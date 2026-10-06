@@ -1,5 +1,13 @@
 # Autopilot 30-minute stage-timeout evidence
 
+> **Status:** the parent RFC is superseded by
+> [`rfc-retire-chat-autopilot.md`](../rfc-retire-chat-autopilot.md)
+> ([#15362](https://github.com/kirodotdev/KiroCrew/pull/15362),
+> [#15359](https://github.com/kirodotdev/KiroCrew/pull/15359)). Go All and the
+> stage loop are removed from `main`, so the Reproduction below applies only to
+> the `7f1f4fb1d` baseline. [#14058](https://github.com/kirodotdev/KiroCrew/issues/14058)
+> tracks the generic chat-turn cancellation defect.
+
 This appendix supports
 [`rfc-autopilot-stage-budgets.md`](../rfc-autopilot-stage-budgets.md) and the
 remaining lifecycle defect tracked by

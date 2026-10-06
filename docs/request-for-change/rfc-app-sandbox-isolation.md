@@ -4,8 +4,8 @@ status: partial
 kind: framework
 author: Ray Xu (rayrayxu)
 created: 2026-04-23
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-10-05
+audited-at: e281ecaf33
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -28,16 +28,20 @@ approved on its own.
 
 ## Problem
 
-A buggy or malicious app with a valid app token can currently:
+An app token is deny-by-default: it reaches only its own namespace plus the
+paths its manifest lists in `permissions.api`, and WebSocket events and chat
+slots are app-scoped. The residual risk is inside what an app is granted:
 
-- Delete all cron jobs (including other apps' and user's)
-- Clear the user's lessons
-- Register/remove MCP servers
-- Read user memory and chat history
-- Spawn unlimited subagents, exhausting compute
-- Send notifications impersonating the system
+- A granted path has no per-resource owner filter. An app granted `/api/crons*`
+  can list, update, pause or remove every cron job, including other apps' and
+  the user's; the same holds for any other granted resource route.
+- `permissions.mcpTools` is declared and shown at install, but nothing enforces
+  it at runtime.
+- No quota bounds what a granted app may create (slots, crons, subagents,
+  storage, request rate).
 
-The app identity system (App Kit §6) provides authentication but not authorization. We need per-app sandboxing so one app cannot destroy another app's state or degrade the user's Kiro Crew experience.
+We need per-app resource ownership and quotas so one app cannot destroy another
+app's state or degrade the user's Kiro Crew experience.
 
 ---
 
@@ -53,12 +57,15 @@ The app identity system (App Kit §6) provides authentication but not authorizat
 
 | Resource | Enforcement | Status |
 |----------|------------|--------|
-| Slots | App can only send/delete/inject into slots it created | ✅ Done (beta) |
-| API surface | App token confined to its own namespace (`/apps/<name>/*`, `/api/apps/<name>/*`) + its manifest `permissions.api` allowlist; everything else denied (CWE-269). Enforced centrally in `token_auth_middleware` at every grant point (main flow + loopback/mixed internal branches) so app tokens can't escalate via mixed-internal paths. Reverse proxy re-checks `token.app == <name>`. | ✅ Done |
-| All others | No enforcement — any app token can access anything | ⚠️ Partial (api-path done; resource-ownership below still open) |
-| Audit | `request["app"]` logged in SEL for all API calls | ✅ Done (beta) |
+| Slots | App can only send/delete/inject into slots it created | Shipped |
+| API surface | App token confined to its own namespace (`/apps/<name>/*`, `/api/apps/<name>/*`) + its manifest `permissions.api` allowlist; everything else denied (CWE-269). Enforced centrally in `token_auth_middleware` at every grant point (main flow + loopback/mixed internal branches) so app tokens can't escalate via mixed-internal paths. Reverse proxy re-checks `token.app == <name>`. | Shipped |
+| WebSocket events | App token on `/api/ws` receives only its own slots' events and the global events listed in `permissions.events` (`dashboard/ws_event_scope.py`) | Shipped |
+| Granted resources | Residual risk: a granted path (for example `/api/crons*`) has no per-resource owner filter, and `permissions.mcpTools`, `cron` and `network` are stored and shown at install with no runtime gate | Open (Phase 2) |
+| Audit | `request["app"]` logged in SEL for all API calls | Shipped |
 
 ### Phase 2 — Resource Ownership
+
+Not implemented: no cron, subagent or notification record carries `owner_app`.
 
 Each mutable resource gets an `owner_app` field. Apps can only modify resources they own. Dashboard users (no app identity) can access everything.
 
@@ -78,10 +85,12 @@ Each mutable resource gets an `owner_app` field. Apps can only modify resources 
 | Lessons | App lessons stored in `app:{name}:` namespace. App cannot read/write global lessons. Global lessons remain read-only for apps. |
 | Memory | App can only search memory from its own slots. Memory consolidation scoped to app's sessions. |
 | Chat history | App can only read history of its own slots. |
-| App storage | Already directory-isolated (`~/.kirocrew/apps/{name}/data/`). Add token-level check: app token can only access its own `name` in `/api/apps/{name}/config`. |
+| App storage | Already directory-isolated (`~/.kiro/crew/apps/{name}/data/`). Add token-level check: app token can only access its own `name` in `/api/apps/{name}/config`. |
 | Gateway config | Apps cannot modify gateway config (`/api/config/*`). Read-only access to non-sensitive fields only. |
 
 ### Phase 4 — Quotas & Rate Limiting
+
+Not implemented: no quota key is read anywhere in the gateway.
 
 Manifest declares resource tier. Gateway enforces limits.
 
@@ -128,7 +137,10 @@ None. The SDK already sends the `app` field in the token. All enforcement is gat
 
 ### Manifest `permissions` Field
 
-Already defined in Mochi's `app.json`:
+`docs/app-kit/manifest-reference.md` owns the full permissions list. Of these
+keys, `api` and `events` are enforced at runtime; `mcpTools`, `cron` and
+`network` are stored and shown at install with no runtime gate. Mochi's
+`app.json` declares:
 
 ```json
 {

@@ -3,8 +3,8 @@ title: AgentCore Identity and Gateway — Crew agent identity and token vending
 status: partial
 author: kyle
 created: 2026-08-27
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-10-05
+audited-at: e281ecaf33
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -17,7 +17,17 @@ superseded-by: []
 Status: partial. The AWS-free `AgentIdentityProvider` CPP slot, public no-op,
 policy validators, and default-off `capabilities.agentcore` governance row are
 on main. The AWS adapter, IAM document helpers, Gateway session attachment,
-consent flow, and Settings surfaces are not present at `80bd0a81f`.
+consent flow, and Settings surfaces are not on main. The on-main seam is also
+unconsumed: `agent._agent_identity_enabled()` has no caller, and nothing reads
+`PlatformContext.agent_identity` beyond bootstrap wiring, so no Gateway or token
+path is gated by it yet.
+
+The Design, Migration plan (Phase 1b onward), Live verification findings,
+resolved Open questions and Alternative F describe the proposed design and
+results observed on an unmerged branch. Where they name `platform/agentcore_aws.py`,
+`platform/agentcore_sigv4.py`, `/api/agentcore/*` routes, `apply_agentcore_runtime`,
+a login withhold in `rebuild_agent_config()`, or the
+`kirocrew-ec2-boundary-agentcore` boundary, none of these exist on main.
 
 ## Summary
 
@@ -49,24 +59,26 @@ execution plane in the sibling AgentCore sandboxes design.
 
 ## Motivation
 
-### Current state (verified at `152c00e99`)
+### Current state before Phase 1 (snapshot at `152c00e99`)
 
-Crew has an operator-identity seam and no agent-identity or token-vending
-seam.
+This table records the state before Phase 1. Since then
+`platform/agentcore_schema.py` and the `AgentIdentityProvider` slot exist on
+main. Crew then had an operator-identity seam and no agent-identity or
+token-vending seam.
 
 | Surface | What exists | What it is not |
 |---|---|---|
-| `IdentityProvider` (`platform/interfaces.py:306`) | SSO status, preflight, MCP credential-watch paths | Not consumed as a principal. `whoami` / `issuer` are **RESERVED** (`platform/context.py:150`) |
+| `IdentityProvider` (`platform/interfaces.py`) | SSO status, preflight, MCP credential-watch paths | Not consumed as a principal. `whoami` / `issuer` are **RESERVED** (`RESERVED_METHODS` in `platform/context.py`) |
 | `DefaultIdentityProvider` | Delegates to `sso_status.py` stubs (`available: false`) | No SSO, no JWT, no workload |
 | `McpToolingProvider.extra_mcp_servers()` | ADD-only MCP specs merged into `kirocrew.json` | Static at rebuild time. No per-session `Authorization` |
-| `kiro_oauth_wire_entry` (`mcp_utils.py:160`) | Translates remote MCP OAuth hints for kiro-cli | Operator-managed client credentials, not AgentCore |
+| `kiro_oauth_wire_entry` (`mcp_utils.py`) | Translates remote MCP OAuth hints for kiro-cli | Operator-managed client credentials, not AgentCore |
 | MCP `headers` on URL servers (`mcp_discovery.py`) | Static headers from config | A baked bearer is a live credential in an agent-readable file |
 | Dashboard tokens (`dashboard/token_auth.py`) | HMAC-SHA256, IP-pinned, single-use | Not an OIDC JWT. Cannot satisfy Gateway `CUSTOM_JWT` |
 | Channel session keys (`session.md`) | `slack:…`, `dashboard:…`, cron keys | Surface routing, not a cryptographic user identity |
 | Governance `SCOPE_CATALOG` | `mcp`, `network.egress`, `capabilities.*` | No AgentCore / token-vend row |
 | Credential redaction | AKIA/ASIA floor + bearer-header heuristics | No AgentCore workload-token shape |
 
-Grep of `src/`, `website/src/`, and `docs/` at `152c00e99` finds **no**
+At that snapshot, a grep of `src/`, `website/src/`, and `docs/` found **no**
 `AgentCore`, `bedrock-agentcore`, `GetWorkloadAccessToken`, or
 `GetResourceOauth2Token` symbol.
 
@@ -175,6 +187,9 @@ it calls Identity APIs.
   alternatives, not layers.
 
 ## Design
+
+> **Proposed.** This section is the design, not implementation status. Only the
+> Phase 1 seam is on main; see the status note at the top.
 
 ### Target architecture
 
@@ -750,6 +765,11 @@ fails closed; no `bedrock-agentcore` SDK import under
 
 ### Phase 1b — Policy.json pair, boundary successor, login withhold
 
+> **Not on main.** Phases 1b through 4 are proposed. Their deliverables
+> (instance policy helper, `kirocrew-ec2-boundary-agentcore`, login withhold,
+> AWS adapter, Gateway attach, consent flow) are absent from main;
+> `cloud/iam.py` defines a single `BOUNDARY_NAME`.
+
 Public-core JSON only (no AgentCore SDK):
 
 - `iam.agentcore_instance_policy_document(posture)` emits the
@@ -856,6 +876,11 @@ same principal rules, same redaction. Do not start this phase to
   read and write/extract verbs.
 
 ## Live verification findings (2026-08-28)
+
+> **Observed on an unmerged branch.** These results came from a branch that
+> carried the AWS adapter, SigV4 proxy and `/api/agentcore` routes. None of that
+> code is on main, so this log is evidence for the design, not implementation
+> status.
 
 Verified in a scratch AWS account in `us-east-1` against a tagged
 `kirocrew:e2e=true` stack: an AWS_IAM Gateway (READY), a standalone
@@ -1062,6 +1087,8 @@ should present identity, not become a token broker.
 
 ### F. IAM inbound to Gateway, no JWT (adopted as posture `workload`)
 
+Adopted in the design; the `workload` posture's runtime path is not on main.
+
 This is no longer a fallback: it **is** the deployed-box posture.
 IAM inbound lets a `kirocrew cloud launch` instance invoke Gateway
 at boot with no login. The public-core `probe_instance_invoke_gateway()`
@@ -1076,6 +1103,9 @@ run two hosts (or switch `security_policy.json` and relaunch
 with the matching boundary + instance grant).
 
 ## Open questions
+
+Items marked "Resolved" record design decisions; the routes and sidecar they
+name are not on main.
 
 1. **kiro-cli per-session headers (Phase 0).** Resolved: sidecar path.
    Tokens never enter the rendered agent JSON. `session/new` injects

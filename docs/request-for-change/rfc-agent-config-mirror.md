@@ -4,8 +4,8 @@ status: partial
 revision: v1
 author: zejiangg, with Kiro
 created: 2026-09-02
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-10-05
+audited-at: e281ecaf33
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -16,11 +16,14 @@ superseded-by: []
 
 - Status: partial — the declared mirror contract, projection-kind and disposition
   vocabularies, registry, parity guards, and Claude Code, Codex, OpenCode, and
-  Goose mirrors are on main. KAS remains an external projection and kiro-cli
-  remains native, so the relocation plan is not complete.
+  Goose mirrors are on main. The contract ships as a registry keyed by backend
+  id (`providers/mirrors/registry.py`: `PROJECTIONS` and `mirror_for`), not as
+  a defaulted method on `LLMProvider`; see `../../src/kiro_crew/providers/mirrors/README.md`.
+  KAS remains an external projection and kiro-cli remains native, so the
+  relocation plan is not complete.
 - Author: zejiangg, with Kiro
 - Created: 2026-09-02
-- Audited against: `80bd0a81f`
+- Audited against: `e281ecaf33`
 - Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this RFC adds a bucket to),
   `../system-specs/modules/claude-code-provider.md`,
@@ -53,15 +56,16 @@ is no error.
 
 A fourth backend hits it a fourth time. That is the cost this RFC removes.
 
-## 2. What exists on main today
+## 2. What existed on main at proposal time
 
-Three mirrors, three shapes, three locations, one of which is documented only in
-`providers.md` and two of which are documented nowhere as mirrors.
+This section records the baseline the proposal started from, not the current
+tree. Three mirrors, three shapes, three locations, one of which was documented
+only in `providers.md` and two of which were documented nowhere as mirrors.
 
 | Mirror | Where | Channel | What it projects |
 |---|---|---|---|
-| kiro-cli | `providers/acp.py:61` `_write_cli_overlay`, `:136` `_write_tool_search_overlay` | a file the harness reads: `<work_dir>/.kiro/settings/cli.json` | model, effort, tool-search settings. The spec proper needs no mirror — kiro-cli is handed `--agent` and reads `~/.kiro/agents/<name>.json` itself |
-| KAS | `acp/kas_agents.py` (561 lines) + `acp/kas_permissions.py` (231 lines) | per-session wire params: `_meta.kiro.customAgents` on `session/new` | `prompt` (inlined from `file://`, since KAS will not read a URI), `tools` (always explicit — absent means *no* tools in KAS, so an ambiguous spec fails closed rather than guessing `*`), `mcpServers` minus broker stubs, `permissions` derived from `allowedTools` through KAS's own capability vocabulary |
+| kiro-cli | `providers/acp.py` `_write_cli_overlay`, `_write_tool_search_overlay` | a file the harness reads: `<work_dir>/.kiro/settings/cli.json` | model, effort, tool-search settings. The spec proper needs no mirror — kiro-cli is handed `--agent` and reads `~/.kiro/agents/<name>.json` itself |
+| KAS | `acp/kas_agents.py` + `acp/kas_permissions.py` | per-session wire params: `_meta.kiro.customAgents` on `session/new` | `prompt` (inlined from `file://`, since KAS will not read a URI), `tools` (always explicit — absent means *no* tools in KAS, so an ambiguous spec fails closed rather than guessing `*`), `mcpServers` minus broker stubs, `permissions` derived from `allowedTools` through KAS's own capability vocabulary |
 | Claude Code | `acp/session_mcp.py` + `acp/client.py` `_write_claude_local_settings` | both: per-session wire array (`mcpServers` on `session/new`) **and** a file (`<work_dir>/.claude/settings.local.json`) | MCP servers, `permissions.deny` from `disabledTools`, `availableModels`, `model` |
 
 Two observations that decide the design:
@@ -80,6 +84,13 @@ Two observations that decide the design:
 ## 3. Proposal
 
 ### 3.1 One declared interface, on `LLMProvider`
+
+> **As shipped:** the declaration is a registry keyed by backend id, not a
+> method on `LLMProvider`. `providers/mirrors/registry.py` holds `PROJECTIONS`
+> (one declared kind per backend) and `mirror_for(backend)`, which returns the
+> registered mirror or `None`. A backend still has to be declared, so absence
+> stays a statement. `../../src/kiro_crew/providers/mirrors/README.md` owns the
+> current contract.
 
 The mirror is declared on `LLMProvider` with a safe default, not on `AcpClient`
 and not probed with `hasattr`.
@@ -162,27 +173,29 @@ src/kiro_crew/providers/mirrors/
   claude_code.py     # both faces: session/new array + settings.local.json
 ```
 
-`providers/mirrors/` rather than `acp/mirrors/`, because the interface is declared
-on `LLMProvider` (`providers/base.py:61`) and an implementation belongs beside the
+`providers/mirrors/` rather than `acp/mirrors/`, because the interface was proposed
+on `LLMProvider` (`providers/base.py`) and an implementation belongs beside the
 thing it implements. It is also the scope that survives a non-ACP backend: `acp/`
 would be the wrong name the first time a provider arrives that does not speak ACP.
 
-**This relocates into the agent SDK when that lands.** The eventual home is
-`agent_sdk/mirrors/`, per `rfc-crew-agent-sdk-boundary.md`. That package does not
-exist on main today (audited: no `agent_sdk` package, no import ratchet), so
-blocking this RFC on it would mean shipping nothing. `providers/mirrors/` is
-therefore the interim home, and the move is a package rename with no redesign —
-one folder moving as a unit is exactly the cheap case, which is the second reason
-to co-locate now rather than later.
+**The mirrors stay in `providers/mirrors/`.** `rfc-crew-agent-sdk-boundary.md`
+names `agent_sdk/mirrors/` as a possible home. The `agent_sdk` package exists on
+main and holds the capability sets (`agent_sdk/backends.py`) and the ref
+resolver (`agent_sdk/mcp_refs.py`), but the mirrors do not move: they live and
+are tested in `providers/mirrors/`, and only a new decision reopens that (§6
+Q5). If one does, the move is a package rename with no redesign, because one
+folder moves as a unit.
 
 ### 3.6 A folder is discoverability; it is not the reminder
 
 Co-location makes a mirror easy to find and easy to copy. It does not make anyone
 write one. Three mechanisms do that, and all three are needed:
 
-1. **A declared method with a default that must be answered.** The default is
-   "no mirror", and a backend taking it has to say so in the registry rather than
-   inherit it silently. Absence is then a statement, not an oversight.
+1. **A declaration that must be answered.** As shipped this is the registry
+   entry in `PROJECTIONS`, not a defaulted method: `mirror_for` returns `None`
+   for a backend with no mirror, and that backend still carries a declared kind
+   with a reason rather than inheriting "no mirror" silently. Absence is then a
+   statement, not an oversight.
 2. **The parity test (§4.3 H4).** Every backend × every concern must resolve to
    one of the four dispositions with a reason. A new backend that leaves a
    concern unaddressed fails a test rather than shipping a session with missing
@@ -194,12 +207,14 @@ The folder is where the answer goes; the test is what asks the question.
 
 ### 3.7 Where the supporting code lives
 
-- Capability sets: `src/kiro_crew/acp_backends.py` only. Harness-parity R5/H8
-  exempts no other path, and every member must already be in
-  `ACP_BACKENDS_KNOWN`.
+- Capability sets: `src/kiro_crew/agent_sdk/backends.py` only;
+  `acp_backends.py` re-exports them. Harness-parity R5/H8 exempts no other path,
+  and every member must already be in `ACP_BACKENDS_KNOWN`.
 - Consumption: `backend in ACP_BACKENDS_<CAP>`. Never `not self._is_claude`,
   never `!= ACP_BACKEND_X`, never a name comparison (H5, H1).
-- The declared method: `LLMProvider` (`providers/base.py`), with a default (H14).
+- The declaration: the `PROJECTIONS` registry and `mirror_for` in
+  `providers/mirrors/registry.py`, keyed by backend id. The RFC proposed a
+  defaulted method on `LLMProvider` (H14); the registry ships instead.
 - Anything needing disk stays off the Kiro construction path and behind a
   synchronous accessor over a warmed cache (H13) — the existing
   `_session_mcp_servers` cache is the pattern to copy.
@@ -224,6 +239,10 @@ finished states are required to be addressable:
 | `mirror` | a mirror in `providers/mirrors/` projects it; must have a registered class | — |
 | `external` | Crew projects it, from a module outside that folder | `projection` (dotted module), `tracking` |
 | `no-channel` | no transport the backend advertises can carry Crew's servers | `channel` (what would have to exist), `tracking` |
+| `broker-only` | the shared MCP broker reaches the backend, but the spec's own servers and per-tool deny set do not | `tracking` |
+
+`providers/mirrors/README.md` owns the full kind list; `ProjectionKind` in
+`registry.py` is the code source.
 
 `tracking` is an issue URL or a repo-relative `path#anchor`, and the parity test
 resolves it. `channel` is the field that makes a gap addressable rather than
@@ -275,7 +294,7 @@ These are routinely conflated and the plan is wrong if they are:
 
 - **Crew's own hooks** (`src/kiro_crew/hooks.py`, the `config.json` `hooks`
   section) fire on Crew's side of the wire, on ACP tool events, via
-  `fire_tool_hooks` / `get_global_hook_store` in `acp/client.py:5881`. They are
+  `fire_tool_hooks` / `get_global_hook_store` in `acp/client.py`. They are
   already backend-agnostic and already work everywhere. **This RFC does not
   touch them, and no gap here is about them.**
 - **The spec's `hooks` block** (written by `_kiro_hooks_only` +
@@ -283,19 +302,23 @@ These are routinely conflated and the plan is wrong if they are:
   by the *harness*. This is the one that does not arrive.
 
 So the honest statement of the gap is narrow: *a user's per-agent hooks are
-executed by kiro-cli and by nobody else.* Crew's own gate, audit and deny rules
-are unaffected on every backend.
+executed by kiro-cli itself, by Crew's turn loop for the backends in
+`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` (KAS, Goose, OpenCode), and by nobody for
+Claude Code and Codex.* Crew's own gate, audit and deny rules are unaffected on
+every backend.
 
 ### 4.2 Current disposition per backend
 
 | Backend | Today | Backend's own support |
 |---|---|---|
 | kiro-cli | `delivered` — spec `hooks` read from `~/.kiro/agents/<name>.json` via `--agent` | native |
-| KAS | `no-channel` — `hooks` is in `kas_agents.UNSUPPORTED_SPEC_KEYS`; a wire-injected agent cannot carry it | **native**, and loads them from an agent profile on disk, and the module notes it "even accepts Crew's object form" |
+| KAS | fired by Crew — `hooks` is in `kas_agents.UNSUPPORTED_SPEC_KEYS`, so the wire cannot carry it; Crew's turn loop runs the spec's hooks instead (`agent_sdk/spec_hooks.py`, `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`) | **native**, and loads them from an agent profile on disk, and the module notes it "even accepts Crew's object form" |
+| Goose, OpenCode | fired by Crew — same turn-loop path as KAS | — |
 | Claude Code | `no-channel` — never written | **native**, via `hooks` in its settings file |
+| Codex | `no-channel` — never written | — |
 
-Both gaps are `no-channel`, and in both cases the destination already exists.
-Neither is a missing feature in the backend.
+The open gaps are the Claude Code and Codex `no-channel` rows. For Claude Code
+the destination already exists, so it is not a missing feature in the backend.
 
 ### 4.3 The plan
 
@@ -316,7 +339,10 @@ by shipping a shape the harness may reject at session start. `withheld` is the
 correct disposition for a hook whose action Crew cannot express safely on that
 harness.
 
-**Phase H3 — KAS, via a Crew-owned agent profile on disk.** KAS's channel is a
+**Phase H3 — KAS, via a Crew-owned agent profile on disk.** Shipped instead: KAS
+spec hooks are fired by Crew's turn loop (`agent_sdk/spec_hooks.py`), as for Goose
+and OpenCode, so they pass the same gates as a Hooks-page hook and no disk
+profile is written. The disk-profile design below remains the alternative. KAS's channel is a
 disk profile, not the wire, so this needs a write target. It must be a
 **Crew-owned** directory, not a user path — the same reasoning that makes an
 isolated config root the right answer for the Claude `~/.claude` gap. Under
@@ -415,11 +441,11 @@ Two things this changes about the record above, both worth keeping:
 
 5. **Should this wait for the agent SDK package so the folder lands in its final
    home?**
-   Disposition: **no.** `agent_sdk/` does not exist on main and that RFC is still
-   `draft`, so waiting means the three mirrors stay scattered indefinitely while
-   a fourth backend arrives. `providers/mirrors/` moves as one unit later, which
-   is the cheapest possible migration and is itself an argument for gathering the
-   files now. Reopens only if the SDK package lands before PR 1 of this stack.
+   Disposition: **no move.** `agent_sdk/` exists on main and holds the capability
+   sets (`agent_sdk/backends.py`, re-exported by `acp_backends.py`), but the
+   mirrors live and are tested in `providers/mirrors/` and stay there. Reopens
+   only on a new decision to move them; `providers/mirrors/` moves as one unit if
+   so.
 
 ## 7. Documentation changes this requires
 
