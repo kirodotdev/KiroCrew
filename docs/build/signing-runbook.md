@@ -101,9 +101,9 @@ latest-DMG permalink (`desktop/<channel>/latest/KiroCrew.dmg`) are a public
 contract, so deriving filenames from the bundle name would silently rename keys
 and break the permalink. The DMG's **volume** name does follow the bundle.
 
-The single-arch legs (`mac_variant: arm64 | x64`, nightly only today) run the
-same three jobs once more per DMG and append the arch to every name the legs
-would otherwise share: the signing-bucket keys (`SIGN_KEY_SUFFIX`, read by
+The single-arch legs (`mac_variant: arm64 | x64`, on nightly and on both release
+channels) run the same three jobs once more per DMG and append the arch to every
+name the legs would otherwise share: the signing-bucket keys (`SIGN_KEY_SUFFIX`, read by
 `sign.sh`), `notarized/…/KiroCrew-<arch>.zip`, the gated artifact
 `KiroCrew-notarized-<channel>-<version>-<arch>`, the public
 `desktop/<channel>/<version>/KiroCrew-<arch>.{zip,dmg}` and alias

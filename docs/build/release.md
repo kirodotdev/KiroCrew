@@ -46,7 +46,8 @@ the documented exception and preserves the candidate's prerelease stamp. The
 mechanism:
 
 - **A successful prerelease run clears the candidate commit.** After every
-  publish lane succeeds, `record-promotion` assembles the wheel/sdist, all six
+  publish lane succeeds, and after the insider-only `release-candidate-tests`
+  job has run the test suite on the exact tagged SHA, `record-promotion` assembles the wheel/sdist, all six
   Linux artifacts, all three notarized macOS zip/DMG pairs (universal,
   arm64-only, x86_64-only), the optional Windows installer pair, and
   the attested OCI manifest digest into a
@@ -75,7 +76,12 @@ mechanism:
 - **Everything fails closed.** No successful same-commit prerelease run, an
   undocumented version, or a release branch still declaring the RC spelling all
   abort the release before any lane publishes. On the byte-reuse path a missing,
-  expired, ambiguous, or digest-mismatched record aborts it too.
+  expired, ambiguous, or digest-mismatched record aborts it too. The one
+  deliberate exception is the repository variable `vars.STABLE_GATE_OVERRIDE`:
+  set to exactly the version being released, it turns the stable gate's unmet
+  preconditions into a warning and lets that one release proceed. Like
+  `STABLE_PROMOTE_BYTES` it is scoped to one version, so it cannot be left
+  switched on for the next release.
 - **The bare version is stamped in at build time, not patched afterwards** (see
   "Version stamping"). There is no metadata-rewrite step to trust. `stable-gate`
   additionally compares the tag against all three declaration files, because a
@@ -197,7 +203,7 @@ code.
      Linux pin bump must also measure each staged binary's highest `GLIBC_*`
      requirement as described in [desktop-app](desktop-app.md); neither arch
      may exceed the desktop app's documented `GLIBC_2.34` compatibility floor.
-     version bump without its sha lines FAILS the desktop build lane with that
+     A version bump without its sha lines FAILS the desktop build lane with that
      procedure in the error, never by shipping unverified bytes. A stale pin is
      not a build failure: the pinned artifact stays downloadable under its own
      version prefix, which is also why a hotfix rebuild of an older tag keeps
@@ -210,7 +216,7 @@ code.
    `__version__ = "X.Y.Z"` **in all three version files** (`src/kiro_crew/__init__.py`,
    `pyproject.toml`, `website/electron/package.json` — the 0.4.0 promotion was
    nearly tagged on a commit still declaring `0.4.0-rc.9` because only the tag
-   name was checked); the bytecode/pycache test fix is present; the display-fold
+   name was checked); the display-fold
    contract above is fully present (run the regression gates:
    `test_stable_version_display.py` + the `version_display` tests — a stamped
    stable build must show `X.Y.Z` on the version chip, the Settings footer, the
@@ -382,11 +388,12 @@ and authenticate with a token carrying `read:packages`.
 ### GitHub Releases
 
 `release.yml`'s `github-release` job attaches the wheel, sdist, all six Linux
-artifacts, the available Windows installer, per-build symbols manifests, and the
-two gated macOS artifacts renamed
-`KiroCrew-<version>-universal-mac.zip` and `KiroCrew-<version>-universal.dmg`.
-It accepts macOS bytes **only** from the exact name-bound artifact the notarize
-job attached after the Gatekeeper gate, and re-validates them structurally
+artifacts, the available Windows installer, per-build symbols manifests, and
+three gated macOS zip/DMG pairs renamed
+`KiroCrew-<version>-{universal,arm64,x64}-mac.zip` and
+`KiroCrew-<version>-{universal,arm64,x64}.dmg`. All three pairs are required:
+the three `sign-and-notarize` callers are required lanes. It accepts macOS bytes
+**only** from the exact name-bound artifacts the notarize jobs attached after the Gatekeeper gate, and re-validates them structurally
 before publishing (ZIP CRC plus exactly one top-level `.app`; DMG `koly` UDIF
 trailer). The unsigned electron-builder zip and DMG are inter-job handoffs and
 never become release assets. Windows remains optional: when present, exactly one
@@ -404,7 +411,8 @@ AWS credentials but never `contents: write`.
 `CHANGELOG.md`; for a promotion, bytes insiders actually received), so the lanes
 then publish independently of one another. `github-release` therefore waits on
 the complete required set -- `publish-cli`, all six Linux format/arch lanes,
-`publish-docker` and `sign-and-notarize` -- rather than on macOS alone, so a
+`publish-docker`, `sign-and-notarize`, `sign-and-notarize-arm64` and
+`sign-and-notarize-x64` -- rather than on macOS alone, so a
 version cannot become publicly visible while a required lane failed. It is the
 same set `record-promotion` requires, and
 `test_release_promotion_contract.py::test_the_promotion_record_and_the_release_page_require_the_same_lanes`
@@ -746,8 +754,9 @@ one key) are in [../../packaging/signing/README.md](../../packaging/signing/READ
 
 **The pinned key has three consumers, not two.** `cli.sh` and the gateway's
 update-feed reader verify `cli-manifest.json` against it, and the gateway's
-feature-video manifest (`src/kiro_crew/platform/feed_trust.py`, schema
-`kirocrew-feature-videos/1`) verifies against the same key. A rotation therefore
+feature-video manifest (`src/kiro_crew/feature_videos_manifest.py`, schema
+`kirocrew-feature-videos-manifest-v1`, using the shared verify core in
+`src/kiro_crew/platform/feed_trust.py`) verifies against the same key. A rotation therefore
 moves `cli.sh`, the feed publisher and the feature-video manifest publisher
 together, and every hosted manifest a release still reads back (this release,
 this minor's `.0`, and the `.0` of up to three earlier minors) must be re-signed
@@ -1285,9 +1294,10 @@ for one to appear.
   CHANGELOG prose is wrapped at ~76 columns, and copied in verbatim it renders as
   a fixed-width column with a wide empty gutter down the right of the page — the
   "big blank area" reported on v0.5.0. The identical text looks correct in
-  `CHANGELOG.md` because a rendered *file* does not enable that option. Join each
-  paragraph and each list item onto one line and let the browser reflow;
-  headings, list nesting, code fences and tables are unaffected.
+  `CHANGELOG.md` because a rendered *file* does not enable that option. The
+  extractor's `unwrap()` step joins each paragraph and each list item onto one
+  line so the browser reflows them; headings, list nesting, code fences and
+  tables are unaffected.
 
 Trimming the body after the fact is safe and is the normal remedy: release notes
 are prose on the GitHub page, editable independently of the tag, the CHANGELOG,
