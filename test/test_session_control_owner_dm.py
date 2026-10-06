@@ -1234,13 +1234,14 @@ def test_a_channel_turn_records_no_audience_so_a_later_dashboard_reply_is_not_wi
 def test_a_runner_turn_still_records_and_the_marker_is_the_runners_own(tmp_path, monkeypatch):
     """The same channel-born slot driven from the dashboard -- ``_run_chat`` has
     published the turn's identity on it -- records the admission, and the record
-    still fences the read-to-publication path. The marker is the runner's own: it
-    is set and compare-and-cleared in ``_run_chat``, whose every-exit tail
-    (``_end_turn_tail``) empties the record, and the messaging driver that runs
-    channel turns never touches it -- pinned at the source, so a driver that starts
-    setting it reds this test rather than resurrecting the stale record."""
+    still fences the read-to-publication path. The marker is the runner's own: a
+    real dashboard turn (``turn_harness.run_turn``) publishes it while it runs and
+    retires it, with the record, when it ends; and the messaging driver that runs
+    channel turns never touches it -- pinned at the driver's source, so a driver
+    that starts setting it reds this test rather than resurrecting the stale record."""
     import inspect
-    import re
+
+    from turn_harness import Do, TurnScript, run_turn
 
     from kiro_crew.dashboard import chat_runner
     from kiro_crew.messaging import dispatch, driver
@@ -1256,13 +1257,19 @@ def test_a_runner_turn_still_records_and_the_marker_is_the_runners_own(tmp_path,
     state.sessions.set_mirror_link(DISCORD_DM, ChannelLink("discord", channel_id=THREAD))
     assert chat_runner.cross_surface_withheld(state, dm) is True, "and it still fences"
 
-    runner = inspect.getsource(chat_runner._run_chat)
-    assert re.search(r"slot\._active_turn_session_key = session_key", runner)
-    assert re.search(r'slot\._active_turn_session_key = ""', runner)
-    # The teardown that empties the record is the runner's every-exit tail,
-    # which the same ``finally`` runs right after the compare-and-clear above.
-    assert re.search(r"_end_turn_tail\(state, slot, turn_exit", runner)
-    assert "slot._steer_audience_fences.clear()" in inspect.getsource(chat_runner._end_turn_tail)
+    # A real runner turn: inside it the slot reads as a runner turn, and an
+    # admission recorded during it is gone, with the marker, once the turn ends.
+    seen: dict = {}
+
+    def _during(ctx) -> None:
+        seen["slot"] = ctx.slot
+        seen["inside"] = sc._in_runner_turn(ctx.slot)
+        ctx.slot._steer_audience_fences["audience:probe"] = {"probe": True}
+
+    asyncio.run(run_turn(TurnScript(events=(Do(_during),))))
+    assert seen["inside"] is True, "the runner publishes its marker while the turn runs"
+    assert seen["slot"]._active_turn_session_key == "", "the runner retires its marker"
+    assert seen["slot"]._steer_audience_fences == {}, "the runner's teardown empties the record"
     for module in (driver, dispatch):
         assert "_active_turn_session_key" not in inspect.getsource(module), module.__name__
     assert "_active_turn_session_key" in inspect.getsource(sc._in_runner_turn)
