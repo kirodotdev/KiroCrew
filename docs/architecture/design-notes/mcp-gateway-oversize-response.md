@@ -2,10 +2,10 @@
 
 ## Problem
 
-MCP tool responses (e.g. from `ReadInternalWebsites` reading a large CR page)
-can exceed the gateway's read buffer limit. Before this fix, the response was
-silently dropped and the calling session hung for 600s until the ACP watchdog
-killed it.
+An MCP tool response (for example a fetch tool returning a very large web page)
+can exceed the gateway's read buffer limit. A dropped response with no answer
+would leave the calling session waiting until the ACP watchdog killed it, so the
+gateway answers every such request itself.
 
 ## Config Keys
 
@@ -35,21 +35,24 @@ marker. This prevents large responses from bloating the LLM's context window.
 
 When an MCP backend emits a response line exceeding `read_buffer_limit_bytes`:
 
-1. The oversize line is drained (never stored in memory).
-2. The JSON-RPC `id` is parsed from the first ~512 bytes of the drained head
-   (a JSON prefix parse, then a targeted `"id":` regex fallback).
-3. If id is recovered → ONLY that pending request receives a -32000 error.
-4. If the oversize line was an `initialize` response (or the id is
-   unrecoverable), the whole shared backend is recycled — the handshake can
-   never complete, so no single-request fail would unwedge it.
+1. The oversize line is drained (never stored in memory); its head and tail,
+   `ID_PROBE_BYTES` each, are kept.
+2. The JSON-RPC `id` is recovered from the top-level object in either kept end
+   (`recover_top_level_id`).
+3. If the id is recovered, ONLY that pending request receives a -32000 error,
+   settled the way a server error would settle it (`_fail_claimed_request`). An
+   oversize `initialize` reply therefore fails the handshake and answers every
+   queued waiter; the backend is not recycled.
+4. If the id is unrecoverable, the shared backend is recycled, so every attached
+   stub gets a clean backend-gone error and re-establishes. No arbitrary pending
+   request is failed in its place.
 5. **Nothing ever hangs.** Every in-flight request gets a response or the
    backend is respawned.
 
-The error message is self-explanatory:
+The error message names the limit:
 
 ```
-MCP response too large (1482937 bytes > limit 67108864); raise
-mcp_gateway.read_buffer_limit_bytes or narrow the query
+response exceeded size limit (67108864 bytes); request dropped
 ```
 
 ### Layer 2: Spill-to-file (large tool results)
@@ -152,7 +155,7 @@ no brokered path renders resource blobs to the model today.
 
 ## Troubleshooting
 
-If you see `-32000 "MCP response too large"` errors:
+If you see `-32000 "response exceeded size limit (N bytes); request dropped"` errors:
 
 1. **Narrow the query** — ask the tool for less data (e.g. specific sections vs full page).
 2. **Raise the limit** — set `KIROCREW_MCP_READ_LIMIT=134217728` (128 MiB) in your env, or add it to `<data home>/config.json` (`KIROCREW_HOME`, default `~/.kiro/crew`):

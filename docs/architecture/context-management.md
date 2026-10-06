@@ -40,7 +40,10 @@ once rather than per turn.
 Each block is a bracket marker that is also a contract with the model.
 `context_blocks.py` → `_MARKERS` is the authoritative list and `_CLOSERS` the ones
 that close; the metering reads the final string back through them, so that table
-cannot disagree with what was sent.
+cannot disagree with what was sent. Every opener except the request header
+(`_LINE_START_EXEMPT`) is matched only at the start of a line, so a new block must
+begin on its own line; the assembly newline-terminates the caller's
+`request_prefix_context` for that reason.
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
@@ -90,11 +93,15 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 - **Preferences** — injected **complete**, not capped, while the protected set
   stays under the model-safe ceiling.
 - **Semantic memory** — the eligible `pref.*` records
-  (`get_preferences_context`) are protected; task facts arrive in the activity
+  (`get_preferences_context`) are protected but bounded by the startup allowance
+  `_PREFS_STARTUP_CAP` in `context_assembly/budget.py`: over it, rows are ranked by
+  overlap with the request and kept whole until the next would cross the cap, and
+  an omission notice points at `memory_recall` for the rest. Task facts arrive in the activity
   block below, query-ranked and with the `pref.*` rows dropped
   (`get_semantic_context(facts_only=True)`) so nothing ships twice.
 - **`activity_index()`** — protected: a bounded index of project headings and
-  the last three days' titles (the `cap` default of `activity_index`), plus a
+  the last three days' titles (the `days` default of `activity_index`; its `cap`
+  default bounds the characters), plus a
   `[Memory tools]` line pointing at `memory_recall` for the bodies.
 - **Projects, daily history (14 full days, then decayed summaries and counts to
   day 180), task facts, episodic fragments** — the `[Memory activity]` block,
@@ -209,6 +216,9 @@ it adds:
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
 | `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
+| `[CURRENT USER] <name>` | the sender's display name (for example WeCom `allowed_users[].name`) | a channel turn that carries a display name |
+| `[Task checklist — automatic recovery]` | `todo_recovery_prompt`, prepended to the message by `dashboard/chat_turn/prompt_assembly.py`; task text inside the untrusted TODO fence | a cold start without provider history, or a recovery still pending; it settles on the provider's first event |
+| `[Task checklist — person edited]` | `todo_sync_prompt`, prepended the same way | a warm turn with person edits not yet stated to the agent; marked stated on the provider's first event |
 | `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
 
@@ -256,6 +266,31 @@ The mechanism, when on:
   `selected_skills`, wired through the `select` callable) may **replace** the
   matched set for a sampled session; `None` keeps the match, `[]` empties it. See
   [Jev Skill Selection](../../src/kiro_crew/docs/decisions.md).
+
+#### Per-session body dedup
+
+`ContextBuilder._dedup_triggered_bodies` in `context.py` keeps, per provider
+session, a digest-keyed record of which skill bodies the prompt carried. Both the
+session key and each skill key are stored as fixed-size digests, and both levels
+are LRU-bounded: `_SENT_SKILL_BODY_SESSIONS` (512) sessions and
+`_SENT_SKILL_BODY_ENTRIES` (64) skills per session. An eviction re-sends that body
+on its next match, never drops the skill.
+
+- **Reset.** The record for a session is dropped on a new session, on the first
+  turn after Kiro Crew's own compaction (`needs_reinjection`), and when the agent
+  on that key changes. The reset runs whether or not a skill matches that turn.
+- **Commit or roll back.** The record is written at build time, and each build
+  keeps an undo entry for what it wrote. A turn that lands calls
+  `commit_skill_bodies`; a turn that does not land calls `rollback_skill_bodies`,
+  so the next turn re-sends the body. Every turn loop settles the record in its
+  `finally`, beside `rearm_reinjection`; `drive_turn` derives the choice from
+  the driver's landed result. `test/test_skill_body_dedup.py` pins both outcomes.
+- **Confined skills are exempt.** A confined project skill takes the body path on
+  every match.
+- **Known soft failure.** A backend that trims or compacts its own window out of
+  band does not arm the reset, so the next match of a recorded skill gets its
+  pointer line rather than its body. The agent still learns the skill applies and
+  can read it.
 
 ### What comes back after compaction
 
@@ -365,9 +400,9 @@ second private window into the masked scratch root and names as the child's
 `$KIROCREW_SCRATCH` is readable by every child, however it was placed, and a
 `_bg` runtime recycled for age or RSS hands the sessions it takes over the same
 directory (its replacement inherits and adopts it). Reclamation is keyed on
-process liveness rather than on file age — a directory is removed only once its
-recorded owner's process GROUP is dead **and** the whole tree has been idle past a
-grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
+process liveness rather than on file age — a directory is removed only once every
+process group recorded in its `.owner` marker is dead **and** the whole tree has
+been idle past a grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
 deny over the masked root re-opens `file-read-metadata` on the literal
 directories above each window (`sandbox._window_ancestors`) and nothing else:
 `realpath` of a window `lstat`s every component, so without it a harness that
@@ -406,7 +441,7 @@ including skills absent from the startup directory. `action="read", key="full/ke
 loads that exact key. Qualified `$namespace/name` references match complete keys;
 an unqualified leaf is accepted only when unique within the available set.
 
-Native Kiro 2.21.2 loads skill names/descriptions at startup and bodies on demand.
+Native Kiro loads skill names/descriptions at startup and bodies on demand.
 It does **not** eagerly load every `skill://` body, but its metadata directory is
 unbounded. Crew's native launch view therefore removes `skill://` entries while
 retaining the authored mapping for Crew discovery. Managed transport aliases
@@ -578,10 +613,12 @@ the DM thread).
 ## 6. Crew-member private files: implemented vs planned
 
 Audited against `<data home>/members/<slug>/` and the keystone-gated
-`<data home>/trust/` subtree. On a populated host a member directory holds
-`activity.jsonl` (plus its lock); `briefing.md` appears once the member writes one,
-and `[CURRENT ASSIGNMENT]` renders `(empty — write your first briefing there …)`
-until it does.
+`<data home>/trust/` subtree. A member's activity lives in its per-member event
+log under `<data home>/crew-log/members/`, not in the member directory; a legacy
+`activity.jsonl` found there is folded into that log once and retired to
+`activity.jsonl.migrated`. `briefing.md` appears in the member directory once the
+member writes one, and `[CURRENT ASSIGNMENT]` renders
+`(empty — write your first briefing there …)` until it does.
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -589,7 +626,7 @@ until it does.
 | Per-member working memory (briefing) | **Implemented** | `members.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
 | Per-member permanent rules | **Implemented** | `members.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `trust/member-rules/` so the member's file tools cannot rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
 | Private per-member memory | **Implemented for explicitly created members** | Memory V2: one SQLite database per immutable `member_id`, resolved by `config/loader.py` → `resolve_agent_bindings` and `execution_context.py` → `member_config_for_id`; bounded essentials from `member_essential_context.py`, recall through `memory_recall`. **Gap:** legacy and auto-discovered members remain on Global V1 and are not migrated, and a member cannot choose or rebind a shared store. |
-| Per-member activity log | **Implemented** | `members.py` → `record_activity`, `read_activity`, now backed by the per-member event log rather than `activity.jsonl`; each record is one `activity/record` event under the caps `eventlog/log.py` applies per append. There is NO rotation: rotation renamed the file out from under readers and dropped its oldest rows, which a sequence-ordered reader cannot survive, so the log is bounded per row and per value and accumulates over a member's lifetime. The legacy file is folded in once and then retired to `activity.jsonl.migrated`. |
+| Per-member activity log | **Implemented** | `members.py` → `record_activity`, `read_activity`, backed by the per-member event log (`eventlog/log.py`, a `member`-kind crew log); each record is one `activity/record` event under the caps that module applies per append. There is NO rotation, because a sequence-ordered reader cannot survive a file renamed out from under it or a dropped oldest row; the log is bounded per row and per value and accumulates over a member's lifetime. A legacy `activity.jsonl` is folded in once and retired to `activity.jsonl.migrated`. |
 | Per-member permission control | **Partial** | Real and enforced, but keyed on the **template**, not the member: `agent_capabilities.py` resolves owner-reviewed intent over `agent_state.CAPABILITY_SECTIONS` (`mcpServers`, `tools`, `allowedTools`, `autoApprove`, `skills`, `prompt`, `model`, `resources`). A member gets its own permissions only through a **private copy** of its template (`private_to` lineage; `dashboard/agent_admin/template_lineage.py` → `_foreign_private_copy_owner`, `dashboard/agent_admin/crew_removal.py` → `_prune_private_copy_of_deleted_crew`), which is refused to a second crew. **Gaps:** two members sharing one template share its permissions; `[PERMANENT RULES]` is prompt-level guidance, not an enforced gate; and `agent.member_dispatch` is one global ceiling rather than a per-member one. |
 | Per-member DM binding | **Implemented** | `members.py` → `dm_binding_path`, `read_dm_binding`, `write_dm_binding`; under `trust/member-bindings/`, because the binding is the thread's identity authority. |
 

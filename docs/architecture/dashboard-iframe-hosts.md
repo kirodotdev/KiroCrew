@@ -1,8 +1,8 @@
 # Dashboard iframe hosts — which one to use
 
-This note covers four core interactive iframe hosts. The dashboard also has
+This note covers five core interactive iframe hosts. The dashboard also has
 static renderers and app-specific frames, so this list is not exhaustive. These
-four look interchangeable and are not: each has a different sandbox posture
+five look interchangeable and are not: each has a different sandbox posture
 (including no `sandbox` on remote-instance panes), and two make *opposite*
 assumptions about whether the frame may talk back.
 
@@ -10,8 +10,8 @@ Pick a host from this table. **Do not widen an existing host's sandbox to make i
 
 | Host | `sandbox` | Content it is for | Frame → host messages |
 |---|---|---|---|
-| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | An explicitly loaded loopback preview or the loopback Playwright CLI dashboard; Electron browsing can use a native Chromium view instead | none |
-| `WidgetFrame.tsx` (`<mcwidget>`, artifacts) | `allow-scripts allow-popups allow-popups-to-escape-sandbox` | **LLM-emitted HTML** | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile |
+| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | An explicitly loaded loopback preview or the loopback Playwright CLI dashboard; Electron browsing can use a native Chromium view instead. The relayed browser view, served on the dashboard's own origin, uses `VIEW_SANDBOX` instead: the same flags without `allow-same-origin` | none |
+| `WidgetFrame.tsx` (`<mcwidget>`, artifacts) | `allow-scripts allow-popups allow-popups-to-escape-sandbox` | **LLM-emitted HTML**. `buildSrcdoc` injects a click-time shim that gives bare absolute `http(s)` links `target=_blank rel=noopener noreferrer`; hosts whose sandbox withholds popups (`CrewWebview.tsx`, the mochi `WidgetFrame.tsx`) pass `rewriteBareLinks: false` | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile |
 | `McpAppFrame.tsx` (the **App** tab) | `allow-scripts allow-forms` | **MCP-server-supplied HTML** (`srcDoc`) | **Required and trusted-by-capability.** SEP-1865 JSON-RPC bridge; the host holds a `callback_secret` |
 | `InstancesViewport.tsx` | none | another instance's dashboard | n/a |
 | `TaskDashboardFrame.tsx` (**Dynamic Dashboard**) | empty sandbox | Sanitized task-specific HTML/CSS/SVG artifacts; no model scripts or outbound links | none; answers and approvals use separate native controls |
