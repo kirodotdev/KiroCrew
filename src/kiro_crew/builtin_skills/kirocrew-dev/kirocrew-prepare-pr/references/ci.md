@@ -31,9 +31,11 @@ then re-arm.
 ## Updating a PR body when `gh` fails
 
 A GraphQL error or a rate limit on `gh pr edit` leaves the old body in place.
-PATCH it over REST instead, then read the body back to confirm it landed:
+PATCH it over REST instead, then read the body back to confirm it landed. Stream
+the generated JSON on stdin: this avoids both file-argument parsing differences
+and a request-body upload from a local path.
 
 ```bash
-python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' > /tmp/pr-patch.json
-gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input /tmp/pr-patch.json
+python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' |
+  gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input -
 ```

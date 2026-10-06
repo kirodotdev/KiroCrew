@@ -178,7 +178,13 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised again, from 28,415, for the data-exfiltration gate's normalized argv
+#: view and raw fail-closed body-file substrings. The normalized view covers
+#: carriers and respelled programs without one spelling-chase per wrapper; the
+#: shared shell reader and its tests carry the supporting token/assignment
+#: machinery.
+_PACKAGE_LINE_BUDGET = 29_638
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
