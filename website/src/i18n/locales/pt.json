@@ -8158,8 +8158,6 @@
       "sub_agent_result_other": "{{count}} resultados de subagente"
     },
     "readingWidthToggle": {
-      "label_full": "T",
-      "label_md": "M",
       "title_full": "Largura total",
       "title_md": "Largura média"
     },
@@ -10407,6 +10405,10 @@
       "content_copied_from_v": "conteúdo copiado da v",
       "copied": "Copiado",
       "copy_content": "Copiar conteúdo",
+      "send_to_session": "Enviar para uma sessão",
+      "send_to_new_session": "Nova sessão",
+      "send_to_session_failed": "Não foi possível iniciar uma sessão — tente novamente",
+      "untitled_session": "Sessão sem título",
       "copy_failed": "Falha ao copiar",
       "could_not_overwrite": "Não foi possível sobrescrever.",
       "created": "Criado",

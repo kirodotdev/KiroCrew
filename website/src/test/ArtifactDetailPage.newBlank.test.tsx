@@ -103,7 +103,7 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
 
   it('renames the document from the title, without bumping the version', async () => {
     renderPage({ blank: false })
-    fireEvent.click(await screen.findByTitle('Rename this artifact'))
+    fireEvent.click(await screen.findByRole('button', { description: 'Rename this artifact' }))
     const input = await screen.findByLabelText('Artifact name')
     fireEvent.change(input, { target: { value: 'Launch plan' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -116,19 +116,19 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
     // The input unmounts on commit, which would drop focus to the body and lose
     // the user's place mid-keyboard-flow.
     renderPage()
-    const trigger = await screen.findByTitle('Rename this artifact')
+    const trigger = await screen.findByRole('button', { description: 'Rename this artifact' })
     fireEvent.click(trigger)
     const input = await screen.findByLabelText('Artifact name')
     fireEvent.change(input, { target: { value: 'Release plan' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() =>
-      expect(screen.getByTitle('Rename this artifact')).toHaveFocus(),
+      expect(screen.getByRole('button', { description: 'Rename this artifact' })).toHaveFocus(),
     )
   })
 
   it('abandons a rename on Escape', async () => {
     renderPage({ blank: false })
-    fireEvent.click(await screen.findByTitle('Rename this artifact'))
+    fireEvent.click(await screen.findByRole('button', { description: 'Rename this artifact' }))
     const input = await screen.findByLabelText('Artifact name')
     fireEvent.change(input, { target: { value: 'Discard me' } })
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -138,7 +138,7 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
 
   it('ignores a rename that changes nothing', async () => {
     renderPage({ blank: false })
-    fireEvent.click(await screen.findByTitle('Rename this artifact'))
+    fireEvent.click(await screen.findByRole('button', { description: 'Rename this artifact' }))
     fireEvent.keyDown(await screen.findByLabelText('Artifact name'), { key: 'Enter' })
     await waitFor(() => expect(screen.queryByLabelText('Artifact name')).not.toBeInTheDocument())
     expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
@@ -193,7 +193,7 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
 
   it.each([
     ['renamed it', async () => {
-      fireEvent.click(screen.getByTitle('Rename this artifact'))
+      fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
       const input = await screen.findByLabelText('Artifact name')
       fireEvent.change(input, { target: { value: 'Release plan' } })
       fireEvent.keyDown(input, { key: 'Enter' })
@@ -244,7 +244,7 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
     // Escape writes nothing, so the blank is still litter.
     const { unmount } = renderPage()
     await screen.findByLabelText('editor')
-    fireEvent.click(screen.getByTitle('Rename this artifact'))
+    fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
     const input = await screen.findByLabelText('Artifact name')
     fireEvent.change(input, { target: { value: 'Changed my mind' } })
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -338,7 +338,7 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
       { route: '/artifacts/untitled' },
     )
     await screen.findByLabelText('editor')
-    fireEvent.click(screen.getByTitle('Rename this artifact'))
+    fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
     const input = await screen.findByLabelText('Artifact name')
     fireEvent.change(input, { target: { value: 'Release checklist' } })
     fireEvent.keyDown(input, { key: 'Enter' })

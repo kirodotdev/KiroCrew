@@ -8035,8 +8035,6 @@
       "sub_agent_result_other": "{{count}}টি সাবএজেন্ট ফলাফল"
     },
     "readingWidthToggle": {
-      "label_full": "প",
-      "label_md": "ম",
       "title_full": "পূর্ণ প্রস্থ",
       "title_md": "মধ্যম প্রস্থ"
     },
@@ -10265,6 +10263,10 @@
       "content_copied_from_v": "কনটেন্ট কপি করা হয়েছে এই ভার্সন থেকে: v",
       "copied": "কপি হয়েছে",
       "copy_content": "বিষয়বস্তু কপি করুন",
+      "send_to_session": "কোনো সেশনে পাঠান",
+      "send_to_new_session": "নতুন সেশন",
+      "send_to_session_failed": "সেশন শুরু করা যায়নি — আবার চেষ্টা করুন",
+      "untitled_session": "শিরোনামহীন সেশন",
       "copy_failed": "কপি ব্যর্থ",
       "could_not_overwrite": "ওভাররাইট করা যায়নি।",
       "created": "তৈরি হয়েছে",

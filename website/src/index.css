@@ -3176,15 +3176,22 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .mc-cmt-bubble.unread { background-color: var(--warn); color: var(--warn-fg, #1a1a1a); }
 .mc-cmt-bubble.active { background-color: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
-/* Artifact toolbar: every control (version select + buttons) the same height.
-   Icon-only buttons become squares; labeled buttons keep their padding-driven
-   width. ArtifactDetailPage already carries the `mc-art-toolbar` class. */
+/* Artifact toolbar: every button the same height. Icon-only buttons become
+   squares (the min-width matches the height); labeled buttons keep their
+   padding-driven width. The version select is a Radix trigger inside a
+   wrapper div, so this selector cannot reach it -- it takes the same 32px
+   through its own className (TOOLBAR_SELECT_CLASS in ArtifactDetailPage). A
+   button wrapped in HoverTip (`[data-hover-tip]`) is one level deeper and is
+   matched explicitly. */
 .mc-art-toolbar > button,
+.mc-art-toolbar > [data-hover-tip] > button,
 .mc-art-toolbar > select {
   height: 32px;
+  min-width: 32px;
   box-sizing: border-box;
 }
-.mc-art-toolbar > button {
+.mc-art-toolbar > button,
+.mc-art-toolbar > [data-hover-tip] > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;

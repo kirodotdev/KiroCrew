@@ -161,15 +161,15 @@ async function mount(artifact: Artifact, versions: number[] = [1, 2]) {
 
 /** Open the inline editor and type, so `dirty` becomes true. */
 async function typeIntoEditor(text: string) {
-  fireEvent.click(screen.getByTitle('Edit content'))
+  fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
   const box = await screen.findByLabelText('body editor')
   fireEvent.change(box, { target: { value: text } })
   await waitFor(() => expect(screen.getByText('• unsaved changes')).toBeInTheDocument())
   return box
 }
 
-const saveBtn = () => screen.getByTitle(/Save to Live/i)
-const snapshotEditBtn = () => screen.getByTitle(/Snapshot \(Cmd\+Shift\+S\)/i)
+const saveBtn = () => screen.getByRole('button', { description: /Save to Live/i })
+const snapshotEditBtn = () => screen.getByRole('button', { description: /Snapshot \(Cmd\+Shift\+S\)/i })
 
 /** Pick a row from the Radix-backed version select (open, then click). */
 async function pickVersion(label: string) {
@@ -286,7 +286,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     // still be claimed (preventDefault) so AppKit does not select the word under
     // the cursor, but no redundant write is issued.
     await mount(mkArtifact())
-    fireEvent.click(screen.getByTitle('Edit content'))
+    fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
     await screen.findByLabelText('body editor')
     const evt = new KeyboardEvent('keydown', {
       key: 's',
@@ -337,7 +337,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // Declined — the buffer survives.
     expect(screen.getByLabelText('body editor')).toBeInTheDocument()
-    fireEvent.click(screen.getByTitle(/Cancel \(Esc\)/i))
+    fireEvent.click(screen.getByRole('button', { description: /Cancel \(Esc\)/i }))
     const second = await screen.findByRole('dialog')
     fireEvent.click(within(second).getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByLabelText('body editor')).toBeNull())
@@ -372,7 +372,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
   it('toggles the rendered preview of the edit buffer without committing it', async () => {
     await mount(mkArtifact())
     await typeIntoEditor('# preview me')
-    fireEvent.click(screen.getByTitle(/Preview rendered output/i))
+    fireEvent.click(screen.getByRole('button', { description: /Preview rendered output/i }))
     // Preview swaps the textarea for the rendered body; nothing was posted.
     await waitFor(() => expect(screen.queryByLabelText('body editor')).toBeNull())
     expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
@@ -381,13 +381,13 @@ describe('ArtifactDetailPage — mutation paths', () => {
 
   it('snapshots live state when the record is live_dirty, and reports failures', async () => {
     await mount(mkArtifact({ live_dirty: true }))
-    const btn = screen.getByTitle(/Snapshot — capture the current state/i)
+    const btn = screen.getByRole('button', { description: /Snapshot — capture the current state/i })
     fireEvent.click(btn)
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, { snapshot: true }),
     )
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('snapshot refused'))
-    fireEvent.click(screen.getByTitle(/Snapshot — capture the current state/i))
+    fireEvent.click(screen.getByRole('button', { description: /Snapshot — capture the current state/i }))
     await waitFor(() => expect(screen.getByText('snapshot refused')).toBeInTheDocument())
   })
 
@@ -398,7 +398,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .mockResolvedValue(mkArtifact({ version: 1, content: '# old' }))
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
-    const revert = await screen.findByTitle('Revert to v1')
+    const revert = await screen.findByRole('button', { description: 'Revert to v1' })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     fireEvent.click(revert)
     expect(confirmSpy).toHaveBeenCalled()
@@ -412,9 +412,9 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .mockRejectedValue(new Error('version gone'))
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
-    fireEvent.click(await screen.findByTitle('Revert to v1'))
+    fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    fireEvent.click(screen.getByTitle('Revert to v1'))
+    fireEvent.click(screen.getByRole('button', { description: 'Revert to v1' }))
     await waitFor(() => expect(screen.getByText('version gone')).toBeInTheDocument())
   })
 
@@ -424,10 +424,10 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .mockResolvedValue(mkArtifact({ version: 1, content: '# old' }))
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
-    await waitFor(() => expect(screen.getByTitle('Revert to v1')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { description: 'Revert to v1' })).toBeInTheDocument())
     await pickVersion('Live')
     // Revert is meaningless on Live, so the control disappears again.
-    await waitFor(() => expect(screen.queryByTitle('Revert to v1')).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { description: 'Revert to v1' })).toBeNull())
     expect(screen.getByText(/Showing Live \(v2\)/)).toBeInTheDocument()
   })
 
@@ -527,7 +527,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
 
   it('renaming patches the name; a rejected rename surfaces', async () => {
     await mount(mkArtifact())
-    fireEvent.click(screen.getByTitle('Rename this artifact'))
+    fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
     const field = await screen.findByLabelText('Artifact name')
     fireEvent.change(field, { target: { value: 'Release plan' } })
     fireEvent.keyDown(field, { key: 'Enter' })
@@ -535,7 +535,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, { name: 'Release plan' }),
     )
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('name taken'))
-    fireEvent.click(screen.getByTitle('Rename this artifact'))
+    fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
     const field2 = await screen.findByLabelText('Artifact name')
     fireEvent.change(field2, { target: { value: 'Something else' } })
     fireEvent.blur(field2)
@@ -544,11 +544,11 @@ describe('ArtifactDetailPage — mutation paths', () => {
 
   it('Escape abandons a rename without a write', async () => {
     await mount(mkArtifact())
-    fireEvent.click(screen.getByTitle('Rename this artifact'))
+    fireEvent.click(screen.getByRole('button', { description: 'Rename this artifact' }))
     const field = await screen.findByLabelText('Artifact name')
     fireEvent.change(field, { target: { value: 'discarded' } })
     fireEvent.keyDown(field, { key: 'Escape' })
-    await waitFor(() => expect(screen.getByTitle('Rename this artifact')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { description: 'Rename this artifact' })).toBeInTheDocument())
     expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
   })
 

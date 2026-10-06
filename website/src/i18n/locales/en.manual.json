@@ -3403,8 +3403,6 @@
       "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set. Only models that support reasoning effort offer this setting."
     },
     "readingWidthToggle": {
-      "label_full": "F",
-      "label_md": "M",
       "title_full": "Full width",
       "title_md": "Medium width"
     },

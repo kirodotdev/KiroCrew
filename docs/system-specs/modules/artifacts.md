@@ -1628,6 +1628,15 @@ exclusive flex siblings of the artifact body, icon-toggled from the toolbar
 comment-count auto-reveal never switches away from an open chat panel, since the
 chat panel opens only on explicit action.
 
+**Send to a session (frontend)** — the toolbar's forward-arrow menu
+(`ArtifactSendToSession`) lists "New session" plus the ten most recent live
+sessions, leaving out artifact-bound companion chats.
+Picking one navigates there through the page's `sendNav` and appends a one-line
+reference (`Reference artifact "<name>" (slug \`<slug>\`; load it with
+artifact_get).`) to that session's composer draft with `mergeIntoDraft`, so an
+unsent draft is kept. Nothing is sent: the user reviews and submits. The menu is
+hidden while editing, because navigating away would drop unsaved edits.
+
 **Session resolution (frontend)** — the active bound session is resolved from
 the Redux slots snapshot (`slot.artifact === slug`), so no extra endpoint exists:
 the WS `slots` event already carries the binding. The flow keeps it to at most

@@ -86,29 +86,22 @@ describe('ArtifactDetailPage copy content', () => {
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 
-  it('aligns the copy control with the reading-width card and follows full width', async () => {
+  it('sits in the header toolbar rather than on a row of its own above the body', async () => {
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const toolbar = copyBtn().parentElement as HTMLElement
-
-    expect(toolbar.style.maxWidth).toBe('var(--mc-content-width, 900px)')
-    expect(toolbar.style.margin).toBe('0px auto')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Medium width' }))
-    expect(toolbar.style.maxWidth).toBe('')
-    expect(toolbar.style.margin).toBe('')
+    // A direct child of the toolbar, so it takes the toolbar's shared 32px
+    // height like every other button there.
+    expect(copyBtn().closest('[data-hover-tip]')?.parentElement).toHaveClass('mc-art-toolbar')
   })
 
-  it('keeps iframe artifacts and their copy control full width', async () => {
+  it('keeps iframe artifacts full width', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'html', content: '<main>Full-width report</main>' }),
     )
     const { container } = renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
 
-    const toolbar = copyBtn().parentElement as HTMLElement
-    expect(toolbar.style.maxWidth).toBe('')
-    expect(toolbar.style.margin).toBe('')
+    expect(copyBtn().closest('[data-hover-tip]')?.parentElement).toHaveClass('mc-art-toolbar')
     expect(screen.queryByRole('button', { name: 'Medium width' })).toBeNull()
 
     const iframe = await waitFor(() => {

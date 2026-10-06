@@ -8035,8 +8035,6 @@
       "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम"
     },
     "readingWidthToggle": {
-      "label_full": "प",
-      "label_md": "म",
       "title_full": "पूरी चौड़ाई",
       "title_md": "मध्यम चौड़ाई"
     },
@@ -10265,6 +10263,10 @@
       "content_copied_from_v": "सामग्री इससे कॉपी की गई: v",
       "copied": "कॉपी हो गया",
       "copy_content": "सामग्री कॉपी करें",
+      "send_to_session": "किसी सत्र में भेजें",
+      "send_to_new_session": "नया सत्र",
+      "send_to_session_failed": "सत्र शुरू नहीं हो सका — फिर से कोशिश करें",
+      "untitled_session": "बिना शीर्षक का सत्र",
       "copy_failed": "कॉपी विफल",
       "could_not_overwrite": "ओवरराइट नहीं हो सका।",
       "created": "बनाया गया",

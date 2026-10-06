@@ -23,7 +23,9 @@ import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
+import HoverTip from '../components/HoverTip'
 import ReadingWidthToggle from '../components/ReadingWidthToggle'
+import { ArtifactSendToSession } from '../components/ArtifactSendToSession'
 import { useReadingWidth } from '../hooks/useReadingWidth'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
@@ -101,6 +103,16 @@ function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | 
 }
 
 
+/** Puts the header's dropdowns on the same 32px line as the buttons beside
+ *  them; the select's padding alone stands it taller. A height, not a padding
+ *  override: the trigger owns its spacing and typography. */
+const TOOLBAR_SELECT_CLASS = 'h-8'
+
+/** Size and shape shared by the header's folder / star / tag chips, so they
+ *  sit on the same 32px line as Back and the kind select. Colour and border
+ *  style stay per chip. */
+const TOOLBAR_CHIP_CLASS = 'inline-flex items-center gap-1.5 h-8 px-2.5 text-[12px] rounded-md box-border'
+
 export { isEditableKind }
 
 /**
@@ -116,20 +128,21 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
   const path = chain.map(f => f.name).join(' › ')
   return (
     <DropdownMenu>
+      <HoverTip label={current ? i18nT('pages.artifactDetailPage.filed_in_click_to_move', { path }) : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border cursor-pointer bg-bg-elevated transition-colors ${
-            current ? 'border-border text-muted hover:text-text' : 'border-dashed border-border text-muted hover:text-text hover:border-border-strong'
-          }`}
-          title={current ? i18nT('pages.artifactDetailPage.filed_in_click_to_move', { path }) : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}
-          aria-label={current ? i18nT('pages.artifactDetailPage.folder_move_to_folder', { path }) : i18nT('pages.artifactDetailPage.move_to_folder')}
-          {...uiLocation('artifacts.detail.move-to-folder')}
-        >
-          <FolderIcon size={10} className={current ? 'text-accent' : undefined} />
-          {current ? current.name : 'folder'}
-        </button>
+          <button
+            type="button"
+            className={`${TOOLBAR_CHIP_CLASS} border cursor-pointer bg-bg-elevated transition-colors ${
+              current ? 'border-border text-muted hover:text-text' : 'border-dashed border-border text-muted hover:text-text hover:border-border-strong'
+            }`}
+            aria-label={current ? i18nT('pages.artifactDetailPage.folder_move_to_folder', { path }) : i18nT('pages.artifactDetailPage.move_to_folder')}
+            {...uiLocation('artifacts.detail.move-to-folder')}
+          >
+            <FolderIcon size={13} className={current ? 'text-accent' : undefined} />
+            {current ? current.name : 'folder'}
+          </button>
       </DropdownMenuTrigger>
+      </HoverTip>
       {/* Intentional tighter cap composed via min() with the primitive's
           available-height var: 300px keeps the folder picker compact while
           preserving the viewport never-clip floor (a bare max-h would override
@@ -280,37 +293,40 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
   if (isPoppedOut(slug)) {
     return (
       <>
-        <button
-          type="button"
-          onClick={() => focus(slug)}
-          className="p-1.5 rounded-md border border-accent text-accent bg-accent-subtle cursor-pointer transition-all"
-          title={i18nT('pages.artifactDetailPage.focus_the_popped_out_window')}
-          aria-label={i18nT('pages.artifactDetailPage.focus_popped_out_window')}
-        >
-          <Monitor size={13} />
-        </button>
-        <button
-          type="button"
-          onClick={() => bringBack(slug)}
-          className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-          title={i18nT('pages.artifactDetailPage.bring_the_artifact_back_into_this_window')}
-          aria-label={i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}
-        >
-          <Undo2 size={13} />
-        </button>
+        <HoverTip label={i18nT('pages.artifactDetailPage.focus_the_popped_out_window')}>
+          <button
+            type="button"
+            onClick={() => focus(slug)}
+            className="p-1.5 rounded-md border border-accent text-accent bg-accent-subtle cursor-pointer transition-all"
+            aria-label={i18nT('pages.artifactDetailPage.focus_popped_out_window')}
+          >
+            <Monitor size={13} />
+          </button>
+        </HoverTip>
+        <HoverTip label={i18nT('pages.artifactDetailPage.bring_the_artifact_back_into_this_window')}>
+          <button
+            type="button"
+            onClick={() => bringBack(slug)}
+            className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+            aria-label={i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}
+          >
+            <Undo2 size={13} />
+          </button>
+        </HoverTip>
       </>
     )
   }
   return (
-    <button
-      type="button"
-      onClick={() => open(slug, name)}
-      className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-      title={i18nT('pages.artifactDetailPage.pop_out_into_its_own_window')}
-      aria-label={i18nT('pages.artifactDetailPage.pop_out_to_window')}
-    >
-      <ExternalLink size={13} />
-    </button>
+    <HoverTip label={i18nT('pages.artifactDetailPage.pop_out_into_its_own_window')}>
+      <button
+        type="button"
+        onClick={() => open(slug, name)}
+        className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+        aria-label={i18nT('pages.artifactDetailPage.pop_out_to_window')}
+      >
+        <ExternalLink size={13} />
+      </button>
+    </HoverTip>
   )
 }
 
@@ -1653,8 +1669,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
   const usesIframe = artifact?.kind === 'widget' || artifact?.kind === 'html'
   // HTML/widget artifacts own a full-width iframe surface. Reading width only
-  // constrains native document bodies, and the copy control follows whichever
-  // width the active body actually uses.
+  // constrains native document bodies.
   const contentWidthStyle = usesIframe ? undefined : mdPreviewStyle
   const exportSrcdoc = useMemo(
     () => artifact?.content && usesIframe
@@ -1863,15 +1878,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
             />
           ) : (
-            <Btn
-              ref={titleButtonRef}
-              onClick={startRenaming}
-              title={i18nT('pages.artifactDetailPage.rename_this_artifact')}
-              className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
-            >
-              {artifact.name}
-              <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
-            </Btn>
+            <HoverTip label={i18nT('pages.artifactDetailPage.rename_this_artifact')}>
+              <Btn
+                ref={titleButtonRef}
+                onClick={startRenaming}
+                className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
+              >
+                {artifact.name}
+                <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
+              </Btn>
+            </HoverTip>
           )}
           subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
         />
@@ -1883,7 +1899,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
               }))) return
               navigate('/artifacts')
-            }} className="flex items-center gap-1">
+            }} className="flex items-center gap-1 h-8">
               <ArrowLeft size={13} /> {i18nT('pages.artifactDetailPage.back')}
             </Btn>
           )}
@@ -1895,18 +1911,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             * would strand a document the user is typing in. Choosing a type also
             * PINS it, stopping the auto-detect from re-typing it later. */}
           {editable ? (
-            /* SimpleSelect has no `title` channel, so the hover tooltip moves to
-             * a wrapper element; the accessible name still rides on the trigger
-             * itself via aria-label. */
-            <div title={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}>
+            <HoverTip label={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}>
               <SimpleSelect
                 options={USER_SELECTABLE_KINDS}
                 value={artifact.kind}
                 aria-label={i18nT('pages.artifactDetailPage.document_type')}
+                className={TOOLBAR_SELECT_CLASS}
                 disabled={changingKind}
                 onChange={(v) => void changeKind(v)}
               />
-            </div>
+            </HoverTip>
           ) : (
             <Badge variant="aim">{artifact.kind}</Badge>
           )}
@@ -1915,37 +1929,39 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             * live record-level `pinned`, so rendering it there could show a
             * stale star for state the user cannot meaningfully toggle. */}
           {isCurrent && (
-            <button
-              type="button"
-              onClick={togglePin}
-              disabled={pinning}
-              className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border transition-colors cursor-pointer disabled:cursor-default ${
-                artifact.pinned
-                  ? 'bg-accent/10 border-accent text-accent'
-                  : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
-              }`}
-              title={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
-              aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
-              aria-pressed={!!artifact.pinned}
-            >
-              {pinning
-                ? <RefreshCw size={10} className="animate-spin" />
-                : <Star size={10} className={artifact.pinned ? 'fill-current' : ''} />}
-              {artifact.pinned ? i18nT('pages.artifactsPage.starred') : i18nT('pages.artifactDetailPage.star')}
-            </button>
-          )}
-          {artifact.tags.map((t) => (
-            <span key={t} className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-border text-muted group">
-              {t}
+            <HoverTip label={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}>
               <button
                 type="button"
-                onClick={() => removeTag(t)}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
-                title={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
-                aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
+                onClick={togglePin}
+                disabled={pinning}
+                className={`${TOOLBAR_CHIP_CLASS} border transition-colors cursor-pointer disabled:cursor-default ${
+                  artifact.pinned
+                    ? 'bg-accent/10 border-accent text-accent'
+                    : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
+                }`}
+                aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
+                aria-pressed={!!artifact.pinned}
               >
-                <X size={10} />
+                {pinning
+                  ? <RefreshCw size={13} className="animate-spin" />
+                  : <Star size={13} className={artifact.pinned ? 'fill-current' : ''} />}
+                {artifact.pinned ? i18nT('pages.artifactsPage.starred') : i18nT('pages.artifactDetailPage.star')}
               </button>
+            </HoverTip>
+          )}
+          {artifact.tags.map((t) => (
+            <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
+              {t}
+              <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
+                <button
+                  type="button"
+                  onClick={() => removeTag(t)}
+                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                  aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
+                >
+                  <X size={12} />
+                </button>
+              </HoverTip>
             </span>
           ))}
           {addingTag ? (
@@ -1978,20 +1994,21 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               })}
               autoFocus
               placeholder={i18nT('pages.artifactDetailPage.tag')}
-              className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-accent text-text outline-hidden focus-ring"
+              className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-accent text-text outline-hidden focus-ring`}
               style={{ width: '90px' }}
               aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
             />
           ) : (
-            <button
-              type="button"
-              onClick={() => setAddingTag(true)}
-              className="inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors"
-              title={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}
-              aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-            >
-              <Plus size={10} /> {i18nT('pages.artifactDetailPage.tag_2')}
-            </button>
+            <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
+              <button
+                type="button"
+                onClick={() => setAddingTag(true)}
+                className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
+                aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
+              >
+                <Plus size={13} /> {i18nT('pages.artifactDetailPage.tag_2')}
+              </button>
+            </HoverTip>
           )}
           {/* `flex-wrap`: the parent row wraps, but this group did not, so at a
               narrow window the trailing controls (Download last) ran past the
@@ -2005,6 +2022,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               // beside it -- both for assistive tech and for tests.
               aria-label={i18nT('pages.artifactDetailPage.version')}
               {...uiLocation('artifacts.detail.versions')}
+              className={TOOLBAR_SELECT_CLASS}
               disabled={saving}
               options={versionOptions}
               optionLabels={versionOptionLabels}
@@ -2034,16 +2052,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
             {/* Revert: only meaningful when viewing a historical version */}
             {!isCurrent && (
-              <button
-                type="button"
-                onClick={handleRevert}
-                disabled={saving}
-                className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
-                title={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
-                aria-label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
-              >
-                <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
-              </button>
+              <HoverTip label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}>
+                <button
+                  type="button"
+                  onClick={handleRevert}
+                  disabled={saving}
+                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
+                  aria-label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
+                >
+                  <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
+                </button>
+              </HoverTip>
             )}
 
             {/* Editing controls (Save / Snapshot / Cancel / Preview) when
@@ -2051,74 +2070,80 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 iterate, publish, full screen, download. */}
             {editing ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => handleSave(false, saveConflict)}
-                  disabled={!dirty || saving}
-                  className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
-                  title={saveConflict
-                    ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content_title')
-                    : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}
-                >
-                  {saving
-                    ? i18nT('pages.artifactDetailPage.saving')
-                    : saveConflict
-                      ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content')
-                      : i18nT('pages.artifactDetailPage.save')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSave(true)}
-                  disabled={!dirty || saving}
-                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title={i18nT('pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}
-                >
-                  <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelEditing}
-                  disabled={saving}
-                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title={i18nT('pages.artifactDetailPage.cancel_esc')}
-                >
-                  <span className="inline-flex items-center gap-1"><X size={13} /> {i18nT('pages.artifactDetailPage.cancel')}</span>
-                </button>
-                {artifact.kind !== 'svg' && (
+                <HoverTip label={saveConflict
+                  ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content_title')
+                  : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}>
                   <button
                     type="button"
-                    onClick={() => setPreviewDuringEdit(p => !p)}
-                    disabled={saving}
-                    className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                    title={previewDuringEdit ? i18nT('pages.artifactDetailPage.back_to_editor') : i18nT('pages.artifactDetailPage.preview_rendered_output_of_current_edits')}
+                    onClick={() => handleSave(false, saveConflict)}
+                    disabled={!dirty || saving}
+                    className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
                   >
-                    {previewDuringEdit ? i18nT('pages.artifactDetailPage.edit') : i18nT('pages.artifactDetailPage.preview')}
+                    {saving
+                      ? i18nT('pages.artifactDetailPage.saving')
+                      : saveConflict
+                        ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content')
+                        : i18nT('pages.artifactDetailPage.save')}
                   </button>
+                </HoverTip>
+                <HoverTip label={i18nT('pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}>
+                  <button
+                    type="button"
+                    onClick={() => handleSave(true)}
+                    disabled={!dirty || saving}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                  >
+                    <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
+                  </button>
+                </HoverTip>
+                <HoverTip label={i18nT('pages.artifactDetailPage.cancel_esc')}>
+                  <button
+                    type="button"
+                    onClick={cancelEditing}
+                    disabled={saving}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                  >
+                    <span className="inline-flex items-center gap-1"><X size={13} /> {i18nT('pages.artifactDetailPage.cancel')}</span>
+                  </button>
+                </HoverTip>
+                {artifact.kind !== 'svg' && (
+                  <HoverTip label={previewDuringEdit ? i18nT('pages.artifactDetailPage.back_to_editor') : i18nT('pages.artifactDetailPage.preview_rendered_output_of_current_edits')}>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDuringEdit(p => !p)}
+                      disabled={saving}
+                      className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+                    >
+                      {previewDuringEdit ? i18nT('pages.artifactDetailPage.edit') : i18nT('pages.artifactDetailPage.preview')}
+                    </button>
+                  </HoverTip>
                 )}
               </>
             ) : (
               <>
                 {isCurrent && artifact.live_dirty && (
-                  <button
-                    type="button"
-                    onClick={handleSnapshotLive}
-                    disabled={saving}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                    title={i18nT('pages.artifactDetailPage.snapshot_capture_the_current_state_as_a_new_vers')}
-                  >
-                    <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
-                  </button>
+                  <HoverTip label={i18nT('pages.artifactDetailPage.snapshot_capture_the_current_state_as_a_new_vers')}>
+                    <button
+                      type="button"
+                      onClick={handleSnapshotLive}
+                      disabled={saving}
+                      className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                    >
+                      <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
+                    </button>
+                  </HoverTip>
                 )}
                 {editable && (
-                  <button
-                    type="button"
-                    onClick={() => { void guardCommentDraft(startEditing) }}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-                    title={i18nT('pages.artifactDetailPage.edit_content')}
-                    aria-label={i18nT('pages.artifactDetailPage.edit_content')}
-                  >
-                    <Pencil size={13} />
-                  </button>
+                  <HoverTip label={i18nT('pages.artifactDetailPage.edit_content')}>
+                    <button
+                      type="button"
+                      onClick={() => { void guardCommentDraft(startEditing) }}
+                      className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+                      aria-label={i18nT('pages.artifactDetailPage.edit_content')}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </HoverTip>
                 )}
                 {/* Companion chat — toggles the embedded chat panel. Primary
                     "discuss with agent" action for all kinds; for widgets it is
@@ -2126,16 +2151,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     Comments are durable and read by the agent via
                     artifact_get_comments. Works in popout windows too — the
                     popout has its own store + WS. */}
-                <button
-                  type="button"
-                  onClick={() => { void openCompanionChat() }}
-                  className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'chat' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                  title={i18nT('pages.artifactDetailPage.chat_with_the_agent_about_this_artifact')}
-                  aria-label={i18nT('pages.artifactDetailPage.toggle_agent_chat')}
-                  aria-pressed={panel === 'chat'}
-                >
-                  <Sparkles size={13} />
-                </button>
+                <HoverTip label={i18nT('pages.artifactDetailPage.chat_with_the_agent_about_this_artifact')}>
+                  <button
+                    type="button"
+                    onClick={() => { void openCompanionChat() }}
+                    className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'chat' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+                    aria-label={i18nT('pages.artifactDetailPage.toggle_agent_chat')}
+                    aria-pressed={panel === 'chat'}
+                  >
+                    <Sparkles size={13} />
+                  </button>
+                </HoverTip>
               </>
             )}
 
@@ -2144,27 +2170,56 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             )}
             {/* Comments toggle, Publish, Full screen, Download — icon-only to
                 keep the top-right bar compact; labels live in tooltips. */}
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'comments' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-              title={panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}
-              aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
-              aria-pressed={panel === 'comments'}
-              {...uiLocation('artifacts.detail.comments')}
-            >
-              <span className="inline-flex items-center gap-1">
-                <MessageSquare size={13} />
-                {displayCommentCount > 0 && (
-                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{displayCommentCount}</span>
-                )}
-              </span>
-            </button>
+            <HoverTip label={panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}>
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'comments' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+                aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
+                aria-pressed={panel === 'comments'}
+                {...uiLocation('artifacts.detail.comments')}
+              >
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquare size={13} />
+                  {displayCommentCount > 0 && (
+                    <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{displayCommentCount}</span>
+                  )}
+                </span>
+              </button>
+            </HoverTip>
             {/* Pop out — opens the artifact in its own live browser window.
                 Swaps to Focus + Bring-back once
                 out. Not shown inside the popout window itself (the frame's
                 Return button handles closing). */}
             {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
+            {/* Copy raw source + hand a reference to a chat session. Copy is
+                hidden for image (bytes, not text) and webapp (its deploy card
+                has its own affordances); both hide while the editor owns the
+                surface, since leaving for a chat would discard the buffer. */}
+            {artifact.kind !== 'webapp' && artifact.kind !== 'image' && !editing && (
+              <HoverTip label={copyLabel}>
+                <button
+                  type="button"
+                  onClick={handleCopyContent}
+                  className={`p-1.5 rounded-md border border-border hover:border-border-strong cursor-pointer transition-all ${copyStatus === 'failed' ? 'text-danger hover:text-danger' : 'text-muted hover:text-text'}`}
+                  aria-label={copyLabel}
+                  aria-live="polite"
+                >
+                  {copyStatus === 'copied'
+                    ? <Check size={13} className="text-ok" />
+                    : copyStatus === 'failed'
+                      ? <AlertCircle size={13} aria-hidden="true" />
+                      : <Copy size={13} />}
+                </button>
+              </HoverTip>
+            )}
+            {!editing && (
+              <ArtifactSendToSession
+                name={artifact.name}
+                slug={artifact.slug}
+                onSend={(intent) => { void guardCommentDraft(() => sendNav(intent)) }}
+              />
+            )}
             {/* Publish — the single publish surface. Web deploy (Publish to
                 public web on the user's own AWS) and any future publish
                 providers register into PublishHub, so this is the one and only
@@ -2175,26 +2230,28 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 here — a deliberate public-edition divergence, so an upstream
                 sync must NOT re-add it. */}
             {artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
+              <HoverTip label={i18nT('pages.artifactDetailPage.publish_this_artifact')}>
+                <Btn
+                  type="button"
+                  onClick={() => setShowPublish(v => !v)}
+                  aria-label={i18nT('pages.artifactDetailPage.publish')}
+                  aria-pressed={showPublish}
+                  className={showPublish ? 'border-accent text-accent bg-accent-subtle hover:bg-accent-subtle hover:text-accent' : ''}
+                >
+                  <Upload size={13} /> {i18nT('pages.artifactDetailPage.publish')}
+                </Btn>
+              </HoverTip>
+            )}
+            <HoverTip label={i18nT('pages.artifactDetailPage.download')}>
               <Btn
                 type="button"
-                onClick={() => setShowPublish(v => !v)}
-                title={i18nT('pages.artifactDetailPage.publish_this_artifact')}
-                aria-label={i18nT('pages.artifactDetailPage.publish')}
-                aria-pressed={showPublish}
-                className={showPublish ? 'border-accent text-accent bg-accent-subtle hover:bg-accent-subtle hover:text-accent' : ''}
+                onClick={downloadAsHtml}
+                className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+                aria-label={i18nT('pages.artifactDetailPage.download')}
               >
-                <Upload size={13} /> {i18nT('pages.artifactDetailPage.publish')}
+                <Download size={13} />
               </Btn>
-            )}
-            <Btn
-              type="button"
-              onClick={downloadAsHtml}
-              className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-              title={i18nT('pages.artifactDetailPage.download')}
-              aria-label={i18nT('pages.artifactDetailPage.download')}
-            >
-              <Download size={13} />
-            </Btn>
+            </HoverTip>
           </span>
         </div>
       </div>
@@ -2334,32 +2391,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               holds scroll position and, for markdown, an in-progress anchored
               comment selection, and rotating a phone crosses the breakpoint. */}
           <div className={`flex-1 min-w-0 ${narrowPanelOpen ? 'hidden' : ''}`}>
-            {/* Copy raw source — its own right-aligned slot ABOVE the body (not
-                the header toolbar, which must not grow; not an overlay, which
-                could obscure a heading's trailing text or cover a top-right
-                control inside a widget artifact). Hidden for image (bytes, not
-                text) and webapp (deploy card has its own affordances), and
-                while the editor owns the surface. */}
-            {artifact.kind !== 'webapp' && artifact.kind !== 'image' && !editing && (
-              <div className="mb-1.5">
-                <div className="flex justify-end" style={contentWidthStyle}>
-                  <Btn
-                    type="button"
-                    onClick={handleCopyContent}
-                    className={`p-1.5 rounded-md border border-border hover:border-border-strong cursor-pointer transition-all ${copyStatus === 'failed' ? 'text-danger hover:text-danger' : 'text-muted hover:text-text'}`}
-                    title={copyLabel}
-                    aria-label={copyLabel}
-                    aria-live="polite"
-                  >
-                    {copyStatus === 'copied'
-                      ? <Check size={13} className="text-ok" />
-                      : copyStatus === 'failed'
-                        ? <AlertCircle size={13} aria-hidden="true" />
-                        : <Copy size={13} />}
-                  </Btn>
-                </div>
-              </div>
-            )}
             {artifact.kind === 'webapp' ? (
               <WebAppArtifactCard artifact={artifact} />
             ) : artifact.kind === 'image' ? (

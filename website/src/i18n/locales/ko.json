@@ -7912,8 +7912,6 @@
       "sub_agent_result_other": "서브 에이전트 결과 {{count}}개"
     },
     "readingWidthToggle": {
-      "label_full": "전",
-      "label_md": "중",
       "title_full": "전체 너비",
       "title_md": "중간 너비"
     },
@@ -10123,6 +10121,10 @@
       "content_copied_from_v": "콘텐츠를 다음 버전에서 복사함: v",
       "copied": "복사됨",
       "copy_content": "콘텐츠 복사",
+      "send_to_session": "세션으로 보내기",
+      "send_to_new_session": "새 세션",
+      "send_to_session_failed": "세션을 시작하지 못했습니다. 다시 시도하세요",
+      "untitled_session": "제목 없는 세션",
       "copy_failed": "복사 실패",
       "could_not_overwrite": "덮어쓸 수 없습니다.",
       "created": "생성됨",

@@ -7912,8 +7912,6 @@
       "sub_agent_result_other": "{{count}} 个子代理结果"
     },
     "readingWidthToggle": {
-      "label_full": "全",
-      "label_md": "中",
       "title_full": "全宽",
       "title_md": "中等宽度"
     },
@@ -10123,6 +10121,10 @@
       "content_copied_from_v": "内容复制自 v",
       "copied": "已复制",
       "copy_content": "复制内容",
+      "send_to_session": "发送到会话",
+      "send_to_new_session": "新会话",
+      "send_to_session_failed": "无法新建会话，请重试",
+      "untitled_session": "未命名会话",
       "copy_failed": "复制失败",
       "could_not_overwrite": "无法覆盖。",
       "created": "创建于",

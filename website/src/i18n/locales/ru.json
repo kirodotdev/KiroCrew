@@ -8281,8 +8281,6 @@
       "sub_agent_result_other": "{{count}} результата субагентов"
     },
     "readingWidthToggle": {
-      "label_full": "П",
-      "label_md": "С",
       "title_full": "Полная ширина",
       "title_md": "Средняя ширина"
     },
@@ -10549,6 +10547,10 @@
       "content_copied_from_v": "содержимое скопировано из v",
       "copied": "Скопировано",
       "copy_content": "Скопировать содержимое",
+      "send_to_session": "Отправить в сессию",
+      "send_to_new_session": "Новая сессия",
+      "send_to_session_failed": "Не удалось начать сессию — попробуйте ещё раз",
+      "untitled_session": "Сессия без названия",
       "copy_failed": "Не удалось скопировать",
       "could_not_overwrite": "Не удалось перезаписать.",
       "created": "Создано",

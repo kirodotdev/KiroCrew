@@ -348,7 +348,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     fireEvent.click(screen.getByRole('combobox', { name: /Version/i }))
     fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
-    await waitFor(() => expect(screen.getByTitle(/revert to v1/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { description: /revert to v1/i })).toBeInTheDocument())
     const frame = container.querySelector('iframe') as HTMLIFrameElement
     const source = { postMessage: vi.fn() }
     Object.defineProperty(frame, 'contentWindow', { value: source, configurable: true })
@@ -369,7 +369,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     const input = await screen.findByLabelText(COMPOSER_INPUT)
     fireEvent.change(input, { target: { value: 'not yet added' } })
 
-    fireEvent.click(screen.getByTitle(/edit content/i))
+    fireEvent.click(screen.getByRole('button', { description: /edit content/i }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Discard your unsaved comment?')).toBeInTheDocument()
     // Above the composer's z-[9999] portal, so its buttons are reachable.
@@ -378,7 +378,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(screen.getByLabelText(COMPOSER_INPUT)).toHaveValue('not yet added')
 
-    fireEvent.click(screen.getByTitle(/edit content/i))
+    fireEvent.click(screen.getByRole('button', { description: /edit content/i }))
     const again = await screen.findByRole('dialog')
     fireEvent.click(within(again).getByRole('button', { name: 'Discard comment' }))
     await waitFor(() => expect(screen.queryByLabelText(COMPOSER_INPUT)).toBeNull())
@@ -389,8 +389,8 @@ describe('ArtifactDetailPage anchored comments', () => {
     // Selecting inside a textarea is an edit gesture, not an annotation gesture.
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
-    fireEvent.click(screen.getByTitle(/edit content/i))
-    await waitFor(() => expect(screen.getByText(/unsaved changes|save/i)).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { description: /edit content/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument())
     selectInBody('beta')
     await settle()
     expect(screen.queryByLabelText(COMPOSER_INPUT)).toBeNull()
@@ -405,7 +405,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     // the trigger does nothing — open it, then click the row.
     fireEvent.click(screen.getByRole('combobox', { name: /Version/i }))
     fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
-    await waitFor(() => expect(screen.getByTitle(/revert to v1/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { description: /revert to v1/i })).toBeInTheDocument())
     selectInBody('beta')
     await settle()
     expect(screen.queryByLabelText(COMPOSER_INPUT)).toBeNull()

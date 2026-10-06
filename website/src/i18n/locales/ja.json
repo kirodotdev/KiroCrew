@@ -7912,8 +7912,6 @@
       "sub_agent_result_other": "{{count}} 個のサブエージェント結果"
     },
     "readingWidthToggle": {
-      "label_full": "F",
-      "label_md": "M",
       "title_full": "全幅",
       "title_md": "中幅"
     },
@@ -10123,6 +10121,10 @@
       "content_copied_from_v": "コンテンツは v からコピー",
       "copied": "コピーしました",
       "copy_content": "コンテンツをコピー",
+      "send_to_session": "セッションに送る",
+      "send_to_new_session": "新しいセッション",
+      "send_to_session_failed": "セッションを開始できませんでした。もう一度お試しください",
+      "untitled_session": "無題のセッション",
       "copy_failed": "コピーに失敗しました",
       "could_not_overwrite": "上書きできませんでした。",
       "created": "作成",
