@@ -129,6 +129,7 @@ _BASE_NAMES: dict[str, str] = {
     "_doctor_memory_pressure": "own-func",
     "_doctor_model_url_reachable": "own-func",
     "_doctor_name_grant_platform_scope": "own-func",
+    "_doctor_notification_settings_pointer": "own-func",
     "_doctor_overload_resilience": "own-func",
     "_doctor_path_launcher": "own-func",
     "_doctor_pod_session_bus": "own-func",

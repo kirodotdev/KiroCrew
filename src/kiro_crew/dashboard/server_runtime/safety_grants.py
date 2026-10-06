@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         grant_declared_yolo,
         logger,
         safety_override,
+        system_origin,
         take_dropped_grant,
     )
 
@@ -170,7 +171,7 @@ def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
             "safety_override",
             _UNATTENDED_EXPIRY_TITLE,
             body,
-            meta={"loops": len(armed), "source": source},
+            meta=system_origin(loops=len(armed), source=source),
         )
     except Exception:
         # ERROR, not debug: this notice is the only operator-visible trace that an
@@ -281,10 +282,10 @@ async def _notify_restart_dropped_grant(state: DashboardState) -> None:
                 "safety",
                 "Auto-approve was dropped by a restart",
                 describe_dropped_grant(_dropped_grant),
-                meta={
-                    "source": _dropped_grant.source,
-                    "remaining_secs": _dropped_grant.remaining_secs,
-                },
+                meta=system_origin(
+                    source=_dropped_grant.source,
+                    remaining_secs=_dropped_grant.remaining_secs,
+                ),
             )
     except Exception:
         # Startup must not fail over a notification. The grant is off either
