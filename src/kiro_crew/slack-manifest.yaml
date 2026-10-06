@@ -24,8 +24,8 @@ features:
     always_online: true
   slash_commands:
     - command: /kirocrew
-      description: Dashboard access, allowlist, and channel tracking
-      usage_hint: "dashboard [duration] | @user | #channel"
+      description: Dashboard access and channel tracking
+      usage_hint: "dashboard [duration] | #channel"
       should_escape: true
 
 oauth_config:

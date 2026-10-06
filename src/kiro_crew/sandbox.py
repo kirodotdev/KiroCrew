@@ -2289,7 +2289,7 @@ def _refuse_if_dangling_symlink(target: str) -> None:
         f"the governance ceiling {safe_terminal_line(target)} is a DANGLING symlink -> "
         f"{_symlink_target_display(target)}. "
         "mount(2) cannot seal it and it would leave the path writable inside the "
-        "sandbox. Remove or repoint it, or lower sandbox_level to run without the seal "
+        "sandbox. Remove or repoint it, or lower agent.sandbox to run without the seal "
         "deliberately."
     )
 
@@ -3372,7 +3372,8 @@ def _refuse_aliased_masked_leaves(
     used yet offers no name to alias, and the retired ``ledgers`` root must not be
     re-materialised on every machine (see its entry in :data:`_CREW_HIDDEN_LEAVES`, which
     says so). Giving the leaves that need a mount target one is a different job, and
-    :func:`_materialize_maskable_dirs` does it for the nine it covers.
+    :func:`_materialize_maskable_dirs` does it for the leaves in
+    :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`.
 
     Runs LAST on the spawn path, after every materialiser, so a leaf with its own tailored
     refusal answers first and keeps its own sentence: ``live_target.json`` shares its
@@ -6214,9 +6215,9 @@ _LINUX_REMEDY_GUIDANCE = {
         "created, then the mount namespace was denied because the restricted "
         "AppArmor profile carries no CAP_SYS_ADMIN. Run `kirocrew service "
         "install` to install the narrow kirocrew-userns AppArmor profile (it "
-        "grants only `userns` and applies to the kirocrew service alone). "
-        "systemd is what attaches that profile, so the service is the only path "
-        "that applies it — a gateway started by hand stays unconfined, and "
+        "grants only `userns`). The profile is attached by path to the kirocrew "
+        "launcher, so any launch through that launcher is confined, a foreground "
+        "`kirocrew gateway` included; other entry points stay unconfined, and "
         "`aa-exec -p` cannot fix that for an unprivileged user because entering "
         "a named profile needs privilege and aa-exec execs unconfined rather "
         "than failing. The desktop app reuses a gateway already listening on the "
@@ -6246,8 +6247,10 @@ _LINUX_REMEDY_GUIDANCE = {
         "the runtime's default AppArmor profile (it carries `deny mount`; "
         "EACCES) or a seccomp filter without the mount family (EPERM). Run the "
         "container with AppArmor unconfined (docker: --security-opt "
-        "apparmor=unconfined; Kubernetes: securityContext.appArmorProfile.type "
-        "Unconfined) and a seccomp profile that permits unshare and mount — no "
+        "apparmor=unconfined; Kubernetes 1.30+: securityContext.appArmorProfile.type "
+        "Unconfined, earlier versions the "
+        "container.apparmor.security.beta.kubernetes.io/<container>: unconfined "
+        "annotation) and a seccomp profile that permits unshare and mount — no "
         "root or CAP_SYS_ADMIN is needed — or accept the container as the only "
         "isolation boundary with agent.sandbox_allow_unsandboxed_exec=true. "
     ),
@@ -7955,19 +7958,20 @@ def delegated_workspace_exposes_sealed_target(
     """Reason a kiro-cli spawn must be refused because its workspace would leave a
     SEALED target writable, or ``None`` when it may proceed.
 
-    Two targets, one guard. Both seals are rules of Kiro Crew's OWN launcher: the
-    kiro agents tree (:func:`_resolved_kiro_agents_targets`), whose fork and
-    template specs decide what the next spawn may do, and the strict no-alias
-    config leaf (``cloud.json``), which names the container image a Fargate launch
-    runs and therefore the image the task's execution role hands the model
-    credential to.
+    One guard over every sealed target. Each seal is a rule of Kiro Crew's OWN
+    launcher: the kiro agents tree (:func:`_resolved_kiro_agents_targets`), whose fork
+    and template specs decide what the next spawn may do, plus every data-home leaf in
+    :data:`_DELEGATED_OVERLAP_LEAF_REASONS`, each with its own stated reason -- for
+    example the strict no-alias config leaf ``cloud.json``, which names the container
+    image a Fargate launch runs and therefore the image the task's execution role hands
+    the model credential to.
 
     A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
     enabled, every first-party Windows spawn) never passes through that launcher,
     and the delegated sandbox treats the workspace as writable — so a workspace
-    that IS, CONTAINS or sits INSIDE either target lets the child rewrite it.
+    that IS, CONTAINS or sits INSIDE any target lets the child rewrite it.
     Refusing here, before the spawn, is the only enforcement point left on those
-    paths. Where Kiro Crew's launcher does wrap the child both seals hold
+    paths. Where Kiro Crew's launcher does wrap the child every seal holds
     regardless of workspace, so this returns ``None`` and keeps ``$HOME``-rooted
     workspaces working there.
 
@@ -8951,10 +8955,11 @@ def _no_backend_guidance() -> str:
 
     * AppImage / desktop app — nothing applies a profile to a directly launched
       binary, so attach one to it (``kirocrew sandbox install-profile``).
-    * anything else on such a host — the profile must be applied by systemd
-      (``kirocrew service install``), because the only executable in a foreground
-      launch is a shared interpreter and attaching there would grant unprivileged
-      userns to every Python process on the machine.
+    * anything else on such a host — ``kirocrew service install`` installs a
+      profile attached by path to the resolved kirocrew launcher script (never the
+      shared interpreter, which would grant unprivileged userns to every Python
+      process on the machine). Any launch through that launcher is confined,
+      foreground included; other entry points stay unconfined.
 
     Deliberately does NOT tell the user to set the sysctl to 0: that trades a
     kernel-wide protection for one app's need, and the per-application profile
@@ -9016,8 +9021,9 @@ def _no_backend_guidance() -> str:
         return (
             base
             + (
-                "Run `kirocrew service install` to install the profile and have "
-                "systemd apply it to the gateway unit. Do NOT set the sysctl to 0: "
+                "Run `kirocrew service install` to install the profile, attached by "
+                "path to the kirocrew launcher; any launch through that launcher, "
+                "foreground included, is then confined. Do NOT set the sysctl to 0: "
                 "that disables a kernel-wide protection for every application on the "
                 "machine. "
             )
@@ -9072,11 +9078,9 @@ def _inside_kirocrew_sandbox() -> bool:
     with EPERM from inside an existing sandbox — even under an ``(allow default)``
     outer profile. An in-sandbox wrap_argv call must therefore pass through rather
     than fail closed — the outer sandbox still confines every descendant, so this
-    is NOT the fail-open path. Failing closed here bricked every in-sandbox MCP
-    spawn with unshare EPERM (the probe error was raised on every ctx.call_tool
-    and silently swallowed by the caller), and on macOS it bricked every
-    app-backend spawn (Dev Fleet's ``git worktree list``, Files' ``git
-    status``/search) plus ~40 MCP probes at gateway boot.
+    is NOT the fail-open path. Failing closed here would refuse every in-sandbox
+    MCP spawn with unshare EPERM and, on macOS, every app-backend spawn and MCP
+    probe the gateway starts.
 
     Detection is deny-by-default: gated solely on the explicit, launcher-only
     ``KIROCREW_SANDBOX_ACTIVE`` marker (see ``_IN_SANDBOX_MARKER``).
@@ -9224,7 +9228,7 @@ def _warn_no_isolation(mode: str, granted_by: str = "") -> None:
         "(mode=%s), so the agent subprocess runs WITHOUT credential isolation — "
         "~/.aws, ~/.ssh and other secrets are readable by it and only the "
         "bypassable app-level security.py checks remain. Install a supported "
-        "sandbox (Linux user namespaces, or macOS < 26 sandbox-exec), or set "
+        "sandbox (Linux user namespaces, or macOS sandbox-exec), or set "
         "agent.sandbox_allow_no_isolation=true in ~/.kiro/crew/config.json to "
         "acknowledge the risk and silence this warning.",
         mode,
@@ -10558,8 +10562,11 @@ def wrap_argv(
                         "seccomp profile that permits unshare and mount:\n"
                         "        docker run --security-opt apparmor=unconfined "
                         "--security-opt seccomp=kirocrew-seccomp.json ...\n"
-                        "        # Kubernetes: securityContext.appArmorProfile: "
+                        "        # Kubernetes 1.30+: securityContext.appArmorProfile: "
                         "{type: Unconfined}\n"
+                        "        # earlier Kubernetes: annotation "
+                        "container.apparmor.security.beta.kubernetes.io/<container>: "
+                        "unconfined\n"
                         "  (b) Restart with explicit unsandboxed consent "
                         "(the container is then the only isolation boundary):\n"
                         "        docker run -e KIROCREW_ALLOW_UNSANDBOXED=1 ...\n"
@@ -11319,7 +11326,7 @@ _CGROUP_LINGER_REMEDY = (
     "the systemd user manager is not running for this user, which logind does "
     "when the last login session ends on a host without lingering; "
     "`loginctl enable-linger $USER` keeps it running (it needs sudo on a managed "
-    "host such as a Cloud Desktop), and the ceiling returns on its own once the "
+    "host), and the ceiling returns on its own once the "
     "manager is back"
 )
 

@@ -1145,9 +1145,9 @@ def snapshot_main(
         # read like a crash and bury the sentence saying what to do about it.
         #
         # It is also a PERMISSION decision, so it belongs in the SEL log next to
-        # `state_restore_rejected`. Review's point: the refusals this change introduced
-        # returned without auditing, so the one outcome a reviewer would most want a
-        # record of -- staging declined on an unsupported platform -- left no trace.
+        # `state_restore_rejected`. Without the audit, the one outcome a reviewer would
+        # most want a record of -- staging declined on an unsupported platform -- would
+        # leave no trace.
         _audit("snapshot_rejected", f"reason=unpinnable_staging detail={exc}")
         print(f"❌ {exc}")
         return 1
@@ -1194,10 +1194,10 @@ def snapshot_main(
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
-    # Prune. This runs even when the upload failed, because --keep is a promise about
-    # local disk and a persistently failing destination must not turn a daily backup
-    # into an unbounded pile of bundles -- the disk fills, and then the snapshot that
-    # would have worked cannot be written either.
+    # Prune. --keep is a promise about local disk, so retention runs after every
+    # successful bundle unless the omission guard below holds it: a daily backup must
+    # not turn into an unbounded pile of bundles -- the disk fills, and then the
+    # snapshot that would have worked cannot be written either.
     snaps = sorted(
         out.glob("kirocrew-snapshot-*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True
     )
@@ -1272,10 +1272,10 @@ def _copy_notifications(src_path: Path, dst_path: Path) -> None:
     do it.
 
     The alternative -- a ctypes ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` --
-    is declined, and not by me: ``eval/bench/safepath.py`` records that it "is no longer
-    worth considering here: it would buy the same property exclusive creation already
-    has, at the price of security code that cannot be exercised on the machine this
-    harness is developed on", and ``skill_trust.py`` records that Python "does not expose
+    is declined elsewhere in this repo: ``kiro_crew/eval/bench/safepath.py`` records that
+    it "is not worth considering here: it would buy the same property exclusive creation
+    already has, at the price of security code that cannot be exercised on the machine
+    this harness is developed on", and ``skill_trust.py`` records that Python "does not expose
     an equivalent handle-relative, no-reparse walk on Windows". Both decline the capable
     route, which means this repo has already chosen less capability on that platform over
     a hand-rolled walk. Refusing extends those two decisions; falling back contradicts
@@ -1284,13 +1284,13 @@ def _copy_notifications(src_path: Path, dst_path: Path) -> None:
     The cost is not symmetric, which is what makes the trade easy. Refusing loses
     notification HISTORY on one platform for one operation -- the records remain in the
     snapshot and nothing is destroyed. Falling back can put attacker-chosen bytes, a
-    credentials file among them, into a location the agent then reads. And this PR exists
-    because snapshot restore installed unvalidated bytes: a remaining path that installs
-    attacker-chosen bytes is the same defect, closed everywhere except where it is
-    hardest.
+    credentials file among them, into a location the agent then reads. Snapshot restore
+    validates what it installs so that it never installs unvalidated bytes: a remaining
+    path that installs attacker-chosen bytes is that same defect, closed everywhere
+    except where it is hardest.
 
     The refusal is LOUD and the callers report the skip. A silent skip would be the same
-    class of bug as the one being fixed, so the message names the platform, the missing
+    class of bug as installing unvalidated bytes, so the message names the platform, the missing
     primitive, and what was not imported.
     """
     if not getattr(os, "O_NOFOLLOW", 0):

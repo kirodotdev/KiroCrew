@@ -2,7 +2,7 @@
 conductor that dispatched it, and the conductor's structured read of its own fleet.
 
 A conductor session dispatches work to child sessions and otherwise learns what
-happened by reading their transcripts. These four tools replace that inference
+happened by reading their transcripts. These five tools replace that inference
 with a record: a worker writes a schema-bounded status against the ONE work item
 it was bound to, and the conductor reads that record as data.
 
@@ -28,15 +28,15 @@ approved inside kiro-cli and emits no permission request, so ``hooks.on_tool_cal
 governance ceiling — is never reached for it. A store that writes agent-authored
 text into a record the user reads is not the place to break that.
 
-All four tools are advertised to every caller and DISPATCH BY RESOLVED IDENTITY at
+All five tools are advertised to every caller and DISPATCH BY RESOLVED IDENTITY at
 call time, because a session can be a worker to its parent and a conductor to its
 own children:
 
 * a binding file, no ledger directory → the worker pair answers, the conductor
-  pair returns ``no_ledger``
-* a ledger directory, no binding file → the conductor pair answers, the worker
+  trio returns ``no_ledger``
+* a ledger directory, no binding file → the conductor trio answers, the worker
   pair returns ``not_bound``
-* both — a second-level conductor → all four answer
+* both — a second-level conductor → all five answer
 * neither → ``not_bound`` / ``no_ledger``
 
 Splitting the worker half onto a server of its own would express the same rule in
@@ -392,7 +392,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "accept_eval.py. The ledger is your own. With no arguments that is the "
                 "whole board, each item with its last 20 events; every argument NARROWS "
                 "it. compact=true is the cheap patrol read: per item only item_id, title, "
-                "state, status, summary, decision, verdict, pr, worker_session_key, "
+                "state, created_at, status, summary, decision, verdict, pr, worker_session_key, "
                 "last_report_at and the three flags — no events, acceptance or "
                 "accept_batch. item_id=<id> reads one item in full; state= and since= "
                 "select rows (accept_batch is always the whole board); events=<n> "
@@ -403,12 +403,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "dropped_events_for / elided_acceptance_for / omitted_items. accept_batch "
                 "is built from each item's acceptance ALONE and deliberately ignores a "
                 "worker's claimed pr, so a worker cannot point your bar at someone else's "
-                "green pull request. It also leaves out any item whose bar is not concrete "
-                "yet — an unknown kind, or a placeholder ('TBD', blank) or wrong type in a "
+                "green pull request. It also leaves out every terminal item, and any "
+                "item whose bar is not concrete yet — an unknown kind, or a placeholder ('TBD', blank) or wrong type in a "
                 "field the evaluator reads for that kind, such as a pr_checks pr that is "
                 "not a positive integer — because accept_eval.py can only answer 'error' "
                 "to those; a placeholder in a field it never reads costs an item nothing. "
-                "The item's 'acceptance_concrete' flag is why it is missing, and an "
+                "For an open item, its 'acceptance_concrete' flag is why it is missing, and an "
                 "'accept' write puts it back. Each entry carries that item's status so you can "
                 "apply your own 'done only' filter without a second lookup; the batch is "
                 "not filtered for you. An item is stale only when it has gone quiet AND "
@@ -416,7 +416,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "the worker, so a worker in a long build is never flagged and neither is "
                 "a 'done' item waiting on you — though a 'done' item you ruled "
                 "verdict=fail on and left open counts again, since that hands the retry "
-                "back to the worker. Answers 'no_ledger' when this session owns "
+                "back to the worker. A worker session that has closed after at least one "
+                "report counts as quiet at once, without waiting out the window. "
+                "Answers 'no_ledger' when this session owns "
                 "none yet."
             ),
             "inputSchema": {
@@ -568,7 +570,7 @@ def _list_tools() -> list[dict[str, Any]]:
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened. What a caller may DO with a tool is decided
     by what it resolves to at call time, not by hiding half the list: a
-    second-level conductor legitimately reaches all four, and a list that varied
+    second-level conductor legitimately reaches all five, and a list that varied
     by identity would make a worker's missing conductor tools look like a broken
     install rather than a refusal it can read.
     """

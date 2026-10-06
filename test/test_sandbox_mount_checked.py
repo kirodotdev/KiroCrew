@@ -400,11 +400,13 @@ def test_the_refusal_carries_the_errno(tmp_path: Path) -> None:
 def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     """Refusing is only defensible if the message says how to opt out.
 
-    Break-arm: ``drop_optout`` (the sandbox_level sentence removed).
+    It names the real operator setting, ``agent.sandbox``.
+
+    Break-arm: ``drop_optout`` (the ``agent.sandbox`` sentence removed).
     """
     _libc_unused, refusal = _run(tmp_path, fail_at=1)
     assert refusal is not None
-    assert "sandbox_level" in refusal
+    assert "agent.sandbox" in refusal
 
 
 @pytest.mark.skipif(
@@ -828,7 +830,7 @@ _ARMS: dict[str, tuple[str, str]] = {
         '"hiding a credential directory"',
     ),
     "drop_optout": (
-        '"visible. Lower sandbox_level to run without it deliberately."',
+        '"visible. Lower agent.sandbox to run without this control deliberately."',
         '"visible."',
     ),
 }
@@ -866,7 +868,7 @@ def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
     if arm == "drop_optout":
         _unused, refusal = _run(tmp_path, fail_at=1, script=script)
         assert refusal is not None
-        assert "sandbox_level" not in refusal
+        assert "agent.sandbox" not in refusal
         return
 
     if arm == "happy_path":

@@ -4645,8 +4645,8 @@ class TestSandboxUnavailableIsNotAMissingBinary:
     _LAUNCHER_MOUNT_REFUSED = (
         "sandbox: BLOCKED -- making mount propagation private on / failed: errno 13 "
         "(Permission denied). The sandbox could not establish this control, so the "
-        "agent would run with the path visible. Lower sandbox_level to run without "
-        "it deliberately."
+        "agent would run with the path visible. Lower agent.sandbox "
+        "to run without this control deliberately."
     )
 
     @staticmethod

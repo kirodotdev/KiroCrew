@@ -38,8 +38,8 @@ def _no_host_ssh_probe(monkeypatch):
 _MOUNT_REFUSED = (
     "sandbox: BLOCKED -- making mount propagation private on / failed: errno 13 "
     "(Permission denied). The sandbox could not establish this control, so the "
-    "agent would run with the path visible. Lower sandbox_level to run without it "
-    "deliberately."
+    "agent would run with the path visible. Lower agent.sandbox "
+    "to run without this control deliberately."
 )
 
 
@@ -384,7 +384,7 @@ class TestClassifierMatchesTheLauncher:
         rendered = (
             "sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "
             "establish this control, so the agent would run with the path "
-            "visible. Lower sandbox_level to run without it deliberately."
+            "visible. Lower agent.sandbox to run without this control deliberately."
         ) % ("making mount propagation private on /", errno.EACCES, "Permission denied")
         assert "_mount_or_die" in sb._build_launcher_script("strict")
         assert sb.launcher_refusal(rendered) == ("no_backend", rendered, sb.REMEDY_MOUNT_DENIED)

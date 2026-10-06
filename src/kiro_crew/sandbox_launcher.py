@@ -408,9 +408,9 @@ import tempfile
 # Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
 # FIRST-TIME stdlib import reads module files off disk, and once the child has
 # entered its user+mount namespaces that read can be denied by the host's LSM
-# (seen in the wild: Ubuntu 24.04 with apparmor_restrict_unprivileged_userns=1
-# denies the post-unshare read, so ``import platform`` at seccomp-install time
-# died with ModuleNotFoundError and every sandboxed spawn failed -- #8151).
+# (Ubuntu 24.04 with apparmor_restrict_unprivileged_userns=1 denies the
+# post-unshare read, so an ``import platform`` at seccomp-install time would die
+# with ModuleNotFoundError and fail every sandboxed spawn).
 # Import EVERYTHING this launcher needs while it is still pre-isolation, so no
 # post-isolation code ever touches the filesystem for stdlib. The static-scan
 # test pins this: every import in this generated script must be module-level.
@@ -442,10 +442,9 @@ _MNT_DETACH    = 2
 # confinement this launcher exists to establish.
 #
 # Same rule, same reason, as the spawned userns probe in ``_PROBE_SHIM_CODE``,
-# which already resolves libc this way; the launcher was the one pre-confinement
-# script still violating it. Not a new code path either: ``find_library``
-# returning None made this call ``CDLL(None)`` anyway, so dlopen(NULL) was
-# already the implicit fallback here. ``ctypes.util`` is deliberately left
+# which resolves libc this way too. It is not a new code path: ``find_library``
+# returning None would make this call ``CDLL(None)`` anyway, so dlopen(NULL) is
+# the same fallback. ``ctypes.util`` is deliberately left
 # unimported above so a future reintroduction fails loudly instead of silently
 # reopening the PATH lookup.
 _libc = ctypes.CDLL(None, use_errno=True)
@@ -494,14 +493,14 @@ def _mount_or_die(source, target, flags, what):
         sys.exit(
             "sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "
             "establish this control, so the agent would run with the path "
-            "visible. Lower sandbox_level to run without it deliberately."
+            "visible. Lower agent.sandbox to run without this control deliberately."
             % (what, _err, os.strerror(_err))
         )
 
 def _mount_or_warn(source, target, flags, what):
     """``mount(2)`` that degrades OPEN with an advisory, for access-WIDENING mounts.
 
-    The write carve-out pair (#8653) is the inverse of every ``_mount_or_die``
+    The write carve-out pair is the inverse of every ``_mount_or_die``
     site: those mounts WITHHOLD access and a silent failure hands the agent a
     visible credential, so they refuse; these mounts GRANT access inside an
     already-sealed subtree, so a failure means the path simply stays sealed --
@@ -549,8 +548,9 @@ def _retire_stage_or_die(stage, what):
         sys.exit(
             "sandbox: BLOCKED -- could not retire the staging mount for %s: errno %d "
             "(%s). It is a second path to that tree, so the agent would run with a "
-            "masked path reachable. Lower sandbox_level to run without the mask "
-            "deliberately." % (what, _err, os.strerror(_err))
+            "masked path reachable. "
+            "Lower agent.sandbox "
+            "to run without this control deliberately." % (what, _err, os.strerror(_err))
         )
     try:
         os.rmdir(stage)
@@ -613,7 +613,7 @@ def _register_stand_in(stand_in_id, masked_fd):
     except OSError as exc:
         sys.exit(
             "sandbox: BLOCKED -- cannot read the identity of an object about to be "
-            "masked (%s). Lower sandbox_level to run without this mask deliberately."
+            "masked (%s). Lower agent.sandbox to run without this control deliberately."
             % exc
         )
     _OWN_STAND_INS[tuple(stand_in_id)] = (st.st_dev, st.st_ino)
@@ -830,8 +830,9 @@ def _pin_mount_path(target, kind, require_present=False):
         sys.exit(
             "sandbox: BLOCKED -- cannot pin %s to mask it: %s. Masking it by name "
             "instead could cover a different object, and skipping it would run the "
-            "agent with the path VISIBLE. Lower sandbox_level to run without this "
-            "mask deliberately." % (os.fsdecode(target), why)
+            "agent with the path VISIBLE. "
+            "Lower agent.sandbox "
+            "to run without this control deliberately." % (os.fsdecode(target), why)
         )
 
     # The name is never resolved as a whole path more than once. The PARENT is
@@ -1115,8 +1116,9 @@ def _stand_in_identity(stand_in):
     """The ``(dev, ino)`` of a stand-in this launcher just created, pinned no-follow.
 
     Taken BEFORE the stand-in is mounted, and handed to the post-mount name check
-    in place of the stand-in's PATH. The stand-in lives in a host-shared tmpfs
-    (``/run/user/$UID`` or ``/dev/shm``) that any same-UID process can write, so
+    in place of the stand-in's PATH. The stand-in usually lives in a host-shared
+    tmpfs (``/run/user/$UID`` or ``/dev/shm``), falling back to the system tempdir,
+    and any same-UID process can write to each of those, so
     re-resolving its path after the mount would let a writer replace it with a
     link to the protected name and have both sides of the comparison reach the
     same unmasked object. An identity read off a no-follow descriptor cannot be
@@ -1129,7 +1131,7 @@ def _stand_in_identity(stand_in):
         sys.exit(
             "sandbox: BLOCKED -- cannot pin the stand-in %s this launcher just "
             "created (%s), so the mask it is about to place could not be verified. "
-            "Lower sandbox_level to run without this mask deliberately."
+            "Lower agent.sandbox to run without this control deliberately."
             % (os.fsdecode(stand_in), exc)
         )
     try:
@@ -1173,7 +1175,7 @@ def _verify_masked_name(name, stand_in_id, what):
         sys.exit(
             "sandbox: BLOCKED -- cannot confirm %s is masked after mounting over it "
             "(%s). The mask may not cover that name, so the agent could reach it. "
-            "Lower sandbox_level to run without this mask deliberately."
+            "Lower agent.sandbox to run without this control deliberately."
             % (os.fsdecode(what), exc)
         )
 
@@ -1194,8 +1196,8 @@ def _verify_masked_name(name, stand_in_id, what):
             sys.exit(
                 "sandbox: BLOCKED -- %s is a link now and was not the link the pin "
                 "followed, so another process planted it after the mask was placed "
-                "and the mask covers something else. Lower sandbox_level to run "
-                "without this mask deliberately." % os.fsdecode(what)
+                "and the mask covers something else. "
+                "Lower agent.sandbox to run without this control deliberately." % os.fsdecode(what)
             )
         try:
             reached = os.stat(name)
@@ -1207,8 +1209,8 @@ def _verify_masked_name(name, stand_in_id, what):
         sys.exit(
             "sandbox: BLOCKED -- %s does not reach its mask after mounting: another "
             "process renamed that name, so it names a DIFFERENT object that would "
-            "stay writable inside the sandbox. Lower sandbox_level to run without "
-            "this mask deliberately." % os.fsdecode(what)
+            "stay writable inside the sandbox. "
+            "Lower agent.sandbox to run without this control deliberately." % os.fsdecode(what)
         )
 
 def _locked_mount_flags(target):
@@ -1409,7 +1411,7 @@ def main():
                     "sandbox: BLOCKED -- %s reached the data home %s when this spawn was "
                     "prepared and one of them cannot be read now (%s), so the rules "
                     "folded onto the data home may not cover what the alias reaches. "
-                    "Lower sandbox_level to run without this check deliberately."
+                    "Lower agent.sandbox to run without this control deliberately."
                     % (_alias, _canonical, _alias_exc)
                 )
             if (_canonical_st.st_dev, _canonical_st.st_ino) != (_alias_dev, _alias_ino):
@@ -1417,16 +1419,18 @@ def main():
                     "sandbox: BLOCKED -- %s reached the data home %s when this spawn was "
                     "prepared and %s holds a different directory now, so the rules folded "
                     "onto the data home would cover the replacement and leave the original "
-                    "unmasked. Another process replaced that name. Lower sandbox_level to "
-                    "run without this check deliberately." % (_alias, _canonical, _canonical)
+                    "unmasked. Another process replaced that name. "
+                    "Lower agent.sandbox "
+                    "to run without this control deliberately." % (_alias, _canonical, _canonical)
                 )
             if _alias_resolved != _canonical_resolved:
                 sys.exit(
                     "sandbox: BLOCKED -- %s reached the data home %s when this spawn was "
                     "prepared and reaches a different directory now (%s), so the rules "
                     "folded onto the data home would leave what the alias reaches "
-                    "unmasked. Another process re-aimed that name. Lower sandbox_level to "
-                    "run without this check deliberately." % (_alias, _canonical, _alias_resolved)
+                    "unmasked. Another process re-aimed that name. "
+                    "Lower agent.sandbox "
+                    "to run without this control deliberately." % (_alias, _canonical, _alias_resolved)
                 )
 
         # Pre-read files that must survive dir hiding.
@@ -1663,8 +1667,8 @@ def main():
                     "sandbox: BLOCKED -- %s changed identity between being bound "
                     "and being sealed, so the read-only seal would apply to a "
                     "different object and this path would stay writable. Another "
-                    "process is rewriting that name. Lower sandbox_level to run "
-                    "without the seal deliberately." % d
+                    "process is rewriting that name. Lower agent.sandbox "
+                    "to run without this control deliberately." % d
                 )
 
         # Bind-mount empty dirs over credential paths (per-dir tmpdir to
@@ -1781,7 +1785,7 @@ def main():
             _retire_stage_or_die(_private_stage.pop(_staged),
                                  "private window %s" % _staged)
 
-        # Writable carve-outs (#8653) — validated by the builder against every
+        # Writable carve-outs — validated by the builder against every
         # seal this script applies; each approved entry lives INSIDE the sealed
         # runtime parent and covers no other protected path. MUST run AFTER the
         # READONLY loop, for two reasons, the second stronger than the first:
@@ -1791,8 +1795,7 @@ def main():
         # non-recursive MS_BIND does not replicate submounts, so if the parent
         # self-bind were established AFTER the carve-out, lookups through the
         # new parent mount would not find the carve-out mount at all and the
-        # writable window would vanish silently — the #8653 failure back with
-        # no error. Clearing MS_RDONLY here is permitted because the seal
+        # writable window would vanish silently, with no error. Clearing MS_RDONLY here is permitted because the seal
         # being cleared was created inside THIS namespace without
         # MNT_LOCK_READONLY (a data home on a genuinely read-only underlying
         # mount could not have produced the carve-out directory at all); the
@@ -1933,8 +1936,8 @@ def main():
             if not _stage_is_fresh_mount(_sfd, _parent):
                 sys.exit(
                     "sandbox: BLOCKED -- the private stage for the unreadable mask "
-                    "over %s was replaced before it could be used. Lower "
-                    "sandbox_level to run without this mask deliberately." % what)
+                    "over %s was replaced before it could be used. "
+                    "Lower agent.sandbox to run without this control deliberately." % what)
             _ffd = os.open("stand-in", os.O_CREAT | os.O_EXCL | os.O_WRONLY
                            | os.O_NOFOLLOW | os.O_CLOEXEC, 0, dir_fd=_sfd)
             return _ffd, _sfd, _stage
@@ -1948,8 +1951,8 @@ def main():
                 sys.exit(
                     "sandbox: BLOCKED -- could not retire the private stage for the "
                     "unreadable mask over %s: errno %d (%s). It is a second, writable "
-                    "path to the mask, so the agent could make it readable. Lower "
-                    "sandbox_level to run without this mask deliberately."
+                    "path to the mask, so the agent could make it readable. "
+                    "Lower agent.sandbox to run without this control deliberately."
                     % (what, _err, os.strerror(_err)))
             os.close(_sfd)
             try:
@@ -2053,8 +2056,8 @@ def main():
                         file=sys.stderr,
                     )
                     raise
-            # Cross-fs source for the same kernel-race reason as SENSITIVE_DIRS
-            # (line 371) and SENSITIVE_FILES (line 389).
+            # Cross-fs source for the same kernel-race reason as the
+            # SENSITIVE_DIRS and SENSITIVE_FILES hiding loops.
             ssh_tmp = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix).encode()
             _ssh_tmp_id = _stand_in_identity(ssh_tmp)
             # Host trust is restored INTO the stand-in, before that stand-in is
@@ -2088,8 +2091,8 @@ def main():
                         "sandbox: BLOCKED -- cannot pin %s to mask it: it is absent, "
                         "though it was present a moment ago. Another process moved that "
                         "name, so masking whatever replaces it would leave the keys "
-                        "readable at the name they moved to. Lower sandbox_level to run "
-                        "without this mask deliberately." % SSH_DIR
+                        "readable at the name they moved to. "
+                        "Lower agent.sandbox to run without this control deliberately." % SSH_DIR
                     )
                 sys.stderr.write(
                     "sandbox: WARNING -- %s is not a directory (a dangling link, or a "
@@ -2131,8 +2134,8 @@ def main():
                 sys.exit(
                     "sandbox: BLOCKED -- %s reached the data home %s when this spawn was "
                     "prepared and cannot be read back after masking (%s), so the folded "
-                    "rules cannot be confirmed to cover what the alias reaches. Lower "
-                    "sandbox_level to run without this check deliberately."
+                    "rules cannot be confirmed to cover what the alias reaches. "
+                    "Lower agent.sandbox to run without this control deliberately."
                     % (_alias, _canonical, _alias_exc)
                 )
             if _alias_resolved != _canonical_resolved:
@@ -2141,8 +2144,9 @@ def main():
                     "prepared and resolves to %s now that the masks are placed, so the "
                     "rules folded onto the data home leave what the alias reaches "
                     "unmasked. Another process re-aimed that name while this sandbox was "
-                    "being built. Lower sandbox_level to run without this check "
-                    "deliberately." % (_alias, _canonical, _alias_resolved)
+                    "being built. "
+                    "Lower agent.sandbox "
+                    "to run without this control deliberately." % (_alias, _canonical, _alias_resolved)
                 )
 
         # Mark the sandboxed tree so in-sandbox wrap_argv calls know OS
@@ -2190,8 +2194,8 @@ def main():
         # NS) which lets it umount the credential bind-mounts. Drop ALL
         # capabilities from the bounding set and set NO_NEW_PRIVS before exec.
         # (_struct is imported in the preamble, pre-isolation -- see the hoist
-        # note there; importing it HERE crashed under AppArmor userns
-        # restriction, #8151.)
+        # note there; importing it HERE would fail under the AppArmor userns
+        # restriction.)
 
         _PR_SET_NO_NEW_PRIVS = 38
         _PR_CAPBSET_DROP = 24
@@ -2213,7 +2217,7 @@ def main():
                 "~/.kiro/crew/config.json."
             )
         if _libc.prctl:
-            # Linux CAP_LAST_CAP is currently 41 (kernel 6.x); iterate 0..63 for
+            # Linux CAP_LAST_CAP is 40 on 6.x kernels; iterate 0..63 for
             # forward-compatibility — dropping a non-existent cap just returns -1.
             for _cap in range(64):
                 _libc.prctl(_PR_CAPBSET_DROP, _cap, 0, 0, 0)
@@ -2258,9 +2262,9 @@ def main():
         #
         # Additionally deny kill(-1, sig) — the signal BROADCAST that reaches
         # every same-uid process on the host (gateway, other sessions). This
-        # is the accident-containment redo of the reverted PID-namespace
-        # isolation (24c320f6): a static arg filter blocks the hand-slip /
-        # runaway-script broadcast without changing the subtree's view of
+        # is accident containment without a PID namespace: a static arg filter
+        # blocks the hand-slip / runaway-script broadcast without changing the
+        # subtree's view of
         # pids, so session identity, claim-push, and systemd stay intact.
         # Only ``kill`` needs arg inspection: tkill/tgkill/pidfd_send_signal
         # are inherently targeted (no broadcast semantics). pid==0 and
@@ -2308,8 +2312,8 @@ def main():
             # aarch64: mount=40, umount2=39, unshare=97, setns=268,
             # pivot_root=41, kill=129
             # (_plat is imported in the preamble, pre-isolation -- importing it
-            # HERE was the reported #8151 crash: the post-unshare first-time
-            # stdlib read was denied and the whole launcher died.)
+            # HERE would crash: the post-unshare first-time stdlib read can be
+            # denied, and the whole launcher dies.)
             _machine = _plat.machine()
             if _machine == "x86_64":
                 _DENY_SYSCALLS = (165, 166, 272, 308, 155)
@@ -2460,7 +2464,7 @@ def main():
             except OSError:
                 pass
         # The per-app credentials, as INODES the parent read. Not a scan: this same
-        # process masks that tree a few hundred lines above, binding an empty directory
+        # process masks that tree in the SENSITIVE_DIRS loop, binding an empty directory
         # over it, so a stat here would report ENOENT and arm the walk on nothing. The
         # parent collected these while the paths were still readable, which is also why
         # no bound or name filter is needed at this point -- the set is already bounded
