@@ -178,6 +178,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     set_builtin_app_agents,
     set_builtin_app_mcp_servers,
     set_builtin_app_names,
+    title_is_trusted_mcp_identity,
 )
 from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
     _fold_extended_length_local,

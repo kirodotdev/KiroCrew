@@ -488,6 +488,45 @@ def mcp_identity_ref(mcp_server_name: str, mcp_tool_name: str) -> str:
     return f"@{mcp_server_name}/{mcp_tool_name}"
 
 
+def title_is_trusted_mcp_identity(
+    title: str,
+    mcp_server_name: str,
+    mcp_tool_name: str,
+    *,
+    mcp_identity_trusted: bool,
+) -> bool:
+    """*title* is exactly the call's own verified MCP identity, not a path.
+
+    The sensitive-path tier reads a string as a filename. A permission title
+    that is the exact ``@server/tool`` reference of the call's OWN verified
+    identity (:func:`mcp_identity_ref`) names a tool, not a file: the
+    identity comes from the client's provenance-verified ``_meta.kiro`` parse,
+    and the title must equal it byte for byte, so a title that carries anything
+    else -- a path, a path-shaped description -- stays gated. The tool's
+    arguments are judged on their own tiers either way; only this one string,
+    which can name nothing but the tool, is spared the resolver round trip that
+    refused it as a "path" under resolver load.
+
+    The exemption is the one exact ``@server/tool`` reference
+    :func:`mcp_identity_ref` builds for this call's PROVEN identity, nothing
+    wider. The tool must be proven (``mcp_tool_name`` non-empty): a bare
+    ``@server`` title -- whether the tool is known (where it names a broader
+    thing than the specific tool that ran) or genuinely unproven (where the
+    identity itself is incomplete) -- is NOT this call's own exact identity and
+    stays path-gated. Over-refusing an unverified or incomplete title is the
+    safe failure; the arguments are judged on their own tiers regardless.
+
+    Fail-closed: an unverified identity, an empty server, an empty tool, or a
+    segment holding a separator (which :func:`mcp_identity_ref` documents cannot
+    occur, and would make the reference path-shaped) never matches.
+    """
+    if not (mcp_identity_trusted and mcp_server_name and mcp_tool_name and title):
+        return False
+    if any(sep in seg for seg in (mcp_server_name, mcp_tool_name) for sep in ("/", "\\")):
+        return False
+    return title == mcp_identity_ref(mcp_server_name, mcp_tool_name)
+
+
 def _note_title_only_grant_pattern(pattern: str, identity_ref: str) -> None:
     """Log once that an ``auto_approve_tools`` pattern matches only the title.
 

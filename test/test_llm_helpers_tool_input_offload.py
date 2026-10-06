@@ -604,3 +604,122 @@ class TestShellCommandTextLeavesThePathTier:
             source = inspect.getsource(tier)
             assert "_is_exempt_command_text(" in source, tier.__name__
             assert source.count("sensitive_path_refusal(") == 1, tier.__name__
+
+
+class TestToolIdentityTitleLeavesThePathTier:
+    """A permission title that is exactly the call's own verified
+    ``@server/tool`` identity names a tool, not a file, so the title tier does
+    not resolve it as a path -- and a resolver stall cannot refuse it as one.
+    Any other title, an unverified identity, and every argument stay gated.
+    """
+
+    @staticmethod
+    def _mcp_event(
+        title: str, *, server: str = "kirocrew-core", tool: str = "wait", trusted: bool = True
+    ) -> LLMEvent:
+        ev = _event(json.dumps({"seconds": 60}), title=title)
+        ev.mcp_server_name = server
+        ev.tool_name = tool
+        ev.mcp_identity_trusted = trusted
+        return ev
+
+    async def _resolve_event(self, ev: LLMEvent) -> tuple[bool, _RecordingProvider]:
+        provider = _RecordingProvider()
+        sel_stub = MagicMock()
+        with patch.object(sel_mod, "sel", lambda: sel_stub):
+            approved = await _resolve_permission(
+                provider,  # type: ignore[arg-type]
+                ev,
+                ToolApprovalPolicy.AUTO_APPROVE,
+                None,
+            )
+        return approved, provider
+
+    def test_an_exempt_identity_title_never_reaches_the_path_tier(self) -> None:
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on a tool identity")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            assert (
+                llm_helpers._title_denial("@kirocrew-core/wait", None, identity_exempt=True) is None
+            )
+
+    def test_the_predicate_matches_only_the_verified_identity(self) -> None:
+        from kiro_crew.hooks import title_is_trusted_mcp_identity as match
+
+        # Only an exact, provenance-verified ``@server/tool`` with a PROVEN tool
+        # is exempt. Over-refusing an unverified or incomplete title is the safe
+        # failure, so a bare ``@server`` is never exempt.
+        assert match("@srv/tool", "srv", "tool", mcp_identity_trusted=True)
+        # A bare ``@srv`` is NOT this call's exact identity, whether the tool is
+        # known (names a broader thing than the tool that ran) or unproven (the
+        # identity itself is incomplete). Both stay path-gated.
+        assert not match("@srv", "srv", "tool", mcp_identity_trusted=True)
+        assert not match("@srv", "srv", "", mcp_identity_trusted=True)
+        assert not match("@srv/tool", "srv", "tool", mcp_identity_trusted=False)
+        assert not match("@srv/tool", "", "tool", mcp_identity_trusted=True)
+        assert not match("Running: @srv/tool", "srv", "tool", mcp_identity_trusted=True)
+        assert not match("@srv/x/tool", "srv/x", "tool", mcp_identity_trusted=True)
+        assert not match("@srv/..\\tool", "srv", "..\\tool", mcp_identity_trusted=True)
+
+    def test_the_identity_exemption_keeps_the_command_tiers(self) -> None:
+        with patch.object(llm_helpers, "is_sensitive_bash_command", lambda *_a, **_k: "bash"):
+            hit = llm_helpers._title_denial("@srv/tool", None, identity_exempt=True)
+        assert hit == ("bash", "bash")
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_path_tier_cannot_refuse_a_tool_identity_title(self) -> None:
+        stall = (
+            f"{security.UNVERIFIABLE_PATH_PREFIX}, so it is refused. Path: '@kirocrew-core/wait'"
+        )
+        with patch.object(llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: stall):
+            approved, provider = await self._resolve_event(self._mcp_event("@kirocrew-core/wait"))
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", ["@kirocrew-core/wait", "Running: @kirocrew-core/wait"])
+    async def test_the_raw_and_stripped_title_forms_give_the_same_verdict(self, title: str) -> None:
+        """The hook side normalizes the title (``GateFacts.normalized`` ->
+        ``_normalize_tool_name``) before the identity check, so this side must
+        too. Before the fix this side read the RAW title, so ``@kirocrew-core/
+        wait`` was exempt while ``Running: @kirocrew-core/wait`` was not -- the
+        two sides reached different verdicts on the identical call. Both forms
+        name the same verified identity, so both must be exempt here."""
+
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on a verified tool identity")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            approved, provider = await self._resolve_event(self._mcp_event(title))
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("title", "trusted"),
+        [
+            ("@kirocrew-core/wait", False),  # identity not provenance-verified
+            ("~/.ssh/id_rsa", True),  # a path title on a verified MCP call
+            ("@kirocrew-core/wait/x", True),  # not the identity byte for byte
+            ("@other/wait", True),  # another server's identity
+            (
+                "@kirocrew-core/other",
+                True,
+            ),  # same server, a tool the title names but the frame does not
+        ],
+    )
+    async def test_any_other_title_still_pays_the_path_tier(
+        self, title: str, trusted: bool
+    ) -> None:
+        seen: list[str] = []
+
+        def refuse(path, *_a, **_k):
+            seen.append(path)
+            return "Blocked: sensitive path"
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", refuse):
+            approved, provider = await self._resolve_event(self._mcp_event(title, trusted=trusted))
+        assert title in seen
+        assert approved is False
+        assert provider.rejected == ["r1"]

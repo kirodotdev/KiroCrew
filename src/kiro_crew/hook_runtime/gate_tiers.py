@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         security,
         sensitive_path_refusal,
         target_paths,
+        title_is_trusted_mcp_identity,
     )
 
 
@@ -209,6 +210,34 @@ class GateFacts:
         """
         call = self.call
         return call.command if (call.is_shell and call.command and not call.mcp_server) else None
+
+    @property
+    def exempt_identity(self) -> str | None:
+        """The other target the path rule does not resolve: a title that IS the
+        call's own verified ``@server/tool`` identity.
+
+        A permission title such as ``@kirocrew-core/wait`` names a TOOL, not a
+        file, so handing it to the path resolver is a category error: under
+        resolver load that check stalled and refused the call fail-closed with a
+        "Path:" wording that named no path. The exemption fires only when the
+        normalized title is EXACTLY the call's own verified ``@server/tool``
+        reference built from the provenance-verified ``_meta.kiro`` identity
+        (``title_is_trusted_mcp_identity``, which requires a proven tool) -- a
+        bare ``@server``, any other title of an MCP call, an unverified
+        identity, and every argument stay path-gated, and the bash and
+        deny-rule tiers still read the title.
+        """
+        call = self.call
+        return (
+            self.normalized
+            if title_is_trusted_mcp_identity(
+                self.normalized,
+                call.mcp_server,
+                call.mcp_tool,
+                mcp_identity_trusted=call.identity_trusted,
+            )
+            else None
+        )
 
     @property
     def authority(self) -> Any:
@@ -466,8 +495,19 @@ def _rule_sensitive_path(facts: GateFacts, target: str) -> str | None:
     the client's own classification and recovery of the tool frame, the same
     provenance the shell rules trust; a shell tool whose command is a bare path is
     left to the sandbox, as every command is.
+
+    A title that is EXACTLY the call's own verified ``@server/tool`` identity
+    (:attr:`GateFacts.exempt_identity`) is spared for the same reason: it names a
+    tool, not a file, so resolving it as a path is a category error that under a
+    resolver stall refused the call fail-closed with a "Path:" wording naming no
+    path. Only an exact verified-identity match is spared; any other title, and
+    every argument, stays gated.
     """
-    return sensitive_path_refusal(target) if target != facts.exempt_command else None
+    return (
+        sensitive_path_refusal(target)
+        if target not in (facts.exempt_command, facts.exempt_identity)
+        else None
+    )
 
 
 def _rule_sensitive_bash(facts: GateFacts, target: str) -> str | None:
