@@ -1386,7 +1386,13 @@ def apply_import_zip(
                         vetted_settings["notification_settings.json"],
                     )
                     swap_guard.enter_context(channel_settings.replacing_file(channels))
-                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                _do_replace(
+                    snap,
+                    mc,
+                    None,
+                    allow_unpinned=not staging_pinned,
+                    stamp_notification_settings=False,
+                )
             summary["items"].append("full replace")
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True
