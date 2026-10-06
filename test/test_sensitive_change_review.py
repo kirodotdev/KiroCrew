@@ -259,6 +259,16 @@ def test_failure_summary_carries_the_template(mod):
         assert label in text
 
 
+def test_failure_summary_says_how_to_approve(mod):
+    # Operators pasted the template as a PR comment, or approved their own PR.
+    # The summary must name the real action: a non-author Approve review.
+    text = mod._summary(_eval(mod, _pr(), SENSITIVE, []))
+    assert "comment does NOT count" in text
+    assert "other than the PR author" in text
+    assert '"Approve"' in text
+    assert "new push resets" in text
+
+
 def test_event_head_must_match_api_head(mod):
     # Finding 1: an API that lags a push must not let an older approval turn
     # the newer commit green.
