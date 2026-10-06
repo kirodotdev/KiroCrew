@@ -10,6 +10,7 @@ import { useCanOpenFile, useCopyAck } from './FilePathMenu'
 import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { pathBasename } from '../utils/pathBasename'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -78,7 +79,7 @@ export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: s
     <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
       <img
         src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
-        alt={filePath.split('/').pop()}
+        alt={pathBasename(filePath)}
         className="max-w-full max-h-full object-contain"
         draggable={false}
       />

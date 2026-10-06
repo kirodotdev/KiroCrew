@@ -373,6 +373,7 @@ import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile } from './FilePathMenu'
+import { pathBasename } from '../utils/pathBasename'
 
 /**
  * File types that render through a dedicated viewer instead of a text editor.
@@ -898,7 +899,7 @@ function useFileKnowledgeState(filePath: string, onError: ReportError) {
   })
   const { mutate: add, isPending: adding, isSuccess: added, data: addResult, reset } = useMutation({
     mutationFn: async () => {
-      const name = filePath.split('/').pop() || filePath
+      const name = pathBasename(filePath) || filePath
       const res = await fetch('/api/knowledge/sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -946,7 +947,7 @@ function useFileArtifactState(filePath: string, content: string, onError: Report
   const existing = data ?? null
   const { mutate: add, isPending: adding, isSuccess: added, reset: resetAdd } = useMutation({
     mutationFn: async () => {
-      const name = filePath.split('/').pop() || filePath
+      const name = pathBasename(filePath) || filePath
       const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
       const kind: 'markdown' | 'json' | 'svg' | 'html' | 'text' =
         ext === '.md' || ext === '.markdown' || ext === '.mdx' ? 'markdown'
@@ -1028,7 +1029,7 @@ function useFileArtifactState(filePath: string, content: string, onError: Report
       }
       // Not yet an artifact — create (file-backed), then pin. createArtifact
       // dedups on source_path server-side, so this stays idempotent.
-      const name = filePath.split('/').pop() || filePath
+      const name = pathBasename(filePath) || filePath
       const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
       const kind: 'markdown' | 'json' | 'svg' | 'html' | 'text' =
         ext === '.md' || ext === '.markdown' || ext === '.mdx' ? 'markdown'
@@ -1294,7 +1295,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // instead of yanking focus and aborting the composition
   // (`useDialogFocusTrap` is the reference consumer of the same seam).
   const fsImeLatch = useDocumentImeLatch(fullscreen)
-  const fileName = filePath.split('/').pop() || filePath
+  const fileName = pathBasename(filePath) || filePath
   // Artifact + knowledge state power the header star/knowledge toggles and
   // the ⋯ menu's Snapshot entry (same query cache as the OverflowMenu's own
   // hooks, so states stay coherent).

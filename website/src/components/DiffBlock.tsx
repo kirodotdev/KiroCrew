@@ -13,6 +13,7 @@ import { usePlainDiff } from '../hooks/usePlainDiff'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { pathBasename } from '../utils/pathBasename'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -93,7 +94,7 @@ export function extractFilePath(code: string): { path: string; prefixStripped: b
  * path, making "relative spelling absent" meaningless as evidence. */
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
-const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+const basename = pathBasename
 
 /** What a file's header row is titled: the basename, and for a rename the old
  *  basename, an arrow, the new one. The full path is the wrapper's tooltip and

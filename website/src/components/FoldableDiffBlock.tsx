@@ -5,6 +5,7 @@ import DiffBlock, { extractFilePath } from './DiffBlock'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { pathBasename } from '../utils/pathBasename'
 
 /**
  * A prose ```diff fence, COLLAPSED to a one-line chip by default.
@@ -76,7 +77,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
   const headerPath = useMemo(() => extractFilePath(code)?.path, [code]) ?? pathHint ?? null
   // The chip shows the basename; two changed files sharing a name would render
   // as identical chips, so the full path lives in the native tooltip.
-  const basename = headerPath ? headerPath.split('/').pop() : null
+  const basename = headerPath ? pathBasename(headerPath) : null
   // An aria-label REPLACES the button's text, so the counts have to be in it:
   // without them a screen-reader user cannot hear how large the patch is
   // without opening it, which is the one decision the chip exists to support.

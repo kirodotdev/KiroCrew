@@ -6,6 +6,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { IMG_EXT, buildFileLabels } from '../../utils/fileTokens'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { i18nT } from '../../i18n/t'
+import { pathBasename } from '../../utils/pathBasename'
 
 /** Accent pill under a downscaled attachment chip. Hover (or focus) shows a
  *  styled tooltip with the resize details through the shared `InstantTip`
@@ -89,7 +90,7 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
               type="button"
-              aria-label={i18nT('components.chatInput.open_preview_of', { name: path.split('/').pop() })}
+              aria-label={i18nT('components.chatInput.open_preview_of', { name: pathBasename(path) })}
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
@@ -126,7 +127,7 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
       })}
       {nonImgs.map(path => (
         <div key={path} role="group" aria-label={path} title={path} className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text">
-          <span>{path.split('/').pop()}</span>
+          <span>{pathBasename(path)}</span>
           {onRemove && (
             <button className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')} aria-label={i18nT('components.chatInput.remove')}><X size={12} /></button>
           )}

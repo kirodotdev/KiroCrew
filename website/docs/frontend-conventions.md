@@ -428,6 +428,13 @@ payloads. Widening that regex or its key scope is a security change — the same
 constant also decides which paths are treated as local file reads, so the two
 decisions must stay on the one exported copy in `urlTransform.ts`.
 
+To SHOW a gateway path's file name, use `pathBasename` (and
+`stripTrailingSeparators` for a directory) from `utils/pathBasename.ts`, never
+`.split('/').pop()`: a Windows gateway reports `C:\repo\a.ts`, which a `/`-only
+split shows whole. The helper treats `\` as a separator only in a drive-rooted
+or backslash-UNC path, because on POSIX a backslash is a legal file-name
+character. It is display-only and decides nothing about which paths may be read.
+
 ## Data fetching
 
 The shared memory editor keeps the existing global V1 Key/Value/Set action

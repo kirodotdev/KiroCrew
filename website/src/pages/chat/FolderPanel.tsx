@@ -22,10 +22,11 @@ import {
 } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState, useTreeQuery } from './FileBrowserRail'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
-  return p.replace(/\/+$/, '').split('/').pop() || p
+  return pathBasename(stripTrailingSeparators(p)) || p
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   panelTabDescriptor,
   type PanelTabDescriptor,
 } from './panelTabRegistry'
+import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
@@ -269,7 +270,7 @@ const nextRevealNonce = (): number => ++revealSeq
 /** Last path segment. Trailing slashes are stripped first: '/a/b/'.split('/')
  *  ends in '' which is falsy, so the naive form would fall back to the whole
  *  path and title a directory tab '/a/b/' instead of 'b'. */
-const basename = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
+const basename = (p: string) => pathBasename(stripTrailingSeparators(p)) || p
 
 type Bucket = { tabs: PanelTab[]; activeId: string | null }
 type BySlot = Record<string, Bucket>
