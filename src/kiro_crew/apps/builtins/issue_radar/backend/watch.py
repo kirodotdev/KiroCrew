@@ -54,6 +54,7 @@ from aiohttp import web
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime, provider, store
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.notifications.attribution import system_origin
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
 
@@ -309,7 +310,16 @@ def _notify_new_issues(
             "issue-radar",
             title,
             body,
-            meta={"app": "issue-radar", "owner": owner, "repo": repo, "url": url, "count": count},
+            meta=system_origin(
+                app="issue-radar",
+                # The app that produced it, so the bridge also asks a profile the
+                # operator bound to ``app:issue-radar``.
+                producer_app="issue-radar",
+                owner=owner,
+                repo=repo,
+                url=url,
+                count=count,
+            ),
         )
         logger.info("issue-radar notified %d new issue(s) in %s/%s", count, owner, repo)
     except Exception:  # pragma: no cover - defensive

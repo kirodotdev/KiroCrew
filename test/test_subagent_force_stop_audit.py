@@ -2970,7 +2970,15 @@ def agent_root(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def _orphan_on_disk(agent_id: str, pid: int) -> SubagentManager:
     """A prior gateway run's folder with a live-looking pid and no tombstone."""
-    manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder())
+    # A delivering orphan DM: under the delivery-gated tombstone contract a
+    # digest-pending orphan is tombstoned only once its DM confirms delivery, so
+    # these reconcile tests (which assert the folder IS tombstoned) wire a DM that
+    # reports the owner was reached.
+    manager = SubagentManager(
+        sessions=_mock_sessions(),
+        ctx_builder=_mock_ctx_builder(),
+        on_orphan_dm=AsyncMock(return_value=True),
+    )
     create_agent_folder(agent_id, task="stuck task")
     update_state(agent_id, pid=pid)
     return manager
