@@ -733,10 +733,13 @@ async def _reveal_title(
     explicit title (manual rename) that lands mid-reveal is never clobbered by
     an animation frame. When *epoch* is given, the reveal also stops the moment
     ``slot._title_epoch`` moves — an explicit title is landing, so there is
-    nothing left to animate.
+    nothing left to animate — or the moment *slot* is not the one holding its key, so
+    a session reopened under the same key never shows this title.
     """
     for prefix in _title_reveal_prefixes(title):
-        if epoch is not None and slot._title_epoch != epoch:
+        if epoch is not None and (
+            slot._title_epoch != epoch or state._slots.get(slot.key) is not slot
+        ):
             return
         state.push_slot_title(slot.key, prefix, full=False)
         await asyncio.sleep(_TITLE_REVEAL_STEP_SECS)
@@ -1126,6 +1129,10 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     # synchronously, so a moved epoch (or a set ``_titled``) means a
     # higher-precedence title is already in place and this attempt stands down.
     epoch = slot._title_epoch
+
+    def still_current() -> bool:
+        return state._slots.get(slot.key) is slot
+
     messages = _titling_messages(slot)
     attempt_has_assistant = any(m.get("role") == "assistant" and m.get("content") for m in messages)
     logger.info("Auto-title: attempting for slot %s (turn %d)", slot.key, user_count)
@@ -1138,7 +1145,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         logger.info("Auto-title: kiro returned %r for slot %s", title, slot.key)
         # RACE GUARD: an explicit title (manual rename / manual generate) may
         # have landed while we awaited generation. Keep it and discard ours.
-        if slot._titled or slot._title_epoch != epoch:
+        # A session closed and reopened under the same key is a NEW slot with
+        # its own epoch, so only identity tells it apart.
+        if slot._titled or slot._title_epoch != epoch or not still_current():
             logger.info(
                 "Auto-title: explicit title landed during generation for slot %s; keeping it",
                 slot.key,
@@ -1150,7 +1159,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # (it never assigns ``slot.title``) and stops if the epoch moves.
             await _reveal_title(state, slot, title, epoch=epoch)
             # Re-check after the reveal's awaits for the same reason.
-            if slot._titled or slot._title_epoch != epoch:
+            if slot._titled or slot._title_epoch != epoch or not still_current():
                 logger.info(
                     "Auto-title: explicit title landed during reveal for slot %s; keeping it",
                     slot.key,
@@ -1163,7 +1172,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # the link; flag it so the background refresh re-examines it as
             # soon as the first turn's transcript names the real topic.
             slot._title_low_signal = _is_low_signal_title(title, messages)
-            await _persist_title(state, slot)
+            await _persist_title(state, slot, still_current=still_current)
+            if not still_current():
+                return
             state.push_slot_title(slot.key, title)
         else:
             # LLM returned SKIP/empty. Show the truncated fallback name right
@@ -1184,7 +1195,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
                 # and frames the task as keep-or-rename rather than
                 # title-or-SKIP) gets one immediate shot at a real name.
                 slot._title_low_signal = _is_low_signal_title(slot.title, current)
-            await _persist_title(state, slot)
+            await _persist_title(state, slot, still_current=still_current)
+            if not still_current():
+                return
             state.push_slot_title(slot.key, slot.title)
             logger.info(
                 "Auto-title: fell back to truncated message for slot %s (locked=%s)",
@@ -1212,7 +1225,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         # (chat_runner/chat_handlers create it), the title has been pushed by the
         # time we get here, so the wait costs the user nothing — and it keeps the
         # suggestion from becoming an unreferenced task the loop may drop.
-        if slot._titled and not cancelled:
+        if slot._titled and not cancelled and still_current():
             try:
                 await maybe_suggest_folder(state, slot)
             except asyncio.CancelledError:
@@ -1243,6 +1256,10 @@ async def title_then_refresh(state: DashboardState, slot: _ChatSlot) -> None:
     if pending is not None and not pending.done():
         await asyncio.wait([pending])
     await _maybe_auto_title(state, slot)
+    # A slot replaced at its key during the attempt is not refreshed: the
+    # refresh's mark write would land on the line its successor shares.
+    if state._slots.get(slot.key) is not slot:
+        return
     await maybe_refresh_title(state, slot)
 
 
@@ -1327,6 +1344,10 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     # ``_persist_title`` writes below).
     slot._title_low_signal = False
     epoch = slot._title_epoch
+
+    def still_current() -> bool:
+        return state._slots.get(slot.key) is slot
+
     logger.info("Title refresh: attempting for slot %s (turn %d)", slot.key, user_count)
     try:
         # Persist the consumed mark BEFORE the generation await, so neither an
@@ -1351,7 +1372,13 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
             return
         # RACE GUARD: a manual rename landing during generation bumps the epoch
         # and flips the origin to "user" — its title outranks ours, keep it.
-        if slot._title_epoch != epoch or slot._title_origin != _TITLE_ORIGIN_AUTO:
+        # A session closed and reopened under the same key is a NEW slot with
+        # its own epoch, so only identity tells it apart.
+        if (
+            slot._title_epoch != epoch
+            or slot._title_origin != _TITLE_ORIGIN_AUTO
+            or not still_current()
+        ):
             logger.info(
                 "Title refresh: explicit title landed during generation for slot %s; keeping it",
                 slot.key,
@@ -1360,13 +1387,17 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
         if title == slot.title:
             return
         slot.title = title
-        await _persist_title(state, slot)
+        await _persist_title(state, slot, still_current=still_current)
         # RE-CHECK after the persist await: a rename landing during the write
         # has already pushed ITS name — pushing our now-stale local ``title``
         # would overwrite it in the sidebar (the disk is already correct via
         # the persist loop; this guards the broadcast). Push the slot's
         # CURRENT title only if no explicit title superseded ours.
-        if slot._title_epoch != epoch or slot._title_origin != _TITLE_ORIGIN_AUTO:
+        if (
+            slot._title_epoch != epoch
+            or slot._title_origin != _TITLE_ORIGIN_AUTO
+            or not still_current()
+        ):
             logger.info(
                 "Title refresh: explicit title landed during persist for slot %s; keeping it",
                 slot.key,
