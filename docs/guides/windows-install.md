@@ -778,6 +778,16 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   when wrong, and the most-cited one
   (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
   118 even though the Chrome enterprise *policy* of the same name still works.
+
+  If instead the symptom is the agent's **`git`/`cr` commands** being killed
+  ("A process was blocked because malicious behavior was detected") while the
+  app window itself is fine, that is a different case: read the detection entry
+  in your security console to find the exact image path and detection id, then
+  ask whoever administers endpoint security to scope an exception to that pair.
+  The spawn mechanism described in
+  [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md)
+  is macOS/Linux-specific, so use that guide's "durable fix" steps for scoping
+  the exception, not its explanation of the cause.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

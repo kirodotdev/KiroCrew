@@ -118,3 +118,21 @@ app once if a command is still missing.
   segment, is ignored.
 - A Gateway started from a terminal (`kirocrew gateway`) is unaffected — it
   inherits the shell's `PATH` directly and needs none of this.
+
+---
+
+## The agent's git/cr commands are killed by security software
+
+**Symptoms:** the agent's `git` or `cr` commands (even a read-only
+`git branch`) are blocked with "A process was blocked because malicious behavior
+was detected" from your endpoint-security product, while the same commands run
+fine when you type them in Terminal yourself.
+
+This is not macOS-specific — it affects any OS with a behavioral sensor — so it
+has its own guide:
+[endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md).
+In short: it is a false positive on the way the agent spawns tools, the durable
+fix is an exception scoped to the specific detection id and the exact image path
+that was blocked — the Python interpreter Kiro Crew runs under (owned by whoever
+administers endpoint security on the device) — and the interim workaround is to
+run `git`/`cr` from your own terminal.
