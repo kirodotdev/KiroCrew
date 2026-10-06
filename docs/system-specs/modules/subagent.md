@@ -93,6 +93,11 @@ session id. The next continuation uses this directory even when its target is
 itself a completed follow-up and the gateway has restarted. This uses the common
 provider `cwd` property, falling back to the admitted directory when unavailable;
 the legacy Claude client fallback remains for providers without that property.
+That record (`session_id` + `cwd` in `state.json`) is written once, after session
+acquisition, with one bounded retry on an exception or a skipped merge, the same
+as the pre-spawn model-provenance write; a record that still fails to land is
+logged at WARNING rather than debug, so a continuation that loses its project is
+visible in the log. Persistence never blocks the run.
 When the recorded directory resolves to the current pool default, continuation
 omits the redundant override. Disabled overrides therefore do not reject a turn
 that stays in the default directory. A different recorded directory remains an

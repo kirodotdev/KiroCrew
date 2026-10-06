@@ -256,6 +256,95 @@ async def test_provenance_write_retries_on_silently_skipped_merge() -> None:
     assert info.error == ""
 
 
+def _session_record_manager(agent_id: str) -> tuple[SubagentManager, SubagentInfo]:
+    """A manager whose provider recorded a project cwd, for the session-record
+    write that is the only writer of ``cwd`` on the spawn path."""
+    sessions = _mock_sessions(served_model="model-served")
+    # The project the provider runs in is what the session record carries as
+    # ``cwd`` (run.py takes it from ``client.cwd``).
+    sessions.get_or_create.return_value[0].cwd = "/projects/chess"
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id=agent_id,
+        task="session record retry task",
+    )
+    manager._log_spawned(info)
+    manager._agents[info.id] = info
+    return manager, info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_attempt", ["raises", "skips"])
+async def test_session_record_write_retries_once(first_attempt: str) -> None:
+    """The session record is the SINGLE owner of ``cwd`` and ``session_id``, so a
+    transient failure -- an exception (a Windows sharing violation that outlived
+    the rename retry) or a reported skip (``update_state`` returned False because
+    the state was unreadable) -- gets one retry, exactly like the provenance
+    write, so a single failed attempt does not leave a record without
+    ``cwd``."""
+    manager, info = _session_record_manager(f"sessrt-{first_attempt}")
+    attempts = {"n": 0}
+    landed: list[dict[str, Any]] = []
+
+    def _flaky_update(agent_id: str, **kwargs: Any) -> bool:
+        if "session_id" in kwargs:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                if first_attempt == "raises":
+                    raise PermissionError("sharing violation")
+                return False
+            landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_flaky_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    assert attempts["n"] == 2, "a failed session record write must be retried once"
+    assert len(landed) == 1 and landed[0]["cwd"] == "/projects/chess"
+    assert info.error == ""
+
+
+@pytest.mark.asyncio
+async def test_session_record_write_that_never_lands_is_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bounded: two failed attempts and the run goes on (persistence never blocks
+    the spawn), but the loss is logged at WARNING so a missing ``cwd`` is visible
+    in a CI job log."""
+    manager, info = _session_record_manager("sessrt-lost")
+    attempts = {"n": 0}
+
+    def _broken_update(agent_id: str, **kwargs: Any) -> bool:
+        if "session_id" in kwargs:
+            attempts["n"] += 1
+            raise PermissionError("sharing violation")
+        return True
+
+    with (
+        caplog.at_level("WARNING", logger="kiro_crew"),
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_broken_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    assert attempts["n"] == 2, "the retry is bounded at one"
+    assert info.error == ""
+    warnings = [
+        r for r in caplog.records if r.levelname == "WARNING" and "Session record" in r.getMessage()
+    ]
+    assert len(warnings) == 1 and info.id in warnings[0].getMessage()
+
+
 def _mock_sessions_with_tool_event(served_model: str, event: Any) -> MagicMock:
     """Like ``_mock_sessions`` but the stream yields one event before ending —
     enough to drive the per-turn EVENT_PERMISSION_REQUEST branch in

@@ -2593,7 +2593,33 @@ class RunEventCoordinator(ManagerComponent):
             # on-loop writers (promote / release) contend for -- taking the
             # per-agent lock here is what orders it against any other pool
             # writer.
-            await self._manager._write_state_off_loop(info, "session record", **state_update)
+            #
+            # This write is the SINGLE owner of `cwd` and `session_id` on the
+            # spawn path (continuation reads `cwd` back through
+            # recorded_cwd), so it gets the same ONE bounded retry as the
+            # model-provenance write above: an exception or a reported skip
+            # (False -- update_state could not read the state) gets a second
+            # chance, and only a reported write ends the loop. CancelledError
+            # is not an Exception, so a cancellation still ends the loop
+            # instead of starting a second writer. A write that fails both
+            # times is logged at WARNING, so a run whose record lacks `cwd` is
+            # visible in the log.
+            _session_record_written = False
+            for _session_record_attempt in range(2):
+                try:
+                    if await self._manager._write_state_off_loop(
+                        info, "session record", **state_update
+                    ):
+                        _session_record_written = True
+                        break
+                    logger.debug("Session record write skipped (unreadable state) for %s", info.id)
+                except Exception:
+                    logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
+            if not _session_record_written:
+                logger.warning(
+                    "Session record (session_id/cwd) was not persisted for %s after 2 attempts",
+                    info.id,
+                )
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
