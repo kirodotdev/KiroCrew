@@ -30,7 +30,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.mcp_gateway import gatewayd as gw
-from kiro_crew.mcp_gateway.backend import Backend, BackendGone, _PendingRequest
+from kiro_crew.mcp_gateway.backend import (
+    _RECYCLE_EXEMPT_METHODS,
+    Backend,
+    BackendGone,
+    _PendingRequest,
+    has_recyclable_in_flight,
+)
 from kiro_crew.mcp_gateway.pool import BackendUnavailable, PoolAtCapacity, PoolKey
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
@@ -1006,6 +1012,53 @@ class TestDisconnectTeardown:
         assert any(b"notifications/cancelled" in payload for payload in sent)
         assert backend.refcount == 0
         recycle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", sorted(_RECYCLE_EXEMPT_METHODS))
+    async def test_an_abandoned_listing_keeps_the_warm_backend(
+        self, peer_ok, monkeypatch, method
+    ):
+        """a stub that leaves with only a listing in flight must not cost
+        the backend it just started."""
+        backend = _fake_backend()
+        backend._pending_requests["f1"] = _PendingRequest(
+            stub_uuid=_STUB, original_id=7, method=method
+        )
+        recycle = AsyncMock(return_value=True)
+        backend.recycle_if_idle = recycle  # type: ignore[method-assign]
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
+
+        await _handle(
+            _ScriptedReader(_register_frame(), {"type": "ensure_backend"}),
+            _FakeWriter(),
+            _fake_pool(),
+        )
+
+        sent = [call.args[0] for call in backend.stdin.write.call_args_list]
+        assert any(b"notifications/cancelled" in payload for payload in sent)
+        assert backend.refcount == 0
+        recycle.assert_not_awaited()
+
+    def test_the_exempt_set_is_the_documented_one(self):
+        assert _RECYCLE_EXEMPT_METHODS == {
+            "ping",
+            "tools/list",
+            "prompts/list",
+            "resources/list",
+            "resources/templates/list",
+        }
+
+    def test_tool_work_alongside_a_listing_still_counts(self):
+        backend = _fake_backend()
+        backend._pending_requests["f1"] = _PendingRequest(
+            stub_uuid=_STUB, original_id=1, method="tools/list"
+        )
+        assert not has_recyclable_in_flight(backend._pending_requests, _STUB)
+        backend._pending_requests["f2"] = _PendingRequest(
+            stub_uuid=_STUB, original_id=2, method="tools/call"
+        )
+        assert has_recyclable_in_flight(backend._pending_requests, _STUB)
+        assert not has_recyclable_in_flight(backend._pending_requests, "another-stub")
 
     @pytest.mark.asyncio
     async def test_a_failing_cancel_still_detaches_the_stub(self, peer_ok, monkeypatch):

@@ -321,6 +321,40 @@ class BackendGone(RuntimeError):
     emits a clean JSON-RPC error to the originating stub."""
 
 
+#: Requests a departing stub may abandon without the backend being recycled:
+#: a ping and the read-only listings run no tool work, so there is nothing a
+#: best-effort cancel could fail to stop. ``initialize`` is not listed because
+#: it is never pending under a stub's own uuid: the upstream handshake is
+#: forwarded under the ``__init__`` sentinel. See ``has_recyclable_in_flight``.
+_RECYCLE_EXEMPT_METHODS = frozenset(
+    {
+        "ping",
+        "tools/list",
+        "prompts/list",
+        "resources/list",
+        "resources/templates/list",
+    }
+)
+
+
+def has_recyclable_in_flight(pending: Mapping[str, Any], stub_uuid: str) -> bool:
+    """Whether ``stub_uuid`` owns in-flight work that justifies a recycle.
+
+    ``pending`` is a backend's ``_pending_requests``. Scope B kills a backend
+    whose last stub left with work in flight, because the cancel notification
+    is best-effort and abandoned tool work must not keep running. A ping or a
+    listing request has no such work: killing the backend for one throws away
+    a backend that just finished starting, and the client's retry pays a fresh
+    spawn behind every other queued backend. Those requests are
+    cancelled like any other, but the backend stays pooled for the retry.
+    """
+    return any(
+        getattr(p, "stub_uuid", None) == stub_uuid
+        and getattr(p, "method", "") not in _RECYCLE_EXEMPT_METHODS
+        for p in pending.values()
+    )
+
+
 @dataclass
 class _PendingRequest:
     """Tracks an in-flight request so the stdout pump can restore the

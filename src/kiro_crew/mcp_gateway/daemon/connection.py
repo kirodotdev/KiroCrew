@@ -21,7 +21,12 @@ from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.json_line import parse_json_object_line, recover_line_id
 from kiro_crew.mcp_gateway import hazards
 from kiro_crew.mcp_gateway.admission import Admission
-from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES, Backend, BackendGone
+from kiro_crew.mcp_gateway.backend import (
+    INTERNAL_STUB_PREFIXES,
+    Backend,
+    BackendGone,
+    has_recyclable_in_flight,
+)
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
@@ -631,7 +636,9 @@ async def _teardown_connection(
         # with no consumer (the root cause of the stop/kill bug).
         # Best-effort: a failure here must never skip detach_stub below,
         # or the backend's refcount leaks and it can never be recycled.
-        had_in_flight = any(p.stub_uuid == stub_uuid for p in backend._pending_requests.values())
+        # Only work a cancel might not stop counts: an abandoned ping or
+        # listing keeps the warm backend for the client's retry.
+        had_in_flight = has_recyclable_in_flight(backend._pending_requests, stub_uuid)
         cancelled: list = []
         try:
             cancelled = await backend.cancel_in_flight_for_stub(stub_uuid)
@@ -657,7 +664,7 @@ async def _teardown_connection(
         else:
             logger.debug("stub %s detached; refcount=%d", stub_uuid, remaining)
         # Scope B: if no consumers remain and the backend had in-flight
-        # work, kill+respawn (the cancel notification is best-effort —
+        # tool work, kill+respawn (the cancel notification is best-effort —
         # the backend may not honour it).
         if remaining == 0 and had_in_flight:
             await backend.recycle_if_idle()
