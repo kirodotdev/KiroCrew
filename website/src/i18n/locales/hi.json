@@ -6592,7 +6592,13 @@
       "save": "सहेजें",
       "submit_all": "सभी सबमिट करें",
       "toggle_additional_prompt": "समग्र निर्देश जोड़ो",
-      "write_a_comment": "टिप्पणी लिखें…"
+      "write_a_comment": "टिप्पणी लिखें…",
+      "comment_on_the_boxed_area": "चिह्नित क्षेत्र पर टिप्पणी करो",
+      "image_anchor": "छवि \"{{label}}\" पर बॉक्स {{number}}"
+    },
+    "imageComments": {
+      "comment_on_image": "इस छवि पर टिप्पणी करो",
+      "box_label": "बॉक्स {{number}}, स्थान {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "बंद करें",
@@ -7541,6 +7547,7 @@
       "full_screen": "पूर्ण स्क्रीन",
       "full_screen_file_preview": "पूर्ण स्क्रीन फ़ाइल पूर्वावलोकन",
       "got_it": "समझ गया",
+      "new_badge": "नया",
       "in_artifacts": "आर्टिफ़ैक्ट में",
       "in_knowledge_library": "ज्ञान लाइब्रेरी में",
       "in_library": "लाइब्रेरी में",
@@ -7570,6 +7577,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "इस फ़ाइल को आर्टिफ़ैक्ट के रूप में सहेजें (संस्करणबद्ध, स्थायी, टिप्पणी-योग्य)",
       "saving": "सहेजा जा रहा है…",
       "select_any_text_to_add_inline_comments_then_subm": "इनलाइन टिप्पणियाँ जोड़ने के लिए कोई भी टेक्स्ट चुनें, फिर उन सभी को चैट में भेजें।",
+      "select_any_text_or_drag_across_an_image_to_add_i": "इनलाइन टिप्पणियाँ जोड़ने के लिए कोई भी टेक्स्ट चुनो या किसी छवि पर खींचकर एक हिस्सा चुनो, फिर उन सभी को चैट में भेजो।",
       "show_changes": "बदलाव दिखाएँ",
       "show_full_file": "पूरी फ़ाइल दिखाएँ",
       "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",

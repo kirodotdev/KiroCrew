@@ -6478,7 +6478,13 @@
       "save": "保存",
       "submit_all": "すべてを送信",
       "toggle_additional_prompt": "全体への指示を追加",
-      "write_a_comment": "コメントを書く…"
+      "write_a_comment": "コメントを書く…",
+      "comment_on_the_boxed_area": "囲んだ範囲にコメント",
+      "image_anchor": "画像「{{label}}」の枠 {{number}}"
+    },
+    "imageComments": {
+      "comment_on_image": "この画像にコメント",
+      "box_label": "枠 {{number}}（位置 {{x}}、{{y}}）"
     },
     "commentThreadPopover": {
       "close": "閉じる",
@@ -7416,6 +7422,7 @@
       "full_screen": "フルスクリーン",
       "full_screen_file_preview": "フルスクリーンファイルプレビュー",
       "got_it": "了解しました",
+      "new_badge": "新機能",
       "in_artifacts": "アーティファクトに含まれています",
       "in_knowledge_library": "ナレッジライブラリに含まれています",
       "in_library": "ライブラリに含まれています",
@@ -7445,6 +7452,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "このファイルをアーティファクトとして保存 (バージョン管理、永続化、コメント可能)",
       "saving": "保存中…",
       "select_any_text_to_add_inline_comments_then_subm": "任意のテキストを選択してインラインコメントを追加し、すべてをチャットに送信します。",
+      "select_any_text_or_drag_across_an_image_to_add_i": "任意のテキストを選択するか、画像の上をドラッグしてインラインコメントを追加し、すべてをチャットに送信します。",
       "show_changes": "変更を表示",
       "show_full_file": "ファイル全体を表示",
       "show_in_file_manager": "ファイルマネージャーに表示",

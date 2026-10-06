@@ -6592,7 +6592,13 @@
       "save": "সংরক্ষণ",
       "submit_all": "সব জমা দিন",
       "toggle_additional_prompt": "সার্বিক নির্দেশ যোগ করো",
-      "write_a_comment": "একটি মন্তব্য লিখুন…"
+      "write_a_comment": "একটি মন্তব্য লিখুন…",
+      "comment_on_the_boxed_area": "চিহ্নিত অংশে মন্তব্য করো",
+      "image_anchor": "ছবি \"{{label}}\"-এর বক্স {{number}}"
+    },
+    "imageComments": {
+      "comment_on_image": "এই ছবিতে মন্তব্য করো",
+      "box_label": "বক্স {{number}}, অবস্থান {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "বন্ধ করুন",
@@ -7541,6 +7547,7 @@
       "full_screen": "ফুল স্ক্রিন",
       "full_screen_file_preview": "ফুল স্ক্রিন ফাইল প্রিভিউ",
       "got_it": "বুঝেছি",
+      "new_badge": "নতুন",
       "in_artifacts": "আর্টিফ্যাক্টে",
       "in_knowledge_library": "নলেজ লাইব্রেরিতে",
       "in_library": "লাইব্রেরিতে",
@@ -7570,6 +7577,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "এই ফাইলটি আর্টিফ্যাক্ট হিসেবে সংরক্ষণ করুন (ভার্সনযুক্ত, স্থায়ী, মন্তব্য করার যোগ্য)",
       "saving": "সেভ হচ্ছে…",
       "select_any_text_to_add_inline_comments_then_subm": "ইনলাইন মন্তব্য যোগ করতে যেকোনো টেক্সট নির্বাচন করুন, তারপর সেগুলো সবই চ্যাটে পাঠান।",
+      "select_any_text_or_drag_across_an_image_to_add_i": "ইনলাইন মন্তব্য যোগ করতে যেকোনো টেক্সট নির্বাচন করো বা কোনো ছবির ওপর টেনে একটি অংশ চিহ্নিত করো, তারপর সেগুলো সবই চ্যাটে পাঠাও।",
       "show_changes": "পরিবর্তনগুলি দেখাও",
       "show_full_file": "সম্পূর্ণ ফাইল দেখান",
       "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",

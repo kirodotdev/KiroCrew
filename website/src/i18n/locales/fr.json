@@ -6706,7 +6706,13 @@
       "save": "Enregistrer",
       "submit_all": "Tout envoyer",
       "toggle_additional_prompt": "Ajouter une instruction globale",
-      "write_a_comment": "Écrire un commentaire…"
+      "write_a_comment": "Écrire un commentaire…",
+      "comment_on_the_boxed_area": "Commenter la zone encadrée",
+      "image_anchor": "Cadre {{number}} sur «{{label}}»"
+    },
+    "imageComments": {
+      "comment_on_image": "Commenter cette image",
+      "box_label": "Cadre {{number}} à {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "Fermer",
@@ -7666,6 +7672,7 @@
       "full_screen": "Plein écran",
       "full_screen_file_preview": "Aperçu du fichier en plein écran",
       "got_it": "J'ai compris",
+      "new_badge": "Nouveau",
       "in_artifacts": "Dans les artefacts",
       "in_knowledge_library": "Dans la bibliothèque de connaissances",
       "in_library": "Dans la bibliothèque",
@@ -7695,6 +7702,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Enregistrer ce fichier comme artefact (versionné, persistant, commentable)",
       "saving": "Enregistrement…",
       "select_any_text_to_add_inline_comments_then_subm": "Sélectionnez n'importe quel texte pour ajouter des commentaires en ligne, puis envoyez-les tous dans la conversation.",
+      "select_any_text_or_drag_across_an_image_to_add_i": "Sélectionne n'importe quel texte, ou fais glisser sur une image, pour ajouter des commentaires en ligne, puis envoie-les tous dans la conversation.",
       "show_changes": "Afficher les modifications",
       "show_full_file": "Afficher le fichier complet",
       "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",

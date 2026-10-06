@@ -3,6 +3,7 @@ import { MessageSquare, X, FileDiff, TriangleAlert, CaseSensitive, ChevronUp, Ch
 import { CommentList, type InlineComment } from './CommentOverlay'
 import { PierreFilePair, PierrePatch } from '../pierre'
 import { i18nT } from '../i18n/t'
+import { Badge } from './ui'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import type { useImeGuard } from '../hooks/useImeGuard'
 import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
@@ -15,8 +16,10 @@ import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
  * them out in both the side-panel and the full-screen layouts.
  */
 
-/** Comment hint banner — shown once per session for markdown files */
-export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
+/** Comment hint banner for markdown files, shown until the reader dismisses it.
+ *  `image` names the image gesture, and `isNew` badges the tip when it is back
+ *  for a reader who closed the text-only one (see `useCommentHint`). */
+export function CommentHint({ image, isNew, onDismiss }: { image: boolean; isNew: boolean; onDismiss: () => void }) {
   return (
     <div
       className="flex items-center gap-2.5 px-3 py-2.5 bg-bg-elevated border rounded-lg text-[12px] animate-scale-in mx-1 mb-2"
@@ -24,7 +27,10 @@ export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
     >
       <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
       <span className="flex-1 text-text">
-        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
+        {isNew && <Badge variant="aim" className="me-1.5 align-middle text-[11px] font-sans">{i18nT('components.markdownPanel.new_badge')}</Badge>}
+        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {image
+          ? i18nT('components.markdownPanel.select_any_text_or_drag_across_an_image_to_add_i')
+          : i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
       </span>
       <button className="text-accent hover:text-accent-hover cursor-pointer bg-transparent border-none text-[11px] font-medium shrink-0" onClick={onDismiss}>{i18nT('components.markdownPanel.got_it')}</button>
     </div>

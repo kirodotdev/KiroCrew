@@ -4476,7 +4476,13 @@
       "save": "Save",
       "submit_all": "Submit All",
       "toggle_additional_prompt": "Add overall instruction",
-      "write_a_comment": "Write a comment…"
+      "write_a_comment": "Write a comment…",
+      "comment_on_the_boxed_area": "Comment on the boxed area",
+      "image_anchor": "Box {{number}} on \"{{label}}\""
+    },
+    "imageComments": {
+      "comment_on_image": "Comment on this image",
+      "box_label": "Box {{number}} at {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "Close",
@@ -4857,6 +4863,7 @@
       "find_in_document_2": "Find in document",
       "full_screen_file_preview": "Full screen file preview",
       "got_it": "Got it",
+      "new_badge": "New",
       "in_artifacts": "In Artifacts",
       "in_knowledge_library": "In Knowledge Library",
       "in_library": "In Library",
@@ -4870,6 +4877,7 @@
       "refresh_file": "Refresh file",
       "save_this_file_as_an_artifact_versioned_persiste": "Save this file as an artifact (versioned, persistent, comment-able)",
       "select_any_text_to_add_inline_comments_then_subm": "Select any text to add inline comments, then submit them all to the chat.",
+      "select_any_text_or_drag_across_an_image_to_add_i": "Select any text, or drag across an image, to add inline comments, then submit them all to the chat.",
       "show_changes": "Show changes",
       "tip": "Tip:",
       "toggle_diff_view": "Toggle diff view",

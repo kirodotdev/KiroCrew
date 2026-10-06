@@ -6706,7 +6706,13 @@
       "save": "Salvar",
       "submit_all": "Enviar tudo",
       "toggle_additional_prompt": "Adicionar instrução geral",
-      "write_a_comment": "Escreva um comentário…"
+      "write_a_comment": "Escreva um comentário…",
+      "comment_on_the_boxed_area": "Comentar a área marcada",
+      "image_anchor": "Caixa {{number}} em \"{{label}}\""
+    },
+    "imageComments": {
+      "comment_on_image": "Comentar esta imagem",
+      "box_label": "Caixa {{number}} em {{x}}, {{y}}"
     },
     "commentThreadPopover": {
       "close": "Fechar",
@@ -7666,6 +7672,7 @@
       "full_screen": "Tela cheia",
       "full_screen_file_preview": "Pré-visualização do arquivo em tela cheia",
       "got_it": "Entendi",
+      "new_badge": "Novo",
       "in_artifacts": "Em Artefatos",
       "in_knowledge_library": "Na Biblioteca de Conhecimento",
       "in_library": "Na Biblioteca",
@@ -7695,6 +7702,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Salvar este arquivo como artefato (versionado, persistente, com comentários)",
       "saving": "Salvando…",
       "select_any_text_to_add_inline_comments_then_subm": "Selecione qualquer texto para adicionar comentários inline e depois envie todos para o chat.",
+      "select_any_text_or_drag_across_an_image_to_add_i": "Selecione qualquer texto, ou arraste sobre uma imagem, para adicionar comentários inline e depois envie todos para o chat.",
       "show_changes": "Mostrar alterações",
       "show_full_file": "Mostrar arquivo completo",
       "show_in_file_manager": "Mostrar no gerenciador de arquivos",

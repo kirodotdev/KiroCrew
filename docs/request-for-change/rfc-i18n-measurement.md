@@ -206,7 +206,7 @@ template literals that no catalog value can reach. `i18n-plural-codemod.mjs
 --check` is wired into `i18n:check` and guards *already-converted* keys against
 regression; it does not reach strings that were never catalog keys. Some of the
 40 construct LLM prompt text and fall outside the rule's scope, which governs
-user-facing strings (`website/src/components/CommentOverlay.tsx:224`),
+user-facing strings (`formatArtifactCommentsMessage` in `website/src/components/CommentOverlay.tsx`),
 but user-visible ones are not — `website/src/App.tsx:499`, `website/src/App.tsx:619`,
 `website/src/components/InlineCommentOverlay.tsx:171`,
 `website/src/components/ArtifactFolderDeleteDialog.tsx:41`.

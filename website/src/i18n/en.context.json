@@ -872,6 +872,12 @@
     "pages.membersPage.patrol_pause": "Verb on a button: pause the crewmate's watch over its tasks. Not the noun.",
     "pages.membersPage.patrol_resume": "Verb on a button: resume a paused watch. Not the noun.",
     "pages.membersPage.patrol_stopped_runtime": "One-phrase reason the watch stopped: it ran up to its time budget of {{limit}} (a short duration like '7d').",
-    "pages.membersPage.patrol_stopped_cycles": "One-phrase reason the watch stopped: it did as many checks as it was allowed."
+    "pages.membersPage.patrol_stopped_cycles": "One-phrase reason the watch stopped: it did as many checks as it was allowed.",
+    "components.markdownPanel.select_any_text_or_drag_across_an_image_to_add_i": "One-time tip at the top of the file viewer, shown only when the device has a mouse or trackpad: the reader can select text, or drag a box across an image, to add comments, then send them to the chat together. On a touch-only device the text-only tip shows instead.",
+    "components.commentOverlay.comment_on_the_boxed_area": "Accessible name of the text field in the comment box for a box drawn on an image in the file viewer (also opened by the keyboard 'Comment on this image' button). It parallels the text composer's 'Comment on the selected text', so the field and its 'Add comment' button never read the same; 'boxed area' is the part of the image inside the drawn box.",
+    "components.commentOverlay.image_anchor": "Label on a pending comment in the file viewer that is attached to a box drawn on an image rather than to text; {{number}} is the box's number, the same one drawn on the box over the image and the comment's place in the pending list, already formatted, and {{label}} is the image alt text, or its file name when it has none.",
+    "components.imageComments.comment_on_image": "Accessible name and tooltip of a button on a rendered image in the file viewer that appears only when it has keyboard focus; pressing it opens a comment on the whole image, for readers who cannot drag a box across it.",
+    "components.imageComments.box_label": "Accessible name of a box drawn on an image for an existing comment; {{number}} is the comment number in the pending list, and {{x}}, {{y}} are the box's top-left corner as horizontal and vertical percentages, already formatted. Activating it highlights that comment in the pending list.",
+    "components.markdownPanel.new_badge": "Small badge before 'Tip:' on the file viewer's one-time comment tip, shown only when the tip is back for a reader who had closed its earlier, text-only wording: it marks that the tip now names a new feature (drawing a box on an image to comment on it). An adjective for the feature, not a verb like 'Create'; keep it to one short word."
   }
 }

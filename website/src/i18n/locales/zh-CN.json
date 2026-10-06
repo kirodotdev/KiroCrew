@@ -6478,7 +6478,13 @@
       "save": "保存",
       "submit_all": "全部提交",
       "toggle_additional_prompt": "添加整体指令",
-      "write_a_comment": "写下评论…"
+      "write_a_comment": "写下评论…",
+      "comment_on_the_boxed_area": "对框选区域添加评论",
+      "image_anchor": "图片“{{label}}”上的方框 {{number}}"
+    },
+    "imageComments": {
+      "comment_on_image": "评论此图片",
+      "box_label": "方框 {{number}}，位置 {{x}}，{{y}}"
     },
     "commentThreadPopover": {
       "close": "关闭",
@@ -7416,6 +7422,7 @@
       "full_screen": "全屏",
       "full_screen_file_preview": "全屏文件预览",
       "got_it": "知道了",
+      "new_badge": "新功能",
       "in_artifacts": "已在产物中",
       "in_knowledge_library": "已在知识库中",
       "in_library": "已在库中",
@@ -7445,6 +7452,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "将此文件保存为产物（带版本、持久化、可评论）",
       "saving": "保存中…",
       "select_any_text_to_add_inline_comments_then_subm": "选中任意文本添加行内评论，然后一并提交到聊天。",
+      "select_any_text_or_drag_across_an_image_to_add_i": "选中任意文本或在图片上拖出一个区域来添加行内评论，然后一并提交到聊天。",
       "show_changes": "显示更改",
       "show_full_file": "显示完整文件",
       "show_in_file_manager": "在文件管理器中显示",

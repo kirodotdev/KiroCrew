@@ -6478,7 +6478,13 @@
       "save": "저장",
       "submit_all": "모두 제출",
       "toggle_additional_prompt": "전체 지시 추가",
-      "write_a_comment": "댓글 작성…"
+      "write_a_comment": "댓글 작성…",
+      "comment_on_the_boxed_area": "표시한 영역에 댓글 달기",
+      "image_anchor": "이미지 ‘{{label}}’의 상자 {{number}}"
+    },
+    "imageComments": {
+      "comment_on_image": "이 이미지에 댓글 달기",
+      "box_label": "상자 {{number}} ({{x}}, {{y}} 위치)"
     },
     "commentThreadPopover": {
       "close": "닫기",
@@ -7416,6 +7422,7 @@
       "full_screen": "전체 화면",
       "full_screen_file_preview": "전체 화면 파일 미리 보기",
       "got_it": "확인",
+      "new_badge": "신규",
       "in_artifacts": "아티팩트에 있음",
       "in_knowledge_library": "지식 라이브러리에 있음",
       "in_library": "라이브러리에 있음",
@@ -7445,6 +7452,7 @@
       "save_this_file_as_an_artifact_versioned_persiste": "이 파일을 아티팩트로 저장합니다 (버전 관리·영구 보존·댓글 가능)",
       "saving": "저장하는 중…",
       "select_any_text_to_add_inline_comments_then_subm": "텍스트를 선택해 인라인 댓글을 추가한 뒤 한 번에 채팅으로 보내세요.",
+      "select_any_text_or_drag_across_an_image_to_add_i": "텍스트를 선택하거나 이미지 위를 드래그해 인라인 댓글을 추가한 뒤 한 번에 채팅으로 보내세요.",
       "show_changes": "변경 사항 표시",
       "show_full_file": "전체 파일 보기",
       "show_in_file_manager": "파일 관리자에서 보기",
