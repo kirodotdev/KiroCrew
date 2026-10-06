@@ -3264,6 +3264,21 @@ _IMPORT_FACET_KEYS = ("scope", "surface", "crew", "session_key", "derived_from")
 #: collection this list misses is one that raises AFTER the store was created.
 _IMPORTED_COLLECTIONS = ("semantic", "episodic")
 
+#: Printed after `memory import` when rows still lack a vector. The CLI store has
+#: no embed_fn (loading the model would add its startup cost to every invocation),
+#: so `import_memory`'s `_try_embed` returns None and every imported episode lands
+#: keyword-only; the export file carries no vectors either. Without this line the
+#: summary ("Skipped: 0") reads as complete while semantic recall over the imported
+#: rows silently does not work. The gateway's paced repair loop and its boot sweep
+#: (`slack/gateway_runtime/memory_lifecycle.py`) are what fill them, each only once
+#: the embedding backend is ready -- hence "once", not a promised time.
+_IMPORT_EMBED_NOTE = (
+    "Note: embedding vectors are not built by this command. The gateway's background\n"
+    "  re-embed sweep fills them once its embedding backend is ready; until then the\n"
+    "  imported rows are keyword-searchable only. `kirocrew memory stats` shows the\n"
+    "  progress on its Embedded line."
+)
+
 #: Most rows ``memory export`` writes per collection. A cut collection is named on
 #: stderr with its full count, so a short file never reads as a complete one.
 _EXPORT_EPISODIC_LIMIT = 10_000
@@ -4060,6 +4075,14 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     f"  Episodic: {stats['episodic_active']} active, {stats['episodic_deleted']} deleted"
                 )
                 print(f"  Embedded: {stats['embedded_count']}/{stats['episodic_active']}")
+                pending = stats["episodic_active"] - stats["embedded_count"]
+                if pending > 0:
+                    # A bare ratio reads as a fault. Name what fills the gap, so a
+                    # just-imported store is not mistaken for a broken one.
+                    print(
+                        f"    {pending} row(s) wait for the gateway's background re-embed "
+                        "sweep (keyword-searchable until then)"
+                    )
                 if stats["faiss_available"]:
                     print(f"  FAISS accelerator: {stats['faiss_index_size']} vectors indexed")
                 else:
@@ -4190,6 +4213,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 print(f"  Semantic: {counts['semantic']}")
                 print(f"  Episodic: {counts['episodic']}")
                 print(f"  Skipped:  {counts['skipped']}")
+                if counts["episodic"] > 0 and store.has_pending_embeddings():
+                    print(_IMPORT_EMBED_NOTE)
                 if dropped and memory_store_version(store_name) != 2:
                     # A V2 export reads the canonical relation, so its rows carry
                     # scope, surface, crew, session_key and derived_from;
