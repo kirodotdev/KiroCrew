@@ -156,6 +156,33 @@ async def _emit_call_metric(record: dict[str, Any]) -> None:
 # backend on a loaded host.
 _DEFAULT_INITIALIZE_TIMEOUT_SECS = 10.0
 
+# Windows cold-start floor for the first-``initialize`` deadline. On Windows the
+# backend's cold start (interpreter + import graph on a filesystem with no POSIX
+# page cache, and process creation that is itself heavier than fork/exec)
+# routinely overruns a 10s budget and then completes on the next spawn, so a
+# too-tight deadline reaps a backend that was about to answer and respawns it --
+# a spawn -> reaped-at-deadline -> respawn loop in which tools never finish
+# listing. The 10s default was measured against POSIX cold starts; raising only
+# the Windows floor leaves every POSIX host and any explicit operator value that
+# already clears the floor untouched. See ``_effective_initialize_timeout_secs``.
+_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS = 30.0
+
+
+def _effective_initialize_timeout_secs(configured: float) -> float:
+    """Apply the Windows cold-start floor to a configured initialize deadline.
+
+    POSIX hosts, and any Windows host whose configured value already clears the
+    floor, get ``configured`` back unchanged -- an operator who deliberately
+    raised the deadline is never lowered. Only a Windows host left on (or below)
+    the POSIX-measured default is lifted to
+    ``_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS``, so a slow cold start is given
+    room to finish its handshake rather than being reaped and respawned.
+    """
+    if platform_compat.IS_WINDOWS:
+        return max(float(configured), _WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS)
+    return float(configured)
+
+
 # Budget for the tool-surface probe (see ``Backend.probe_tool_surface``). Same
 # 10s as the app-call listing, and for the same reason: a backend that has just
 # completed its handshake answers ``tools/list`` in milliseconds, so a longer
@@ -4730,7 +4757,7 @@ async def spawn_backend(
         stdout=process.stdout,
         created_at=now,
         last_used_at=now,
-        initialize_timeout_secs=float(initialize_timeout_secs),
+        initialize_timeout_secs=_effective_initialize_timeout_secs(initialize_timeout_secs),
     )
     backend._last_ping_response_mono = now  # cold-start: not insta-stale
     backend._stderr_task = stderr_task
