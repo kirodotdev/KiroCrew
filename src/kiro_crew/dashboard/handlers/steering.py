@@ -136,6 +136,18 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {os.unlink, os.stat}.is
 # nested folders.  Anything else is rewritten on create (see _safe_rel_name).
 _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
 
+#: Byte budget for the relative name ``<...>.md`` a create writes, mirroring
+#: prompts/skills (``MAX_PROMPT_NAME_BYTES``). ``_safe_rel_name`` screens the
+#: character set but imposes no length, so a long name reaches the write and the
+#: host refuses the joined path: POSIX caps a single component at 255 bytes, and
+#: a Windows host without ``LongPathsEnabled`` caps the whole path at ``MAX_PATH``
+#: (260) -- surfaced there as a bare ``FileNotFoundError`` from ``CreateFileW``,
+#: an uncoded 500 indistinguishable from a real write failure. Bounding the whole
+#: name before the write (nesting ``a/b/c`` blows the limit on short segments
+#: too) turns that into a coded 400 on every host, with no dependence on which
+#: errno or winerror a given platform happens to raise.
+MAX_STEERING_NAME_BYTES = 200
+
 
 def _sel():
     """Late-binding sel() — allows monkeypatching at parent package level."""
@@ -1101,6 +1113,22 @@ async def api_steering_create(request: web.Request) -> web.Response:
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
         return web.json_response({"error": "name is required"}, status=400)
+    if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
+        # Bound the name before the write: the host would otherwise refuse the
+        # joined path for its length and the blanket OSError handling below would
+        # answer an uncoded 500. A coded 400 lets the dashboard tell the user to
+        # shorten the name.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="steering.create",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{source}/{rel}",
+        )
+        return web.json_response(
+            {"error": "steering name is too long", "code": "name_too_long"},
+            status=400,
+        )
     if source == "workspace":
         # Same precondition as the detail writes: creating into a project the
         # client is no longer looking at plants the file where nobody will find
