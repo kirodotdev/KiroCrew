@@ -428,6 +428,9 @@ class TestCommandCronShellResolution:
         assert "/bin/sh" in output and "/usr/bin/sh" in output
         assert "+B" in output
         assert "script cron" in output
+        # The failed probe is cached for the gateway's lifetime, so fixing the
+        # shell alone is not enough: the refusal must name the restart.
+        assert "restart the gateway" in output
 
     def test_windows_refusal_keeps_its_by_design_reason(self, monkeypatch):
         """The Windows wording is unchanged: there the refusal IS the platform."""

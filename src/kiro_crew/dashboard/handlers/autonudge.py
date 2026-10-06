@@ -944,7 +944,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     if svc is None:
         return web.json_response(
             {
-                "error": "auto-nudge disabled (KIROCREW_AUTONUDGE not set)",
+                "error": "auto-nudge disabled (KIROCREW_AUTONUDGE is 0/false/no)",
                 "code": "autonudge_disabled",
             },
             status=503,

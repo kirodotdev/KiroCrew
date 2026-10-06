@@ -197,7 +197,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "mode the listing says so and warns that an anchor sets the stored "
                 "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
-                "agent, and how many archived (history) sessions are filed there; "
+                "agent, and a hidden flag; "
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
                 "get folder ids/paths and session keys before calling "

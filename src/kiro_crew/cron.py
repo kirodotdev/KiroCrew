@@ -1451,10 +1451,9 @@ class CronService:
         start-id reads around the child walk, the group signal (by the group id
         retained while the leader was alive once the leader is gone), the
         pid-scoped fallback, the escaped-children sweep -- is
-        :func:`kiro_crew.process_identity.kill_verified_process`, whose only
-        caller today is this method; the sub-agent manager's twin of this path
-        still runs its own copy of the old kill, and its move onto the same
-        function is tracked follow-up work, not a change here. It never
+        :func:`kiro_crew.process_identity.kill_verified_process`, the one
+        definition this method shares with the sub-agent manager's teardown
+        paths. It never
         raises (the caller took the run's claim and must still finish it) and
         never swallows: it returns what stopped the kill, and the caller records
         it so the audit does not say the run was reaped over a process tree left

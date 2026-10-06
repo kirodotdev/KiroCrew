@@ -1586,7 +1586,7 @@ class AutoNudgeService:
 
     async def start(self) -> None:
         if not enabled():
-            logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE not set)")
+            logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE is 0/false/no)")
             return
         # This lock spans load, repair, timer arming and singleton publication.
         # Disabled-mode maintenance that got here first finishes its whole

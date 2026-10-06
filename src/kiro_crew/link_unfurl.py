@@ -112,7 +112,7 @@ _LOGIN_PAGE_TITLE = re.compile(
       ^\s* (?:please\s+)? (?:sign|log) [\s-]? (?:in|on)
           \s* (?: $ | [|\-–—·:•] | to\b | with\s+your\b )   # "Sign In", "Sign in to X | Slack"
     | [|\-–—·:•] \s* (?:sign|log) [\s-]? in \s*$            # "Acme Corp - Sign In"
-    | ^\s* single\s+sign [\s-]? on \s* (?: $ | [|\-–—·:•] ) # "Single Sign-On", "SSO - Okta"
+    | ^\s* single\s+sign [\s-]? on \s* (?: $ | [|\-–—·:•] ) # "Single Sign-On", "Single Sign-On | X"
     | ^\s* authentication\s+required \s*$
     """,
     re.IGNORECASE,

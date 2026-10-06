@@ -1091,7 +1091,7 @@ def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str
     never run on this path. We therefore replicate them here, at storage time,
     so a prompt-injected ``cron_add`` cannot schedule credential exfiltration or
     arbitrary destructive shell. Mirrors the same guards used for the bash tool
-    in ``security.py`` (``is_denied`` / ``is_sensitive_bash_command`` /
+    in the ``kiro_crew.security`` package (``is_denied`` / ``is_sensitive_bash_command`` /
     ``scan_exfiltration_urls``), plus a cron-surface-specific deny of any
     credential-path or protected-secret-env reference (the stock guards miss
     flag-based file reads like ``curl -d @FILE`` and body-exfil, which is the
@@ -1384,7 +1384,7 @@ def _vet_script_contents(text: str) -> str | None:
     rules matching pieces hundreds of lines apart, and a ``find``-grammar parse of
     English docstrings. Each produces a class of false denial on ordinary scripts,
     each closeable only by another layer of AST analysis in
-    ``security.py``, and ~1500 lines of that still cannot stop
+    the ``kiro_crew.security`` package, and ~1500 lines of that still cannot stop
     ``open(os.environ["LOCALAPPDATA"] + r"\\kiro-cli\\config.json")``: static text
     analysis of a Turing-complete body cannot be the fence. The runtime control for
     what a script may OPEN is the sandbox ``run_script`` spawns it in (``wrap_argv``
@@ -1778,8 +1778,10 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Standard 5-field cron expression: "
                         '"min hour dom month dow" where dow: 0=Sun,1=Mon..6=Sat '
-                        '(e.g. "0 9 * * 1-5" for weekdays at 9AM UTC, '
-                        '"30 15 * * 2,4" for Tue/Thu at 3:30PM UTC)',
+                        '(e.g. "0 9 * * 1-5" for weekdays at 9AM, '
+                        '"30 15 * * 2,4" for Tue/Thu at 3:30PM), evaluated in '
+                        "the job's timezone (default: the global config "
+                        "timezone, then UTC)",
                     },
                     "at": {
                         "type": "number",
@@ -1943,7 +1945,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "timeout": {
                         "type": "integer",
                         "description": "Script/command subprocess timeout in "
-                        "seconds (0..86400; 0 = defaults: 30s script, 300s "
+                        "seconds (0..3600; 0 = defaults: 30s script, 300s "
                         "command).",
                     },
                     "timeout_secs": {
@@ -2024,7 +2026,8 @@ def _list_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "cron_remove_all",
-            "description": "Remove all cron jobs",
+            "description": "Remove all cron jobs owned by this session (other "
+            "sessions' jobs are untouched; use `kirocrew cron` for those)",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -2828,7 +2831,7 @@ def _not_found(job_id: str) -> str:
     The recovery command is named for the same reason: ``cron adopt`` exists
     precisely to un-strand these rows, and a caller who never sees it named
     has no way to reach it from inside the product. It is phrased as something to
-    ASK THE USER for, not to run: ``security.py``'s ``self-protection-cron-adopt``
+    ASK THE USER for, not to run: ``security/denied_rules.py``'s ``self-protection-cron-adopt``
     rule denies that command to the agent so a session cannot assign itself
     ownership of a scheduled job, so an instruction to run it would dead-end at
     that gate and read as a malfunction.
@@ -2963,7 +2966,7 @@ def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
 #: not.
 #:
 #: ``cron adopt`` is named as something to ASK THE USER for. The agent cannot run
-#: it: ``security.py``'s ``self-protection-cron-adopt`` rule denies the command so
+#: it: ``security/denied_rules.py``'s ``self-protection-cron-adopt`` rule denies the command so
 #: a session cannot assign itself ownership of a scheduled job. Coaching the model
 #: to run it would send it into that gate; coaching it to relay the command points
 #: the text and the deny rule the same way.
@@ -2996,7 +2999,7 @@ def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) ->
 
     Every ``cron adopt`` reference here is addressed to the USER, in the same
     ``Tell the user:`` register the success string already uses. That is not a
-    style choice: ``security.py``'s ``self-protection-cron-adopt`` rule denies the
+    style choice: ``security/denied_rules.py``'s ``self-protection-cron-adopt`` rule denies the
     command to the agent outright, precisely so a session cannot assign itself
     ownership of a scheduled job. An instruction telling the model to RUN it would
     dead-end at that gate and read as a malfunction, so the model is told to relay

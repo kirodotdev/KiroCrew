@@ -163,9 +163,10 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         "compare",
         help="Diff two saved JSON reports",
         description=(
-            "Refuses to attribute a delta when the two runs disagree on corpus "
-            "fingerprint, ingest config, retrieval config or search backend -- any "
-            "of those makes the difference unattributable to the code change."
+            "Refuses to attribute a delta when the two runs disagree on, or either "
+            "report lacks, corpus fingerprint, ingest config, retrieval config, "
+            "search backend, embedder or environment -- any of those makes the "
+            "difference unattributable to the code change."
         ),
     )
     cmp_p.add_argument("baseline", help="Path to the baseline .json report")

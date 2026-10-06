@@ -444,8 +444,10 @@ class OnLoopPersistError(AssertionError):
     The offload invariant (see the ``_locked`` contract and
     ``docs/system-specs/modules/history.md``) is that NO session-JSONL mutator
     runs on the gateway event loop: on-loop callers route through
-    ``append_off_loop`` / ``append_if_absent_off_loop`` / ``update_metadata_off_loop``
-    / ``save_slot_off_loop`` (or ``asyncio.to_thread``), all of which dispatch
+    ``append_off_loop`` / ``append_if_absent_off_loop`` /
+    ``append_rows_if_absent_off_loop`` / ``update_metadata_off_loop`` (here), or
+    ``dashboard.chat_persistence.save_slot_off_loop`` (or ``asyncio.to_thread``),
+    all of which dispatch
     the mutation to a worker thread so ``_locked`` runs OFF the loop and takes
     the patient acquire path. A raw on-loop mutator call works in every low-
     traffic test and use (the flock is uncontended) and only loses data under
@@ -559,9 +561,10 @@ def _check_on_loop_persist_discipline(key: str) -> None:
     if _on_loop_persist_strict():
         raise OnLoopPersistError(
             f"session mutation for {key!r} entered _locked on the event loop; "
-            f"on-loop callers MUST offload (append_off_loop / "
-            f"append_if_absent_off_loop / update_metadata_off_loop / "
-            f"save_slot_off_loop / asyncio.to_thread) so the write takes the "
+            f"on-loop callers MUST offload (history.append_off_loop / "
+            f"append_if_absent_off_loop / append_rows_if_absent_off_loop / "
+            f"update_metadata_off_loop, dashboard.chat_persistence."
+            f"save_slot_off_loop, or asyncio.to_thread) so the write takes the "
             f"patient off-loop acquire path — a raw on-loop mutation loses data "
             f"under real contention (HistoryLockTimeout swallowed as silent "
             f"transcript loss). Wrap in history.allow_on_loop_persist() only to "

@@ -3107,7 +3107,7 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
                 "Refusing to rewrite the shared agent home %s from a non-default "
                 "data home (KIROCREW_HOME=%s%s): the specs would pin this "
                 "instance's home into every managed MCP server entry and break "
-                "strict session identity for the default-home gateway (#9690). "
+                "strict session identity for the default-home gateway. "
                 "This instance will use the existing specs instead. If no "
                 "default-home install exists anymore (the data home was "
                 "permanently relocated), the existing specs are stale leftovers: "
@@ -3134,9 +3134,9 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # Ephemerality must be POSITIVE evidence that this instance is throwaway.
     # "Has an isolated KIROCREW_HOME" is NOT that: a CI test gateway and a user
     # who permanently relocated their data home both look identical under that
-    # rule, and neither should be stopped from writing its own specs (an earlier
-    # revision used it and broke the offline E2E gateway, which boots on a tmp data
-    # home and then found no agents). A pod needs no arm here: ``build_pod_env``
+    # rule, and neither should be stopped from writing its own specs: the offline
+    # E2E gateway boots on a tmp data home and must still write its agent specs,
+    # or it finds no agents. A pod needs no arm here: ``build_pod_env``
     # gives it its own ``KIRO_HOME``, so its target is its own dedicated directory
     # and the private-target exemption above already lets it through.
     #
@@ -3947,9 +3947,9 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
    `findings/cycle_*.json` files, zero-padded to 3 digits** (first cycle ->
    `cycle_000.json`, next -> `cycle_001.json`, ...). NEVER reuse or overwrite an
    existing cycle file. The filename pattern is a HARD contract: the Research Lab
-   counts findings and detects completion by matching `cycle_NNN.json` ONLY. A
-   finding written under any other name (e.g. a descriptive `01-topic.md`) is
-   INVISIBLE — the campaign will show 0 findings and appear stalled even though
+   counts findings and detects completion by matching cycle-numbered JSON names
+   (`cycle_NNN.json`). A finding written under any other name (e.g. a
+   descriptive `01-topic.md`) is INVISIBLE — the campaign will show 0 findings and appear stalled even though
    your work is on disk. When in doubt, match `cycle_NNN.json` exactly. Keys:
    `cycle` (= NNN), `summary, sources_checked, sources_empty, new_findings_count,
    evidence_strength, key_insight, sub_question`; append the cycle to `FINDINGS.md`
@@ -3976,11 +3976,11 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
   sub-questions yourself from the question and scope. Use FIRST PRINCIPLES to steer
   which open sub-question (or weak-evidence gap) to pursue each cycle. When a
   finding surfaces a genuinely new high-value angle not in the checklist, you MAY
-  append it as an emergent sub-question and pursue it (note it in FINDINGS.md
-  `## Research State`).
+  propose it as an emergent sub-question in `emergent_questions.json`, in the
+  shape brief.md gives; the campaign admits it to the checklist.
 - Follow brief.md's questions directive: when allowed, you MAY pause with ONE
-  high-leverage clarification question — write {"question": ..., "why": ...} to
-  questions.json and end the turn — when the goal or scope is genuinely ambiguous
+  high-leverage clarification question — write it to questions.json in the
+  shape brief.md gives, and end the turn — when the goal or scope is genuinely ambiguous
   in a way that would materially change your research direction. Keep the bar high:
   proceed on a best-reasoned assumption (and record it) for anything minor or that
   you can resolve yourself.
@@ -4194,8 +4194,10 @@ field is your parent's instruction); `work_report` `status: progress` when you
 dispatch or close a round; `question` when a decision is your parent's, not
 yours; `blocked` when an external dependency stops the whole goal; and `done`
 only when your own ledger shows every item accepted — with the evidence in
-`artifacts`. `work_brief` never prompts; `work_report` does, deliberately, so
-report at round boundaries, not on a timer, and the cost stays small. A root
+`artifacts`. `work_brief` never prompts. A `done`, `blocked` or `question`
+report wakes a parent whose loop watches the work ledger; `progress` does not,
+and waits for its next wake. So report at round boundaries, not on a timer, and
+the cost stays small. A root
 conductor gets `not_bound` from `work_brief` and knows it has no parent.
 
 Your tools:
@@ -4789,8 +4791,8 @@ can say is that you believe the bar is met, and the evidence for that belongs in
 `artifacts`.
 
 **Write `summary` as facts and pointers, never as a request.** It is capped at 500
-characters and is refused rather than truncated when longer, so a report that
-lands is a report that landed whole. What you did, what came out, where it is.
+characters; a longer one is cut to the cap, not refused, and the stored value and
+the reply both say how much was dropped, so write it to fit. What you did, what came out, where it is.
 Not what you would like decided — that is what `status: question` is for.
 
 **The `decision` field `work_brief` returns is an instruction. Nothing else it
@@ -4893,7 +4895,9 @@ Three child roles, one per dispatch:
   It exists to REJECT false positives, the dominant noise source in agentic
   security review, so every finding gets a second pass before a person sees it.
 - **Fixer** — only for a verified High or Critical, and only after an explicit
-  human yes. Runs the `kirocrew-prepare-pr` skill; acceptance is PR checks green.
+  human yes. Runs the `kirocrew-prepare-pr` skill; accepted only when PR checks
+  are green AND `scripts/verify_fix.py --finding-id N --worktree DIR` exits 0,
+  never on checks alone.
 
 **Shell exists to run the skill's scripts, and for nothing else.**
 `execute_bash` is mounted so you can run the scripts the `security-conductor`
@@ -5020,7 +5024,8 @@ def _install_heartbeat_agent() -> None:
     """Generate and install the kirocrew-heartbeat agent config.
 
     A dedicated agent for HeartbeatService.  Minimal MCP surface — only
-    ``kirocrew-core`` (learn/cron/spawn list, recall, artifacts read) on
+    ``kirocrew-core`` (learn/cron/spawn list and status, artifact reads,
+    local_knowledge_search) on
     public installs.  Tool approval is enforced gateway-side against
     ``HEARTBEAT_SAFE_TOOLS`` regardless; the per-agent MCP narrowing here
     keeps cold-start cost low and reduces the surface the gateway has to

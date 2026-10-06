@@ -643,7 +643,7 @@ async def authorize_and_update_nudge(
 
     if svc is None:
         _audit("error", "autonudge disabled")
-        return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+        return None, "auto-nudge disabled (KIROCREW_AUTONUDGE is 0/false/no)", 503
     if not loop_id:
         return _deny("loop_id required", 400)
     # ONE read serving BOTH consumers below. Called directly, NOT behind a ``hasattr``
@@ -921,7 +921,7 @@ async def authorize_and_add_nudge(
 
     if svc is None:
         _audit("error", "autonudge disabled")
-        return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+        return None, "auto-nudge disabled (KIROCREW_AUTONUDGE is 0/false/no)", 503
     monitor_wake_instructions = ""
     if monitor is not None:
         monitor_wake_instructions = monitor.wake_instructions

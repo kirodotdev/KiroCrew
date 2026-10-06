@@ -197,11 +197,10 @@ def _kick_deferred_transcript_removal(state: DashboardState, claimed: frozenset[
 
     ``start_dashboard`` merges every orphaned dashboard copy into its channel
     transcript before the session restores read it, but while the crewmate
-    prune has not settled it passes ``remove=False``: the copy's first line is
-    the only record of the agent that dashboard surface ran as, and the pass
-    reads exactly that line to decide which crewmates were used. Deleting the
-    copy under the pass would leave a used crewmate with no evidence and get
-    its row removed. So the delete waits here, off the readiness path, for
+    prune has not settled it passes ``remove=False``. The prune itself reads
+    only each crewmate's own DM-thread transcript (``dashboard_<member slot
+    key>``), never these copies, so keeping them does not protect its
+    evidence. The delete still waits here, off the readiness path, for
     the pass to RETURN (``crewmate_prune_settled`` is set in its ``finally``),
     then re-runs the migration with removal on; the re-merge is byte-identical
     and only the deletes are new. Best-effort like the startup call: a failure
@@ -243,11 +242,10 @@ async def _converge_channel_transcripts(state: DashboardState) -> None:
         # dashboard session that merely happens to be named like a channel
         # stem is never mistaken for an orphan of it.
         _claimed = await asyncio.to_thread(_claimed_dashboard_slots, state)
-        # The crewmate prune reads the first line of every transcript, and an
-        # orphan is the only file that recorded the agent of the dashboard
-        # surface it came from. While the prune has not settled the merge is
-        # written but the copy stays, so the prune still finds that evidence;
-        # a follow-up removes the copies once the pass has returned. Nothing
+        # While the crewmate prune has not settled the merge is written but
+        # the copy stays; a follow-up removes the copies once the pass has
+        # returned. The prune reads only each crewmate's own DM-thread
+        # transcript, never these copies, so this is ordering, not evidence. Nothing
         # here waits for the pass: the readiness path stays as it was.
         _remove = state.crewmate_prune_settled.is_set()
         merged = await asyncio.to_thread(
