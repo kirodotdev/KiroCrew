@@ -2002,7 +2002,11 @@
         "open": "Öffnen",
         "open_as_workspace_root": "Als Workspace-Wurzel öffnen",
         "resize_panel": "Größe des Panels ändern",
-        "reveal_parent": "Übergeordnetes Element anzeigen"
+        "reveal_parent": "Übergeordnetes Element anzeigen",
+        "link_open_failed": "{{path}} konnte nicht geöffnet werden.",
+        "link_target_missing": "Unter diesem Pfad gibt es keine Datei und keinen Ordner.",
+        "link_target_relative": "{{path}} lässt sich nicht öffnen: Links brauchen einen vollständigen Pfad.",
+        "link_target_unsupported": "Dieser Pfad ist weder eine Datei noch ein Ordner."
       },
       "fileViewer": {
         "binary_file": "Binärdatei",
@@ -7354,7 +7358,8 @@
       "word_wrap": "Zeilenumbruch",
       "knowledge_status_failed": "Die Wissensbibliothek konnte nicht geprüft werden.",
       "artifact_status_failed": "Es konnte nicht geprüft werden, ob diese Datei ein Artefakt ist.",
-      "diff_status_failed": "Die git-Änderungen dieser Datei konnten nicht geprüft werden."
+      "diff_status_failed": "Die git-Änderungen dieser Datei konnten nicht geprüft werden.",
+      "open_in_app": "In {{app}} öffnen"
     },
     "markdownRenderer": {
       "download_failed": "Das Diagramm konnte nicht heruntergeladen werden. Versuche es erneut.",

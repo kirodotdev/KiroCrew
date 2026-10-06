@@ -1964,7 +1964,11 @@
         "open": "開く",
         "open_as_workspace_root": "ワークスペースルートとして開く",
         "resize_panel": "パネルサイズ変更",
-        "reveal_parent": "親を表示"
+        "reveal_parent": "親を表示",
+        "link_open_failed": "「{{path}}」を開けませんでした。",
+        "link_target_missing": "そのパスにはファイルもフォルダーもありません。",
+        "link_target_relative": "「{{path}}」は開けません。リンクには完全なパスが必要です。",
+        "link_target_unsupported": "そのパスはファイルでもフォルダーでもありません。"
       },
       "fileViewer": {
         "binary_file": "バイナリファイル",
@@ -7243,7 +7247,8 @@
       "word_wrap": "ワードラップ",
       "knowledge_status_failed": "ナレッジライブラリを確認できませんでした。",
       "artifact_status_failed": "このファイルがアーティファクトかどうかを確認できませんでした。",
-      "diff_status_failed": "このファイルの git の変更を確認できませんでした。"
+      "diff_status_failed": "このファイルの git の変更を確認できませんでした。",
+      "open_in_app": "{{app}} で開く"
     },
     "markdownRenderer": {
       "download_failed": "図をダウンロードできませんでした。もう一度お試しください。",

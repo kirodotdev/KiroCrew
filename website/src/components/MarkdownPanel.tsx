@@ -15,6 +15,9 @@ import Clickable from './Clickable'
 import { CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
+import { FILE_EXPLORER_APP, FILE_EXPLORER_ROUTE, fileExplorerDeepLink } from '../apps/file-explorer/deepLink'
+import { useInstalledApps } from '../hooks/panelTabRegistry'
+import { appNavTarget } from '../appNav'
 import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
@@ -27,7 +30,7 @@ import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
 import { detectFileType, BinaryFileCard } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { api } from '../api/client'
-import { fileReadUrl, downloadFileToDisk, downloadFileName } from '../utils/fileReadUrl'
+import { fileReadUrl, downloadFileToDisk, downloadFileName, isAbsolutePath } from '../utils/fileReadUrl'
 import { downloadBlob } from '../utils/download'
 import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileReadQuery'
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
@@ -585,6 +588,31 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
 // the cap instead of being clipped by it.
 const menuRowCls = 'flex items-center gap-2 w-full min-w-0 overflow-hidden px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left whitespace-nowrap hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-hidden'
 
+/**
+ * The Files app as a destination for the file under the ⋯ menu, or `null` when
+ * there is none to offer.
+ *
+ * Eligibility, route and label come from the same `appNavTarget` derivation the
+ * left rail and the command palette use, so this row cannot offer an app those
+ * two hide: the Files app ships `defaultEnabled: false`, and a disabled app has
+ * nowhere to go. Narrower than theirs in one way — the row needs the NATIVE
+ * page (`FILE_EXPLORER_ROUTE`), because only `FileExplorerPage` reads the
+ * `?path=` the link carries. An orphaned app (routed to its migration page) or
+ * one an edition re-homes under AppHost would swallow the param and land the
+ * reader on a page that opened nothing, so neither gets a row.
+ *
+ * Costs no request: `useInstalledApps` observes the shell's own `['apps']`
+ * query, which the sidebar fetches on every dashboard load.
+ */
+function useFilesAppTarget(): { label: string } | null {
+  const { apps } = useInstalledApps()
+  return useMemo(() => {
+    const app = apps.find(a => a.name === FILE_EXPLORER_APP)
+    const target = app ? appNavTarget(app) : null
+    return target?.route === FILE_EXPLORER_ROUTE ? { label: target.label } : null
+  }, [apps])
+}
+
 export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, onDownload }: {
   filePath: string; content: string
   /** Where a failed row action (add to knowledge, promote, snapshot, save,
@@ -651,6 +679,12 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
+  // "Open in Files": the in-dashboard destination, gated on the app being
+  // enabled and natively routed (see useFilesAppTarget) and on the path being
+  // absolute — the Files backend has no project directory to resolve a relative
+  // path against, so for one of those the row would only promise an error.
+  const filesApp = useFilesAppTarget()
+  const openInFiles = filesApp && isAbsolutePath(filePath) ? filesApp : null
   const knowledge = useFileKnowledgeState(filePath, onError)
   const artifact = useFileArtifactState(filePath, content, onError)
   const contribItems = useFileMenuItems('file-overflow')
@@ -766,14 +800,21 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             )
           )}
           <div className="h-px bg-border my-1 mx-2" />
-          {/* File-location group: hand the file to the desktop, then the
+          {/* File-location group: hand the file to another surface — the Files
+              app inside the dashboard first, then the desktop — then the
               clipboard/download fallbacks for hosts that have no desktop.
               Iconless like its neighbours — the group reads as a list of
-              destinations, and two glyphs among five would look arbitrary.
-              Open uses the shared canOpen gate (directLocal + non-Windows);
-              Reveal uses directLocal alone — a remote session cannot usefully
-              drive Finder on the gateway, so it sees the fallbacks only. Same
-              gates the shared FilePathMenu applies. */}
+              destinations, and two glyphs among six would look arbitrary.
+              Open in Files needs the app enabled at its native route plus an
+              absolute path (openInFiles); Open uses the shared canOpen gate
+              (directLocal + non-Windows); Reveal uses directLocal alone — a
+              remote session cannot usefully drive Finder on the gateway, so it
+              sees the fallbacks only. Same gates the shared FilePathMenu applies. */}
+          {openInFiles && (
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { navigate(fileExplorerDeepLink(filePath)); setOpen(false) }}>
+              {i18nT('components.markdownPanel.open_in_app', { app: openInFiles.label })}
+            </button>
+          )}
           {canOpen && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'open', { onError }); setOpen(false) }}>
               {i18nT('components.markdownPanel.open_with_default_app')}

@@ -1916,7 +1916,11 @@
         "open": "खोलें",
         "open_as_workspace_root": "वर्कस्पेस रूट के रूप में खोलें",
         "resize_panel": "पैनल का आकार बदलें",
-        "reveal_parent": "पैरेंट दिखाएँ"
+        "reveal_parent": "पैरेंट दिखाएँ",
+        "link_open_failed": "{{path}} नहीं खोला जा सका।",
+        "link_target_missing": "इस पथ पर कोई फ़ाइल या फ़ोल्डर नहीं है।",
+        "link_target_relative": "{{path}} नहीं खोला जा सकता: लिंक के लिए पूर्ण पथ ज़रूरी है।",
+        "link_target_unsupported": "यह पथ कोई फ़ाइल या फ़ोल्डर नहीं है।"
       },
       "fileViewer": {
         "binary_file": "बाइनरी फ़ाइल",
@@ -7354,7 +7358,8 @@
       "word_wrap": "वर्ड रैप",
       "knowledge_status_failed": "ज्ञान लाइब्रेरी की जाँच नहीं की जा सकी।",
       "artifact_status_failed": "यह जाँच नहीं की जा सकी कि यह फ़ाइल आर्टिफ़ैक्ट है या नहीं।",
-      "diff_status_failed": "इस फ़ाइल के git परिवर्तनों की जाँच नहीं की जा सकी।"
+      "diff_status_failed": "इस फ़ाइल के git परिवर्तनों की जाँच नहीं की जा सकी।",
+      "open_in_app": "{{app}} में खोलो"
     },
     "markdownRenderer": {
       "download_failed": "आरेख डाउनलोड नहीं हो सका। फिर से कोशिश करें।",

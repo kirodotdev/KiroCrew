@@ -1916,7 +1916,11 @@
         "open": "খুলুন",
         "open_as_workspace_root": "ওয়ার্কস্পেস রুট হিসেবে খুলুন",
         "resize_panel": "প্যানেলের আকার বদলান",
-        "reveal_parent": "প্যারেন্ট ফোল্ডার দেখান"
+        "reveal_parent": "প্যারেন্ট ফোল্ডার দেখান",
+        "link_open_failed": "{{path}} খোলা যায়নি।",
+        "link_target_missing": "এই পাথে কোনো ফাইল বা ফোল্ডার নেই।",
+        "link_target_relative": "{{path}} খোলা যায় না: লিংকের জন্য সম্পূর্ণ পাথ লাগে।",
+        "link_target_unsupported": "এই পাথটি কোনো ফাইল বা ফোল্ডার নয়।"
       },
       "fileViewer": {
         "binary_file": "বাইনারি ফাইল",
@@ -7354,7 +7358,8 @@
       "word_wrap": "ওয়ার্ড র‍্যাপ",
       "knowledge_status_failed": "নলেজ লাইব্রেরি পরীক্ষা করা যায়নি।",
       "artifact_status_failed": "এই ফাইলটি আর্টিফ্যাক্ট কি না তা পরীক্ষা করা যায়নি।",
-      "diff_status_failed": "এই ফাইলের git পরিবর্তন পরীক্ষা করা যায়নি।"
+      "diff_status_failed": "এই ফাইলের git পরিবর্তন পরীক্ষা করা যায়নি।",
+      "open_in_app": "{{app}}-এ খোলো"
     },
     "markdownRenderer": {
       "download_failed": "ডায়াগ্রাম ডাউনলোড করা যায়নি। আবার চেষ্টা করুন।",

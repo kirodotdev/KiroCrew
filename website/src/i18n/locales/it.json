@@ -1954,7 +1954,11 @@
         "open": "Apri",
         "open_as_workspace_root": "Apri come radice del workspace",
         "resize_panel": "Ridimensiona il pannello",
-        "reveal_parent": "Mostra l'elemento padre"
+        "reveal_parent": "Mostra l'elemento padre",
+        "link_open_failed": "Impossibile aprire {{path}}.",
+        "link_target_missing": "Non c’è nessun file o cartella in quel percorso.",
+        "link_target_relative": "Impossibile aprire {{path}}: i link richiedono un percorso completo.",
+        "link_target_unsupported": "Quel percorso non è né un file né una cartella."
       },
       "fileViewer": {
         "binary_file": "File binario",
@@ -7465,7 +7469,8 @@
       "word_wrap": "Ritorno a capo automatico",
       "knowledge_status_failed": "Impossibile controllare la libreria della conoscenza.",
       "artifact_status_failed": "Impossibile verificare se questo file è un artefatto.",
-      "diff_status_failed": "Impossibile controllare le modifiche git di questo file."
+      "diff_status_failed": "Impossibile controllare le modifiche git di questo file.",
+      "open_in_app": "Apri in {{app}}"
     },
     "markdownRenderer": {
       "download_failed": "Impossibile scaricare il diagramma. Riprova.",

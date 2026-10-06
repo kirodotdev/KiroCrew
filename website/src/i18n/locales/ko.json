@@ -1964,7 +1964,11 @@
         "open": "열기",
         "open_as_workspace_root": "워크스페이스 루트로 열기",
         "resize_panel": "패널 크기 조절",
-        "reveal_parent": "상위 폴더 표시"
+        "reveal_parent": "상위 폴더 표시",
+        "link_open_failed": "‘{{path}}’을(를) 열 수 없습니다.",
+        "link_target_missing": "해당 경로에는 파일이나 폴더가 없습니다.",
+        "link_target_relative": "‘{{path}}’을(를) 열 수 없습니다. 링크에는 전체 경로가 필요합니다.",
+        "link_target_unsupported": "해당 경로는 파일도 폴더도 아닙니다."
       },
       "fileViewer": {
         "binary_file": "바이너리 파일",
@@ -7243,7 +7247,8 @@
       "word_wrap": "자동 줄 바꿈",
       "knowledge_status_failed": "지식 라이브러리를 확인할 수 없습니다.",
       "artifact_status_failed": "이 파일이 아티팩트인지 확인할 수 없습니다.",
-      "diff_status_failed": "이 파일의 git 변경 사항을 확인할 수 없습니다."
+      "diff_status_failed": "이 파일의 git 변경 사항을 확인할 수 없습니다.",
+      "open_in_app": "{{app}}에서 열기"
     },
     "markdownRenderer": {
       "download_failed": "다이어그램을 다운로드하지 못했습니다. 다시 시도하세요.",

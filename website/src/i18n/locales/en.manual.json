@@ -545,6 +545,12 @@
       }
     },
     "fileExplorer": {
+      "fileExplorerPage": {
+        "link_open_failed": "Couldn’t open {{path}}.",
+        "link_target_missing": "There is no file or folder at that path.",
+        "link_target_relative": "Can’t open {{path}}: links need a full path.",
+        "link_target_unsupported": "That path is not a file or a folder."
+      },
       "fileViewer": {
         "copy_path_2": "Copy path: {{path}}",
         "more_options": "More options"
@@ -2748,7 +2754,8 @@
       "tracking_description": "Tracking {{path}}",
       "knowledge_status_failed": "Couldn’t check the knowledge library.",
       "artifact_status_failed": "Couldn’t check whether this file is an artifact.",
-      "diff_status_failed": "Couldn’t check this file’s git changes."
+      "diff_status_failed": "Couldn’t check this file’s git changes.",
+      "open_in_app": "Open in {{app}}"
     },
     "markdownRenderer": {
       "download_failed": "Couldn't download the diagram. Try again.",

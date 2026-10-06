@@ -1878,7 +1878,11 @@
         "open": "打开",
         "open_as_workspace_root": "作为工作区根目录打开",
         "resize_panel": "调整面板大小",
-        "reveal_parent": "显示上级目录"
+        "reveal_parent": "显示上级目录",
+        "link_open_failed": "无法打开 {{path}}。",
+        "link_target_missing": "该路径下没有文件或文件夹。",
+        "link_target_relative": "无法打开 {{path}}：链接需要使用完整路径。",
+        "link_target_unsupported": "该路径不是文件或文件夹。"
       },
       "fileViewer": {
         "binary_file": "二进制文件",
@@ -7243,7 +7247,8 @@
       "word_wrap": "自动换行",
       "knowledge_status_failed": "无法检查知识库。",
       "artifact_status_failed": "无法检查此文件是否为工件。",
-      "diff_status_failed": "无法检查此文件的 git 更改。"
+      "diff_status_failed": "无法检查此文件的 git 更改。",
+      "open_in_app": "在 {{app}} 中打开"
     },
     "markdownRenderer": {
       "download_failed": "无法下载图表。请重试。",

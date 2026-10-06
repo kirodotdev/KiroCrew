@@ -1954,7 +1954,11 @@
         "open": "Abrir",
         "open_as_workspace_root": "Abrir como raíz del espacio de trabajo",
         "resize_panel": "Redimensionar panel",
-        "reveal_parent": "Mostrar la carpeta superior"
+        "reveal_parent": "Mostrar la carpeta superior",
+        "link_open_failed": "No se pudo abrir {{path}}.",
+        "link_target_missing": "No hay ningún archivo ni carpeta en esa ruta.",
+        "link_target_relative": "No se puede abrir {{path}}: los enlaces necesitan una ruta completa.",
+        "link_target_unsupported": "Esa ruta no es un archivo ni una carpeta."
       },
       "fileViewer": {
         "binary_file": "Archivo binario",
@@ -7465,7 +7469,8 @@
       "word_wrap": "Ajuste de línea",
       "knowledge_status_failed": "No se pudo comprobar la biblioteca de conocimiento.",
       "artifact_status_failed": "No se pudo comprobar si este archivo es un artefacto.",
-      "diff_status_failed": "No se pudieron comprobar los cambios de git de este archivo."
+      "diff_status_failed": "No se pudieron comprobar los cambios de git de este archivo.",
+      "open_in_app": "Abrir en {{app}}"
     },
     "markdownRenderer": {
       "download_failed": "No se pudo descargar el diagrama. Inténtalo de nuevo.",

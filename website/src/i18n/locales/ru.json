@@ -1992,7 +1992,11 @@
         "open": "Открыть",
         "open_as_workspace_root": "Открыть как корень рабочей области",
         "resize_panel": "Изменить размер панели",
-        "reveal_parent": "Показать родительскую папку"
+        "reveal_parent": "Показать родительскую папку",
+        "link_open_failed": "Не удалось открыть {{path}}.",
+        "link_target_missing": "По этому пути нет файла или папки.",
+        "link_target_relative": "Не удалось открыть {{path}}: для ссылок нужен полный путь.",
+        "link_target_unsupported": "Этот путь не является файлом или папкой."
       },
       "fileViewer": {
         "binary_file": "Двоичный файл",
@@ -7576,7 +7580,8 @@
       "word_wrap": "Перенос строк",
       "knowledge_status_failed": "Не удалось проверить библиотеку знаний.",
       "artifact_status_failed": "Не удалось проверить, является ли этот файл артефактом.",
-      "diff_status_failed": "Не удалось проверить изменения git для этого файла."
+      "diff_status_failed": "Не удалось проверить изменения git для этого файла.",
+      "open_in_app": "Открыть в {{app}}"
     },
     "markdownRenderer": {
       "download_failed": "Не удалось скачать диаграмму. Попробуйте ещё раз.",

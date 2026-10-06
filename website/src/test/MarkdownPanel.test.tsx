@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { join } from 'node:path'
 import { readSource } from './readSource'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { store } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
@@ -707,5 +707,90 @@ describe('OverflowMenu — app-contributed rows (contributes.fileMenuItems)', ()
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     await waitFor(() => expect(onError).toHaveBeenCalledWith('endpoint refused'))
+  })
+})
+
+/**
+ * "Open in Files" — the ⋯ menu's hand-off to the Files app (`/file-explorer`),
+ * which opens the file in its own tabbed tree via the `?path=` deep link.
+ */
+describe('OverflowMenu — Open in Files', () => {
+  /** The Files builtin as `GET /api/apps` reports it: natively routed, no `ui.entry`. */
+  const FILES_APP = {
+    name: 'file-explorer',
+    displayName: 'Files',
+    enabled: true,
+    origin: 'builtin',
+    manifest: { ui: { pages: [{ route: '/file-explorer', label: 'Files', icon: 'FolderTree' }] } },
+  }
+  const seedApps = (apps: unknown[]) => queryClient.setQueryData(['apps'], apps)
+  const rowName = i18nT('components.markdownPanel.open_in_app', { app: i18nT('apps.fileExplorer.manifest.page_label') })
+
+  function UrlProbe() {
+    const loc = useLocation()
+    return <span data-testid="url">{loc.pathname + loc.search}</span>
+  }
+
+  const openWith = (filePath = '/tmp/hello.txt') => {
+    render(<><OverflowMenu onError={overflowError} filePath={filePath} content={'x'} /><UrlProbe /></>, { wrapper })
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+  }
+
+  it('is absent when the Files app is not installed or the list has not loaded', () => {
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: rowName })).not.toBeInTheDocument()
+  })
+
+  it('is absent while the Files app is disabled — a disabled app has nowhere to go', () => {
+    seedApps([{ ...FILES_APP, enabled: false }])
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: rowName })).not.toBeInTheDocument()
+  })
+
+  it('is absent for an orphaned app, whose route is its migration page and would swallow ?path=', () => {
+    seedApps([{ ...FILES_APP, orphaned: true }])
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: rowName })).not.toBeInTheDocument()
+  })
+
+  it('is absent for an AppHost-routed build of the app, since only the native page reads ?path=', () => {
+    seedApps([{ ...FILES_APP, manifest: { ui: { ...FILES_APP.manifest.ui, entry: 'ui/index.js' } } }])
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: rowName })).not.toBeInTheDocument()
+  })
+
+  it('is absent for a relative path — the Files backend has no project dir to resolve it against', () => {
+    seedApps([FILES_APP])
+    openWith('src/index.ts')
+    expect(screen.queryByRole('menuitem', { name: rowName })).not.toBeInTheDocument()
+    expect(screen.getByText('Copy path')).toBeInTheDocument()
+  })
+
+  it('navigates to the Files app with the path URL-encoded under ?path=', () => {
+    seedApps([FILES_APP])
+    openWith('/tmp/notes & drafts/a#1.md')
+    fireEvent.click(screen.getByRole('menuitem', { name: rowName }))
+    const url = new URL(screen.getByTestId('url').textContent || '', 'http://x')
+    expect(url.pathname).toBe('/file-explorer')
+    expect(url.searchParams.get('path')).toBe('/tmp/notes & drafts/a#1.md')
+    // Closed on select like every other navigating row.
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('heads the file-location group, before the desktop hand-offs, and is keyboard-navigable', () => {
+    seedApps([FILES_APP])
+    openWith()
+    const labels = screen.getAllByRole('menuitem').map(el => el.textContent?.trim())
+    const files = labels.indexOf(rowName)
+    expect(files).toBeGreaterThan(labels.indexOf('Add to artifacts'))
+    expect(files).toBe(labels.indexOf('Open with default app') - 1)
+    // `data-option` is what useListboxKeyboard treats as navigable.
+    expect(screen.getByRole('menuitem', { name: rowName })).toHaveAttribute('data-option')
+  })
+
+  it('names the destination by the app page label, so the row and the sidebar agree', () => {
+    seedApps([FILES_APP])
+    openWith()
+    expect(screen.getByRole('menuitem', { name: 'Open in Files' })).toBeInTheDocument()
   })
 })

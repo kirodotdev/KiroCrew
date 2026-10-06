@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/react-query'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
-import { AlertTriangle, MessageSquare, Eye, CornerDownRight, Copy, ArrowUpFromLine, ChevronDown, ChevronUp } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { AlertTriangle, MessageSquare, Eye, CornerDownRight, Copy, ArrowUpFromLine, ChevronDown, ChevronUp, X } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
 import { Skeleton, Btn } from '../../components/ui'
@@ -11,6 +11,8 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '../../components/ui/context-menu'
 import { fileExplorerApi } from './api'
 import { basename, dirname, loadState, saveState, isShortcut } from './utils'
+import { FILE_EXPLORER_PATH_PARAM, underRoot, parentDir, revealChain } from './deepLink'
+import { isAbsolutePath } from '../../utils/fileReadUrl'
 import { copyToClipboard } from '../../utils/clipboard'
 import { FE_CSS } from './styles'
 import TabStrip from './TabStrip'
@@ -27,14 +29,6 @@ const newFolderTab = (rootPath = '/', label = ''): FolderTab => ({
   expanded: { [rootPath]: true },
   showSearch: false,
 })
-
-// `p` is root `r` itself or a path below it. Windows drive/UNC paths compare
-// with either separator and case-insensitively.
-const normPath = (x: string) => /^([a-z]:|[\\/]{2})/i.test(x) ? x.replace(/\\/g, '/').toLowerCase() : x
-const underRoot = (p: string, r: string) => {
-  const [a, b] = [normPath(p), normPath(r).replace(/\/+$/, '')]
-  return a === b || a.startsWith(b + '/') || b === ''
-}
 
 const newFileTab = (path: string, folderId: string): FileTab => ({
   id: `of-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -64,6 +58,31 @@ export default function FileExplorerPage() {
   const [initialized, setInitialized] = useState(false)
   // The health-derived default root, for tabs opened after initialization.
   const defaultRootRef = useRef('/')
+
+  // ── Deep link (`?path=`) ──
+  // Captured off the URL and consumed immediately (history REPLACE, never
+  // push): a reload or Back must not reopen the file a second time, and the
+  // saved tab state — not the URL — is what this page restores from. The value
+  // lives in component state from here on, so consuming the param cannot drop
+  // a link the still-loading health read has yet to satisfy. Same shape as the
+  // notifications page's `?note=` capture.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [pendingLink, setPendingLink] = useState<string | null>(null)
+  useEffect(() => {
+    const raw = searchParams.get(FILE_EXPLORER_PATH_PARAM)
+    if (raw === null) return
+    setPendingLink(raw)
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete(FILE_EXPLORER_PATH_PARAM)
+      return next
+    }, { replace: true })
+  }, [searchParams, setSearchParams])
+  /** Why the last link could not be opened, shown where the tree errors show. */
+  const [linkError, setLinkError] = useState<{ path: string; message: string } | null>(null)
+  /** A link this page declined to follow (relative path) — nothing failed, so
+   *  this is kept apart from `linkError` and never dressed as an error. */
+  const [linkRefused, setLinkRefused] = useState<string | null>(null)
 
   const activeFolder = useMemo(() => folderTabs.find((t) => t.id === activeFolderId) || folderTabs[0] || null, [folderTabs, activeFolderId])
   const activeFile = useMemo(() => fileTabs.find((t) => t.id === activeFileId) || null, [fileTabs, activeFileId])
@@ -196,18 +215,24 @@ export default function FileExplorerPage() {
   const fileTabsRef = useRef(fileTabs)
   fileTabsRef.current = fileTabs
 
-  const openFile = useCallback(async (path: string, _opts: { reveal?: boolean } = {}) => {
-    if (!activeFolder) return
+  /** Open `path` as a file tab under the folder tab `folderId`, and make both
+   *  active. Reuses an existing tab for the same path in that folder. */
+  const openFileInFolder = useCallback((folderId: string, path: string) => {
     // Close the drawer on pick, or the full-width tree is a one-way door: the
     // file opens behind it with nothing on screen to say so.
     if (isMobile) setTreeOpen(false)
-    const folderId = activeFolder.id
+    setActiveFolderId(folderId)
     const existing = fileTabsRef.current.find((ft) => ft.path === path && ft.folderId === folderId)
     if (existing) { setActiveFileId(existing.id); return }
     const ft = newFileTab(path, folderId)
     setFileTabs((tabs) => [...tabs, ft])
     setActiveFileId(ft.id)
-  }, [activeFolder, isMobile])
+  }, [isMobile])
+
+  const openFile = useCallback(async (path: string, _opts: { reveal?: boolean } = {}) => {
+    if (!activeFolder) return
+    openFileInFolder(activeFolder.id, path)
+  }, [activeFolder, openFileInFolder])
 
   const reloadFile = useCallback(() => {
     if (!activeFile) return
@@ -290,6 +315,79 @@ export default function FileExplorerPage() {
   })
 
   const openMaybe = useCallback((path: string) => { resolveMutation.mutate(path) }, [resolveMutation])
+
+  // ── Deep link: resolve, then reveal ──
+  // The link only NAMES a path. The backend decides what it is and whether this
+  // app may show it: `/resolve` runs the same `_safe_path` gate as every read
+  // (outside the allowed roots or in a sensitive location is a 403; a vanished
+  // file is `exists: false`), so a link can never make the page show something
+  // the tree would refuse.
+  //
+  // Unlike the path bar's `openMaybe`, which re-roots the ACTIVE tab, a link
+  // reveals the path where it already is: in the tab whose root contains it,
+  // with the folders between that root and the path expanded so the tree shows
+  // it; only when no open tab contains it does a new tab open, rooted at its
+  // folder. The reader's tabs are theirs — a link must not re-root one.
+  const revealMutation = useMutation({
+    mutationFn: (path: string) => fileExplorerApi.resolve(path),
+    onSuccess: (r, asked) => {
+      if (!r?.exists) {
+        setLinkError({ path: asked, message: i18nT('apps.fileExplorer.fileExplorerPage.link_target_missing') })
+        return
+      }
+      const isDir = r.type === 'dir'
+      if (!isDir && r.type !== 'file') {
+        setLinkError({ path: asked, message: i18nT('apps.fileExplorer.fileExplorerPage.link_target_unsupported') })
+        return
+      }
+      // Tab state is keyed by the backend's spelling of the path (symlinks
+      // followed, `~` expanded) — the one its tree nodes carry — not by the
+      // string the link asked about; `expanded` is matched byte for byte.
+      const path = r.path || asked
+      const dir = isDir ? path : parentDir(path) ?? path
+      // The active tab first, so a link into the folder the reader is already
+      // looking at never switches tabs under them; then any other open tab.
+      const containing = [activeFolder, ...folderTabs].find(
+        (t): t is FolderTab => !!t && underRoot(path, t.rootPath),
+      )
+      const tab = containing ?? newFolderTab(dir)
+      if (containing) {
+        const chain = revealChain(tab.rootPath, dir)
+        updateFolderTab(tab.id, (cur) => ({
+          ...cur,
+          expanded: { ...cur.expanded, ...Object.fromEntries(chain.map((d) => [d, true])) },
+        }))
+      } else {
+        setFolderTabs((tabs) => [...tabs, tab])
+      }
+      if (isDir) { setActiveFolderId(tab.id); setActiveFileId(null) }
+      else openFileInFolder(tab.id, path)
+    },
+    onError: (err, asked) => {
+      setLinkError({ path: asked, message: (err as Error).message })
+    },
+  })
+
+  // Consume the captured link once the saved tabs exist to match it against.
+  // `setPendingLink(null)` is what makes it once: the capture effect above only
+  // re-arms when the URL carries the param again.
+  const revealMutate = revealMutation.mutate
+  useEffect(() => {
+    if (!initialized || pendingLink === null) return
+    setPendingLink(null)
+    setLinkError(null)
+    setLinkRefused(null)
+    // The backend resolves a relative path against ITS working directory, which
+    // the link's author cannot know — refuse here rather than open whatever
+    // happens to sit there. `~` and `~/…` are absolute in this sense (they expand
+    // to the gateway user's own home); `~name` is not, see `isAbsolutePath`.
+    // No request is sent, so this is a refusal, not an error (see render).
+    if (!isAbsolutePath(pendingLink)) {
+      setLinkRefused(pendingLink)
+      return
+    }
+    revealMutate(pendingLink)
+  }, [initialized, pendingLink, revealMutate])
 
   const toggleSearch = useCallback(() => {
     if (!activeFolder) return
@@ -383,6 +481,38 @@ export default function FileExplorerPage() {
       />
       {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} {(healthError as Error).message}</div>}
       {treeError && <ErrorNotice variant="block" title={i18nT('apps.fileExplorer.fileExplorerPage.cannot_open_folder')} message={(treeError as Error).message} askAgent />}
+      {/* A link the backend could not open: refused (403), vanished, or not a
+          file/folder. The reason sits BELOW the lead: it is the backend's own
+          sentence (the journal lookup key the hand-off recovers endpoint and
+          status from), which reads as a detail under the plain-language title
+          rather than as the lead. askAgent on: this page holds no draft, and a
+          refused or vanished path is exactly what the agent can explain. */}
+      {linkError && (
+        <ErrorNotice
+          variant="block"
+          title={i18nT('apps.fileExplorer.fileExplorerPage.link_open_failed', { path: linkError.path })}
+          message={linkError.message}
+          messagePlacement="below"
+          onDismiss={() => setLinkError(null)}
+          askAgent
+          testId="file-explorer-link-error"
+        />
+      )}
+      {/* A link this page declined to follow. Deliberately NOT an ErrorNotice:
+          nothing failed — no request was sent — so there is no journal entry
+          for a hand-off to recover and nothing the agent could explain beyond
+          this sentence. It wears the page's own warn banner (the dress of the
+          backend-not-reachable notice above), not danger tokens, and is
+          dismissable because it sits above a tree that is still the page. */}
+      {linkRefused !== null && (
+        <div className="mc-fe-banner" role="status" data-testid="file-explorer-link-refused">
+          <AlertTriangle size={12} aria-hidden="true" />
+          <span className="mc-fe-banner-text">{i18nT('apps.fileExplorer.fileExplorerPage.link_target_relative', { path: linkRefused })}</span>
+          <button type="button" className="mc-fe-iconbtn mc-fe-banner-dismiss" aria-label={i18nT('app.dismiss')} onClick={() => setLinkRefused(null)}>
+            <X size={12} />
+          </button>
+        </div>
+      )}
       <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
       <div className={`mc-fe-split${isMobile ? ' is-stacked' : ''}`}>
         {/* Narrow: the control that reaches the tree sits at the TOP, so no
