@@ -5,8 +5,11 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
+from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
@@ -14,6 +17,7 @@ from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +53,7 @@ class _ManagedEssentialSourceError(MemberEssentialContextError):
     """A managed source is excluded from wildcard discovery, never readable."""
 
 
-def _refuse_managed_source(path: Path) -> None:
+def _refuse_managed_source(path: Path, *, refuse_unverifiable_roots: bool = False) -> None:
     """Resources cannot reopen Global V1 or a peer's managed member state.
 
     The ROOTS are compared in their realpath spelling; the CANDIDATE is only
@@ -79,7 +83,14 @@ def _refuse_managed_source(path: Path) -> None:
     candidate = Path(os.path.abspath(path))
     # Reuse only within this check. A later call must observe new configuration
     # and link targets through the same guarded resolver, never a cached grant.
-    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
+    resolved_roots = {
+        root: (
+            _comparable_root(root, refuse_unverifiable=True)
+            if refuse_unverifiable_roots
+            else _comparable_root(root)
+        )
+        for root in dict.fromkeys([*roots, *workspaces])
+    }
     in_workspace = False
     for workspace in workspaces:
         workspace = resolved_roots[workspace]
@@ -129,16 +140,23 @@ def member_context_identity(member: str, *, member_is_id: bool = True) -> tuple[
     return member_id, configured_member.kiro_agent or "kirocrew"
 
 
-def _comparable_root(root: Path) -> Path:
+def _comparable_root(root: Path, *, refuse_unverifiable: bool = False) -> Path:
     """The spelling a root is compared against in :func:`_refuse_managed_source`.
 
     Resolved through ``validate_file_path`` when that screen admits the root, so
     a symlinked spelling matches resolved candidates. A root the screen refuses
     (a UNC share not on the trusted list, a sensitive path) is never handed to
     ``realpath`` -- on Windows that resolution is itself the network probe --
-    and keeps the lexical ``abspath`` comparison this check always had.
+    and keeps the lexical ``abspath`` comparison this check always had. A caller
+    requiring proof can refuse a resolver stall instead of using that fallback.
     """
     admitted = _admitted_root(root)
+    if admitted is None and refuse_unverifiable:
+        reason = sensitive_path_refusal(str(root))
+        if reason is not None and is_unverifiable_path_refusal(reason):
+            raise _ManagedEssentialSourceError(
+                f"Essential source {root}: managed root cannot be verified"
+            )
     return admitted if admitted is not None else Path(os.path.abspath(root))
 
 
@@ -310,10 +328,17 @@ def _matches(root: Path, pattern: str) -> list[Path]:
     return sorted(result)
 
 
-def resolve_template_path(template: str, project: str | None = None) -> Path | None:
-    """Resolve one template, with a project override ahead of the global copy."""
-    from kiro_crew.agent import agent_spec_path
-    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
+def _resolve_template(
+    template: str, project: str | None = None
+) -> tuple[Path, Path, Callable[[Path], bool] | None] | None:
+    """Resolve one template as ``(listed, read, fence)``.
+
+    A project override wins over the global copy. A regular claimant is read
+    where it is listed with the reader's defaults. A linked global claimant is
+    read at the target its screen returned, held to the managed-state fence,
+    and parsed by its listed name.
+    """
+    from kiro_crew.agent import _linked_agent_spec_path, agent_spec_path
 
     spec_path: Path | None = None
     if project:
@@ -332,12 +357,47 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
                 if spec_path is not None:
                     raise MemberEssentialContextError(f"Ambiguous essential template {template!r}")
                 spec_path = path
-    if spec_path is None:
-        try:
-            spec_path = agent_spec_path(template)
-        except ValueError as exc:
-            raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
-    return spec_path
+    if spec_path is not None:
+        return spec_path, spec_path, None
+    try:
+        spec_path = agent_spec_path(template)
+        if spec_path is not None:
+            return spec_path, spec_path, None
+        linked = _linked_agent_spec_path(template)
+    except ValueError as exc:
+        raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+    if linked is None:
+        return None
+    return linked[0], linked[1], _managed_template_target_refused
+
+
+def read_template_spec(
+    template: str, project: str | None, *, operation: str, source: str
+) -> tuple[Path, dict[str, Any] | None] | None:
+    """Resolve and parse one template; the spec is ``None`` when it is unusable."""
+    resolved = _resolve_template(template, project)
+    if resolved is None:
+        return None
+    listed, read, fence = resolved
+    return listed, _read_agent_spec(
+        read,
+        operation=operation,
+        source=source,
+        fence=fence,
+        parse_as=None if read == listed else listed,
+    )
+
+
+def _managed_template_target_refused(path: Path) -> bool:
+    """Whether a linked global template target belongs to managed state.
+
+    A managed root the resolver cannot verify refuses.
+    """
+    try:
+        _refuse_managed_source(path, refuse_unverifiable_roots=True)
+    except _ManagedEssentialSourceError:
+        return True
+    return False
 
 
 def resolve_relative_prompt_path(
@@ -421,7 +481,6 @@ def documents_for_member(
     resources) is a guide the caller may drop whole.
     """
     from kiro_crew.agent import is_managed_prompt
-    from kiro_crew.agent_discovery import _read_agent_spec
 
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
@@ -529,12 +588,14 @@ def documents_for_member(
             for path in _matches(project_root, ".kiro/steering/**/*.md"):
                 add(path, project_root, steering=True)
 
-    spec_path = resolve_template_path(template, project)
-    if spec_path is None:
+    template_spec = read_template_spec(
+        template, project, operation="member_essentials", source="context"
+    )
+    if template_spec is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
         return documents
-    spec = _read_agent_spec(spec_path, operation="member_essentials", source="context")
+    spec_path, spec = template_spec
     if spec is None:
         raise MemberEssentialContextError(f"Essential template {spec_path}: cannot be read safely")
     # Native file resources are relative to the project cwd or user home.

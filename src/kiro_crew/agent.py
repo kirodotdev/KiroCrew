@@ -53,6 +53,7 @@ from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import (
     SKILL_URI_PREFIX,
     AmbiguousAgentSpecError,
+    _audit_denied,
     _declared_project_agent_name,
     _read_agent_spec,
     project_agent_files,
@@ -86,7 +87,7 @@ from kiro_crew.config.paths import (
     shared_kiro_agents_writable,
 )
 from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform import (
     current_context,
 )
@@ -2591,7 +2592,7 @@ def clear_model_pin(config: MutableMapping[str, object], name: str) -> None:
     agent_state.set_model_managed(name, True)
 
 
-def _read_spec_capped(path: Path) -> dict | None:
+def _read_spec_capped(path: Path, *, listed: Path | None = None) -> dict | None:
     """Parse an agent spec through the hardened, SIZE-CAPPED read gate.
 
     ``agent_discovery._read_agent_spec`` is what that module documents as the one
@@ -2603,7 +2604,7 @@ def _read_spec_capped(path: Path) -> dict | None:
     A thin wrapper rather than a direct call at each site, so the reason the
     capped reader is used lives in one place.
     """
-    return _read_agent_spec(path, operation="agent_spec_lookup", source="unknown")
+    return _read_agent_spec(path, operation="agent_spec_lookup", source="unknown", parse_as=listed)
 
 
 def _spec_path_is_safe(path: Path, agents_dir: Path) -> bool:
@@ -2695,20 +2696,72 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
         return None
 
     direct = set(agent_spec_candidates(agents_dir, name))
-    declared_matches: list[Path] = []
-    fallbacks: list[Path] = []
-    for spec_path in iter_agent_spec_files(agents_dir):
-        if not _spec_path_is_safe(spec_path, agents_dir):
+    specs = [
+        (path, path)
+        for path in iter_agent_spec_files(agents_dir)
+        if _spec_path_is_safe(path, agents_dir)
+    ]
+    claimant = _spec_claimant(name, specs, direct)
+    return None if claimant is None else claimant[0]
+
+
+def _linked_agent_spec_path(
+    name: str, *, agents_dir: Path | None = None
+) -> tuple[Path, Path] | None:
+    """Return the link in the agents directory that claims *name* and its screened target.
+
+    Only for read-only callers that have found no regular claimant through
+    :func:`agent_spec_path` and that fence the link target themselves; spec
+    writers never resolve through it. Each link passes
+    :func:`~kiro_crew.hooks.validate_file_path` before anything resolves or
+    reads it, and is read only at the target that screen returned. Links
+    declaring the name raise
+    :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` like any two
+    claimants.
+    """
+    if not is_registered_agent_name(name):
+        return None
+    agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return None
+    direct = set(agent_spec_candidates(agents_dir, name))
+    specs: list[tuple[Path, Path]] = []
+    for path in iter_agent_spec_files(agents_dir):
+        if not path.is_symlink():
             continue
+        target = validate_file_path(str(path))
+        if target is None:
+            _audit_denied(
+                operation="agent_spec_lookup",
+                source="unknown",
+                resources=str(path),
+                error="link target rejected",
+            )
+            continue
+        specs.append((path, Path(target)))
+    return _spec_claimant(name, specs, direct)
+
+
+def _spec_claimant(
+    name: str, specs: list[tuple[Path, Path]], direct: set[Path]
+) -> tuple[Path, Path] | None:
+    """The ``(listed, read)`` pair claiming *name*; *read* is the path the spec is read at."""
+    declared_matches: list[tuple[Path, Path]] = []
+    fallbacks: list[tuple[Path, Path]] = []
+    for spec_path, read_path in specs:
         try:
-            data = _read_spec_capped(spec_path)
+            data = (
+                _read_spec_capped(read_path)
+                if read_path == spec_path
+                else _read_spec_capped(read_path, listed=spec_path)
+            )
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
         declared = data.get("name")
         if declared == name:
-            declared_matches.append(spec_path)
+            declared_matches.append((spec_path, read_path))
         elif spec_path in direct:
             # Right filename. Accepted as the fallback even when it declares a
             # DIFFERENT name, because the runtime resolver matches on
@@ -2718,7 +2771,7 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
             # bug this change exists to fix. Only used when no declared match is
             # found, and a declared match alongside it is the ambiguity the
             # caller refuses rather than resolves.
-            fallbacks.append(spec_path)
+            fallbacks.append((spec_path, read_path))
     if len(declared_matches) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and this message is printed to a terminal.
@@ -2728,7 +2781,7 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
         # callers are unaffected.
         raise AmbiguousAgentSpecError(
             f"{len(declared_matches)} specs declare the name {name!r}: "
-            f"{', '.join(repr(str(p)) for p in declared_matches)}. The runtime iterates the "
+            f"{', '.join(repr(str(p)) for p, _ in declared_matches)}. The runtime iterates the "
             f"directory unordered, so which one is live is undefined -- remove or rename "
             f"one before resetting."
         )

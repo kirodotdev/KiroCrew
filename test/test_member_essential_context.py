@@ -972,6 +972,266 @@ def test_global_template_cannot_import_managed_memory_or_peer_briefing(env, monk
         documents_for_member("writer-template", None)
 
 
+@requires_symlinks
+def test_a_symlinked_global_template_supplies_the_members_persona(env, tmp_path):
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "writer-template.json"
+    target.write_text(
+        json.dumps({"name": "writer-template", "prompt": "DOTFILES_PERSONA"}), encoding="utf-8"
+    )
+    link = agents / "writer-template.json"
+    link.symlink_to(os.path.relpath(target, agents))
+
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member
+    )
+
+    assert "DOTFILES_PERSONA" in message
+    assert link.is_symlink()
+    assert sorted(p.name for p in agents.iterdir()) == ["writer-template.json"]
+
+
+@requires_symlinks
+def test_a_linked_template_is_parsed_by_the_name_the_agents_directory_lists(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "dotfiles" / "writer-template"
+    target.parent.mkdir()
+    target.write_text("---\nname: writer-template\n---\nMARKDOWN_PERSONA\n", encoding="utf-8")
+    (agents / "writer-template.md").symlink_to(target)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("MARKDOWN_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_the_execution_prompt_of_a_symlinked_global_template_is_read(env, tmp_path):
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "task-runtime.json"
+    target.write_text(
+        json.dumps({"name": "task-runtime", "prompt": "LINKED_TASK_INSTRUCTIONS"}),
+        encoding="utf-8",
+    )
+    (agents / "task-runtime.json").symlink_to(target)
+
+    assert ContextBuilder._load_agent_prompt("task-runtime") == "LINKED_TASK_INSTRUCTIONS"
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "spec_name, leaf, body",
+    [
+        (
+            "writer-template.json",
+            "members/peer/state.json",
+            json.dumps({"name": "writer-template", "prompt": "PEER_SECRET"}),
+        ),
+        (
+            "writer-template.md",
+            "members/peer/briefing.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+        (
+            "writer-template.md",
+            "workspace/memory/preferences.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+    ],
+    ids=["json-peer-state", "md-peer-briefing", "md-global-preferences"],
+)
+def test_a_global_template_linked_into_managed_state_is_refused(env, spec_name, leaf, body):
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = config_dir() / leaf
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / spec_name).symlink_to(target)
+
+    with pytest.raises(MemberEssentialContextError, match="cannot be read safely"):
+        documents_for_member("writer-template", None)
+    assert ContextBuilder._load_agent_prompt("writer-template") == ""
+
+
+@requires_symlinks
+def test_a_managed_target_moved_behind_an_ancestor_link_before_open_is_refused(env, monkeypatch):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    managed = config_dir() / "workspace" / "memory"
+    managed.mkdir(parents=True, exist_ok=True)
+    target = managed / "writer-template.json"
+    target.write_text(
+        json.dumps({"name": "writer-template", "prompt": "MANAGED_PERSONA"}),
+        encoding="utf-8",
+    )
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").symlink_to(target)
+    real_read = agent_discovery._read_spec_bytes
+    raced = False
+
+    def redirect_before_open(real, *, fence=None):
+        nonlocal raced
+        if fence is not None and not raced:
+            escaped = managed.with_name("escaped")
+            managed.rename(escaped)
+            managed.symlink_to(escaped, target_is_directory=True)
+            raced = True
+        if fence is None:
+            return real_read(real)
+        return real_read(real, fence=fence)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", redirect_before_open)
+
+    with pytest.raises(MemberEssentialContextError, match="cannot be read safely"):
+        documents_for_member("writer-template", None)
+    assert raced
+
+
+@requires_symlinks
+@pytest.mark.skipif(os.name == "nt", reason="the linked-home layout is POSIX-specific")
+def test_a_managed_root_stall_refuses_a_linked_template_under_a_symlinked_home(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import member_essential_context as essentials
+
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    agents = linked_home / ".kiro" / "agents"
+    agents.mkdir(parents=True)
+    target = real_home / ".kiro" / "crew" / "workspace" / "memory" / "template.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps({"name": "template"}), encoding="utf-8")
+    link = agents / "template.json"
+    link.symlink_to(target)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: linked_home))
+    monkeypatch.setattr(essentials, "config_dir", lambda: linked_home / ".kiro" / "crew")
+    monkeypatch.setattr(
+        essentials.KiroCrewConfig,
+        "load",
+        classmethod(lambda cls: SimpleNamespace(workspaces={})),
+    )
+    monkeypatch.setattr(essentials, "_admitted_root", lambda _root: None)
+    monkeypatch.setattr(essentials, "sensitive_path_refusal", lambda _path: "unverifiable")
+    monkeypatch.setattr(essentials, "is_unverifiable_path_refusal", lambda _reason: True)
+
+    assert essentials._managed_template_target_refused(target.resolve()) is True
+
+
+def _managed_writer_template(body_marker):
+    from kiro_crew.config import config_dir
+
+    target = config_dir() / "workspace" / "memory" / "writer-template.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"name": "writer-template", "prompt": body_marker}), encoding="utf-8"
+    )
+    return target
+
+
+@requires_symlinks
+def test_a_linked_template_is_read_at_its_screened_target_after_the_entry_changes(
+    env, monkeypatch, tmp_path
+):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    managed = _managed_writer_template("MANAGED_PERSONA")
+    benign = tmp_path / "dotfiles" / "writer-template.json"
+    benign.parent.mkdir()
+    benign.write_text(
+        json.dumps({"name": "writer-template", "prompt": "DOTFILES_PERSONA"}), encoding="utf-8"
+    )
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    entry = agents / "writer-template.json"
+    entry.symlink_to(benign)
+    real_read = member_essential_context._read_agent_spec
+    read_at = []
+
+    def swap_then_read(path, **kwargs):
+        if not read_at:
+            entry.unlink()
+            entry.symlink_to(managed)
+        read_at.append(path)
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(member_essential_context, "_read_agent_spec", swap_then_read)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert read_at == [benign.resolve()]
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert not any("MANAGED_PERSONA" in body for _, body in documents)
+
+
+def test_a_regular_global_template_read_does_not_consult_managed_roots(env, monkeypatch):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "REGULAR_PERSONA"}), encoding="utf-8"
+    )
+
+    entry = agents / "writer-template.json"
+    if entry.resolve() != Path(os.path.abspath(entry)):
+        pytest.skip("the home directory is reached through a link on this host")
+
+    def unexpected(_path, **_kwargs):
+        raise AssertionError("a regular template read consulted the managed roots")
+
+    monkeypatch.setattr(member_essential_context, "_managed_template_target_refused", unexpected)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("REGULAR_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_a_linked_template_read_checks_managed_state_once(env, monkeypatch, tmp_path):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = tmp_path / "dotfiles" / "writer-template.json"
+    target.parent.mkdir()
+    target.write_text(
+        json.dumps({"name": "writer-template", "prompt": "DOTFILES_PERSONA"}), encoding="utf-8"
+    )
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").symlink_to(target)
+    real_check = member_essential_context._managed_template_target_refused
+    checked = []
+
+    def counted(path, **kwargs):
+        checked.append(path)
+        return real_check(path, **kwargs)
+
+    monkeypatch.setattr(member_essential_context, "_managed_template_target_refused", counted)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert checked == [target.resolve()]
+
+
 def test_runtime_override_keeps_the_memory_owners_soul(env):
     message, _ = env.builder.build_message(
         "Critique this draft",

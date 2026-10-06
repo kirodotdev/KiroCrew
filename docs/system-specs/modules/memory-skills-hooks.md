@@ -1434,9 +1434,22 @@ Auto relevance and file paths first discovered through tools remain agent-driven
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
 A project override of a template takes precedence over its global copy. A
-relative `file://` prompt uses the project root when its template comes from the
-project's agents directory, and the user home when it comes from the global
-agents directory, even with a project bound. Both readers share the same path
+regular global claimant keeps the existing `agent_spec_path` resolution and
+ambiguity behavior. When no regular claimant resolves, member template reads may
+follow links in the global agents directory. Each link passes
+`hooks.validate_file_path` before anything resolves or reads it and is read at
+the target that screen returned, parsed by its listed name. Two links declaring
+the same name are ambiguous, as in `agent_discovery.spec_by_declared_name`.
+Both member-context readers resolve and parse a template through
+`member_essential_context.read_template_spec`, which keeps
+`agent_discovery._read_agent_spec`'s size, sensitive-path, non-regular, hardlink
+and descriptor-pinned read guards. A linked template is refused when its
+target, or a differing opened inode, lies inside managed memory or member
+private state, or when a managed-state root cannot be resolved. Regular and
+project templates retain their existing read behavior. Spec writers continue to
+refuse links. A relative `file://` prompt uses the project root when its template
+comes from the project's agents directory, and the user home when it comes from
+the global agents directory, even with a project bound. Both readers share the same path
 validator: resolve symlinks and require the result to remain inside that resolved
 root. Relative execution prompts retain that root through the no-follow byte
 reader, which checks the opened descriptor's path against it. An ancestor swap
