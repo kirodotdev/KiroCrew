@@ -14,14 +14,19 @@
  *                          disclosure it opens is the surface that can say what
  *                          the drive holds
  *   03-never-backed-up     a kind with no run at all and one recorded archive:
- *                          the count still exceeds what "not backed up yet"
- *                          implies, so the line renders there
+ *                          the meta line reads "no run recorded here, archives
+ *                          may still be on the drive" rather than the bare "not
+ *                          backed up yet" that would contradict the count line
+ *                          (#13566 item 2). The frame-03 assertion resolves the
+ *                          clause from the SELECTED locale's catalog, so a
+ *                          non-English run checks that language's string.
  *
  * Usage: node scripts/capture-backup-remembered-archives.mjs <devServerBase> [outDir] [lang] [theme]
  */
 import { chromium } from 'playwright'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { json, stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
 
@@ -34,6 +39,14 @@ const OUT = process.argv[3] || './temp-screenshots/backup-remembered'
 const LANG = process.argv[4] || 'en'
 const THEME = process.argv[5] || 'dark'
 mkdirSync(OUT, { recursive: true })
+
+// The "no run recorded here" clause (#13566 item 2) is translated, so the frame
+// 03 assertion must compare against the SELECTED locale's string, not an
+// English substring -- otherwise a non-English run renders that language's
+// clause and the English check throws before the frame is captured.
+const LOCALE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'i18n', 'locales')
+const NEVER_RECORDED = JSON.parse(readFileSync(join(LOCALE_DIR, `${LANG}.json`), 'utf8'))
+  .apps.awsControl.console.backup_never_recorded
 
 // One healthy account with a provisioned drive, the baseline every backup frame
 // starts from. Everything below is derived from these values rather than
@@ -243,12 +256,19 @@ await page.getByTestId('backup-remembered-snapshot').click()
 await page.getByTestId('backup-archive').waitFor({ timeout: 20000 })
 await shotArchives('02-archive-list-open.png')
 
-// 3. A kind that never ran, holding one recorded archive: "not backed up yet"
-//    implies none, so one still exceeds it and the line renders.
+// 3. A kind that never ran, holding one recorded archive. "Not backed up yet"
+//    alone contradicts a nonzero recorded count on the same row (#13566 item 2),
+//    so the meta line says which kind of "none" it means: no run recorded here,
+//    not no archive kept. The count line still renders because one archive
+//    exceeds what a missing run implies.
 state.runs = { sessions: state.runs.sessions }
 state.remembered = { snapshot: 1, sessions: 1 }
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.getByTestId('backup-remembered-snapshot').waitFor({ timeout: 30000 })
+const snapshotMeta = await page.getByTestId('backup-last-snapshot').textContent()
+if (!snapshotMeta || !snapshotMeta.includes(NEVER_RECORDED)) {
+  throw new Error(`expected the no-run-recorded clause (${LANG}: "${NEVER_RECORDED}") on the snapshot row, got: ${snapshotMeta}`)
+}
 await shot('03-never-backed-up.png')
 
 await browser.close()

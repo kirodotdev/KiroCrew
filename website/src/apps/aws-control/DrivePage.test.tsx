@@ -2555,6 +2555,74 @@ describe('DrivePage sections: backup, access, CLI drawer', () => {
     expect(scrolled).toHaveBeenCalledTimes(1)
   })
 
+  it('does not scroll on a later successful poll when the reveal fetch failed', async () => {
+    // #17702 open sub-case: the reader clicks the count line while the list is
+    // not loaded, so `revealRemote` sets the pending flag. The `remote: true`
+    // refetch then FAILS -- the backend returns `remote: null` with the reason
+    // in `remoteError` -- so the clearing effect's old `if (!data?.remote)
+    // return` left the flag set. A later successful poll/invalidate (rows now
+    // present) fired the deferred scroll long after the click, yanking the pane
+    // into a list the reader never saw. The fix clears the pending flag when the
+    // response resolves to a failure, so this later success does not scroll.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    onTestFinished(() => raf.mockRestore())
+
+    const row = { key: 'snap-1', size: 1024, modified: '2026-08-20T00:00:00Z', install: INSTALL_ID, origin: 'self' as const }
+    vi.mocked(awsControlApi.backup)
+      // First load: remembered count known, remote half not fetched yet.
+      .mockResolvedValueOnce({
+        ...emptyBackup,
+        runs: {},
+        remote: null,
+        rememberedArchives: { snapshot: 2 },
+      })
+      // The `remote: true` refetch the count-line click triggers FAILS: no rows,
+      // only the error reason. This is the response that must cancel the pending
+      // reveal.
+      .mockResolvedValueOnce({
+        ...emptyBackup,
+        runs: {},
+        remote: null,
+        remoteError: 'AccessDenied: s3:ListBucket on backup/',
+        rememberedArchives: { snapshot: 2 },
+      })
+      // A later refetch (here forced by flipping the co-tenant toggle, standing
+      // in for a poll/invalidate) finally returns the rows. If the flag had
+      // leaked past the failure, the clearing effect would scroll here.
+      .mockResolvedValue({
+        ...emptyBackup,
+        runs: {},
+        remote: { ...emptyRemote, snapshot: [{ ...row }] },
+        rememberedArchives: { snapshot: 2 },
+      })
+
+    await renderDrive('backup')
+
+    // Click the count line while the list is not open: `revealRemote` sets the
+    // pending flag because `data.remote` is not loaded yet. The reveal scroll
+    // fires once immediately against skeleton height.
+    fireEvent.click(await screen.findByTestId('backup-remembered-snapshot'))
+    await waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1))
+
+    // The failed refetch lands: the error note appears, and the clearing effect
+    // drops the pending flag because the response resolved to a failure.
+    await screen.findByTestId('backup-remote-error')
+    expect(scrolled).toHaveBeenCalledTimes(1)
+
+    // Force a later successful refetch by flipping the co-tenant toggle (a stand
+    // -in for a poll/invalidate). The rows arrive and change `data.remote` by
+    // reference -- exactly what the clearing effect keys on. Before the fix the
+    // leaked flag fired a second scroll here; now it must not.
+    const toggle = within(screen.getByTestId('backup-others-toggle')).getByRole('switch')
+    fireEvent.click(toggle)
+    await screen.findByTestId('backup-archive-row')
+    expect(scrolled).toHaveBeenCalledTimes(1)
+  })
+
   it('shows the backup remote-error note when the archive could not be read', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.backup).mockResolvedValue({
