@@ -28,8 +28,13 @@ links the class that explains it; the rest of this document is the evidence behi
 them. The shared shapes live in `kiro_crew.testing` (`clock`, `wait`, `ids`), which
 ships in the wheel, so the in-package app suites use them too; the rootdir
 `conftest.py` adds the `manual_clock`, `seeded_rng` and `local_tz` fixtures.
-`AUTOSDE.yaml`'s `tests-are-deterministic` rule holds review to them. The
-frontend's rules are in
+`AUTOSDE.yaml`'s `tests-are-deterministic` rule holds review to them, and the SAST
+job's `semgrep/test-determinism.yaml` refuses one of the commonest shapes on a line a
+change adds or rewrites (a fixed sleep in a test body outside a poll loop, a bare
+`monkeypatch.undo()`, an in-process reload, a rebound stdlib clock, a naive local-time
+read, an unseeded draw, a new autouse fixture on the shared `monkeypatch`, a
+promise-sleep, `waitForTimeout`); a deliberate one says why with
+`# nosemgrep: <rule id>`. The frontend's rules are in
 [website/docs/testing.md](../../../website/docs/testing.md#determinism-establish-the-state-you-assert-on).
 
 - **D1. Wait on a signal, never a duration.** Poll the state you are about to assert
