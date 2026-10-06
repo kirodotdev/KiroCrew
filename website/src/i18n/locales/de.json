@@ -13496,7 +13496,7 @@
         "config": "Konfiguration:",
         "created": "Erstellt:",
         "crons": "Crons:",
-        "download_all_settings_memory_skills_crons_and_le": "Alle Einstellungen, Erinnerungen, Skills, Crons und Lektionen als portable ZIP-Datei herunterladen.\n          Anmeldedaten und Sitzungs-Secrets sind ausgeschlossen.",
+        "download_all_settings_memory_skills_crons_and_le": "Alle Einstellungen, Erinnerungen, Skills, Crons und Lektionen als portable ZIP-Datei herunterladen.\n          Gespeicherte Anmeldedaten und Sitzungs-Secrets sind ausgeschlossen.",
         "download_export_zip": "Export herunterladen (.zip)",
         "download_started": "Download gestartet.",
         "export_configuration": "Konfiguration exportieren",
@@ -13518,7 +13518,7 @@
         "replace": "Ersetzen",
         "replace_mode_will_overwrite_existing_data_contin": "Der Ersetzungsmodus überschreibt bestehende Daten. Fortfahren?",
         "skills": "Skills:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Laden Sie eine {{productName}}-Export-ZIP hoch, um Einstellungen auf dieser Instanz wiederherzustellen.\n          Bestehende Daten werden standardmäßig zusammengeführt (Duplikate werden übersprungen).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Lade eine {{productName}}-Export-ZIP hoch, um Einstellungen auf dieser Instanz wiederherzustellen. Chats aus dem Archiv werden hinzugefügt; vorhandene Chats werden nie ersetzt.\n          Bestehende Daten werden standardmäßig zusammengeführt (Duplikate werden übersprungen).",
         "workspace_files": "Workspace-Dateien:",
         "export_templates_not_included": "Dieser Export enthält die Agent-Vorlagen deiner Crews nicht: {{names}}. Kopiere sie aus ~/.kiro/agents in denselben Ordner auf dem anderen Rechner.",
         "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt.",
@@ -13530,7 +13530,14 @@
         "settings_kept_name_config": "Agenten- und Gateway-Einstellungen",
         "settings_kept_name_config_local": "lokalen Einstellungs-Überschreibungen",
         "settings_kept_name_ui_prefs": "Anzeigeeinstellungen",
-        "settings_kept_name_notifications": "Benachrichtigungseinstellungen"
+        "settings_kept_name_notifications": "Benachrichtigungseinstellungen",
+        "include_chat_history": "Chatverlauf einschließen",
+        "include_chat_history_hint": "Fügt jeden Chat aus deiner Liste „Sitzungen“ hinzu. Chats behalten alles, was in sie eingefügt wurde, etwa Passwörter oder Schlüssel, also bewahre dieses Archiv privat auf. Inkognito- und temporäre Chats werden nie einbezogen.",
+        "chats_count": "Unterhaltungen: {{chats}}",
+        "archive_has_no_chats": "Dieses Archiv enthält keine Unterhaltungen. Um sie mitzunehmen, exportiere erneut mit aktiviertem „Chatverlauf einschließen“.",
+        "export_chats_skipped_size": "Ältere Unterhaltungen, die nicht in dieses Archiv gepasst haben und weggelassen wurden: {{chats}}.",
+        "import_chats_result": "Hinzugefügte Chats: {{added}}. Bereits in dieser Installation: {{existing}}.",
+        "import_chats_withheld": "Nicht importierte Chats, weil sie Inkognito, temporär oder unlesbar sind: {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

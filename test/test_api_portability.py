@@ -86,7 +86,7 @@ async def test_export_failure_is_coded_and_stays_opaque(monkeypatch) -> None:
     audit = _AuditLog()
     private_detail = "/Users/alice/.kiro/crew/secrets.json"
 
-    def fail():
+    def fail(**_kwargs):
         raise RuntimeError(private_detail)
 
     monkeypatch.setattr(module, "create_export_zip", fail)
@@ -104,6 +104,79 @@ async def test_export_failure_is_coded_and_stays_opaque(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("", False),
+        ("?include_sessions=true", True),
+        ("?include_sessions=1", True),
+        ("?include_sessions=no", False),
+    ],
+)
+async def test_export_includes_chats_only_when_the_request_asks(
+    monkeypatch, query, expected
+) -> None:
+    module = _handler_module()
+    seen: list[bool] = []
+
+    def export(*, include_sessions: bool = False):
+        seen.append(include_sessions)
+        return b"PK", {"created_at": "t", "contents": {"session_count": 2}}
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "contents", "header", "audit"),
+    [
+        ("?include_sessions=true", {"session_count": 2, "sessions_skipped_size": 3}, "3", 3),
+        ("?include_sessions=true", {"session_count": 2}, "0", 0),
+        ("?include_sessions=true", {"sessions_skipped_size": "9\r\nX-Injected: 1"}, "0", 0),
+        ("?include_sessions=true", {"sessions_skipped_size": -1}, "0", 0),
+        ("", {}, None, None),
+    ],
+)
+async def test_export_reports_chats_left_out_for_size(
+    monkeypatch, query, contents, header, audit
+) -> None:
+    """The count rides a bare-integer header and the audit line, only for a chat export."""
+    module = _handler_module()
+    log = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: log)
+    monkeypatch.setattr(
+        module,
+        "create_export_zip",
+        lambda **_kwargs: (b"PK", {"created_at": "t", "contents": contents}),
+    )
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert response.headers.get(module.SESSIONS_SKIPPED_SIZE_HEADER) == header
+    assert "X-Injected" not in response.headers
+    (event,) = [e for e in log.events if e.get("outcome") == "ok"]
+    if audit is None:
+        assert "sessions_skipped_size" not in event["resources"]
+    else:
+        assert f",sessions_skipped_size={audit}" in event["resources"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("templates", "header"),
     [
         ((["a", "b\nX-Injected: 1"], 0), '["a", "b\\nX-Injected: 1"]'),
@@ -117,7 +190,7 @@ async def test_export_names_the_unbundled_templates_in_a_header(
     """The body is the archive, so the warning rides a header -- JSON-escaped."""
     module = _handler_module()
     monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
-    monkeypatch.setattr(module, "create_export_zip", lambda: (b"PK", {"created_at": "t"}))
+    monkeypatch.setattr(module, "create_export_zip", lambda **_kwargs: (b"PK", {"created_at": "t"}))
     monkeypatch.setattr(module, "unbundled_agent_templates", lambda: templates)
 
     async with TestClient(TestServer(_make_app(module))) as client:

@@ -912,7 +912,7 @@ class TestThePortabilityRoutesAreOwnerOnly:
     async def test_a_non_owner_cannot_export(self, handlers):
         ph, events = handlers
         called = []
-        with patch.object(ph, "create_export_zip", lambda: called.append(1) or (b"x", {})):
+        with patch.object(ph, "create_export_zip", lambda **_kw: called.append(1) or (b"x", {})):
             resp = await ph.api_portability_export(
                 self._request("GET", "/api/portability/export", user="slack-participant")
             )
@@ -921,7 +921,7 @@ class TestThePortabilityRoutesAreOwnerOnly:
 
     async def test_the_owner_can_export(self, handlers):
         ph, _ = handlers
-        with patch.object(ph, "create_export_zip", lambda: (b"zip", {"created_at": "t"})):
+        with patch.object(ph, "create_export_zip", lambda **_kw: (b"zip", {"created_at": "t"})):
             resp = await ph.api_portability_export(
                 self._request("GET", "/api/portability/export", user="local-app")
             )

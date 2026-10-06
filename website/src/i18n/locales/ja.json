@@ -13290,7 +13290,7 @@
         "config": "設定:",
         "created": "作成:",
         "crons": "cron ジョブ:",
-        "download_all_settings_memory_skills_crons_and_le": "すべての設定、メモリ、スキル、cron、およびレッスンをポータブル zip ファイルとしてダウンロードします。\n          認証情報とセッションシークレットは除外されます。",
+        "download_all_settings_memory_skills_crons_and_le": "すべての設定、メモリ、スキル、cron、およびレッスンをポータブル zip ファイルとしてダウンロードします。\n          保存済みの認証情報とセッションシークレットは除外されます。",
         "download_export_zip": "エクスポート (.zip) をダウンロード",
         "download_started": "ダウンロードが開始されました。",
         "export_configuration": "設定をエクスポート",
@@ -13312,7 +13312,7 @@
         "replace": "置換",
         "replace_mode_will_overwrite_existing_data_contin": "置換モードは既存のデータを上書きします。続行しますか？",
         "skills": "スキル:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} エクスポート zip をアップロードして、このインスタンスの設定を復元します。\n          既存のデータはデフォルトでマージされます (重複はスキップされます)。",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} エクスポート zip をアップロードして、このインスタンスの設定を復元します。アーカイブ内のチャットは追加され、既存のチャットが置き換えられることはありません。\n          既存のデータはデフォルトでマージされます (重複はスキップされます)。",
         "workspace_files": "ワークスペースファイル:",
         "export_templates_not_included": "このエクスポートには、クルーが使うエージェントテンプレートが含まれていません: {{names}}。~/.kiro/agents から、もう一方のマシンの同じフォルダーにコピーしてください。",
         "import_templates_missing": "このマシンにないエージェントテンプレートを使うクルーがあります (クルー → テンプレート): {{crews}}。これらのクルーを使う前に、足りないテンプレートを ~/.kiro/agents にコピーしてください。",
@@ -13323,7 +13323,14 @@
         "settings_kept_name_config": "エージェントとゲートウェイの設定",
         "settings_kept_name_config_local": "ローカル設定の上書き",
         "settings_kept_name_ui_prefs": "表示設定",
-        "settings_kept_name_notifications": "通知設定"
+        "settings_kept_name_notifications": "通知設定",
+        "include_chat_history": "チャット履歴を含める",
+        "include_chat_history_hint": "「セッション」一覧のすべてのチャットを追加します。チャットには貼り付けた内容がすべて残り、パスワードやキーも含まれるため、このアーカイブは他人に渡さないでください。「プライベート」と「一時的」のチャットは含まれません。",
+        "chats_count": "チャット: {{chats}}",
+        "archive_has_no_chats": "このアーカイブにはチャットが含まれていません。チャットを移すには、「チャット履歴を含める」にチェックを入れて、もう一度エクスポートしてください。",
+        "export_chats_skipped_size": "このアーカイブに収まらず除外された古いチャット: {{chats}}",
+        "import_chats_result": "追加したチャット: {{added}}。このインストールに既にあるもの: {{existing}}。",
+        "import_chats_withheld": "「プライベート」「一時的」または読み取れないためインポートしなかったチャット: {{withheld}}。"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

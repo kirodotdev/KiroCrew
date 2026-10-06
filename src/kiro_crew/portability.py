@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import logging
+import math
 import os
 import shutil
 import socket
@@ -30,12 +31,25 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.history import (
+    ARCHIVE_DIR_NAME,
+    ARCHIVE_SEGMENT_DELIMITER,
+    INCOGNITO_MEMORY_MODES,
+    SESSIONS_DIR_NAME,
+    THREADS_DIR_NAME,
+    THREADS_SIDECAR_SUFFIX,
+    TRANSCRIPT_HEADER_MAX_BYTES,
+    ConversationLog,
+    _safe_key,
+    memory_mode_from_header_line,
+)
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
@@ -415,6 +429,40 @@ def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> i
                 os.close(fd)
 
 
+@contextlib.contextmanager
+def _open_contained_file(root_real: str, rel: PurePath) -> Iterator[int | None]:
+    """Open one export file with every ancestor pinned until its descriptor closes."""
+    with contextlib.ExitStack() as held:
+        here = root_real
+        try:
+            for part in ("", *rel.parts[:-1]):
+                here = os.path.join(here, part)
+                pin = platform_compat.pin_directory(here)
+                held.callback(os.close, pin)
+        except OSError:
+            yield None
+            return
+        fd = _open_verified(os.path.join(root_real, *rel.parts), root_real)
+        if fd is not None:
+            held.callback(os.close, fd)
+        yield fd
+
+
+# ZIP's DOS date fields have a seven-bit year and two-second resolution.
+_ZIP_DATE_MIN = (1980, 1, 1, 0, 0, 0)
+_ZIP_DATE_MAX = (2107, 12, 31, 23, 59, 58)
+
+
+def _zip_date_time(epoch: float) -> tuple[int, int, int, int, int, int]:
+    """Clamp header time only; session manifests retain the descriptor's true epoch."""
+    try:
+        date_time = time.localtime(epoch)[:6]
+    except (OSError, OverflowError, ValueError):
+        # Some platforms cannot convert negative or very large filesystem epochs.
+        return _ZIP_DATE_MIN if epoch < 0 else _ZIP_DATE_MAX
+    return min(_ZIP_DATE_MAX, max(_ZIP_DATE_MIN, date_time))
+
+
 def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     """Stream the bytes behind *fd* into *zf* as *arcname*.
 
@@ -436,7 +484,7 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     one defect for another.
     """
     st = os.fstat(fd)
-    info = zipfile.ZipInfo(arcname, date_time=time.localtime(st.st_mtime)[:6])
+    info = zipfile.ZipInfo(arcname, date_time=_zip_date_time(st.st_mtime))
     info.compress_type = zf.compression
     info.external_attr = (st.st_mode & 0xFFFF) << 16
     os.lseek(fd, 0, os.SEEK_SET)
@@ -445,6 +493,292 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
         zf.open(info, "w", force_zip64=True) as dest,
     ):
         shutil.copyfileobj(src, dest)
+
+
+#: A dashboard transcript's file name: ``<stem>.jsonl`` directly under ``sessions/``.
+_TRANSCRIPT_SUFFIX = ".jsonl"
+
+#: The longest first line a transcript header is read up to: the same bound the
+#: restricted-session write gate reads, so a longer line is unknown to both.
+_MAX_TRANSCRIPT_HEADER_BYTES = TRANSCRIPT_HEADER_MAX_BYTES
+
+
+def _transcript_stem(name: str) -> str | None:
+    """The session stem of a ``sessions/`` entry named *name*, or ``None``.
+
+    A stem is accepted only in the spelling ``history._safe_key`` writes (word
+    characters, ``-`` and ``.``), so an archive member cannot name a file this
+    platform's history layer would never produce -- a ``:`` or ``\\`` in it, say.
+    """
+    if not name.endswith(_TRANSCRIPT_SUFFIX):
+        return None
+    stem = name[: -len(_TRANSCRIPT_SUFFIX)]
+    if stem in ("", ".", "..") or _safe_key(stem) != stem:
+        return None
+    return stem
+
+
+#: The stem every dashboard chat's transcript carries: a dashboard slot key is
+#: ``dashboard:<slot>`` (`dashboard.chat_utils.dashboard_slot_key`), which
+#: ``history._safe_key`` writes as ``dashboard_<slot>``. Channel threads, cron runs
+#: and subagent runs keep transcripts under other stems and are not chats here.
+_DASHBOARD_STEM_PREFIX = "dashboard_"
+
+
+def _chat_stem(name: str) -> str | None:
+    """The stem of the dashboard chat whose transcript is *name*, or ``None``.
+
+    The one selection rule for which ``sessions/`` entries this feature carries, on
+    export and on import alike: a valid `_transcript_stem` that starts with
+    `_DASHBOARD_STEM_PREFIX` and names a slot after it.
+    """
+    stem = _transcript_stem(name)
+    if stem is None or not stem.startswith(_DASHBOARD_STEM_PREFIX):
+        return None
+    if len(stem) == len(_DASHBOARD_STEM_PREFIX):
+        return None
+    return stem
+
+
+def _transcript_header_verdict(first_line: bytes | None) -> str | None:
+    """Why a transcript may not travel in an archive, or ``None`` when it may.
+
+    Applied on both ends, export and import, so an archive can only ever carry what
+    an export of this build would write. The rule is the one every derived reader
+    applies to Incognito and Temporary chats: they are kept for the user's own
+    History and never exported or transferred. The mode comes from
+    `history.memory_mode_from_header_line`, the same parse the restricted-session
+    write gate uses, and the verdict fails CLOSED -- only a header that reads
+    persistent passes:
+
+    * a metadata header with no ``memory_mode`` reads persistent (a transcript
+      written before the mode existed);
+    * ``memory_mode`` ``persistent`` (any case, surrounding whitespace ignored)
+      passes;
+    * ``incognito`` and ``temporary`` are withheld as private chats;
+    * anything the parse cannot place -- no metadata header, a first line that is
+      not a JSON object, a non-string or unrecognised mode -- is withheld as
+      unreadable.
+    """
+    if first_line is None:
+        return "unreadable header"
+    if not first_line.strip():
+        return "empty transcript"
+    mode = memory_mode_from_header_line(first_line)
+    if mode == "persistent":
+        return None
+    if mode in INCOGNITO_MEMORY_MODES:
+        return "incognito or temporary chat"
+    return "unreadable header"
+
+
+def _read_first_line_fd(fd: int) -> bytes | None:
+    """The first line behind *fd*, without its newline; ``None`` past the header cap."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    buf = bytearray()
+    while len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            return bytes(buf)
+        cut = chunk.find(b"\n")
+        if cut >= 0:
+            buf += chunk[:cut]
+            return bytes(buf) if len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES else None
+        buf += chunk
+    return None
+
+
+def _keep_top_level_transcript(rel: PurePath) -> bool:
+    """``sessions/<stem>.jsonl`` for a dashboard chat (`_chat_stem`) and nothing else.
+
+    Lexical only, like every walk filter.
+    """
+    return (
+        len(rel.parts) == 2
+        and rel.parts[0] == SESSIONS_DIR_NAME
+        and _chat_stem(rel.parts[1]) is not None
+    )
+
+
+def _rotation_segment_for_stem(name: str, stem: str) -> bool:
+    """Match the complete stem, including when another stem contains the delimiter."""
+    owner, delimiter, suffix = name.rpartition(ARCHIVE_SEGMENT_DELIMITER)
+    return owner == stem and bool(delimiter) and suffix.endswith(_TRANSCRIPT_SUFFIX)
+
+
+def _is_rotation_header(first_line: bytes | None) -> bool:
+    """Only retained rotation history travels; discarded edits never do."""
+    if first_line is None:
+        return False
+    try:
+        header = json.loads(first_line)
+    except (ValueError, RecursionError):
+        return False
+    return (
+        isinstance(header, dict)
+        and header.get("_type") == "archive"
+        and header.get("reason") == "rotate"
+    )
+
+
+def _add_session_from_fd(
+    zf: zipfile.ZipFile, fd: int, arcname: str, mtimes: dict[str, float]
+) -> None:
+    """Record absolute activity time from the same descriptor as the archived bytes."""
+    mtime = os.fstat(fd).st_mtime
+    _add_from_fd(zf, fd, arcname)
+    mtimes[arcname] = mtime
+
+
+#: Minimum manifest allowance in the archive's uncompressed-byte budget. The actual
+#: envelope is measured too, including the three counters at their maximum width.
+_MANIFEST_BASE_RESERVE = 64 * 1024
+#: Per record, beyond its JSON-encoded name: a float takes at most 24 ASCII bytes;
+#: indentation, colon, comma and newline take 8. This allowance covers both.
+_MANIFEST_PER_MEMBER_RESERVE = 64
+
+
+def _export_sessions(
+    zf: zipfile.ZipFile,
+    mc_real: str,
+    prefix: str,
+    mtimes: dict[str, float],
+    *,
+    manifest: dict,
+) -> tuple[int, int, int]:
+    """Write the persistent dashboard chats into *zf*; ``(exported, withheld, skipped)``.
+
+    The pinned walk discovers candidate stems only. Each transcript is reopened and
+    judged under its canonical history lock, which stays held through its threads
+    and images so a deleted chat's private replacement cannot donate companions.
+
+    The finished archive must pass this build's own import inventory check, so the
+    chats are budgeted against the caps import enforces, `_MAX_IMPORT_MEMBERS` and
+    `_MAX_IMPORT_UNCOMPRESSED`, counting every member already in *zf* and a reserve
+    for the manifest still to be written. Chats are taken most recently active first
+    (transcript mtime) and only whole: a chat whose files do not all fit is left out
+    and counted in ``skipped``, and a later, smaller chat may still fit.
+    """
+    candidates: list[tuple[float, str]] = []
+    for rel, fd in _walk_contained(
+        mc_real, PurePath(SESSIONS_DIR_NAME), _keep_top_level_transcript
+    ):
+        try:
+            mtime = os.fstat(fd).st_mtime
+        finally:
+            os.close(fd)
+        stem = _chat_stem(rel.parts[1])
+        if stem is not None:
+            candidates.append((mtime, stem))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+
+    # These are the only fields filled after selection; each is at most the number
+    # of candidates. Measure the actual envelope (including host/user strings) with
+    # those upper bounds, using the writer's indent and default ASCII escaping.
+    envelope = {
+        **manifest,
+        "contents": {
+            **manifest["contents"],
+            "session_count": len(candidates),
+            "sessions_withheld": len(candidates),
+            "sessions_skipped_size": len(candidates),
+        },
+        "session_mtimes": {},
+    }
+    # A nonempty nested map adds a newline plus two closing-brace indent spaces.
+    manifest_base = len(json.dumps(envelope, indent=2).encode("utf-8")) + 3
+    manifest_bytes_left = _MAX_SETTINGS_DOCUMENT_BYTES - manifest_base
+    infos = zf.infolist()
+    # +1: the manifest itself is one more member, so timestamp records also stay
+    # below _read_session_mtimes' _MAX_IMPORT_MEMBERS record cap.
+    members_left = _MAX_IMPORT_MEMBERS - len(infos) - 1
+    bytes_left = (
+        _MAX_IMPORT_UNCOMPRESSED
+        - sum(i.file_size for i in infos)
+        - max(_MANIFEST_BASE_RESERVE, manifest_base)
+    )
+
+    history = ConversationLog(base_dir=Path(mc_real) / SESSIONS_DIR_NAME)
+    exported = withheld = skipped = 0
+    for _mtime, stem in candidates:
+        with history.locked_stems([stem]):
+            rel = PurePath(SESSIONS_DIR_NAME, f"{stem}{_TRANSCRIPT_SUFFIX}")
+            with _open_contained_file(mc_real, rel) as transcript_fd:
+                if transcript_fd is None:
+                    continue
+                if _transcript_header_verdict(_read_first_line_fd(transcript_fd)) is not None:
+                    withheld += 1
+                    continue
+                # Sized in one pass and written in a second, both under the lock; the
+                # companions open one at a time, so an image-heavy chat never holds a
+                # descriptor per image.
+                members = 1
+                manifest_need = _manifest_entry_size(f"{prefix}/{rel.as_posix()}")
+                need = os.fstat(transcript_fd).st_size
+                for comp_rel, fd in _chat_companions(mc_real, stem):
+                    members += 1
+                    need += os.fstat(fd).st_size
+                    manifest_need += _manifest_entry_size(f"{prefix}/{comp_rel.as_posix()}")
+                need += manifest_need
+                if (
+                    members > members_left
+                    or need > bytes_left
+                    or manifest_need > manifest_bytes_left
+                ):
+                    skipped += 1
+                    continue
+                before = len(zf.infolist())
+                _add_session_from_fd(zf, transcript_fd, f"{prefix}/{rel.as_posix()}", mtimes)
+            for comp_rel, fd in _chat_companions(mc_real, stem):
+                _add_session_from_fd(zf, fd, f"{prefix}/{comp_rel.as_posix()}", mtimes)
+            # Charge what was actually written, not the estimate: a file that grew, or a
+            # companion that appeared, between the two passes still counts against the cap.
+            written = zf.infolist()[before:]
+            members_left -= len(written)
+            written_manifest_bytes = sum(_manifest_entry_size(i.filename) for i in written)
+            manifest_bytes_left -= written_manifest_bytes
+            bytes_left -= sum(i.file_size for i in written) + written_manifest_bytes
+            exported += 1
+    return exported, withheld, skipped
+
+
+def _manifest_entry_size(arcname: str) -> int:
+    """Reserve a record using the manifest writer's default JSON string escaping."""
+    return len(json.dumps(arcname).encode("utf-8")) + _MANIFEST_PER_MEMBER_RESERVE
+
+
+def _chat_companions(mc_real: str, stem: str) -> Iterator[tuple[PurePath, int]]:
+    """``(rel, fd)`` for each companion of *stem* that travels; each fd closes on resume.
+
+    The reply-thread sidecar, the flat image directory and the retained rotation
+    segments. Callers hold the chat's history lock across the whole iteration.
+    """
+    sidecar = PurePath(SESSIONS_DIR_NAME, THREADS_DIR_NAME, f"{stem}{THREADS_SIDECAR_SUFFIX}")
+    with _open_contained_file(mc_real, sidecar) as sidecar_fd:
+        if sidecar_fd is not None:
+            yield sidecar, sidecar_fd
+    # sessions/<stem>.attachments/ is flat: only its direct files travel.
+    images = PurePath(SESSIONS_DIR_NAME, f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+    for rel, fd in _walk_contained(
+        mc_real,
+        images,
+        lambda rel: len(rel.parts) == 3 and rel.parts[1] == f"{stem}{ATTACHMENTS_DIR_SUFFIX}",
+    ):
+        try:
+            yield rel, fd
+        finally:
+            os.close(fd)
+    archive = PurePath(SESSIONS_DIR_NAME, ARCHIVE_DIR_NAME)
+    for rel, fd in _walk_contained(
+        mc_real,
+        archive,
+        lambda rel: len(rel.parts) == 3 and _rotation_segment_for_stem(rel.name, stem),
+    ):
+        try:
+            if _is_rotation_header(_read_first_line_fd(fd)):
+                yield rel, fd
+        finally:
+            os.close(fd)
 
 
 _MANAGED_TEMPLATES = frozenset(Path(name).stem for name in OWNED_KIRO_AGENT_FILES)
@@ -528,8 +862,15 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     return rows, len(missing) - len(kept)
 
 
-def create_export_zip() -> tuple[bytes, dict]:
-    """Create a zip archive of KiroCrew state. Returns (zip_bytes, manifest_dict)."""
+def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
+    """Create a zip archive of Kiro Crew state. Returns (zip_bytes, manifest_dict).
+
+    *include_sessions* adds the dashboard chats (`_export_sessions`). It is off by
+    default because a transcript holds everything the agent was shown, so an archive
+    that carries chats is a different thing to hand around than one that does not;
+    the manifest then records ``session_count`` and ``sessions_withheld``. With it
+    off the archive is unchanged.
+    """
     mc = _mc_dir()
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prefix = f"kirocrew-export-{ts}"
@@ -625,7 +966,8 @@ def create_export_zip() -> tuple[bytes, dict]:
                     stores.add(rel.parts[1])
         contents_summary["memory_store_count"] = len(stores)
 
-        # Manifest
+        # Build the envelope before selecting chats so their timestamp map is
+        # budgeted against the same document the importer will read.
         manifest = {
             "version": EXPORT_MANIFEST_VERSION,
             "format": "zip",
@@ -634,6 +976,15 @@ def create_export_zip() -> tuple[bytes, dict]:
             "user": os.environ.get("USER", "unknown"),
             "contents": contents_summary,
         }
+        if include_sessions:
+            session_mtimes: dict[str, float] = {}
+            exported, withheld, skipped = _export_sessions(
+                zf, mc_real, prefix, session_mtimes, manifest=manifest
+            )
+            contents_summary["session_count"] = exported
+            contents_summary["sessions_withheld"] = withheld
+            contents_summary["sessions_skipped_size"] = skipped
+            manifest["session_mtimes"] = session_mtimes
         zf.writestr(f"{prefix}/MANIFEST.json", json.dumps(manifest, indent=2))
 
     return buf.getvalue(), manifest
@@ -1187,6 +1538,267 @@ def _merge_settings(
         summary["settings_kept"] = kept
 
 
+def _listing(directory: Path) -> dict[str, os.DirEntry]:
+    """The entries of *directory* by name; empty when it cannot be listed."""
+    try:
+        with os.scandir(directory) as scan:
+            return {entry.name: entry for entry in scan}
+    except OSError:
+        return {}
+
+
+def _real_dir(entry: os.DirEntry | None) -> bool:
+    """A directory that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_dir(follow_symlinks=False)
+
+
+def _real_file(entry: os.DirEntry | None) -> bool:
+    """A regular file that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_file(follow_symlinks=False)
+
+
+@contextlib.contextmanager
+def _open_import_session_file(root: Path, rel: PurePath) -> Iterator[int | None]:
+    """Open an extracted file with every component below the extraction root pinned.
+
+    The root is the private extraction directory, not the archive-supplied top-level
+    name. Descendants must never be resolved before opening: doing so would bless an
+    ancestor replaced by a symlink. The caller owns the yielded descriptor until exit.
+    """
+    with contextlib.ExitStack() as held:
+        fd: int | None = None
+        try:
+            parent = held.enter_context(
+                pinned_fs.open_pinned_descendant_dir(
+                    root, rel.parts[:-1], what="imported chat source"
+                )
+            )
+            if parent is None:
+                fd = platform_compat.open_file_no_reparse(root / rel, nonblocking=True)
+            else:
+                fd = os.open(
+                    rel.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=parent,
+                )
+            held.callback(os.close, fd)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                fd = None
+        except (OSError, pinned_fs.PinnedPathRefusal):
+            fd = None
+        yield fd
+
+
+def _copy_import_session_fd(
+    mc: Path,
+    rel: PurePath,
+    fd: int,
+    *,
+    held: contextlib.ExitStack,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> bool:
+    """Keep each destination pin and created inode until this chat commits or rolls back."""
+    if rel.parent not in parents:
+        parents[rel.parent] = held.enter_context(
+            pinned_fs.open_pinned_descendant_dir(
+                mc, rel.parts[:-1], what="imported chat destination", create=True
+            )
+        )
+    parent = parents[rel.parent]
+
+    def record_opened(st: os.stat_result) -> None:
+        # The descriptor's identity is available even when the first write fails.
+        created[rel] = (st.st_dev, st.st_ino)
+
+    os.lseek(fd, 0, os.SEEK_SET)
+    # The primitive takes ownership; the reader's context still owns fd.
+    return pinned_fs.copy_file_pinned(
+        str(mc / rel),
+        str(mc / rel),
+        src_fd=os.dup(fd),
+        dst_dir_fd=parent,
+        dst_name=rel.name if parent is not None else None,
+        skip_existing=True,
+        on_opened=record_opened,
+    )
+
+
+def _rollback_import_session(
+    mc: Path,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> list[str]:
+    """Remove only this call's files, through the pins held for their creation."""
+    left = []
+    for rel, identity in reversed(created.items()):
+        parent = parents[rel.parent]
+        try:
+            if parent is None:
+                removed = pinned_fs.unlink_verified_by_name(mc / rel.parent, rel.name, identity)
+            else:
+                removed = pinned_fs.unlink_verified(parent, rel.name, identity)
+        except OSError:
+            removed = False
+        if not removed:
+            left.append(rel.as_posix())
+    return left
+
+
+def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool) -> None:
+    """Add the archive's dashboard chats this install does not have yet.
+
+    Never overwrites: a transcript whose file name already exists here is left as
+    it is, along with its threads and images, so a re-import is a no-op and two
+    machines' copies of one chat are never spliced. Each candidate is re-judged by
+    `_transcript_header_verdict` -- the archive is not trusted to have come from an
+    export that applied it -- and by `_chat_stem`, so only dashboard chats, in the
+    spelling this platform's history layer writes, are installed.
+
+    Listings select candidates only. Every accepted file is opened with the whole
+    extraction-relative chain pinned, then copied from that descriptor into the
+    pinned destination with exclusive creation. Transcript and rotation headers
+    are judged through the descriptor that supplies the installed bytes. Nothing
+    is moved out of the extraction tree. Platforms without directory descriptors
+    use the import driver's declared unpinned policy and still copy, never move.
+
+    Records ``sessions_added``, ``sessions_skipped_existing``, ``sessions_withheld``
+    and ``sessions_failed`` in *summary*. Copy failures roll back only this call's
+    files under the stem lock and use the existing items/refused_merges reporting.
+    An archive without a ``sessions/`` tree records nothing.
+    """
+    if not _real_dir(_listing(snap).get(SESSIONS_DIR_NAME)):
+        return
+    src = snap / SESSIONS_DIR_NAME
+    entries = _listing(src)
+    threads_dir = entries.get(THREADS_DIR_NAME)
+    threads = _listing(src / THREADS_DIR_NAME) if _real_dir(threads_dir) else {}
+    archive_dir = entries.get(ARCHIVE_DIR_NAME)
+    segments = _listing(src / ARCHIVE_DIR_NAME) if _real_dir(archive_dir) else {}
+    _staging_is_pinned(allow_unpinned=allow_unpinned, what="chat import")
+    dest = mc / SESSIONS_DIR_NAME
+    history = ConversationLog(base_dir=dest)
+    added = existing = withheld = failed = 0
+    for name in sorted(entries):
+        entry = entries[name]
+        stem = _chat_stem(name)
+        if stem is None or not _real_file(entry):
+            continue
+        rel = PurePath(SESSIONS_DIR_NAME, name)
+        with _open_import_session_file(snap.parent, PurePath(snap.name) / rel) as fd:
+            if fd is None or _transcript_header_verdict(_read_first_line_fd(fd)) is not None:
+                withheld += 1
+                continue
+            # Exclusive file creation alone cannot keep two imports' companions
+            # together. Hold the transcript writers' lock through the whole install.
+            with history.locked_stems([stem]):
+                if os.path.lexists(dest / name):
+                    existing += 1
+                    continue
+                companions: list[PurePath] = []
+                sidecar = threads.get(f"{stem}{THREADS_SIDECAR_SUFFIX}")
+                if sidecar is not None and _real_file(sidecar):
+                    companions.append(PurePath(THREADS_DIR_NAME, sidecar.name))
+                images = entries.get(f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+                if images is not None and _real_dir(images):
+                    # Attachments are flat: only regular files directly inside.
+                    for image in _listing(Path(images.path)).values():
+                        if _real_file(image):
+                            companions.append(PurePath(images.name, image.name))
+                companions.extend(
+                    PurePath(ARCHIVE_DIR_NAME, segment.name)
+                    for segment in segments.values()
+                    if _rotation_segment_for_stem(segment.name, stem) and _real_file(segment)
+                )
+                with contextlib.ExitStack() as held:
+                    parents: dict[PurePath, int | None] = {}
+                    created: dict[PurePath, tuple[int, int]] = {}
+
+                    def install(member: PurePath, source_fd: int) -> None:
+                        if not _copy_import_session_fd(
+                            mc, member, source_fd, held=held, parents=parents, created=created
+                        ):
+                            raise OSError(f"chat file could not be installed: {member.as_posix()}")
+
+                    try:
+                        for companion in companions:
+                            member = PurePath(SESSIONS_DIR_NAME) / companion
+                            with _open_import_session_file(
+                                snap.parent, PurePath(snap.name) / member
+                            ) as companion_fd:
+                                if companion_fd is None:
+                                    continue
+                                if companion.parts[0] == ARCHIVE_DIR_NAME:
+                                    if not _is_rotation_header(_read_first_line_fd(companion_fd)):
+                                        continue
+                                install(member, companion_fd)
+                        # The transcript is the existing-chat marker; publish it last.
+                        install(rel, fd)
+                    except (OSError, pinned_fs.PinnedPathRefusal) as exc:
+                        left = _rollback_import_session(mc, parents, created)
+                        failed += 1
+                        summary["items"].append(f"sessions/{name} (failed: {exc})")
+                        if left:
+                            summary["items"].append(
+                                "sessions rollback incomplete (not removed: "
+                                + ", ".join(left)
+                                + ")"
+                            )
+                        continue
+                added += 1
+    summary["sessions_added"] = added
+    summary["sessions_skipped_existing"] = existing
+    summary["sessions_withheld"] = withheld
+    summary["sessions_failed"] = failed
+    if failed:
+        summary.setdefault("refused_merges", []).append("sessions")
+    summary["items"].append(
+        f"sessions (merged: {added} added, {existing} already here, {withheld} withheld, "
+        f"{failed} failed)"
+    )
+
+
+def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
+    """Read optional absolute session times; unusable records leave extraction time.
+
+    This is bounded by both the settings-document byte cap and archive member cap.
+    ZIP wall-clock fields carry no zone, so they are never a fallback for activity.
+    """
+    manifests = [
+        info
+        for info in zf.infolist()
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(manifests) != 1 or manifests[0].file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        return {}
+    try:
+        with zf.open(manifests[0]) as src:
+            raw = src.read(_MAX_SETTINGS_DOCUMENT_BYTES + 1)
+        if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
+            return {}
+        manifest = json.loads(raw)
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    records = manifest.get("session_mtimes")
+    if not isinstance(records, dict) or len(records) > _MAX_IMPORT_MEMBERS:
+        return {}
+    mtimes: dict[str, float] = {}
+    for name, value in records.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            epoch = float(value)
+        except OverflowError:
+            continue
+        if math.isfinite(epoch):
+            mtimes[name] = epoch
+    return mtimes
+
+
 def apply_import_zip(
     zip_path: Path, mode: str = "merge", *, channel_settings: ChannelSettings | None = None
 ) -> dict:
@@ -1286,13 +1898,21 @@ def apply_import_zip(
                     f"Import archive uncompressed size {total_uncompressed} exceeds cap "
                     f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
                 )
+            session_mtimes = _read_session_mtimes(zf)
             for info in infos:
                 parts = PurePosixPath(info.filename).parts
                 if ".." in parts or info.filename.startswith("/"):
                     continue
                 if _is_link_entry(info):
                     continue
-                zf.extract(info, work)
+                extracted = zf.extract(info, work)
+                if len(parts) >= 3 and parts[1] == SESSIONS_DIR_NAME and not info.is_dir():
+                    # Only accepted chats are copied out of this private staging tree;
+                    # no-overwrite copying preserves these epochs on installed files.
+                    ts = session_mtimes.get(info.filename)
+                    if ts is not None:
+                        with contextlib.suppress(OSError, OverflowError, ValueError):
+                            os.utime(extracted, (ts, ts))
 
         snap_dirs = [d for d in work.iterdir() if d.is_dir()]
         if len(snap_dirs) != 1:
@@ -1514,6 +2134,11 @@ def apply_import_zip(
                     elif item.is_file() and not target.exists():
                         shutil.copy2(str(item), str(target))
                 summary["items"].append("skills (merged, auto/ skipped)")
+
+        # Both modes, and add-only in both: Replace restores the components it
+        # names, and chats are not one of them, so an archive -- with chats or
+        # without -- never deletes or overwrites a chat this install already has.
+        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned)
 
     # Warn, never refuse: the rows are already written, and a template can be
     # installed afterwards without importing again.

@@ -31,6 +31,11 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+
+# Every ``memory_mode`` a transcript header may record, least strict first. The one
+# allowlist lives in `execution_context`, whose order `stricter_memory_mode` reads;
+# re-exported here for the header parse and the dashboard's ``VALID_MEMORY_MODES``.
+from kiro_crew.execution_context import MEMORY_MODES  # noqa: F401 - facade re-export
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.frontmatter import (  # noqa: F401 - facade re-exports
     SKILL_UPDATE,
@@ -831,6 +836,44 @@ def update_metadata_off_loop(
 # history tools (mcp_core) and the dashboard session handlers so the exclusion
 # can't silently diverge between surfaces.
 INCOGNITO_MEMORY_MODES = frozenset({"incognito", "temporary"})
+
+#: The most of a transcript's first line any reader parses for its mode. The
+#: metadata line is a small JSON object; a longer first line is unknown to every
+#: reader alike, so the write gate and the export cannot disagree about it.
+TRANSCRIPT_HEADER_MAX_BYTES = 64 * 1024
+
+
+def memory_mode_from_header_line(first_line: bytes) -> str | None:
+    """The ``memory_mode`` a transcript's first line records, or ``None`` when unknown.
+
+    The one parse of a transcript header's mode, shared by the restricted-session
+    write gate and the whole-install export and import, so the readers that must
+    fail closed cannot drift apart. Pure: the caller reads (and bounds) the line.
+
+    * a JSON object with ``_type: metadata`` and no ``memory_mode`` (or ``null``)
+      is a legacy persistent session -> ``"persistent"``;
+    * a string mode is ``strip().lower()``-ed and must then be in
+      :data:`MEMORY_MODES`;
+    * anything else -- not JSON, not an object, not a metadata header, a
+      non-string or unrecognised mode -> ``None``. Callers deny on ``None``.
+    """
+    try:
+        data = json.loads(first_line.decode("utf-8", "replace"))
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError and an integer past the interpreter's
+        # digit limit; deep nesting raises RecursionError.
+        return None
+    if not isinstance(data, dict) or data.get("_type") != "metadata":
+        return None
+    mode = data.get("memory_mode")
+    if mode is None:
+        return "persistent"
+    if not isinstance(mode, str):
+        return None
+    # Allowlist, not normalize-and-hope: `"incognito "` must not read as an
+    # unrestricted mode just because it misses INCOGNITO_MEMORY_MODES.
+    normalized = mode.strip().lower()
+    return normalized if normalized in MEMORY_MODES else None
 
 
 def is_incognito_transcript(memory_mode: object) -> bool:

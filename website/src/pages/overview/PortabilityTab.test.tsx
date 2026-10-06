@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import PortabilityTab, { IMPORT_RESULT_KEY, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
+import PortabilityTab, { IMPORT_RESULT_KEY, chatImportLines, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
 import { __resetUiPrefsSyncForTests, resumeUiPrefsSync } from '../../lib/uiPrefs'
 
 // Spied, not replaced: the tab must hand the sync back exactly when it does not
@@ -337,5 +337,134 @@ describe('PortabilityTab restoring browser settings', () => {
     // The refused item is not counted as imported.
     expect(screen.getByText(/Import complete \(2 items\)\. To apply every change, restart the gateway: Settings → About → Restart gateway\./)).toBeTruthy()
     expect(reload).not.toHaveBeenCalled()
+  })
+})
+
+describe('chatImportLines', () => {
+  it('says nothing for an archive that carried no chats', () => {
+    expect(chatImportLines({ items: ['config (restored)'] })).toEqual([])
+  })
+
+  it('reports added and kept chats, and the withheld ones only when there are any', () => {
+    expect(chatImportLines({ sessions_added: 3, sessions_skipped_existing: 1, sessions_withheld: 0 })).toEqual([
+      'Chats added: 3. Already on this install: 1.',
+    ])
+    expect(chatImportLines({ sessions_added: 0, sessions_skipped_existing: 0, sessions_withheld: 2 })).toEqual([
+      'Chats added: 0. Already on this install: 0.',
+      'Chats not imported because they are Incognito, Temporary or unreadable: 2.',
+    ])
+  })
+
+  it('ignores a malformed count rather than rendering it', () => {
+    expect(chatImportLines({ sessions_added: '3' })).toEqual([])
+    expect(chatImportLines({ sessions_added: 1, sessions_skipped_existing: -4 })).toEqual([
+      'Chats added: 1. Already on this install: 0.',
+    ])
+  })
+})
+
+describe('PortabilityTab chat history', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubDownload(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (_url: string) => new Response(new Blob(['PK']), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = () => 'blob:x'
+      static revokeObjectURL = () => {}
+    })
+    return fetchMock
+  }
+
+  it('exports without chats unless the box is ticked', async () => {
+    const fetchMock = stubDownload()
+    render(<PortabilityTab />)
+    const box = screen.getByRole('checkbox', { name: 'Include chat history' }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: /download export/i }))
+    await screen.findByText('Download started.')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/portability/export')
+
+    fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: /download export/i }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/portability/export?include_sessions=true')
+  })
+
+  it('explains what a chat archive holds next to the box', () => {
+    render(<PortabilityTab />)
+    const box = screen.getByRole('checkbox', { name: 'Include chat history' })
+    const hint = document.getElementById(box.getAttribute('aria-describedby') ?? '')
+    expect(hint?.textContent).toContain('Adds every chat in your Sessions list.')
+    expect(hint?.textContent).toContain('Incognito and Temporary chats are never included.')
+  })
+
+  async function preview(contents: Record<string, number>) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(
+      { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents } },
+    ), { status: 200 })))
+    render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    await screen.findByText('Archive contents:')
+  }
+
+  it('says when the chosen archive has no chats', async () => {
+    await preview({ skill_count: 1 })
+    expect(screen.getByTestId('portability-preview-no-chats').textContent)
+      .toBe('This archive has no chats. To bring chats, export again with Include chat history ticked.')
+  })
+
+  async function exportWith(headers: Record<string, string>, tickChats: boolean) {
+    const fetchMock = vi.fn(async () => new Response(new Blob(['PK']), { status: 200, headers }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = () => 'blob:x'
+      static revokeObjectURL = () => {}
+    })
+    render(<PortabilityTab />)
+    if (tickChats) fireEvent.click(screen.getByRole('checkbox', { name: 'Include chat history' }))
+    fireEvent.click(screen.getByRole('button', { name: /download export/i }))
+    await screen.findByText('Download started.')
+    return fetchMock
+  }
+
+  it('says how many older chats an export with chats left out for size', async () => {
+    const fetchMock = await exportWith({ 'X-Kirocrew-Sessions-Skipped-Size': '3' }, true)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('include_sessions=true')
+    expect(screen.getByTestId('portability-export-chats-skipped').textContent)
+      .toBe("Older chats left out because they didn't fit in this archive: 3.")
+  })
+
+  it.each([
+    ['nothing was left out', { 'X-Kirocrew-Sessions-Skipped-Size': '0' }, true],
+    ['the header is not a bare integer', { 'X-Kirocrew-Sessions-Skipped-Size': '3; x' }, true],
+    ['the export carried no chats', { 'X-Kirocrew-Sessions-Skipped-Size': '3' }, false],
+  ])('shows no left-out line when %s', async (_why, headers, tickChats) => {
+    await exportWith(headers, tickChats)
+    expect(screen.queryByTestId('portability-export-chats-skipped')).toBeNull()
+  })
+
+  it('counts the chats the chosen archive carries', async () => {
+    await preview({ session_count: 4, sessions_withheld: 1 })
+    expect(screen.queryByTestId('portability-preview-no-chats')).toBeNull()
+    expect(screen.getByText('Chats: 4')).toBeTruthy()
+  })
+
+  it('reports what the import did with the chats', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: { session_count: 3 } } }
+        : { ok: true, summary: { items: ['sessions (merged: 2 added, 1 already here, 0 withheld)'], sessions_added: 2, sessions_skipped_existing: 1, sessions_withheld: 0 } },
+    ), { status: 200 })))
+    render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect((importButton as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(importButton)
+    const line = await screen.findByTestId('portability-import-chats')
+    expect(line.textContent).toBe('Chats added: 2. Already on this install: 1.')
   })
 })

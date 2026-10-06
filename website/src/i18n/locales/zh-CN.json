@@ -13290,7 +13290,7 @@
         "config": "配置：",
         "created": "创建时间：",
         "crons": "定时任务：",
-        "download_all_settings_memory_skills_crons_and_le": "将所有设置、记忆、技能、定时任务和经验下载为可移植的 zip 文件。\n          不含凭证和会话密钥。",
+        "download_all_settings_memory_skills_crons_and_le": "将所有设置、记忆、技能、定时任务和经验下载为可移植的 zip 文件。\n          不含已存储的凭证和会话密钥。",
         "download_export_zip": "下载导出文件（.zip）",
         "download_started": "已开始下载。",
         "export_configuration": "导出配置",
@@ -13312,7 +13312,7 @@
         "replace": "替换",
         "replace_mode_will_overwrite_existing_data_contin": "替换模式将覆盖现有数据。是否继续？",
         "skills": "技能：",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "上传 {{productName}} 导出的 zip 以在此实例恢复设置。\n          默认会与现有数据合并（跳过重复项）。",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "上传 {{productName}} 导出的 zip，在此实例恢复设置。归档中的聊天会被添加，现有聊天绝不会被替换。\n          默认会与现有数据合并（跳过重复项）。",
         "workspace_files": "工作区文件：",
         "export_templates_not_included": "此导出不包含你的小队使用的 Agent 模板：{{names}}。请把它们从 ~/.kiro/agents 复制到另一台机器的同一文件夹。",
         "import_templates_missing": "部分小队使用了这台机器上没有的 Agent 模板（小队 → 模板）：{{crews}}。使用这些小队前，请先把缺少的模板复制到 ~/.kiro/agents。",
@@ -13323,7 +13323,14 @@
         "settings_kept_name_config": "智能体和网关设置",
         "settings_kept_name_config_local": "本地设置覆盖",
         "settings_kept_name_ui_prefs": "显示偏好",
-        "settings_kept_name_notifications": "通知设置"
+        "settings_kept_name_notifications": "通知设置",
+        "include_chat_history": "包含聊天记录",
+        "include_chat_history_hint": "包含“会话”列表中的所有聊天。聊天会保留粘贴进去的任何内容，例如密码或访问令牌，所以请妥善保管这个归档，不要外传。隐身和临时聊天永远不会被包含。",
+        "chats_count": "聊天：{{chats}}",
+        "archive_has_no_chats": "此归档不含聊天。如需带上聊天，重新导出时勾选“包含聊天记录”。",
+        "export_chats_skipped_size": "较早的聊天因放不进此归档而未包含：{{chats}}。",
+        "import_chats_result": "已添加的聊天：{{added}}。此安装中已有：{{existing}}。",
+        "import_chats_withheld": "因属于隐身、临时或无法读取而未导入的聊天：{{withheld}}。"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

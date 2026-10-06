@@ -78,6 +78,7 @@ from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard i
     steer_refusal_notice,
 )
 from kiro_crew.history import (
+    MEMORY_MODES,
     latest_transcript_ts,
     mint_row_mid,
     monotonic_transcript_ts,
@@ -2356,7 +2357,7 @@ def _parse_options(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
-VALID_MEMORY_MODES = ("persistent", "incognito", "temporary")
+VALID_MEMORY_MODES = MEMORY_MODES
 
 
 def _ascii_slot_key(name: str) -> str:

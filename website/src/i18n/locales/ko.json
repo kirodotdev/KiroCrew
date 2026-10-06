@@ -13290,7 +13290,7 @@
         "config": "설정:",
         "created": "생성:",
         "crons": "cron 작업:",
-        "download_all_settings_memory_skills_crons_and_le": "모든 설정·메모리·스킬·cron·학습 내용을 이식 가능한 zip 파일로 다운로드합니다.\n 자격 증명과 세션 시크릿은 제외됩니다.",
+        "download_all_settings_memory_skills_crons_and_le": "모든 설정·메모리·스킬·cron·학습 내용을 이식 가능한 zip 파일로 다운로드합니다.\n 저장된 자격 증명과 세션 시크릿은 제외됩니다.",
         "download_export_zip": "내보내기 파일 (.zip) 다운로드",
         "download_started": "다운로드를 시작했습니다.",
         "export_configuration": "설정 내보내기",
@@ -13312,7 +13312,7 @@
         "replace": "덮어쓰기",
         "replace_mode_will_overwrite_existing_data_contin": "덮어쓰기 모드는 기존 데이터를 덮어씁니다. 계속하시겠습니까?",
         "skills": "스킬:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} 내보내기 zip을 업로드해 이 인스턴스의 설정을 복원합니다.\n 기존 데이터는 기본적으로 병합됩니다 (중복은 건너뜁니다).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} 내보내기 zip을 업로드해 이 인스턴스의 설정을 복원합니다. 아카이브의 채팅은 추가되며, 기존 채팅은 절대 대체되지 않습니다.\n 기존 데이터는 기본적으로 병합됩니다 (중복은 건너뜁니다).",
         "workspace_files": "워크스페이스 파일:",
         "export_templates_not_included": "이 내보내기에는 크루가 사용하는 에이전트 템플릿이 포함되지 않습니다: {{names}}. ~/.kiro/agents에서 다른 머신의 같은 폴더로 복사하세요.",
         "import_templates_missing": "이 머신에 없는 에이전트 템플릿을 사용하는 크루가 있습니다 (크루 → 템플릿): {{crews}}. 이 크루를 사용하기 전에 없는 템플릿을 ~/.kiro/agents에 복사하세요.",
@@ -13323,7 +13323,14 @@
         "settings_kept_name_config": "에이전트 및 게이트웨이 설정",
         "settings_kept_name_config_local": "로컬 설정 재정의",
         "settings_kept_name_ui_prefs": "표시 환경설정",
-        "settings_kept_name_notifications": "알림 설정"
+        "settings_kept_name_notifications": "알림 설정",
+        "include_chat_history": "채팅 기록 포함",
+        "include_chat_history_hint": "세션 목록의 모든 채팅을 추가합니다. 채팅에는 붙여 넣은 모든 내용이 남으며 비밀번호나 키도 포함되므로 이 아카이브는 다른 사람과 공유하지 마세요. 시크릿 및 임시 채팅은 포함되지 않습니다.",
+        "chats_count": "채팅: {{chats}}",
+        "archive_has_no_chats": "이 아카이브에는 채팅이 없습니다. 채팅을 옮기려면 ‘채팅 기록 포함’을 선택한 상태로 다시 내보내세요.",
+        "export_chats_skipped_size": "이 아카이브에 들어가지 않아 제외된 이전 채팅: {{chats}}",
+        "import_chats_result": "추가한 채팅: {{added}}. 이 설치에 이미 있음: {{existing}}.",
+        "import_chats_withheld": "시크릿, 임시 또는 읽을 수 없어 가져오지 않은 채팅: {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

@@ -13702,7 +13702,7 @@
         "config": "Configuração:",
         "created": "Criado:",
         "crons": "Crons:",
-        "download_all_settings_memory_skills_crons_and_le": "Baixe todas as configurações, memória, habilidades, crons e lições como um arquivo zip portátil.\n          Credenciais e segredos de sessão são excluídos.",
+        "download_all_settings_memory_skills_crons_and_le": "Baixe todas as configurações, memória, habilidades, crons e lições como um arquivo zip portátil.\n          Credenciais armazenadas e segredos de sessão são excluídos.",
         "download_export_zip": "Baixar exportação (.zip)",
         "download_started": "Download iniciado.",
         "export_configuration": "Exportar configuração",
@@ -13724,7 +13724,7 @@
         "replace": "Substituir",
         "replace_mode_will_overwrite_existing_data_contin": "O modo Substituir sobrescreverá os dados existentes. Continuar?",
         "skills": "Habilidades:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Envie um zip de exportação do {{productName}} para restaurar as configurações nesta instância.\n          Os dados existentes serão mesclados por padrão (duplicatas são ignoradas).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Envie um zip de exportação do {{productName}} para restaurar as configurações nesta instância. As conversas do arquivo são adicionadas; as conversas existentes nunca são substituídas.\n          Os dados existentes serão mesclados por padrão (duplicatas são ignoradas).",
         "workspace_files": "Arquivos do workspace:",
         "export_templates_not_included": "Esta exportação não inclui os modelos de agente que suas crews usam: {{names}}. Copie-os de ~/.kiro/agents para a mesma pasta na outra máquina.",
         "import_templates_missing": "Algumas crews usam um modelo de agente que esta máquina não tem (crew → modelo): {{crews}}. Copie os modelos que faltam para ~/.kiro/agents antes de usar essas crews.",
@@ -13737,7 +13737,14 @@
         "settings_kept_name_config": "configurações do agente e do gateway",
         "settings_kept_name_config_local": "substituições locais de configurações",
         "settings_kept_name_ui_prefs": "preferências de exibição",
-        "settings_kept_name_notifications": "configurações de notificação"
+        "settings_kept_name_notifications": "configurações de notificação",
+        "include_chat_history": "Incluir histórico de conversas",
+        "include_chat_history_hint": "Adiciona todas as conversas da sua lista de Sessões. As conversas guardam tudo o que foi colado nelas, como senhas ou chaves, então mantenha este arquivo privado. Conversas no modo Anônimo ou Temporário nunca são incluídas.",
+        "chats_count": "Conversas: {{chats}}",
+        "archive_has_no_chats": "Este arquivo não tem conversas. Para trazê-las, exporte de novo com \"Incluir histórico de conversas\" marcado.",
+        "export_chats_skipped_size": "Conversas mais antigas deixadas de fora porque não couberam neste arquivo: {{chats}}.",
+        "import_chats_result": "Conversas adicionadas: {{added}}. Já estavam nesta instalação: {{existing}}.",
+        "import_chats_withheld": "Conversas não importadas por estarem no modo Anônimo ou Temporário ou por serem ilegíveis: {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

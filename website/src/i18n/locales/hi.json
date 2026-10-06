@@ -13496,7 +13496,7 @@
         "config": "कॉन्फ़िग:",
         "created": "बनाया गया:",
         "crons": "क्रॉन:",
-        "download_all_settings_memory_skills_crons_and_le": "सभी सेटिंग, मेमोरी, स्किल, cron और सीख को एक पोर्टेबल zip फ़ाइल के रूप में डाउनलोड करें।\n          क्रेडेंशियल और सत्र सीक्रेट शामिल नहीं किए जाते।",
+        "download_all_settings_memory_skills_crons_and_le": "सभी सेटिंग, मेमोरी, स्किल, cron और सीख को एक पोर्टेबल zip फ़ाइल के रूप में डाउनलोड करें।\n          सहेजे गए क्रेडेंशियल और सत्र सीक्रेट शामिल नहीं किए जाते।",
         "download_export_zip": "एक्सपोर्ट डाउनलोड करें (.zip)",
         "download_started": "डाउनलोड शुरू हुआ।",
         "export_configuration": "कॉन्फ़िगरेशन एक्सपोर्ट करें",
@@ -13518,7 +13518,7 @@
         "replace": "बदलें",
         "replace_mode_will_overwrite_existing_data_contin": "'बदलें' मोड मौजूदा डेटा को अधिलेखित कर देगा। जारी रखें?",
         "skills": "स्किल:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "इस इंस्टेंस पर सेटिंग बहाल करने के लिए {{productName}} एक्सपोर्ट zip अपलोड करें।\n          मौजूदा डेटा डिफ़ॉल्ट रूप से मर्ज किया जाएगा (डुप्लिकेट छोड़ दिए जाते हैं)।",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "इस इंस्टेंस पर सेटिंग बहाल करने के लिए {{productName}} एक्सपोर्ट zip अपलोड करो। आर्काइव की चैट जोड़ी जाती हैं; मौजूदा चैट कभी नहीं बदली जातीं।\n          मौजूदा डेटा डिफ़ॉल्ट रूप से मर्ज किया जाएगा (डुप्लिकेट छोड़ दिए जाते हैं)।",
         "workspace_files": "वर्कस्पेस फ़ाइलें:",
         "export_templates_not_included": "इस एक्सपोर्ट में वे एजेंट टेम्पलेट नहीं हैं जो तुम्हारे क्रू इस्तेमाल करते हैं: {{names}}। इन्हें ~/.kiro/agents से दूसरी मशीन के उसी फ़ोल्डर में कॉपी करो।",
         "import_templates_missing": "कुछ क्रू ऐसा एजेंट टेम्पलेट इस्तेमाल करते हैं जो इस मशीन पर नहीं है (क्रू → टेम्पलेट): {{crews}}। इन क्रू को इस्तेमाल करने से पहले छूटे हुए टेम्पलेट ~/.kiro/agents में कॉपी करो।",
@@ -13530,7 +13530,14 @@
         "settings_kept_name_config": "एजेंट और गेटवे सेटिंग्स",
         "settings_kept_name_config_local": "लोकल सेटिंग ओवरराइड",
         "settings_kept_name_ui_prefs": "डिस्प्ले प्राथमिकताएँ",
-        "settings_kept_name_notifications": "सूचना सेटिंग्स"
+        "settings_kept_name_notifications": "सूचना सेटिंग्स",
+        "include_chat_history": "चैट इतिहास शामिल करो",
+        "include_chat_history_hint": "तुम्हारी सत्र सूची की हर चैट जोड़ता है। चैट में चिपकाई गई हर चीज़ रहती है, जैसे पासवर्ड या कुंजियाँ, इसलिए यह आर्काइव निजी रखो। गुप्त और अस्थायी चैट कभी शामिल नहीं होतीं।",
+        "chats_count": "चैट: {{chats}}",
+        "archive_has_no_chats": "इस आर्काइव में कोई चैट नहीं है। चैट लाने के लिए \"चैट इतिहास शामिल करो\" पर टिक लगाकर फिर से एक्सपोर्ट करो।",
+        "export_chats_skipped_size": "पुरानी चैट जो इस आर्काइव में नहीं समा सकीं और छोड़ दी गईं: {{chats}}।",
+        "import_chats_result": "जोड़ी गई चैट: {{added}}। इस इंस्टॉल पर पहले से मौजूद: {{existing}}।",
+        "import_chats_withheld": "गुप्त, अस्थायी या पढ़ी न जा सकने के कारण इम्पोर्ट न हुई चैट: {{withheld}}।"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

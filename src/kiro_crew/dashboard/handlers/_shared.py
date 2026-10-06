@@ -42,6 +42,7 @@ from kiro_crew.dashboard.token_auth import (
     _b64url_decode,
     required_peer_key_unverified,
 )
+from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES, memory_mode_from_header_line
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
@@ -3270,10 +3271,9 @@ def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
     return False
 
 
-# Byte ceiling for the session-metadata head read. The metadata line is a small
-# JSON object (a few hundred bytes); 64 KiB is generous headroom while keeping an
-# enormous or adversarial first line from being pulled into memory.
-_METADATA_HEAD_MAX_BYTES = 64 * 1024
+# Byte ceiling for the session-metadata head read, shared with the whole-install
+# export so both read the same amount of a first line before judging it.
+_METADATA_HEAD_MAX_BYTES = TRANSCRIPT_HEADER_MAX_BYTES
 
 
 def _persisted_session_paths(slot_name: str) -> list["Path"]:
@@ -3423,28 +3423,9 @@ def _read_memory_mode(path: "Path") -> str | None:
     except OSError:
         return None
     first, _sep, _rest = head.partition(b"\n")
-    try:
-        d = json.loads(first.decode("utf-8", "replace"))
-    except ValueError:
-        return None
-    if not isinstance(d, dict) or d.get("_type") != "metadata":
-        return None
-    mode = d.get("memory_mode")
-    if mode is None:
-        # Valid header, field absent -> legacy persistent session.
-        return "persistent"
-    if not isinstance(mode, str):
-        return None
-    # Allowlist, not normalize-and-hope: an unrecognised value must read as
-    # unknown so the caller fails closed. Case/whitespace matter because the
-    # comparison downstream is set membership — `"incognito "` would lower() to
-    # itself, miss INCOGNITO_MEMORY_MODES, and be treated as unrestricted. The
-    # API validates this field on the way in, but a hand-edited or partially
-    # written transcript is not bound by that.
-    normalized = mode.strip().lower()
-    if normalized not in VALID_MEMORY_MODES:
-        return None
-    return normalized
+    # The shared header parse (allowlisted, fails closed on anything it does not
+    # recognise) -- the same one the whole-install export and import apply.
+    return memory_mode_from_header_line(first)
 
 
 async def require_owner_dashboard_request(

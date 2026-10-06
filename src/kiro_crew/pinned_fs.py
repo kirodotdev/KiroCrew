@@ -580,6 +580,7 @@ def copy_file_pinned(
     expected_src_ident: "tuple[int, int] | None" = None,
     on_skip: SkipReporter = _noop_skip,
     on_created: "Callable[[os.stat_result], None] | None" = None,
+    on_opened: "Callable[[os.stat_result], None] | None" = None,
 ) -> bool:
     """Copy one file's bytes from a descriptor pinned to a validated inode.
 
@@ -608,6 +609,12 @@ def copy_file_pinned(
     copy by name later: matching ``(st_dev, st_ino)`` on that reopen proves it
     reached the inode this copy created, not a replacement swapped in at the
     same name between the copy and the reopen.
+
+    ``on_opened`` receives the exclusively created destination descriptor's
+    ``fstat`` BEFORE the first write, including when the copy later fails. A
+    caller rolling back a multi-file install can record this identity without
+    re-reading a mutable path. It does not change ``on_created``'s success-only
+    semantics; cleanup remains the caller's responsibility.
 
     ``max_bytes`` is a size ceiling enforced INSIDE the copy, not after it: the
     ``fstat`` size is checked before the destination is even created (a sparse
@@ -776,6 +783,8 @@ def copy_file_pinned(
         # earlier form unlinked first and left the fragment exactly where cleanup was meant
         # to remove it, which my own Windows shard caught.
         try:
+            if on_opened is not None:
+                on_opened(os.fstat(dst_fd))
             exceeded = False
             with os.fdopen(fd, "rb") as fsrc:
                 fd = -1  # ownership passed to the file object

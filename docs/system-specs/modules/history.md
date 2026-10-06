@@ -483,6 +483,158 @@ the retained candidate keeps its stable source-item identity rather than derivin
 identity from its transcript. A growing source session therefore remains tied to
 the same provenance ledger entry.
 
+### Chats in the whole-install export (`portability.py`)
+
+Settings → Import / Export carries dashboard chats only when the export asks:
+`GET /api/portability/export?include_sessions=true`, set by the card's
+"Include chat history (Sessions)" box, which is off on every visit. Without it the archive
+holds no `sessions/` member, exactly as before the option existed.
+
+A chat that travels is its transcript `sessions/<stem>.jsonl` plus the two
+companions keyed by its stem: the reply-thread sidecar `.threads/<stem>.json` and
+the flat image directory `<stem>.attachments/`, plus its retained `archive/`
+segments whose first-line header has `_type="archive"` and `reason="rotate"`.
+Segments are paired by the complete stem before `ARCHIVE_SEGMENT_DELIMITER`;
+longer stems sharing a prefix cannot donate history. Compaction, foreign-dedup
+and rewrite archives stay behind because they contain discarded content. The
+rotation header is judged through the same pinned descriptor that is streamed,
+under the chat's lock, and re-judged on import. The derived `.summaries/` and
+`.intents/` sidecars, lock and temp files, and the
+kiro-cli context window (`session_map.json` and the files under the kiro-cli
+sessions directory) never travel, so an imported chat renders its transcript and
+continues from it rather than resuming the source's context. A stem is accepted
+only in the spelling `_safe_key` writes.
+
+The feature carries dashboard chats and nothing else, selected by the
+`dashboard_` stem: a dashboard slot key `dashboard:<slot>` is written as
+`dashboard_<slot>`, and `portability._chat_stem` (prefix
+`_DASHBOARD_STEM_PREFIX`) is the one rule both export and import apply. Channel
+threads (`slack_…`), cron runs (`cron_…`) and subagent runs (`subagent_…`) keep
+transcripts under other stems; they are not chats for this feature, so they are
+neither exported nor installed and are not counted as withheld.
+
+`portability._transcript_header_verdict` decides which transcripts travel, on
+both ends. It reads the mode with `history.memory_mode_from_header_line`, the
+same parse the restricted-session write gate applies through
+`_read_memory_mode`, so the two cannot disagree about a header. Only a
+transcript that reads `persistent` travels: a metadata first line whose
+`memory_mode` is absent or `null`, or `persistent` in any case with surrounding
+whitespace ignored. `incognito` and `temporary` are withheld as private chats.
+Everything the parse cannot place is withheld as unreadable, never raised: a
+transcript with no metadata header line, a first line that is not a JSON object
+or that the parser cannot finish (an integer past the digit limit, nesting past
+the recursion limit), and a `memory_mode` that is not a string or not one of
+`execution_context.MEMORY_MODES`. Both read at most
+`history.TRANSCRIPT_HEADER_MAX_BYTES` of the first line, so a longer one is
+unknown to both. The export discovers stems
+with one pinned walk, then takes each chat's canonical
+`ConversationLog.locked_stems([stem])` lock before reopening and judging its
+transcript. It holds that in-process and cross-process transcript lock through
+streaming the transcript and its companions, releasing it only after the whole
+chat is archived. A delete and private replacement therefore cannot change the
+chat between its header check and companion export. Each file is opened with
+its ancestors pinned and checked for containment, regular-file type and a single
+link; the header and archived transcript bytes come from the same descriptor.
+The manifest records `session_count` and `sessions_withheld`.
+
+The finished archive must pass this build's own import inventory check, so the
+export budgets the chats against the very caps import enforces,
+`portability._MAX_IMPORT_MEMBERS` (entries) and `_MAX_IMPORT_UNCOMPRESSED`
+(declared uncompressed bytes); there is no second copy of either number. The
+budget starts from what is already in the archive -- every non-session member
+written before the chats -- and reserves one member for the manifest. Its
+non-session envelope is measured with the writer's `json.dumps(indent=2)` UTF-8
+encoding, including the actual host/user fields and all three session counters
+at their maximum width (the candidate count). The uncompressed budget reserves
+at least `_MANIFEST_BASE_RESERVE` bytes for that envelope. Each session member
+charges its JSON-escaped archive name plus `_MANIFEST_PER_MEMBER_RESERVE` bytes
+for its epoch and punctuation; 64 bytes cover a float's maximum 24 ASCII bytes
+plus the indentation, colon, comma and newline. The same per-member charge also
+spends `_MAX_SETTINGS_DOCUMENT_BYTES` minus the measured envelope, so the
+finished manifest's `session_mtimes` stays readable by import's settings-document
+cap. Empty-to-nonempty map formatting is included in the envelope reserve. A
+chat that exceeds this metadata budget is skipped whole and counted in the same
+`sessions_skipped_size` counter, with no new header. One timestamp record per
+session member and the reserved manifest member keep the record count strictly
+below import's `_MAX_IMPORT_MEMBERS` cap (50,000). Candidates are taken most
+recently active first (transcript mtime, ties by stem), and only whole: under the
+chat's lock the transcript and its companions
+are sized in one pass (each companion opened one at a time) and written in a
+second, and a chat whose members or bytes do not fit is left out entirely and
+counted, while a later, smaller chat may still fit. The remaining budget is then
+charged with what was actually written, so a file that grew between the passes
+still counts. The count is `contents.sessions_skipped_size` (present whenever
+chats were requested); the export handler adds it to its SEL `resources` line as
+`sessions_skipped_size=<n>` and sends it as the bare non-negative integer header
+`X-Kirocrew-Sessions-Skipped-Size`, only on an export that asked for chats. The
+Import / Export card shows `export_chats_skipped_size` under the download when
+that header is above zero.
+
+Import never deletes or overwrites a chat, in Merge and in Replace alike
+(`portability._merge_sessions`). It re-applies the header verdict and the
+dashboard stem rule to every archived transcript, because the archive cannot be
+trusted to come
+from an export that applied them, and it skips a transcript whose file name
+already exists here together with that chat's companions, so a re-import adds
+nothing and two copies of one chat are never spliced. Listings select candidates
+only: each source opens from the private extraction root through
+`open_pinned_descendant_dir`, including the archive's top-level directory, with
+no resolution of extraction-relative ancestors. Every file is copied, never
+moved. Transcript and rotation headers are judged through the same no-follow,
+regular-file, single-link descriptor passed to `copy_file_pinned`; swapping a
+name after judgment cannot substitute another file's bytes. Destination
+ancestors are pinned too, and exclusive creation keeps the install add-only.
+
+Each candidate takes the target `ConversationLog.locked_stems([stem])` lock,
+re-checks whether its transcript exists, and holds the lock through every
+companion copy, the transcript copy LAST, and any rollback. A refused transcript
+counts as withheld and installs no companions. If another writer installed the
+transcript before the lock was acquired, the chat counts as already here and
+installs nothing. Destination collisions or copy failures fail the whole chat:
+`copy_file_pinned(on_opened=...)` records each exclusively created file's
+`(st_dev, st_ino)` from its descriptor before the first write; its existing
+`on_created` callback still fires only on success. Rollback removes only these
+recorded files, in reverse order through `unlink_verified` using the destination
+parent descriptors retained through the install, or `unlink_verified_by_name`
+on an unpinned platform. Pre-existing files are never rollback candidates.
+Removal failures and identity mismatches are reported with the unremoved paths;
+they never abort subsequent chats. Empty directories and lock sidecars remain.
+Refused companion sources are omitted, never followed into an outside tree.
+Rotation segments join the same no-overwrite copy under that lock; a skipped
+chat installs none of its segments. Platforms without descriptor-relative
+operations follow the import driver's `allow_unpinned` decision and report
+`staging=unpinned`: every ancestor is screened for links/reparse points, and
+files still copy from no-reparse descriptors with exclusive destination creation.
+This fallback retains the declared ancestor-swap window, but never removes a
+source file. Descriptor pinning does not freeze in-place writes by an unrelated
+same-user process. Rollback is exception recovery, not crash atomicity: a killed
+process can leave companions or a partial transcript, and a failed removal can
+still require manual recovery before a retry. Identity-checked unlink retains
+the helpers' adjacent stat/unlink race against a non-cooperating same-user
+writer. A successful rollback leaves no transcript marker or newly copied chat
+files, so a retry installs the complete chat. The manifest's optional
+`session_mtimes` map keys each session member's full archive name to its absolute
+epoch mtime, sampled from the exported descriptor. The shared descriptor ZIP
+writer clamps header dates to 1980-01-01 00:00:00 through 2107-12-31 23:59:58
+for transcripts, reply threads, attachments and rotation segments, without
+clamping the manifest epoch. Import restores that epoch
+in private staging, and the copy preserves it only for files actually installed,
+so timezone and DST differences cannot shift last activity. This optional read
+uses the 8 MiB settings-document cap and the archive-member count cap; values
+must be finite numbers, not booleans or numeric strings. A missing, malformed
+or unrepresentable timestamp leaves the extraction time, never a guess from
+ZIP's zone-less wall clock. Other members keep their existing ZIP timestamps.
+The summary carries `sessions_added`, `sessions_skipped_existing`,
+`sessions_withheld` and `sessions_failed`; an archive without chats adds none of
+these. A failed chat is not added, kept or withheld. Its failure and any rollback
+residue appear in the existing `items` list, and `refused_merges` includes
+`sessions` so the existing API partial-import reporting applies. No new frontend
+field is required.
+
+Image references inside a transcript are absolute paths into the source's
+`sessions/` directory, so an image renders after import only when the target's
+data home has the same path.
+
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
 
 Dashboard restoration reads an existing canonical execution context before applying

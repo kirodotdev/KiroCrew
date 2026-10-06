@@ -13702,7 +13702,7 @@
         "config": "Configurazione:",
         "created": "Creato:",
         "crons": "Cron:",
-        "download_all_settings_memory_skills_crons_and_le": "Scarica tutte le impostazioni, la memoria, le skill, i cron e le lezioni come file zip portabile.\n          Le credenziali e i segreti di sessione sono esclusi.",
+        "download_all_settings_memory_skills_crons_and_le": "Scarica tutte le impostazioni, la memoria, le skill, i cron e le lezioni come file zip portabile.\n          Le credenziali salvate e i segreti di sessione sono esclusi.",
         "download_export_zip": "Scarica l’esportazione (.zip)",
         "download_started": "Download avviato.",
         "export_configuration": "Esporta la configurazione",
@@ -13724,7 +13724,7 @@
         "replace": "Sostituisci",
         "replace_mode_will_overwrite_existing_data_contin": "La modalità di sostituzione sovrascriverà i dati esistenti. Continuare?",
         "skills": "Skill:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Carica uno zip di esportazione di {{productName}} per ripristinare le impostazioni su questa istanza.\n          I dati esistenti vengono uniti per impostazione predefinita (i duplicati vengono saltati).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Carica uno zip di esportazione di {{productName}} per ripristinare le impostazioni su questa istanza. Le chat dell’archivio vengono aggiunte; le chat esistenti non vengono mai sostituite.\n          I dati esistenti vengono uniti per impostazione predefinita (i duplicati vengono saltati).",
         "workspace_files": "File del workspace:",
         "export_templates_not_included": "Questa esportazione non include i modelli di agente usati dalle tue crew: {{names}}. Copiali da ~/.kiro/agents nella stessa cartella sull'altra macchina.",
         "import_templates_missing": "Alcune crew usano un modello di agente che su questa macchina non c'è (crew → modello): {{crews}}. Copia i modelli mancanti in ~/.kiro/agents prima di usare queste crew.",
@@ -13737,7 +13737,14 @@
         "settings_kept_name_config": "impostazioni dell'agente e del gateway",
         "settings_kept_name_config_local": "sostituzioni locali delle impostazioni",
         "settings_kept_name_ui_prefs": "preferenze di visualizzazione",
-        "settings_kept_name_notifications": "impostazioni delle notifiche"
+        "settings_kept_name_notifications": "impostazioni delle notifiche",
+        "include_chat_history": "Includi la cronologia delle chat",
+        "include_chat_history_hint": "Aggiunge tutte le chat del tuo elenco Sessioni. Le chat conservano tutto ciò che vi incolli, come password o chiavi, quindi tieni privato questo archivio. Le chat Incognito e Temporanee non vengono mai incluse.",
+        "chats_count": "Chat: {{chats}}",
+        "archive_has_no_chats": "Questo archivio non contiene chat. Per portarle, esporta di nuovo con «Includi la cronologia delle chat» selezionato.",
+        "export_chats_skipped_size": "Chat meno recenti escluse perché non entravano in questo archivio: {{chats}}.",
+        "import_chats_result": "Chat aggiunte: {{added}}. Già presenti in questa installazione: {{existing}}.",
+        "import_chats_withheld": "Chat non importate perché Incognito, Temporanee o illeggibili: {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

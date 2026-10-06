@@ -6237,7 +6237,14 @@
         "settings_kept_name_config": "agent and gateway settings",
         "settings_kept_name_config_local": "local settings overrides",
         "settings_kept_name_ui_prefs": "display preferences",
-        "settings_kept_name_notifications": "notification settings"
+        "settings_kept_name_notifications": "notification settings",
+        "include_chat_history": "Include chat history",
+        "include_chat_history_hint": "Adds every chat in your Sessions list. Chats keep anything pasted into them, such as passwords or keys, so keep this archive private. Incognito and Temporary chats are never included.",
+        "chats_count": "Chats: {{chats}}",
+        "archive_has_no_chats": "This archive has no chats. To bring chats, export again with Include chat history ticked.",
+        "export_chats_skipped_size": "Older chats left out because they didn't fit in this archive: {{chats}}.",
+        "import_chats_result": "Chats added: {{added}}. Already on this install: {{existing}}.",
+        "import_chats_withheld": "Chats not imported because they are Incognito, Temporary or unreadable: {{withheld}}."
       },
       "usageTab": {
         "credits": "Credits",

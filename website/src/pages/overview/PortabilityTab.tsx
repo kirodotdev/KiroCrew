@@ -22,6 +22,8 @@ interface ImportResult {
   warnings: string[]
   /** Failures inside an import that otherwise succeeded: items it refused and left unchanged. */
   errors: string[]
+  /** What the import did with the archive's chats (`chatImportLines`); absent when it carried none. */
+  chats?: string[]
 }
 
 /** Non-empty strings only; anything else a stored record holds is dropped. */
@@ -34,9 +36,9 @@ export function readCarriedImportResult(): ImportResult | null {
   try {
     const raw: unknown = JSON.parse(sessionStorage.getItem(IMPORT_RESULT_KEY) ?? 'null')
     if (!raw || typeof raw !== 'object') return null
-    const { msg, warnings, errors } = raw as { msg?: unknown; warnings?: unknown; errors?: unknown }
+    const { msg, warnings, errors, chats } = raw as { msg?: unknown; warnings?: unknown; errors?: unknown; chats?: unknown }
     if (typeof msg !== 'string' || !msg) return null
-    return { msg, warnings: storedStrings(warnings), errors: storedStrings(errors) }
+    return { msg, warnings: storedStrings(warnings), errors: storedStrings(errors), chats: storedStrings(chats) }
   } catch {
     return null
   }
@@ -102,6 +104,15 @@ export function unbundledTemplates(header: string | null): { names: string[]; mo
   } catch {
     return { names: [], more: 0 }
   }
+}
+
+/**
+ * The export's `X-Kirocrew-Sessions-Skipped-Size` header: how many chats the server
+ * left out so the archive stays within what import accepts. A bare non-negative
+ * integer; anything else reads as 0.
+ */
+export function skippedChats(header: string | null): number {
+  return header && /^\d{1,9}$/.test(header) ? Number(header) : 0
 }
 
 /** A bounded list of names, with the left-out count as "N more". */
@@ -177,6 +188,26 @@ export function importedItemCount(items: unknown): number {
   return items.filter(i => !(typeof i === 'string' && NOT_APPLIED_ITEM.test(i))).length
 }
 
+/** A non-negative integer from the import summary, or null when the field is absent or malformed. */
+function summaryCount(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : null
+}
+
+/**
+ * The lines an import reports about chats: how many it added and left as they
+ * were, then, only when there were any, how many it would not install. Empty
+ * when the archive carried no chats (the summary then has no `sessions_added`).
+ */
+export function chatImportLines(summary: Record<string, unknown>): string[] {
+  const added = summaryCount(summary.sessions_added)
+  if (added === null) return []
+  const existing = summaryCount(summary.sessions_skipped_existing) ?? 0
+  const withheld = summaryCount(summary.sessions_withheld) ?? 0
+  const lines = [i18nT('pages.overview.portabilityTab.import_chats_result', { added, existing })]
+  if (withheld) lines.push(i18nT('pages.overview.portabilityTab.import_chats_withheld', { withheld }))
+  return lines
+}
+
 /** A status line for a warning the call still succeeded through. */
 function WarnLine({ msg, testId }: { msg: string; testId: string }) {
   if (!msg) return null
@@ -197,11 +228,14 @@ export default function PortabilityTab() {
     carried ? { type: 'ok', msg: carried.msg } : { type: 'idle', msg: '' },
   )
   const [exportWarning, setExportWarning] = useState('')
+  const [exportChatsSkipped, setExportChatsSkipped] = useState('')
   const [importWarnings, setImportWarnings] = useState<string[]>(carried?.warnings ?? [])
   const [importErrors, setImportErrors] = useState<string[]>(carried?.errors ?? [])
   const [preview, setPreview] = useState<Manifest | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [mode, setMode] = useState<'merge' | 'replace'>('merge')
+  const [includeChats, setIncludeChats] = useState(false)
+  const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -211,8 +245,9 @@ export default function PortabilityTab() {
   const handleExport = async () => {
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     setExportWarning('')
+    setExportChatsSkipped('')
     try {
-      const resp = await fetch('/api/portability/export')
+      const resp = await fetch(includeChats ? '/api/portability/export?include_sessions=true' : '/api/portability/export')
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }))
         setExportStatus({ type: 'error', msg: err.error || resp.statusText })
@@ -232,6 +267,8 @@ export default function PortabilityTab() {
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
       if (names.length) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))
+      const skipped = includeChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
+      if (skipped > 0) setExportChatsSkipped(i18nT('pages.overview.portabilityTab.export_chats_skipped_size', { chats: skipped }))
     } catch (e: unknown) {
       setExportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
     }
@@ -244,6 +281,7 @@ export default function PortabilityTab() {
     setImportStatus({ type: 'idle', msg: '' })
     setImportWarnings([])
     setImportErrors([])
+    setChatLines([])
     if (!file) return
 
     const fd = new FormData()
@@ -269,6 +307,7 @@ export default function PortabilityTab() {
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     setImportWarnings([])
     setImportErrors([])
+    setChatLines([])
     const fd = new FormData()
     fd.append('file', file)
     // The import may rewrite the host's copy of this browser's preferences, so
@@ -300,8 +339,10 @@ export default function PortabilityTab() {
           warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: keptFiles.map(settingsFileLabel).join(', ') }))
         }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
+        const chats = chatImportLines(summary)
         setImportWarnings(warnings)
         setImportErrors(errors)
+        setChatLines(chats)
         setImportStatus({ type: 'ok', msg })
         if (summary.ui_prefs_restored) {
           // The restored browser settings live in localStorage, which only a
@@ -317,7 +358,7 @@ export default function PortabilityTab() {
           // Said before the reload, so the page does not just blink: the full
           // result is re-shown from sessionStorage once the next load mounts.
           setImportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.import_reloading_display_settings') })
-          carryImportResult({ msg, warnings, errors })
+          carryImportResult({ msg, warnings, errors, ...(chats.length ? { chats } : {}) })
           window.location.reload()
         }
       } else {
@@ -340,6 +381,21 @@ export default function PortabilityTab() {
         <p className="text-muted text-[13px] mb-3">
           {i18nT('pages.overview.portabilityTab.download_all_settings_memory_skills_crons_and_le')}
         </p>
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]">
+          <input
+            type="checkbox"
+            aria-label={i18nT('pages.overview.portabilityTab.include_chat_history')}
+            className="h-4 w-4 shrink-0 accent-accent"
+            checked={includeChats}
+            disabled={exportStatus.type === 'loading'}
+            aria-describedby="portability-include-chats-hint"
+            onChange={event => setIncludeChats(event.target.checked)}
+          />
+          {i18nT('pages.overview.portabilityTab.include_chat_history')}
+        </label>
+        <p id="portability-include-chats-hint" className="text-text text-[12px] mb-3">
+          {i18nT('pages.overview.portabilityTab.include_chat_history_hint')}
+        </p>
         <div className="flex items-center gap-3">
           <button
             onClick={handleExport}
@@ -358,6 +414,7 @@ export default function PortabilityTab() {
           )}
         </div>
         <WarnLine msg={exportWarning} testId="portability-export-warning" />
+        <WarnLine msg={exportChatsSkipped} testId="portability-export-chats-skipped" />
       </Card>
 
       <Card>
@@ -405,6 +462,9 @@ export default function PortabilityTab() {
             {preview.contents.workspace_files != null && <div>{i18nT('pages.overview.portabilityTab.workspace_files')} {preview.contents.workspace_files}</div>}
             {preview.contents.skill_count != null && <div>{i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}</div>}
             {preview.contents.plan_memory_files != null && <div>{i18nT('pages.overview.portabilityTab.plan_memory_files')} {preview.contents.plan_memory_files}</div>}
+            {preview.contents.session_count != null
+              ? <div>{i18nT('pages.overview.portabilityTab.chats_count', { chats: preview.contents.session_count })}</div>
+              : <div data-testid="portability-preview-no-chats" className="text-muted">{i18nT('pages.overview.portabilityTab.archive_has_no_chats')}</div>}
             <div className="pt-1 border-t border-border mt-1 text-muted">
               {i18nT('pages.overview.portabilityTab.created')} {preview.created_at} {i18nT('pages.overview.portabilityTab.from')} {preview.user}@{preview.hostname}
             </div>
@@ -433,6 +493,15 @@ export default function PortabilityTab() {
         {importErrors.map((e, i) => (
           <ErrorNotice key={i} variant="inline" message={e} className="mt-3" testId="portability-import-refused" />
         ))}
+        {chatLines.length > 0 && (
+          <div className="flex flex-col items-start">
+            {chatLines.map((line, i) => (
+              <div key={i} role="status" data-testid="portability-import-chats" className="mt-3 text-[12px] text-muted">
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
         {importWarnings.length > 0 && (
           <div className="flex flex-col items-start">
             {importWarnings.map((w, i) => <WarnLine key={i} msg={w} testId="portability-import-warning" />)}

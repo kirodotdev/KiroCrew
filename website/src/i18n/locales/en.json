@@ -7869,7 +7869,7 @@
         "config": "Config:",
         "created": "Created:",
         "crons": "Crons:",
-        "download_all_settings_memory_skills_crons_and_le": "Download all settings, memory, skills, crons, and lessons as a portable zip file.\n          Credentials and session secrets are excluded.",
+        "download_all_settings_memory_skills_crons_and_le": "Download all settings, memory, skills, crons, and lessons as a portable zip file.\n          Stored credentials and session secrets are excluded.",
         "export_configuration": "Export Configuration",
         "from": "| From:",
         "import_configuration": "Import Configuration",
@@ -7880,7 +7880,7 @@
         "replace": "Replace",
         "replace_mode_will_overwrite_existing_data_contin": "Replace mode will overwrite existing data. Continue?",
         "skills": "Skills:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Upload a {{productName}} export zip to restore settings on this instance.\n          Existing data will be merged by default (duplicates are skipped).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Upload a {{productName}} export zip to restore settings on this instance. Chats in the archive are added; existing chats are never replaced.\n          Existing data will be merged by default (duplicates are skipped).",
         "workspace_files": "Workspace files:"
       },
       "promptsTab": {

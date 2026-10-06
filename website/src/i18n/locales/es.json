@@ -13702,7 +13702,7 @@
         "config": "Configuración:",
         "created": "Creado:",
         "crons": "Crons:",
-        "download_all_settings_memory_skills_crons_and_le": "Descarga todos los ajustes, la memoria, las habilidades, los crons y las lecciones en un archivo zip portable.\n          Se excluyen las credenciales y los secretos de sesión.",
+        "download_all_settings_memory_skills_crons_and_le": "Descarga todos los ajustes, la memoria, las habilidades, los crons y las lecciones en un archivo zip portable.\n          Se excluyen las credenciales almacenadas y los secretos de sesión.",
         "download_export_zip": "Descargar la exportación (.zip)",
         "download_started": "Descarga iniciada.",
         "export_configuration": "Exportar configuración",
@@ -13724,7 +13724,7 @@
         "replace": "Reemplazar",
         "replace_mode_will_overwrite_existing_data_contin": "El modo Reemplazar sobrescribirá los datos existentes. ¿Continuar?",
         "skills": "Habilidades:",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Sube un zip de exportación de {{productName}} para restaurar los ajustes en esta instancia.\n          Los datos existentes se combinarán de forma predeterminada (se omiten los duplicados).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Sube un zip de exportación de {{productName}} para restaurar los ajustes en esta instancia. Los chats del archivo se añaden; los chats existentes nunca se reemplazan.\n          Los datos existentes se combinarán de forma predeterminada (se omiten los duplicados).",
         "workspace_files": "Archivos del espacio de trabajo:",
         "export_templates_not_included": "Esta exportación no incluye las plantillas de agente que usan tus equipos: {{names}}. Cópialas de ~/.kiro/agents a la misma carpeta en la otra máquina.",
         "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos.",
@@ -13737,7 +13737,14 @@
         "settings_kept_name_config": "ajustes del agente y del gateway",
         "settings_kept_name_config_local": "anulaciones locales de ajustes",
         "settings_kept_name_ui_prefs": "preferencias de visualización",
-        "settings_kept_name_notifications": "ajustes de notificaciones"
+        "settings_kept_name_notifications": "ajustes de notificaciones",
+        "include_chat_history": "Incluir el historial de chats",
+        "include_chat_history_hint": "Añade todos los chats de tu lista de Sesiones. Los chats conservan todo lo que pegues en ellos, como contraseñas o claves, así que mantén este archivo en privado. Los chats Incógnito y Temporal nunca se incluyen.",
+        "chats_count": "Conversaciones: {{chats}}",
+        "archive_has_no_chats": "Este archivo no tiene conversaciones. Para traerlas, exporta de nuevo con \"Incluir el historial de chats\" marcado.",
+        "export_chats_skipped_size": "Conversaciones antiguas que no cupieron en este archivo y se dejaron fuera: {{chats}}.",
+        "import_chats_result": "Chats añadidos: {{added}}. Ya estaban en esta instalación: {{existing}}.",
+        "import_chats_withheld": "Chats no importados por ser Incógnito, Temporal o ilegibles: {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

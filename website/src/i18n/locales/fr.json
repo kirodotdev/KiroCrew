@@ -13702,7 +13702,7 @@
         "config": "Configuration :",
         "created": "Créé :",
         "crons": "Crons :",
-        "download_all_settings_memory_skills_crons_and_le": "Téléchargez tous les paramètres, la mémoire, les compétences, les crons et les leçons dans un fichier zip portable.\n          Les identifiants et les secrets de session sont exclus.",
+        "download_all_settings_memory_skills_crons_and_le": "Télécharge tous les paramètres, la mémoire, les compétences, les crons et les leçons dans un fichier zip portable.\n          Les identifiants enregistrés et les secrets de session sont exclus.",
         "download_export_zip": "Télécharger l’export (.zip)",
         "download_started": "Téléchargement démarré.",
         "export_configuration": "Exporter la configuration",
@@ -13724,7 +13724,7 @@
         "replace": "Remplacer",
         "replace_mode_will_overwrite_existing_data_contin": "Le mode Remplacer écrasera les données existantes. Continuer ?",
         "skills": "Compétences :",
-        "upload_a_kirocrew_export_zip_to_restore_settings": "Importez un zip d'export {{productName}} pour restaurer les paramètres sur cette instance.\n          Les données existantes seront fusionnées par défaut (les doublons sont ignorés).",
+        "upload_a_kirocrew_export_zip_to_restore_settings": "Importe un zip d’export {{productName}} pour restaurer les paramètres sur cette instance. Les discussions de l’archive sont ajoutées ; les discussions existantes ne sont jamais remplacées.\n          Les données existantes seront fusionnées par défaut (les doublons sont ignorés).",
         "workspace_files": "Fichiers de l'espace de travail :",
         "export_templates_not_included": "Cet export n'inclut pas les modèles d'agent utilisés par tes équipes : {{names}}. Copie-les depuis ~/.kiro/agents vers le même dossier sur l'autre machine.",
         "import_templates_missing": "Certaines équipes utilisent un modèle d'agent absent de cette machine (équipe → modèle) : {{crews}}. Copie les modèles manquants dans ~/.kiro/agents avant d'utiliser ces équipes.",
@@ -13737,7 +13737,14 @@
         "settings_kept_name_config": "paramètres de l'agent et du gateway",
         "settings_kept_name_config_local": "surcharges locales des paramètres",
         "settings_kept_name_ui_prefs": "préférences d'affichage",
-        "settings_kept_name_notifications": "paramètres de notification"
+        "settings_kept_name_notifications": "paramètres de notification",
+        "include_chat_history": "Inclure l’historique des discussions",
+        "include_chat_history_hint": "Ajoute toutes les discussions de ta liste Sessions. Les discussions gardent tout ce que tu y colles, comme des mots de passe ou des clés, alors garde cette archive privée. Les discussions Incognito et Temporaire ne sont jamais incluses.",
+        "chats_count": "Discussions : {{chats}}",
+        "archive_has_no_chats": "Cette archive ne contient aucune discussion. Pour les emporter, exporte à nouveau en cochant « Inclure l’historique des discussions ».",
+        "export_chats_skipped_size": "Discussions plus anciennes laissées de côté faute de place dans cette archive : {{chats}}.",
+        "import_chats_result": "Discussions ajoutées : {{added}}. Déjà dans cette installation : {{existing}}.",
+        "import_chats_withheld": "Discussions non importées car Incognito, Temporaire ou illisibles : {{withheld}}."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",
