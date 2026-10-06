@@ -867,8 +867,9 @@ dependency. The second run sees the agent the first already cleared, computes
 own notice after ~250ms. The branch is therefore guarded to act on the TRANSITION
 into the empty state (`unbindHandledRef`), re-armed by any bound path so a later
 clear still announces itself. A test that reads the notice synchronously cannot
-see this: it passes against the erasing version, which is why the form's
-regressions read it AFTER the debounce.
+see this: it passes against the erasing version, which is why the regressions in
+`website/src/test/JobForm.projectAgentReset.test.tsx` read it AFTER the
+debounce.
 
 **A reset a path EDIT caused is undone when the finished path defines the name
 again.** The debounce above only protects a path typed faster than 250ms;
