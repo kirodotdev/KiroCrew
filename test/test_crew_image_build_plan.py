@@ -155,58 +155,6 @@ def test_a_comment_inside_a_continuation_does_not_break_an_instruction() -> None
     assert joined[0].split() == ["RUN", "a", "b"]
 
 
-def test_the_two_dockerfile_readers_agree() -> None:
-    """This reader and the sibling ratchet's must not drift apart.
-
-    ``test_docker_wheel_layer_contract.py`` carries its own copy of this loop for
-    the gateway image, so two readers decide what a Dockerfile instruction is. A
-    divergence would classify a recipe one way for the ratchet and another way
-    for this lane, with both green. They are compared on a REAL recipe carrying
-    continuations and comments rather than on a synthetic string, so the input is
-    one neither reader was written against.
-
-    The sibling's names are looked up rather than assumed. Reaching straight into
-    another test module's private API would raise ``AttributeError`` the moment
-    that module reshapes its reader or its recipe set, which reads as a broken
-    test rather than as the signal it is. So the lookup fails with a message
-    naming what to re-point it at. Deleting this pin is right only when one of the
-    two readers goes away, not when the surface around one of them moves.
-    """
-    ratchet = importlib.import_module("test_docker_wheel_layer_contract")
-    reader = getattr(ratchet, "_instructions", None)
-    recipes = getattr(ratchet, "RECIPES", None)
-    assert reader is not None and recipes, (
-        "test_docker_wheel_layer_contract no longer exposes _instructions() and a non-empty "
-        "RECIPES, so this parity pin cannot reach the reader it compares against. Re-point it "
-        "at whatever that module now calls its reader and its recipe set; delete it only once "
-        "one of the two readers is gone"
-    )
-    for recipe in sorted(recipes):
-        assert recipe.is_file(), f"the sibling ratchet names a recipe that is missing: {recipe}"
-        theirs = reader(recipe)
-        mine = plan_mod.logical_instructions(recipe.read_text(encoding="utf-8"))
-        assert mine == theirs, (
-            "the crew lane's Dockerfile reader and the wheel-layer ratchet's disagree on "
-            f"{recipe}, so the same recipe means two different things to two gates"
-        )
-        assert mine, f"{recipe} yielded no instructions, so this comparison proves nothing"
-
-
-def test_the_parity_pin_says_what_to_repoint_when_the_sibling_reshapes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Losing the sibling's surface must read as a signal, not as a broken test.
-
-    The sibling owns its reader and its recipe set as private names, so both are
-    free to move. When one does, this pin must say what to re-point rather than
-    surface an ``AttributeError`` from reaching into a private API.
-    """
-    ratchet = importlib.import_module("test_docker_wheel_layer_contract")
-    monkeypatch.delattr(ratchet, "RECIPES")
-    with pytest.raises(AssertionError, match="Re-point it"):
-        test_the_two_dockerfile_readers_agree()
-
-
 # ── the refusals ─────────────────────────────────────────────────────────────
 
 

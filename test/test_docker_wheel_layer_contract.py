@@ -32,8 +32,10 @@ daemon (same shape as ``test_workflow_cache_setup_uniqueness.py``).
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,26 +69,38 @@ RECIPES: dict[Path, str] = {
 WHEEL_FREE: tuple[Path, ...] = (_CREW_RUNTIME / "Dockerfile.crew",)
 
 
+def _load_build_plan():
+    """The crew image lane's build-plan module, loaded from ``scripts/``.
+
+    ``scripts/`` is not an importable package, so the module is loaded by file
+    path -- the same way ``test/test_crew_image_build_plan.py`` loads it. It is
+    registered in ``sys.modules`` before execution because ``@dataclass`` looks
+    its own module up there while the class body runs.
+    """
+    name = "crew_image_build_plan"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "scripts" / "crew_image_build_plan.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _instructions(dockerfile: Path) -> list[str]:
     """Logical Dockerfile instructions, continuations joined, comments dropped.
 
-    The Dockerfile parser strips whole-line comments even inside a
-    backslash-continued instruction, so mirror that here before joining.
+    A thin per-file wrapper over the single repository reader,
+    ``logical_instructions`` in ``scripts/crew_image_build_plan.py``: it reads
+    the recipe's text and classifies it through that one reader, so this ratchet
+    and the crew image lane cannot classify the same recipe differently.
     """
-    logical: list[str] = []
-    pending = ""
-    for raw in dockerfile.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.endswith("\\"):
-            pending += line[:-1] + " "
-            continue
-        logical.append((pending + line).strip())
-        pending = ""
-    if pending:
-        logical.append(pending.strip())
-    return logical
+    text = dockerfile.read_text(encoding="utf-8")
+    return _load_build_plan().logical_instructions(text)
 
 
 def _copy_sources_and_dest(inst: str) -> tuple[list[str], str]:
