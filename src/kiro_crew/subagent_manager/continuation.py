@@ -10,6 +10,8 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _CONVERSATION_TTL_SECS,
+        _MAX_FOLLOWUP_MESSAGE_CHARS,
+        _MAX_PENDING_FOLLOWUPS,
         _STEER_STARTUP_POLL_SECS,
         _STEER_STARTUP_WAIT_SECS,
         CONTEXT_GROUP_LESSONS,
@@ -529,6 +531,29 @@ class ContinuationCoordinator(ManagerComponent):
         - ``conversation_gone`` — no resumable session files remain.
         """
         conv_key = f"subagent:{conv_id}"
+        # Resolve the run's owning app ONCE, up front and best-effort, so every
+        # early-return refusal record below (conversation_busy, conversation_gone,
+        # memory_unavailable, resume_failed, retryable) carries it. Without it a
+        # refused follow-up for a parentless app-owned run (allowed to spawn,
+        # denied messaging) names no app, and its completion egresses under the
+        # permissive host profile instead of the app's own. The authoritative
+        # resolution below (with its typed failure handling) still runs for the
+        # dispatched path; this is the fail-closed floor for the refusals that
+        # return before it. Any lookup error leaves it empty (host-only vetting,
+        # the safe direction), never raising on the refusal path.
+        _owning_app = ""
+        try:
+            if _execution_context is not None:
+                _owning_app = _execution_context.app or ""
+            else:
+                _orig = self._manager._agents.get(conv_id)
+                if _orig is not None:
+                    _owning_app = _orig.app or ""
+                else:
+                    _read_app = self._persistence.read_run_app(conv_id)
+                    _owning_app = _read_app if isinstance(_read_app, str) else ""
+        except Exception:
+            _owning_app = ""
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
             info = SubagentInfo(
@@ -536,6 +561,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                app=_owning_app,
                 error=(
                     f"conversation_busy: run {busy.id} is still settling a state "
                     "write on this conversation — retry shortly"
@@ -574,6 +600,7 @@ class ContinuationCoordinator(ManagerComponent):
                     task=_redact(task),
                     done=True,
                     parent_session_key=parent_session_key,
+                    app=_owning_app,
                     error=native_refusal,
                 )
             # Point the caller at the prior result if the run folder survives
@@ -590,6 +617,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                app=_owning_app,
                 error=(
                     "conversation_gone: no resumable session remains for "
                     f"{conv_id} (expired, released, or files pruned)."
@@ -611,6 +639,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                app=_owning_app,
                 error=f"memory_unavailable: {exc}",
             )
         # The old registry record can disappear after eviction or restart. A
@@ -633,6 +662,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                app=_owning_app,
                 error=f"resume_failed: {exc}",
             )
         # Promote the run's retention through the single choke point:
@@ -662,6 +692,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                app=_owning_app,
                 error=(
                     "conversation_busy: retention promotion is temporarily "
                     f"unavailable for {conv_id}; retry the continuation"
@@ -891,6 +922,22 @@ class ContinuationCoordinator(ManagerComponent):
             # promises a completion event, and a shutting-down gateway can
             # keep neither the watcher nor the continuation alive.
             return False, "shutting_down: the gateway is stopping — re-send after restart"
+        # Bound the QUEUE here, where it grows, under the same two limits the shutdown
+        # handover writes with. Refusing for the same reason the shutdown check above
+        # refuses: an accepted message promises a completion event, so admitting one and
+        # shortening it later owes an event for text the queue does not hold. The caller
+        # learns which limit it met, so a legitimately long correction can be split.
+        if len(message) > _MAX_FOLLOWUP_MESSAGE_CHARS:
+            return False, (
+                f"too_long: a follow_up message is capped at {_MAX_FOLLOWUP_MESSAGE_CHARS} "
+                f"characters (got {len(message)}) — send it in smaller pieces"
+            )
+        if len(info.pending_followups) >= _MAX_PENDING_FOLLOWUPS:
+            return False, (
+                f"queue_full: this run already holds {len(info.pending_followups)} queued "
+                f"follow_up message(s), the cap is {_MAX_PENDING_FOLLOWUPS} — they drain as "
+                f"one continuation when the run ends"
+            )
         info.pending_followups.append(message)
         if not info._followup_watcher:
             self._manager._arm_followup_watcher(info)
@@ -1076,7 +1123,7 @@ class ContinuationCoordinator(ManagerComponent):
         reason: str,
         failure_info: SubagentInfo | None = None,
         messages: list | None = None,
-    ) -> None:
+    ) -> bool:
         """Deliver a SYNTHETIC failure completion event for an undeliverable
         follow-up, through the same ``_on_done`` path as real completions.
 
@@ -1087,9 +1134,15 @@ class ContinuationCoordinator(ManagerComponent):
         ``messages`` labels the synthetic event when the queue was already
         drained by the caller (the expiry path clears before announcing so a
         later watcher cannot resurrect messages reported dead).
+
+        Returns whether the parent was actually told. Both ways of not telling it
+        are contained here -- there is no ``_on_done`` to reach, and ``_on_done``
+        raised -- so a caller that must not discard the queue until it has been
+        reported cannot learn that from an exception it will never see. A caller
+        free to ignore the answer still may.
         """
         if self._manager._on_done is None:
-            return
+            return False
         label_msgs = messages if messages is not None else info.pending_followups
         # The label joins the RAW messages and redacts the JOIN before any
         # bound: bounding first can split a credential at a cut into fragments
@@ -1104,11 +1157,30 @@ class ContinuationCoordinator(ManagerComponent):
             done=True,
             parent_session_key=info.parent_session_key,
             error=reason,
+            # Carry the originating run's owning app onto the synthetic event, so
+            # its completion is vetted under the app's own profile. Without it a
+            # parentless app-owned run (allowed to spawn, denied messaging) whose
+            # synthetic completion names no app egresses its follow-up snippet
+            # under the permissive host profile.
+            app=info.app,
         )
+        # A caller-SUPPLIED failure_info bypasses the constructor above, so the
+        # app line never ran for it: the async-continuation memory-resolution
+        # refusal and the admission refusal both hand in a record that carries
+        # no app. Preserve ownership on those too -- inherit the originating
+        # run's app when the supplied record names none, and keep whatever app a
+        # supplied record already carries. Without this the same denied-messaging
+        # app egresses its follow-up under the host profile when ordinary
+        # operator activity (crew deletion during an app-owned run with queued
+        # follow-ups) drives the supplied-failure path.
+        if not synthetic.app:
+            synthetic.app = info.app
         try:
             await self._manager._on_done(synthetic)
         except Exception:
             logger.warning("follow_up failure announce for %s failed", info.id, exc_info=True)
+            return False
+        return True
 
     def _audit_followup_impl(self, info: SubagentInfo, outcome: str) -> None:
         try:
