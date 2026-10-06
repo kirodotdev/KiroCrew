@@ -19,7 +19,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.dashboard import chat_utils, handlers
 from kiro_crew.dashboard import remote_chat_guard as guard
-from kiro_crew.dashboard.handlers import source_providers
+from kiro_crew.dashboard.handlers import git_branches, source_providers
 from kiro_crew.dashboard.routes import taskrunner
 
 pytestmark = pytest.mark.asyncio
@@ -35,6 +35,8 @@ GUARDED = {
     "/api/project/git": ("api_project_git", "GET"),
     "/api/project/git/status": ("api_project_git_status", "GET"),
     "/api/project/git/log": ("api_project_git_log", "GET"),
+    "/api/project/git/branches": ("api_project_git_branches", "GET"),
+    "/api/project/git/switch": ("api_project_git_switch", "POST"),
 }
 SECRET_PATH = "/srv/owner-private/notes/plan.md"
 REMOTE, LOCAL = "chat-remote", "chat-local"
@@ -54,7 +56,9 @@ def table(monkeypatch: pytest.MonkeyPatch):
         return handler
 
     for name, _method in GUARDED.values():
-        monkeypatch.setattr(handlers, name, stand_in(name))
+        # The branch switcher's routes live in their own handler module.
+        owner = git_branches if hasattr(git_branches, name) else handlers
+        monkeypatch.setattr(owner, name, stand_in(name))
     app = web.Application()
     taskrunner.register(app)
     slots = {REMOTE: SimpleNamespace(key=REMOTE), LOCAL: SimpleNamespace(key=LOCAL)}

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
+import BranchSwitcher from './BranchSwitcher'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import { errMessage } from '../utils/thunkError'
@@ -107,6 +108,12 @@ export interface GitPanelSection {
    *  subprocesses every 5 s. An open section without it still fetched once and
    *  refreshes on window focus and on its Refresh button. */
   poll?: boolean
+  /** Whether the heading's branch is the branch switcher rather than a label.
+   *  `GitReposPanel` sets it on the chat's project only, the one repository
+   *  the switch route accepts. The switcher is a button, which cannot nest in
+   *  the heading's toggle button, so a switchable heading lays the toggle's
+   *  hit area over the status line instead of wrapping it (see the return). */
+  branchSwitch?: boolean
 }
 
 type GitStatus = Awaited<ReturnType<typeof api.projectGitStatus>>
@@ -137,12 +144,16 @@ interface GitPanelProps {
    *  collapsed section; the open state itself stays here, since it is partly
    *  derived from this section's own status query. */
   onOpenChange?: (projectDir: string, open: boolean) => void
+  /** True while this chat's response runs: a checkout would change files under the turn. */
+  busy?: boolean
 }
 
-export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange }: GitPanelProps) {
+export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange, busy = false }: GitPanelProps) {
   const prevBranch = useRef<string | undefined>(undefined)
   // null = the user has not toggled this section, so its open state is derived.
   const [openOverride, setOpenOverride] = useState<boolean | null>(null)
+  const switchable = section.branchSwitch === true
+  const statusRowId = useId()
 
   const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
@@ -313,13 +324,27 @@ export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange
             </span>
           ) : (
             <>
-              {/* Branch name */}
-              <GitBranch size={14} className="text-accent shrink-0" />
-              <span className="text-[12px] font-medium text-text truncate">
-                {status?.branch || (noRepository
-                  ? i18nT('components.gitPanel.not_a_repository')
-                  : i18nT('components.gitPanel.loading'))}
-              </span>
+              {/* Branch name, or the switcher once the repository is known on a
+                  switchable section. Positioned so it paints above the
+                  toggle's stretched hit area and takes its own clicks. */}
+              {isRepository && switchable ? (
+                <span className="relative z-[1] flex min-w-0">
+                  <BranchSwitcher
+                    projectDir={projectDir}
+                    branch={status?.branch}
+                    disabledReason={busy ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
+                  />
+                </span>
+              ) : (
+                <>
+                  <GitBranch size={14} className="text-accent shrink-0" />
+                  <span className="text-[12px] font-medium text-text truncate">
+                    {status?.branch || (noRepository
+                      ? i18nT('components.gitPanel.not_a_repository')
+                      : i18nT('components.gitPanel.loading'))}
+                  </span>
+                </>
+              )}
 
               {/* Ahead/behind pill */}
               {status && (status.ahead != null || status.behind != null) && (
@@ -617,10 +642,22 @@ export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange
           heading and a button cannot nest in a button, so it is a sibling in
           the same flex row, outside the toggle's hover and hit area. */}
       <div className="flex items-stretch">
+        {/* A switchable heading's status line holds the branch switcher, a
+            button, so it cannot sit inside the toggle. It follows the toggle
+            instead, and the toggle's `::after` stretches over the whole
+            two-line block (`relative` frame), so a click on the change count
+            still toggles while the switcher, positioned above that hit area,
+            takes its own. The line is the toggle's description, so the toggle
+            still announces the branch and count. Elsewhere the frame is
+            `contents` and the heading is the one toggle described above. */}
+        <div className={switchable ? 'relative flex-1 min-w-0 flex flex-col pl-3 pr-2 pt-2 hover:bg-bg-hover transition-colors' : 'contents'}>
         <button
           type="button"
-          className="flex-1 min-w-0 flex flex-col pl-3 pr-2 pt-2 bg-transparent border-none cursor-pointer text-left hover:bg-bg-hover transition-colors"
+          className={switchable
+            ? 'min-w-0 flex flex-col p-0 bg-transparent border-none cursor-pointer text-left after:absolute after:inset-0'
+            : 'flex-1 min-w-0 flex flex-col pl-3 pr-2 pt-2 bg-transparent border-none cursor-pointer text-left hover:bg-bg-hover transition-colors'}
           aria-expanded={sectionOpen}
+          aria-describedby={switchable ? statusRowId : undefined}
           // Native tooltip that never changes layout: a title draws over the
           // page, so it cannot shift a row the way an inline reveal did. It
           // names the action for the open heading too, where the chevron alone
@@ -685,8 +722,10 @@ export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange
               </span>
             )}
           </div>
-          {statusRow}
+          {!switchable && statusRow}
         </button>
+        {switchable && <div id={statusRowId}>{statusRow}</div>}
+        </div>
         {refreshButton}
       </div>
       {requestErrors}
