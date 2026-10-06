@@ -519,10 +519,11 @@ the ordinary fresh state and logs at debug. It **never raises** —
 `default_project_dir` and the workspace-identity block are built on it, so a raise
 would break a fresh install and take both with it.
 
-Consequence worth knowing: a legacy FLAT `{"name": "dir"}` workspaces entry is a
-type mismatch the schema validator removes before the loader sees it, so such an
-entry is absent from the loaded table. `resolve_agent_bindings` has always answered
-from that table; `workspace_dir_for` now agrees with it.
+A legacy FLAT `{"name": "dir"}` workspaces entry is a schema type mismatch that
+the validator keeps (`_is_flat_workspace_string`): `_migrate_workspaces` turns it
+into `WorkspaceConfig(dir=...)` in the loaded table, and the `MIGRATE_WORKSPACES`
+write-back persists it as `{"dir": ...}`. Both `resolve_agent_bindings` and
+`workspace_dir_for` answer from that table.
 
 ## Superseded Defaults (reported; a named few adopt themselves once)
 

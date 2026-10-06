@@ -392,17 +392,15 @@ class TestWorkspaceFallThrough:
     def test_it_agrees_with_resolve_agent_bindings(self) -> None:
         """One table, one answer: both resolvers now read ``cfg.workspaces``.
 
-        Including for a config the schema repairs. A legacy FLAT
-        ``{"name": "dir"}`` entry is a type mismatch the validator removes before
-        the loader sees it, so the loaded table has no such workspace — and
-        ``resolve_agent_bindings`` has always answered from that table. Reading
-        the raw bytes instead is what let the two disagree.
+        Including for a legacy FLAT ``{"name": "dir"}`` entry: the loader
+        migrates it into the table, and both resolvers answer from that table
+        rather than from the raw bytes.
         """
         from kiro_crew.config.loader import resolve_agent_bindings
 
         _write_config({"workspaces": {"alt": "alt-tree"}, "default_workspace": "alt"})
         cfg = KiroCrewConfig.load()
-        assert "alt" not in cfg.workspaces
+        assert cfg.workspaces["alt"].dir == "alt-tree"
         bindings = resolve_agent_bindings(cfg)
         assert workspace_dir_for("alt") == config_dir() / bindings.workspace_dir
 

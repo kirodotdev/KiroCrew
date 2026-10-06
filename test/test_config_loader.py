@@ -1847,10 +1847,9 @@ class TestAgentWorkspaceBindingsProperties:
         assert cfg.agents["default"].kiro_agent == expected_kiro
 
         # Req 9.2: Flat workspaces auto-migrated to structured format
-        # (schema validation may strip invalid entries, so only check
-        # that surviving workspaces are structured)
-        for ws_name, ws_cfg in cfg.workspaces.items():
-            assert isinstance(ws_cfg, WorkspaceConfig)
+        for ws_name, ws_dir in flat_workspaces.items():
+            assert isinstance(cfg.workspaces[ws_name], WorkspaceConfig)
+            assert cfg.workspaces[ws_name].dir == ws_dir
 
         # Always has at least one workspace (default synthesized if empty)
         assert len(cfg.workspaces) >= 1
@@ -1862,6 +1861,28 @@ class TestAgentWorkspaceBindingsProperties:
         # Resolve bindings → uses migrated default agent
         result = resolve_agent_bindings(cfg)
         assert result.kiro_agent == expected_kiro
+
+    def test_flat_workspace_strings_migrate_and_write_back(self, tmp_path: Path) -> None:
+        """Flat ``workspaces`` strings load as their dirs and persist as ``{"dir": ...}``."""
+        home = tmp_path / "home"
+        home.mkdir()
+        cfg_file = home / "config.json"
+        cfg_file.write_text(
+            json.dumps({"workspaces": {"default": "~/ws", "other": "/abs"}}),
+            encoding="utf-8",
+        )
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=home),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+        ):
+            cfg = KiroCrewConfig.load()
+
+        assert cfg.workspaces == {
+            "default": WorkspaceConfig(dir="~/ws"),
+            "other": WorkspaceConfig(dir="/abs"),
+        }
+        on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert on_disk["workspaces"] == {"default": {"dir": "~/ws"}, "other": {"dir": "/abs"}}
 
 
 class TestMemoryStoreBindingFloor:
