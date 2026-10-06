@@ -203,9 +203,27 @@ async def api_spawn(request: web.Request) -> web.Response:
             else ("", ())
         )
         if parent_execution is None:
+            # A parentless spawn (an app token calling /api/spawn with no parent
+            # session) still has a verified producer: the request's own app, set by
+            # the token-auth middleware. Mint the context unattributed here and let
+            # the reconcile below attach the request app, so the parentless path and
+            # the resolved-parent path take the SAME attachment step.
             parent_execution = ExecutionContext(
-                None, MemoryStoreRef("default"), "template", agent or "kirocrew"
+                None,
+                MemoryStoreRef("default"),
+                "template",
+                agent or "kirocrew",
             )
+        # GPT 6.1 F1: attach the request's authenticated app on EVERY app-token spawn,
+        # not only the parentless one. ``read_session_execution`` above can resolve a
+        # parent session whose stored execution carries ``app=""`` (an archived personal
+        # session an app token allowed /api/spawn but denied messaging can hand in);
+        # without this the request app never reaches the child, the completion note's
+        # producer is empty, and the app's channel denial is bypassed on the owner's DM.
+        # The resolver attaches it when the inherited app is empty and rejects a parent
+        # session owned by a DIFFERENT app; an empty request app (dashboard user) leaves
+        # the inherited attribution untouched.
+        parent_execution = parent_execution.reconcile_app(str(request.get("app") or ""))
         config = await asyncio.to_thread(KiroCrewConfig.load) if crew else None
         if crew and config is not None and crew not in config.agents:
             return web.json_response(

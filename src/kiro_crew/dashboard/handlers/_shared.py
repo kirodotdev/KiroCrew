@@ -3096,6 +3096,33 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     return carried, ttl_ceiling
 
 
+def subagent_producer_meta(state: DashboardState, key: str) -> dict[str, str]:
+    """Bridge governance identities for a note a running subagent publishes, or ``{}``.
+
+    A child's own notice (``send_notification``, or ``send_message`` falling back to
+    the bell) names its session key, which the bridge vets under ``surface:subagent``;
+    the agent name and owning app are looked up here from the trusted
+    ``SubagentInfo`` the gateway holds, so the agent's task-bound profile and the app's
+    profile are asked as well. Added-only on the bridge side, so a miss narrows nothing
+    and a hit can only tighten.
+    """
+    manager = getattr(state, "subagents", None)
+    if manager is None or not key:
+        return {}
+    for info in getattr(manager, "running", ()):
+        if key not in (f"subagent:{info.id}", info.conversation_key):
+            continue
+        meta: dict[str, str] = {}
+        agent = str(getattr(info, "agent", "") or "").strip()
+        if agent:
+            meta["producer_agent"] = agent
+        app = str(getattr(info, "app", "") or "").strip()
+        if app:
+            meta["producer_app"] = app
+        return meta
+    return {}
+
+
 def inherited_session_memory_mode(state: DashboardState, key: str) -> str | None:
     """Read only restrictions captured by trusted child creation in this process."""
     from kiro_crew.messaging.privacy_mode import strictest

@@ -19,7 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    import asyncio
 
 # ── Constants ──
 
@@ -357,7 +360,10 @@ class NotificationBus:
     unread counter, SSE/WS broadcast, and JSONL persistence).
     """
 
-    def __init__(self, sink: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(
+        self,
+        sink: "Callable[[dict[str, Any]], asyncio.Future[bool] | bool | None]",
+    ) -> None:
         self._sink = sink
         self._channels: dict[str, str] = dict(SYSTEM_CHANNELS)
 
@@ -384,9 +390,7 @@ class NotificationBus:
         Returns the number of channels removed.
         """
         prefix = f"{app_name}."
-        doomed = [
-            c for c in self._channels if c.startswith(prefix) and c not in SYSTEM_CHANNELS
-        ]
+        doomed = [c for c in self._channels if c.startswith(prefix) and c not in SYSTEM_CHANNELS]
         for channel in doomed:
             self._channels.pop(channel, None)
         return len(doomed)
@@ -398,7 +402,9 @@ class NotificationBus:
         """Snapshot of registered channels: {channel: default_priority}."""
         return dict(self._channels)
 
-    def push(self, payload: NotificationPayload) -> dict[str, Any]:
+    def push(
+        self, payload: NotificationPayload, *, return_sink_result: bool = False
+    ) -> "dict[str, Any] | asyncio.Future[bool] | bool | None":
         """Validate, enrich, and deliver a notification.
 
         Returns the note dict handed to the sink. Raises
@@ -453,5 +459,11 @@ class NotificationBus:
                 if key in note or key.startswith("_") or key in _RESERVED_NOTE_KEYS:
                     continue
                 note[key] = value
-        self._sink(note)
+        sink_result = self._sink(note)
+        # Default return is the note dict (the two existing callers read it). A caller
+        # that must gate on THIS note's durable write asks for the sink's own result --
+        # the per-note persist handle _deliver_note returns -- so it never has to re-read
+        # the shared ``last_notification_persist`` field a concurrent delivery can clobber.
+        if return_sink_result:
+            return sink_result
         return note
