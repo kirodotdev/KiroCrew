@@ -58,6 +58,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew.notifications.attribution import system_origin
 from kiro_crew.notifications.bus import NotificationPayload
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
@@ -249,7 +250,7 @@ class ResourcePressureNotifier:
                 title="Agent subprocess OOM-killed by cgroup ceiling",
                 body=message,
                 group_key="agents-slice-oom",
-                meta={"kind": "agents-slice-oom"},
+                meta=system_origin(kind="agents-slice-oom"),
             )
         )
 
@@ -274,7 +275,7 @@ class ResourcePressureNotifier:
                     "memory now."
                 ),
                 group_key="resource-pressure",
-                meta={"posture": status.posture, "available_gb": status.available_gb},
+                meta=system_origin(posture=status.posture, available_gb=status.available_gb),
             )
         )
 
@@ -293,7 +294,7 @@ class ResourcePressureNotifier:
                     "until memory frees."
                 ),
                 group_key="resource-pressure",
-                meta={"posture": status.posture, "available_gb": status.available_gb},
+                meta=system_origin(posture=status.posture, available_gb=status.available_gb),
             )
         )
 
@@ -308,6 +309,6 @@ class ResourcePressureNotifier:
                     f"free{_fmt_load(status)}."
                 ),
                 group_key="resource-pressure",
-                meta={"posture": status.posture, "available_gb": status.available_gb},
+                meta=system_origin(posture=status.posture, available_gb=status.available_gb),
             )
         )

@@ -934,9 +934,22 @@ def _allocate_rollback_dir(mc: Path) -> Path:
 
 
 def _do_replace(
-    snap: Path, mc: Path, components: list[str] | None, *, allow_unpinned: bool = False
+    snap: Path,
+    mc: Path,
+    components: list[str] | None,
+    *,
+    allow_unpinned: bool = False,
+    notification_publisher: Callable[[], None] | None = None,
 ) -> None:
     """Replace the selected components, with a complete rollback set taken first.
+
+    A restored ``notification_settings.json`` is republished through its store's stamped
+    writer as the LAST mutation inside the rollback boundary, so a stamp that cannot be
+    written rolls the whole replace back to the previous file/stamp pair rather than
+    failing after the replace has landed. *notification_publisher* does that publish; the
+    dashboard import passes the one its store's ``replacing_file`` hold yields (that hold
+    owns the writer lock across this call). Omitted, the snapshot copy is republished
+    (see :func:`_republish_restored_notification_settings`).
 
     Two phases, and the boundary between them is the whole design. Phase one copies every
     tree this run will mutate into a fresh rollback directory and mutates nothing; phase
@@ -1113,6 +1126,13 @@ def _do_replace(
             facade._do_replace_mutations(
                 snap, mc, backup, components, mem_roots, installed, allow_unpinned=allow_unpinned
             )
+            # Last, so nothing after it can fail and roll the file back under a stamp
+            # that names the restored bytes.
+            if _NOTIFICATION_SETTINGS in installed:
+                if notification_publisher is not None:
+                    notification_publisher()
+                else:
+                    _republish_restored_notification_settings(snap, mc)
         except BaseException as e:
             # `BaseException`, not `Exception`, and deliberately wider than a few named
             # classes. `PinnedPathRefusal` belongs here because it fires MID-mutation and
@@ -1253,6 +1273,31 @@ def _clear_store_directories(root: Path) -> None:
             platform_compat.unlink_link_or_junction(entry)
         else:
             entry.unlink()
+
+
+_NOTIFICATION_SETTINGS = "notification_settings.json"
+
+
+def _republish_restored_notification_settings(snap: Path, mc: Path) -> None:
+    """Publish the restored notification settings through the store's stamped writer.
+
+    The core-file copy installs the archive's bytes but leaves the write stamp naming the
+    file it replaced, so the next load would drop every restored route and the next owner
+    save would write that loss to disk. The mapping is parsed from the SNAPSHOT copy (the
+    bytes the pre-flight validated, not a re-read of the live name) and written back with a
+    stamp of exactly those bytes. A failure raises, so the caller rolls the whole restore
+    back and reports it rather than reporting success for routes the next load discards.
+    """
+    from kiro_crew.notifications import settings as notification_settings
+
+    text = (snap / _NOTIFICATION_SETTINGS).read_text(encoding="utf-8")
+    if not notification_settings.publish_restored_settings(text, home=mc):
+        # A restore into some other home: its store is not this process's, and its stamp
+        # lives beside that home's file. Its routes stay unhonoured until saved there.
+        print(
+            f"⚠️  {_NOTIFICATION_SETTINGS} restored into another data home; its delivery "
+            "routes stay inactive until notification settings are saved there."
+        )
 
 
 def _do_replace_mutations(

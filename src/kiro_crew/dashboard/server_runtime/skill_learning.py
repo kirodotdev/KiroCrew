@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         logger,
         set_pending_consumed_hook,
         set_pending_staged_hook,
+        system_origin,
     )
 
 
@@ -183,7 +184,7 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
                             "skills",
                             title,
                             body,
-                            meta=payload,
+                            meta=system_origin(**payload),
                             url=review_url,
                             actions=actions,
                         )
