@@ -34,7 +34,8 @@ name: CI Runner Watchdog
 # script as `WATCHED_WORKFLOWS` and tested against the workflows whose `runs-on`
 # actually carries the fleet label. One listing per status covers the whole
 # watched set as a client-side filter and reaches more than a per-workflow loop
-# would; live paging is bounded at 8 pages, and each live classification
+# would; live paging is bounded at 10 pages per status (a status-filtered listing
+# serves at most 1000 results), and each live classification
 # sweep reads jobs for at most 50 runs: UP TO 10 reserved for the newest runs that
 # are THEMSELVES at least one saturation wait old (a younger run cannot hold a
 # served start that waited that long and so could only ever report the fleet
@@ -43,15 +44,15 @@ name: CI Runner Watchdog
 # actionable-shaped first (a `push` run of a heal-safe workflow past the orphan
 # threshold) then oldest. The split is dynamic: a reserve that comes back short
 # hands its unused reads to the classify slice rather than leaving them unspent. Cancelled-run recovery
-# has a separate 16-page reach because GitHub indexes that status by creation
-# time while the pass selects by cancellation time. That reach is about eight
+# has a separate 10-page reach because GitHub indexes that status by creation
+# time while the pass selects by cancellation time. That reach is about five
 # hours at this repo's measured 200 cancellations an hour, and the 2026-09-20
 # orphans were 21 hours old. That reach is BEST-EFFORT: GitHub offers no ordering
 # by cancellation time, so truncation only warns and a run that never got listed
 # needs `gh run rerun` by hand.
 # The four repo-wide indexes
-# cost at most 40 calls per tick: eight pages for each of three live statuses,
-# plus 16 cancelled pages.
+# cost at most 40 calls per tick: ten pages for each of three live statuses,
+# plus 10 cancelled pages.
 # Heal safety never reads this job's checkout. A workflow clears
 # TWO gates: it is DECLARED safe, and its run-level concurrency group is keyed the
 # way its successor check needs while its YAML carries no publish or deploy signal.

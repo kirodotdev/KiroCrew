@@ -8,7 +8,7 @@ advertises against the ``l0_expectations`` baseline committed in the registry.
 
 It does NOT check challenge shape -- whether an unauthenticated request answers
 401 with a well-formed ``WWW-Authenticate: Bearer resource_metadata=...`` -- and
-a green run says nothing about it. Two of the seven registry providers fail that
+a green run says nothing about it. Some registry providers fail that
 today while serving perfectly good metadata (Stripe omits the parameter, Vercel
 answers HTTP 500), so it needs its own baseline of known exceptions and is
 deliberately a separate follow-up (L0b). Do not read this probe as covering it.
@@ -33,7 +33,7 @@ never reports drift, and without it the exit code reflects this run alone, which
 is what a human debugging a single provider locally wants. A FATAL error -- one
 that stops the probe before it reaches any provider -- always exits non-zero
 immediately and leaves the streak state untouched, because it is evidence about
-the probe, not about seven providers.
+the probe, not about the providers.
 """
 
 from __future__ import annotations
@@ -651,8 +651,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         results = asyncio.run(run_probe(concurrency=args.concurrency, timeout_seconds=args.timeout))
     except Exception as error:
         # A fatal error stopped the probe before it reached any provider, so it
-        # is evidence about the PROBE, not about the providers. Advancing seven
-        # streaks would spend two nights of the drift budget on a broken runner
+        # is evidence about the PROBE, not about the providers. Advancing every
+        # provider's streak would spend two nights of the drift budget on a broken runner
         # and then blame the providers; leave the state exactly as it was and
         # fail now, where it is legible.
         report = build_report([], fatal=error)

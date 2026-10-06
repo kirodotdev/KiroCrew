@@ -421,12 +421,11 @@ jobs:
       # checkout is sparse and shallow, and it carries no credentials -- the gh
       # read authenticates with GH_TOKEN below, not the checkout token.
       #
-      # ref is pinned to the TRUSTED script, never the untrusted one. On a
-      # pull_request the default checkout is the merge ref, which contains the
-      # PR head's -- i.e. a fork's -- copy of this script; a fork could edit it
-      # to exit success unconditionally and release the heavy matrix on a Fast
-      # Gate that never confirmed. The checkout uses the default ref (the
-      # merge ref on a pull_request) so the script this job just added is
+      # On a pull_request the default checkout is the merge ref, which contains
+      # the PR head's -- i.e. a fork's -- copy of this script; a fork could edit
+      # it to exit success unconditionally and release the heavy matrix on a
+      # Fast Gate that never confirmed. The checkout still uses the default ref
+      # (the merge ref on a pull_request) so the script this job just added is
       # present -- a base-pinned ref would predate the script and fail the step
       # exit 127. The barrier is not the control against a fork editing the
       # script: on a pull_request the fork also supplies this step's run:/env:,
@@ -1729,8 +1728,10 @@ jobs:
       # --max-worker-restart=2 --timeout=120`; with no xdist and no pytest-timeout
       # installed that is an argument error, not a test run. Its `pytest==8.3.4` also
       # contradicts the dev group's `9.0.3` that the rootdir conftest is written
-      # against, so the two sets cannot share one resolution. The image build still
-      # uses that file; CI installs the runtime half plus this repo's own toolchain.
+      # against, so the two sets cannot share one resolution. The image installs
+      # only `container/requirements.txt`; `requirements-dev.txt` is for developer
+      # machines running container_tests. CI installs the runtime half plus this
+      # repo's own toolchain.
       - name: Install dependencies
         run: |
           uv pip install --system -e "." --group dev

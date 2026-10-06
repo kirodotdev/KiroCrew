@@ -116,10 +116,13 @@ body:
     attributes:
       label: Ready-to-paste entry (optional)
       description: >-
-        If you have already drafted a published-schema catalog entry against the
-        schema served at `apps.crew.kiro.dev/official-registry.json`, paste it
-        here. This is a convenience for the maintainer authoring the entry — it
-        is not authoritative and the pipeline pins whatever commit it resolves.
+        If you have already drafted a catalog entry, paste it here in the
+        authored shape described in section 10 of the publishing guide (the
+        shape of `catalog/official-registry.json` in kirodotdev/KiroCrewApps).
+        `apps.crew.kiro.dev/official-registry.json` serves the published
+        catalog document, not a schema to write against. This is a convenience
+        for the maintainer authoring the entry — it is not authoritative and
+        the pipeline pins whatever commit it resolves.
       render: json
     validations:
       required: false
@@ -129,8 +132,9 @@ body:
     attributes:
       label: Review checklist (self-attestation)
       description: >-
-        These mirror the review checklist in section 14 of the publishing guide.
-        Confirm each item for your app.
+        These are a subset of the review checklist in section 14 of the
+        publishing guide; the reviewer still checks the full list. Confirm each
+        item for your app.
       options:
         - label: "`app.json` validates: kebab-case `name`, semver `version`, all required fields non-empty."
           required: true
@@ -140,7 +144,7 @@ body:
           required: true
         - label: "Agent JSON files are valid, and each skill `SKILL.md` has proper frontmatter."
           required: true
-        - label: "Opaque icon committed, square, 512x512, plus a hero image (16:9), a detail banner, and at least one screenshot committed."
+        - label: "Opaque icon committed, square, 512x512, plus a hero image (16:9) and at least one screenshot committed."
           required: true
         - label: "`README.md` documents what the app does, how to use it, and the `agent.apps_allow_third_party` prerequisite if any executable surface is present."
           required: true

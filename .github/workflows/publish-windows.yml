@@ -24,13 +24,17 @@ name: Publish Windows Desktop (reusable)
 # bytes whose certificate table is empty or whose leaf does not carry the
 # expected publisher.
 #
-# NIGHTLY AND INSIDER ONLY, BY DESIGN
+# STABLE: OPTIONAL WINDOWS PAIR, BY DESIGN
 #
-# The stable lane republishes the immutable promotion bundle that
-# scripts/release_promotion.py verifies, and that bundle has no Windows role.
-# Adding one would couple stable releases to Windows build success and undo the
-# per-platform release independence that build-windows.yml's soft_fail exists to
-# protect, so it is a separate decision rather than a side effect of this lane.
+# A stable rebuild publishes its freshly built installer like any channel. In
+# promote mode (`promote: true`) the lane republishes the windows_installer /
+# windows_blockmap pair from the promotion bundle that
+# scripts/release_promotion.py verifies. Both roles are OPTIONAL and
+# all-or-nothing: a candidate carries the pair or neither, and one that carries
+# no Windows pair skips this lane cleanly while the other platforms still
+# publish. A REQUIRED Windows role would couple stable releases to Windows
+# build success and undo the per-platform release independence that
+# build-windows.yml's soft_fail exists to protect.
 
 on:
   workflow_call:
@@ -44,6 +48,7 @@ on:
         required: true
         type: string
       publish:
+        description: "Publish to the public CDN; false skips the job entirely"
         required: false
         type: boolean
         default: true

@@ -297,10 +297,11 @@ jobs:
             failures=$((failures + 1))
           fi
 
-          # ── 2. Stable only promotes bytes insiders actually received ─────
+          # ── 2. Stable only ships a commit insiders actually received ─────
           # A TAG IS NOT EVIDENCE OF A RELEASE. A cancelled or failed
           # prerelease run leaves its tag behind, so matching on tag names
-          # alone would let stable promote a candidate that never shipped
+          # alone would let stable ship (rebuilt, or byte-promoted under
+          # STABLE_PROMOTE_BYTES) a candidate that never shipped
           # (GPT 5.6 review on 2ce9bcef). The evidence is a SUCCESSFUL
           # release-workflow run for a v<version>-* tag at this exact commit.
           #
@@ -710,8 +711,9 @@ jobs:
     uses: ./.github/workflows/publish-windows.yml
     with:
       channel: ${{ needs.version.outputs.channel }}
-      # Stable republishes the candidate's own bytes, whose embedded app version
-      # is the insider one, so the feed has to advertise that same version or
+      # In promote mode (vars.STABLE_PROMOTE_BYTES) stable republishes the
+      # candidate's own bytes, whose embedded app version is the insider one,
+      # so the feed has to advertise that same version or
       # every client's version comparison is made against a number the binary
       # does not carry. Mirrors publish-linux.yml's caller exactly.
       version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
@@ -799,10 +801,12 @@ jobs:
   # sign-and-notarize.yml's NOTARIZED_ZIP). NOT `needs: build-wheel`: a
   # single-arch leg downloads only its own build artifact and attests no
   # wheel, so on the fresh path it waits on build-desktop alone. Their build
-  # job is continue-on-error in build-desktop.yml so the universal leg is
-  # never held by them; when that build failed, the leg here fails at
-  # download-artifact -- and since both legs are REQUIRED below, that failure
-  # withholds the release page and the promotion record, as any lane's does.
+  # job is continue-on-error in build-desktop.yml only when the caller sets
+  # soft_fail_mac_single_arch (nightly.yml does). Here it stays false, so a
+  # failed single-arch build fails the build-desktop aggregate and skips every
+  # publisher before any key is written; and since both legs are REQUIRED
+  # below, a failed leg withholds the release page and the promotion record,
+  # as any lane's does.
   sign-and-notarize-arm64:
     name: Sign + Notarize macOS (arm64 only)
     needs: [version, stable-gate, build-desktop, resolve-promotion]
@@ -1168,13 +1172,11 @@ jobs:
       # Two transforms are applied on the way, because the CHANGELOG section is
       # written for a rendered FILE and the release body is a comment field:
       #
-      #  - `### Contributors` is DROPPED. The section is required to carry it
-      #    (it ships in the wheel and feeds the dashboard's Releases page, where
-      #    no native block exists), but the release page renders its own
-      #    contributor block from the tag range, so copying ours in duplicates
-      #    the list directly above GitHub's. That duplicated on v0.3.0 and again
-      #    on v0.5.0 -- as a hand-written list was blamed both times, when the
-      #    copy is what actually carries it.
+      #  - `### Contributors` is DROPPED. New sections no longer carry it
+      #    (docs/build/changelog.md forbids it), but older sections still do,
+      #    and the release page renders its own contributor block from the tag
+      #    range, so copying ours in would duplicate the list directly above
+      #    GitHub's. drop_contributors stays for those older sections.
       #  - Paragraphs and list items are JOINED onto one line. GitHub renders a
       #    release body with GFM line breaks ON, so the CHANGELOG's ~76-column
       #    wrapping becomes real <br>s and the page shows a fixed-width column
