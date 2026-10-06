@@ -863,6 +863,11 @@ class SetupConfig:
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
     onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
+    # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
+    # on native Windows (no `/bin/bash`): the runner refuses them with an
+    # unsupported-platform reason before any spawn. (`onInstall` runs in the
+    # separate install transaction and is not covered by that refusal.) See
+    # docs/app-kit/manifest-reference.md ("setup — Lifecycle Scripts").
     onEnableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
     onDisableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
     configSchema: dict[str, Any] = field(default_factory=dict)  # noqa: N815

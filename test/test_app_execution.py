@@ -596,6 +596,9 @@ class TestLaunchAndLifecycleBoundary:
             lifecycle_scripts, "wrap_argv", lambda argv, **kwargs: (argv, None)
         )
         monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
+        # Exercises the POSIX run path; pin IS_POSIX so the native-Windows guard
+        # does not short-circuit it on a Windows CI runner.
+        monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", True)
 
         class _Process:
             pid = 55

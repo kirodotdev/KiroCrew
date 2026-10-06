@@ -943,8 +943,13 @@ the endpoint; it does not import provider code.
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
 stays disabled and any registered resources are deregistered. `onDisable`
 failures are logged as warnings but do not block the disable operation. Local-path
-installs do not run `onInstall`; build first, then install. Lifecycle scripts always
-invoke `/bin/bash`; on native Windows without that executable they fail cleanly.
+installs do not run `onInstall`; build first, then install. The `onEnable`,
+`onDisable` and `onUninstall` hooks always invoke `/bin/bash`, so they are
+**not run on native Windows** (which has no `/bin/bash`): the runner refuses the
+hook before any process is started and reports a failure whose message names the
+unsupported platform, rather than letting the spawn fail opaquely and look like
+your script breaking. Write hooks for POSIX shells; do not rely on them running
+on a native-Windows host.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as
