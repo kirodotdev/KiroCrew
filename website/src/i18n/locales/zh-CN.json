@@ -5127,6 +5127,7 @@
         "backup_kind_sessions": "会话存档",
         "backup_last_run": "上次备份于 {{when}} · {{size}}",
         "backup_never": "尚未备份",
+        "backup_never_recorded": "此处没有运行记录——较早的档案可能仍在云端硬盘上",
         "backup_remembered": "本机已记录的备份档案：{{count}} · 查看列表",
         "backup_sessions_scope": "包含此 Kiro 主目录下所有会话的 CLI 回放日志，而不仅是在 {{productName}} 中开始的对话。",
         "backup_run_now": "立即备份",

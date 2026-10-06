@@ -5127,6 +5127,7 @@
         "backup_kind_sessions": "セッションアーカイブ",
         "backup_last_run": "最終バックアップ {{when}} · {{size}}",
         "backup_never": "まだバックアップされていません",
+        "backup_never_recorded": "ここに記録された実行はありません — 以前のアーカイブはまだドライブに残っている可能性があります",
         "backup_remembered": "このインストールが記録したアーカイブ：{{count}} · 一覧を表示",
         "backup_sessions_scope": "この Kiro ホーム配下のすべてのセッションの CLI 再生ログが含まれます。{{productName}} で開始したチャットだけではありません。",
         "backup_run_now": "今すぐバックアップ",

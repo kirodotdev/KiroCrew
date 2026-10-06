@@ -5289,6 +5289,7 @@
         "backup_kind_sessions": "Archive des sessions",
         "backup_last_run": "Dernière sauvegarde {{when}} · {{size}}",
         "backup_never": "Pas encore sauvegardé",
+        "backup_never_recorded": "Aucune exécution enregistrée ici — des archives antérieures peuvent encore être sur le lecteur",
         "backup_remembered": "Archives enregistrées par cette installation : {{count}} · afficher la liste",
         "backup_sessions_scope": "Inclut les journaux de relecture CLI de chaque session de ce dossier Kiro, pas seulement des conversations démarrées dans {{productName}}.",
         "backup_run_now": "Sauvegarder maintenant",

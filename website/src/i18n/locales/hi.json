@@ -5208,6 +5208,7 @@
         "backup_kind_sessions": "सत्र संग्रह",
         "backup_last_run": "अंतिम बैकअप {{when}} · {{size}}",
         "backup_never": "अभी तक बैकअप नहीं हुआ",
+        "backup_never_recorded": "यहाँ कोई रन दर्ज नहीं है — पुराने आर्काइव अब भी ड्राइव पर हो सकते हैं",
         "backup_remembered": "इस इंस्टॉल के दर्ज किए गए संग्रह: {{count}} · सूची देखो",
         "backup_sessions_scope": "इस Kiro होम के अंतर्गत हर सत्र के CLI रीप्ले लॉग शामिल हैं, केवल {{productName}} में शुरू की गई चैट के नहीं।",
         "backup_run_now": "अभी बैकअप करें",

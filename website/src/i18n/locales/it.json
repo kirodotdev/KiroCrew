@@ -5289,6 +5289,7 @@
         "backup_kind_sessions": "Archivio delle sessioni",
         "backup_last_run": "Ultimo backup {{when}} · {{size}}",
         "backup_never": "Ancora nessun backup",
+        "backup_never_recorded": "Nessuna esecuzione registrata qui: gli archivi precedenti potrebbero essere ancora sull'unità",
         "backup_remembered": "Archivi registrati da questa installazione: {{count}} · mostra l'elenco",
         "backup_sessions_scope": "Include i log di riproduzione della CLI di ogni sessione in questa home di Kiro, non solo delle chat avviate in {{productName}}.",
         "backup_run_now": "Esegui backup",

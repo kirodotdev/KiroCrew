@@ -3780,6 +3780,7 @@
         "backup_kind_sessions": "Sessions archive",
         "backup_last_run": "Last backed up {{when}} · {{size}}",
         "backup_never": "Not backed up yet",
+        "backup_never_recorded": "No run recorded here — earlier archives may still be on the drive",
         "backup_remembered": "Archives this install has recorded: {{count}} · show the list",
         "backup_sessions_scope": "Includes the CLI replay logs for every session under this Kiro home, not only chats started in {{productName}}.",
         "backup_run_now": "Back up now",

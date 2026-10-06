@@ -5127,6 +5127,7 @@
         "backup_kind_sessions": "세션 아카이브",
         "backup_last_run": "마지막 백업 {{when}} · {{size}}",
         "backup_never": "아직 백업되지 않음",
+        "backup_never_recorded": "여기에 기록된 실행이 없습니다 — 이전 아카이브가 아직 드라이브에 남아 있을 수 있습니다",
         "backup_remembered": "이 설치가 기록한 아카이브: {{count}} · 목록 보기",
         "backup_sessions_scope": "이 Kiro 홈에 있는 모든 세션의 CLI 재생 로그가 포함됩니다. {{productName}}에서 시작한 대화만이 아닙니다.",
         "backup_run_now": "지금 백업",
