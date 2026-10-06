@@ -244,7 +244,11 @@ function applyNonActiveFrame(
   }
   if (role === '_done') {
     setRunState(run, 'idle')
-    run.lastChunkSeq = undefined
+    // The replay floor survives `_done`: seqs never restart within a gateway
+    // generation, so a chunk redelivered after the turn ends sits at or below
+    // it and is dropped instead of opening a second bubble. A turn-starting
+    // `user`/`inject` frame clears it, which covers a slot whose server
+    // counter did restart (rebuilt slot, gen-less gateway).
     syncOriginRun(state, slot, 'idle')
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'streaming') { msgs[i].role = 'assistant'; msgs[i].rawText = msgs[i].content; break }
@@ -277,7 +281,10 @@ function applyNonActiveFrame(
   // inject row but is PASSIVE: it starts no turn, so counting it would make a
   // Stop settlement captured a moment earlier read as stale and leave the pane
   // falsely busy (GPT round 10).
-  if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
+  if (role === 'inject' && !isNoteRow({ cls, meta })) {
+    bumpRunEpoch(state, slot)
+    if (run.state === 'idle') run.lastChunkSeq = undefined
+  }
   if (role === 'tool') {
     if (run.state === 'idle') bumpRunEpoch(state, slot)
     setRunState(run, 'tool_running')
@@ -294,7 +301,7 @@ function applyNonActiveFrame(
   if (role === 'assistant') {
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'streaming') {
-        msgs[i].role = 'assistant'; msgs[i].content = content; if (ts) msgs[i].ts = ts
+        msgs[i].role = 'assistant'; msgs[i].content = content; msgs[i].rawText = content; if (ts) msgs[i].ts = ts
         // Carry the frame's meta — crucially `mid`, this row's server identity.
         // The row was minted client-side by the first `chunk` and has none until
         // now; without it a later redelivery of THIS frame is unrecognisable and
@@ -309,6 +316,7 @@ function applyNonActiveFrame(
     // cleanup so the approval bar remains visible and answerable (#1667).
     if (!meta?.steer) {
       bumpRunEpoch(state, slot)
+      if (run.state === 'idle') run.lastChunkSeq = undefined
       sa.toolLog = []
       for (const m of msgs) {
         if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
@@ -421,7 +429,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   if (role === '_done') {
     countLiveFrame(state)
     state.slotState = 'idle'
-    state.lastChunkSeq = undefined
+    // Floor kept on purpose; see the background `_done` branch.
     for (let i = state.messages.length - 1; i >= 0; i--) {
       if (state.messages[i].role === 'streaming') {
         const msg = state.messages[i]
@@ -478,7 +486,10 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   dropStaleStatelessQuestion(state, slot, role)
   // An inject row starts a turn like a user message does (see runEpoch);
   // a passive `/note` does not (GPT round 10).
-  if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
+  if (role === 'inject' && !isNoteRow({ cls, meta })) {
+    bumpRunEpoch(state, slot)
+    if (state.slotState === 'idle') state.lastChunkSeq = undefined
+  }
   // Tool call — update state, insert before streaming message
   if (role === 'tool') {
     if (state.slotState === 'idle') bumpRunEpoch(state, slot)
@@ -502,7 +513,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   if (role === 'assistant') {
     for (let i = state.messages.length - 1; i >= 0; i--) {
       if (state.messages[i].role === 'streaming') {
-        state.messages[i].role = 'assistant'; state.messages[i].content = content; if (ts) state.messages[i].ts = ts
+        state.messages[i].role = 'assistant'; state.messages[i].content = content; state.messages[i].rawText = content; if (ts) state.messages[i].ts = ts
         // Carry the frame's meta — crucially `mid`, this row's server
         // identity. The row was minted client-side by the first `chunk` and
         // has none until now; without it a later redelivery of THIS frame is
@@ -518,6 +529,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     // cleanup so the approval bar remains visible and answerable (#1667).
     if (!meta?.steer) {
       bumpRunEpoch(state, slot)
+      if (state.slotState === 'idle') state.lastChunkSeq = undefined
       state.toolLog = []
       // Auto-resolve any stale permissions from previous turn so they don't block the new turn
       for (const m of state.messages) {
