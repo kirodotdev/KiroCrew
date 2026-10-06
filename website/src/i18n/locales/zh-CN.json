@@ -8099,7 +8099,10 @@
       "rename": "重命名",
       "reveal_in_sidebar": "在侧边栏中显示",
       "tags": "标签…",
-      "unpin": "取消置顶"
+      "unpin": "取消置顶",
+      "mute_sessions_it_opens": "静音此会话打开的会话",
+      "unmute_sessions_it_opens": "取消静音此会话打开的会话",
+      "mute_sessions_it_opens_failed": "无法更改静音设置"
     },
     "sessionColorSwatches": {
       "custom_color": "自定义颜色",

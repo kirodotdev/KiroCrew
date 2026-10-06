@@ -8339,7 +8339,10 @@
       "rename": "Cambiar el nombre",
       "reveal_in_sidebar": "Mostrar en la barra lateral",
       "tags": "Etiquetas…",
-      "unpin": "Dejar de fijar"
+      "unpin": "Dejar de fijar",
+      "mute_sessions_it_opens": "Silenciar las sesiones que abre esta",
+      "unmute_sessions_it_opens": "Reactivar las sesiones que abre esta",
+      "mute_sessions_it_opens_failed": "No se pudo cambiar el ajuste de silencio"
     },
     "sessionColorSwatches": {
       "custom_color": "Color personalizado",

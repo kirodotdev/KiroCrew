@@ -8099,7 +8099,10 @@
       "rename": "名前変更",
       "reveal_in_sidebar": "サイドバーに表示",
       "tags": "タグ…",
-      "unpin": "ピン留め解除"
+      "unpin": "ピン留め解除",
+      "mute_sessions_it_opens": "このセッションが開くセッションをミュート",
+      "unmute_sessions_it_opens": "このセッションが開くセッションのミュートを解除",
+      "mute_sessions_it_opens_failed": "ミュート設定を変更できませんでした"
     },
     "sessionColorSwatches": {
       "custom_color": "カスタムカラー",

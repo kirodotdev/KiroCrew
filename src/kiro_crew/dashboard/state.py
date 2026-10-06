@@ -330,7 +330,7 @@ MAX_LIVE_SLOTS = 500
 
 #: Fields whose dashboard-user projection is identical for every slot-patch
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "title", "folder_id"})
 
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
@@ -2840,6 +2840,7 @@ class _ChatSlot:
         "_folder_changed",
         "_folder_suggested",
         "pinned",
+        "mutes_opened",
         "tags",
         "tags_revision",
         "_pending_subagent_failures",
@@ -3527,6 +3528,14 @@ class _ChatSlot:
         # and a reset flag cannot produce a second card.
         self._folder_suggested: bool = False
         self.pinned: bool = False  # pinned to top of sidebar
+        # When set on a creating session, every session it opens (and anything
+        # those open, down the ``_created_by`` chain) is muted for attention:
+        # no turn-done chime, background-finished toast or unread badge. The
+        # creator itself stays unmuted -- its reports are the signal the user
+        # wants -- and tool-approval prompts stay exempt. Owned by the
+        # user through the slot's kebab menu, never set by an agent, and
+        # derived from the durable ``created_by`` chain on the client.
+        self.mutes_opened: bool = False
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         # Change identity for tag snapshots. Orderable (see mint_tags_revision):
         # equality identifies a specific frame, and the sequence prefix lets a

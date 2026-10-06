@@ -8099,7 +8099,10 @@
       "rename": "이름 변경",
       "reveal_in_sidebar": "사이드바에서 보기",
       "tags": "태그…",
-      "unpin": "고정 해제"
+      "unpin": "고정 해제",
+      "mute_sessions_it_opens": "이 세션이 여는 세션 음소거",
+      "unmute_sessions_it_opens": "이 세션이 여는 세션 음소거 해제",
+      "mute_sessions_it_opens_failed": "음소거 설정을 변경하지 못했습니다"
     },
     "sessionColorSwatches": {
       "custom_color": "사용자 지정 색상",

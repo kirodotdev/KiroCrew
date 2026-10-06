@@ -7,6 +7,7 @@ import { markSlotUnread } from '../../store/dashboardSlice'
 import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, unreadWatermarkTs } from '../unreadOnAttention'
+import { isSlotMutedByCreator } from '../sessionMute'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
 import { isReconcileNote } from '../../lib/noteContract'
@@ -70,7 +71,10 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       if (data.slot && unreadWatermarkTs(data.role, data.ts) === undefined && data.ts) noteUnsavedRowTs(data.slot, data.ts)
       // The "only when done or waiting" opt-in leaves routine rows unbadged.
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
-        if (chatMessageMarksUnread(data.role)) {
+        // Criterion 7: a session muted by its creator never becomes
+        // unread from its own activity. This is the chat_message half of the
+        // two automatic markSlotUnread sites; turnCompletion.ts has the other.
+        if (chatMessageMarksUnread(data.role) && !isSlotMutedByCreator(store.getState().dashboard.slots, slot)) {
           dispatch(markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
         }
       })

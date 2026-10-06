@@ -8219,7 +8219,10 @@
       "rename": "নাম পরিবর্তন",
       "reveal_in_sidebar": "সাইডবারে দেখান",
       "tags": "ট্যাগ…",
-      "unpin": "পিন সরাও"
+      "unpin": "পিন সরাও",
+      "mute_sessions_it_opens": "এটি যে সেশনগুলি খোলে সেগুলি নীরব করো",
+      "unmute_sessions_it_opens": "এটি যে সেশনগুলি খোলে সেগুলি সচল করো",
+      "mute_sessions_it_opens_failed": "মিউট সেটিং পরিবর্তন করা যায়নি"
     },
     "sessionColorSwatches": {
       "custom_color": "কাস্টম রং",

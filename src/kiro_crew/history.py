@@ -247,6 +247,10 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # would hand back a prompt whose turn already ran.
         "queued_prompts",
         "pinned",
+        # Slot-owned so ABSENCE retracts it: an unmute writes no key, and an
+        # unowned key would be carried forward forever by
+        # ``carry_unowned_metadata`` -- the session could never be un-muted.
+        "mutes_opened",
         "color_index",
         "color_hex",
         "color_theme",

@@ -97,6 +97,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
      *  an index-only null would leave a custom hex behind. */
     clearSlotColor: (slot: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: null, color_hex: null }).then(j),
     setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
+    // Toggle the "mute sessions it opens" rule on a creating session.
+    setSlotMutesOpened: (slot: string, mutesOpened: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mutes-opened', { mutes_opened: mutesOpened }).then(j),
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

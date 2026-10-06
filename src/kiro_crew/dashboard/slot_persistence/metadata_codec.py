@@ -756,6 +756,11 @@ def _read_pinned(r: _Read) -> None:
         r.slot.pinned = True
 
 
+def _read_mutes_opened(r: _Read) -> None:
+    if r.meta.get("mutes_opened"):
+        r.slot.mutes_opened = True
+
+
 def _read_color_index(r: _Read) -> None:
     if r.meta.get("color_index") is not None:
         r.slot.color_index = r.meta["color_index"]
@@ -1184,6 +1189,14 @@ FIELDS: tuple[Field, ...] = (
         read=_read_pinned,
     ),
     Field(
+        "mutes_opened",
+        _ALL,
+        attr="mutes_opened",
+        line=_flag(lambda s: s.mutes_opened),
+        merge=_always(lambda s: bool(s.mutes_opened)),
+        read=_read_mutes_opened,
+    ),
+    Field(
         "color_index",
         _ALL,
         attr="color_index",
@@ -1393,6 +1406,7 @@ LINE_ORDER: tuple[str, ...] = (
     "created_by",
     "artifact",
     "pinned",
+    "mutes_opened",
     "color_index",
     "color_hex",
     "color_theme",
@@ -1415,6 +1429,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "folder_id",
     "tags",
     "pinned",
+    "mutes_opened",
     "mode",
     "artifact",
     "reasoning_effort",

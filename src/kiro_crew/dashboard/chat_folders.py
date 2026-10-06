@@ -2933,6 +2933,156 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned": slot.pinned, "changed": changed})
 
 
+async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/mutes-opened — toggle the "mute sessions it
+    opens" rule on a creating session.
+
+    When set, every session this one opens -- and anything those open, down the
+    durable ``created_by`` chain -- is muted for attention on the client: no
+    turn-done chime, no background-finished toast, no unread badge, starting
+    from the worker's first turn. The creating session itself keeps all
+    of its signals, and a tool-approval prompt from a muted session still
+    surfaces (handled client-side).
+
+    Shaped exactly like :func:`api_chat_slot_pin`, with one deliberate
+    difference: this write is the user's own decision (``session_create``'s
+    contract says an agent must not open sessions already silenced), so this
+    route is NOT in the member-admitted set in ``handlers/_shared.py`` and no
+    MCP tool reaches it. The same three ownership fences still apply.
+    """
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (
+        refusal := refuse_unattributable_caller(state, request, "chat.slot_mutes_opened")
+    ) is not None:
+        return refusal
+    if (
+        refusal := member_slot_write_refused(state, request, slot, "chat.slot_mutes_opened")
+    ) is not None:
+        return refusal
+    request_app = _effective_request_app(state, request)
+    if (
+        denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_mutes_opened")
+    ) is not None:
+        return denied
+    authorized_history_key = slot_history_key(slot)
+    if not app_owns_transcript(state._slots, request_app, authorized_history_key):
+        audit_app_slot_denial(
+            request_app,
+            "chat.slot_mutes_opened",
+            slot.key,
+            "app does not own this slot's transcript",
+        )
+        return slot_not_found()
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    expected_created = str(body.get("expected_created") or "")
+    async with _slot_meta_txn_lock(state):
+        if (
+            state._slots.get(name) is not slot
+            or slot_history_key(slot) != authorized_history_key
+            or (expected_created and slot.created_at != expected_created)
+            or not app_owns_transcript(state._slots, request_app, authorized_history_key)
+        ):
+            source, caller = _audit_origin(request)
+            sel().log_api_access(
+                caller=caller,
+                operation="chat.slot_mutes_opened",
+                outcome="denied",
+                source=source,
+                resources=name,
+                error="session was deleted or rebound",
+            )
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+            )
+        prior = slot.mutes_opened
+        new_value = body.get("mutes_opened", False)
+        # JSON strings such as "false" are truthy; validate the type like pin.
+        if not isinstance(new_value, bool):
+            return web.json_response(
+                {"error": "mutes_opened must be a boolean", "code": "mutes_opened_not_bool"},
+                status=400,
+            )
+        slot.mutes_opened = new_value
+        changed = prior != new_value
+        if changed:
+            # best_effort=False so a lock timeout / disk-full PROPAGATES instead
+            # of being swallowed and acknowledged as a successful change (a
+            # swallowed failure would publish a patch for a setting that never
+            # reached disk and vanishes on the next restart). Persist BEFORE the
+            # patch is pushed; on any failure, restore the prior flag and return
+            # an error without publishing.
+            try:
+                saved = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                )
+            except Exception:
+                if slot.mutes_opened == new_value:
+                    slot.mutes_opened = prior
+                slot._dirty = True
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation="chat.slot_mutes_opened",
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="could not persist mute setting",
+                )
+                logger.warning(
+                    "chat.slot_mutes_opened: durable save of slot=%s failed; "
+                    "not publishing the unpersisted change",
+                    slot.key,
+                    exc_info=True,
+                )
+                return web.json_response(
+                    {
+                        "error": "could not persist the mute setting; please retry",
+                        "code": "mutes_opened_save_failed",
+                    },
+                    status=503,
+                )
+            if not saved:
+                # A non-raising refuse (the slot was deleted or rebound under
+                # the write): roll back and report it as gone.
+                if slot.mutes_opened == new_value:
+                    slot.mutes_opened = prior
+                slot._dirty = True
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation="chat.slot_mutes_opened",
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="session was deleted or rebound",
+                )
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+                )
+    state.push_slot_patch(slot.key, ("mutes_opened",))
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.slot_mutes_opened",
+        outcome="allowed",
+        source=source,
+        resources=name,
+    )
+    return web.json_response({"ok": True, "mutes_opened": slot.mutes_opened, "changed": changed})
+
+
 _VALID_MODES = ("",)
 
 

@@ -8339,7 +8339,10 @@
       "rename": "Rinomina",
       "reveal_in_sidebar": "Mostra nella barra laterale",
       "tags": "Tag…",
-      "unpin": "Non fissare"
+      "unpin": "Non fissare",
+      "mute_sessions_it_opens": "Silenzia le sessioni aperte da questa",
+      "unmute_sessions_it_opens": "Riattiva le sessioni aperte da questa",
+      "mute_sessions_it_opens_failed": "Impossibile modificare l'impostazione di silenzio"
     },
     "sessionColorSwatches": {
       "custom_color": "Colore personalizzato",

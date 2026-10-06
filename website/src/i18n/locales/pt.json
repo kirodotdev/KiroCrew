@@ -8339,7 +8339,10 @@
       "rename": "Renomear",
       "reveal_in_sidebar": "Mostrar na barra lateral",
       "tags": "Etiquetas…",
-      "unpin": "Desafixar"
+      "unpin": "Desafixar",
+      "mute_sessions_it_opens": "Silenciar sessões que esta abre",
+      "unmute_sessions_it_opens": "Reativar sessões que esta abre",
+      "mute_sessions_it_opens_failed": "Não foi possível alterar a configuração de silêncio"
     },
     "sessionColorSwatches": {
       "custom_color": "Cor personalizada",

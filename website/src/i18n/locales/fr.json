@@ -8339,7 +8339,10 @@
       "rename": "Renommer",
       "reveal_in_sidebar": "Afficher dans la barre latérale",
       "tags": "Étiquettes…",
-      "unpin": "Désépingler"
+      "unpin": "Désépingler",
+      "mute_sessions_it_opens": "Masquer les sessions ouvertes par celle-ci",
+      "unmute_sessions_it_opens": "Réactiver les sessions ouvertes par celle-ci",
+      "mute_sessions_it_opens_failed": "Impossible de modifier le réglage de sourdine"
     },
     "sessionColorSwatches": {
       "custom_color": "Couleur personnalisée",

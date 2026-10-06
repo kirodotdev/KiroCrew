@@ -8459,7 +8459,10 @@
       "rename": "Переименовать",
       "reveal_in_sidebar": "Показать в боковой панели",
       "tags": "Теги…",
-      "unpin": "Открепить"
+      "unpin": "Открепить",
+      "mute_sessions_it_opens": "Отключить уведомления сессий, открытых этой",
+      "unmute_sessions_it_opens": "Включить уведомления сессий, открытых этой",
+      "mute_sessions_it_opens_failed": "Не удалось изменить настройку отключения уведомлений"
     },
     "sessionColorSwatches": {
       "custom_color": "Пользовательский цвет",

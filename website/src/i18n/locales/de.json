@@ -8219,7 +8219,10 @@
       "rename": "Umbenennen",
       "reveal_in_sidebar": "In der Seitenleiste anzeigen",
       "tags": "Tags…",
-      "unpin": "Entpinnen"
+      "unpin": "Entpinnen",
+      "mute_sessions_it_opens": "Von dieser Sitzung geöffnete Sitzungen stummschalten",
+      "unmute_sessions_it_opens": "Stummschaltung für von dieser Sitzung geöffnete Sitzungen aufheben",
+      "mute_sessions_it_opens_failed": "Stummschaltung konnte nicht geändert werden"
     },
     "sessionColorSwatches": {
       "custom_color": "Benutzerdefinierte Farbe",

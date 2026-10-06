@@ -448,6 +448,7 @@ class SlotProjection:
             "slack_thread_ts": slot._slack_thread_ts,
             "folder_id": slot.folder_id,
             "pinned": slot.pinned,
+            "mutes_opened": slot.mutes_opened,
             "tags": list(slot.tags),
             "tags_revision": getattr(slot, "tags_revision", ""),
             "color_index": slot.color_index,

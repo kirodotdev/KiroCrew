@@ -8219,7 +8219,10 @@
       "rename": "नाम बदलें",
       "reveal_in_sidebar": "साइडबार में दिखाएँ",
       "tags": "टैग…",
-      "unpin": "पिन हटाएँ"
+      "unpin": "पिन हटाएँ",
+      "mute_sessions_it_opens": "इसके द्वारा खोले गए सत्र म्यूट करो",
+      "unmute_sessions_it_opens": "इसके द्वारा खोले गए सत्र अनम्यूट करो",
+      "mute_sessions_it_opens_failed": "म्यूट सेटिंग नहीं बदली जा सकी"
     },
     "sessionColorSwatches": {
       "custom_color": "कस्टम रंग",
