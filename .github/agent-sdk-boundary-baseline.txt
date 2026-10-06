@@ -3,7 +3,8 @@
 # shapes (LLMEvent and the EVENT_* constants), so watching only `acp` would let
 # a consumer look migrated while still reading the backend's own types.
 #
-# The gate requires every OTHER file under src/ to be clean and none of these
+# The gate requires every OTHER file under src/ -- outside the exempt
+# agent_sdk/, acp/ and providers/ trees -- to be clean and none of these
 # counts to grow, so the list can shrink but never grow.
 #
 # It is a floor, not a countdown to zero. Most of these consumers are expected

@@ -64,9 +64,9 @@ that were actually leaking. Read it as "these four shapes are extinct", not as
 
 ``builtin_skills/kirocrew-dev/`` is the family FOR developing this repository --
 ``kirocrew-prepare-pr``, ``babysit``, ``writing-tests``, ``kirocrew-worktree-dev`` and
-``dashboard-template``. A Kiro Crew path there is the subject matter, not a leak, and 26 of the tree's 28
-markers live in it. That exemption is a directory rule rather than 26 recorded
-lines on purpose: it is a property of what the family IS, so it stays true as
+``dashboard-template``. A Kiro Crew path there is the subject matter, not a leak.
+That exemption is a directory rule rather than a list of recorded lines on
+purpose: it is a property of what the family IS, so it stays true as
 those skills are edited, where a per-line list would just record today's bytes
 and demand churn on every edit.
 

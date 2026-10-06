@@ -17,7 +17,7 @@
 #
 # EVERY COUNT IS DETERMINISTIC; ONLY PROSE AND SELECTION ARE THE MODEL'S. The
 # bug / feature / other split and all the numbers come from real labels in
-# `Partition issues`. The model contributes the narratives and picks the
+# `Partition issues` (over at most the 101 issues `Fetch filed issues` reads). The model contributes the narratives and picks the
 # must-fix numbers, which are then intersected with the window's real issue
 # numbers -- so a number it invented, or was told to include by an issue body,
 # cannot reach the post.
@@ -68,7 +68,7 @@ on:
   workflow_dispatch:
     inputs:
       lookback_hours:
-        description: "Override window: report PRs merged in the last N hours"
+        description: "Override window: report PRs merged and issues filed in the last N hours"
         required: false
         default: ""
       dry_run:
@@ -89,7 +89,7 @@ concurrency:
 
 jobs:
   report:
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
@@ -194,9 +194,11 @@ jobs:
           # Deliberately NOT a hard failure on overflow, unlike the 300-PR cap
           # above. Failing would withhold the whole report AND leave the window
           # unadvanced, so a quiet inbound spike would suppress the shipping
-          # half it has nothing to do with. The section truncates instead.
+          # half it has nothing to do with. The fetch stops at 101 issues, so
+          # in a bigger window every inbound count and list covers only the
+          # 101 fetched issues.
           if [ "$COUNT" -ge 100 ]; then
-            echo "::warning::100+ issues in this window; the section lists a subset"
+            echo "::warning::100+ issues in this window; counts and list are capped at the 101 fetched issues"
           fi
 
       - name: Set zero issue count for disabled repos
@@ -293,14 +295,9 @@ jobs:
             | join("\n")
           ' prs.json > body.txt
 
-      # Appended AFTER both narrative steps and BEFORE delivery, so issue titles
-      # pass through the same sanitizer as the PR half (they are untrusted the
-      # same way). This also creates body.txt when nothing merged: both narrative
-      # steps are gated on the PR count, so a window with only inbound issues
-      # would otherwise reach delivery with no body at all.
       # Split the window's issues into the two audiences BEFORE any model sees
-      # them. Precedence matters: 6 of today's 40 issues carry BOTH `bug` and
-      # `enhancement`, so a naive two-way split double-counts them. A defect is
+      # them. Precedence matters: an issue can carry BOTH `bug` and
+      # `enhancement`, so a naive two-way split double-counts it. A defect is
       # a defect -- `bug` or `security` wins, and `enhancement` only claims an
       # issue that has neither.
       - name: Partition issues
@@ -328,12 +325,10 @@ jobs:
       # a weak signal in one half dilute the other.
       #
       # RELEASE RISK IS INFERRED FROM TEXT, NOT FROM THE channel: LABEL.
-      # `channel: insider` and `channel: nightly` exist as labels and have never
-      # once been applied in this repository's history -- all 7 channel labels
-      # ever applied are `channel: stable`, because the label comes from
-      # bug_report.yml's dropdown and only 7 issues have ever arrived that way.
-      # Keying the "must fix before stable" list on that label would produce an
-      # empty list every day forever. The signal is really in the title and body
+      # Only the bug form and the dashboard's report flow set a `channel:`
+      # label, so many issues arrive without one, and keying the "must fix
+      # before stable" list on it would miss blockers. The signal is really in
+      # the title and body
       # ("rc.8 regression", "regression", "red on main"), which is a judgement,
       # which is why a model makes it. The label is still USED when present --
       # it is just not required.
@@ -427,6 +422,12 @@ jobs:
       #
       # Degrades to a deterministic label-grouped list, so a Bedrock outage
       # costs the prose but never the two-section split or the counts.
+      #
+      # Runs AFTER both narrative steps and BEFORE delivery, so issue titles
+      # pass through the same sanitizer as the PR half (they are untrusted the
+      # same way). It also creates body.txt when nothing merged: both narrative
+      # steps are gated on the PR count, so a window with only inbound issues
+      # would otherwise reach delivery with no body at all.
       - name: Append issue sections
         if: steps.issues.outputs.count != '' && steps.issues.outputs.count != '0'
         run: |

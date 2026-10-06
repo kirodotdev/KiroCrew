@@ -6,11 +6,11 @@
 ``AGENTS.md`` lists ``black src/kiro_crew test`` as a gate to run before every
 commit, and CI does not check it. That combination is worse than having no gate,
 because the instruction is not merely unenforced, it is actively harmful to
-follow: 1,420 files under ``src/`` and ``test/`` are not black-clean, so running
-the documented command reformats about 95,800 lines that have nothing to do with
-the change being made. A contributor who obeys the documentation buries their own
-diff; one who notices has to knowingly skip a documented gate and hope no
-reviewer objects. Both outcomes were observed on real PRs.
+follow: every file in the baseline under ``src/`` and ``test/`` is not
+black-clean, so running the documented command reformats lines that have
+nothing to do with the change being made. A contributor who obeys the
+documentation buries their own diff; one who notices has to knowingly skip a
+documented gate and hope no reviewer objects. Both outcomes were observed on real PRs.
 
 The bulk format pass that would make the command safe has been "pending" long
 enough for the note in ``ci.yml`` to go stale by a factor of three (it estimates
@@ -126,8 +126,8 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
             continue
         # black reports ABSOLUTE paths even for relative arguments, and an
         # absolute path in a committed baseline matches nothing on any other
-        # checkout -- CI included -- so the gate would silently flag all 1,420
-        # files as new offenders. Store repo-relative paths only.
+        # checkout -- CI included -- so the gate would silently flag every
+        # baselined file as a new offender. Store repo-relative paths only.
         raw = Path(match.group(1))
         try:
             relative = raw.resolve().relative_to(ROOT)
@@ -137,7 +137,7 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
     # Exit 1 with nothing parsed is NOT "zero offenders". `python -m black` also
     # exits 1 when the module is absent, so an environment without black would
     # otherwise look like a fully formatted tree -- and `--update-baseline` would
-    # then write an EMPTY baseline over 1,420 recorded paths, destroying the
+    # then write an EMPTY baseline over every recorded path, destroying the
     # ratchet in a way no gate run afterwards could detect. Exit 0 with nothing
     # parsed is the real "all clean" answer and stays allowed.
     if proc.returncode == 1 and not found:

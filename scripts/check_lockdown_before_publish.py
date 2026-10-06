@@ -771,7 +771,7 @@ def main(argv: list[str]) -> int:
                 "  %s:%d: `%s` is locked down only AFTER content was written to "
                 "it in %s().\n      Use atomic_write(..., restrict_to_owner=True) "
                 "so the temp file is locked down before the payload and before "
-                "the rename (issue #5307). If this is a load-time re-assert or a "
+                "the rename. If this is a load-time re-assert or a "
                 "file that holds no data, annotate the lockdown line with "
                 "`# lockdown-ok: <reason>`." % (rel, line, expr, fn)
             )
