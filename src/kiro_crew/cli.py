@@ -69,7 +69,7 @@ from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.log_redaction import install_log_redaction
 from kiro_crew.memory import MemoryStore
-from kiro_crew.owner_only_files import owner_only_opener, tighten_data_home
+from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.platform import (
     PlatformCompositionError,
     boot_platform,
@@ -3318,14 +3318,6 @@ env var overrides it.
     # detach-spawned gateway needs double-write protection (stderr IS
     # gateway.log in that mode) — see _setup_cli_logging.
     _setup_cli_logging(args.command, args.verbose)
-    # Once per gateway start, still synchronous and before any service opens a
-    # store: drop group/other access from whatever an earlier version (or a
-    # writer that predates the owner-only policy) left in the data home.
-    # ensure_data_home above already made the home itself 0700; this repairs
-    # the tree inside it, bounded and best-effort (kiro_crew.owner_only_files).
-    # After the log setup so its one summary line reaches gateway.log.
-    if args.command == "gateway":
-        tighten_data_home(config_dir())
 
     # No subcommand given (`kirocrew` with no args) — show banner + help and exit.
     # Without this guard, the `args.command.startswith("mcp-")` branch later

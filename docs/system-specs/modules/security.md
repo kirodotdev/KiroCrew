@@ -2198,17 +2198,48 @@ traversable. The policy is every file under the data home `0600` and every direc
   bundled and the stdlib driver), transcripts, notifications, `gateway.log` (handler and
   every rollover) and lock files open with a `0600` mode, directories are created `0700`
   at every level, and `atomic_write` defaults to `0600` for any target in the data home.
-  The default `postToolUse` audit hook passes `0o600` to `os.open` and runs its `printf`
-  fallback under `umask 077` in its own one-command shell.
+  A new database is created under a private staging name and published with a
+  no-replace hard link, so no descriptor is ever closed on the published name (another
+  connection of the process may already have locked it). The default `postToolUse`
+  audit hook passes `0o600` to `os.open` and runs its `printf`
+  fallback under `umask 077` in its own one-command shell. Inside the data home,
+  `prepare_owner_only_sqlite` reaches the database's directory with `O_NOFOLLOW` at every
+  component below the home, so a symlinked directory planted there is left alone instead
+  of redirecting a create or a `chmod` elsewhere.
 - **The root.** `ensure_data_home()` makes the data home itself `0700` in every CLI
   prologue, and `config_dir()` creates it `0700`.
-- **What already exists.** `tighten_data_home()` runs once per `kirocrew gateway` start in
-  the synchronous prologue: it removes group/other bits through no-follow descriptors,
-  never follows or modifies a symlink or its target, skips hard-linked files, other
-  owners and other filesystems, stops on `EROFS` or repeated refusals, and is bounded by
-  time and entry count. It skips `skills/`, whose permission bits the builtin-skill sync
-  fingerprints, so tightening it there would make every installed builtin read as
-  user-edited.
+- **What already exists.** `tighten_data_home()` runs once per gateway start, on a worker
+  thread kicked by both dashboard entrypoints after the listener serves
+  (`_kick_owner_only_sweep`), never on the boot path: its cost grows with the user's
+  history. Nothing waits for it, and the process shutdown flag ends it at the next
+  entry. It touches only a fixed list of Kiro Crew's own stores
+  (`STARTUP_SWEEP_STORES`: transcripts, agent and member state, artifacts, memory,
+  knowledge and research stores, the meetings store, logs, audit and security-event logs,
+  notifications, configuration), named relative to the data home, and never walks the
+  rest of it. So a project kept anywhere in the data home (in `workspace/`, in a session
+  workspace root placed there, in the home used as a working directory) keeps the
+  modes its own tools gave it, without the sweep having to recognise it; `skills/`,
+  whose permission bits the builtin-skill sync fingerprints, and `scratch/` are not on
+  the list either. Within a listed store it removes group/other bits without following
+  or modifying a symlink or its target; the directories leading to a store are opened
+  `O_NOFOLLOW` at every level, so a store reached through a link is skipped. It skips
+  hard-linked files, other owners and other filesystems, stops on `EROFS` or repeated
+  refusals, reads directories incrementally, is bounded by time and entry count (30 s,
+  1,000,000 entries), and logs one summary line rather than one per entry. Low-value
+  leftovers an older version wrote outside the list (pid files, locks, migration
+  markers) keep their modes inside the `0700` home, and a database a converted store
+  opens is narrowed again on every open. There is no switch to keep wider modes on the
+  listed stores: the home itself is made `0700` on every CLI start, and while it is, a
+  group or other bit below it grants no account access.
+
+An existing file's mode is never changed through an `open` + `fchmod` + `close`: closing
+any descriptor on a file releases every POSIX record lock the process holds on it, and
+SQLite locks a database and its `-shm` that way, so tightening a database another
+connection of the same process has open would silently drop that connection's locks.
+Linux changes the mode through an `O_PATH` descriptor (re-checked by inode, closed without
+releasing any lock) and `/proc/self/fd/<n>`; macOS and the BSDs use
+`chmod(follow_symlinks=False)` by name; a platform with neither leaves the file alone. A
+file that is already owner-only is only `lstat`-ed.
 
 The process umask is deliberately not changed: children inherit it, so files agents
 write into users' own repositories would become `0600` too. Windows is unchanged; the

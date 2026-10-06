@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         SNIFF_BYTES,
         _sel,
         data_home,
+        ensure_directory,
         logger,
         part_stream,
         sniff_raster_mime,
@@ -184,8 +185,6 @@ async def api_upload_file(request: web.Request) -> web.Response:
     Saves files to the data home's uploads/ and returns server-side paths
     that ACP's _send_prompt() can detect for image inlining.
     """
-
-    from kiro_crew.owner_only_files import ensure_directory
 
     upload_dir = _upload_dir()
     ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files

@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
@@ -569,9 +570,10 @@ def _diag_log(log_dir: Path | None, payload: dict) -> None:
         return
     try:
         log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(log_dir)
         line = json.dumps(payload, default=str)
-        with open(log_dir / "agent_discovery.log", "a", encoding="utf-8") as fh:
+        log_path = log_dir / "agent_discovery.log"
+        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener_for(log_path)) as fh:
             fh.write(line + "\n")
     except Exception:  # noqa: BLE001 — logging must never break discovery
         pass

@@ -34,6 +34,7 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_VALUE,
 )
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.runtime_ownership import (
     PidRefcount,
     authorize_runtime_kill,
@@ -162,7 +163,7 @@ def _session_pid_file_path() -> Path:
 def _session_pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for session PID file operations."""
     lock_path = _session_pid_file_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
     # loses the lock on Windows (GH-9248). The helper does the create-or-open in
     # one syscall; the parent mkdir above stays because it does not.
@@ -215,7 +216,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
     entry = f"{prefix}:{token}" if token else prefix
     with _session_pid_file_lock():
         path = _session_pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         if path.exists():
             lines = _read_pid_file_text(path).splitlines()
             kept: list[str] = []
@@ -257,7 +258,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
                 if not _rewrite_pid_file(path, "\n".join(kept) + "\n"):
                     raise OSError(f"could not record root PID {pid} in {path}")
                 return
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             f.write(f"{entry}\n")
 
 
@@ -265,7 +266,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
 def _pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for all PID file read-modify-write operations."""
     lock_path = _pid_file_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
     # loses the lock on Windows (GH-9248). The helper does the create-or-open in
     # one syscall; the parent mkdir above stays because it does not.
@@ -1306,7 +1307,7 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
     if not path.exists():
         return set(), []
     lock_path = path.with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     try:
         # Non-truncating, for the reason spelled out in `_session_pid_file_lock`.
         # This site is the likeliest of the three to feel it: the sweep runs on a
@@ -1315,7 +1316,7 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
         # Kept inline rather than routed through `platform_compat.open_lock_file`:
         # this fd is held across the try/finally below, not a `with` block, so a
         # with-scoped opener that closes the fd at block exit does not fit.
-        lock_path.touch(exist_ok=True)
+        lock_path.touch(mode=0o600, exist_ok=True)
         lock_fd = open(lock_path, "r+")
     except OSError:
         return set(), []
@@ -3182,8 +3183,8 @@ def _track_pid(pid: int) -> None:
     """Append a PID to the tracking file."""
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
+        ensure_directory(path.parent)
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             f.write(f"{pid}\n")
 
 
@@ -3200,9 +3201,9 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
         return
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         existing = set(_read_pid_file_text(path).splitlines()) if path.exists() else set()
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             for pid in pids:
                 key = f"{pid}:{parent_pid}"
                 if any(e == key or e.startswith(key + ":") for e in existing):
@@ -3279,7 +3280,7 @@ def _replace_child_pids(
         return True
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         lines = _read_pid_file_text(path).splitlines() if path.exists() else []
         kept: list[str] = []
         for raw in lines:

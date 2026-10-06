@@ -60,6 +60,7 @@ from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
 from kiro_crew.config.paths import config_dir
 from kiro_crew.executors import kiro_spawn_executor
 from kiro_crew.kiro_cli import find_kiro_cli_candidates, is_bundled_kiro_cli, known_kiro_cli_dirs
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     corroborate_launcher_refusal,
@@ -1100,7 +1101,7 @@ def _project_identity_database(source: Path, destination: Path) -> bool:
     except sqlite3.Error:
         return False
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(destination.parent)  # 0700 inside the data home
     # Create the file before writing, so the identity rows are never briefly
     # world-readable between SQLite's create and the chmod.
     fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

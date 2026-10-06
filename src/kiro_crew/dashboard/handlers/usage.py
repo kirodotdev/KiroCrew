@@ -35,6 +35,7 @@ from kiro_crew.metrics.turns import (
     emit_turn_usage,
     turn_outcome,
 )
+from kiro_crew.owner_only_files import owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -1615,7 +1616,7 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
             ",".join(non_finite),
         )
         line = json.dumps(_finite_only(record), allow_nan=False)
-    with open(shard_path, "a", encoding="utf-8") as f:
+    with open(shard_path, "a", encoding="utf-8", opener=owner_only_opener_for(shard_path)) as f:
         f.write(line + "\n")
 
 

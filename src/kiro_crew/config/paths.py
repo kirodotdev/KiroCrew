@@ -93,6 +93,14 @@ _resolved_home: Path | None = None
 # breadcrumb write effectively once-per-process rather than once-per-call.
 _config_dir_memo: tuple[str | None, Path | None, Path] | None = None
 
+#: The mode :func:`config_dir` creates the data home with. ``0o700`` on POSIX.
+#: Windows keeps the default: CPython maps a ``0o700`` ``mkdir`` there to a
+#: protected DACL (SYSTEM, Administrators, OWNER RIGHTS), which would replace
+#: the user-SID grant ``ensure_data_home`` applies through
+#: ``restrict_dir_to_owner``. Same test as ``platform_compat.IS_WINDOWS``, which
+#: this module does not import at load.
+_HOME_CREATE_MODE = 0o777 if sys.platform == "win32" else 0o700
+
 
 def _default_home() -> Path:
     """Resolve the default (non-override) data root: ``~/.kiro/crew``."""
@@ -344,7 +352,7 @@ def config_dir() -> Path:
         # 0o700 at creation: the home is owner-only from the moment it exists,
         # not only after ``ensure_data_home`` tightens it. Applies to the leaf
         # only -- missing parents are not the data home and keep their default.
-        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+        p.mkdir(parents=True, exist_ok=True, mode=_HOME_CREATE_MODE)
         _config_dir_memo = (override_raw, _resolved_home, p)
         return p
     if os.environ.get("KIROCREW_HOME"):
@@ -353,7 +361,7 @@ def config_dir() -> Path:
             os.environ.get("KIROCREW_HOME"),
         )
     d = _resolve_default_home()
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)  # owner-only at creation, as above
+    d.mkdir(parents=True, exist_ok=True, mode=_HOME_CREATE_MODE)  # as above
     # Drop the recovery-pointer breadcrumb outside ~/.kiro/ (default path only).
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
@@ -426,11 +434,17 @@ def peek_data_home() -> Path:
     tool that reports state should not create it. Applies the SAME override
     predicate :func:`config_dir` gates on, so a valid ``KIROCREW_HOME`` and the
     default home agree between reader and writer, and reads nothing else.
+
+    It reads the process's resolution cache but never fills it. Filling it would
+    make the next :func:`data_home` take its "already resolved" branch, so the
+    first real resolution would skip the maintenance it owes the process start
+    (the ``mkdir`` and the recovery breadcrumb). That matters because the
+    owner-only file helpers peek on every write that might be in the data home.
     """
     override = _valid_override_home()
     if override is not None:
         return override
-    return _resolve_default_home()
+    return _resolved_home if _resolved_home is not None else _default_home()
 
 
 def ensure_data_home() -> Path:

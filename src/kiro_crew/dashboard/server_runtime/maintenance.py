@@ -1,8 +1,8 @@
 """The tracked background maintenance both entrypoints start once the listener serves.
 
 The warm-mint scavenge and its cleanup, the local decision model, the session search
-indexer, the knowledge orphan reclaim, and the own-address read for the ssh self-target
-floor.
+indexer, the knowledge orphan reclaim, the data home's owner-only mode repair, and the
+own-address read for the ssh self-target floor.
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _OWN_HOST_WARM_TASKS,
         DashboardState,
+        data_home,
         logger,
+        shutdown_event,
+        tighten_data_home,
         warm_own_host_names,
     )
 
@@ -95,6 +98,35 @@ def _kick_local_decision_model(state: DashboardState) -> None:
             logger.info("local decision model: starting %s", preset)
 
     task = asyncio.create_task(_resume())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_owner_only_sweep(state: DashboardState) -> None:
+    """Repair the data home's file modes as a tracked background task, post-bind.
+
+    ``tighten_data_home`` walks the data home's session, log and memory stores, so
+    its cost grows with the user's history, and on a healthy install it finds
+    nothing to change: it must not sit between process start and the socket
+    accepting requests (``no-new-work-on-gateway-boot-path``, items 3 and 4). Both
+    gateway entrypoints call this only after ``_start_site`` has returned, and the
+    walk runs on a worker thread. Nothing waits for it: what the services create is
+    owner-only from creation, and the sweep changes modes without opening a file,
+    so it releases no lock a store's connection holds. ``shutdown_event`` ends the
+    walk at its next entry, so a stopping gateway does not wait out the sweep's
+    budget in the executor.
+    """
+
+    def _sweep_in_thread() -> None:
+        tighten_data_home(data_home(), should_stop=shutdown_event.is_set)
+
+    async def _owner_only_sweep() -> None:
+        try:
+            await asyncio.to_thread(_sweep_in_thread)
+        except Exception:  # noqa: BLE001 -- a permission repair never fails the gateway
+            logger.warning("owner-only sweep of the data home failed", exc_info=True)
+
+    task = asyncio.create_task(_owner_only_sweep())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 

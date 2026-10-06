@@ -66,6 +66,7 @@ from kiro_crew.dashboard_templates.manifest import (
     check_parity,
     parse_manifest,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_compat import release_lock, try_acquire_lock
 
 __all__ = [
@@ -245,7 +246,7 @@ def _locked(directory: Path) -> Iterator[None]:
     interleaving produces two writes claiming the same ``instance_version`` and one of
     the two pages is lost with nothing recorded.
     """
-    directory.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(directory)
     lock_path = directory / _LOCK_FILE
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -650,7 +651,7 @@ def _commit(
     """
     directory = instance_dir(slug)
     versions_dir = directory / _VERSIONS_SUBDIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(versions_dir)
     current = _read_record(slug) or {}
     previous = current.get("instance_version")
     previous = previous if isinstance(previous, int) and previous > 0 else 0

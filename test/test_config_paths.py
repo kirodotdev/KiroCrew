@@ -51,6 +51,23 @@ class TestConfigDir:
         assert result == home.resolve()
         assert result.is_dir()
 
+    def test_the_home_is_created_with_no_mode_argument_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A ``0o700`` mkdir is a protected DACL on Windows; POSIX gets owner-only."""
+        seen: list[int] = []
+        real_mkdir = Path.mkdir
+
+        def recording_mkdir(self: Path, mode: int = 0o777, **kwargs: object) -> None:
+            seen.append(mode)
+            real_mkdir(self, mode, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "mkdir", recording_mkdir)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "fresh-home"))
+        paths.config_dir()
+
+        assert seen == [0o777 if sys.platform == "win32" else 0o700]
+
     def test_kirocrew_home_system_dir_is_ignored(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

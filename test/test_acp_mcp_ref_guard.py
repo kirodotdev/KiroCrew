@@ -1210,5 +1210,5 @@ class TestTheSpawnHopCarriesTheSnapshot:
 
         # ...and the fold itself is not split back apart: one hop, both halves.
         hop = inspect.getsource(AcpClient._prepare_spawn_workspace)
-        assert "self._work_dir.mkdir(" in hop
+        assert "ensure_directory(self._work_dir)" in hop
         assert "self._mcp_ref_spec = self._read_mcp_ref_spec()" in hop

@@ -26,6 +26,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
+
 from .ledger_lock import LEDGER_WRITE_LOCK
 
 # The outcome statuses a finding can land on. Mirrors the source ledger so the
@@ -219,7 +221,7 @@ class Ledger:
 
     def __init__(self, path: Path, *, retry_cooldown_s: float = DEFAULT_RETRY_COOLDOWN_S):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.path.parent)
         self._lock = threading.Lock()
         self._seen: dict[str, LedgerEntry] = {}
         # Soft-terminal loci (error / no_defect) become retryable after this window so a
@@ -290,7 +292,9 @@ class Ledger:
         # `_seen` map for readers on this instance.
         with LEDGER_WRITE_LOCK, self._lock:
             self._seen[entry.fp] = entry
-            with self.path.open("a", encoding="utf-8") as f:
+            with open(
+                self.path, "a", encoding="utf-8", opener=owner_only_opener_for(self.path)
+            ) as f:
                 f.write(json.dumps(asdict(entry)) + "\n")
 
     def counts(self) -> dict[str, int]:

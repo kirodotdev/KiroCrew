@@ -2488,8 +2488,13 @@ def log_fallback(
     written before the field existed has no key and so still counts as a
     fallback — which is what it was."""
     try:
+        # The log is always under the stub's own data home (_crew_home), so it is
+        # owner-only unconditionally: no lexical home test, which would compare
+        # a raw KIROCREW_HOME against the resolved one and import config.paths.
+        from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
+
         log_path = _fallback_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdirs_owner_only(log_path.parent)
         record = {
             "ts": time.time(),
             "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2514,7 +2519,7 @@ def log_fallback(
         from kiro_crew.jsonl_util import rotate_jsonl_at
 
         rotate_jsonl_at(log_path, _FALLBACK_LOG_MAX_BYTES)
-        with open(log_path, "a", encoding="utf-8") as f:
+        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener) as f:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
         pass

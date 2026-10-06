@@ -15,6 +15,7 @@ the per-test ``KIROCREW_HOME`` that Kiro Crew's conftest pins.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import logging
 import os
@@ -2145,14 +2146,15 @@ class TestWriteDiagnostic:
         # never-raises contract would silently drop the record.
         path = tmp_path / "diag.jsonl"
         opens: list[str] = []
-        real_open = Path.open
+        real_open = builtins.open
 
-        def counting_open(self, *args, **kwargs):
-            if self == path:
+        def counting_open(file, *args, **kwargs):
+            if os.fspath(file) == os.fspath(path):
                 opens.append(str(args))
-            return real_open(self, *args, **kwargs)
+            return real_open(file, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "open", counting_open)
+        # The writer opens through builtins.open (it passes an owner-only opener).
+        monkeypatch.setattr(builtins, "open", counting_open)
         gw._write_diagnostic(path, {"tag": "probe", "n": 1}, {"tag": "zombie_detected", "n": 2})
         assert len(opens) == 1
         lines = path.read_text(encoding="utf-8").strip().splitlines()

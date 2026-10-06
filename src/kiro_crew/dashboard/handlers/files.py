@@ -259,6 +259,7 @@ from kiro_crew.hooks import (  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.owner_only_files import ensure_directory  # noqa: F401 - owner: uploads
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments  # noqa: F401
 from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact

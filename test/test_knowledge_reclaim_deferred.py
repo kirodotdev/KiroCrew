@@ -1,8 +1,8 @@
 """The knowledge store's orphan sweep runs after the bind, not inside ``__init__``.
 
 Boot cost is the reason: the orphan sweep is writer-locked and data-scaled,
-and the constructor runs on the event-loop thread before the socket binds
-(``setup_knowledge_routes`` reads the lazy store at route registration). A
+and the constructor runs on the boot path before the socket binds
+(``start_dashboard`` builds the lazy store just before route registration). A
 sweep inside ``_migrate()`` would, on a large store, stall boot long enough for
 the runtime's timeouts to kill the gateway. These tests pin four
 properties: construction does not sweep, ``reclaim_orphans`` does the

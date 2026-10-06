@@ -1,6 +1,6 @@
 """Regression tests for KnowledgeStore sqlite access from worker threads.
 
-KnowledgeStore is created on the event-loop thread, but HybridRetriever.search()
+KnowledgeStore is created on one thread, but HybridRetriever.search()
 runs on mc-embed executor threads (dashboard/handlers/knowledge.py
 search_for_context via run_in_embed_pool). A shared sqlite3 connection carries
 creating-thread affinity (check_same_thread=True default), so every

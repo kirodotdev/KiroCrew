@@ -45,6 +45,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
 )
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ class _LedgerLock:
 
     def __enter__(self) -> _LedgerLock:
         lock_file = app_data_dir(APP_NAME) / _LOCK_FILENAME
-        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(lock_file.parent)
         self._fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
         platform_compat.acquire_lock(self._fd, exclusive=True)
         return self
@@ -319,10 +320,12 @@ def _write_all(entries: list[LedgerEntry]) -> None:
 
 def _append(entry: LedgerEntry) -> None:
     path = ledger_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     # ``newline="\n"`` for the same shared-repo reason as ``_write_all``, and this is the
     # hotter path: it runs on every single lesson written, not once a day.
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
+    with open(
+        path, "a", encoding="utf-8", newline="\n", opener=owner_only_opener_for(path)
+    ) as handle:
         handle.write(json.dumps(entry.to_dict(), sort_keys=True) + "\n")
 
 

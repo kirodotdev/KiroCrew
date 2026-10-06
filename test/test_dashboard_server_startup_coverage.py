@@ -31,6 +31,7 @@ import functools
 import os
 import socket
 import stat
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -1080,6 +1081,29 @@ class TestStartDashboardWiring:
             assert runner.app["state"] is state
             assert runner.app["port"] == 0
             assert state.resume_channel_agents is None
+
+    @pytest.mark.asyncio
+    async def test_the_knowledge_store_is_built_off_the_loop(self, tmp_path, monkeypatch) -> None:
+        """Its constructor prepares and opens SQLite files, which must not run on the loop.
+
+        Route registration reads the lazy store, so the boot builds it on a
+        worker first; this records which thread ran the constructor.
+        """
+        import kiro_crew.dashboard.state as _st
+
+        loop_thread = threading.get_ident()
+        built_on: list[int] = []
+        real_store = _st.KnowledgeStore
+
+        def _recording_store(*args: Any, **kwargs: Any) -> Any:
+            built_on.append(threading.get_ident())
+            return real_store(*args, **kwargs)
+
+        monkeypatch.setattr(_st, "KnowledgeStore", _recording_store)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+            assert state._knowledge_store is not None
+        assert len(built_on) == 1
+        assert built_on[0] != loop_thread
 
     @pytest.mark.asyncio
     async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(

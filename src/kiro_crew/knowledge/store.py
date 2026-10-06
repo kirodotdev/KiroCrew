@@ -771,7 +771,7 @@ class KnowledgeStore:
         # thread affinity (check_same_thread=True by default), but callers
         # like HybridRetriever.search() run on worker threads via
         # run_in_embed_pool / asyncio.to_thread while the store is created
-        # on the event-loop thread. A shared connection raises
+        # on another thread. A shared connection raises
         # sqlite3.ProgrammingError from those workers (HTTP 500 on
         # /api/knowledge/search-for-context). WAL mode (below) supports
         # concurrent readers alongside a single writer, and busy_timeout
@@ -789,11 +789,11 @@ class KnowledgeStore:
         self._connections_lock = threading.Lock()
         self._generation = 0
         # The FTS index rebuild is deliberately NOT done here. This constructor
-        # runs on the event-loop thread (see the note above), and a rebuild is
-        # data-scaled, so doing it here would stall the gateway at boot for the
-        # length of a full reindex. It is triggered instead by the first reader
-        # -- `ensure_fts_index_current` -- which by the same note always runs on
-        # a worker thread.
+        # runs on the gateway's boot path (see the construction note below),
+        # and a rebuild is data-scaled, so doing it here would stall the
+        # gateway at boot for the length of a full reindex. It is triggered
+        # instead by the first reader -- `ensure_fts_index_current` -- which
+        # always runs on a worker thread.
         #
         # Guards the rebuild ONLY, so two reader threads in this process do not
         # each start one. Deliberately not taken on the FTS write path: the
@@ -822,14 +822,14 @@ class KnowledgeStore:
         # Orders ingestion against the deferred orphan sweep -- see
         # `IngestionGate`, `ingestion_in_flight` and `maintenance_window`.
         self._ingestion_gate = IngestionGate()
-        # This constructor runs on the event-loop thread by documented design
-        # (see the thread-affinity note above). It is not an edge case:
-        # `setup_knowledge_routes()` reads the gateway's lazy `knowledge_store`
-        # property at route registration, which `start_dashboard` runs BEFORE
-        # the socket binds, so construction happens on the loop on every
-        # launch. The take is deliberate, so the on-loop guard -- which exists
-        # to police reader/writer query paths -- would warn spuriously on every
-        # boot. Deliberate is not free, though, so neither data-scaled piece of
+        # This constructor sits on the gateway's boot path: `start_dashboard`
+        # builds the lazy `knowledge_store` on a worker thread just before
+        # `setup_knowledge_routes()` reads it, BEFORE the socket binds, so it
+        # runs on every launch. Other callers (a CLI command, a test, a handler
+        # harness) may still build a store on an event-loop thread. That take
+        # is deliberate, so the on-loop guard -- which exists to police
+        # reader/writer query paths -- would warn spuriously on it. Being on
+        # the boot path is not free, though, so neither data-scaled piece of
         # construction sits on the boot path: `_load_graph()` is deferred to
         # the first graph reader (`ensure_graph_loaded`), the same shape the
         # FTS rebuild uses, and the writer-locked orphan sweep is
@@ -1494,7 +1494,7 @@ class KnowledgeStore:
         ``get_entity_graph`` and ``get_full_graph`` in the dashboard handlers --
         from a worker thread via ``asyncio.to_thread``. Deliberately NOT called
         from ``__init__``, for the reason ``ensure_fts_index_current`` gives
-        about itself: the constructor runs on the event-loop thread and this
+        about itself: the constructor runs on the gateway's boot path and this
         work is proportional to ``entities`` + ``entity_relations``, so doing it
         there stalls the gateway before the socket binds.
 
@@ -2037,7 +2037,7 @@ class KnowledgeStore:
         Called by each of the three FTS readers before it matches --
         :meth:`search_items_fts`, ``HybridRetriever._keyword_search``, and the
         dashboard's entity-items lookup. Deliberately NOT called
-        from ``__init__``: the constructor runs on the event-loop thread, and a
+        from ``__init__``: the constructor runs on the gateway's boot path, and a
         rebuild is proportional to corpus size, so migrating there would stall
         the gateway at boot for a large legacy library. All three readers run on
         a worker thread

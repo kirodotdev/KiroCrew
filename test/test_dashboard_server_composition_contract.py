@@ -1432,7 +1432,8 @@ _DASHBOARD_BOOT = tuple("""
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
-    _kick_local_decision_model _kick_knowledge_orphan_reclaim load_loop_stall_exit_after
+    _kick_local_decision_model _kick_knowledge_orphan_reclaim _kick_owner_only_sweep
+    load_loop_stall_exit_after
     _arm_prevent_sleep_poll safety_override safety_override safety_override
     await_crewmate_prune_settled current_context record_boot_to_ready
     _dispatch_healthy_boot_marker
@@ -1453,7 +1454,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:refresh_materialized_agents
     T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
     T:start_enabled_app_backends T:sweep_stale_dumps T:take_dropped_grant
-    T:warm_own_host_names
+    T:tighten_data_home T:warm_own_host_names
     """.split())
 _API_BOOT = tuple("""
     set_global_hook_store register_skill_read_observer wire_session_subagent_probe
@@ -1479,14 +1480,15 @@ _API_BOOT = tuple("""
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
-    _kick_local_decision_model _arm_prevent_sleep_poll record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    _kick_local_decision_model _kick_owner_only_sweep _arm_prevent_sleep_poll
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _API_TEARDOWN: tuple[str, ...] = ()
 _API_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_stt_idle_sweep S:_stt_startup_prewarm
     T:_live_sibling_port T:_write_instance_credentials T:_write_secret_file
-    T:_write_secret_file T:_write_secret_file T:record_healthy_boot T:warm_own_host_names
+    T:_write_secret_file T:_write_secret_file T:record_healthy_boot T:tighten_data_home
+    T:warm_own_host_names
     """.split())
 
 #: Done callbacks of tasks the boot creates, whose position depends on when a worker

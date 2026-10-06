@@ -276,12 +276,11 @@ class TestSharedSwitchCannotArmThisStore:
 class TestConstructionOnLoopIsSanctioned:
     """Construction is the ONE vetted on-loop take.
 
-    ``setup_knowledge_routes()`` reads the gateway's lazy ``knowledge_store``
-    property at route registration, before the socket binds, so ``__init__``
-    -- schema init, migrations, graph load -- runs on the event-loop thread on
-    every launch, by the constructor's documented design (moving that work off
-    the boot path is a separate change). The guard would warn on every boot for
-    that deliberate take, so the constructor wraps exactly those calls in
+    ``__init__`` -- schema init, migrations -- may run on an event-loop thread
+    when a caller other than the gateway builds a store there (a CLI command,
+    a test, a handler harness); the gateway itself builds it on a worker before
+    route registration. The guard would warn on every such deliberate take, so
+    the constructor wraps exactly those calls in
     ``allow_on_loop()``; these tests pin both directions -- construction is
     silent, AND the guard stays fully armed on every path after the block ends.
     """

@@ -108,6 +108,7 @@ from kiro_crew.jsonl_util import (
     bounded_raw_records,
     strict_raw_records,
 )
+from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.platform_compat import file_lock, restrict_dir_to_owner
 from kiro_crew.session_ledger import _store_name, is_link, resolved_within, unlink_lock_in_hold
 
@@ -3646,7 +3647,7 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
     holding the session's append lock, so no other handle can have appended between
     this write and its rollback -- the bytes removed can only be this call's own.
     """
-    with open(path, "ab") as handle:
+    with open(path, "ab", opener=owner_only_opener) as handle:  # conversation bodies: 0600
         before = handle.tell()
         try:
             handle.write(blob)

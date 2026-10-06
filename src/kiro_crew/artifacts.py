@@ -129,7 +129,10 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 - facade surface
     webapp_metadata_from_dict,
 )
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
-from kiro_crew.owner_only_files import ensure_directory
+from kiro_crew.owner_only_files import GROUP_OTHER_BITS as _GROUP_OTHER_BITS
+from kiro_crew.owner_only_files import is_owner_only_target as _is_owner_only_target
+from kiro_crew.owner_only_files import mkdirs_owner_only as _mkdirs_owner_only
+from kiro_crew.owner_only_files import owner_only_opener as _owner_only_opener
 from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F401 - facade surface
 from kiro_crew.security import (
     canonical_path_refusal,
@@ -378,6 +381,37 @@ def _open_pinned_for_read(resolved: Path) -> int:
     )
 
 
+def _owner_only_tmp_opener(path: str, flags: int) -> int:
+    """:func:`_owner_only_opener` for a fixed-name ``.tmp`` that a crash can leave behind.
+
+    ``os.open`` applies the mode only when it creates the file, so a ``.tmp`` an
+    earlier version left at ``0644`` would be truncated, reused and then
+    published at that mode by the rename. The descriptor belongs to this write
+    alone (no lock is ever taken on a ``.tmp``), so it is narrowed here before
+    any byte is written.
+    """
+    fd = _owner_only_opener(path, flags)
+    if not platform_compat.IS_POSIX:
+        return fd
+    try:
+        mode = os.fstat(fd).st_mode & 0o7777
+        if mode & _GROUP_OTHER_BITS:
+            os.fchmod(fd, mode & ~_GROUP_OTHER_BITS)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _prepare_store_write(resolved: Path, *, owner_only: bool) -> Callable[[str, int], int] | None:
+    """Create *resolved*'s parent and return the opener for its tmp file."""
+    if owner_only:
+        _mkdirs_owner_only(resolved.parent)
+        return _owner_only_tmp_opener
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return None
+
+
 class ArtifactStore:
     """File-system backed store for artifacts.
 
@@ -406,7 +440,19 @@ class ArtifactStore:
         # Keyed by the RESOLVED root so a symlinked alias of the same
         # directory still shares the lock, not just a literal path match.
         self._lock = _lock_for_root(resolved)
-        ensure_directory(self._root)  # 0700 when the root is in the data home
+        # Owner-only (0600 files, 0700 directories) when the root is in the data
+        # home. Decided once, on the root as it is SPELLED: the data-home test is
+        # lexical, and every path below the root is resolved (_artifact_dir), so
+        # under a symlinked, relocated home a per-write test would never match.
+        self._owner_only = _is_owner_only_target(self._root)
+        self._mkdirs(self._root)
+
+    def _mkdirs(self, path: Path) -> None:
+        """``mkdir -p`` for a store directory, 0700 when the store is owner-only."""
+        if self._owner_only:
+            _mkdirs_owner_only(path)
+        else:
+            path.mkdir(parents=True, exist_ok=True)
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -2356,7 +2402,7 @@ class ArtifactStore:
 
     def _write_artifact(self, art: Artifact, content: str) -> None:
         adir = self._artifact_dir(art.slug)
-        ensure_directory(adir / "versions")  # creates adir too
+        self._mkdirs(adir / "versions")  # creates adir too
         self._write_text(adir / "current.html", content)
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         self._write_meta(art)
@@ -2372,7 +2418,7 @@ class ArtifactStore:
         gated byte writer.
         """
         adir = self._artifact_dir(art.slug)
-        ensure_directory(adir / "versions")  # creates adir too
+        self._mkdirs(adir / "versions")  # creates adir too
         self._write_text(adir / "current.html", art.content or "")
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         assert art.image is not None  # set by create_image before this is called
@@ -2464,10 +2510,13 @@ class ArtifactStore:
         resolved = Path(os.path.realpath(path))
         if reason := _fence_refusal(resolved, "write"):
             raise ArtifactError(reason)
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: tmp file + rename.
+        # Atomic write: tmp file + rename. Inside the data home the tmp is 0600
+        # before the first byte is written (created so, or narrowed when a crash
+        # left one behind), so the published file is never readable by others.
+        opener = _prepare_store_write(resolved, owner_only=self._owner_only)
         tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", opener=opener) as fh:
+            fh.write(text)
         tmp.replace(resolved)
 
     def _read_bytes(self, path: Path) -> bytes:
@@ -2523,9 +2572,10 @@ class ArtifactStore:
         resolved = Path(os.path.realpath(path))
         if reason := _fence_refusal(resolved, "write"):
             raise ArtifactError(reason)
-        resolved.parent.mkdir(parents=True, exist_ok=True)
+        opener = _prepare_store_write(resolved, owner_only=self._owner_only)
         tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-        tmp.write_bytes(data)
+        with open(tmp, "wb", opener=opener) as fh:
+            fh.write(data)
         tmp.replace(resolved)
 
     def _prune_versions(self, slug: str) -> None:

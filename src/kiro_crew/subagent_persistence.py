@@ -29,7 +29,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.jsonl_util import rotate_jsonl_at
-from kiro_crew.owner_only_files import ensure_directory
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
@@ -1468,7 +1468,7 @@ def record_slow_command(agent_id: str, **fields: object) -> None:
         # this log diagnoses, so a rotation failure must never cost the
         # record; only a failure of the append itself may.
         rotate_jsonl_at(log_path, _SLOW_LOG_MAX_BYTES)
-        with open(log_path, "a", encoding="utf-8") as fh:
+        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener_for(log_path)) as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
     except OSError:
         logger.warning("record_slow_command failed for %s", agent_id, exc_info=True)

@@ -49,6 +49,8 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
+from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
+from kiro_crew.owner_only_files import owner_only_opener_for as _owner_only_opener_for
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -496,7 +498,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
 
     # Prepare log directory (needed early for adopt path)
     log_dir = root / "data" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(log_dir)  # 0700 inside the data home
     log_path = log_dir / "backend.log"
 
     # Check if the port is already in use by a healthy instance
@@ -1198,7 +1200,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # why provisioning failed. ``errors="replace"`` keeps the write total
         # for any codepoint; the child's own output is appended as raw bytes
         # through the inherited fd and is not affected by this wrapper.
-        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+        log_fh = open(
+            log_path,
+            "w",
+            encoding="utf-8",
+            errors="replace",
+            opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
+        )
         if provision_error:
             # Put the real cause at the top of the backend's own (user-visible)
             # log: the import error missing deps produce reads as an app bug,

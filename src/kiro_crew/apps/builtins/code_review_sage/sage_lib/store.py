@@ -64,6 +64,13 @@ except ImportError:  # pragma: no cover - standalone fallback
     _runtime_file_lock = None  # type: ignore[assignment]
     _runtime_open_creating = None  # type: ignore[assignment]
 
+# Owner-only directory creation in the data home, same guard shape: standalone
+# creates with the umask default, exactly as it has no owner-only lockdown.
+try:
+    from kiro_crew.owner_only_files import ensure_directory as _runtime_ensure_directory
+except ImportError:  # pragma: no cover - standalone fallback
+    _runtime_ensure_directory = None  # type: ignore[assignment]
+
 
 def _open_creating(name: str, flags: int, mode: int, dir_fd: int | None = None) -> int:
     """Open *name*, creating it when absent, without the Darwin ``O_CREAT`` race.
@@ -317,11 +324,12 @@ def mkdir_refusing_links(directory: str | os.PathLike) -> Path:
     bytes actually land, additionally pins the chain and so does not depend on
     this window.
     """
-    from kiro_crew.owner_only_files import ensure_directory
-
     d = Path(directory)
     refuse_linked_parents(d / _CHAIN_PROBE)
-    ensure_directory(d)  # 0700 levels in the data home
+    if _runtime_ensure_directory is not None:
+        _runtime_ensure_directory(d)  # 0700 levels in the data home
+    else:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 

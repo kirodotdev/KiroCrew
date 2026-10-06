@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from kiro_crew.jsonl_util import rotate_jsonl_at
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.platform import redact_log_via_context
 
 logger = logging.getLogger("kiro_crew.autonudge")
@@ -190,10 +191,10 @@ def append_record(base_dir: Path, record: Mapping[str, Any]) -> None:
     """
     try:
         path = stops_path(base_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)  # 0700 inside the data home
         line = json.dumps(dict(record), ensure_ascii=True, separators=(",", ":"), default=str)
         rotate_jsonl_at(path, STOPS_MAX_BYTES)
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
             fh.write(line + "\n")
     except Exception:  # noqa: BLE001 - see docstring: the store write already stands
         logger.warning("AutoNudge: could not append a stop record to the stop file", exc_info=True)
