@@ -1037,11 +1037,17 @@ async def _synthesize_polly(
     engine: str = DEFAULT_ENGINE,
     aws_profile: str = "",
     region: str = "",
+    *,
+    raise_refusal: bool = False,
 ) -> str | None:
     """Call Amazon Polly to generate MP3.  Returns temp file path or ``None``.
 
     ``ssml`` may be SSML (starting with ``<speak``) or plain text;
     text-type is auto-detected from the leading ``<speak`` tag.
+
+    ``raise_refusal`` is for a caller with a person waiting: when no consent is
+    recorded for this profile and region it raises
+    ``VoiceSynthesisError("voice_consent_required")`` instead of returning ``None``.
     """
     # Polly is a PAID AWS service and this is the request that spends money, so
     # it does not happen without a recorded operator consent for this exact
@@ -1053,6 +1059,18 @@ async def _synthesize_polly(
     if not await aws_consent.refuse_and_log(
         aws_consent.SERVICE_POLLY, profile=aws_profile, region=region
     ):
+        if raise_refusal:
+            # Only a missing grant is the person's to fix. The gate's log and
+            # audit keep the account, profile and region this text leaves out.
+            granted, _ = aws_consent.is_granted(
+                aws_consent.SERVICE_POLLY, profile=aws_profile, region=region
+            )
+            if not granted:
+                raise VoiceSynthesisError(
+                    "voice_consent_required",
+                    "Amazon Polly use is not confirmed for this profile and region. "
+                    "Nothing was sent to AWS. Confirm it in Settings -> Voice.",
+                )
         return None
     # Polly is OPTIONAL and driven via the ``aws`` CLI (no boto3 dependency).
     # On a vanilla machine without the CLI installed, degrade gracefully here
@@ -1651,13 +1669,16 @@ async def streaming_voice_reply(
             continue
         # Dashboard streaming is Polly-only today (sentence-by-sentence MP3
         # chunks). Calls the Polly-specific internal to avoid double-wrapping
-        # text→SSML through the public dispatcher.
+        # text→SSML through the public dispatcher. Raises only when no consent
+        # is recorded for this profile and region; any other refusal skips
+        # this sentence and the next one is checked again.
         mp3_path = await _synthesize_polly(
             ssml,
             voice_id=voice_id,
             engine=engine,
             aws_profile=aws_profile,
             region=region,
+            raise_refusal=True,
         )
         if not mp3_path:
             continue

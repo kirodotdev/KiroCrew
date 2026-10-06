@@ -5610,9 +5610,10 @@
   },
   "components": {
     "voicePlaybackNotice": {
-      "failed": "Não foi possível usar “{{speak}}”. Verifique as definições de texto para fala e tente novamente.",
+      "failed": "Não foi possível usar “{{speak}}”. Verifique as configurações de texto para fala e tente novamente.",
+      "consent_required": "“{{speak}}” precisa que você confirme o Amazon Polly para este perfil da AWS e esta região. Confirme nas configurações de texto para fala e tente novamente.",
       "blocked": "O navegador bloqueou a reprodução automática. Abra “{{moreActions}}” abaixo da resposta concluída e selecione “{{speak}}”.",
-      "settings": "Definições de “{{speak}}” (texto para fala)"
+      "settings": "Configurações de “{{speak}}” (texto para fala)"
     },
     "avatarBuilder": {
       "apply": "Aplicar",

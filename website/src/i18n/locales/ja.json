@@ -5431,6 +5431,7 @@
   "components": {
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
+      "consent_required": "「{{speak}}」を使うには、この AWS プロファイルとリージョンで Amazon Polly の利用を確認する必要があります。テキスト音声変換の設定で確認してから、もう一度お試しください。",
       "blocked": "ブラウザーが自動再生をブロックしました。完了した返信の下にある「{{moreActions}}」を開き、「{{speak}}」を選択してください。",
       "settings": "{{speak}}の設定（テキスト音声変換）"
     },

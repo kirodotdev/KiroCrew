@@ -886,6 +886,64 @@ class TestVoiceSynthesize:
         assert call_args[0][0] == "voice_error"
         assert call_args[0][1]["slot"] == "s1"
 
+    @pytest.mark.asyncio
+    async def test_polly_consent_refusal_reaches_the_client_with_its_code(
+        self, tmp_path, monkeypatch
+    ):
+        """Profile repointed at another account: read aloud names the refusal.
+
+        The real stream runs here, so this pins the whole path from the gate to
+        the response code the dashboard maps to its notice. The gate withdraws
+        the stale grant and logs the accounts; the client gets fixed text with
+        neither account nor the profile name in it.
+        """
+        from kiro_crew import aws_consent
+        from kiro_crew.config.loader import config_dir
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        config_dir().mkdir(parents=True, exist_ok=True)
+        _consent_to_polly(profile="polly-reader", region="us-east-1")
+
+        async def _repointed(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="999988887777")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _repointed)
+        mock_vc = MagicMock(
+            provider="polly",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="+0%",
+            aws_profile="polly-reader",
+            region="us-east-1",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        spawn = AsyncMock(side_effect=AssertionError("the AWS CLI must not run"))
+        monkeypatch.setattr("kiro_crew.voice_reply.create_subprocess_limited", spawn)
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.post(
+                "/api/voice/synthesize", json={"text": "First. Second.", "slot": "s1"}
+            )
+            assert resp.status == 502
+            data = await resp.json()
+        event, payload = state.broadcast_ws.call_args[0]
+        assert event == "voice_error"
+        assert payload["slot"] == "s1"
+        fixed = (
+            "Amazon Polly use is not confirmed for this profile and region. "
+            "Nothing was sent to AWS. Confirm it in Settings -> Voice."
+        )
+        for carried in (data, payload):
+            assert carried["code"] == "voice_consent_required"
+            assert carried["error"] == fixed
+            for secret in ("111122223333", "999988887777", "polly-reader"):
+                assert secret not in carried["error"]
+        spawn.assert_not_called()
+
 
 def _consent_to_polly(*, profile: str, region: str) -> None:
     """Record operator consent for Polly under one profile+region pair."""

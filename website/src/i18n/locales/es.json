@@ -5611,6 +5611,7 @@
   "components": {
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
+      "consent_required": "«{{speak}}» necesita que confirmes Amazon Polly para este perfil de AWS y esta región. Confírmalo en los ajustes de texto a voz y vuelve a intentarlo.",
       "blocked": "El navegador bloqueó la reproducción automática. Abre «{{moreActions}}» debajo de la respuesta completada y selecciona «{{speak}}».",
       "settings": "Ajustes de «{{speak}}» (texto a voz)"
     },

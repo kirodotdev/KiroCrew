@@ -5521,6 +5521,7 @@
   "components": {
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",
+      "consent_required": "„{{speak}}“ braucht deine Bestätigung für Amazon Polly mit diesem AWS-Profil und dieser Region. Bestätige sie in den Text-zu-Sprache-Einstellungen und versuche es dann erneut.",
       "blocked": "Dein Browser hat die automatische Wiedergabe blockiert. Öffne unter der abgeschlossenen Antwort „{{moreActions}}“ und wähle „{{speak}}“ aus.",
       "settings": "Einstellungen für „{{speak}}“ (Text zu Sprache)"
     },

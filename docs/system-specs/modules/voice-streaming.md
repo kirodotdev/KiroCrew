@@ -423,6 +423,18 @@ spawning the AWS CLI. It returns no audio when consent is absent, which lets its
 callers retain their text response rather than spending through an unattended
 path.
 
+The dashboard's sentence stream, `streaming_voice_reply()`, is the one caller with
+a person waiting, so it passes `raise_refusal=True`. When the gate refuses and
+`aws_consent.is_granted()` reports no consent for this profile and region, the
+first sentence raises `VoiceSynthesisError("voice_consent_required")` with fixed
+text that names neither the account, the profile nor the region; the gate's log
+line and audit entry keep the full reason. The synthesis endpoint answers 502 with
+that code and broadcasts it on `voice_error`; `voiceFailureMessage()` maps it to a
+localized notice that names the confirmation step, above the existing
+Text-to-speech settings link. A refusal while the consent stands (the account could
+not be re-checked, or the consent changed during the check) returns no audio for
+that sentence, and the next sentence is checked again.
+
 `_synthesize_polly()` and `streaming_piper_reply()` run their commands through
 `wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_piper()` instead delegates
 to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the

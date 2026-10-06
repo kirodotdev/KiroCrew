@@ -5431,6 +5431,7 @@
   "components": {
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",
+      "consent_required": "‘{{speak}}’에서 이 AWS 프로필과 리전의 Amazon Polly 사용을 확인해야 합니다. 텍스트 음성 변환 설정에서 확인한 다음 다시 시도하세요.",
       "blocked": "브라우저가 자동 재생을 차단했습니다. 완료된 답변 아래에서 ‘{{moreActions}}’을 열고 ‘{{speak}}’를 선택하세요.",
       "settings": "‘{{speak}}’ 설정 (텍스트 음성 변환)"
     },

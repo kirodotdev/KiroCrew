@@ -5610,9 +5610,10 @@
   },
   "components": {
     "voicePlaybackNotice": {
-      "failed": "«{{speak}}» non riuscito. Controlla le impostazioni di sintesi vocale e riprova.",
+      "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",
+      "consent_required": "«{{speak}}» ha bisogno che tu confermi Amazon Polly per questo profilo AWS e questa regione. Confermalo nelle impostazioni «Da testo a voce», poi riprova.",
       "blocked": "Il browser ha bloccato la riproduzione automatica. Apri «{{moreActions}}» sotto la risposta completata, poi seleziona «{{speak}}».",
-      "settings": "Impostazioni di «{{speak}}» (sintesi vocale)"
+      "settings": "Impostazioni di «{{speak}}» (Da testo a voce)"
     },
     "avatarBuilder": {
       "apply": "Applica",

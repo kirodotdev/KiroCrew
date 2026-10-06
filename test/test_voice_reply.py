@@ -2398,6 +2398,142 @@ class TestStreamingVoiceReply:
         assert collected == [0, 2]
 
 
+class TestStreamingVoiceReplyConsent:
+    """The dashboard stream raises only when no consent is recorded.
+
+    ``_polly_consented`` grants Polly for the default profile+region with a
+    matching account probe; each case below alters one of those three.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
+        # See TestSynthesizePolly._passthrough_sandbox.
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
+
+    @staticmethod
+    def _fake_exec(spoken: list[str]):
+        proc = _mock_subprocess(returncode=0)
+
+        async def fake_exec(*cmd, **kwargs):
+            spoken.append(cmd[-2])
+            with open(cmd[-1], "wb") as f:
+                f.write(b"x" * 200)
+            return proc
+
+        return fake_exec
+
+    @staticmethod
+    async def _collect(**kwargs) -> list[int]:
+        from kiro_crew.voice_reply import streaming_voice_reply
+
+        stream = streaming_voice_reply("First. Second.", **kwargs)
+        return [idx async for idx, _sent, _data in stream]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_account_check_skips_only_that_sentence(self, monkeypatch) -> None:
+        """The grant stands; the account could not be re-checked once.
+
+        The first sentence is skipped and the second is checked again and
+        spoken, so a transient fault never ends the read aloud with a notice
+        telling the person to confirm a consent they already gave.
+        """
+        from kiro_crew import aws_consent
+
+        probes: list[str] = []
+
+        async def _flaky(_profile: str, _region: str, *, use_cache: bool = True):
+            probes.append(_profile)
+            if len(probes) == 1:
+                return aws_consent.Identity(ok=False, detail="STS unreachable")
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _flaky)
+        spoken: list[str] = []
+        with (
+            patch.object(aws_consent, "audit_decision") as audit,
+            patch("asyncio.create_subprocess_exec", side_effect=self._fake_exec(spoken)),
+        ):
+            collected = await self._collect()
+
+        assert collected == [1]
+        assert len(spoken) == 1 and "Second." in spoken[0]
+        assert len(probes) == 2
+        assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied", "verified"]
+
+    @pytest.mark.asyncio
+    async def test_no_matching_grant_raises_at_the_first_sentence(self) -> None:
+        """Consent recorded for another region: fixed text, refused once."""
+        from kiro_crew import aws_consent
+        from kiro_crew.voice_reply import VoiceSynthesisError
+
+        with (
+            patch.object(aws_consent, "audit_decision") as audit,
+            patch("asyncio.create_subprocess_exec") as spawn,
+            pytest.raises(VoiceSynthesisError) as refused,
+        ):
+            await self._collect(region="us-east-1")
+
+        assert refused.value.code == "voice_consent_required"
+        assert str(refused.value) == (
+            "Amazon Polly use is not confirmed for this profile and region. "
+            "Nothing was sent to AWS. Confirm it in Settings -> Voice."
+        )
+        assert "us-east-1" not in str(refused.value)
+        assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied"]
+        assert spawn.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_consent_withdrawn_mid_reply_keeps_the_spoken_part(self, monkeypatch) -> None:
+        """The account under the profile changes after the first sentence.
+
+        The first sentence is already spoken. The gate then withdraws the grant,
+        so the second sentence raises and the person sees the consent notice
+        after the audio they already heard.
+        """
+        from kiro_crew import aws_consent
+        from kiro_crew.voice_reply import VoiceSynthesisError, streaming_voice_reply
+
+        probes: list[str] = []
+
+        async def _repointed(_profile: str, _region: str, *, use_cache: bool = True):
+            probes.append(_profile)
+            account = "111122223333" if len(probes) == 1 else "999988887777"
+            return aws_consent.Identity(ok=True, account=account)
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _repointed)
+        spoken: list[str] = []
+        collected: list[int] = []
+        with (
+            patch.object(aws_consent, "audit_decision"),
+            patch("asyncio.create_subprocess_exec", side_effect=self._fake_exec(spoken)),
+            pytest.raises(VoiceSynthesisError) as refused,
+        ):
+            async for idx, _sent, _data in streaming_voice_reply("First. Second."):
+                collected.append(idx)
+
+        assert collected == [0]
+        assert len(spoken) == 1 and "First." in spoken[0]
+        assert refused.value.code == "voice_consent_required"
+        assert aws_consent.read_grant(aws_consent.SERVICE_POLLY) is None
+
+    @pytest.mark.asyncio
+    async def test_unattended_call_returns_none_on_either_refusal(self) -> None:
+        """Without ``raise_refusal`` a refusal is "no audio", whatever its cause."""
+        from kiro_crew import aws_consent
+
+        unknown = aws_consent.Identity(ok=False, detail="STS unreachable")
+        with (
+            patch.object(aws_consent, "probe_identity", AsyncMock(return_value=unknown)),
+            patch("asyncio.create_subprocess_exec") as spawn,
+        ):
+            assert await _synthesize_polly("<speak>hi</speak>") is None
+            assert await _synthesize_polly("<speak>hi</speak>", region="us-east-1") is None
+        assert spawn.call_count == 0
+
+
 class TestTextTypeAutoDetection:
     """Tests for --text-type dynamic selection (ssml vs text)."""
 
