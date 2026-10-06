@@ -1393,6 +1393,20 @@ def test_a_failed_file_lock_releases_the_in_process_lock(tmp_path, monkeypatch):
     local.release()
 
 
+def test_a_non_oserror_after_the_in_process_lock_releases_it(tmp_path, monkeypatch):
+    directory = tmp_path / "agents"
+
+    def broken_link_check(path):
+        raise ValueError("unexpected path shape")
+
+    monkeypatch.setattr(projection.platform_compat, "is_link_or_junction", broken_link_check)
+    with pytest.raises(ValueError, match="unexpected path shape"):
+        projection._projection_alias_lock(directory)
+    local = projection._in_process_projection_lock(directory)
+    assert local.acquire(blocking=False)
+    local.release()
+
+
 def test_a_burst_of_spawns_prunes_once_per_interval(native_tree, monkeypatch):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")

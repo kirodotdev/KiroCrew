@@ -842,7 +842,9 @@ def _projection_alias_lock(directory: Path) -> ExitStack:
             or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
         ):
             raise OSError("skill projection lock changed while it was acquired")
-    except OSError:
+    except BaseException:
+        # Any failure, not only OSError: the stack holds the in-process lock, and
+        # a leaked one makes every later start in this process wait it out.
         stack.close()
         raise
     return stack
