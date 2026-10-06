@@ -1,7 +1,9 @@
 import { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUp, ArrowUpFromLine, Loader2, Square } from 'lucide-react'
-import BusySendButton, { useBusySendMode, type BusySendMode } from '../BusySendButton'
+import BusySendButton, { readBusySendMode, useBusySendMode, type BusySendMode } from '../BusySendButton'
+import type { RootState } from '../../store'
+import { selectComposerBusy, selectSlotStreamState } from '../../store/chatSlice'
 import { haptic } from '../../lib/haptic'
 import { useOverLimitSendConfirm } from '../useOverLimitSendConfirm'
 import type { PasteBlock } from '../../utils/pasteTokens'
@@ -17,6 +19,80 @@ import type { ComposerBusyMode } from './props'
    the send steers the running turn or queues behind it, and `BusySendControls`
    renders the stop controls that replace the send button through a stop's soft
    and hard phases. */
+
+/** What a send does while its slot is busy: the decision behind the composer's
+ *  default Send, kept in one place so every other send surface (a comment
+ *  batch, a voice auto-submit, a follow-up answer) takes it instead of a copy. */
+export function decideBusySend({ busyMode = 'split', mode, isRunning, stopState, canSteer, jevAutoAvailable }: {
+  busyMode?: ComposerBusyMode
+  /** The slot's persisted busy-send mode (`useBusySendMode` / `readBusySendMode`). */
+  mode: BusySendMode
+  isRunning: boolean
+  stopState?: 'idle' | 'soft_pending' | 'killing'
+  /** The surface has a steer path for this send. */
+  canSteer: boolean
+  jevAutoAvailable: boolean
+}) {
+  // Steer is the active Enter/send action only while the composer is busy and
+  // not stopping, on a steer-capable slot, and the user hasn't switched the
+  // split button to Queue. Everywhere else the composer falls back to onSend
+  // (normal send, or server-side queue while busy).
+  //
+  // `steer-only` has no Queue to switch to, so the persisted per-slot mode is
+  // not consulted: a slot that once picked Queue in the main chat must not
+  // silently queue from a surface that never shows that choice.
+  const steerOnly = busyMode === 'steer-only'
+  const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && canSteer
+  // A stored `auto` from a session where the seam WAS available resolves back to
+  // the shipped default while it is not: consent can be withdrawn and a fleet can
+  // pin the seam off, and a mode kept on screen after that would send a flag the
+  // gateway refuses to act on — which is a steer either way, but one the sender
+  // was told was a decision.
+  const effectiveBusyMode: BusySendMode = mode === 'auto' && !jevAutoAvailable ? 'steer' : mode
+  // `auto` is an ACTIVE steer: the send goes down the steer route carrying the
+  // flag, and the gateway decides there. Its fallback on every refusal is that
+  // same steer, so the composer's own reading of "acting now" is unchanged.
+  const steerActive = busyChoiceAvailable && (steerOnly || effectiveBusyMode !== 'queue')
+  const steerAuto = busyChoiceAvailable && !steerOnly && effectiveBusyMode === 'auto'
+  return { steerOnly, busyChoiceAvailable, effectiveBusyMode, steerActive, steerAuto }
+}
+
+/** The `steer` flag a send from outside the composer carries: what the
+ *  composer's default Send (no chord) on `slotKey` would do right now, with the
+ *  inputs its hosts give it (`canSteer` = busy, Auto only while a turn runs).
+ *  `undefined` is a plain send (idle, Queue, stopping), `true` steers (or, with
+ *  only sub-agents running, starts a turn past their hold), `'auto'` lets the
+ *  gateway decide. */
+export function busySteerFlag({ slotKey, busy, turnRunning, stopState, jevAutoConsented, busyMode }: {
+  slotKey: string | null
+  busy: boolean
+  turnRunning: boolean
+  stopState?: 'idle' | 'soft_pending' | 'killing'
+  jevAutoConsented: boolean
+  busyMode?: ComposerBusyMode
+}): true | 'auto' | undefined {
+  const { steerActive, steerAuto } = decideBusySend({
+    busyMode, mode: readBusySendMode(slotKey), isRunning: busy, stopState, canSteer: busy,
+    jevAutoAvailable: jevAutoConsented && turnRunning,
+  })
+  return steerActive ? (steerAuto ? 'auto' : true) : undefined
+}
+
+/** `busySteerFlag` for a slot read from the store. The active slot reads what
+ *  its composer reads; any other slot may have no live run state yet after a
+ *  reload, so its slots-stream row counts as running too. */
+export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: boolean): true | 'auto' | undefined {
+  const row = state.dashboard.slots.find(s => s.key === slot)
+  const active = slot === state.chat.activeSlot
+  const rowRunning = !active && !!row?.running
+  return busySteerFlag({
+    slotKey: slot,
+    busy: selectComposerBusy(state, slot) || rowRunning,
+    turnRunning: (active ? !!state.chat.slotRunning : selectSlotStreamState(state, slot) !== 'idle') || rowRunning,
+    stopState: row?.stop_state,
+    jevAutoConsented,
+  })
+}
 
 export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
   slotId: string | null
@@ -43,28 +119,9 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
   // Split send button while the composer is BUSY: 'steer' (default) vs 'queue'.
   // The mode is a persisted PER-SLOT preference — see BusySendButton.
   const [busySendMode, setBusySendMode] = useBusySendMode(slotId)
-  // Steer is the active Enter/send action only while the composer is busy and
-  // not stopping, on a steer-capable slot, and the user hasn't switched the
-  // split button to Queue. Everywhere else the composer falls back to onSend
-  // (normal send, or server-side queue while busy).
-  //
-  // `steer-only` has no Queue to switch to, so the persisted per-slot mode is
-  // not consulted: a slot that once picked Queue in the main chat must not
-  // silently queue from a surface that never shows that choice.
-  const steerOnly = busyMode === 'steer-only'
-  const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer
-  // A stored `auto` from a session where the seam WAS available resolves back to
-  // the shipped default while it is not: consent can be withdrawn and a fleet can
-  // pin the seam off, and a mode kept on screen after that would send a flag the
-  // gateway refuses to act on — which is a steer either way, but one the sender
-  // was told was a decision.
-  const effectiveBusyMode: BusySendMode =
-    busySendMode === 'auto' && !jevAutoAvailable ? 'steer' : busySendMode
-  // `auto` is an ACTIVE steer: the send goes down the steer route carrying the
-  // flag, and the gateway decides there. Its fallback on every refusal is that
-  // same steer, so the composer's own reading of "acting now" is unchanged.
-  const steerActive = busyChoiceAvailable && (steerOnly || effectiveBusyMode !== 'queue')
-  const steerAuto = busyChoiceAvailable && !steerOnly && effectiveBusyMode === 'auto'
+  const { steerOnly, busyChoiceAvailable, effectiveBusyMode, steerActive, steerAuto } = decideBusySend({
+    busyMode, mode: busySendMode, isRunning, stopState, canSteer: !!canSteer && !!onSteer, jevAutoAvailable,
+  })
   const { pending: overLimitPending, intercept: interceptOverLimitSend } = useOverLimitSendConfirm(
     value,
     pasteBlocks,

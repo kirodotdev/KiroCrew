@@ -11,6 +11,7 @@ import type { ThreadHooks } from '../app-sdk/messageRenderers'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
+import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat } from './chat/crewmateBubbles'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
@@ -449,9 +450,9 @@ export default function ChatPane({
   // ownership). The pane's steer-not-queue rule (#8852) stays on `canSteer`
   // below until the Send atom exists.
   const composerRef = useRef<ComposerHandle>(null)
-  const doSendRef = useRef<((optionText?: string) => void) | null>(null)
+  const autoSubmitRef = useRef<(() => void) | null>(null)
   const composerVoiceOptions = useMemo<ComposerVoiceOptions>(() => ({
-    onAutoSubmit: () => { doSendRef.current?.() },
+    onAutoSubmit: () => { autoSubmitRef.current?.() },
   }), [])
   // Shared composer-busy rule (chatSlice.selectComposerBusy): main turn
   // streaming OR sub-agents running (dual signal). Drives the queue affordance
@@ -1226,9 +1227,6 @@ export default function ChatPane({
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
   }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto])
-  // The endpointer auto-submit (handed to the Voice atom above) reads the
-  // latest send through this ref.
-  doSendRef.current = doSend
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the
@@ -1369,6 +1367,17 @@ export default function ChatPane({
   }, [slotKey])
   const paneStopState: typeof serverStopState =
     optimisticSoftPending && !isEscalationState(serverStopState) ? 'soft_pending' : serverStopState
+  // The endpointer auto-submit (handed to the Voice atom above) is an Enter
+  // press: the composer's default busy decision with this pane's own composer
+  // inputs (never the flipped chord), so it steers where Send would steer.
+  autoSubmitRef.current = () => {
+    // An attachment still uploading holds the composer: doSend owns that hold
+    // (it ends the dictation and sends nothing) and doSteer has no copy of it.
+    if (isComposerSendHeld(slotKey)) { doSend(); return }
+    const flag = busySteerFlag({ slotKey, busy, turnRunning: running, stopState: paneStopState, jevAutoConsented, busyMode })
+    if (flag) doSteer(flag === 'auto' ? { auto: true } : undefined)
+    else doSend()
+  }
   // A press that fails on the wire must say so: a silently swallowed
   // rejection leaves exactly the dead-looking button this fix removes. The
   // notice clears on the next press, so a retry that succeeds retires it.

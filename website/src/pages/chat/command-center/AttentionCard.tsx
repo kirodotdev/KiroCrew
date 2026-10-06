@@ -4,9 +4,11 @@ import { useTranslation } from 'react-i18next'
 import { ArrowUpRight, Check, ShieldCheck } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '../../../api/client'
-import { useAppDispatch, useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { clearQuestionCard, resolveQuestionCard, selectComposerBusy } from '../../../store/chatSlice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
+import { slotBusySteer } from '../../../components/chat-input/busySend'
+import { useJevAutoSend } from '../useJevAutoSend'
 import { Btn } from '../../../components/ui'
 import QuestionCard from '../../../components/QuestionCard'
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -35,6 +37,8 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
   // After reload an inactive session may have no live chat run state yet.
   const busy = useAppSelector(state => selectComposerBusy(state, item.slot)
     || state.dashboard.slots.some(slot => slot.key === item.slot && slot.running))
+  const appStore = useAppStore()
+  const jevAutoConsented = useJevAutoSend()
   const locked = useRef(false)
   // QuestionCard drops a draft whenever its payload changes, so a follow-up's
   // heading is translated once per mount: a language switch must not erase a
@@ -59,7 +63,10 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
           // put words in the user's mouth.
           const message = q.followUp ? Object.values(action.answers).join('\n')
             : Object.entries(action.answers).map(([question, answer]) => `${question}: ${answer}`).join('\n')
-          const receipt = await sendTurn({ slot: item.slot, message, ...(q.native && busy ? { steer: true } : {}) })
+          // A follow-up choice is a chip send, so it takes the composer's busy
+          // decision for its slot (steer, queue or auto per the busy-send mode).
+          const steer = q.followUp ? slotBusySteer(appStore.getState(), item.slot, jevAutoConsented) : (q.native && busy ? true : undefined)
+          const receipt = await sendTurn({ slot: item.slot, message, ...(steer ? { steer } : {}) })
           if (receipt.status !== 'dispatched' && receipt.status !== 'queued') {
             throw new Error(receipt.status === 'refused' ? receipt.reason || t('commandCenter.send_refused') : t('commandCenter.send_unknown'))
           }

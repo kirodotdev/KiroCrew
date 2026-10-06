@@ -6,6 +6,10 @@ import { api, ApiError } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { buildCommandCenter, type AttentionItem } from '../pages/chat/command-center/model'
 
+/** Jev's consent for `Auto` mode, set per test rather than fetched. */
+const jev = vi.hoisted(() => ({ consented: false }))
+vi.mock('../pages/chat/useJevAutoSend', () => ({ useJevAutoSend: () => jev.consented }))
+
 const approval: AttentionItem = { id: 'approval:child:r1', kind: 'approval', slot: 'child', native: true, approvalMode: 'normal', approval: { id: 'r1', instance: 'inst-r1', request_mid: 'row-r1', slot: 'dashboard:child', tool: 'shell', tool_input: 'git status' } }
 const question: AttentionItem = { id: 'question:q1', kind: 'question', slot: 'child', question: { slot: 'child', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'Backend' }, { label: 'Frontend' }] }] } }
 
@@ -335,5 +339,62 @@ describe('task dashboard input routing', () => {
     await screen.findByText('Retirement failed')
     expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument()
     expect(send).toHaveBeenCalledTimes(1)
+  })
+})
+
+/** A follow-up choice is a chip send, so it takes the composer's busy decision
+ *  for its slot: steer, queue or auto per the slot's busy-send mode. It used to
+ *  send with no steer flag, queueing (or parking behind sub-agents) in Steer
+ *  mode. */
+describe('task dashboard follow-up answers follow the busy-send mode', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    localStorage.clear()
+    jev.consented = false
+  })
+
+  async function answer(row: Record<string, unknown>, { consent = false } = {}) {
+    jev.consented = consent
+    const slotRow = { key: 'child', messages: 2, has_options: true, options: ['Fix all 3', 'Keep it'], ...row }
+    // The card is built while the session waits idle on its choice; what it
+    // answers into is the slot as the store sees it at the press (a turn can
+    // start, or sub-agents finish, while the card stays mounted).
+    const [item] = buildCommandCenter({ root: 'child', slots: [{ ...slotRow, running: false } as never], subagents: {}, workflows: [], questions: [], approvals: [] }).attention
+    const initial = createTestStore().getState()
+    const store = createTestStore({ ...initial, chat: { ...initial.chat, activeSlot: 'front' }, dashboard: { ...initial.dashboard, slots: [slotRow as never] } })
+    const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: { ok: true } })
+    renderWithProviders(<AttentionCard item={item} title="Worker" />, { store })
+    fireEvent.click(screen.getByText('Keep it'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await screen.findByText('Your response was recorded.')
+    return send
+  }
+  const setMode = (mode: string) => localStorage.setItem('mc-busy-send-mode:child', mode)
+
+  it('sends plainly while the session is idle', async () => {
+    const send = await answer({ running: false })
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it' })
+  })
+
+  it('steers past the sub-agent hold in Steer mode', async () => {
+    const send = await answer({ running: false, subagents_running: true })
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it', steer: true })
+  })
+
+  it('steers a running turn in Steer mode', async () => {
+    const send = await answer({ running: true })
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it', steer: true })
+  })
+
+  it('queues in Queue mode', async () => {
+    setMode('queue')
+    const send = await answer({ running: true })
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it' })
+  })
+
+  it('carries steer=auto in Auto mode while a turn runs and Jev is consented', async () => {
+    setMode('auto')
+    const send = await answer({ running: true }, { consent: true })
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it', steer: 'auto' })
   })
 })

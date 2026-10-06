@@ -9,13 +9,15 @@ import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFor
 import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { sendTurn } from '../chat-core/transport/sendTurn'
+import { slotBusySteer } from '../components/chat-input/busySend'
+import { useJevAutoSend } from './chat/useJevAutoSend'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -1237,6 +1239,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // false, so the batch submit is disabled (and bails) there — same gating as
   // the file viewer's "Submit All".
   const connected = useAppSelector((s) => s.dashboard.connected)
+  // The batch submit takes the bound session's busy decision at press time.
+  const appStore = useAppStore()
+  const jevAutoConsented = useJevAutoSend()
   // Serializes the two session-lifecycle entry points. `chatCreating` cannot do
   // this job: it is React state (so a second handler in the same tick still sees
   // the old value) and it is only set INSIDE createBoundSession, which runs
@@ -1459,9 +1464,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const batch = pendingComments
     setSubmittingComments(true)
     try {
+      // A Send press on the bound session: it steers or queues per that
+      // session's busy-send mode. A steer comes back `dispatched` (steered, or
+      // a fresh turn) or `queued` (demoted), so the custody rule below holds.
+      const steer = slotBusySteer(appStore.getState(), boundSlot.key, jevAutoConsented)
       const receipt = await sendTurn({
         message: formatArtifactCommentsMessage(slug, artifact.name, batch, extraPrompt),
         slot: boundSlot.key,
+        ...(steer ? { steer } : {}),
       })
       // Mark sent only on a receipt that PROVES the server took custody: a
       // dispatch, a queue entry, or a 2xx whose body would not parse (accepted,
@@ -1494,7 +1504,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setSubmittingComments(false)
     }
-  }, [connected, artifact, pendingComments, boundSlot, slug, sentKey])
+  }, [connected, artifact, pendingComments, boundSlot, slug, sentKey, appStore, jevAutoConsented])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */

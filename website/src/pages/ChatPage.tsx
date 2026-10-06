@@ -95,6 +95,7 @@ import { useTurnRecovery } from './chat/page/turnRecovery'
 import { useComposerAboveBand, useComposerDockMetrics } from './chat/page/composerDock'
 import { useStableRowKeys, useTranscriptRows } from './chat/page/transcriptRows'
 import { useBusyTurnControls } from './chat/page/busyTurnControls'
+import { slotBusySteer } from '../components/chat-input/busySend'
 import { useSessionAutomation } from './chat/page/sessionAutomation'
 import { useTranscriptJumps } from './chat/page/transcriptJumps'
 import ChatPaneNotices from './chat/page/ChatPaneNotices'
@@ -1450,10 +1451,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // document-wide push-to-talk key. `composerRef` reaches the atom's controls
   // from send().
   //
-  // Forward ref to send() (defined far below) so the streaming endpointer's
-  // auto-submit callback — handed to the atom here, above send — can fire it.
-  // Kept fresh by an effect after send is declared.
-  const sendRef = useRef<((optionText?: string, targetSlot?: string) => void) | null>(null)
+  // Forward ref to the Enter-equivalent submit (defined far below, after send
+  // and steer) so the streaming endpointer's auto-submit callback — handed to
+  // the atom here, above both — can fire it. Assigned in render after steer.
+  const voiceSubmitRef = useRef<(() => void) | null>(null)
   const composerRef = useRef<ComposerHandle>(null)
   // Live composer caret, kept current by ChatInput; the resources controller
   // splices a picked file token at it, and dictation splices the transcript at
@@ -1481,7 +1482,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (composerSlotRef.current === target) inputRef.current = next
     saveDrafts()
   }, [saveDrafts, drafts])
-  const voiceAutoSubmit = useCallback(() => { sendRef.current?.() }, [])
+  const voiceAutoSubmit = useCallback(() => { voiceSubmitRef.current?.() }, [])
   const composerVoiceOptions = useMemo<ComposerVoiceOptions>(() => ({
     isComposerFor: voiceIsComposerFor,
     deliverOffScreen: voiceDeliverOffScreen,
@@ -1857,7 +1858,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // intercepted locally, transport error, refused). UI reactions all stay
   // inside send(); the verdict exists for callers that persist state only on
   // delivery (ArtifactPanel's submit-to-chat batch marks comments sent on it).
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated = false): Promise<boolean> => {
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false): Promise<boolean> => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -2393,11 +2394,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // missing response -- a channel-linked slot can deliver one -- and then
       // there is nothing to warn about.
       if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      // An unconfirmed STEER is not counted as delivered: the steer receipt
+      // policy hands its text back (applySteerReceipt), so a caller that
+      // persists on this verdict (a comment batch) keeps its payload.
+      const lateVerdict = !steerNow
       // A busy-slot Queue send minted no bubble, so there is no row to mark and
       // the notice below would point at nothing. It keeps the bare pending
       // verdict; what becomes of its text is the restore decision this arm
       // does not take.
-      if (!bubbleMinted || !slot) return true
+      if (!bubbleMinted || !slot) return lateVerdict
       // The mark is what draws the bubble's pending line (the `optimistic` flag
       // alone cannot, see `markSendUnconfirmed`), and the row under the bubble
       // says what the line cannot: that the deadline passed and what to do.
@@ -2407,7 +2412,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // deadline window.
       dispatch(markSendUnconfirmed({ slot, sendId }))
       dispatch(appendSlotMessage({ slot, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
-      return true
+      return lateVerdict
     }
     if (body.queued && turn.typedOnly) {
       // The server queued this send and its receipt names the entry:
@@ -2512,21 +2517,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // land where the document belongs. switchSlot.pending sets activeSlot
   // synchronously, but send()'s closure activeSlot is stale until re-render,
   // so the origin slot is passed to send() explicitly.
-  // Keep sendRef current so the streaming endpointer's auto-submit callback
-  // (wired into the voice hook above, before send is declared) always invokes
-  // the latest send(). Assigned in render like inputRef.current = input above.
-  sendRef.current = send
   const submitComments = useCallback((message: string) => {
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
     // but bail here too so an offline call can't switch the active session
     // and then have send() silently drop the message.
     if (!connected) return false
     const target = tabsCtl.activeTab?.slot ?? null
+    // The batch is a Send press for the TARGET slot: it steers or queues per
+    // that slot's busy-send mode, read before a switch can change what the
+    // store says about it.
+    const sendSlot = target ?? activeSlotRef.current
+    const steerFlag = sendSlot ? slotBusySteer(store.getState(), sendSlot, jevAutoConsented) : undefined
     if (target && target !== activeSlot) dispatch(switchSlot(target))
     // The delivery verdict flows back to the panel: ArtifactPanel marks a
     // comment batch as sent only when this resolves true.
-    return send(message, target ?? undefined)
-  }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send])
+    return send(message, target ?? undefined, steerFlag)
+  }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send, jevAutoConsented])
 
   // The armed auto-send (?autoSend=1, a signed token, an app launch) and a
   // widget action's prefill.
@@ -3879,6 +3885,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     softStopAtMapRef,
     dispatch,
   })
+  // The endpointer's auto-submit is an Enter press: the composer's default busy
+  // decision for the active slot (never the flipped chord), so it steers where
+  // Send would steer. Assigned in render so the voice callback above always
+  // reaches the latest send() and steer().
+  voiceSubmitRef.current = () => {
+    const slot = activeSlotRef.current
+    // send() owns the disconnected guard and upload hold, so route either state there before steer() can consume the composer.
+    if (!connected || isComposerSendHeld(slot) || isComposerSendHeld(composerSlotRef.current)) { void send(); return }
+    const flag = slot ? slotBusySteer(store.getState(), slot, jevAutoConsented) : undefined
+    if (flag) steer(flag === 'auto' ? { auto: true } : undefined)
+    else void send()
+  }
 
 
   // Search, pins, tool focus, and deep links navigate the rows the virtualizer
