@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import cli_doctor, cron, extras
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
 
@@ -196,6 +196,25 @@ class TestDataHome:
         assert "Data Home" in out
         assert "legacy:" not in out
         assert "rm -rf" not in out
+
+    def test_location_prints_the_symlink_resolved_spelling(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A data home reached through a ``current`` symlink to a versioned
+        # directory is printed as its canonical target, so it cannot read as a
+        # second install beside the (already canonical) PATH launcher row.
+        versioned = tmp_path / "install" / "1.2.3"
+        versioned.mkdir(parents=True)
+        current = tmp_path / "install" / "current"
+        make_dir_link(current, versioned)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(cli_doctor, "config_dir", lambda: current)
+
+        cli_doctor._doctor_data_home()
+
+        out = capsys.readouterr().out
+        assert f"location:    ✅ {os.path.realpath(versioned)}" in out
+        assert str(current) not in out
 
 
 class TestPodSessionBus:
@@ -1986,6 +2005,27 @@ class TestPathLauncherOwnership:
         out = capsys.readouterr().out
         assert "kirocrew CLI: ✅" in out
         assert "different install" not in out
+
+    def test_matching_launcher_prints_the_symlink_resolved_spelling(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        # The clean row prints the same canonical form the mismatch rows and the
+        # Data Home row print, not the PATH spelling through a ``current`` link.
+        versioned = tmp_path / "install" / "1.2.3"
+        (versioned / "bin").mkdir(parents=True)
+        exe = versioned / "bin" / "kirocrew"
+        exe.write_text("")
+        current = tmp_path / "install" / "current"
+        make_dir_link(current, versioned)
+        via_link = current / "bin" / "kirocrew"
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(via_link))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(exe))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
+        assert str(via_link) not in out
 
     def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
         wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"

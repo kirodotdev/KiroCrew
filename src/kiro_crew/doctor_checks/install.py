@@ -41,7 +41,10 @@ def _doctor_data_home() -> None:
     """
     print("\nData Home")
     home = cli_doctor.config_dir()
-    print(f"  location:    ✅ {home}")
+    # Print the canonical (symlink-resolved) spelling, the same form the PATH
+    # launcher row prints: one install reached through a ``current`` symlink and
+    # through its versioned directory must not read as two installs.
+    print(f"  location:    ✅ {os.path.realpath(home)}")
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -274,7 +277,8 @@ def _doctor_path_launcher() -> None:
         return
     running = _resolve_kirocrew_bin()
     if not os.path.isabs(running) or os.path.realpath(on_path) == os.path.realpath(running):
-        print(f"  kirocrew CLI: ✅ {on_path}")
+        # Canonical spelling, matching the Data Home row and the comparison above.
+        print(f"  kirocrew CLI: ✅ {os.path.realpath(on_path)}")
         return
     print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
     # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
