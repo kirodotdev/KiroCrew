@@ -179,11 +179,12 @@ The criterion and the constraints in §2 and §3 hold either way; see
 
 The out-of-band carrier already exists and needs no new machinery.
 `SessionWatchdog` (`watchdog.py`) is a stateless dispatcher over a fixed list of
-`CleanupHook`s, ticked from `SessionManager._cleanup_loop` on its own
-`asyncio.wait_for(shutdown_event.wait(), timeout=interval)` sleep, where
-`interval = max(timeout // 6, 60)` (`SessionManager._cleanup_loop`). It depends
-on no session's read loop. Three hooks are registered today: `idle_expiry`,
-`orphan_mcp`, `rss_threshold`.
+`CleanupHook`s, ticked from the cleanup loop that `session_cleanup.SessionCleanup`
+runs on its own `asyncio.wait_for(shutdown_event.wait(), timeout=interval)` sleep,
+where `interval = min(max(timeout // 6, 60), MAX_TICK_INTERVAL_SECS)` and
+`MAX_TICK_INTERVAL_SECS` is 300. It depends on no session's read loop. The
+registered hooks are listed in [session.md](../../system-specs/modules/session.md),
+which owns them.
 
 **Readable at that layer.** `SessionManager._sessions` under `self._lock`, and
 per `_Session`: `semaphore.locked()` (the only in-flight signal at this layer),
@@ -204,9 +205,9 @@ holds no reference to it. The session layer must not import the dashboard.
 
 **The blind spot that matters — and why it was not a plumbing problem.** From
 outside, a healthy 40-minute turn and a turn parked on an approval for 40 minutes
-look identical: `semaphore.locked()` is True for both, and `last_used` is bumped
-only by `get_or_create()` (the "Known limitation" note in `session.py`'s module
-docstring), so it does not advance during a turn at all.
+look identical: `semaphore.locked()` is True for both, and `last_used` advances
+only on the allocation paths and on `touch()`, not on every LLM round-trip
+(`session.py`'s module docstring), so it does not track a turn's progress.
 
 The tempting reading is that the signal has to be *injected* from the layer that
 can see it — a consumer-supplied reader in the shape of
@@ -334,7 +335,8 @@ into this note would blur what is being decided.
 
 All three questions this note opened are settled, and the hook they describe is
 implemented (`SessionManager._stuck_turn_check`, registered on `SessionWatchdog`
-alongside `idle_expiry` / `orphan_mcp` / `rss_threshold`).
+as the `stuck_turn` hook alongside the other cleanup hooks that
+[session.md](../../system-specs/modules/session.md) lists).
 
 **Where current behavior is authoritative:** `session.md` and `acp-client.md`, not
 this note. A behavior change is contractually required to update the owning module
