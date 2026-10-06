@@ -6175,7 +6175,9 @@
       "terminal_review": "检查并在终端中运行",
       "terminal_force_stop": "停止智能体",
       "terminal_pending": "请等待会话详情加载，或选择其他会话。",
-      "terminal_run_review": "审阅终端命令"
+      "terminal_run_review": "审阅终端命令",
+      "attachment_removed": "已从附件中移除 {{file}}",
+      "attachment_restored": "已附加 {{file}}"
     },
     "chatPane": {
       "agent_list": "代理列表",

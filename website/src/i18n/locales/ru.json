@@ -6472,7 +6472,9 @@
       "terminal_review": "Проверить и выполнить в терминале",
       "terminal_force_stop": "Остановить агента",
       "terminal_pending": "Дождись загрузки сведений о сеансе или выбери другой сеанс.",
-      "terminal_run_review": "Проверить команду терминала"
+      "terminal_run_review": "Проверить команду терминала",
+      "attachment_removed": "{{file}} удалён из вложений",
+      "attachment_restored": "{{file}} прикреплён"
     },
     "chatPane": {
       "agent_list": "Список агентов",

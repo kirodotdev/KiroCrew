@@ -2075,7 +2075,9 @@
       "terminal_review": "Review and run in terminal",
       "terminal_run_review": "Review terminal command",
       "terminal_force_stop": "Stop agent",
-      "terminal_pending": "Wait for session details to load, or select another session."
+      "terminal_pending": "Wait for session details to load, or select another session.",
+      "attachment_removed": "{{file}} removed from attachments",
+      "attachment_restored": "{{file}} attached"
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",

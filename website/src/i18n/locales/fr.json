@@ -6373,7 +6373,9 @@
       "terminal_review": "Vérifier et exécuter dans le terminal",
       "terminal_force_stop": "Arrêter l’agent",
       "terminal_pending": "Attends le chargement des détails de la session ou sélectionne une autre session.",
-      "terminal_run_review": "Vérifier la commande du terminal"
+      "terminal_run_review": "Vérifier la commande du terminal",
+      "attachment_removed": "{{file}} retiré des pièces jointes",
+      "attachment_restored": "{{file}} joint"
     },
     "chatPane": {
       "agent_list": "Liste des agents",

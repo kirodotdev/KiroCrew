@@ -8,6 +8,7 @@ import {
   parseDirTokens, spliceDirTokens,
 } from '../../../utils/fileTokens'
 import { findTokenRanges } from '../../../utils/pasteTokens'
+import { i18nT } from '../../../i18n/t'
 import { revealComposer } from '../composerFocus'
 import type { ComposerStaging } from './composerStaging'
 
@@ -69,6 +70,15 @@ interface FileMentionActionsOptions {
   voicePendingCaretRef: MutableRefObject<number | null>
   /** Set here to the reconciliation; the draft-commit sink calls it. */
   reconcileFileChipsRef: MutableRefObject<((text: string) => void) | null>
+  /**
+   * Politely announce an attachment change the reconciliation made on its own
+   * (a hand-edited or pasted `@mention` un/restaging a chip), for screen-reader
+   * users who get no focus change from it. Set by ChatPage to write the composer's
+   * `aria-live` status region. Only the AUTOMATIC path calls this: the chip's own
+   * ✕ and a picker pick already move focus, so `removeFileChip` deliberately does
+   * not announce (that would double-announce — #14597).
+   */
+  announceAttachmentChange?: (message: string) => void
 }
 
 /**
@@ -84,6 +94,7 @@ export function useFileMentionActions({
   voiceCaretRef,
   voicePendingCaretRef,
   reconcileFileChipsRef,
+  announceAttachmentChange,
 }: FileMentionActionsOptions) {
   const { pendingFiles, setPendingFiles, pendingFilesRef, pasteBlocksRef, currentSlotTokens, recordSlotToken } = staging
   // Mention checks in this block compare both separator forms only for a
@@ -511,7 +522,40 @@ export function useFileMentionActions({
       const next = prev.filter(p => !stale.includes(p))
       return revived.reduce((acc, p) => addPendingFile(acc, p), next)
     })
-  }, [currentSlotTokens, relMentionedHere, liveOtherAliases, fileChipRevives, pendingFiles, setPendingFiles])
+    // Announce the change the user did NOT initiate directly. Reconciliation
+    // runs when an `@mention` is hand-edited or pasted, which moves no focus, so
+    // a screen-reader user otherwise gets no sign a chip appeared or vanished and
+    // may send with (or without) a file they did not mean to (#14597). The chip's
+    // own ✕ and a picker pick move focus already, so they do not route here.
+    // A chip shows its basename, so the announcement names the file the same way;
+    // when one edit changes several at once, the names join into one message so
+    // the single live region is not overwritten before it is read.
+    //
+    // ONE reconciliation == ONE announce call, even when the same edit both
+    // restages and unstages chips (paste one `@mention` over another). The two
+    // messages are joined into a single string so React does not batch two
+    // `setAttachmentAnnouncement` calls into one render and drop the first --
+    // which would otherwise leave a screen reader hearing only the removal --
+    // and so the live region's nonce advances exactly once (two calls advanced
+    // it by two, and `nonce % 2` could land back on its prior parity and never
+    // fire). Restore is named before removal so the net new attachment is heard
+    // first.
+    if (announceAttachmentChange) {
+      const basename = (p: string) => p.split(/[/\\]/).filter(Boolean).pop() || p
+      const parts: string[] = []
+      if (revived.length) {
+        parts.push(i18nT('components.chatInput.attachment_restored', {
+          file: revived.map(basename).join(', '),
+        }))
+      }
+      if (stale.length) {
+        parts.push(i18nT('components.chatInput.attachment_removed', {
+          file: stale.map(basename).join(', '),
+        }))
+      }
+      if (parts.length) announceAttachmentChange(parts.join('. '))
+    }
+  }, [currentSlotTokens, relMentionedHere, liveOtherAliases, fileChipRevives, pendingFiles, setPendingFiles, announceAttachmentChange])
   reconcileFileChipsRef.current = reconcileFileChips
 
   /** The file chip's remove (ChatInput `onRemoveFile`). */

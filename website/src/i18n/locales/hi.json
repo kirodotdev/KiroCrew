@@ -6274,7 +6274,9 @@
       "terminal_review": "जाँचकर टर्मिनल में चलाओ",
       "terminal_force_stop": "एजेंट रोको",
       "terminal_pending": "सत्र का विवरण लोड होने का इंतज़ार करो या दूसरा सत्र चुनो।",
-      "terminal_run_review": "टर्मिनल कमांड की समीक्षा करो"
+      "terminal_run_review": "टर्मिनल कमांड की समीक्षा करो",
+      "attachment_removed": "{{file}} अनुलग्नकों से हटाया गया",
+      "attachment_restored": "{{file}} संलग्न किया गया"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

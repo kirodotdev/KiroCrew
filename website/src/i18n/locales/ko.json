@@ -6175,7 +6175,9 @@
       "terminal_review": "검토 후 터미널에서 실행",
       "terminal_force_stop": "에이전트 중지",
       "terminal_pending": "세션 정보가 로드될 때까지 기다리거나 다른 세션을 선택하세요.",
-      "terminal_run_review": "터미널 명령 검토"
+      "terminal_run_review": "터미널 명령 검토",
+      "attachment_removed": "{{file}} 첨부에서 제거됨",
+      "attachment_restored": "{{file}} 첨부됨"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

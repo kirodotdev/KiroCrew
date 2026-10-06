@@ -6274,7 +6274,9 @@
       "terminal_review": "Prüfen und im Terminal ausführen",
       "terminal_force_stop": "Agent stoppen",
       "terminal_pending": "Warte, bis die Sitzungsdetails geladen sind, oder wähle eine andere Sitzung.",
-      "terminal_run_review": "Terminalbefehl prüfen"
+      "terminal_run_review": "Terminalbefehl prüfen",
+      "attachment_removed": "{{file}} aus Anhängen entfernt",
+      "attachment_restored": "{{file}} angehängt"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

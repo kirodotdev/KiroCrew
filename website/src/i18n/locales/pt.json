@@ -6373,7 +6373,9 @@
       "terminal_review": "Revisar e executar no terminal",
       "terminal_force_stop": "Parar agente",
       "terminal_pending": "Aguarde o carregamento dos detalhes da sessão ou selecione outra sessão.",
-      "terminal_run_review": "Revisar comando do terminal"
+      "terminal_run_review": "Revisar comando do terminal",
+      "attachment_removed": "{{file}} removido dos anexos",
+      "attachment_restored": "{{file}} anexado"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

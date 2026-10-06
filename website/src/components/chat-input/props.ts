@@ -92,6 +92,14 @@ export interface ChatInputProps {
   resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
+  /**
+   * Polite screen-reader announcement for a file chip the composer's own
+   * reconciliation un/restaged (a hand-edited or pasted `@mention`), which
+   * moves no focus. `text` is the localized message, `nonce` advances on every
+   * announcement so a repeated message still re-fires the `aria-live` region
+   * (which announces only on a text change). #14597.
+   */
+  attachmentAnnouncement?: { text: string; nonce: number }
   /** Remove a pending folder reference by its relative path (strips its composer token) */
   onRemoveDir?: (path: string) => void
   /** Session references staged by dragging a session onto the chat pane.

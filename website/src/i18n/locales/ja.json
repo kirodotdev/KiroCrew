@@ -6175,7 +6175,9 @@
       "terminal_review": "確認してターミナルで実行",
       "terminal_force_stop": "エージェントを停止",
       "terminal_pending": "セッション情報の読み込みを待つか、別のセッションを選択してください。",
-      "terminal_run_review": "ターミナルコマンドを確認"
+      "terminal_run_review": "ターミナルコマンドを確認",
+      "attachment_removed": "{{file}} を添付から削除しました",
+      "attachment_restored": "{{file}} を添付しました"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

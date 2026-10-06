@@ -130,6 +130,7 @@ function ChatInput({
   resizedInfo,
   onRemoveFile,
   onRemoveDir,
+  attachmentAnnouncement,
   pendingSessions = [],
   pendingQuote = null,
   onRemoveQuote,
@@ -953,6 +954,18 @@ function ChatInput({
             {holdSendReason}
           </div>
         )}
+        {/* Visually-hidden status line for a file chip the composer reconciled on
+            its own — a hand-edited or pasted @mention un/restaging a chip moves no
+            focus, so a screen-reader user would otherwise hear nothing (#14597).
+            The ✕ button and a picker pick move focus already and never route here.
+            `nonce % 2` zero-width spaces force the text to differ when the SAME
+            message repeats, so the live region re-announces (it fires only on a
+            text change). The composer had no shared announcer before this. */}
+        <div data-testid="attachment-announcer" aria-live="polite" className="sr-only">
+          {attachmentAnnouncement?.text
+            ? `${attachmentAnnouncement.text}${'\u200B'.repeat(attachmentAnnouncement.nonce % 2)}`
+            : ''}
+        </div>
 
         <VoiceCaptureStatus
           voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} showDictation={showDictation} value={value} voicePartial={voicePartial}

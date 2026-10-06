@@ -2799,6 +2799,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; naming the enclosing object would make this a new function every render and churn renderMessage below
   }, [dispatch, activeSlot, boundStore, search.close])
   // `@`-mentions of files and folders and the file chips they stage.
+  // The composer's polite status line for an attachment the reconciliation
+  // changed on its own (#14597). `nonce` advances on every announcement so the
+  // same file removed, re-added and removed again re-announces each time: a
+  // screen reader fires only when the live region's text CHANGES, and a repeated
+  // message is the same text — the nonce lets ChatInput force the change.
+  const [attachmentAnnouncement, setAttachmentAnnouncement] = useState<{ text: string; nonce: number }>({ text: '', nonce: 0 })
+  const announceAttachmentChange = useCallback((text: string) => {
+    setAttachmentAnnouncement(prev => ({ text, nonce: prev.nonce + 1 }))
+  }, [])
   const { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile } = useFileMentionActions({
     staging,
     inputRef,
@@ -2807,6 +2816,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     voiceCaretRef,
     voicePendingCaretRef,
     reconcileFileChipsRef,
+    announceAttachmentChange,
   })
 
   // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
@@ -6342,6 +6352,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               resizedInfo={resizedInfo}
               onRemoveFile={removeFileChip}
               onRemoveDir={removeDirChip}
+              attachmentAnnouncement={attachmentAnnouncement}
               pendingSessions={pendingSessions}
               pendingQuote={messageQuote.pendingQuote}
               onRemoveQuote={messageQuote.clearQuote}

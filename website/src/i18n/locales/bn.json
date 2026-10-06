@@ -6274,7 +6274,9 @@
       "terminal_review": "পর্যালোচনা করে টার্মিনালে চালাও",
       "terminal_force_stop": "এজেন্ট থামাও",
       "terminal_pending": "সেশনের তথ্য লোড হওয়া পর্যন্ত অপেক্ষা করো অথবা অন্য সেশন বেছে নাও।",
-      "terminal_run_review": "টার্মিনাল কমান্ড দেখে নাও"
+      "terminal_run_review": "টার্মিনাল কমান্ড দেখে নাও",
+      "attachment_removed": "{{file}} সংযুক্তি থেকে সরানো হয়েছে",
+      "attachment_restored": "{{file}} সংযুক্ত করা হয়েছে"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
