@@ -451,3 +451,83 @@ class TestChildGateInheritsTheApp:
         assert ast.dump(app_arg, include_attributes=False) == ast.dump(
             expected, include_attributes=False
         )
+
+
+class TestEveryAppTokenSpawnCarriesTheRequestApp:
+    """GPT 6.1 F1: an app-token spawn must carry the request's own app into the
+    admitted execution context on EVERY path -- not only a parentless one. An app
+    token allowed /api/spawn but denied messaging can hand a parent session key whose
+    stored execution carries app="" (an archived personal session); the request app
+    must still attach, or the completion note names no producer app, the bridge vets
+    only the host profile, and the app's channel denial is bypassed on the result DM.
+    """
+
+    def test_derive_execution_preserves_a_parentless_contexts_app(self):
+        # The load-bearing link: whatever app the parent ExecutionContext carries
+        # must survive derivation into the admitted record that becomes
+        # SubagentInfo.app (which _subagent_notif_meta reads for producer_app).
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            derive_execution,
+        )
+
+        ctx = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", app="rogue")
+        admitted = derive_execution(
+            ctx, target_member=None, config=None, requested_mode="persistent"
+        )
+        assert admitted.app == "rogue"
+        assert admitted.to_record().get("app") == "rogue"
+
+    def test_reconcile_attaches_the_request_app_to_an_app_empty_parent(self):
+        # The bypass path: a parent session resolved with app="" (archived personal
+        # session) MUST take the request's app, exactly as a parentless context does.
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        inherited = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew")
+        assert inherited.app == ""
+        assert inherited.reconcile_app("mochi").app == "mochi"
+
+    def test_reconcile_rejects_a_parent_owned_by_a_different_app(self):
+        # An app token must not inherit a DIFFERENT app's ownership through a
+        # borrowed parent session; the resolver rejects it (handler returns 409).
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        inherited = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew", app="owner-app"
+        )
+        with pytest.raises(UnknownMemoryStore):
+            inherited.reconcile_app("other-app")
+
+    def test_reconcile_is_a_noop_for_a_dashboard_user_and_a_matching_app(self):
+        # An empty request app (ordinary dashboard-user spawn) and an app that already
+        # equals the inherited one both leave the attribution exactly as-is.
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        dash = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", app="x")
+        assert dash.reconcile_app("") is dash
+        assert dash.reconcile_app("x") is dash
+
+    def test_api_spawn_reconciles_every_path_with_the_request_app(self):
+        # Guards the fix structurally: api_spawn must call reconcile_app with the
+        # token-auth-verified request app (never a body field), so the attachment
+        # happens on BOTH the parentless and the resolved-parent-session paths rather
+        # than only inside the parentless ExecutionContext(...) branch (the F1 bypass).
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.messaging_api import spawn as spawn_mod
+
+        tree = ast.parse(inspect.getsource(spawn_mod.api_spawn))
+        reconcile_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "reconcile_app"
+        ]
+        assert reconcile_calls, "api_spawn does not reconcile the request app -- F1 regressed"
+        assert any(
+            "request" in ast.dump(arg) for call in reconcile_calls for arg in call.args
+        ), "reconcile_app's app must come from request, not a body field"

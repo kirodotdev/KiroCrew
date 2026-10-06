@@ -39,6 +39,32 @@ def agent_sequence_dispatches(seq: list[str]) -> bool:
     return len(seq) > 1
 
 
+def cron_job_agent_names(job: Any) -> list[str]:
+    """Every agent name a run of *job* executes as, for governance subjects.
+
+    The agents dispatch actually runs (the sequence when it dispatches, else
+    ``agent_id``) plus the selection the job's captured execution context binds,
+    which is what an unnamed job's session resolves to. A consumer that only ever
+    ADDS each as a subject can name them all: an extra name can tighten a decision
+    and never widen it. Read from the stored job, never a request.
+    """
+    candidates: list[object] = []
+    sequence = getattr(job, "agent_sequence", None)
+    if isinstance(sequence, list) and agent_sequence_dispatches(sequence):
+        candidates.extend(sequence)
+    else:
+        candidates.append(getattr(job, "agent_id", ""))
+    execution = getattr(job, "execution_context", None)
+    if isinstance(execution, dict):
+        candidates += [execution.get("selection_name"), execution.get("template_id")]
+    names: list[str] = []
+    for candidate in candidates:
+        name = candidate.strip() if isinstance(candidate, str) else ""
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 

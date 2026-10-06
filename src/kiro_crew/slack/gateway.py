@@ -212,7 +212,15 @@ from kiro_crew.executors import (  # noqa: F401
 )
 from kiro_crew.frontend import build_frontend_async
 from kiro_crew.gateway_restart import resolve_restart_launcher, supervisor_reentry
-from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS, UPDATE_INSTALLER_STOP_SECS
+from kiro_crew.gateway_shutdown_budget import (
+    _ORPHAN_BELL_PERSIST_TIMEOUT,
+    _SESSION_CLOSE_DRAIN_CEILING_SECS,
+    _SESSION_CLOSE_DRAIN_GRACE_SECS,
+    _SESSION_CLOSE_PERSIST_RESERVE,
+    BRIDGE_DRAIN_RESERVE_SECS,
+    GRACEFUL_SHUTDOWN_SECS,
+    UPDATE_INSTALLER_STOP_SECS,
+)
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
     HeartbeatService,
@@ -308,6 +316,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     monitor_state_public_dict,
 )
+from kiro_crew.notifications.attribution import system_origin
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (  # noqa: F401
@@ -619,6 +628,16 @@ async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+#: The producer a heartbeat note names to the notification bridge. A heartbeat report is
+#: written by the heartbeat turn, which runs as ``HEARTBEAT_KEY`` (``_hb``) and is governed
+#: under ``surface:heartbeat``; the note's own ``source`` is ``"system"``, so without this
+#: the bridge would vet the host alone. The turn runs as the dedicated heartbeat agent, so
+#: that agent's own profile is named too. Added-only on the bridge side.
+_HEARTBEAT_PRODUCER: dict[str, str] = {
+    "producer_session": "_hb",
+    "producer_agent": "kirocrew-heartbeat",
+}
 
 #: The update coordinator's shutdown grace when the managed-venv apply module was
 #: never loaded (no apply can be running); otherwise its own STOP_GRACE_SECS.
@@ -3101,12 +3120,12 @@ class GatewayOrchestrator:
                         self.dashboard_state.push_slots_update()
                     else:
                         self.dashboard_state.notify(
-                            "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                            "cron", f"⚡ {label}", message, meta=self._cron_notif_meta(job)
                         )
                 elif message and not job.silent and self.dashboard_state:
                     label = redact(job.name)
                     self.dashboard_state.notify(
-                        "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                        "cron", f"⚡ {label}", message, meta=self._cron_notif_meta(job)
                     )
                 delivered = True
             except Exception as notify_exc:
@@ -3203,7 +3222,7 @@ class GatewayOrchestrator:
                                 "cron",
                                 f"🔇 Cron: {label} (repeat)",
                                 f"{mark} Still failing (suppressed — same reason):\n{text}",
-                                meta={"job_id": job.id, "failure_hash": fh},
+                                meta=self._cron_notif_meta(job, failure_hash=fh),
                             )
                     except Exception:
                         logger.debug(
@@ -3217,7 +3236,7 @@ class GatewayOrchestrator:
                             "cron",
                             f"Cron: {label}",
                             f"{mark} {headline}:\n{text}",
-                            meta={"job_id": job.id, "failure_hash": fh},
+                            meta=self._cron_notif_meta(job, failure_hash=fh),
                         )
                 except Exception:
                     logger.debug(
@@ -5295,7 +5314,7 @@ class GatewayOrchestrator:
                                 "cron",
                                 title,
                                 redacted_for_dash,
-                                meta={"job_id": job.id},
+                                meta=self._cron_notif_meta(job),
                             )
 
                         sel().log_tool_invocation(
@@ -5382,7 +5401,7 @@ class GatewayOrchestrator:
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)
                     safe_name, _ = redact_exfiltration_urls(job.name)
                     safe_name, _ = redact_credentials(safe_name)
-                    notify_meta: dict[str, str] = {"job_id": job.id}
+                    notify_meta: dict[str, str] = self._cron_notif_meta(job)
                     # Gate the slot linkage on not hide_in_chat for parity with the
                     # three inject sites above. Without this, a job flipped to
                     # hide_in_chat=True that still owns an older cron-{id} slot would
@@ -5590,7 +5609,7 @@ class GatewayOrchestrator:
                                 "cron",
                                 f"Cron: {job.name}",
                                 f"⚠️ Job completed but Slack delivery failed: {exc_msg}",
-                                meta={"job_id": job.id},
+                                meta=self._cron_notif_meta(job),
                             )
                 # Session cleanup happens in finally block
                 return result_text
@@ -5893,7 +5912,7 @@ class GatewayOrchestrator:
                                 "cron",
                                 title,
                                 f"❌ Job failed (suppressed — same error):\n{exc_detail}",
-                                meta={"job_id": job.id, "failure_hash": fh},
+                                meta=self._cron_notif_meta(job, failure_hash=fh),
                             )
                     except Exception:
                         logger.debug(
@@ -5930,7 +5949,7 @@ class GatewayOrchestrator:
                             "cron",
                             alert_title,
                             f"❌ Job failed:\n{exc_detail}",
-                            meta={"job_id": job.id, "failure_hash": fh},
+                            meta=self._cron_notif_meta(job, failure_hash=fh),
                         )
                 except Exception:
                     logger.debug(
@@ -6148,6 +6167,7 @@ class GatewayOrchestrator:
             "tasks. Nothing was deleted. To restore: fix that copy, stop Kiro Crew, "
             f"move it back to {data_home() / 'crons.json'}, and start again. "
             "`kirocrew doctor` shows the same steps.",
+            meta=system_origin(),
         )
 
     async def _start_cron_after_memory_ready(self) -> None:
@@ -8200,12 +8220,17 @@ class GatewayOrchestrator:
             return False
         try:
             key = loop.slot_key
-            # Channel-bound loops get NO synthesized meta: _notif_meta's generic
+            # Channel-bound loops get NO synthesized jump link: _notif_meta's generic
             # ``chan:ts`` split would read the NAMESPACE as the channel id,
-            # producing a dead link (and a Slack URL for a Discord loop).
-            # Dashboard loops bind on the BARE slot key, so re-qualify those to
-            # get a working jump-to-source slot link.
-            meta = None if is_channel_key(key) else self._notif_meta(f"dashboard:{key}")
+            # producing a dead link (and a Slack URL for a Discord loop). They still
+            # name their session, so the bridge can attribute the note to the agent
+            # that runs it. Dashboard loops bind on the BARE slot key, so re-qualify
+            # those to get a working jump-to-source slot link.
+            meta = (
+                {"session_key": key}
+                if is_channel_key(key)
+                else self._notif_meta(f"dashboard:{key}")
+            )
             if is_structured_monitor_loop(loop):
                 monitor = loop.monitor
                 assert monitor is not None
@@ -8427,7 +8452,7 @@ class GatewayOrchestrator:
             "agent",
             title,
             body,
-            meta={"session_key": key, "kind": "consolidation-abandoned"},
+            meta=system_origin(session_key=key, kind="consolidation-abandoned"),
         )
 
     @staticmethod
@@ -8487,22 +8512,121 @@ class GatewayOrchestrator:
             info._digest_settle_deliveries = []
 
     @staticmethod
+    def _cron_notif_meta(job: Any, **extra: str) -> dict[str, str]:
+        """Cron-result meta: the job id plus the job's owning app, when an app owns it.
+
+        An app's own cron job is stamped ``created_by="app:<name>"``, but its result note
+        has ``source="system"``, so the bridge's ``_producing_app`` sees no app and only
+        the host, session and ``cron:<job_id>`` profiles are asked -- an app whose own
+        profile denies messaging would still have its job's result DMed on a permissive
+        host. ``producer_app`` names that app as an added governance subject. It is read
+        from the stored job, never a request body, and like the ``job_id`` it only ever
+        ADDS a subject, so it can tighten delivery and never widen it.
+        """
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
+        meta: dict[str, str] = {"job_id": job.id, **extra}
+        created_by = getattr(job, "created_by", None)
+        app = app_owner_name(created_by if isinstance(created_by, str) else None).strip()
+        if app:
+            meta["producer_app"] = app
+        # The job's agents, so a task-bound profile on each is asked as well as the
+        # job's own ``cron:<job_id>`` profile -- the same producer identity a subagent
+        # completion carries. From the stored job, added-only.
+        from kiro_crew.cron_service.identity import cron_job_agent_names
+
+        if getattr(job, "script", "") or getattr(job, "command", ""):
+            # A script or command job runs no agent: its result is system-produced,
+            # and says so, so the bridge does not refuse it as unattributed.
+            from kiro_crew.notifications.attribution import SYSTEM_ORIGIN_KEY
+
+            meta[SYSTEM_ORIGIN_KEY] = "1"
+            return meta
+        agents = cron_job_agent_names(job)
+        if not agents:
+            # An agent job that names none runs the configured default agent.
+            from kiro_crew.notifications.attribution import default_agent_names
+
+            agents = default_agent_names()
+        if agents:
+            meta["producer_agent"] = "\n".join(agents)
+        return meta
+
+    @staticmethod
+    def _subagent_notif_meta(parent_key: str | None, info: Any) -> dict[str, str] | None:
+        """Subagent-completion meta: jump-source plus the trusted producer identities.
+
+        The completion note's ``source`` is ``"system"`` and its ``session_key`` is the
+        PARENT (where the jump link points), so on its own the notification bridge
+        vets the host and the parent and never the child that wrote the content. Three
+        SERVER-set identities from the trusted ``SubagentInfo`` close that:
+
+        * ``producer_app`` -- the spawning app (``info.app``), so an app allowed to spawn
+          but denied ``capabilities.messaging`` cannot egress its child's result under
+          the permissive host profile (GPT 6.1 F9).
+        * ``producer_session`` -- the child's own session key, so a ``surface:subagent``
+          profile denying Slack binds the child's completion as it binds the child's
+          own ``send_message``.
+        * ``producer_agent`` -- the child's agent name, so a task-bound profile on that
+          agent is asked too.
+
+        None is ever a request body. Like the cron ``job_id`` and the claimed
+        ``session_key``, each only ever ADDS a subject, so it can tighten delivery and
+        never widen it.
+        """
+        meta = dict(GatewayOrchestrator._notif_meta(parent_key) or {})
+        app = str(getattr(info, "app", "") or "").strip()
+        if app:
+            meta["producer_app"] = app
+        child_id = str(getattr(info, "id", "") or "").strip()
+        sessions = [f"subagent:{child_id}"] if child_id else []
+        conversation = str(getattr(info, "conversation_key", "") or "").strip()
+        if conversation and conversation not in sessions:
+            sessions.append(conversation)
+        if sessions:
+            meta["producer_session"] = "\n".join(sessions)
+        # The child's agent, and the template its execution binds when it named
+        # none (a child spawned without an agent inherits its parent's template).
+        from kiro_crew.execution_context import producer_agent_names
+
+        agents = producer_agent_names(
+            getattr(info, "agent", ""), getattr(info, "execution_context", None)
+        )
+        if agents:
+            meta["producer_agent"] = "\n".join(agents)
+        return meta or None
+
+    @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
-        """Build notification meta with slot or slack_link for jump-to-source."""
+        """Build notification meta with slot or slack_link for jump-to-source.
+
+        Also carries the originating ``parent_key`` as a SERVER-set
+        ``session_key`` so the notification bridge evaluates the parent
+        session's own governance profile. Without it a parent on a
+        non-dashboard surface (e.g. a Telegram key, whose ``_notif_meta`` would
+        otherwise return only a ``slack_link``) names no producer the bridge can
+        read, so ``_claimed_session`` returns '' and the parent profile's
+        channel denial is never consulted -- the child's result would egress to
+        Slack despite the parent denying ``channels/slack``. The claim only ever
+        ADDS a governance subject (see ``NotificationBridge._claimed_session``),
+        so this can only narrow delivery, never widen it.
+        """
         if not parent_key:
             return None
+        meta: dict[str, str] = {"session_key": parent_key}
         # A jump-to-source slot beats a channel deep link whenever a tab is
         # open, including for a channel-born conversation whose key is the
         # channel's own.
         slot = dashboard_slot_key(parent_key)
         if slot:
-            return {"slot": slot}
+            meta["slot"] = slot
+            return meta
         if ":" in parent_key and not parent_key.startswith(("cron:", "subagent:", "hook:")):
             chan, ts = parent_key.split(":", 1)
-            return {
-                "slack_link": f"https://amzn-aws.slack.com/archives/{chan}/p{ts.replace('.', '')}"
-            }
-        return None
+            meta["slack_link"] = (
+                f"https://amzn-aws.slack.com/archives/{chan}/p{ts.replace('.', '')}"
+            )
+        return meta
 
     async def _persist_slot_title(self, slot: "_ChatSlot") -> None:
         """Persist a dashboard slot's title so it survives a gateway restart.
@@ -8614,7 +8738,7 @@ class GatewayOrchestrator:
                         # queued prompts produce no visible change until dequeued.
                         self.dashboard_state.push_slots_update()
                         self.dashboard_state.notify(
-                            "heartbeat", title, body, meta={"slot": slot.key}
+                            "heartbeat", title, body, meta={"slot": slot.key, **_HEARTBEAT_PRODUCER}
                         )
                     else:
                         logger.info(
@@ -8650,7 +8774,9 @@ class GatewayOrchestrator:
                     )
                     slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")
                     self.dashboard_state.push_slots_update()
-                    self.dashboard_state.notify("heartbeat", title, body, meta={"slot": slot.key})
+                    self.dashboard_state.notify(
+                        "heartbeat", title, body, meta={"slot": slot.key, **_HEARTBEAT_PRODUCER}
+                    )
                 else:
                     sel().log_api_access(
                         caller="heartbeat",
@@ -8683,7 +8809,9 @@ class GatewayOrchestrator:
                 slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")
                 self.dashboard_state.push_slot_title(slot.key, slot.title)
                 self.dashboard_state.push_slots_update()
-                self.dashboard_state.notify("heartbeat", title, body, meta={"slot": slot.key})
+                self.dashboard_state.notify(
+                    "heartbeat", title, body, meta={"slot": slot.key, **_HEARTBEAT_PRODUCER}
+                )
             return
 
         # ── slack (no thread) → new Slack DM only ──
@@ -8766,7 +8894,9 @@ class GatewayOrchestrator:
             except Exception:
                 logger.exception("Heartbeat Slack delivery failed")
             if self.dashboard_state:
-                self.dashboard_state.notify("heartbeat", title, body)
+                self.dashboard_state.notify(
+                    "heartbeat", title, body, meta=dict(_HEARTBEAT_PRODUCER)
+                )
             return
 
         # ── default: Slack DM + dashboard notification ──
@@ -8779,7 +8909,7 @@ class GatewayOrchestrator:
             except Exception:
                 logger.exception("Heartbeat Slack delivery failed")
         if self.dashboard_state:
-            self.dashboard_state.notify("heartbeat", title, body)
+            self.dashboard_state.notify("heartbeat", title, body, meta=dict(_HEARTBEAT_PRODUCER))
 
     # gateway_runtime/mcp_broker.py
     _init_mcp_discovery = _mcp_broker._init_mcp_discovery
@@ -9852,7 +9982,7 @@ class GatewayOrchestrator:
                         "subagent",
                         title,
                         body,
-                        meta=self._notif_meta(parent_key),
+                        meta=self._subagent_notif_meta(parent_key, info),
                     )
                 return
 
@@ -10117,7 +10247,7 @@ class GatewayOrchestrator:
                         "subagent",
                         title,
                         body,
-                        meta=self._notif_meta(parent_key),
+                        meta=self._subagent_notif_meta(parent_key, info),
                     )
                 return
 
@@ -10259,7 +10389,7 @@ class GatewayOrchestrator:
                     "subagent",
                     title,
                     body,
-                    meta=self._notif_meta(parent_key),
+                    meta=self._subagent_notif_meta(parent_key, info),
                 )
             if not parent_key.startswith("cron:"):
                 logger.info("Subagent %s → notification only (parent=%s)", info.id, parent_key)
@@ -10476,17 +10606,71 @@ class GatewayOrchestrator:
             logger.info("Orphan notification injected into slot %s", slot_name)
             return True
 
-        async def _orphan_dm(msg: str) -> bool:
-            """Owner-DM fallback for orphan notifications (bell + Slack DM)."""
+        async def _orphan_dm(msg: str, producer_meta: dict[str, str] | None = None) -> bool:
+            """Owner-DM fallback for orphan notifications (bell + Slack DM).
+
+            ``producer_meta`` names the orphaned runs the notice covers (their session
+            keys, agent names and apps, from their own ``state.json``), so the bell's
+            bridged copy is vetted against each child's governance and not the host's
+            alone.
+            """
             safe_msg, _ = redact_exfiltration_urls(msg)
             safe_msg, _ = redact_credentials(safe_msg)
             delivered = False
             if self.dashboard_state:
                 try:
-                    self.dashboard_state.notify(
-                        "subagent", "Sub-agent orphaned by restart", safe_msg
+                    # Capture THIS bell's own durability handle from notify()'s return
+                    # value, NOT the shared ``last_notification_persist`` field. The field
+                    # is a single slot overwritten by every delivery, so a concurrent
+                    # worker-thread notification landing between the call and a re-read
+                    # would hand us ITS future -- crediting this orphan's bell against a
+                    # write that is not its own and (via the digest-delivery tombstone)
+                    # discharging an undelivered completion permanently. notify() returns
+                    # exactly this call's handle (None on the synchronous inline-write path,
+                    # the persist FUTURE on the event loop), so reading the return value is
+                    # race-free where re-reading shared state is not.
+                    persist = self.dashboard_state.notify_awaiting_persist(
+                        "subagent",
+                        "Sub-agent orphaned by restart",
+                        safe_msg,
+                        meta=dict(producer_meta) if producer_meta else None,
                     )
-                    delivered = True
+                    # A bell counts as delivered only once its DURABLE write lands, not
+                    # merely because the in-memory enqueue returned.
+                    if persist is None:
+                        # Invalid-and-dropped payload, or no handle surfaced: nothing to
+                        # await and no write to credit, so treat the bell as undelivered
+                        # and let the Slack fallback below carry it.
+                        delivered = False
+                    elif isinstance(persist, bool):
+                        # Off-loop inline path: ``deliver`` ran the write to completion
+                        # synchronously and returned its own boolean. That bool IS the
+                        # durability answer -- credit the bell on a truthy write.
+                        delivered = persist
+                    else:
+                        try:
+                            # BOUNDED: a stalled durable write (disk full/slow -- exactly
+                            # when a ``system.resources`` orphan bell fires) must not block
+                            # here forever, because the Slack fallback BELOW is the orphan's
+                            # only other delivery path and it never runs while this awaits.
+                            # On timeout the bell is treated as not-yet-delivered so the
+                            # Slack attempt still runs; the held orphan and its persisted
+                            # follow-up queue are kept (not tombstoned) when neither lands.
+                            # SHIELD the persist: `persist` is the run_in_executor future,
+                            # and a bare wait_for timeout would cancel it -> cancel the
+                            # still-queued `_persist_one` job on the single-worker notif-io
+                            # executor (slow disk), so the already-broadcast bell would
+                            # never be written and would vanish on restart. Shielding bounds
+                            # only THIS caller's wait; the queued write still lands.
+                            delivered = bool(
+                                await asyncio.wait_for(
+                                    asyncio.shield(persist),
+                                    timeout=_ORPHAN_BELL_PERSIST_TIMEOUT,
+                                )
+                            )
+                        except Exception:
+                            logger.debug("Orphan bell persist failed", exc_info=True)
+                            delivered = False
                 except Exception:
                     logger.debug("Orphan bell notification failed", exc_info=True)
             try:
@@ -10565,15 +10749,67 @@ class GatewayOrchestrator:
         """Initialize the task runner."""
 
         async def _task_notify(
-            title: str, body: str, task_id: str = "", *, session_key: str = ""
+            title: str,
+            body: str,
+            task_id: str = "",
+            *,
+            session_key: str = "",
+            app: str = "",
+            agent: str = "",
         ) -> None:
             if self.dashboard_state:
                 body, _ = redact_exfiltration_urls(body)
                 body, _ = redact_credentials(body)
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
-                meta = {"task_id": task_id} if task_id else None
-                self.dashboard_state.notify("taskrunner", title, body, meta=meta)
+                # ``session_key`` is the ORIGINATING conversation, threaded down
+                # from ``start_background`` (see the ladder comment below), and
+                # the notification bridge reads it to vet the PRODUCING
+                # session's governance profile rather than only the host's.
+                # Without it this note names no producer at all: ``task_id``
+                # identifies a task and not a session, and the ``taskrunner``
+                # kind is not an ``app:`` source, so the bridge's subject list
+                # is host-only and a session whose profile denies
+                # ``channels/slack`` is refused on that transport elsewhere and
+                # then egresses to the same Slack DM through a routed
+                # notification channel. One producer, one transport, one policy,
+                # two answers -- the same gap, and the same fix, as the
+                # ``send_notification`` route.
+                #
+                # The bridge only ever ADDS this as a subject and never
+                # substitutes it for the host's, so it can at worst narrow: a
+                # wrong value denies this note rather than widening anything.
+                # Empty for a dashboard- or CLI-started run, and a note carrying
+                # no claim is vetted host-only exactly as before.
+                meta: dict[str, str] = {}
+                if task_id:
+                    meta["task_id"] = task_id
+                    # The run's OWN session, beside the originating one: the run's
+                    # steps execute under ``taskrunner:<task_id>:...`` keys and are
+                    # governed by the ``surface:taskrunner`` profile, so its notices
+                    # are vetted under that profile too. Derived server-side from the
+                    # run id; added-only like every producer subject.
+                    meta["producer_session"] = f"taskrunner:{task_id}:runtime"
+                    # The agent the run executes as, so that agent's task-bound
+                    # profile is asked too. A run always has one (its start
+                    # argument or its execution selection), so a run note that
+                    # arrives without one is refused by the bridge rather than
+                    # vetted as if no agent were involved.
+                    meta["producer_agent_required"] = "1"
+                    if agent:
+                        meta["producer_agent"] = agent
+                if session_key:
+                    meta["session_key"] = session_key
+                # The run's owning app, bound by the bridge as a `producer_app`
+                # governance subject (the same trusted channel a subagent
+                # completion names its spawning app through). It only ever ADDS a
+                # subject, so an app allowed `task_run` but denied `messaging` is
+                # refused this egress instead of riding the permissive host
+                # profile; empty for a dashboard-, cron- or CLI-started run and
+                # vetted host-only exactly as before.
+                if app:
+                    meta["producer_app"] = app
+                self.dashboard_state.notify("taskrunner", title, body, meta=meta or None)
                 self.dashboard_state.push_refresh("taskrunner")
             # Send approval-related notifications to Slack DM so user knows even when away.
             # Match on specific title patterns from task_executor, not broad keywords
@@ -10837,6 +11073,23 @@ class GatewayOrchestrator:
         update_stop_deadline = asyncio.get_running_loop().time() + UPDATE_INSTALLER_STOP_SECS
         if update_task is not None and not update_task.done():
             update_task.cancel()
+
+        # Every step below shares ONE budget: the caller runs this method inside
+        # `wait_for(..., timeout=GRACEFUL_SHUTDOWN_SECS)`. A step that can block for
+        # longer than that budget therefore has to size itself against what is LEFT
+        # of it, which is what this reading is for -- a step choosing its own
+        # constant is how one slow step silently consumes the whole shutdown and
+        # the steps after it never run at all.
+        shutdown_started = time.monotonic()
+
+        def budget_left() -> float:
+            """Seconds left of GRACEFUL_SHUTDOWN_SECS, measured at the call, never below zero.
+
+            One spelling of the reading, because two drift apart: a step that computes
+            the remainder itself is a step that can be given a stale one.
+            """
+            return max(GRACEFUL_SHUTDOWN_SECS - (time.monotonic() - shutdown_started), 0.0)
+
         self._memory_repair_stop.set()
         if self._memory_repair_task is not None:
             self._memory_repair_task.cancel()
@@ -10948,6 +11201,129 @@ class GatewayOrchestrator:
         # otherwise leak orphaned until the next start's flock adoption.
         await self._stop_mcp_broker()
 
+        # Session closing STARTS here and is awaited with the other cleanups in the
+        # gather below. The step it carries -- reconciling every live session's
+        # provider SID into the session map and flushing it to disk -- is one whose
+        # work is LOST rather than deferred when the caller's `wait_for` expires,
+        # because nothing replays it on the next start.
+        #
+        # It cannot be left until the gather, because `cancel_all()` is awaited
+        # INLINE before it and its compensation tail is deliberately unbounded: the
+        # straggler gather carries no timeout and the per-watcher state write is
+        # documented as unbounded with a synchronous fsync. The reserve held back for
+        # the closes therefore bounds only the phases that honour it, and an overrun
+        # in that tail cancels this method at that await -- where the flush has not
+        # been merely cut short but never CREATED.
+        #
+        # Launched only AFTER `cancel_all()` returns, NOT overlapped with it:
+        # `close_all()` sets each session's `_closing` flag at its very first step,
+        # and `cancel_all()` emits terminal subagent reports whose channel-parent
+        # injection acquires the parent through `get_or_create`, which raises
+        # `SessionClosingError` once that flag is set. A completed-but-refused report
+        # is swallowed to `return False` and falls outside the cancelled-only
+        # re-admission loop, so overlapping the two silently and permanently drops a
+        # finished subagent's result on an ordinary restart with a live channel-parent
+        # run. The flush this task carries is still gathered below; it just may not
+        # start until the subagent drain is done. The subagent STORE close stays after
+        # that gather, where the connection it holds outlives the runs still writing
+        # to it.
+        sessions_closing: asyncio.Future | None = None
+
+        # Let scheduled notification bridge fanout finish while its transports
+        # are STILL OPEN. Every close below is only queued into `cleanup_tasks`
+        # and does not run until the gather at the end of this method, so an
+        # inline await here is strictly ordered before the socket client closes
+        # and before `registry.shutdown_tasks` tears the channel handles down.
+        #
+        # Bounded, and a timeout is not an error: the note is already durable on
+        # the dashboard before the bridge is ever scheduled (state.py gates
+        # `bridge.schedule` on the persist future), so the worst outcome of a
+        # slow leg is one chat DM the user reads on the dashboard instead. A
+        # shutdown that waited longer than this for a secondary surface would be
+        # the worse trade.
+        # The producers this drain has to see are cancelled FIRST, inline. A drain
+        # cannot flush work that has not been produced yet: `cancel_all()` emits
+        # terminal announcements for runs it stops, and their bridge legs schedule
+        # onto the bridge when they are emitted. Awaited here rather than gathered
+        # with the closes below, because in the gather those announcements land
+        # after this drain has already returned and then race the transport close,
+        # losing the DM the drain exists to save.
+        #
+        # The cost is that it runs on its own rather than concurrently with the
+        # other cleanups. That is the point: it is the one cleanup whose OUTPUT the
+        # next step consumes. It also satisfies the constraint the store close below
+        # documents, since that must follow `cancel_all()` too.
+        if self.subagent_mgr:
+            # `cancel_all()` can wait on two phases that would otherwise block shutdown:
+            # the run-teardown wait and the shielded terminal-report drain. Both are
+            # bounded INSIDE `cancel_all` from the budget passed here -- the seconds LEFT
+            # of this method's own `wait_for(GRACEFUL_SHUTDOWN_SECS)` deadline -- and a
+            # fixed slice is reserved so the straggler cancel + `clear_tombstone`
+            # re-admission AFTER the drain still run within the deadline. Passing the
+            # budget IN rather than wrapping the call is deliberate: a `wait_for` out here
+            # cancels at whichever await is live, which includes the window between the
+            # drain and that re-admission -- the only thing keeping an undelivered
+            # completion visible to the next start's orphan recovery -- so bounding from
+            # out here would trade a bounded shutdown for a silent, permanent loss.
+            try:
+                await self.subagent_mgr.cancel_all(budget=budget_left())
+            except Exception:
+                # Shutdown continues: a producer that failed to stop cleanly must
+                # not keep the gateway alive, and the drain below is still worth
+                # attempting for whatever did get emitted.
+                logger.warning("Subagent cancel_all failed during shutdown", exc_info=True)
+
+        # With `cancel_all()` finished draining and injecting terminal subagent
+        # reports, it is safe to let sessions enter `_closing`: every report's
+        # channel-parent injection has already run, so none can be refused by a
+        # session that closed out from under it. Launched as a task so it runs
+        # concurrently with the bridge drain and the closes gathered below.
+        if self.sessions:
+            # BOUND the turn drain by what is LEFT of the shutdown budget, holding
+            # back `_SESSION_CLOSE_PERSIST_RESERVE` for `close_all()`'s own durability
+            # point (`SessionMap.aclose()`). Launching `close_all()` only after
+            # `cancel_all()` means a slow `cancel_all()` can leave the budget near its
+            # `_SHUTDOWN_READMIT_RESERVE` floor; the drain's module default
+            # (`drain_active_turns_timeout` + grace, ~6s) would then run past the outer
+            # `wait_for(GRACEFUL_SHUTDOWN_SECS)` deadline and the gather would be
+            # cancelled BEFORE `aclose()` persists the resumable session map -- losing
+            # that state with no replay on the next start. Capping the drain here lets
+            # the drain give up early so `aclose()` still runs inside the deadline;
+            # turns that do not reach a safe boundary in time are abandoned (the same
+            # degrade the drain already accepts on its own timeout), state over turns.
+            # Cap at the drain's own default AND at the reserve net of the drain's
+            # +1.0 grace: a fast cancel_all() leaving the budget nearly full must not
+            # let the drain run its full (budget_left - reserve) ~8s, which overruns
+            # the ~6s default and the outer wait_for before aclose() persists. Taking
+            # the smaller keeps aclose() inside GRACEFUL_SHUTDOWN_SECS; a wedged turn
+            # is abandoned, state over turns.
+            close_drain = max(
+                min(
+                    _SESSION_CLOSE_DRAIN_CEILING_SECS,
+                    budget_left()
+                    - _SESSION_CLOSE_PERSIST_RESERVE
+                    - _SESSION_CLOSE_DRAIN_GRACE_SECS,
+                ),
+                0.0,
+            )
+            sessions_closing = asyncio.ensure_future(
+                self.sessions.close_all(drain_timeout=close_drain)
+            )
+
+        bridge = getattr(self.dashboard_state, "notification_bridge", None)
+        if bridge is not None:
+            try:
+                # A bounded drain of the in-flight fanout TASKS. A note still queued for a
+                # task, or gated on its persist future, is already on the dashboard, so it
+                # lands there rather than being flushed to chat -- an accepted degrade. The
+                # bound is held under the closes' reserve so this step cannot push the
+                # method past the caller's `wait_for` before `close_all()` flushes.
+                await bridge.drain(timeout=min(BRIDGE_DRAIN_RESERVE_SECS, budget_left()))
+            except Exception:
+                # Shutdown continues regardless -- this drain exists to save a
+                # DM, and it must never be the reason a gateway fails to stop.
+                logger.warning("Notification bridge drain failed", exc_info=True)
+
         # Kill all ACP processes and close connections
         cleanup_tasks: list = []
         if self._adaptive_controller is not None:
@@ -10959,10 +11335,10 @@ class GatewayOrchestrator:
             adaptive_controller.register(None)
             self._unwire_overload_health()
             cleanup_tasks.append(self._adaptive_controller.stop())
-        if self.subagent_mgr:
-            cleanup_tasks.append(self.subagent_mgr.cancel_all())
-        if self.sessions:
-            cleanup_tasks.append(self.sessions.close_all())
+        if sessions_closing is not None:
+            # Launched after `cancel_all()` returned; gathered here so the ordering
+            # of everything that follows is unchanged.
+            cleanup_tasks.append(sessions_closing)
         if self._dashboard_runner:
             # Close WS connections first so handlers exit promptly
             if self.dashboard_state:
@@ -10996,11 +11372,12 @@ class GatewayOrchestrator:
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
-        # AFTER the gather, not beside cancel_all() above: cancel_all() is what stops
-        # the runs that still write to the durable task queue, so closing the store
-        # before it finishes would pull the connection out from under them. Off-loop,
-        # because ``close()`` is synchronous and waits for the store's writer lock --
-        # on the loop that stalls shutdown behind an in-flight executor write.
+        # AFTER the gather: `cancel_all()` is awaited inline further up, and it is
+        # what stops the runs that still write to the durable task queue, so closing
+        # the store before those runs finish would pull the connection out from
+        # under them. Off-loop, because ``close()`` is synchronous and waits for the
+        # store's writer lock -- on the loop that stalls shutdown behind an
+        # in-flight executor write.
         if self.subagent_mgr:
             await asyncio.to_thread(self.subagent_mgr.close)
 
@@ -12803,7 +13180,7 @@ class GatewayOrchestrator:
             return
         self._wheel_update_noticed.add(key)
         if self.dashboard_state:
-            self.dashboard_state.notify("update", title, body)
+            self.dashboard_state.notify("update", title, body, meta=system_origin())
 
     # ------------------------------------------------------------------
     # Main run loop
