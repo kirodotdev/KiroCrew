@@ -79,6 +79,8 @@ export function useNativeNotification(botName: string, avatar: string) {
         // Best-effort: Android Chrome throws "Illegal constructor" for a
         // page-context Notification even with permission granted; the helper
         // swallows it and the in-app notification center still shows the event.
+        // Service-worker delivery (needed for an installed iOS PWA) lives in
+        // `postNativeNotification` itself, so every call site gets it.
         postNativeNotification(title, {
           body,
           icon: avatar,

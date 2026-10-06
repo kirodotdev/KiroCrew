@@ -2309,6 +2309,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "When the agent proactively messages you outside a chat"
   },
   {
+    "id": "notifications.send-notifications-to-this-device",
+    "label": "Send notifications to this device",
+    "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
+    "description": "Get notifications on this device even when Kiro Crew is closed.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
+  },
+  {
     "id": "notifications.show-a-banner-for-new-notifications",
     "label": "Show a banner for new notifications",
     "labelKey": "pages.settings.notificationsPanel.show_banner_for_new_notifications",

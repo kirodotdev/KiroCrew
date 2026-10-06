@@ -1368,6 +1368,13 @@
       "description": "When the agent proactively messages you outside a chat"
     },
     {
+      "id": "notifications.send-notifications-to-this-device",
+      "label": "Send notifications to this device",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.send-notifications-to-this-device",
+      "description": "Get notifications on this device even when Kiro Crew is closed."
+    },
+    {
       "id": "notifications.show-a-banner-for-new-notifications",
       "label": "Show a banner for new notifications",
       "tab": "notifications",

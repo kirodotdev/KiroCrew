@@ -463,7 +463,10 @@ def _url_payload_command(n: int) -> str:
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
 #: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
 #: boundary split an SRI value saves main's verdict on the digest, not the notice.
-_PACKAGE_LINE_BUDGET = 32_188
+#:
+#: Raised again, from 32,188, for the ``web-push`` leaf in ``paths_lists`` (the Web
+#: Push key and device secrets): the leaf and its two-line reason. No rule changed.
+_PACKAGE_LINE_BUDGET = 32_191
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
