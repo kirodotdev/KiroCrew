@@ -152,6 +152,7 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _validate_identifier,
 )
 from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
+    _NOTIFICATION_SETTINGS,
     _OWNER_ONLY_SETTINGS_FILES,
     NamedStoresInUse,
     RollbackIncomplete,
@@ -174,6 +175,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _refuse_unless_valid_tree_document,
     _refuse_unsafe_destination_roots,
     _remove_locked_document,
+    _republish_restored_notification_settings,
     _restore_everything_from_rollback,
     _restore_locked_document,
     _save_locked_document_to,

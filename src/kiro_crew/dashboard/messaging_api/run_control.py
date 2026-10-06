@@ -303,6 +303,16 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 status=503,
                 headers={"Retry-After": "5"},
             )
+        if detail.startswith("too_long"):
+            # A follow_up message over the cap is a client limit, not a
+            # transport failure: 413 so a client reads it as "shorten the
+            # message", not a 502 to retry verbatim into the same refusal.
+            return web.json_response({"error": detail, "code": "too_long"}, status=413)
+        if detail.startswith("queue_full"):
+            # The run already holds the maximum queued follow-ups. 429 (a
+            # client limit) rather than 502, so the caller backs off and
+            # retries later instead of hammering a transport-looking error.
+            return web.json_response({"error": detail, "code": "queue_full"}, status=429)
         return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
     return web.json_response(
         {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}

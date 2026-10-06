@@ -32,12 +32,14 @@ def settings(monkeypatch, tmp_path) -> ChannelSettings:
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
-    return DashboardState(
+    state = DashboardState(
         sessions=MagicMock(count=0),
         crons=MagicMock(),
         lessons=MagicMock(),
         start_time=0.0,
     )
+    state.owner_id = "U1"
+    return state
 
 
 class TestChannelSettingsStore:
@@ -168,8 +170,19 @@ class TestSinkIntegration:
 
 
 def _make_app(state) -> web.Application:
+    # The owner gate on the two routing fields reads both token claims, so the
+    # double sets both: ``app == ""`` plus the state's owner as the subject is
+    # what the middleware puts on a dashboard-owner request.
     app = web.Application()
     app["state"] = state
+
+    @web.middleware
+    async def _as_owner(request, handler):
+        request["app"] = ""
+        request["user"] = str(getattr(state, "owner_id", "") or "")
+        return await handler(request)
+
+    app.middlewares.append(_as_owner)
     app.router.add_get("/api/notifications/channels", api_notification_channels)
     app.router.add_put("/api/notifications/channels/settings", api_notification_channel_settings)
     return app
@@ -270,6 +283,11 @@ class TestChannelSettingsApi:
                 json={"channel": "a.b", "muted": True},
             )
         data = json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
+        # Exact at both levels, because this is the persistence ratchet: naming the whole
+        # document is what makes an unintended field a failure here. An owner mute stores
+        # just the field -- no provenance bookkeeping is kept, so a stray internal key
+        # reaching disk is the defect this assertion catches. The empty MONITOR_CHANNEL
+        # row is the seed record every write keeps (see _seed_monitor_from_agent).
         assert data == {
             "channel_settings": {
                 "a.b": {"muted": True},
@@ -302,13 +320,19 @@ class TestReviewRegressions:
 
     def test_persist_failure_leaves_memory_unchanged(self, settings, monkeypatch):
         """A failed write must not leave the rejected setting active in
-        memory: persist the candidate first, commit only on success."""
+        memory: persist the candidate first, commit only on success.
+
+        The seam is ``_write_settings_staged``, which is this module's whole writer: the
+        settings write stages inside a masked directory instead of beside the target.
+        Patching any other name leaves the real write intact, and the test then passes
+        without exercising the ordering it exists for.
+        """
         settings.update("a.b", muted=True)
 
         def boom(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("kiro_crew.notifications.settings.atomic_write", boom)
+        monkeypatch.setattr("kiro_crew.notifications.settings._write_settings_staged", boom)
         with pytest.raises(OSError):
             settings.update("a.b", muted=False)
         # Memory still reflects the last successfully persisted state
@@ -381,6 +405,9 @@ class TestSeedMonitorFromAgent:
         _write_settings(tmp_path, {"system.agent": {"muted": True}})
         ChannelSettings().update("a.b", muted=True)
         data = _read_settings(tmp_path)
+        # No provenance bookkeeping is stored: an owner mute persists as just the field.
+        # The seeded MONITOR_CHANNEL copy and the raw pre-written system.agent row are
+        # each written through their own path this call.
         assert data == {
             "channel_settings": {
                 "system.agent": {"muted": True},
@@ -436,6 +463,8 @@ class TestSeedMonitorFromAgent:
 
         settings.update("system.agent", muted=True)
         data = _read_settings(tmp_path)
+        # system.agent is written through update() as an owner mute, stored as just the
+        # field; the empty MONITOR_CHANNEL sentinel (the seed record) carries nothing.
         assert data["channel_settings"] == {
             "system.agent": {"muted": True},
             MONITOR_CHANNEL: {},
@@ -499,6 +528,54 @@ class TestImportedSettings:
         assert channels["app.y"] == {"priority": "critical"}
         assert "app.x" not in channels
         assert dropped == 5
+
+    def test_an_armed_delivery_route_survives_the_import(self):
+        """A Replace import carries deliver_to/deliver_min_priority.
+
+        An armed route is the egress authorization the bridge keys off, so the
+        import filter must retain both delivery fields rather than drop them (a
+        dropped route silently disarms every saved channel on a Replace install).
+        The two fields are validated by the live writer's own normalizers and
+        reconciled with update()'s arming contract.
+        """
+        channels, dropped = parse_imported_settings(
+            json.dumps(
+                {
+                    "channel_settings": {
+                        # Armed with an explicit floor -- both kept verbatim.
+                        "system.agent": {
+                            "deliver_to": ["slack"],
+                            "deliver_min_priority": "default",
+                        },
+                        # Armed with no floor -- floor defaults to critical, as
+                        # update() stores it.
+                        "app.armed": {"deliver_to": ["slack"]},
+                        # A floor with no transports is not an armed route: neither
+                        # delivery key is kept (an unarmed channel stays unarmed).
+                        "app.floor_only": {"deliver_min_priority": "default"},
+                        # An unknown transport is refused and counted, and the
+                        # channel keeps no delivery keys.
+                        "app.bad": {"deliver_to": ["pigeon"]},
+                    }
+                }
+            )
+        )
+        assert channels["system.agent"] == {
+            "deliver_to": ["slack"],
+            "deliver_min_priority": "default",
+        }
+        assert channels["app.armed"] == {
+            "deliver_to": ["slack"],
+            "deliver_min_priority": "critical",
+        }
+        assert channels["app.floor_only"] == {}
+        # app.bad's only field (an unknown transport) was refused, so the channel
+        # keeps no row at all -- the same all-refused rule mute/priority follow.
+        assert "app.bad" not in channels
+        # Only app.bad's unknown transport is a refusal. app.floor_only's lone
+        # floor is a VALID value that simply goes unused without an armed route,
+        # so it is dropped-by-reconciliation, not counted as refused.
+        assert dropped == 1
 
     @pytest.mark.parametrize("text", ["{bad", "[]", '{"channel_settings": []}'])
     def test_a_document_of_the_wrong_shape_is_refused(self, text):
@@ -597,10 +674,11 @@ class TestImportedSettings:
 
         settings.update("system.heartbeat", muted=True)
         restored = {"app.z": {"muted": True}}
-        with settings.replacing_file(restored):
+        with settings.replacing_file(restored) as publish:
             (tmp_path / "notification_settings.json").write_text(
                 json.dumps({"channel_settings": restored}), encoding="utf-8"
             )
+            publish()
             monkeypatch.setattr(mod, "_read_stored", lambda: {})
         assert settings.get("app.z") == {"muted": True}
         settings.update("app.other", muted=True)
