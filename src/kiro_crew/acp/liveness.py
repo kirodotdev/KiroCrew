@@ -1239,6 +1239,178 @@ class ToolCallState:
         return VERDICT_UNKNOWN, f"wait tool declared {secs}s elapsed"
 
 
+class InFlightToolTracker:
+    """The in-flight tool hand-off rule, shared by the two agent loops.
+
+    Both :class:`~kiro_crew.acp.session_handle.AcpSessionHandle` (the main
+    agent's watchdog) and ``SubagentInfo`` (the sub-agent reaper) have to answer
+    the same question — *which tool call is the one a stall verdict should be
+    read against right now* — and each would otherwise answer it with its own
+    copy of the rule. Two copies drift: one keyed the judged call to a single
+    slot that any result emptied, the other tracked calls by toolCallId. One
+    implementation keeps both honest.
+
+    The rule, in one place:
+
+    * **dispatch** stores a call by its id and makes it the judged call. A call
+      with no id (a backend that omits one) still becomes the judged call but is
+      not stored — a terminal frame for it can only be matched by id, so storing
+      it under ``""`` would let the next id-less dispatch overwrite a live entry.
+    * **a terminal result** for a stored call drops it; when it was the judged
+      call, the judged call moves to the NEWEST remaining dispatch (insertion
+      order is dispatch order), or clears when none remain. A non-terminal
+      (progress) frame changes nothing — the call is still running.
+    * **prompt start** clears everything: a new turn judges nothing until it
+      dispatches.
+
+    Every operation returns whether the JUDGED call changed, because that is the
+    signal both callers act on: the liveness oracle's evidence baseline is keyed
+    to the judged command, so when the judged call changes the caller must retire
+    the oracle (``AcpSessionHandle._retire_liveness_state`` /
+    ``SubagentInfo``'s ``_stall_oracle.fresh()`` + ``_stall_gen`` bump) so a walk
+    still running against the previous command cannot write into the next one's
+    baseline. The retirement itself stays with each caller — one swaps a bound
+    oracle and releases a consult future, the other bumps a generation counter —
+    because that machinery is not shared; only the hand-off decision is.
+
+    The sub-agent uses this in its degenerate single-call shape: a native child's
+    tool call is judged on arrival (so a stall is attributed to the child's own
+    command) but its result frame never reaches the sub-agent's loop, so the
+    stored entry is simply overwritten by the next dispatch rather than popped by
+    a terminal — exactly what a single live slot does. Storing by id costs it
+    nothing (its runtime emits at most one in-flight call at a time) and keeps the
+    one rule honest for the main agent's genuinely-parallel calls.
+
+    ``acp.client`` keeps its own plain ``set`` of call ids for the tool-stall
+    timer and does NOT use this: that set only answers "is any call still open",
+    never "which call is judged", so this tracker would be apparatus it has no
+    buyer for.
+
+    The ``aux`` payload travels beside each :class:`ToolCallState` untouched: the
+    main agent carries the shell call's pre-dispatch interactive classification
+    there, and the sub-agent carries ``None``. The tracker never reads it.
+    """
+
+    __slots__ = ("_calls", "_current_id", "_idless")
+
+    def __init__(self) -> None:
+        # Insertion order IS dispatch order, so the newest remaining call is
+        # ``next(reversed(...))`` — the main agent's parallel calls can finish in
+        # any order and the judged call must fall back to the most recent one
+        # still open, not the oldest.
+        self._calls: dict[str, tuple[ToolCallState, object]] = {}
+        self._current_id: str = ""
+        # An id-less dispatch (a backend that omits a toolCallId, or a sub-agent
+        # native-child call that will never get a terminal frame here) is the
+        # judged call but is held HERE, not in ``_calls`` — it has no stable key
+        # to pop by, so keeping it out of the running set means ``active_calls``
+        # and ``any_active`` reflect only genuinely poppable calls, and the next
+        # dispatch simply overwrites this slot. ``_current_id == ""`` with a
+        # non-None ``_idless`` is exactly the id-less-judged state.
+        self._idless: tuple[ToolCallState, object] | None = None
+
+    @property
+    def current(self) -> ToolCallState | None:
+        """The :class:`ToolCallState` a stall verdict is read against, or None."""
+        if self._current_id:
+            entry = self._calls.get(self._current_id)
+            return entry[0] if entry is not None else None
+        return self._idless[0] if self._idless is not None else None
+
+    @property
+    def current_aux(self) -> object:
+        """The aux payload beside the judged call (``None`` when none)."""
+        if self._current_id:
+            entry = self._calls.get(self._current_id)
+            return entry[1] if entry is not None else None
+        return self._idless[1] if self._idless is not None else None
+
+    @property
+    def current_id(self) -> str:
+        """The judged call's toolCallId (``""`` when none or id-less)."""
+        return self._current_id
+
+    @property
+    def any_active(self) -> bool:
+        """Whether any dispatched call is still open.
+
+        Counts only genuinely stored (poppable) calls — an id-less judged call
+        is never handed the slot by a sibling's result, so it does not keep the
+        running set 'active'.
+        """
+        return bool(self._calls)
+
+    @property
+    def active_calls(self) -> dict[str, tuple[ToolCallState, object]]:
+        """The live ``{toolCallId: (state, aux)}`` map, read-only by convention.
+
+        Backs ``AcpSessionHandle._active_tool_calls`` so the few call sites and
+        tests that read it (membership, newest-remaining, the stored aux) keep
+        working. An id-less judged call is NOT in this map (it has no key).
+        Callers must not mutate it directly — the hand-off goes through
+        :meth:`dispatch` / :meth:`result` / :meth:`clear`.
+        """
+        return self._calls
+
+    def dispatch(self, call_id: str, state: ToolCallState, aux: object = None) -> bool:
+        """Record *state* under *call_id* and make it the judged call.
+
+        A falsy *call_id* is judged but not stored (see the class docstring):
+        it takes the id-less slot, which the next dispatch overwrites and which
+        never appears in ``active_calls``. Returns True — a dispatch always
+        changes the judged call.
+        """
+        self._current_id = call_id or ""
+        if call_id:
+            self._idless = None
+            self._calls[call_id] = (state, aux)
+        else:
+            self._idless = (state, aux)
+        return True
+
+    def result(self, call_id: str, *, terminal: bool) -> bool:
+        """Apply a tool result for *call_id*.
+
+        A non-*terminal* (progress) frame is a no-op and returns False — the call
+        is still running. A terminal frame drops the stored call; when it was the
+        judged one the judged call moves to the newest remaining dispatch, or
+        clears. A terminal frame for a call not in the running set (a sibling
+        already gone, or a native child whose result never reached here) leaves
+        a stored judged call untouched, but DOES move the slot off an id-less
+        judged call — the sub-agent's own next result is how a finished native
+        child stops being judged. Returns whether the judged call changed.
+        """
+        if not terminal:
+            return False
+        existed = (call_id or "") in self._calls
+        self._calls.pop(call_id or "", None)
+        if self._current_id:
+            # A stored call is judged.
+            if (call_id or "") != self._current_id:
+                # A sibling finished; the judged call is untouched.
+                return False
+            self._current_id = next(reversed(self._calls)) if self._calls else ""
+            return True
+        # An id-less call is judged (``_current_id == ""``). Any terminal result
+        # this agent sees (its own next completed call) hands the slot to the
+        # newest call still running, or clears it — a finished native child must
+        # not stay judged for the rest of the prompt.
+        if self._idless is None and not existed:
+            return False
+        self._idless = None
+        if self._calls:
+            self._current_id = next(reversed(self._calls))
+        return True
+
+    def clear(self) -> bool:
+        """Drop every call (prompt start). Returns whether a judged call existed."""
+        had = bool(self._current_id) or bool(self._calls) or self._idless is not None
+        self._calls.clear()
+        self._current_id = ""
+        self._idless = None
+        return had
+
+
 class LivenessOracle:
     """Per-session liveness verdicts from /proc evidence (libproc on macOS).
 

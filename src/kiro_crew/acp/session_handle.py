@@ -89,6 +89,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
+    InFlightToolTracker,
     InteractiveClassification,
     LivenessOracle,
     ToolCallState,
@@ -1095,20 +1096,15 @@ class AcpSessionHandle:
         # submitting a second job, so a wedged walk cannot stack blocked workers
         # in the shared subprocess_executor().
         self._consult_future: asyncio.Future[tuple[str, str]] | None = None
-        # Parallel calls can finish in either order; retain each attribution
-        # until its terminal result so the oracle never inspects a finished call.
-        self._active_tool_calls: dict[
-            str, tuple[ToolCallState, InteractiveClassification | None]
-        ] = {}
-        self._inflight_tool: ToolCallState | None = None
-        # Pre-dispatch interactive classification of the in-flight SHELL tool
-        # (``classify_interactive_command``); ``None`` when no shell tool is in
-        # flight. Read by the tool branch's window policy and by the post-stall
-        # classifier; never by the oracle.
-        self._inflight_interactive: InteractiveClassification | None = None
-        # toolCallId of the in-flight tool ("" when none): ``ToolCallState`` does
-        # not carry the id, and the ``waiting_input`` status must name the call.
-        self._inflight_tool_call_id = ""
+        # The in-flight tool hand-off rule, shared with the sub-agent reaper
+        # (``InFlightToolTracker``): parallel calls can finish in either order,
+        # so each attribution is retained by toolCallId until its terminal result
+        # and the judged call falls back to the newest remaining one. The
+        # pre-dispatch interactive classification of a shell call rides as the
+        # tracker's aux payload (``None`` for a non-shell tool). ``ToolCallState``
+        # does not carry the id, and the ``waiting_input`` status must name the
+        # call, so the tracker keeps it too (``_inflight_tool_call_id`` below).
+        self._tool_tracker = InFlightToolTracker()
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.
@@ -1652,10 +1648,7 @@ class AcpSessionHandle:
         # A new turn starts with no infrastructure verdict carried over.
         self.last_infra_error = None
         self._tool_dispatched = False
-        self._active_tool_calls.clear()
-        self._inflight_tool = None
-        self._inflight_interactive = None
-        self._inflight_tool_call_id = ""
+        self._tool_tracker.clear()
         self._tool_output_seen.clear()
         self._status_rejected.clear()
         self._input_wait_emitted = False
@@ -5196,6 +5189,51 @@ class AcpSessionHandle:
             for _m in _buffered:
                 self._queue.put_nowait(_m)
 
+    # ── In-flight tool state (delegated to the shared tracker) ──
+    # These read-only views keep the call sites that read the judged tool
+    # unchanged while the hand-off rule lives in ``InFlightToolTracker``. The
+    # dispatch / terminal / prompt-start writes go through the tracker directly
+    # (see ``_dispatch_events`` and ``prompt``).
+
+    @property
+    def _inflight_tool(self) -> ToolCallState | None:
+        """The :class:`ToolCallState` a stall verdict is read against."""
+        return self._tool_tracker.current
+
+    @_inflight_tool.setter
+    def _inflight_tool(self, value: ToolCallState | None) -> None:
+        # A direct set stages one call (the single-slot shape the watchdog tests
+        # use to force the oracle path): ``None`` clears, otherwise it becomes the
+        # judged call under the empty-id slot. The normal dispatch path writes
+        # through ``_tool_tracker.dispatch`` with the real toolCallId.
+        if value is None:
+            self._tool_tracker.clear()
+        else:
+            self._tool_tracker.dispatch("", value)
+
+    @property
+    def _active_tool_calls(
+        self,
+    ) -> dict[str, tuple[ToolCallState, "InteractiveClassification | None"]]:
+        """Live ``{toolCallId: (state, interactive)}`` map, backed by the shared
+        tracker. Read-only by convention — the hand-off goes through the tracker
+        (see ``_dispatch_events`` and ``prompt``)."""
+        return self._tool_tracker.active_calls  # type: ignore[return-value]
+
+    @property
+    def _inflight_interactive(self) -> "InteractiveClassification | None":
+        """Pre-dispatch interactive classification of the in-flight SHELL tool
+        (``None`` when no shell tool is in flight). Carried as the tracker's aux
+        payload. Read by the tool branch's window policy and the post-stall
+        classifier; never by the oracle."""
+        aux = self._tool_tracker.current_aux
+        return aux  # type: ignore[return-value]
+
+    @property
+    def _inflight_tool_call_id(self) -> str:
+        """toolCallId of the in-flight tool ("" when none)."""
+        return self._tool_tracker.current_id
+
     def _retire_liveness_state(self) -> None:
         """Release the tracked consult and swap in a fresh, configured oracle.
 
@@ -6567,7 +6605,7 @@ class AcpSessionHandle:
             filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
-                self._stale_eligible = not self._active_tool_calls
+                self._stale_eligible = not self._tool_tracker.any_active
                 self._prompt_or_tool_seen = True
             elif ev.kind == EVENT_TOOL_CALL:
                 self._stale_eligible = False
@@ -6591,8 +6629,6 @@ class AcpSessionHandle:
                     if ev.is_shell
                     else None
                 )
-                self._inflight_interactive = interactive
-                self._inflight_tool_call_id = ev.tool_call_id or ""
                 self._input_wait_emitted = False
                 if interactive is not None and interactive.risk != INTERACTIVE_NONE:
                     logger.info(
@@ -6612,7 +6648,7 @@ class AcpSessionHandle:
                 # flag. A new dispatch retires the oracle so its tracked child
                 # and counter samples never bleed across tools — including from a
                 # walk still running against the previous tool's command.
-                self._inflight_tool = ToolCallState(
+                inflight_tool = ToolCallState(
                     title=ev.title,
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
@@ -6626,10 +6662,11 @@ class AcpSessionHandle:
                     mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
                     interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
                 )
-                self._active_tool_calls[self._inflight_tool_call_id] = (
-                    self._inflight_tool,
-                    interactive,
-                )
+                # The shared hand-off rule stores the call by id and makes it the
+                # judged one (the interactive classification rides as the aux
+                # payload, read back via ``_inflight_interactive``). A dispatch
+                # always changes the judged call, so retire the oracle.
+                self._tool_tracker.dispatch(ev.tool_call_id or "", inflight_tool, interactive)
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 if not ev.tool_final and ev.tool_call_id:
@@ -6637,19 +6674,15 @@ class AcpSessionHandle:
                     # later non-interactive retry of it is not a safe replay.
                     self._tool_output_seen.add(ev.tool_call_id)
                 if ev.tool_status in TERMINAL_TOOL_STATUSES:
-                    self._active_tool_calls.pop(ev.tool_call_id or "", None)
-                    self._tool_dispatched = bool(self._active_tool_calls)
-                    self._stale_eligible = not self._active_tool_calls
-                    if self._inflight_tool_call_id not in self._active_tool_calls:
-                        if self._active_tool_calls:
-                            self._inflight_tool_call_id = next(reversed(self._active_tool_calls))
-                            self._inflight_tool, self._inflight_interactive = (
-                                self._active_tool_calls[self._inflight_tool_call_id]
-                            )
-                        else:
-                            self._inflight_tool = None
-                            self._inflight_interactive = None
-                            self._inflight_tool_call_id = ""
+                    # The shared hand-off rule drops the finished call and, when
+                    # it was the judged one, re-points to the newest remaining
+                    # dispatch (or clears). It returns whether the judged call
+                    # changed — only then is the oracle retired and the input
+                    # wait reset.
+                    judged_changed = self._tool_tracker.result(ev.tool_call_id or "", terminal=True)
+                    self._tool_dispatched = self._tool_tracker.any_active
+                    self._stale_eligible = not self._tool_tracker.any_active
+                    if judged_changed:
                         self._input_wait_emitted = False
                         self._retire_liveness_state()
                 # L1 of the recovery ladder: classify the result text ONCE, at

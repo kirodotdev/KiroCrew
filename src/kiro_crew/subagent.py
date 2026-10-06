@@ -17,7 +17,16 @@ import os
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable, Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, AbstractSet, Any, Literal, NamedTuple, Optional, Protocol
@@ -27,6 +36,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
+    InFlightToolTracker,
     LivenessOracle,
     ToolCallState,
     boottime_now,
@@ -2540,6 +2550,41 @@ _SYSTEM_PREFIX = (
 _NEUTRAL_REAP_REASONS = frozenset({"user_stop", "parent_end"})
 
 
+class _BareStateView(MutableMapping[str, Any]):
+    """Live ``{toolCallId: ToolCallState}`` view over an :class:`InFlightToolTracker`.
+
+    The sub-agent reads and writes ``_active_tool_calls`` as a map of bare
+    :class:`ToolCallState` values (it carries no aux), while the tracker stores
+    ``(state, aux)`` tuples shared with ``AcpSessionHandle``. This adapter
+    unwraps on read and wraps (with ``aux=None``) on write so the hand-off still
+    lives in the one tracker, yet a direct ``view[id] = state`` — used by a test
+    staging a stale call, and by nothing in production — persists and is visible
+    to membership and to :meth:`InFlightToolTracker.clear`. Reads go straight to
+    the tracker's live dict, so a dispatch/result through the tracker shows up
+    here with no copy.
+    """
+
+    __slots__ = ("_tracker",)
+
+    def __init__(self, tracker: InFlightToolTracker) -> None:
+        self._tracker = tracker
+
+    def __getitem__(self, key: str) -> Any:
+        return self._tracker.active_calls[key][0]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._tracker.active_calls[key] = (value, None)
+
+    def __delitem__(self, key: str) -> None:
+        del self._tracker.active_calls[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._tracker.active_calls)
+
+    def __len__(self) -> int:
+        return len(self._tracker.active_calls)
+
+
 @dataclass
 class SubagentInfo:
     """Metadata for a running subagent."""
@@ -2615,18 +2660,22 @@ class SubagentInfo:
     # ``_exec_started is None`` it also tells the reaper which of the two a
     # parked run is sitting on.
     _awaiting_approval: bool = False
-    # Attribution snapshot of the tool currently in flight, mirroring what
-    # ``AcpSessionHandle`` keeps for the main agent. This is what lets the
-    # liveness oracle key evidence to THIS subagent's own child process (by
-    # cmdline match) instead of to the whole runtime subtree — which, on a
-    # session-shared runtime, is dominated by kiro-cli's own background I/O.
-    # It is the most recently dispatched call still in flight, and None only
-    # when none of this agent's own calls is.
-    _inflight_tool: Any = None
-    # Every dispatched call by toolCallId until its terminal result. Parallel
-    # calls finish in any order, so a fast call returning first must not drop
-    # the attribution of a slower one still running beside it (a wait).
-    _active_tool_calls: dict[str, Any] = field(default_factory=dict)
+    # The in-flight tool hand-off rule, shared with ``AcpSessionHandle`` via
+    # ``InFlightToolTracker``. The sub-agent tracks its calls by toolCallId: a
+    # native child's call (``sub_session_id`` set) is judged on arrival (so a
+    # stall is attributed to the child's own command) but not stored, because
+    # its result never reaches this loop; a call with an id is stored until its
+    # terminal result and the judged slot passes to the newest one still running
+    # when it finishes. The attribution lets the liveness oracle key evidence to
+    # THIS subagent's own child process (by cmdline match) instead of to the
+    # whole runtime subtree — which, on a session-shared runtime, is dominated
+    # by kiro-cli's own background I/O.
+    # ``_inflight_tool`` (the most recently dispatched call still in flight,
+    # None when none is) and ``_active_tool_calls`` (every dispatched call by
+    # toolCallId until its terminal result, so a fast call returning first does
+    # not drop a slower one still running beside it) are tracker-backed
+    # properties below, not fields — the hand-off rule lives in the tracker.
+    _tool_tracker: InFlightToolTracker = field(default_factory=InFlightToolTracker)
     # Per-agent liveness oracle. One instance PER AGENT is required, not one per
     # manager: the oracle keys its counter samples by kind ("io"/"cpu"), not by
     # pid, so a shared instance would let one agent's sample become another's
@@ -2710,6 +2759,39 @@ class SubagentInfo:
         startup reap is the run's own failure.
         """
         return self._reap_reason in _NEUTRAL_REAP_REASONS
+
+    @property
+    def _inflight_tool(self) -> Any:
+        """The :class:`ToolCallState` a stall verdict is read against (``None``
+        when no tool is in flight).
+
+        A view onto the shared :class:`InFlightToolTracker`'s current judged
+        call, so the hand-off rule lives in one place
+        (``_note_tool_dispatch`` / ``_note_tool_result`` drive it). The setter
+        stages one call directly under the empty-id slot, which is what a test
+        or a caller that only has a single call to pin uses.
+        """
+        return self._tool_tracker.current
+
+    @_inflight_tool.setter
+    def _inflight_tool(self, value: Any) -> None:
+        if value is None:
+            self._tool_tracker.clear()
+        else:
+            self._tool_tracker.dispatch("", value)
+
+    @property
+    def _active_tool_calls(self) -> MutableMapping[str, Any]:
+        """The live ``{toolCallId: ToolCallState}`` map of calls still running.
+
+        A :class:`_BareStateView` over the shared tracker, so
+        ``_note_tool_result``'s successor hand-off and the tests that read
+        membership or stage a stale call keep working. The tracker stores
+        ``(state, aux)`` tuples; this unwraps to the bare ``ToolCallState`` the
+        sub-agent reads and writes. Prefer ``_note_tool_dispatch`` /
+        ``_note_tool_result`` / ``_clear_tool_dispatch`` to mutate it.
+        """
+        return _BareStateView(self._tool_tracker)
 
     # Set by the gateway on the wave's FINAL member only: terminal snapshots
     # whose delivery tombstones must be settled once the digest has been
@@ -4228,17 +4310,23 @@ class SubagentManager:
         ``AcpEvent``, and keeping only ``title`` would leave stall detection
         with nothing to attribute evidence with.
 
+        The hand-off itself runs through the shared :class:`InFlightToolTracker`
+        (``dispatch``), the same rule the main agent uses: the call becomes the
+        judged one and, when it carries a toolCallId, is stored under it.
+
         Retiring the oracle here (rather than clearing it) is load-bearing: a
         movement walk still running against the PREVIOUS tool's command holds a
         reference to the old instance, and clearing in place would let its late
-        write land on the new tool's baseline and read as movement.
+        write land on the new tool's baseline and read as movement. A dispatch
+        always changes the judged call, so the oracle is always retired.
 
-        The call is also kept by toolCallId in ``_active_tool_calls`` until its
-        terminal result, so a parallel call that finishes first hands the slot
-        back to one still running instead of emptying it. A native child's call
-        (``sub_session_id`` set, from a permission request) is judged but gets no
-        entry: its results go to the backend's own session and never reach this
-        loop, so nothing would ever close it.
+        A native child's call (``sub_session_id`` set, from a permission
+        request) is judged but takes the empty-id slot and is NOT stored by id:
+        its result goes to the backend's own session and never reaches this
+        loop, so nothing would ever pop a stored entry. A normal call is stored
+        under its toolCallId until its terminal result, so a parallel call that
+        finishes first hands the slot back to one still running instead of
+        emptying it.
         """
         state = ToolCallState(
             title=event.title or "",
@@ -4260,10 +4348,18 @@ class SubagentManager:
                 else ""
             ),
         )
-        if not getattr(event, "sub_session_id", ""):
-            info._active_tool_calls[getattr(event, "tool_call_id", "") or ""] = state
-        info._inflight_tool = state
-        SubagentManager._retire_attribution(info)
+        # A native child's call (``sub_session_id`` set, from a permission
+        # request) is judged so a stall is attributed to the child's command,
+        # but its result goes to the backend's own session and never reaches
+        # this loop — so it is NOT stored by id (nothing would ever pop it). It
+        # takes the empty-id slot, which the next dispatch overwrites. A normal
+        # call is stored under its toolCallId so a parallel call finishing first
+        # hands the judged slot back to one still running instead of emptying it.
+        if getattr(event, "sub_session_id", ""):
+            info._tool_tracker.dispatch("", state)
+        else:
+            info._tool_tracker.dispatch(getattr(event, "tool_call_id", "") or "", state)
+        SubagentManager._retire_subagent_oracle(info)
 
     @staticmethod
     def _note_tool_result(info: SubagentInfo, event: Any) -> None:
@@ -4271,33 +4367,34 @@ class SubagentManager:
 
         The gate lives here rather than at the call site so the invariant is
         directly testable. ``EVENT_TOOL_RESULT`` is also emitted for
+        The gate lives here rather than at the call site so the invariant is
+        directly testable. ``EVENT_TOOL_RESULT`` is also emitted for
         non-terminal progress updates, and treating one of those as the end of
         the tool would drop attribution while the command is still running —
         degrading liveness to idle-time-only for exactly the long silent command
         this detection exists to judge, and so raising the badge on a healthy
         agent. A failed, cancelled or refused call is over as surely as a
-        completed one, which is the set ``AcpSessionHandle`` retires on too.
+        completed one, which is the set ``AcpSessionHandle`` retires on too, and
+        which ``acp.client`` gates on the same way.
 
-        Only the finished call is retired. While the judged call is still
-        running it stays judged; otherwise the slot passes to the most recently
-        dispatched call still running, so a file write returning beside a
-        ``wait`` leaves the reaper judging the wait rather than nothing. A judged
-        native-child call is never in the running set, so this agent's own next
-        terminal result moves the slot off it.
+        The hand-off runs through the shared :class:`InFlightToolTracker`
+        (``result``): the finished call is dropped and, when it was the judged
+        one, the slot passes to the most recently dispatched call still running,
+        so a file write returning beside a ``wait`` leaves the reaper judging the
+        wait rather than nothing. A judged native-child call is never in the
+        running set (it took the empty-id slot and was never stored), so this
+        agent's own next terminal result moves the slot off it. The oracle is
+        retired only when the judged call actually changed — the signal the
+        tracker returns.
         """
         terminal = getattr(event, "tool_status", "") in TERMINAL_TOOL_STATUSES
         if not (event.tool_final or terminal):
             return
-        running = info._active_tool_calls
-        running.pop(getattr(event, "tool_call_id", "") or "", None)
-        judged = info._inflight_tool
-        if judged is not None and any(state is judged for state in running.values()):
-            return
-        successor = next(reversed(running.values())) if running else None
-        if successor is judged:
-            return
-        info._inflight_tool = successor
-        SubagentManager._retire_attribution(info)
+        judged_changed = info._tool_tracker.result(
+            getattr(event, "tool_call_id", "") or "", terminal=True
+        )
+        if judged_changed:
+            SubagentManager._retire_subagent_oracle(info)
 
     @staticmethod
     def _clear_tool_dispatch(info: SubagentInfo) -> None:
@@ -4306,13 +4403,23 @@ class SubagentManager:
         Called at the start of each prompt, so a call the previous turn never
         closed cannot be handed the slot when a later call returns.
         """
-        info._active_tool_calls.clear()
-        info._inflight_tool = None
-        SubagentManager._retire_attribution(info)
+        info._tool_tracker.clear()
+        SubagentManager._retire_subagent_oracle(info)
 
     @staticmethod
-    def _retire_attribution(info: SubagentInfo) -> None:
-        """Retire the oracle and bump the generation for a new judged call."""
+    def _retire_subagent_oracle(info: SubagentInfo) -> None:
+        """Retire this agent's stall oracle and bump its generation.
+
+        Called whenever the judged tool call changes (new dispatch, final
+        result, cleared snapshot). Swaps in a ``fresh()`` oracle rather than
+        clearing in place — a walk still running against the previous command
+        holds the old instance, and the generation bump lets a verdict that
+        outlived its tool be recognised as stale and discarded. The counterpart
+        of ``AcpSessionHandle._retire_liveness_state``; the two differ only in
+        the machinery each owns (a bound oracle + consult future there, a
+        generation counter here), which is why the retirement is NOT part of the
+        shared tracker — only the hand-off decision is.
+        """
         oracle = info._stall_oracle
         info._stall_oracle = oracle.fresh() if oracle is not None else None
         info._stall_gen += 1

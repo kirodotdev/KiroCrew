@@ -76,9 +76,9 @@ class FakeProc:
         (d / "task" / str(pid) / "children").write_text(kids)
         # stat: pid (comm) state ... utime(14) stime(15) ... starttime(22)
         fields = ["0"] * 50
-        fields[0] = state          # field 3
-        fields[11] = str(cpu)      # utime (field 14)
-        fields[12] = "0"           # stime (field 15)
+        fields[0] = state  # field 3
+        fields[11] = str(cpu)  # utime (field 14)
+        fields[12] = "0"  # stime (field 15)
         fields[19] = str(int(starttime))  # starttime (field 22)
         (d / "stat").write_text(f"{pid} (fake proc) {' '.join(fields)}\n")
         (d / "cmdline").write_bytes(cmdline.replace(" ", "\0").encode() + b"\0")
@@ -130,9 +130,7 @@ def _oracle(
     sample_min: float = 3.0,
     tenancy=None,
 ) -> LivenessOracle:
-    return LivenessOracle(
-        str(fake.root), now=clock, sample_min_secs=sample_min, tenancy=tenancy
-    )
+    return LivenessOracle(str(fake.root), now=clock, sample_min_secs=sample_min, tenancy=tenancy)
 
 
 # ── Shell tool evidence ──────────────────────────────────────────────────────
@@ -232,9 +230,7 @@ _MULTI_LINE_LONGEST_FIRST = (
     "echo this-first-line-is-deliberately-the-longest-one-here\n"
     "for i in $(seq 1 20); do sleep 15; done"
 )
-_SINGLE_LINE = (
-    "for i in $(seq 1 20); do sleep 15; done; echo this-line-is-longer-than-the-first-one-on-purpose"
-)
+_SINGLE_LINE = "for i in $(seq 1 20); do sleep 15; done; echo this-line-is-longer-than-the-first-one-on-purpose"
 
 
 def _cached_shell_input(command: str) -> str:
@@ -321,7 +317,9 @@ def test_a_lookalike_sharing_only_the_program_name_is_not_bound(tmp_path):
     fake.add_pid(100, children=[200], cmdline="kiro-cli acp")
     fake.add_pid(200, cmdline="python3 -m pytest test/test_other_thing.py -n0")
     oracle = _oracle(fake, clock)
-    tool = _shell_tool(_cached_shell_input("python3 tools/update_index.py --rebuild --quiet"), clock)
+    tool = _shell_tool(
+        _cached_shell_input("python3 tools/update_index.py --rebuild --quiet"), clock
+    )
 
     verdict, evidence = oracle.check_tool(100, tool)
 
@@ -795,9 +793,12 @@ def test_wait_tool_working_until_declared_duration(tmp_path):
     fake.add_pid(100)
     oracle = _oracle(fake, clock)
     tool = ToolCallState(
-        title="wait", command='{"seconds": 300, "reason": "poll"}',
-        dispatch_ts=clock.t, is_shell=False,
-        tool_name="wait", mcp_server_name="kirocrew-core",
+        title="wait",
+        command='{"seconds": 300, "reason": "poll"}',
+        dispatch_ts=clock.t,
+        is_shell=False,
+        tool_name="wait",
+        mcp_server_name="kirocrew-core",
     )
 
     clock.advance(299.0)
@@ -897,8 +898,9 @@ def test_mcp_tool_flat_with_runtime_backend_socket_is_tagged_established_flat(tm
     fake.set_net_tcp(100, ["31337"])
     oracle = _oracle(fake, clock, sample_min=1.0)
     # tool_name="use_subagent" → positive model-wrapping attribution
-    tool = ToolCallState(title="use_subagent", command="{}", dispatch_ts=clock.t,
-                         tool_name="use_subagent")
+    tool = ToolCallState(
+        title="use_subagent", command="{}", dispatch_ts=clock.t, tool_name="use_subagent"
+    )
 
     verdict, evidence = oracle.check_tool(100, tool)
     assert verdict == VERDICT_UNKNOWN  # baseline sample — never tagged
@@ -929,17 +931,18 @@ def test_mcp_tool_flat_ordinary_tool_with_runtime_socket_not_tagged(tmp_path):
     fake.set_net_tcp(100, ["31337"])
     oracle = _oracle(fake, clock, sample_min=1.0)
     # tool_name="" → no model-wrapping attribution; plain MCP call
-    tool = ToolCallState(title="ReadInternalWebsites", command="{}", dispatch_ts=clock.t,
-                         tool_name="")
+    tool = ToolCallState(
+        title="ReadInternalWebsites", command="{}", dispatch_ts=clock.t, tool_name=""
+    )
 
     oracle.check_tool(100, tool)  # baseline
     clock.advance(2.0)
     verdict, evidence = oracle.check_tool(100, tool)
     assert verdict == VERDICT_UNKNOWN
     # Must NOT be tagged established_flat for a non-model-wrapping tool
-    assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT), (
-        "established_flat must not fire for a tool without model-wrapping attribution"
-    )
+    assert not evidence.startswith(
+        EVIDENCE_ESTABLISHED_FLAT
+    ), "established_flat must not fire for a tool without model-wrapping attribution"
     assert "mcp subtree flat" in evidence
 
 
@@ -1383,9 +1386,7 @@ def test_shell_tool_without_a_tree_backend_is_unknown_tagged_platform_limited(
     assert evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)
 
 
-def test_mcp_tool_without_a_tree_backend_is_unknown_tagged_platform_limited(
-    tmp_path, monkeypatch
-):
+def test_mcp_tool_without_a_tree_backend_is_unknown_tagged_platform_limited(tmp_path, monkeypatch):
     clock = _Clock()
     oracle = _no_backend_oracle(tmp_path, clock, monkeypatch)
     tool = ToolCallState(
@@ -1443,3 +1444,130 @@ def test_a_readable_proc_tree_is_never_platform_limited(tmp_path):
     verdict, evidence = oracle.check_tool(100, tool)
     assert verdict == VERDICT_UNKNOWN
     assert not evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)
+
+
+# ── InFlightToolTracker: the shared hand-off rule ──
+#
+# The one implementation both AcpSessionHandle and the sub-agent reaper use to
+# answer "which tool call is judged right now". These tests pin the rule itself;
+# the two callers' own tests (test_stale_watchdog_rearm.py and
+# test_subagent_stall_attribution.py) pin the integration.
+
+
+def _ts(title: str = "t") -> ToolCallState:
+    return ToolCallState(title=title, command="{}", dispatch_ts=1.0)
+
+
+def test_tracker_dispatch_makes_the_call_the_judged_one():
+    tr = liveness.InFlightToolTracker()
+    state = _ts()
+    changed = tr.dispatch("a", state, aux="interactive-a")
+    assert changed is True
+    assert tr.current is state
+    assert tr.current_id == "a"
+    assert tr.current_aux == "interactive-a"
+    assert tr.any_active is True
+
+
+def test_tracker_terminal_result_for_the_judged_call_clears_it():
+    tr = liveness.InFlightToolTracker()
+    tr.dispatch("a", _ts())
+    assert tr.result("a", terminal=True) is True
+    assert tr.current is None
+    assert tr.current_id == ""
+    assert tr.any_active is False
+
+
+def test_tracker_non_terminal_result_is_a_no_op():
+    tr = liveness.InFlightToolTracker()
+    state = _ts()
+    tr.dispatch("a", state)
+    assert tr.result("a", terminal=False) is False
+    assert tr.current is state
+
+
+def test_tracker_sibling_terminal_does_not_change_the_judged_call():
+    """A parallel call finishing out of order must leave the judged call — and
+    so the oracle baseline — untouched."""
+    tr = liveness.InFlightToolTracker()
+    first = _ts("first")
+    second = _ts("second")
+    tr.dispatch("a", first)
+    tr.dispatch("b", second)  # b is now judged (newest dispatch)
+    assert tr.current is second
+    # a (the older sibling) finishes first: judged call is still b.
+    assert tr.result("a", terminal=True) is False
+    assert tr.current is second
+    assert tr.current_id == "b"
+
+
+def test_tracker_judged_call_falls_back_to_newest_remaining():
+    tr = liveness.InFlightToolTracker()
+    first = _ts("first")
+    second = _ts("second")
+    tr.dispatch("a", first)
+    tr.dispatch("b", second)
+    # b (the judged, newest) finishes: judged falls back to a, the one still open.
+    assert tr.result("b", terminal=True) is True
+    assert tr.current is first
+    assert tr.current_id == "a"
+
+
+def test_tracker_clear_drops_everything():
+    tr = liveness.InFlightToolTracker()
+    tr.dispatch("a", _ts())
+    tr.dispatch("b", _ts())
+    assert tr.clear() is True
+    assert tr.current is None
+    assert tr.current_id == ""
+    assert tr.any_active is False
+    assert tr.clear() is False  # nothing to clear a second time
+
+
+def test_tracker_single_slot_shape_overwrites_on_next_dispatch():
+    """The sub-agent's shape: an id-less call is judged but held in a separate
+    slot (not the running set), so it never appears in ``active_calls`` and the
+    next id-less dispatch overwrites it (a native child's result never reaches
+    that loop, so nothing would ever pop a stored entry)."""
+    tr = liveness.InFlightToolTracker()
+    one = _ts("one")
+    two = _ts("two")
+    tr.dispatch("", one)
+    assert tr.current is one
+    assert tr.active_calls == {}
+    assert tr.any_active is False
+    tr.dispatch("", two)
+    assert tr.current is two
+    assert tr.active_calls == {}
+
+
+def test_tracker_idless_judged_call_hands_off_on_a_terminal_result():
+    """A surviving stored call plus a finished stored call and an id-less judged
+    call (a native child): the agent's own terminal result drops the id-less
+    judgement and the slot passes to the stored call still running, rather than
+    leaving the finished child judged."""
+    tr = liveness.InFlightToolTracker()
+    survivor = _ts("survivor")
+    finished = _ts("finished")
+    child = _ts("child")
+    tr.dispatch("survivor-1", survivor)
+    tr.dispatch("finished-1", finished)
+    tr.dispatch("", child)  # native child: judged, not stored
+    assert tr.current is child
+    assert set(tr.active_calls) == {"survivor-1", "finished-1"}
+
+    changed = tr.result("finished-1", terminal=True)
+    assert changed is True
+    assert tr.current is survivor
+    assert set(tr.active_calls) == {"survivor-1"}
+
+
+def test_tracker_idless_judged_call_clears_when_nothing_remains():
+    """An id-less judged call with no stored sibling clears to None on the next
+    terminal result (the slot cannot be handed to anything)."""
+    tr = liveness.InFlightToolTracker()
+    tr.dispatch("", _ts("child"))
+    changed = tr.result("stored-gone", terminal=True)
+    assert changed is True
+    assert tr.current is None
+    assert tr.active_calls == {}
