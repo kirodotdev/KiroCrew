@@ -49,9 +49,9 @@ _FACADE_PATH = Path(ch.__file__).resolve()
 #: and production read private names off it too. The per-slot app ownership helpers
 #: that ``slot_ownership`` holds instead are not all in it.
 _BASE_NAMES = frozenset("""
-        ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ADOPT_PEER_MODE_UNKNOWN ADOPT_TARGET_UNKNOWN
+        ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
         ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider
-        AdoptBackfill AdoptTargetUnknown Any Awaitable COLOR_HEX_RE Callable
+        Any Awaitable COLOR_HEX_RE Callable
         ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
         HUMAN_TURN_META_KEY JEV_ROUTE_MODEL KiroCrewConfig LLMProvider MAX_COLOR_INDEX
         MAX_DEFERRED_NOTES MAX_DEFERRED_NOTE_CHARS MODEL_NAMESPACE_ACP MemoryStartupUnavailable
@@ -112,7 +112,7 @@ _BASE_NAMES = frozenset("""
         _tighten_replacement_to_restricted_original _try_live_model_switch
         _unblock_pending_waits _unhide_folder _validate_autocompact_pct _validate_content
         _validate_max_age _validate_source _wake_conductor_for_closed_worker _wire_model_id
-        _workspace_name_for_dir adopted_slot_for annotations api_chat api_chat_mode
+        _workspace_name_for_dir annotations api_chat api_chat_mode
         api_chat_slot_agent api_chat_slot_approve api_chat_slot_autocompact api_chat_slot_color
         api_chat_slot_context api_chat_slot_continue api_chat_slot_create api_chat_slot_delete
         api_chat_slot_detail api_chat_slot_end_wait api_chat_slot_followup
@@ -123,29 +123,28 @@ _BASE_NAMES = frozenset("""
         api_chat_slot_source_link_unlink api_chat_slot_source_links api_chat_slot_stop
         api_chat_slot_summary api_chat_slot_summary_generate api_chat_slot_workspace
         api_chat_slots api_chat_slots_cleanup api_chat_slots_model api_recent_projects
-        apply_adopted_backfill approval_mode_permitted asyncio attachment_meta
+        approval_mode_permitted asyncio attachment_meta
         base_consent_pattern base_trust_patterns cached_project_agent_names canonical_key
         cap_effort_capability_levels capabilities_of carry_provenance channel_slot_name
         chat_message_frame close_slot compaction_in_flight config_dir context_entry_expired
-        contextlib count_user_turns_in_records create_peer_slot datetime
+        contextlib count_user_turns_in_records datetime
         decided_message_handling default_project_dir deny_non_dashboard_caller
         deny_non_owner_remote_operation deny_session_approval_caller drained_to_thread
         durable_row_count effective_session_key ensure_version_parity exact_trust_pattern
-        fetch_adopted_backfill forward_peer_selection forward_peer_stop generate_session_summary
+        forward_peer_selection forward_peer_stop generate_session_summary
         get_reasoning_effort_ordered get_reasoning_effort_values history_corpus_unreadable
         is_channel_session_key is_claude_code is_incognito_transcript is_owner_dashboard_request
         is_registered_agent_name is_sensitive_path is_stop_event_row is_system_notice
         is_turn_interrupted islice json logger logging math maybe_auto_tag members_mod
         model_registry normalize_send_id normalize_theme_consent_sha note_crew_log_class
         note_hold_durable note_slot_closed os owner_start_priority parse_cls_meta peer_is_connected
-        peer_row_metadata
         persist_deferred_notes_sync pick_epoch_host pin_private_agent_store
         published_autocompact_pct queue_entry_is_user_origin queue_entry_view
         queue_for_next_turn queued_text_for_display read_bounded_json
         read_cached_intent_summary record_agent_selection redact_credentials
         redact_exfiltration_urls redact_peer_text register_reasoning_effort_values
         relay_remote_turn release_prewarmed_session reload_slot_session remote_bound_refusal
-        remote_mirror request_slot_origin resolve_adopt_target resolve_agent_bindings
+        remote_mirror request_slot_origin resolve_agent_bindings
         resolve_folder_project_dir_off_loop resolve_session_agent_bindings resolved_row_identity
         restore_agent_selection restore_replacement_if_handover_did_not_land
         resume_slot_from_history row_mid safety_override save_slot_off_loop schedule_eager_spawn
@@ -224,7 +223,7 @@ _RUNNER_SEAMS = (
 def test_every_name_the_handlers_bound_at_the_base_still_resolves() -> None:
     """Callers, the ``dashboard.chat`` facade and tests read private names off the
     handlers module as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) > 380
+    assert len(_BASE_NAMES) > 370
     assert sorted(name for name in _BASE_NAMES if not hasattr(ch, name)) == []
 
 

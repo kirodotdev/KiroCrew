@@ -1207,33 +1207,13 @@ describe('request bodies with conditionally-omitted keys', () => {
     })
   })
 
-  it('createChatSlot carries adopt_remote_slot and resolves NO default memory mode for it', async () => {
-    // THE ADOPT WIRE FORMAT. `adopt_remote_slot` is the peer session's own slot
-    // key, and it rides the SAME create route beside `instance_id` — the contract
-    // deliberately adds no second endpoint, because the local slot is created the
-    // same way either way and only what it binds to changes.
+  it('createChatSlot sends agent_kind beside an agent and never a crew binding', async () => {
     await api.createChatSlot(
-      undefined, undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, 'inst-a', 'chat-9',
+      undefined, 'a', undefined, undefined, 'persistent', undefined,
+      undefined, undefined, 'member',
     )
     expect(call().url).toBe('/api/chat/slots')
-    expect(call().body).toEqual({ instance_id: 'inst-a', adopt_remote_slot: 'chat-9' })
-    // No `/api/dashboard/config` read at all: an adopt inherits the PEER
-    // session's `memory_mode`, so resolving this machine's default would send a
-    // value the server has to ignore — and if it ever stopped ignoring it, an
-    // incognito peer session would land here as a persistent transcript. That is
-    // why `memory_mode` is ABSENT above rather than defaulted, and why exactly
-    // one request went out.
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    // An explicit mode still wins: a caller that names one means it.
-    await api.createChatSlot(
-      undefined, undefined, undefined, undefined, 'incognito', undefined,
-      undefined, undefined, 'inst-a', 'chat-9',
-    )
-    expect(call(1).body).toEqual({
-      memory_mode: 'incognito', instance_id: 'inst-a', adopt_remote_slot: 'chat-9',
-    })
+    expect(call().body).toEqual({ agent: 'a', agent_kind: 'member', memory_mode: 'persistent' })
   })
 
   it('sessionStorageRestore adds the uid list only for a partial restore', async () => {

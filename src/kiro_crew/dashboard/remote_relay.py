@@ -79,8 +79,8 @@ logger = logging.getLogger(__name__)
 #: buffer without bound — the relay refuses the stream instead.
 _MAX_SSE_RECORD_BYTES = 8 * 1024 * 1024
 
-#: Ceiling on a peer's reply to a small control request (open a slot, stop a
-#: turn). These answer with one flat JSON object, so anything larger is a broken
+#: Ceiling on a peer's reply to a small control request (stop a turn, set a
+#: control). These answer with one flat JSON object, so anything larger is a broken
 #: or hostile peer and is refused rather than decoded.
 _MAX_PEER_SLOT_REPLY_BYTES = 64 * 1024
 
@@ -505,72 +505,6 @@ def remote_bound_refusal(slot: "_ChatSlot") -> "web.Response | None":
             status=409,
         )
     return None
-
-
-async def create_peer_slot(
-    state: "DashboardState",
-    instance_id: str,
-    *,
-    agent: str = "",
-    agent_kind: str = "",
-    model: str = "",
-    memory_mode: str = "persistent",
-) -> str:
-    """Create the slot on *instance_id* that will execute a local session's turns.
-
-    Returns the PEER's slot key. That key is only meaningful inside a request
-    routed back through the same instance — it is not a local session key and
-    must never be handed to a local lookup.
-
-    *agent* and *model* are forwarded only when the caller was given them
-    EXPLICITLY, and they come from the peer's own rosters (the crew picker reads
-    ``/api/instances/{id}/capabilities``). Omitting them is the default because
-    this machine's default agent names a crew from this machine's roster: sending
-    it would either fail there or bind a different crew than the name implies,
-    where an omission lets the peer apply its own default — which is the point of
-    the session running on it. ``memory_mode`` is different: it is the user's
-    privacy boundary and always rides the create, so local and remote execution
-    cannot disagree about whether memory may be read or written.
-    """
-    mgr = await _require_manager(state)
-    await ensure_version_parity(mgr, instance_id)
-    create_body: dict[str, str] = {"memory_mode": memory_mode}
-    if agent:
-        create_body["agent"] = agent
-    if agent_kind:
-        create_body["agent_kind"] = agent_kind
-    if model:
-        create_body["model"] = model
-    try:
-        async with mgr.proxy_request(
-            instance_id,
-            "POST",
-            "api/chat/slots",
-            data=json.dumps(create_body).encode(),
-            content_type="application/json",
-        ) as upstream:
-            if not 200 <= upstream.status < 300:
-                raise RemoteTurnError(
-                    f"The crew refused to open a session (HTTP {upstream.status})."
-                )
-            raw = await upstream.content.read(_MAX_PEER_SLOT_REPLY_BYTES + 1)
-    except RemoteTurnError:
-        raise
-    except Exception as e:
-        logger.info("Peer slot create on %s failed (%s)", instance_id, type(e).__name__)
-        raise RemoteTurnError(
-            "Could not reach that crew to open a session. Reconnect it and try again."
-        ) from None
-    if len(raw) > _MAX_PEER_SLOT_REPLY_BYTES:
-        raise RemoteTurnError("The crew returned an oversized reply when opening a session.")
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        raise RemoteTurnError("The crew returned a malformed reply when opening a session.")
-    key = payload.get("key") if isinstance(payload, dict) else None
-    if not isinstance(key, str) or not key:
-        raise RemoteTurnError("The crew opened a session but did not name it.")
-    return key
 
 
 async def forward_peer_stop(state: "DashboardState", slot: "_ChatSlot", force: bool) -> bool:

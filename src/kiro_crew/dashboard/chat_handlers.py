@@ -209,20 +209,8 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-from kiro_crew.dashboard.remote_adopt import (
-    ADOPT_PEER_MODE_UNKNOWN,
-    ADOPT_TARGET_UNKNOWN,
-    AdoptBackfill,
-    AdoptTargetUnknown,
-    adopted_slot_for,
-    apply_adopted_backfill,
-    fetch_adopted_backfill,
-    peer_row_metadata,
-    resolve_adopt_target,
-)
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
-    create_peer_slot,
     ensure_version_parity,
     forward_peer_selection,
     forward_peer_stop,
@@ -2034,8 +2022,6 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
         "agent_kind",
         "model",
         "folder_id",
-        "instance_id",
-        "adopt_remote_slot",
         "memory_mode",
         "mode",
         "title",
@@ -2052,15 +2038,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # A session on a connected crew is created ON that crew and opened here
+    # through its window; this hub never mints or adopts a relay binding.
+    # Refused before anything is read or written, so a stale client cannot stamp
+    # a remote executor onto a new local slot. The answer is the same for every
+    # caller and every state, so it discloses nothing.
+    if body.get("instance_id") or body.get("adopt_remote_slot"):
+        return web.json_response(
+            {
+                "error": "sessions on a connected crew are created on that crew, not here",
+                "code": "remote_create_retired",
+            },
+            status=400,
+        )
     name = body.get("name")
     if name is not None and not isinstance(name, str):
-        # Coerced HERE, before the peer write below, because `get_or_create_slot`
-        # normalizes the key with string operations: a non-string name reaches it
-        # as an unhandled 500 AFTER `create_peer_slot` has already opened a
-        # session on the crew, leaving that session orphaned over there with no
-        # local slot pointing at it to release it. Every other read of `name` in
-        # this handler already goes through `str(...)`, so this closes the one
-        # path that did not rather than adding a new rule.
+        # `get_or_create_slot` normalizes the key with string operations, so a
+        # non-string name would surface there as an unhandled 500.
         name = str(name)
     agent = body.get("agent", "")
     # The selection NAMESPACE, when the caller states one. "member" names a
@@ -2084,29 +2078,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
     existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
-    # Remote execution binding. Three authorization gates run BEFORE the peer is
-    # touched, because `create_peer_slot` is a write on ANOTHER machine spending
-    # the owner's tunnel credential — a request that is going to be refused must
-    # not have already created a session over there.
-    instance_id = str(body.get("instance_id") or "")
-    # ADOPT: bind this new local slot to a peer session that ALREADY EXISTS,
-    # instead of minting a fresh one over there. The caller supplies the peer's own
-    # slot key (a `key` from GET /api/instances/{id}/chat-slots), which names the
-    # crew that owns it — so without an `instance_id` there is nothing to resolve
-    # the key against and no peer to route the turn to.
-    #
-    # Refused BEFORE the binding gates below, which all sit inside `if instance_id`
-    # and therefore do not run for this shape at all. It discloses nothing: the
-    # request named no crew, so there is no existence to leak.
-    adopt_remote_slot = str(body.get("adopt_remote_slot") or "")
-    if adopt_remote_slot and not instance_id:
-        return web.json_response(
-            {
-                "error": "adopting a crew session needs the crew it belongs to",
-                "code": "adopt_needs_instance",
-            },
-            status=400,
-        )
     request_app = request.get("app", "")
     # Ownership of a NAMED slot for an app caller, before any refusal below can
     # answer about it (get_or_create_slot's memory-mode 409 among them) and
@@ -2119,106 +2090,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         existing_slot = state._slots.get(_normalize_slot_key(str(name)))
-    if instance_id:
-        # (1) Binding a session to a crew is a human act: it comes from the
-        # composer's crew picker, which an app credential has no surface for. So
-        # an app caller is refused outright rather than being allowed to spend
-        # the user's peer credential on an unattended request.
-        #
-        # First of the three deliberately: this refusal is shaped as `not found`
-        # so it cannot be an existence oracle, and the owner gate below answers
-        # 403, which would tell an app caller the route is there. An app
-        # credential fails BOTH gates, so the order decides only which answer it
-        # gets — and the quieter one is the app's.
-        if request_app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat_slot_create",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"instance={instance_id}",
-                error="app tokens cannot bind a session to a remote crew",
-            )
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-        # (2) Owner-only, the same bar as `api_instances_capabilities` and the
-        # proxy: the peer write is made with the OWNER's manager-held tunnel
-        # credential, so being authenticated is not enough. A messaging identity
-        # admitted by an allow-list holds a dashboard credential whose subject is
-        # not the owner and whose `app` claim is EMPTY — so the gate above passes
-        # it, and without this one such a caller could spend the owner's
-        # credential to open and run sessions on the owner's crew. Deny-by-default:
-        # a positive owner assertion, not the absence of an app claim.
-        from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-
-        if not is_owner_dashboard_request(request):
-            sel().log_api_access(
-                caller="non-owner",
-                operation="chat_slot_create",
-                outcome="denied",
-                source="owner_only",
-                resources=f"instance={instance_id}",
-                error="non-owner identity rejected",
-            )
-            return _owner_denial_response(
-                request, "binding a session to a remote crew is owner-only"
-            )
-        # (3) A binding is only ever stamped at BIRTH, so `name` addressing an
-        # existing slot is refused whatever that slot is — the create path has no
-        # honest way to convert one.
-        #
-        # An already-bound slot is the obvious half: re-binding it would point a
-        # live session at a second peer session and orphan the first.
-        #
-        # An existing LOCAL slot is the destructive half. Its transcript stays
-        # here while its EXECUTION moves to a peer slot that is empty, so the next
-        # turn runs with none of the conversation the user is looking at — the
-        # context is not deleted, it is silently no longer in play. It is also the
-        # ownership hole: the check further down runs only after the binding has
-        # been stamped, so a caller with no right to that slot would already have
-        # created a peer session and rewritten somebody else's session's executor
-        # before seeing its 404. Deciding here keeps every side effect unreachable.
-        if existing_slot is not None:
-            return web.json_response(
-                {
-                    "error": "that session already exists and cannot be bound to a crew",
-                    "code": "remote_already_bound",
-                },
-                status=409,
-            )
-    # Every remaining validation that can refuse this request runs BEFORE the
-    # peer write, for the reason the binding gates above give: `create_peer_slot`
-    # opens a session on another machine, and a refusal that happens afterwards
-    # leaves that session orphaned there with nothing local pointing at it to
-    # release it. So a `{"instance_id": …, "mode": "bogus"}` request must fail
-    # here, not after it has already cost the user a peer session. These read
-    # only `body`/`name`, so nothing forces them to run later.
     memory_mode = body.get("memory_mode", "persistent")
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
     _mode = _coerce_requested_mode(body.get("mode", ""))
     if _mode not in _CREATABLE_MODES:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
-    # A crew-bound session runs PLAIN chat only. A non-plain mode
-    # (design-critique) is not handled by the remote arm, which only replaces
-    # the plain ``_run_chat`` dispatch. So a remote slot created with a mode
-    # would run that mode's tools and filesystem work on THIS machine instead of
-    # the crew the user picked. Refused here, alongside the other pre-peer
-    # validations above, so a rejected mode never costs the user an orphaned
-    # ``create_peer_slot`` session.
-    if instance_id and _mode:
-        return web.json_response(
-            {
-                "error": "a crew-bound session runs plain chat only; mode-specific work runs on the crew you pick, not here",
-                "code": "remote_mode_unsupported",
-            },
-            status=400,
-        )
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
-    # that becomes a 409. That rejection has to happen BEFORE the peer write, not
-    # after — otherwise a `{"instance_id": …, "name": "member-…"}` create opens a
-    # peer session at `create_peer_slot` and only then 409s locally, orphaning the
-    # peer slot with nothing here to release it. Checked on the
+    # that becomes a 409; refused here so the error carries its code. Checked on the
     # normalized key, the form the slot store is built from.
     if name and _normalize_slot_key(str(name)).casefold().startswith(
         members_mod.DM_SLOT_KEY_PREFIX
@@ -2248,138 +2128,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
-    remote_slot_key = ""
-    # Metadata the adopted session inherits from the peer, and its prepared
-    # history. Both empty on the mint path, which is why every use below is
-    # guarded rather than branched on `adopt_remote_slot` a second time.
-    peer_meta: dict[str, str] = {}
-    backfill = AdoptBackfill([], "")
-    if instance_id and adopt_remote_slot:
-        # IDEMPOTENCY, first of two. This one runs before the peer is read at all,
-        # so the common case — a double click on the same peer row — is answered
-        # without a tunnel round-trip or a second transcript copy. It is NOT the
-        # one that closes the concurrent-POST race: the awaits below mean two
-        # requests can clear this together, which is what the recheck immediately
-        # before `get_or_create_slot` exists for.
-        #
-        # Two local slots driving one peer session is not just a duplicate row:
-        # each accumulates its own turns, so the transcripts diverge, and
-        # `read_peer_slots` filters the peer's row on whichever binding it sees.
-        # Returning the existing slot is also what makes the frontend's
-        # `switchSlot(resp.key)` correct on a retry.
-        #
-        # Reachable only by an owner dashboard caller: the app and owner gates
-        # above already refused everyone else, so this is not a read-back oracle.
-        already = adopted_slot_for(state, instance_id, adopt_remote_slot)
-        if already is not None:
-            return web.json_response(state.serialize_slot(already))
-        # The key is CALLER-supplied, so it is validated against the peer's live
-        # session list — the same read the merged sidebar renders. That makes the
-        # check free of new policy: a key absent from that view is forged, closed,
-        # or a slot this hub already drives, and none of the three is adoptable.
-        try:
-            adopt_row = await resolve_adopt_target(state, instance_id, adopt_remote_slot)
-        except AdoptTargetUnknown as exc:
-            # "Not in the peer's list" has TWO causes, and only one is an error.
-            # `read_peer_slots` drops the rows this hub already drives, so the
-            # moment a concurrent adopt of this same pair stamps its binding, the
-            # row this request came to adopt disappears from the very listing used
-            # to validate it. Two tabs on one peer row therefore ended with the
-            # winner opening the session and the LOSER getting a 404 for a session
-            # that exists and is now reachable locally.
-            #
-            # So before treating absence as forgery, ask the one question that
-            # tells the two apart: does a local slot already bind this pair? If it
-            # does, absence is the expected consequence of the adopt having already
-            # happened, and the honest answer is that slot -- the same answer the
-            # early check and the pre-create recheck give. This is why all three
-            # sites go through `adopted_slot_for` rather than each deciding for
-            # itself.
-            raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
-            if raced is not None:
-                return web.json_response(state.serialize_slot(raced))
-            return web.json_response({"error": str(exc), "code": ADOPT_TARGET_UNKNOWN}, status=404)
-        except RemoteTurnError as exc:
-            return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
-        remote_slot_key = adopt_remote_slot
-        peer_meta = peer_row_metadata(adopt_row)
-        # The peer's mode is REQUIRED, not preferred. It is the user's privacy
-        # boundary and the peer session already has one, so a session opened as
-        # `incognito` over there must not start writing memory the moment it is
-        # opened on this machine.
-        #
-        # Absent means REFUSE, because the alternative is silent and wrong in the
-        # dangerous direction. `peer_row_metadata` omits the key for a row that
-        # never carried a mode and for one whose value is outside the allowlist,
-        # so falling back to the request's mode would resolve the least
-        # trustworthy case -- a peer whose row we could not read a boundary from
-        # -- to this machine's default of `persistent`. Version skew alone
-        # reaches it: a crew whose slot rows predate the field would hand over
-        # every incognito session as a persistent local one. Refusing costs an
-        # adopt that a newer peer can retry; guessing costs the boundary.
-        peer_mode = peer_meta.get("memory_mode", "")
-        if not peer_mode:
-            return web.json_response(
-                {
-                    "error": (
-                        "the crew did not report this session's memory mode, so it "
-                        "cannot be opened here without guessing its privacy boundary"
-                    ),
-                    "code": ADOPT_PEER_MODE_UNKNOWN,
-                },
-                status=502,
-            )
-        memory_mode = peer_mode
-        # The peer's agent wins too, for the same reason as the mode above and
-        # because this module's contract is that nothing the caller sends decides
-        # what the adopted session claims to be. Unconditional, with no `or agent`
-        # fallback: a peer row carrying no agent means the peer session runs on ITS
-        # default, and resolving that to the REQUEST's agent would open the peer's
-        # conversation under an agent that has never answered in it. Empty here is
-        # the right answer -- the local slot then falls to this machine's own
-        # default the same way any agent-less session does. Stored VERBATIM: the
-        # surrounding resolve/normalize steps are skipped for every peer-bound
-        # create precisely because they answer from THIS machine's roster.
-        agent = peer_meta.get("agent", "")
-        agent_kind = peer_meta.get("agent_kind", "")
-        # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
-        # happens outside the `suspend_slots_push` block below. That suspension is
-        # process-wide: holding it across a transcript read would defer every other
-        # client's slot updates for the length of it. Never raises — an adopted
-        # slot with no history is usable, so a failed copy is a notice in the
-        # transcript rather than a refused create.
-        try:
-            backfill = await fetch_adopted_backfill(state, instance_id, adopt_remote_slot)
-        except AdoptTargetUnknown as exc:
-            # The slot was present in the live list but its detail endpoint says
-            # it is gone. Abort BEFORE `get_or_create_slot`; a local binding to
-            # nothing is not a history-copy failure. Keep the same external 404
-            # as the earlier list check — both mean "this peer key is not
-            # adoptable now", and a caller must not learn which read observed it.
-            raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
-            if raced is not None:
-                return web.json_response(state.serialize_slot(raced))
-            return web.json_response({"error": str(exc), "code": ADOPT_TARGET_UNKNOWN}, status=404)
-    elif instance_id:
-        try:
-            # The picks ride the create rather than following it: a second
-            # round-trip could fail after the peer session existed, leaving a
-            # bound session running a crew the user did not choose.
-            remote_slot_key = await create_peer_slot(
-                state,
-                instance_id,
-                agent=agent,
-                agent_kind=agent_kind,
-                model=model,
-                memory_mode=memory_mode,
-            )
-        except RemoteTurnError as exc:
-            return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
-
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
-    if not instance_id and existing_slot is None and is_owner_dashboard_request(request):
+    if existing_slot is None and is_owner_dashboard_request(request):
         try:
             await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
         except MemoryStartupUnavailable as exc:
@@ -2401,14 +2153,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # quietly resolves the real default. Placed BEFORE the normalization
     # below so the stamped alias also gets its workspace resolved by the
     # existing binding path.
-    #
-    # Skipped for a peer-bound create: THIS machine's default names a crew from
-    # this machine's roster, and stamping it would make the shelf advertise an
-    # agent the peer may not have while the peer quietly answers with its own
-    # default. An empty agent is the honest record — the header renders the
-    # peer's default from its capability read, and `create_peer_slot` sends no
-    # agent precisely so the peer keeps that choice.
-    if cfg is not None and not agent and not instance_id:
+    if cfg is not None and not agent:
         agent = cfg.default_agent or ""
     # Normalize an agent nothing will dispatch to the one that WILL answer.
     # Otherwise the name is stored verbatim and resolve_agent_bindings silently
@@ -2417,11 +2162,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # agent keeps the slot honest, and a caller that requires a specific binding
     # (an app panel verifying the returned agent) can see the mismatch instead of
     # discovering it turns later.
-    # Also skipped for a peer-bound create, and for the workspace's sake as much
-    # as the agent's: `resolve_agent_bindings` answers from THIS machine's
-    # bindings, so a peer agent name would resolve to a local workspace (or to
-    # nothing, logging a false "does not resolve"). The peer resolves its own.
-    if cfg is not None and agent and not instance_id:
+    if cfg is not None and agent:
         resolving_key = _normalize_slot_key(str(name)) if name else ""
         resolving_slot = state._slots.get(resolving_key) if resolving_key else None
         resolving_fields = (
@@ -2496,24 +2237,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
-    # An adopted slot's `workspace` field is the PEER's, read off its row, in
-    # place of the create default the peer-bound branch above skipped resolving.
-    # Same terms as `agent`: it is a mirror of what the crew committed for a
-    # session it runs -- exactly the value the forwarded agent/workspace picks
-    # write back into this field from the peer's answer. Left at the default, the
-    # slot projected and persisted a workspace name of this machine's choosing
-    # for a conversation whose turns run somewhere else.
-    #
-    # Kept apart from `workspace` on purpose: that variable is still THIS
-    # machine's workspace, and `default_project_dir(workspace)` below derives
-    # the local `project` (file search, @-mentions) from it. Feeding the peer's
-    # name through that lookup would resolve a same-named LOCAL workspace the
-    # crew never meant -- the very hazard that keeps `workspace` out of the
-    # agent-binding resolution for a peer-bound create. So the peer's value
-    # reaches the slot field only, and local `project` / `memory_store`
-    # resolution reads the local default it always did.
-    slot_workspace = peer_meta.get("workspace") or workspace
-
     # Resolved before the mint decision below: nothing may await between that
     # read and `get_or_create_slot`, and these are the two awaits this path adds.
     cron_creator = await cron_slot_creator(request)
@@ -2533,7 +2256,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     is_new_slot = not _requested_key or _requested_key not in state._slots
     # A named NEW app slot must not land on a transcript the app does not own:
     # the slot's first save would stamp the app onto that metadata line, which is
-    # what /api/sessions trusts. An app never reaches the adopt branch below.
+    # what /api/sessions trusts.
     if (
         is_new_slot
         and _requested_key
@@ -2542,23 +2265,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     ):
         return slot_not_found()
-
-    if remote_slot_key and adopt_remote_slot:
-        # The DECIDING idempotency check for an adopt. The one at the top of the
-        # adopt branch runs before `resolve_adopt_target` and
-        # `fetch_adopted_backfill`, and both of those suspend — so two concurrent
-        # identical POSTs clear it together and would each mint a slot bound to one
-        # peer session. Re-asked here, after every await and with nothing awaiting
-        # between this and `get_or_create_slot` below, which is what makes
-        # check-and-create atomic on asyncio's single thread.
-        #
-        # The loser discards the history it just read rather than applying it: the
-        # winner copied the same transcript from the same peer slot, so the work is
-        # redundant, not lost. Returning the winner's slot is also what keeps the
-        # frontend's `switchSlot(resp.key)` correct for whichever request lost.
-        raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
-        if raced is not None:
-            return web.json_response(state.serialize_slot(raced))
 
     # Coalesce every push inside into ONE broadcast at exit, so the first frame
     # any client sees already carries the folder, title, artifact binding and
@@ -2570,7 +2276,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # tab. Serializing every open slot before returning only makes that first paint
     # wait. The state-owned 10 ms handoff moves its coalesced full-list frame past
     # the response. Only known request keys may qualify; metadata-bearing,
-    # app-owned, mode-specific, nonpersistent and remote creates remain
+    # app-owned, mode-specific and nonpersistent creates remain
     # synchronous. Errors before a successful handoff retain request-visible
     # publication semantics; delayed publication failures are logged and retried
     # once by the guarded callback.
@@ -2578,7 +2284,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         set(body).issubset(_DEFERRED_PLAIN_CREATE_KNOWN_KEYS)
         and is_new_slot
         and not request_app
-        and not instance_id
         and not folder_id
         and not _mode
         and not body.get("title")
@@ -2599,7 +2304,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot = state.get_or_create_slot(
                 name,
                 agent=agent,
-                workspace=slot_workspace,
+                workspace=workspace,
                 model=model,
                 mode=_mode,
                 memory_mode=memory_mode,
@@ -2626,44 +2331,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # Same attribution as the send auto-create: a cron-opened slot
             # carries its creator and never reads as a person's own tab.
             slot._created_by = cron_creator
-        if is_new_slot and cfg is not None and not instance_id:
+        if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 # Take the slot lock before the newborn's first await: a later
                 # same-name member pick changes its namespace without changing
                 # the agent/project strings checked after publication.
                 await creation_stack.enter_async_context(slot._lock)
-        if remote_slot_key and not is_new_slot:
-            # The name was free when the binding gates ran, but `create_peer_slot`
-            # awaits the peer and a concurrent create took it inside that window,
-            # so `get_or_create_slot` just handed back a session that already
-            # existed. Stamping the binding onto it is exactly the destructive
-            # half those gates exist to prevent: its transcript would stay here
-            # while EXECUTION moved to an empty peer slot, so the next turn runs
-            # with none of the conversation on screen. Refused instead — the peer
-            # session is left to the crew rather than taking over a live local
-            # one, which is the cheaper of the two losses.
-            logger.warning(
-                "Slot %s was created concurrently while binding to %s; refusing to rebind",
-                slot.key,
-                instance_id,
-            )
-            return web.json_response(
-                {
-                    "error": "that session already exists and cannot be bound to a crew",
-                    "code": "remote_already_bound",
-                },
-                status=409,
-            )
-        if remote_slot_key:
-            # Stamped after creation rather than passed through
-            # get_or_create_slot: the binding is not part of a slot's identity
-            # (the key, agent and workspace are), and keeping it out of that
-            # signature means every other creation path — channels, apps, forks,
-            # restore — stays untouched by remote execution.
-            slot.executor = "remote"
-            slot.instance_id = instance_id
-            slot.remote_slot = remote_slot_key
-            slot.agent_kind = agent_kind
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -2686,30 +2359,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             return denied
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
-        # An adopted session takes the PEER's title, ahead of anything the caller
-        # sent. It is the label the user just clicked in the merged list, so
-        # opening it under a different one — or under a local auto-title generated
-        # from a backfilled history — renames their session out from under them.
-        # Ahead of the caller's, not merely a fallback: the same contract that puts
-        # the peer in charge of `agent` and `memory_mode` puts it in charge of the
-        # name, and the adopt path sends no title of its own, so a caller-supplied
-        # one could only contradict the session being adopted. Pinned below like a
-        # caller-explicit title for the same reason: the background refresh must
-        # not rewrite a name the peer owns. (There is no "peer" title origin;
-        # "user" is the closest true statement, in that a human named it and no
-        # local model may replace it.)
-        title = peer_meta.get("title", "") if adopt_remote_slot else title
         if title:
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
             slot.title = title
-        # On an adopt the name is pinned EVEN WHEN the peer's title is empty: the
-        # peer owns it, so an unnamed peer session is one whose name is "none yet",
-        # and leaving it unpinned would let the local auto-titler invent one -- the
-        # same divergence a caller-supplied title would have caused. An ordinary
-        # mint keeps the old rule, pinning only a title the caller actually gave,
-        # so an untitled new session is still free to be auto-titled.
-        if title or adopt_remote_slot:
+        if title:
             # A pinned title is caller-explicit: record origin "user" so the
             # background title refresh never rewrites it (this endpoint can
             # address an ALREADY-auto-titled slot whose origin would otherwise
@@ -2831,7 +2485,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             else:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
-        if is_new_slot and cfg is not None and not instance_id:
+        if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
                 assignment_agent = slot.agent
@@ -2889,17 +2543,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     )
                 if assigned_store:
                     slot.memory_store = assigned_store
-        # The adopted session's history, appended before the first frame and before
-        # the persist below — list appends only, the read and the redaction pass
-        # already happened outside this suspension. Placed after the app-ownership
-        # check above so a request that is about to 404 never copies a transcript,
-        # and after the folder/title work so the coalesced push carries the whole
-        # session in one frame. It also trails the member-assignment block above,
-        # which can still answer 409 `session_rebound`: a create that is about to
-        # be refused must not copy the peer's transcript either.
-        if backfill.rows or backfill.notice:
-            applied = apply_adopted_backfill(slot, backfill)
-            logger.info("Adopted %s into %s with %d rows", remote_slot_key, slot.key, applied)
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control.py`'s create span uses ("the whole
@@ -2931,7 +2574,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if folder_id or title or remote_slot_key:
+        if folder_id or title:
             # The create/recreate request has been authorized against this
             # transcript.  Do not let a rebind while the off-loop write waits on
             # the history lock redirect its newly supplied metadata to another

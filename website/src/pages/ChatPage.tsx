@@ -5236,7 +5236,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       color_index: old?.color_index ?? null,
       color_hex: old?.color_hex ?? null,
       project: old?.project ?? null,
-      instanceId: old?.instance_id || undefined,
     }
     try { await dispatch(createSlot(opts)).unwrap() } catch (error) {
       showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))

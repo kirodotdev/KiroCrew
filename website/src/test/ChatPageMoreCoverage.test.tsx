@@ -399,8 +399,8 @@ afterEach(() => {
   alertSpy.mockRestore()
 })
 
-describe('Welcome recreation preserves remote execution', () => {
-  it('carries instanceId through a memory mode change', async () => {
+describe('Welcome recreation of a crew archive', () => {
+  it('recreates a plain local session that names no crew', async () => {
     apiSpy('dashboardConfig').mockResolvedValue({ default_memory_mode: 'persistent' })
     apiSpy('createChatSlot').mockResolvedValue({
       ...REMOTE_SLOT,
@@ -416,7 +416,7 @@ describe('Welcome recreation preserves remote execution', () => {
     })
 
     await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
-    expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[8]).toBe('crew-remote-1')
+    expect(apiMocks.createChatSlot.mock.calls.at(-1)).not.toContain('crew-remote-1')
     expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
   })
 })

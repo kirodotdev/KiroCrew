@@ -130,25 +130,11 @@ state are composed behind that facade:
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
 
-A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
-`remote_relay.create_peer_slot()` always includes the validated `memory_mode` in
-the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
-explicit picks. Omitting the mode would let a local Incognito or Temporary row
-execute as Persistent on the peer and read or write memory the user disabled.
-
-A slot ADOPTED from a peer row (`POST /api/chat/slots` with `adopt_remote_slot`)
-inherits `agent`, `title`, `memory_mode` and `workspace` from that row
-(`remote_adopt.peer_row_metadata()`). `workspace` is a mirror of the value the
-peer committed for the session it runs, the same value the forwarded
-agent/workspace picks write back into the field afterwards, so the projection
-and the persisted record name the workspace the turns actually run in rather
-than this machine's create default. It is not a local binding: the peer-bound
-create skips this machine's agent-binding resolution, `default_project_dir` is
-still fed the local default (so `project` and `memory_store` never resolve from
-a peer's name), and the relay hands every turn to the peer before the local turn
-path reads the field. Every control in `remote_relay._PEER_CONTROL_SEGMENTS` is
-classified in `remote_adopt.ADOPT_SEEDED_CONTROLS` / `ADOPT_UNSEEDED_CONTROLS`,
-and a structural test fails for a new forwardable control until it is placed.
+`POST /api/chat/slots` refuses to create a slot bound to a remote crew: a body
+carrying `instance_id` or `adopt_remote_slot` is refused with
+`400 remote_create_retired`. A session on a connected crew is created on that
+crew and opened here through its window. A slot already on disk with
+`executor: "remote"` still loads.
 
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected

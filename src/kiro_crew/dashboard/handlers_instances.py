@@ -2125,25 +2125,14 @@ class PeerSlots(NamedTuple):
 async def read_peer_slots(
     state: "DashboardState",
     instance_id: str,
-    *,
-    uncapped: bool = False,
 ) -> PeerSlots:
     """Read *instance_id*'s live slot list, dropping the rows this hub drives.
 
-    The read behind :func:`api_instances_chat_slots`, extracted so the adopt path
-    (:mod:`kiro_crew.dashboard.remote_adopt`) validates an adopt target against
-    the SAME view of the peer the sidebar renders. That shared view is what makes
-    the validation free of new policy: a key absent from it is forged, closed, or
-    a slot this hub already drives, and none of the three is adoptable.
-
-    ``uncapped`` turns OFF the returned-row cap, which is otherwise
-    ``MAX_LIVE_SLOTS`` (read in the body, so a test patching the module constant
-    still moves it). The cap exists to bound the per-row redaction the route then
-    runs, so a caller that does no per-row work has no reason to pay it — and for
-    the adopt path it would be actively wrong: a truncated tail would make a key
-    the peer really does hold look forged, refusing an adopt for a peer that
-    merely has many sessions open. Memory stays bounded either way by the BYTE
-    cap below, which is applied before anything is decoded.
+    The read behind :func:`api_instances_chat_slots`. The returned rows are
+    capped at ``MAX_LIVE_SLOTS`` (read in the body, so a test patching the module
+    constant still moves it) to bound the per-row redaction the route then runs.
+    Memory stays bounded by the BYTE cap below, which is applied before anything
+    is decoded.
 
     Raises :class:`PeerSlotsUnavailable` for every failure; returns
     :class:`PeerSlots` otherwise.
@@ -2298,12 +2287,9 @@ async def read_peer_slots(
     # honest and a refusal would cost it every row. Audited so a short list is
     # attributable to this bound instead of looking like sessions the peer never
     # reported.
-    effective_cap = None if uncapped else MAX_LIVE_SLOTS
-    over_cap = 0
-    if effective_cap is not None:
-        over_cap = max(0, len(rows) - effective_cap)
-        if over_cap:
-            rows = rows[:effective_cap]
+    over_cap = max(0, len(rows) - MAX_LIVE_SLOTS)
+    if over_cap:
+        rows = rows[:MAX_LIVE_SLOTS]
     return PeerSlots(
         rows=rows, filtered=filtered, over_cap=over_cap, driven=MappingProxyType(driven)
     )

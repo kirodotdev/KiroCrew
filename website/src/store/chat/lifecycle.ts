@@ -40,7 +40,7 @@ const configuredDefaultMemoryMode = () =>
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -61,19 +61,6 @@ export const createSlot = createAsyncThunk<
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
-    // Bind the new session to a connected crew for EXECUTION. Sent at birth, not
-    // patched on afterwards: the backend has to open the peer's slot before it
-    // creates the local one, so a failure leaves nothing behind — patching later
-    // would put a session in the sidebar that looks ready and refuses every send.
-    const instanceId = typeof opts === 'string' ? undefined : opts?.instanceId
-    // ADOPT an EXISTING peer session instead of minting a new one on the peer: the
-    // value is that session's own slot key, as listed by
-    // `GET /api/instances/{id}/chat-slots`. The local slot created here is fresh
-    // either way — only what it binds to changes — so this rides the same create
-    // round-trip rather than a second route. Meaningless without `instanceId`
-    // (the peer that owns the key), which the backend refuses with
-    // `400 adopt_needs_instance` rather than guessing an owner.
-    const adoptRemoteSlot = typeof opts === 'string' ? undefined : opts?.adoptRemoteSlot
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -87,12 +74,9 @@ export const createSlot = createAsyncThunk<
     const originActiveSlot = (getState() as RootState).chat.activeSlot
     // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
     // entry points resolve the persisted preference here, before the first turn
-    // can read or write memory. An ADOPT skips the resolution entirely: the
-    // adopted slot inherits the PEER session's mode (see `api.createChatSlot`),
-    // and resolving a local default here would only race it.
-    const memory_mode = requestedMemoryMode
-      || (adoptRemoteSlot ? undefined : await configuredDefaultMemoryMode())
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot, agentKind)
+    // can read or write memory.
+    const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

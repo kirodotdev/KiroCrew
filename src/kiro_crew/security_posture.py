@@ -569,22 +569,6 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential cannot survive by sitting past the length limit).",
     ),
     (
-        "Adopted peer transcript",
-        "dashboard/remote_adopt.py",
-        "A peer session's whole HISTORY, copied into a local slot when the user "
-        "opens that session here (POST /api/chat/slots with adopt_remote_slot). A "
-        "third boundary distinct from the two above, and the widest: those forward "
-        "one row's metadata, this one copies every message BODY the other machine "
-        "produced — model output, tool calls and their results — and PERSISTS it "
-        "into this hub's own transcript file, where later readers cannot tell it "
-        "came from a peer. Every role is scrubbed, user text included: the local "
-        "rule leaves user-authored text raw because its author is its only reader, "
-        "which stops being true once the text arrives over a wire. Row meta goes "
-        "through the deep scrub as well, because that is where tool payloads live. "
-        "The inherited agent, title and memory_mode take the same pass before they "
-        "land on the slot.",
-    ),
-    (
         "Profile artifact",
         "perf_sampler.py",
         "Folded-stack profiles written by `kirocrew perf sample`. Frame labels are "
