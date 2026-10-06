@@ -164,6 +164,13 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again for the project-path resolver (``ProjectPathVerdict`` /
+#: ``resolve_project_path`` in ``paths.py``) and the two names it adds to the facade's
+#: owner table and ``TYPE_CHECKING`` block. A scheduled job may name a directory, and
+#: that one answer -- sensitive, resolved, is-a-directory -- has to be decided in this
+#: package rather than by each caller probing the path itself, because a sensitive path
+#: must be refused before anything stats it.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -189,7 +196,6 @@ def _url_payload_command(n: int) -> str:
 #: safe to withhold, and window classification with whole-run context that exempts
 #: only windows sharing ≥ 24 bytes with that id while every other positive window
 #: redacts each piece it touches. One mechanism, no new pass.
-#:
 #: Raised again, from 28,551, for the Windows alias fold in ``paths.py``: one lexical
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
@@ -208,7 +214,13 @@ def _url_payload_command(n: int) -> str:
 #: window crossing that commit's opening ``/`` with twelve of its digits, one clause
 #: beside the separator ceiling, and the docstring naming them. No pass widened and
 #: no existing threshold moved.
-_PACKAGE_LINE_BUDGET = 28_631
+#:
+#: Raised again, from 28,631, for ``resolve_project_path`` and ``ProjectPathVerdict``
+#: in ``paths.py``: one realpath -> sensitivity -> is-a-directory verdict for a cron
+#: job's ``project_path``, a chat folder's ``project_dir`` and the ``/api/agents``
+#: parameter, judged inside the package that owns the sensitivity floor rather than
+#: at each of the three callers.
+_PACKAGE_LINE_BUDGET = 28_678
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

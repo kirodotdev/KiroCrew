@@ -1278,3 +1278,28 @@ if TYPE_CHECKING:  # the public surface and what production imports, for type ch
         redact_credentials,
         redact_exfiltration_urls,
     )
+
+
+def project_output_visible_to_non_owner(payload: object) -> bool:
+    """Whether a notification or chat frame is proven safe for a non-owner.
+
+    Cron output writers stamp ``project_bound`` as a real boolean. A present
+    malformed value is not evidence of an unbound run, and an unstamped cron
+    notification or cron-slot row has unknown provenance, so both are withheld.
+    Other payload classes are unchanged.
+
+    Lives here rather than beside its first caller because a ``messaging_api``
+    owner's functions run on the facade's namespace, where a name the owner
+    merely defines is never bound -- so a predicate an owner function reads has
+    to come from a non-owner module it imports at call time.
+    """
+    if not isinstance(payload, dict):
+        return False
+    unset = object()
+    marker: object = payload.get("project_bound", unset)
+    meta = payload.get("meta")
+    if marker is unset and isinstance(meta, dict):
+        marker = meta.get("project_bound", unset)
+    if marker is not unset:
+        return marker is False
+    return not (payload.get("kind") == "cron" or str(payload.get("slot") or "").startswith("cron-"))

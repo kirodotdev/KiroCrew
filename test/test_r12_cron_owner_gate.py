@@ -59,6 +59,7 @@ def _crons() -> MagicMock:
         name="nightly",
         chat_folder_id="",
         created_by=f"app:{APP_NAME}",
+        project_path="",
     )
     crons = MagicMock()
     crons.update_job_async = AsyncMock(return_value=job)

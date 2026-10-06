@@ -1136,6 +1136,20 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             has_more = start > 0
             next_before = start
 
+    # A cron slot can be addressed directly, bypassing ``/to-chat``. Its rows
+    # therefore take the same retained run-window proof before a non-owner sees
+    # them. A pruned bound record cannot release an older surviving row because
+    # only positive coverage by a retained unbound window is served.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        from kiro_crew.cron import cron_job_id_from_session_key
+        from kiro_crew.dashboard.handlers.cron import _non_owner_transcript_rows
+
+        cron_job_id = cron_job_id_from_session_key(slot_history_key(slot))
+        if cron_job_id:
+            messages, _ = await _non_owner_transcript_rows(state, cron_job_id, messages)
+
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read
     # attributes the loop keeps mutating mid-turn. `messages` is already a
