@@ -43,8 +43,8 @@ def _recorder(discussion: dict | None = None):
 
 
 @pytest.fixture(autouse=True)
-def _gitlab_allowed(monkeypatch):
-    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=None))
+def _gitlab_allowed(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", AsyncMock(return_value=None))
 
 
 # --- reply ------------------------------------------------------------------
