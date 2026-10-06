@@ -50,8 +50,12 @@ export type NavIntent = {
   path: string
   /** Chat slot to activate before navigating. */
   slotKey?: string
-  /** Composer prefill to seed for a slot (rides the message — sessionStorage is per-window). */
-  prefill?: { slotKey: string; prompt: string }
+  /** Composer prefill to seed for a slot (rides the message — sessionStorage is per-window).
+   *  `prompt` is the whole composer to seed. `append`, when set, is just the text
+   *  this hand-off adds: if the destination composer is already open on that slot,
+   *  the slot-restore effect will not run again, so `append` is merged into the
+   *  LIVE composer instead of `prompt` replacing it. */
+  prefill?: { slotKey: string; prompt: string; append?: string }
 }
 
 export type PopoutMsg =

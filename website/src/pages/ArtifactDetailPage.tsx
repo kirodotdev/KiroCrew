@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, AlertTriangle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, Eye, FoldHorizontal, GitFork, MoreHorizontal, Pencil, UnfoldHorizontal, RefreshCw, X, AlertCircle, AlertTriangle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
@@ -22,10 +22,10 @@ import { useJevAutoSend } from './chat/useJevAutoSend'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import HoverTip from '../components/HoverTip'
-import ReadingWidthToggle from '../components/ReadingWidthToggle'
-import { ArtifactSendToSession } from '../components/ArtifactSendToSession'
+import { ArtifactSendToSessionSubmenu, useArtifactSendToSession } from '../components/ArtifactSendToSession'
 import { useReadingWidth } from '../hooks/useReadingWidth'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
@@ -63,6 +63,7 @@ import { errMessage } from '../utils/thunkError'
 import { byRecentActivity } from '../utils/slotRecency'
 import { fmtDateFields } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /** The selection an open comment composer annotates, resolved while it was
@@ -120,6 +121,13 @@ export { isEditableKind }
  * a picker to move it (metadata-only — no version bump). Mirrors the tag-chip
  * row's inline-mutation pattern.
  */
+// The More menu's comment count. Its own component so the item's registered
+// label (artifacts.detail.comments) reads as the Show / Hide comments text alone.
+function CommentCountBadge({ count }: { count: number }) {
+  if (count <= 0) return null
+  return <span className="ml-auto px-1 rounded bg-accent/20 text-[10px]">{count}</span>
+}
+
 function FolderChip({ artifact }: { artifact: Artifact }) {
   const { folders } = useArtifactFolders()
   const moveArtifact = useMoveArtifactToFolder()
@@ -288,45 +296,32 @@ const ActivityTimeline = memo(function ActivityTimeline({
  * subscription only runs on the main dashboard — never inside the popout window
  * itself (where this control isn't rendered).
  */
-function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
+/**
+ * Pop-out entries of the toolbar's overflow menu: "Pop out to window" while the
+ * artifact is here, or Focus + Bring back once it lives in its own window. Not
+ * rendered inside the popout window itself (the frame's Return button closes it).
+ */
+function ArtifactPopoutMenuItems({ slug, name }: { slug: string; name: string }) {
   const { isPoppedOut, open, focus, bringBack } = useArtifactPopouts()
   if (isPoppedOut(slug)) {
     return (
       <>
-        <HoverTip label={i18nT('pages.artifactDetailPage.focus_the_popped_out_window')}>
-          <button
-            type="button"
-            onClick={() => focus(slug)}
-            className="p-1.5 rounded-md border border-accent text-accent bg-accent-subtle cursor-pointer transition-all"
-            aria-label={i18nT('pages.artifactDetailPage.focus_popped_out_window')}
-          >
-            <Monitor size={13} />
-          </button>
-        </HoverTip>
-        <HoverTip label={i18nT('pages.artifactDetailPage.bring_the_artifact_back_into_this_window')}>
-          <button
-            type="button"
-            onClick={() => bringBack(slug)}
-            className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-            aria-label={i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}
-          >
-            <Undo2 size={13} />
-          </button>
-        </HoverTip>
+        <DropdownMenuItem onSelect={() => focus(slug)}>
+          <Monitor size={13} className="shrink-0 text-accent" aria-hidden="true" />
+          <span>{i18nT('pages.artifactDetailPage.focus_popped_out_window')}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => bringBack(slug)}>
+          <Undo2 size={13} className="shrink-0 text-muted" aria-hidden="true" />
+          <span>{i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}</span>
+        </DropdownMenuItem>
       </>
     )
   }
   return (
-    <HoverTip label={i18nT('pages.artifactDetailPage.pop_out_into_its_own_window')}>
-      <button
-        type="button"
-        onClick={() => open(slug, name)}
-        className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-        aria-label={i18nT('pages.artifactDetailPage.pop_out_to_window')}
-      >
-        <ExternalLink size={13} />
-      </button>
-    </HoverTip>
+    <DropdownMenuItem onSelect={() => open(slug, name)}>
+      <ExternalLink size={13} className="shrink-0 text-muted" aria-hidden="true" />
+      <span>{i18nT('pages.artifactDetailPage.pop_out_to_window')}</span>
+    </DropdownMenuItem>
   )
 }
 
@@ -434,6 +429,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // writer. A save skipped here leaves the buffer dirty, so nothing is lost.
   const tokenWriteInFlightRef = useRef(false)
   const [saveConflict, setSaveConflict] = useState(false)
+  const [sendToSessionError, setSendToSessionError] = useState<string | null>(null)
   const [showPublish, setShowPublish] = useState(false)
   // Tag editing: tags shown in the header are editable inline. Adding a tag
   // posts metadata-only (no version bump). Removing a tag works the same way.
@@ -1089,6 +1085,31 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
 
+  // In-app exits the page does not own (the global sidebar, the command
+  // palette, a popout's forwarded navigation, browser Back) swap the route
+  // without unloading the document, so `beforeunload` never sees them. They
+  // ask the shell's leave registry, which needs a synchronous answer, so a
+  // dirty buffer refuses the exit and opens the app's own discard dialog; after
+  // a discard the user repeats the navigation. The refused navigation cannot be
+  // resumed from here: the registry does not pass its target.
+  useRegisterNavigationLeaveGuard(() => {
+    if (!dirty) return true
+    // A second refusal while the dialog is up replaces it: `useConfirm`
+    // answers the pending ask "no" and shows one dialog.
+    void confirm({
+      title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
+      confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
+    }).then(ok => {
+      if (!ok) return
+      setEditing(false)
+      setEditedContent('')
+      setSaveError(null)
+      setPreviewDuringEdit(false)
+    })
+    return false
+  })
+  usePublishNavigationStake(dirty)
+
   // ── Inline-comment handlers ──────────────────────────────────────────────
   // Comments only make sense for kinds where text→source coords resolve
   // cleanly: markdown (via data-sourcepos) and text (rendered === source).
@@ -1256,13 +1277,20 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     }, () => false)
   }, [postAnchoredMut, isMobile])
 
-  const confirmDiscardDraft = useCallback(() => confirm({
-    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
-    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
-    // The composer it guards is a body portal at z-[9999]; the prompt must
-    // take the layer above it or the box swallows clicks on its buttons.
-    layer: 'top',
-  }), [confirm])
+  // Counts prompts actually shown, so a caller of `guardCommentDraft` can tell
+  // "the user agreed to discard" from "the hook went ahead without asking"
+  // (a composer post already in flight).
+  const discardPromptsRef = useRef(0)
+  const confirmDiscardDraft = useCallback(() => {
+    discardPromptsRef.current += 1
+    return confirm({
+      title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+      confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+      // The composer it guards is a body portal at z-[9999]; the prompt must
+      // take the layer above it or the box swallows clicks on its buttons.
+      layer: 'top',
+    })
+  }, [confirm])
   const quoteOf = useCallback((a: PendingAnchor) => a.anchor, [])
   const quoteOnly = useCallback((anchor: string): PendingAnchor => ({ anchor }), [])
   // A composer post refused after its box was closed: the page's comment
@@ -1278,13 +1306,87 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // `guardCommentDraft` first — in the draft's own words, since "unsaved
   // changes" would read as file edits at risk.
   const {
-    selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState, guardCommentDraft,
+    selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState, guardCommentDraft, hasCommentDraft,
   } = useSelectionComposerAnchor<PendingAnchor>({
     resolveDomAnchor: resolveSelectionAnchor, quoteOf, quoteOnly, submit: submitAnchored,
     draftKey: `mc-artifact-composer-draft:${slug}`, confirmDiscard: confirmDiscardDraft, onRefusedAfterClose,
   })
   // Navigating between artifacts drops any anchor of the departing document.
   useEffect(() => { clearSelectionState() }, [slug, clearSelectionState])
+
+  // The comments sidebar's own composers (add box, reply, in-place edit) hold
+  // local state the selection-composer guard cannot see. A send-to-session
+  // hand-off navigates away and unmounts them, so it asks about these too. A
+  // popout does not navigate (sendNav forwards the intent to a main window and
+  // stays on the artifact), so there is nothing to lose and nothing to ask.
+  //
+  // A confirmed discard takes effect AT ONCE: the sidebar's boxes reset and the
+  // selection toolbar remounts (closing its box; the hook already cleared the
+  // stored draft). So any draft present after a slow create was typed since,
+  // and is asked about with no bookkeeping about which drafts were seen. The
+  // cost, accepted by the owner: if the create then fails, the discarded draft
+  // is gone even though the page stayed.
+  const sidebarDraftDirtyRef = useRef(false)
+  const onSidebarDraftDirtyChange = useCallback((dirty: boolean) => { sidebarDraftDirtyRef.current = dirty }, [])
+  // The floating thread popover's reply and edit boxes count the same way; a
+  // confirmed discard closes the popover, which drops its text.
+  const threadDraftDirtyRef = useRef(false)
+  const onThreadDraftDirtyChange = useCallback((dirty: boolean) => { threadDraftDirtyRef.current = dirty }, [])
+  const [sidebarDiscardSignal, setSidebarDiscardSignal] = useState(0)
+  const [composerResetNonce, setComposerResetNonce] = useState(0)
+  // The remount lands on the next commit; until then the hook still reports
+  // the discarded box as dirty, which must not count as a new draft.
+  const composerDiscardPendingRef = useRef(false)
+  useEffect(() => { composerDiscardPendingRef.current = false }, [composerResetNonce])
+  const discardDraftsBeforeLeaving = useCallback((): Promise<boolean> => new Promise((resolve) => {
+    const sidebar = sidebarDraftDirtyRef.current || threadDraftDirtyRef.current
+    const composer = hasCommentDraft() && !composerDiscardPendingRef.current
+    const discardSidebar = () => {
+      if (!sidebar) return
+      if (sidebarDraftDirtyRef.current) {
+        sidebarDraftDirtyRef.current = false
+        setSidebarDiscardSignal((n) => n + 1)
+      }
+      if (threadDraftDirtyRef.current) {
+        threadDraftDirtyRef.current = false
+        setOpenThread(null)
+      }
+    }
+    if (composer) {
+      // One prompt covers both: the hook asks and clears the composer's slot.
+      let ok = false
+      const promptsBefore = discardPromptsRef.current
+      void guardCommentDraft(() => { ok = true }).then(async () => {
+        if (!ok) { resolve(false); return }
+        if (discardPromptsRef.current !== promptsBefore) {
+          composerDiscardPendingRef.current = true
+          // Clear the iframe selection too: the remounted toolbar would
+          // otherwise reopen an empty box over the discarded passage.
+          clearSelectionState()
+          setComposerResetNonce((n) => n + 1)
+          discardSidebar()
+          resolve(true)
+          return
+        }
+        // The hook went ahead without asking (its post is already saving), so
+        // nothing has agreed to the sidebar's draft yet.
+        if (sidebar && !(await confirmDiscardDraft())) { resolve(false); return }
+        discardSidebar()
+        resolve(true)
+      })
+    } else if (sidebar) {
+      void confirmDiscardDraft().then((ok) => { if (ok) discardSidebar(); resolve(ok) })
+    } else {
+      resolve(true)
+    }
+  }), [confirmDiscardDraft, guardCommentDraft, hasCommentDraft, clearSelectionState])
+  const guardSendToSession = useCallback((proceed: (recheck: (go: () => void) => void) => void | Promise<void>) => {
+    if (popout) { void proceed((go) => go()); return }
+    void (async () => {
+      if (!(await discardDraftsBeforeLeaving())) return
+      void proceed((go) => { void discardDraftsBeforeLeaving().then((ok) => { if (ok) go() }) })
+    })()
+  }, [popout, discardDraftsBeforeLeaving])
   // No row action beside the composer: the box already carries Add comment and
   // Close, and a third control would break the two-per-row cap. Copying the
   // selection is the composer's own Cmd/Ctrl+C while its input is empty.
@@ -1733,12 +1835,20 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // ── Copy raw content ──────────────────────────────────────────────────────
   // Copies the stored source (markdown/HTML/JSON/text as-is) of the version
   // currently on screen — `artifact` already resolves to the selected
-  // snapshot, so a historical view copies that snapshot's content. The button
-  // swaps to a check or warning for a moment as the result confirmation (the
-  // same success pattern chat messages and diff blocks use).
+  // snapshot, so a historical view copies that snapshot's content. The menu
+  // item swaps to a check and "Copied" for a moment as the success
+  // confirmation (the same pattern chat messages and diff blocks use).
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  // A failure is held as a page notice until dismissed or the next copy.
+  const [copyError, setCopyError] = useState<string | null>(null)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyAttemptRef = useRef(0)
+  // The route reuses this page across artifacts, so a failure banner from one
+  // artifact must not stay up over the next.
+  useEffect(() => {
+    setCopyError(null)
+    setSendToSessionError(null)
+  }, [slug])
   useEffect(() => () => {
     copyAttemptRef.current += 1
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
@@ -1747,6 +1857,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const attempt = ++copyAttemptRef.current
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
     setCopyStatus('idle')
+    setCopyError(null)
     // `copyToClipboard` resolves a boolean and never rejects: `true` only once
     // the text actually reached the clipboard. Gate the confirmation on it so a
     // `false` shows the failure glyph instead of a tick over an unchanged
@@ -1755,21 +1866,31 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       .then((ok) => {
         if (attempt !== copyAttemptRef.current) return
         setCopyStatus(ok ? 'copied' : 'failed')
+        if (!ok) setCopyError(i18nT('pages.artifactDetailPage.copy_failed'))
         copiedTimerRef.current = setTimeout(() => {
           if (attempt === copyAttemptRef.current) setCopyStatus('idle')
         }, 1500)
       })
   }, [artifact])
-  // Copy failure stays an icon-state glyph (the button itself turns danger with
-  // an aria-live label), not an ErrorNotice: it is a browser clipboard API
-  // outcome rather than a rejected request, and the editor buffer may be dirty,
-  // so there is nothing to hand to the agent. Same decision as the copy
-  // controls in AssistantMessage / PinnedMessagesPanel.
+  // Success is confirmed on the menu item itself (Copied); a failure is reported
+  // only through the page's ErrorNotice stack (`copyError`).
   const copyLabel = copyStatus === 'copied'
     ? i18nT('pages.artifactDetailPage.copied')
-    : copyStatus === 'failed'
-      ? i18nT('pages.artifactDetailPage.copy_failed')
-      : i18nT('pages.artifactDetailPage.copy_content')
+    : i18nT('pages.artifactDetailPage.copy_content')
+  // The toolbar's More menu. A copy keeps it open so the item's Copied label is
+  // the confirmation; a failed copy closes it, so the page's ErrorNotice — the
+  // one place the failure is reported — is on screen.
+  const [moreOpen, setMoreOpen] = useState(false)
+  useEffect(() => { if (copyStatus === 'failed') setMoreOpen(false) }, [copyStatus])
+
+  const sendToSession = useArtifactSendToSession({
+    name: artifact?.name ?? '',
+    slug,
+    active: !editing,
+    onSend: sendNav,
+    beforeSend: guardSendToSession,
+    onError: setSendToSessionError,
+  })
 
   const downloadAsHtml = () => {
     if (!artifact) return
@@ -1951,7 +2072,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           )}
           {artifact.tags.map((t) => (
             <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
-              {t}
+              {/* Own element: the remove button's HoverTip keeps an sr-only copy of
+                  its label in this chip, so the bare text node would no longer be
+                  the chip's whole text. */}
+              <span>{t}</span>
               <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
                 <button
                   type="button"
@@ -2050,24 +2174,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               message={versionsQuery.error ? (errMessage(versionsQuery.error) || i18nT('components.errorBoundary.something_went_wrong')) : null}
             />
 
-            {/* Revert: only meaningful when viewing a historical version */}
-            {!isCurrent && (
-              <HoverTip label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}>
-                <button
-                  type="button"
-                  onClick={handleRevert}
-                  disabled={saving}
-                  className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
-                  aria-label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
-                >
-                  <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
-                </button>
-              </HoverTip>
-            )}
-
-            {/* Editing controls (Save / Snapshot / Cancel / Preview) when
-                editing; otherwise Edit + Iterate. Bar order: version, edit,
-                iterate, publish, full screen, download. */}
+            {/* At most two actions sit in the row: Save + Cancel while editing,
+                otherwise Revert (historical version) or Edit, plus the
+                companion chat. Everything else lives in the labelled "More"
+                menu (`max-two-buttons-per-row`). */}
             {editing ? (
               <>
                 <HoverTip label={saveConflict
@@ -2086,16 +2196,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                         : i18nT('pages.artifactDetailPage.save')}
                   </button>
                 </HoverTip>
-                <HoverTip label={i18nT('pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}>
-                  <button
-                    type="button"
-                    onClick={() => handleSave(true)}
-                    disabled={!dirty || saving}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  >
-                    <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
-                  </button>
-                </HoverTip>
                 <HoverTip label={i18nT('pages.artifactDetailPage.cancel_esc')}>
                   <button
                     type="button"
@@ -2106,34 +2206,22 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     <span className="inline-flex items-center gap-1"><X size={13} /> {i18nT('pages.artifactDetailPage.cancel')}</span>
                   </button>
                 </HoverTip>
-                {artifact.kind !== 'svg' && (
-                  <HoverTip label={previewDuringEdit ? i18nT('pages.artifactDetailPage.back_to_editor') : i18nT('pages.artifactDetailPage.preview_rendered_output_of_current_edits')}>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewDuringEdit(p => !p)}
-                      disabled={saving}
-                      className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                    >
-                      {previewDuringEdit ? i18nT('pages.artifactDetailPage.edit') : i18nT('pages.artifactDetailPage.preview')}
-                    </button>
-                  </HoverTip>
-                )}
               </>
             ) : (
               <>
-                {isCurrent && artifact.live_dirty && (
-                  <HoverTip label={i18nT('pages.artifactDetailPage.snapshot_capture_the_current_state_as_a_new_vers')}>
+                {!isCurrent ? (
+                  <HoverTip label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}>
                     <button
                       type="button"
-                      onClick={handleSnapshotLive}
+                      onClick={handleRevert}
                       disabled={saving}
-                      className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
+                      className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
+                      aria-label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
                     >
-                      <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
+                      <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
                     </button>
                   </HoverTip>
-                )}
-                {editable && (
+                ) : editable && (
                   <HoverTip label={i18nT('pages.artifactDetailPage.edit_content')}>
                     <button
                       type="button"
@@ -2165,93 +2253,100 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               </>
             )}
 
-            {(!editing || previewDuringEdit) && !usesIframe && (
-              <ReadingWidthToggle value={readingWidth} onToggle={toggleReadingWidth} />
-            )}
-            {/* Comments toggle, Publish, Full screen, Download — icon-only to
-                keep the top-right bar compact; labels live in tooltips. */}
-            <HoverTip label={panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}>
-              <button
-                type="button"
-                onClick={toggleSidebar}
-                className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'comments' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
-                aria-pressed={panel === 'comments'}
-                {...uiLocation('artifacts.detail.comments')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <MessageSquare size={13} />
-                  {displayCommentCount > 0 && (
-                    <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{displayCommentCount}</span>
-                  )}
-                </span>
-              </button>
-            </HoverTip>
-            {/* Pop out — opens the artifact in its own live browser window.
-                Swaps to Focus + Bring-back once
-                out. Not shown inside the popout window itself (the frame's
-                Return button handles closing). */}
-            {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
-            {/* Copy raw source + hand a reference to a chat session. Copy is
-                hidden for image (bytes, not text) and webapp (its deploy card
-                has its own affordances); both hide while the editor owns the
-                surface, since leaving for a chat would discard the buffer. */}
-            {artifact.kind !== 'webapp' && artifact.kind !== 'image' && !editing && (
-              <HoverTip label={copyLabel}>
-                <button
-                  type="button"
-                  onClick={handleCopyContent}
-                  className={`p-1.5 rounded-md border border-border hover:border-border-strong cursor-pointer transition-all ${copyStatus === 'failed' ? 'text-danger hover:text-danger' : 'text-muted hover:text-text'}`}
-                  aria-label={copyLabel}
-                  aria-live="polite"
-                >
-                  {copyStatus === 'copied'
-                    ? <Check size={13} className="text-ok" />
-                    : copyStatus === 'failed'
-                      ? <AlertCircle size={13} aria-hidden="true" />
-                      : <Copy size={13} />}
-                </button>
+            <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen} guideScope="menu:artifacts.detail.more">
+              <HoverTip label={i18nT('pages.artifactDetailPage.more_actions')}>
+                <DropdownMenuTrigger asChild>
+                  <Btn
+                    type="button"
+                    aria-label={i18nT('pages.artifactDetailPage.more_actions')}
+                    {...uiLocation('artifacts.detail.more')}
+                  >
+                    <MoreHorizontal size={13} aria-hidden="true" /> {i18nT('pages.artifactDetailPage.more')}
+                  </Btn>
+                </DropdownMenuTrigger>
               </HoverTip>
-            )}
-            {!editing && (
-              <ArtifactSendToSession
-                name={artifact.name}
-                slug={artifact.slug}
-                onSend={(intent) => { void guardCommentDraft(() => sendNav(intent)) }}
-              />
-            )}
-            {/* Publish — the single publish surface. Web deploy (Publish to
-                public web on the user's own AWS) and any future publish
-                providers register into PublishHub, so this is the one and only
-                publish action. Labeled (not icon-only) as the primary publish
-                action. Shown for non-webapp kinds; webapp artifacts use their
-                own deploy card. NOTE: the internal share/publish-provider
-                surface (Link2 + ArtifactSharePanel) is intentionally absent
-                here — a deliberate public-edition divergence, so an upstream
-                sync must NOT re-add it. */}
-            {artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
-              <HoverTip label={i18nT('pages.artifactDetailPage.publish_this_artifact')}>
-                <Btn
-                  type="button"
-                  onClick={() => setShowPublish(v => !v)}
-                  aria-label={i18nT('pages.artifactDetailPage.publish')}
-                  aria-pressed={showPublish}
-                  className={showPublish ? 'border-accent text-accent bg-accent-subtle hover:bg-accent-subtle hover:text-accent' : ''}
-                >
-                  <Upload size={13} /> {i18nT('pages.artifactDetailPage.publish')}
-                </Btn>
-              </HoverTip>
-            )}
-            <HoverTip label={i18nT('pages.artifactDetailPage.download')}>
-              <Btn
-                type="button"
-                onClick={downloadAsHtml}
-                className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-                aria-label={i18nT('pages.artifactDetailPage.download')}
-              >
-                <Download size={13} />
-              </Btn>
-            </HoverTip>
+              <DropdownMenuContent align="end" className="min-w-[220px]">
+                {editing && (
+                  <>
+                    <DropdownMenuItem disabled={!dirty || saving} onSelect={() => handleSave(true)}>
+                      <Camera size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                      <span>{i18nT('pages.artifactDetailPage.snapshot')}</span>
+                      <kbd className="ml-auto pl-3 font-sans text-[11px] text-muted" aria-hidden="true">{IS_MAC ? '⌘⇧S' : 'Ctrl+Shift+S'}</kbd>
+                    </DropdownMenuItem>
+                    {artifact.kind !== 'svg' && (
+                      <DropdownMenuItem disabled={saving} onSelect={() => setPreviewDuringEdit(p => !p)}>
+                        {previewDuringEdit
+                          ? <Pencil size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                          : <Eye size={13} className="shrink-0 text-muted" aria-hidden="true" />}
+                        <span>{previewDuringEdit ? i18nT('pages.artifactDetailPage.back_to_editor') : i18nT('pages.artifactDetailPage.preview')}</span>
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {!editing && isCurrent && artifact.live_dirty && (
+                  <DropdownMenuItem disabled={saving} onSelect={handleSnapshotLive}>
+                    <Camera size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                    <span>{i18nT('pages.artifactDetailPage.snapshot')}</span>
+                  </DropdownMenuItem>
+                )}
+                {(!editing || previewDuringEdit) && !usesIframe && (
+                  <DropdownMenuItem role="menuitemcheckbox" aria-checked={readingWidth === 'full'} onSelect={(e) => { e.preventDefault(); toggleReadingWidth() }}>
+                    {readingWidth === 'full'
+                      ? <FoldHorizontal size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                      : <UnfoldHorizontal size={13} className="shrink-0 text-muted" aria-hidden="true" />}
+                    <span>{i18nT('components.readingWidthToggle.title_full')}</span>
+                    {readingWidth === 'full' && <Check size={13} className="ml-auto shrink-0 text-accent" aria-hidden="true" />}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={toggleSidebar} {...uiLocation('artifacts.detail.comments')}>
+                  <MessageSquare size={13} className={`shrink-0 ${panel === 'comments' ? 'text-accent' : 'text-muted'}`} aria-hidden="true" />
+                  <span>{panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}</span>
+                  <CommentCountBadge count={displayCommentCount} />
+                </DropdownMenuItem>
+                {!popout && <ArtifactPopoutMenuItems slug={slug} name={artifact.name} />}
+                {/* Copy raw source + hand a reference to a chat session. Copy is
+                    hidden for image (bytes, not text) and webapp (its deploy card
+                    has its own affordances); both hide while the editor owns the
+                    surface, since leaving for a chat would discard the buffer.
+                    Copy keeps the menu open so its Copied / failed label is the
+                    confirmation. */}
+                {!editing && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleCopyContent() }}>
+                        {copyStatus === 'copied'
+                          ? <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
+                          : <Copy size={13} className="shrink-0 text-muted" aria-hidden="true" />}
+                        <span aria-live="polite">{copyLabel}</span>
+                      </DropdownMenuItem>
+                    )}
+                    <ArtifactSendToSessionSubmenu state={sendToSession} />
+                  </>
+                )}
+                <DropdownMenuSeparator />
+                {/* Publish — the single publish surface. Web deploy (Publish to
+                    public web on the user's own AWS) and any future publish
+                    providers register into PublishHub, so this is the one and
+                    only publish action. Shown for non-webapp kinds; webapp
+                    artifacts use their own deploy card. NOTE: the internal
+                    share/publish-provider surface (Link2 + ArtifactSharePanel) is
+                    intentionally absent here — a deliberate public-edition
+                    divergence, so an upstream sync must NOT re-add it. */}
+                {artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
+                  <DropdownMenuItem role="menuitemcheckbox" aria-checked={showPublish} onSelect={() => setShowPublish(v => !v)}>
+                    <Upload size={13} className={`shrink-0 ${showPublish ? 'text-accent' : 'text-muted'}`} aria-hidden="true" />
+                    <span>{i18nT('pages.artifactDetailPage.publish')}</span>
+                    {showPublish && <Check size={13} className="ml-auto shrink-0 text-accent" aria-hidden="true" />}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={downloadAsHtml}>
+                  <Download size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                  <span>{i18nT('pages.artifactDetailPage.download')}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         </div>
       </div>
@@ -2301,6 +2396,25 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               {i18nT('pages.artifactDetailPage.save_conflict_open_newer_in_new_tab')}
             </a>
           )}
+          className="mb-3"
+        />
+
+        {/* A failed "New session" hand-off. Not hidden in the trigger's tooltip:
+            the menu has closed by the time the create rejects, so this is the
+            only place the failure is readable. */}
+        {/* No hand-off: comment draft (sidebar / selection composer text) */}
+        <ErrorNotice
+          message={sendToSessionError}
+          title={i18nT('pages.artifactDetailPage.send_to_session_failed')}
+          onDismiss={() => setSendToSessionError(null)}
+          className="mb-3"
+        />
+
+        {/* A failed Copy. */}
+        {/* No hand-off: comment draft (sidebar / selection composer text) */}
+        <ErrorNotice
+          message={copyError}
+          onDismiss={() => setCopyError(null)}
           className="mb-3"
         />
 
@@ -2413,7 +2527,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     render-failure notice) is not part of the artifact. Gated
                     like the native body: a comment is stored against the
                     CURRENT artifact, so a historical snapshot takes none. */}
-                {isCurrent && !editing && <SelectionToolbar key={slug} containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly suspended={narrowPanelOpen} />}
+                {isCurrent && !editing && <SelectionToolbar key={`${slug}:${composerResetNonce}`} containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly suspended={narrowPanelOpen} />}
               </div>
             ) : (
               <div
@@ -2446,7 +2560,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 {/* Keyed per artifact: the route element is reused across a
                     param-only navigation, and a toolbar that survived it would
                     submit the previous artifact's draft through this one's callbacks. */}
-                {commentable && <SelectionToolbar key={slug} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} suspended={narrowPanelOpen} />}
+                {commentable && <SelectionToolbar key={`${slug}:${composerResetNonce}`} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} suspended={narrowPanelOpen} />}
               </div>
             )}
           </div>
@@ -2459,6 +2573,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           {panel === 'comments' && (
             <CommentsSidebar
               comments={durableComments}
+              onDraftDirtyChange={onSidebarDraftDirtyChange}
+              discardSignal={sidebarDiscardSignal}
               loading={commentsQuery.isFetching}
               remoteSyncError={remoteSyncError}
               onAdd={addDocComment}
@@ -2526,6 +2642,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             onReopen={reopenComment}
             onDelete={removeComment}
             onEditComment={editComment}
+            onDraftDirtyChange={onThreadDraftDirtyChange}
           />
         )}
 

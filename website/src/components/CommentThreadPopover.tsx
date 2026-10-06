@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ArtifactComment } from '../types'
-import { CommentRow } from './CommentsSidebar'
+import { CommentDraftReportProvider, CommentRow } from './CommentsSidebar'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
@@ -36,10 +36,14 @@ interface Props {
   onReopen: (id: string) => void
   onDelete: (id: string) => void
   onEditComment?: (id: string, text: string) => void
+  /** Whether the reply box or an in-place edit holds unsent text, so a host
+   *  that is about to navigate away can ask before the popover unmounts. */
+  onDraftDirtyChange?: (dirty: boolean) => void
 }
 
 export function CommentThreadPopover({
   comments, rootId, rect, hideResolve, onClose, onReply, onResolve, onMarkReview, onReopen, onDelete, onEditComment,
+  onDraftDirtyChange,
 }: Props) {
   const cardRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -48,6 +52,19 @@ export function CommentThreadPopover({
   const [editingId, setEditingId] = useState<string | null>(null)
   const ime = useImeGuard()
   useAutoGrowTextarea(composerRef, reply, 160)
+
+  // The reply box here plus any in-place edit box a row reports.
+  const dirtyBoxesRef = useRef(new Set<string>())
+  const [editDirty, setEditDirty] = useState(false)
+  const reportDraft = useCallback((id: string, dirty: boolean) => {
+    const boxes = dirtyBoxesRef.current
+    if (dirty) boxes.add(id)
+    else boxes.delete(id)
+    setEditDirty(boxes.size > 0)
+  }, [])
+  const draftDirty = reply.trim() !== '' || editDirty
+  useEffect(() => { onDraftDirtyChange?.(draftDirty) }, [draftDirty, onDraftDirtyChange])
+  useEffect(() => () => onDraftDirtyChange?.(false), [onDraftDirtyChange])
 
   const root = comments.find(c => c.id === rootId)
   const replies = comments
@@ -93,13 +110,15 @@ export function CommentThreadPopover({
   }, [rootId, rect, reposition])
 
   // Close on Esc / outside click (but not when clicking another bubble/anchor or
-  // the iframe — those switch threads and re-open cleanly).
+  // the iframe — those switch threads and re-open cleanly — nor inside a menu or
+  // dialog layered over the page, such as the prompt that asks whether to
+  // discard this popover's unsent reply: answering it must not drop the reply).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     const onDown = (e: MouseEvent) => {
       const t = e.target as Element | null
       if (cardRef.current?.contains(t as Node)) return
-      if (t?.closest?.('.mc-cmt-bubble, .mc-cmt-rect, iframe')) return
+      if (t?.closest?.('.mc-cmt-bubble, .mc-cmt-rect, iframe, [role="menu"], [role="dialog"], [role="alertdialog"]')) return
       onClose()
     }
     document.addEventListener('keydown', onKey)
@@ -117,79 +136,81 @@ export function CommentThreadPopover({
   const submit = () => { const t = reply.trim(); if (!t) return; onReply(rootId, t); setReply('') }
 
   return (
-    <div
-      ref={cardRef}
-      className="fixed z-[1000] w-[360px] max-h-[70vh] flex flex-col rounded-xl border-2 border-border-strong bg-bg-elevated shadow-2xl ring-1 ring-accent/30 overflow-hidden"
-      style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
-      role="dialog"
-      aria-label={i18nT('components.commentThreadPopover.comment_thread')}
-    >
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
-        <span className="text-[13px] font-semibold text-text">{i18nT('components.commentThreadPopover.comment', { count: count })}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="ml-auto p-1 rounded text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-          aria-label={i18nT('components.commentThreadPopover.close')}
-        ><X size={14} /></button>
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-2">
-        <CommentRow
-          comment={root}
-          isReply={false}
-          active
-          hideResolve={hideResolve}
-          onReply={() => composerRef.current?.focus()}
-          onResolve={c => { onResolve(c.id); onClose() }}
-          onMarkReview={c => onMarkReview(c.id)}
-          onReopen={c => onReopen(c.id)}
-          onDelete={c => { onDelete(c.id); onClose() }}
-          editing={editingId === root.id}
-          onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
-          onEditSubmit={onEditComment ? text => { onEditComment(root.id, text); setEditingId(null) } : undefined}
-          onEditCancel={() => setEditingId(null)}
-        />
-        {replies.map(r => (
-          <CommentRow
-            key={r.id}
-            comment={r}
-            isReply
-            hideResolve={hideResolve}
-            onReply={() => composerRef.current?.focus()}
-            onResolve={() => {}}
-            onMarkReview={() => {}}
-            onDelete={c => onDelete(c.id)}
-            editing={editingId === r.id}
-            onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
-            onEditSubmit={onEditComment ? text => { onEditComment(r.id, text); setEditingId(null) } : undefined}
-            onEditCancel={() => setEditingId(null)}
-          />
-        ))}
-      </div>
-      <div className="border-t border-border p-2 shrink-0">
-        <textarea
-          ref={composerRef}
-          value={reply}
-          rows={2}
-          placeholder={i18nT('components.commentThreadPopover.reply')}
-          onChange={e => setReply(e.target.value)}
-          {...ime.bindComposition()}
-          onKeyDown={e => {
-            // The emptiness test stays OUTSIDE the claim: on a blank box this Enter is
-            // not a submit at all, and taking it would cost the newline it means there.
-            if (e.key === 'Enter' && !e.shiftKey && reply.trim()) { if (ime.claimEnter(e)) submit() }
-          }}
-          className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
-        />
-        <div className="flex justify-end mt-1">
+    <CommentDraftReportProvider value={reportDraft}>
+      <div
+        ref={cardRef}
+        className="fixed z-[1000] w-[360px] max-h-[70vh] flex flex-col rounded-xl border-2 border-border-strong bg-bg-elevated shadow-2xl ring-1 ring-accent/30 overflow-hidden"
+        style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
+        role="dialog"
+        aria-label={i18nT('components.commentThreadPopover.comment_thread')}
+      >
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
+          <span className="text-[13px] font-semibold text-text">{i18nT('components.commentThreadPopover.comment', { count: count })}</span>
           <button
             type="button"
-            disabled={!reply.trim()}
-            onClick={submit}
-            className="px-2.5 py-1 rounded text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
-          >{i18nT('components.commentThreadPopover.reply_2')}</button>
+            onClick={onClose}
+            className="ml-auto p-1 rounded text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
+            aria-label={i18nT('components.commentThreadPopover.close')}
+          ><X size={14} /></button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-2">
+          <CommentRow
+            comment={root}
+            isReply={false}
+            active
+            hideResolve={hideResolve}
+            onReply={() => composerRef.current?.focus()}
+            onResolve={c => { onResolve(c.id); onClose() }}
+            onMarkReview={c => onMarkReview(c.id)}
+            onReopen={c => onReopen(c.id)}
+            onDelete={c => { onDelete(c.id); onClose() }}
+            editing={editingId === root.id}
+            onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
+            onEditSubmit={onEditComment ? text => { onEditComment(root.id, text); setEditingId(null) } : undefined}
+            onEditCancel={() => setEditingId(null)}
+          />
+          {replies.map(r => (
+            <CommentRow
+              key={r.id}
+              comment={r}
+              isReply
+              hideResolve={hideResolve}
+              onReply={() => composerRef.current?.focus()}
+              onResolve={() => {}}
+              onMarkReview={() => {}}
+              onDelete={c => onDelete(c.id)}
+              editing={editingId === r.id}
+              onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
+              onEditSubmit={onEditComment ? text => { onEditComment(r.id, text); setEditingId(null) } : undefined}
+              onEditCancel={() => setEditingId(null)}
+            />
+          ))}
+        </div>
+        <div className="border-t border-border p-2 shrink-0">
+          <textarea
+            ref={composerRef}
+            value={reply}
+            rows={2}
+            placeholder={i18nT('components.commentThreadPopover.reply')}
+            onChange={e => setReply(e.target.value)}
+            {...ime.bindComposition()}
+            onKeyDown={e => {
+              // The emptiness test stays OUTSIDE the claim: on a blank box this Enter is
+              // not a submit at all, and taking it would cost the newline it means there.
+              if (e.key === 'Enter' && !e.shiftKey && reply.trim()) { if (ime.claimEnter(e)) submit() }
+            }}
+            className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
+          />
+          <div className="flex justify-end mt-1">
+            <button
+              type="button"
+              disabled={!reply.trim()}
+              onClick={submit}
+              className="px-2.5 py-1 rounded text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
+            >{i18nT('components.commentThreadPopover.reply_2')}</button>
+          </div>
         </div>
       </div>
-    </div>
+    </CommentDraftReportProvider>
   )
 }

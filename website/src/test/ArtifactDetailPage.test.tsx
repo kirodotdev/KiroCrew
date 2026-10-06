@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MockedFunction } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
+import { chooseMore, commentsShown, findMoreItem, hasMoreItem } from './artifactMoreMenu'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
@@ -181,7 +182,7 @@ describe('ArtifactDetailPage', () => {
       return el
     })
     try {
-      fireEvent.click(screen.getByLabelText('Download'))
+      fireEvent.click(await findMoreItem('Download'))
     } finally {
       createSpy.mockRestore()
     }
@@ -201,8 +202,7 @@ describe('ArtifactDetailPage', () => {
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     // Empty comment panel = wasted space on a dashboard/infographic, so the
     // sidebar stays collapsed by default.
-    const toggle = screen.getByLabelText('Toggle comments')
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'false'))
+    expect(await commentsShown()).toBe(false)
   })
 
   it('auto-opens the comment sidebar when the artifact has comments', async () => {
@@ -223,7 +223,7 @@ describe('ArtifactDetailPage', () => {
     renderRoute()
     // The comment body appears because the sidebar auto-reveals on comments.
     await waitFor(() => expect(screen.getByText('first review note')).toBeInTheDocument())
-    expect(screen.getByLabelText('Toggle comments')).toHaveAttribute('aria-pressed', 'true')
+    expect(await commentsShown()).toBe(true)
   })
 
   it('clears the manual sidebar override when navigating to another artifact', async () => {
@@ -263,15 +263,14 @@ describe('ArtifactDetailPage', () => {
     )
     // Artifact A auto-opens on its comment; the user then closes it.
     await waitFor(() => expect(screen.getByText('art-a note')).toBeInTheDocument())
-    const toggleA = screen.getByLabelText('Toggle comments')
-    expect(toggleA).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(toggleA)
-    expect(screen.getByLabelText('Toggle comments')).toHaveAttribute('aria-pressed', 'false')
+    expect(await commentsShown()).toBe(true)
+    await chooseMore(/Hide comments/)
+    expect(await commentsShown()).toBe(false)
     // Navigate to B (same route, different param). The override must reset so B
     // — which also has a comment — auto-reveals its sidebar again.
     fireEvent.click(screen.getByText('go-b'))
     await waitFor(() => expect(screen.getByText('art-b note')).toBeInTheDocument())
-    expect(screen.getByLabelText('Toggle comments')).toHaveAttribute('aria-pressed', 'true')
+    expect(await commentsShown()).toBe(true)
   })
 
   it('shows version dropdown with Live default and changes selected version', async () => {
@@ -606,7 +605,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText(/→ v2/)).toBeNull()
   })
 
-  it('Save and Snapshot buttons both render in edit mode with distinct titles', async () => {
+  it('edit mode keeps Save and Cancel in the row and offers Snapshot from More', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
     // appear together in edit mode under the explicit-snapshot model. We can't
     // drive the Monaco editor in jsdom so
@@ -627,9 +626,9 @@ describe('ArtifactDetailPage', () => {
         screen.getByRole('button', { description: /Save to Live \(Cmd\+S\) — updates the live state/i }),
       ).toBeInTheDocument(),
     )
-    expect(
-      screen.getByRole('button', { description: /Snapshot \(Cmd\+Shift\+S\) — save and create a new version/i }),
-    ).toBeInTheDocument()
+    // Snapshot moved into the "More" menu; Save and Cancel stay in the row.
+    expect(screen.getByRole('button', { name: /Cancel/ })).toBeInTheDocument()
+    expect(await findMoreItem(/^Snapshot/)).toBeInTheDocument()
   })
 
   it('version dropdown shows Live + numbered snapshots newest-first', async () => {
@@ -685,7 +684,7 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.getByText('Snapshot')).toBeInTheDocument()
+    expect(await hasMoreItem('Snapshot')).toBe(true)
   })
 
   it('Snapshot hidden when artifact is in sync with latest version', async () => {
@@ -697,7 +696,7 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByText('Snapshot')).toBeNull()
+    expect(await hasMoreItem('Snapshot')).toBe(false)
   })
 
   it('Snapshot click calls updateArtifact with snapshot:true (no content)', async () => {
@@ -711,7 +710,7 @@ describe('ArtifactDetailPage', () => {
     vi.mocked(api).updateArtifact = updateSpy
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Snapshot'))
+    await chooseMore('Snapshot')
     await waitFor(() =>
       expect(updateSpy).toHaveBeenCalledWith('cr-queue', { snapshot: true }),
     )
@@ -751,7 +750,7 @@ describe('ArtifactDetailPage', () => {
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     const trigger = versionTrigger()
     expect(trigger).not.toBeDisabled()
-    fireEvent.click(screen.getByText('Snapshot'))
+    await chooseMore('Snapshot')
     // Wait for the saving state to render (in-flight update).
     await waitFor(() => expect(trigger).toBeDisabled())
     // Resolve to clean up.

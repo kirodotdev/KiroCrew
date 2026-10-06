@@ -25,6 +25,12 @@ describe('HoverTip', () => {
     expect(screen.getByRole('button', { name: 'Publish', description: 'Publish this artifact' })).not.toHaveAttribute('title')
   })
 
+  it('keeps the description out of the reading order, so it is not read twice as page text', () => {
+    render(<h1><span>Notes</span><HoverTip label="Rename this artifact"><button type="button">Rename</button></HoverTip></h1>)
+    expect(screen.getByRole('heading', { name: 'Notes Rename' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rename', description: 'Rename this artifact' })).toBeInTheDocument()
+  })
+
   it('opens synchronously on keyboard focus', () => {
     render(<HoverTip label="Copy"><button type="button">C</button></HoverTip>)
     fireEvent.focus(screen.getByRole('button'))

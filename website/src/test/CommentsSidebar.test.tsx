@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { CommentsSidebar } from '../components/CommentsSidebar'
 import type { ArtifactComment } from '../types'
 
@@ -58,5 +58,39 @@ describe('CommentsSidebar orphaned anchors', () => {
     expect(screen.getByLabelText(
       'Pending sync to provider · Anchor text no longer found in content',
     )).toBeInTheDocument()
+  })
+})
+
+describe('CommentsSidebar unsaved-draft report', () => {
+  it('reports the add box only while it holds text', () => {
+    const onDraftDirtyChange = vi.fn()
+    render(<CommentsSidebar comments={[]} {...base()} onDraftDirtyChange={onDraftDirtyChange} />)
+    fireEvent.click(screen.getByRole('button', { name: /Add comment/ }))
+    const box = screen.getByPlaceholderText('Add a comment on the whole artifact…')
+    fireEvent.change(box, { target: { value: 'half a thought' } })
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(true)
+    fireEvent.change(box, { target: { value: '' } })
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('reports a reply typed inside a comment row', () => {
+    const onDraftDirtyChange = vi.fn()
+    render(<CommentsSidebar comments={[mk()]} {...base()} onDraftDirtyChange={onDraftDirtyChange} />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reply' })[0])
+    fireEvent.change(screen.getByPlaceholderText('Reply…'), { target: { value: 'agreed' } })
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+})
+
+describe('CommentsSidebar discardSignal', () => {
+  it('a bumped signal closes the reply box and reports the panel clean', () => {
+    const onDraftDirtyChange = vi.fn()
+    const view = render(<CommentsSidebar comments={[mk()]} {...base()} onDraftDirtyChange={onDraftDirtyChange} discardSignal={0} />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reply' })[0])
+    fireEvent.change(screen.getByPlaceholderText('Reply…'), { target: { value: 'agreed' } })
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(true)
+    view.rerender(<CommentsSidebar comments={[mk()]} {...base()} onDraftDirtyChange={onDraftDirtyChange} discardSignal={1} />)
+    expect(screen.queryByPlaceholderText('Reply…')).toBeNull()
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(false)
   })
 })
