@@ -621,16 +621,23 @@ class TestAbortModule:
         }
 
     @pytest.mark.asyncio
-    async def test_schedule_abort_noop_without_socket(self):
-        """No socket → no-op."""
-        abort_mod.schedule_abort(None, [100])
+    async def test_schedule_abort_for_noop_on_none_target(self):
+        """None target → no-op (provider has no reachable runtime)."""
+        abort_mod.schedule_abort_for(None)
         # Should not raise
 
-    @pytest.mark.asyncio
-    async def test_schedule_abort_noop_without_valid_pids(self):
-        """Empty/invalid pids → no-op."""
-        abort_mod.schedule_abort("/tmp/test.sock", [0, -1])
-        # Should not raise
+    def test_build_rejects_missing_socket(self):
+        """build is the single judge: no socket → None, so no target to abort."""
+        assert abort_mod.RuntimeAbortTarget.build(100, None) is None
+        assert abort_mod.RuntimeAbortTarget.build(100, "") is None
+
+    def test_build_rejects_invalid_pids(self):
+        """build is the single judge: init/process-group/non-int pids → None."""
+        assert abort_mod.RuntimeAbortTarget.build(0, "/tmp/test.sock") is None
+        assert abort_mod.RuntimeAbortTarget.build(1, "/tmp/test.sock") is None
+        assert abort_mod.RuntimeAbortTarget.build(-1, "/tmp/test.sock") is None
+        assert abort_mod.RuntimeAbortTarget.build(True, "/tmp/test.sock") is None
+        assert abort_mod.RuntimeAbortTarget.build("100", "/tmp/test.sock") is None
 
     @pytest.mark.asyncio
     async def test_send_abort_timeout(self):
