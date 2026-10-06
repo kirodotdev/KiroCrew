@@ -206,6 +206,15 @@ async def resolve_fork_source(
     return ForkSource(slot=slot, execution=inherited_execution, identity=source_memory_identity)
 
 
+def _inherit_pin(parent: "_ChatSlot") -> "Callable[[_ChatSlot], None]":
+    """Return a ``fork_slot`` stamp that copies *parent*'s sidebar pin."""
+
+    def _stamp(child: "_ChatSlot") -> None:
+        child.pinned = bool(parent.pinned)
+
+    return _stamp
+
+
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/fork — fork session into a new tab.
 
@@ -359,6 +368,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # owner armed.
         jev_route_allowed=is_owner_dashboard_request(request),
         audit_caller=request_app or "dashboard",
+        # A person forking a pinned session gets a pinned fork, so it stays
+        # beside its parent in the pinned group. Set through ``stamp`` so the
+        # pin rides the child's birth save. Agent ``session_fork`` children
+        # never get it: pinned marks a session as human-owned.
+        stamp=_inherit_pin(source.slot),
     )
     if isinstance(result, web.Response):
         return result
@@ -370,6 +384,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             "messages": result.messages,
             "prompt": prompt,
             "folder_id": result.slot.folder_id or None,
+            "pinned": result.slot.pinned,
             "direction": result.direction,
             # The mode the child was born with (always the parent's), so the tab
             # can render the incognito/temporary badge before the slots refresh.

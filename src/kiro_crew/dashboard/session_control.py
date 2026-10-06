@@ -3294,7 +3294,9 @@ async def fork_session(
     (``chat_fork.fork_slot``), so what the child inherits -- agent, model,
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
-    reasons no override of agent, model or mode is taken here.
+    reasons no override of agent, model or mode is taken here. The one exception
+    is the sidebar pin: a person's fork of a pinned session is pinned, this
+    child never is, because pinned marks a session as human-owned.
 
     *source* defaults to the CALLER'S OWN session, which is the case this verb
     exists for: an agent splitting its own long investigation into several
