@@ -1,6 +1,6 @@
 # Design — Human-in-the-Loop Tool-Approval Layer
 
-Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard approval components; typed `ToolPreviewFrame` previews remain unimplemented because the App Builder Kit dependency did not ship.
+Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard approval components. Unimplemented: typed `ToolPreviewFrame` previews (the App Builder Kit dependency did not ship), batch multi-select approval of pending tool calls, and the show-raw-input control on the approval card.
 
 ## Overview
 
@@ -49,7 +49,7 @@ Agent turn
    │  operator clicks approve / reject (+ optional pattern)
    ▼
 ┌──────────────────────────────────────────────┐
-│ onApprove(decision, pattern?) → ChatInput.tsx   │
+│ onApprove(decision, pattern?) → approval.ts     │
 │   api.resolveApproval(request_id, action)       │  (EXISTING id-scoped path)
 └──────────────────────────────────────────────┘
    │  resume the SAME interrupted invocation (by request_id)

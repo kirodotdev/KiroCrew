@@ -30,6 +30,6 @@ Maintainers can step down whenever they want. A maintainer who has been unreacha
 
 ## Trademarks and amendments
 
-**Trademarks are governed separately.** The Kiro and Kiro Crew names and logos are trademarks, and they are not licensed under this project's software license. See [NOTICE](NOTICE) for ownership. Maintainers have no authority to license, transfer, or redefine their use. The code in this repository is open source. The marks are not.
+**Trademarks are governed separately.** The Kiro and Kiro Crew names and logos are trademarks, and they are not licensed under this project's software license: section 6 of the [LICENSE](LICENSE) grants no trademark rights. [NOTICE](NOTICE) names the copyright holder. Maintainers have no authority to license, transfer, or redefine their use. The code in this repository is open source. The marks are not.
 
 **This document changes the same way anything else does**, by a pull request that maintainers agree to. Governance is expected to grow as the project does, and a project with more maintainers than this one may well need more structure than this. One constraint holds regardless. Any change that makes this project less open breaks a promise already made to the people depending on it, and this project does not do rug pulls. Opening governance further is always available. Closing it back down is not.

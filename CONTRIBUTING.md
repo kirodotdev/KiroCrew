@@ -38,7 +38,8 @@ tell you in a paragraph.
 - macOS, Linux, or Windows — Windows builds and runs natively from source, with
   the documented feature limits in the [Windows guide](docs/guides/windows-install.md)
 - Python ≥ 3.12
-- Node.js ≥ 22 (24 LTS recommended) and npm (for the frontend)
+- Node.js ≥ 22.12.0 (24 LTS recommended) and npm (for the frontend); the
+  [install guide](docs/guides/install.md#prerequisites) owns the floors
 - An authenticated ACP backend. Fresh setups use `kiro-cli` on `PATH` after
   `kiro-cli login`; other verified harnesses are selected with `agent.acp_backend`
   and have backend-specific prerequisites in the [install guide](docs/guides/install.md)
@@ -52,8 +53,9 @@ steps manually:
 
 ```bash
 # Fork the repo on GitHub, then clone your fork
-git clone https://github.com/kirodotdev/KiroCrew.git
+git clone https://github.com/<your-username>/KiroCrew.git
 cd KiroCrew
+git remote add upstream https://github.com/kirodotdev/KiroCrew.git
 
 make build
 source .venv/bin/activate
@@ -87,6 +89,10 @@ The contributor workflow is codified as agent-loadable skills in
   (commit → sync → squash → open → poll CI/review bots → fix findings).
 - **`babysit`** — same-session monitoring loop that keeps a PR moving through
   CI and review rounds.
+- **`writing-tests`** — writing and fixing backend tests that are side-effect
+  free and not flaky.
+- **`dashboard-template`** — adding a dashboard page with its contract,
+  provider, and parity test.
 
 An agent contributing to Kiro Crew loads this suite and follows the same
 worktree → build gate → kirocrew-prepare-pr → review loop human contributors use, so
@@ -104,10 +110,13 @@ listed there only when you intentionally need one surface.
 
 ## Dev Mode (Isolated Data Directory)
 
-Run a dev gateway alongside production without data or port conflicts:
+Run a dev gateway alongside production without data or port conflicts.
+`./dev-fullstack.sh` starts the dev backend, the Vite dev server, and a dashboard
+token in one terminal; `./dev-backend.sh` starts the dev backend alone from live
+source. The manual steps:
 
 ```bash
-# Seed dev data from your real config (optional, safe to re-run)
+# Copy your whole data home into .kirocrew-dev/ (optional; re-running replaces it)
 ./dev-seed.sh
 
 # Start the dev backend (port 6777, isolated data)
@@ -184,7 +193,8 @@ Key entry points:
 | `src/kiro_crew/slack/gateway.py` | Slack Socket Mode gateway |
 | `src/kiro_crew/slack/handler.py` | Message handling, tool approval |
 | `src/kiro_crew/dashboard/` | Web dashboard (aiohttp backend) |
-| `src/kiro_crew/mcp_core.py` | MCP tools: spawn, learn, task, wait, hook, send_message, file_send |
+| `src/kiro_crew/mcp_core.py` | `kirocrew-core` MCP server: answers `tools/list` and dispatches calls |
+| `src/kiro_crew/mcp_tools/` | `kirocrew-core` tools, one module per domain (`schemas()` + `HANDLERS`) |
 | `src/kiro_crew/mcp_cron.py` | MCP tools: cron scheduling |
 | `src/kiro_crew/context.py` | Context builder (memory, skills, history) |
 | `src/kiro_crew/subagent.py` | Subagent lifecycle and timeout |
@@ -192,8 +202,7 @@ Key entry points:
 | `src/kiro_crew/snapshot.py` | Portable snapshot and restore |
 | `src/kiro_crew/apps/` | App Kit platform (manifest, manager, registry, routes) |
 | `src/kiro_crew/eval/` | Multi-session eval harness |
-| `agents/` | Agent config and system prompt |
-| `agents/prompt.md` | Default system prompt — edit to change the agent's base personality and rules |
+| `src/kiro_crew/config/` | Shipped agent config (`defaults.json`) and default system prompt (`prompt.md`); overrides are in [Agent Config Files](src/kiro_crew/docs/agents.md#agent-config-files) |
 | `skills/` | On-demand skill definitions (see [skills/README.md](skills/README.md)) |
 | `website/` | React + Vite frontend SPA |
 
@@ -216,10 +225,10 @@ index, no changelog narration, run `./scripts/docs-lint.sh` — plus the
 
 ## Extending Kiro Crew
 
-- **Skills** — drop markdown files in `skills/` or `~/.kiro/crew/skills/`. See [skills/README.md](skills/README.md) for the full format reference
-- **MCP tools** — add to `mcp_core.py` or `mcp_cron.py`. Every LLM-facing command must have an MCP tool
-- **Hooks** — configure in `~/.kiro/crew/config.json`
-- **Lessons** — self-learned from corrections, stored in `~/.kiro/crew/lessons.jsonl`
+- **Skills** — a skill is a directory holding a `SKILL.md`. See [skills/README.md](skills/README.md) for the format and where skills are installed
+- **MCP tools** — a `kirocrew-core` tool is a `schemas()` descriptor plus a `HANDLERS` entry in `src/kiro_crew/mcp_tools/<domain>.py`; cron tools live in `mcp_cron.py`. See [MCP](docs/architecture/mcp.md#a-kirocrew-core-tool-has-two-halves). Every LLM-facing command must have an MCP tool
+- **Hooks** — see [Steering files, prompts and hooks](src/kiro_crew/docs/steering-and-hooks.md)
+- **Lessons** — self-learned from corrections and stored in the memory store (`lessons.jsonl` is a legacy fallback); see [Memory & Learning](src/kiro_crew/docs/memory-and-learning.md#lessons)
 
 ## Tests
 
@@ -280,18 +289,19 @@ green a moment earlier. That button's dropdown does carry an **Update with rebas
 option, which is safe; the default click is the trap. Pick that option, or run:
 
 ```
-git fetch origin
-git rebase origin/<base branch>
+git fetch upstream
+git rebase upstream/<base branch>
 git push --force-with-lease origin <feature-branch>
 ```
 
 ## Pull Request Workflow
 
 1. **Fork** the repository on GitHub.
-2. **Branch** from `main`:
+2. **Branch** from `main` in a git worktree, never in the main clone (the
+   `kirocrew-worktree-dev` skill owns this rule):
    ```bash
-   git fetch origin
-   git checkout -b feat/my-feature origin/main
+   git fetch upstream main
+   git worktree add ../kirocrew-wt-my-feature -b feat/my-feature upstream/main
    ```
 3. **Start from an issue.** Every PR must name an issue of this repository
    that has been given a tier, on a line of its own in the description: `Closes #N`
@@ -308,8 +318,13 @@ git push --force-with-lease origin <feature-branch>
    ```
 6. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
    (see below), push to your fork, and open a **Pull Request against `main`**.
-7. A maintainer will review. Address feedback by pushing additional commits to
-   your branch.
+7. **Fill the PR template.** Keep every heading of
+   [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and fill the
+   **Goal:** line under Problem / Motivation. The `pr-hygiene` check fails a body
+   that is missing them, and a PR with more than two commits; see the
+   [pre-gate rules](docs/ci/ci-and-reviews.md#code-reviewyml-the-deterministic-pre-gate).
+8. A maintainer will review. Address feedback by amending or squashing so the
+   branch stays within two commits, then force-push with `--force-with-lease`.
 
 Two things are worth knowing before you start something large.
 [GOVERNANCE.md](GOVERNANCE.md) covers who decides what lands and how a
@@ -400,7 +415,7 @@ discussion in the repository.
 ## Code of Conduct
 
 This project has adopted a [Code of Conduct](CODE_OF_CONDUCT.md). Participating
-means following it, and the file names where to report a concern.
+means following it and the open source code of conduct and FAQ it links.
 
 ## Licensing
 

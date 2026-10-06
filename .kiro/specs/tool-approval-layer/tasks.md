@@ -1,6 +1,6 @@
 # Implementation Plan — Human-in-the-Loop Tool-Approval Layer
 
-Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard approval components; typed `ToolPreviewFrame` previews remain unimplemented because the App Builder Kit dependency did not ship.
+Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard approval components. Unimplemented: typed `ToolPreviewFrame` previews (the App Builder Kit dependency did not ship), batch multi-select approval of pending tool calls, and the show-raw-input control on the approval card.
 
 This plan enriches the render + resume steps of Kiro Crew's existing approval loop and
 documents the portable AI-SDK mapping. The backend enforcement gate (`on_tool_call`) is
@@ -25,7 +25,7 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
   - Confirmed (via reading `useWebSocket.ts` + `ChatInput.tsx`) that a `PendingDecision`
     assembles from the existing PreToolUse event with NO new backend wire field, and that the
     resume identifier is `approval.request_id`: plain approve/reject resolves through the
-    id-scoped `api.resolveApproval(request_id, action)` (`ChatInput.tsx`, now in chat-input/approval.ts), NOT slot-scoped
+    id-scoped `api.resolveApproval(request_id, action)` (`chat-input/approval.ts`), NOT slot-scoped
     `approveChatSlot` (which is used only for trust grants, and downgrades to `resolveApproval`
     for unattended sources).
   - _Requirements: 3.3, 3.4, 5.1, 6.4, 8.1, 8.3_
