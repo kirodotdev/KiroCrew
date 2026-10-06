@@ -1599,6 +1599,12 @@ _ALLOWED_TEXT_EXT = {
     ".csv",
     ".tsv",
     ".log",
+    # CNAB remittance (.rem) and return (.ret) files — the Brazilian banking
+    # (FEBRABAN) interchange format. Fixed-width ASCII/Latin-1 records, so they
+    # read as plain text; the read path and FileRenderers already treat an
+    # unknown extension as text, this just lets them past the upload boundary.
+    ".rem",
+    ".ret",
     ".py",
     ".js",
     ".ts",

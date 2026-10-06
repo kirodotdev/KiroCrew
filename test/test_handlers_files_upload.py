@@ -427,6 +427,45 @@ async def test_upload_tsv_and_jsonl_are_accepted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("extension", [".rem", ".ret"])
+async def test_upload_cnab_rem_ret_is_accepted_as_text(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+) -> None:
+    """CNAB remittance (``.rem``) / return (``.ret``) files upload as text.
+
+    These Brazilian banking (FEBRABAN) interchange files are fixed-width
+    ASCII/Latin-1 records with no magic-byte signature, so they ride the
+    text-extension allowlist. The payload below is Latin-1 (accented names
+    appear in detail segments), which the handler must accept and store
+    byte-for-byte — the server never re-encodes an upload.
+    """
+    # A header record (type 0) plus one detail record carrying a Latin-1
+    # accented name, newline-terminated. Encoded as ISO-8859-1, which is how
+    # banks emit these files.
+    payload = (
+        "02RETORNO01COBRANCA       EMPRESA EXEMPLO LTDA\n"
+        "1 JOSÉ DA CONCEIÇÃO                 000012345\n"
+    ).encode("latin-1")
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=f"cobranca{extension}",
+        content_type="application/octet-stream",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_cobranca{extension}")
+    # Stored byte-for-byte: the Latin-1 bytes are not re-encoded or rejected.
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 async def test_upload_unrelated_extension_still_rejected(
     upload_dir: Path,
     mock_sel,

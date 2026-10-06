@@ -327,6 +327,31 @@ class TestFileRead:
             assert await resp.text() == "café au lait\n"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("ext", [".rem", ".ret"])
+    async def test_read_serves_cnab_rem_ret_as_viewable_text(
+        self, ext, tmp_path, mock_sel, home_patch
+    ):
+        # CNAB remittance/return files are fixed-width ASCII/Latin-1 banking
+        # records with no NUL bytes, so the viewer serves them as text/plain
+        # rather than a binary envelope. The accented detail-segment name is
+        # Latin-1, so the decode is lossy (errors="replace") and the viewer
+        # flags that in the header while still showing the body.
+        f = tmp_path / f"cobranca{ext}"
+        f.write_bytes(
+            b"02RETORNO01COBRANCA       EMPRESA EXEMPLO LTDA\n"
+            b"1 JOS\xc9 DA CONCEI\xc7\xc3O                 000012345\n"
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/plain")
+            body = await resp.json() if resp.content_type == "application/json" else None
+            # Served as text, not the {"binary": True} envelope.
+            text = await resp.text() if body is None else body.get("content", "")
+            assert "RETORNO" in text
+            assert resp.headers.get("X-Lossy-Decode") == "true"
+
+    @pytest.mark.asyncio
     async def test_read_head_on_binary_still_answers_from_the_stat(
         self, tmp_path, mock_sel, home_patch
     ):
