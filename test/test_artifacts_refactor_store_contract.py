@@ -48,11 +48,13 @@ from kiro_crew.artifacts import (
 )
 
 NOW = "2026-01-02T03:04:05.000006+00:00"
+TOKEN = "0123456789abcdef" * 4
 
 
 @pytest.fixture
 def store(tmp_path: Path, monkeypatch) -> ArtifactStore:
     monkeypatch.setattr(art_mod, "_now_iso", lambda: NOW)
+    monkeypatch.setattr(art_mod, "_new_content_token", lambda: TOKEN)
     return ArtifactStore(root=tmp_path / "artifacts")
 
 
@@ -80,6 +82,7 @@ class TestPersistedBytes:
         assert raw == (
             "{\n"
             '  "auto_registered": false,\n'
+            f'  "content_token": "{TOKEN}",\n'
             f'  "created_at": "{NOW}",\n'
             '  "description": "d",\n'
             '  "events": [\n'
@@ -342,6 +345,7 @@ class TestResponseShape:
             "slug_collided_with",
             "webapp_metadata",
             "image",
+            "content_token",
         ]
         assert names(ArtifactPublication) == [
             "artifact_id",
@@ -1065,6 +1069,7 @@ BASE_PUBLIC_NAMES = frozenset(
         "Artifact",
         "ArtifactAlreadyExistsError",
         "ArtifactComment",
+        "ArtifactConflictError",
         "ArtifactError",
         "ArtifactFolderStore",
         "ArtifactNotFoundError",

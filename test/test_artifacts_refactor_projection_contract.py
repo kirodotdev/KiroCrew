@@ -335,6 +335,7 @@ class TestHttpContract:
 
         detail = await art_handlers.api_artifact_detail(_request(match={"slug": "doc"}))
         assert detail.status == 200
+        # Create and current detail both serve the persisted stale-write token.
         assert list(_body(detail)) == [
             k for k in created if k not in ("slug_collided_with", "theme_contrast_warning")
         ]

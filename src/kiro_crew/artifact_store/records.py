@@ -11,6 +11,8 @@ fence; this module owns only their contents.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import fields as fields_of
 from pathlib import Path
@@ -28,6 +30,11 @@ from kiro_crew.artifact_store.model import (
 )
 from kiro_crew.deploy.webapp_types import webapp_metadata_from_dict
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
+
+logger = logging.getLogger(__name__)
+
+#: Shape of a persisted ``content_token``: 256 random bits as lowercase hex.
+_CONTENT_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Allowed lifecycle event types. ``referenced`` records a chat impression of the
 #: artifact; the in-line save/update path emits ``created`` / ``edited`` /
@@ -165,6 +172,13 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         for vk_k, vk_v in raw_vk.items():
             if isinstance(vk_k, str) and isinstance(vk_v, str):
                 version_kinds[vk_k] = vk_v
+    # A malformed token is dropped so the next current read assigns a fresh one.
+    content_token = raw.get("content_token")
+    if content_token is not None and (
+        not isinstance(content_token, str) or _CONTENT_TOKEN_RE.fullmatch(content_token) is None
+    ):
+        logger.warning("artifact meta.json %s: malformed content_token, resetting", path)
+        content_token = None
     return Artifact(
         slug=str(slug),
         name=str(raw.get("name", slug)),
@@ -193,6 +207,7 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         version_kinds=version_kinds,
         webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
         image=image,
+        content_token=content_token,
     )
 
 
