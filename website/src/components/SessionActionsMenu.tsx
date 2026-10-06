@@ -64,6 +64,35 @@ export interface SessionActionsMenuProps {
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
   /**
+   * Replace the Close item's action. The only caller that passes it is the session
+   * tree, whose ✕ closes the card AND the sessions nested under it: the
+   * menu sits next to that ✕ on the same card, and on a phone it IS the only close
+   * affordance, so a menu that closed one session there would be a second, quieter
+   * answer to the same question.
+   *
+   * A bubble prop rather than something internalised, because the subtree is only
+   * knowable where the lineage is: the chat header and a popped-out window have no
+   * tree on screen and keep the connected single-session close.
+   */
+  onClose?: (slotKey: string) => void
+  /**
+   * Override for the Close menu item's label, for surfaces where the close
+   * reaches more than this one session. Matches `closeSessionLabel` on `SessionRow`.
+   */
+  closeLabel?: string
+  /**
+   * A second, muted line under `closeLabel` that says what the press reaches and
+   * how to get it back. It wraps, so on a phone, where this menu is the only
+   * close, nothing is cut off.
+   */
+  closeHint?: string
+  /**
+   * The close would refuse (something in the tree is still running): the item
+   * reads muted instead of destructive, and stays selectable so the press can
+   * open the notice that says who is running.
+   */
+  closeMuted?: boolean
+  /**
    * Whether the chat sidebar -- and with it the banner that says a failed
    * folder-order read -- is on screen while this menu is open. The sidebar's
    * own row menus pass `true`; the chat header passes the drawer's state, which
@@ -122,7 +151,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, infoSlots, onColorPicked, onClose, closeLabel, closeHint, closeMuted = false, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -363,8 +392,18 @@ export default function SessionActionsMenu({
     ],
     // Close session — terminal, destructive
     [
-      <Item key="close" className="text-danger focus:text-danger" onSelect={() => close(slotKey)}>
-        <X size={13} /> {i18nT('components.sessionActionsMenu.close_session')}
+      <Item key="close" className={closeMuted ? 'text-muted' : 'text-danger focus:text-danger'} data-close-muted={closeMuted ? '' : undefined} onSelect={() => (onClose ?? close)(slotKey)}>
+        {closeHint ? (
+          <>
+            <X size={13} className="self-start mt-0.5 shrink-0" />
+            <span className="flex min-w-0 flex-col">
+              <span>{closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</span>
+              <span className="max-w-[15rem] whitespace-normal text-[11px] leading-snug text-muted" data-testid="close-item-hint">{closeHint}</span>
+            </span>
+          </>
+        ) : (
+          <><X size={13} /> {closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</>
+        )}
       </Item>,
     ],
   ])

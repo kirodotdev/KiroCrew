@@ -115,6 +115,16 @@ export interface ConductorRowView {
   depth: number
   /** Direct children. 0 renders no chevron and no count. */
   childCount: number
+  /** Every descendant under this card that the lane keeps on screen: what the ✕
+   *  label and count quote, and what the tree close reaches. 0 while a search
+   *  flattens the lane, where the ✕ closes one session. */
+  subtreeCount: number
+  /** How many sessions the tree close would find running: this card plus its
+   *  kept descendants, by the same predicate the close plans with. Above 0 the
+   *  press refuses, so the ✕ and row menu say "Can't close" before it. 0 while a
+   *  search flattens the lane, and 0 for a card with nothing under it, which
+   *  keeps the plain single close. */
+  subtreeRunning: number
   expanded: boolean
   /** The collapsed subtree's asks, or null while it is open -- an open conductor's
    *  children show their own, and both at once would count a session twice. */
@@ -814,7 +824,7 @@ const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]
 
 /** Every `ConductorRowView` field, for the same reason as `VIEW_FIELDS`. */
 const CONDUCTOR_FIELDS: Record<keyof ConductorRowView, true> = {
-  depth: true, childCount: true, expanded: true, aggregate: true, orphanOf: true, citesParent: true, anchorOnly: true,
+  depth: true, childCount: true, subtreeCount: true, subtreeRunning: true, expanded: true, aggregate: true, orphanOf: true, citesParent: true, anchorOnly: true,
 }
 const CONDUCTOR_KEYS = Object.keys(CONDUCTOR_FIELDS) as (keyof ConductorRowView)[]
 

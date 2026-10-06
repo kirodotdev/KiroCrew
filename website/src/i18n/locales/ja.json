@@ -9294,6 +9294,36 @@
     "theme": {
       "high_contrast": "🔆 高コントラスト"
     },
+    "useCloseSessionTree": {
+      "body": "実行中のセッションを開いて「生成を停止」（チャットのメッセージ欄にある四角いボタン）を押すか、完了を待ってください。",
+      "body_can_close": "この下のセッションが完了すれば、このセッションを閉じられます。",
+      "body_can_close_self": "このセッションは完了すれば閉じられます。",
+      "body_can_close_with_self": "このセッションとその下のセッションが完了すれば、このセッションを閉じられます。",
+      "closed_named_other": "{{count}} 件のセッションを閉じました：{{names}}",
+      "closed_other": "{{count}} 件のセッションを閉じました",
+      "dismiss": "OK",
+      "finished": "完了",
+      "kept_below_other": "開いたままにしました：{{names}}。その下の {{cause}} が閉じられなかったためです。",
+      "kept_running_other": "開いたままにしました：{{names}}。実行が始まったためです。",
+      "kept_unknown_other": "開いたままにしました：{{names}}。状態を読み取れなかったためです。",
+      "level_other": "{{count}} 階層下",
+      "level_self": "このセッション",
+      "open_running": "このセッションを開いて「生成を停止」を押すか、完了を待つ",
+      "pref_body": "すべて完了しています。閉じると以前のセッションに移動し、そこから再び開けます。",
+      "pref_confirm_other": "すべて閉じる（{{count}}）",
+      "pref_title_other": "このセッションとその下の {{count}} 件のセッションを閉じますか？",
+      "refused_other": "まだ開いています：{{names}}。少し待ってからもう一度閉じてください。",
+      "refused_title": "一部のセッションは閉じませんでした",
+      "reopen_elsewhere": "{{names}} は以前のセッションから再び開いてください。",
+      "running": "実行中",
+      "running_background": "バックグラウンドで実行中",
+      "title_including_self_other": "閉じられません：このセッションを含む {{count}} 件のセッションがまだ実行中です",
+      "title_other": "閉じられません：この下の {{count}} 件のセッションがまだ実行中です",
+      "title_self": "閉じられません：このセッションはまだ実行中です",
+      "undo": "取り消し",
+      "undo_failed_other": "再び開けなかったセッション：{{names}}。以前のセッションから開けます。",
+      "undo_failed_title": "一部のセッションを再び開けませんでした"
+    },
     "useCronActions": {
       "failed_to_cancel_job": "ジョブのキャンセルに失敗しました",
       "failed_to_pause_job": "ジョブを一時停止できませんでした",
@@ -11350,6 +11380,8 @@
       "clear_search": "検索をクリア",
       "close": "閉じる",
       "close_session": "セッションを閉じる",
+      "close_session_tree_other": "すべて閉じる（{{total}}）：このセッションとその下の {{count}} 件（元に戻すか、以前のセッションから再び開けます）",
+      "close_count_hint_other": "{{count}} 件のセッション",
       "closed": "クローズ済み",
       "collapse_folder_name": "フォルダー {{name}} を折りたたむ",
       "collapse_group_results": "{{group}} の結果を折りたたむ",
@@ -11602,7 +11634,11 @@
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
       "archived_count_other": "アーカイブ済み {{count}} 件",
-      "waiting_for_memory": "空きRAM待ち"
+      "waiting_for_memory": "空きRAM待ち",
+      "close_all_other": "すべて閉じる（{{count}}）",
+      "close_session_tree_hint_other": "このセッションとその下の {{count}} 件。元に戻すか、以前のセッションから再び開けます。",
+      "close_blocked_other": "閉じられません：{{count}} 件のセッションがまだ実行中です",
+      "close_blocked_short_other": "閉じられません：{{count}} 件実行中"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

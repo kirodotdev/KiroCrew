@@ -11,6 +11,21 @@ from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 
 
+def _history_stem(slot: Any) -> str:
+    """The Older sessions key for *slot*: its transcript key folded to a filename stem.
+
+    ``slot_history_key`` names the transcript (``dashboard:<slot>``, the live
+    channel key, or the channel stem of an unbound channel-born slot) and
+    ``_safe_key`` folds it to the stem the history list lists it under, so the
+    two spellings of one session can never disagree.
+    """
+    # Imported here: chat_utils imports state, which imports this module.
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.history import _safe_key
+
+    return _safe_key(slot_history_key(slot))
+
+
 def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     """Whether a recent declined Stop makes the next press a force stop.
 
@@ -488,6 +503,12 @@ class SlotProjection:
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
             "linked_session_key": slot.linked_session_key,
+            # The transcript filename stem this slot's history lives under: the
+            # same key the Older sessions list gives this session, so a client
+            # that reopens a closed slot sends it verbatim and never derives it.
+            # Resolved by ``slot_history_key``, which knows the channel-origin
+            # provenance a client cannot read from the slot name.
+            "history_key": _history_stem(slot),
             "app": slot._app,
             "origin": slot._origin,
             # Creator attribution: the slot key of the session that asked for

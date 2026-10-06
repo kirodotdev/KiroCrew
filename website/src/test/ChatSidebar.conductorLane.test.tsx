@@ -12,7 +12,7 @@
  * promises to a user who already had a lane preference before this existed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, fireEvent, render, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -71,7 +71,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 // `chatSlots` is a STABLE spy, unlike the proxy's per-access `vi.fn()`: the
 // provisional-lineage test asserts on whether the sidebar came back for a second
 // read, which a fresh mock per property access cannot record.
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn() }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), deleteChatSlot: vi.fn() }))
 
 // The router is real (MemoryRouter below); only `useNavigate` is a spy, so a row that
 // leaves the chat page can be asked WHERE it went rather than inferred from a route
@@ -87,6 +87,7 @@ vi.mock('../api/client', () => ({
     get: (_t, p: string) => {
       if (p === 'chatFolders') return vi.fn().mockImplementation(() => Promise.resolve(mocks.folders))
       if (p === 'chatSlots') return mocks.chatSlots
+      if (p === 'deleteChatSlot') return mocks.deleteChatSlot
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -195,6 +196,8 @@ beforeEach(() => {
   mocks.chatSlots.mockReset()
   mocks.chatSlots.mockResolvedValue([])
   mocks.navigate.mockReset()
+  mocks.deleteChatSlot.mockReset()
+  mocks.deleteChatSlot.mockResolvedValue({ ok: true })
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -358,6 +361,101 @@ describe('chat sidebar — conductor lane', () => {
     expect(worker?.getAttribute('data-conductor-depth')).toBe('1')
     // k-deep is not unread and nothing under it is, so it is not kept at all.
     expect(lane.querySelector('[data-slot-key="k-deep"]')).toBeNull()
+  })
+
+  it('the tree close reaches only the sessions the lane shows: a filtered-out worker survives', async () => {
+    /* Unread admits Worker B only; Conductor stays as its anchor. Worker A and Deep
+       are idle and filtered out. The ✕ counts the two on screen, and the press closes
+       those two and nothing the filter kept off screen. */
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    localStorage.setItem('mc-session-unread-only', '1')
+    const idle = NESTED.map(s => ({ ...s, running: false, needs_input: false }))
+    const { getByTestId } = renderSidebar(idle, [], null, {}, ['k-worker-b'])
+    const lane = getByTestId('conductor-view-lane')
+    expect(laneRows(lane)).toEqual(['k-conductor', 'k-worker-b'])
+    const lead = lane.querySelector('[data-slot-key="k-conductor"]') as HTMLElement
+    const x = lead.querySelector('[data-testid="row-close-tree"]') as HTMLElement
+    expect(x.getAttribute('aria-label')).toMatch(/^Close all 2: this session and the 1 under it/)
+    expect(x.querySelector('[data-testid="row-close-count"]')?.textContent).toBe('2')
+    // At rest, with no hover or focus, the control reads "Close 2": the word is
+    // always rendered, never hidden behind a hover class.
+    const word = x.querySelector('[data-testid="row-close-word"]') as HTMLElement
+    expect(word.textContent).toBe('Close')
+    expect(word.className).not.toMatch(/\bhidden\b/)
+    // The title gives way on touch screens, never the control.
+    expect(lead.querySelector('[data-session-title]')?.className).toContain('[@media(hover:none)]:pr-24')
+    fireEvent.click(x)
+    await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledTimes(2))
+    const closed = mocks.deleteChatSlot.mock.calls.map(([k]) => k)
+    expect(closed).toEqual(['k-worker-b', 'k-conductor'])
+    expect(closed).not.toContain('k-worker-a')
+    expect(closed).not.toContain('k-deep')
+  })
+
+  it('a tree with a running session says it cannot close before the press, and the press closes nothing', async () => {
+    /* Worker A is running, so the plan would refuse: the lead's ✕ reads muted
+       "Can't close: 1 running", never "Close 4", and its tooltip says why. */
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    const { getByTestId } = renderSidebar(NESTED)
+    const lane = getByTestId('conductor-view-lane')
+    const lead = lane.querySelector('[data-slot-key="k-conductor"]') as HTMLElement
+    expect(lead.querySelector('[data-testid="row-close-tree"]')).toBeNull()
+    const x = lead.querySelector('[data-testid="row-close-blocked"]') as HTMLElement
+    expect(x.querySelector('[data-testid="row-close-blocked-label"]')?.textContent).toBe("Can't close: 1 running")
+    expect(x.getAttribute('title')).toBe("Can't close: 1 session is still running")
+    expect(x.getAttribute('aria-label')).toBe("Can't close: 1 session is still running")
+    expect(x.className).toContain('opacity-60')
+    // Still pressable: the press opens the notice and closes nothing.
+    fireEvent.click(x)
+    await waitFor(() => expect(document.querySelector('[data-testid="close-tree-levels"]')).not.toBeNull())
+    expect(mocks.deleteChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('every row that says Thinking is counted by the blocked X', () => {
+    /* The row's "Thinking..." line and the X read one running signal. A row
+       whose own turn runs says "Thinking..." and adds one to "Can't close: N
+       running"; a live workflow with the turn idle shows its run instead and
+       still counts; an idle row adds nothing. */
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    localStorage.setItem('mc-sidebar-conductor-expanded', JSON.stringify(['k-root']))
+    const { getByTestId } = renderSidebar(
+      [
+        { key: 'k-root', title: 'Conductor', messages: 1, running: true, modified: 4000 },
+        { key: 'k-turn', title: 'Turn child', messages: 1, running: true, modified: 3000, parent: { slot: 'k-root', key: 'k-root' } },
+        { key: 'k-wf', title: 'Workflow child', messages: 1, running: false, modified: 2000, parent: { slot: 'k-root', key: 'k-root' } },
+        { key: 'k-idle', title: 'Idle child', messages: 1, running: false, modified: 1000, parent: { slot: 'k-root', key: 'k-root' } },
+      ],
+      [],
+      null,
+      { workflowRuns: { 'r-1': { run_id: 'r-1', name: 'build', status: 'running', sessionKey: 'k-wf', phase: '' } } },
+    )
+    const lane = getByTestId('conductor-view-lane')
+    const rowOf = (k: string) => lane.querySelector(`[data-slot-key="${k}"]`) as HTMLElement
+    const thinking = ['k-root', 'k-turn', 'k-wf', 'k-idle'].filter(k => /Thinking/.test(rowOf(k).textContent ?? ''))
+    expect(thinking).toEqual(['k-root', 'k-turn'])
+    const lead = rowOf('k-root')
+    expect(lead.querySelector('[data-testid="row-close-tree"]')).toBeNull()
+    expect(lead.querySelector('[data-testid="row-close-blocked-label"]')?.textContent).toBe("Can't close: 3 running")
+  })
+
+  it('a running card with nothing under it keeps the plain close, as in the flat lane', async () => {
+    /* Worker B is a leaf and is running. Its ✕ is the ordinary single close: no
+       "Can't close", no tree label, no reserved title padding, and the press
+       goes to the single close rather than the refusal notice. */
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    const slots = NESTED.map(s => (s.key === 'k-worker-b' ? { ...s, running: true } : s))
+    const { getByTestId } = renderSidebar(slots)
+    const lane = getByTestId('conductor-view-lane')
+    const row = lane.querySelector('[data-slot-key="k-worker-b"]') as HTMLElement
+    expect(row.querySelector('[data-testid="row-close-blocked"]')).toBeNull()
+    expect(row.querySelector('[data-testid="row-close-tree"]')).toBeNull()
+    expect(row.querySelector('[data-session-title]')?.className).not.toContain('[@media(hover:none)]:pr-24')
+    const x = row.querySelector('button[aria-label="Close session"]') as HTMLElement
+    expect(x).not.toBeNull()
+    fireEvent.click(x)
+    await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledWith('k-worker-b'))
+    expect(mocks.deleteChatSlot).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('[data-testid="close-tree-levels"]')).toBeNull()
   })
 
   it('dims the anchor, because it is context rather than a match', () => {

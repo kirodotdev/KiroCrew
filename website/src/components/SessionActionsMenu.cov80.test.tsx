@@ -109,6 +109,42 @@ describe('SessionActionsMenu', () => {
     expect(actions.close).toHaveBeenCalledWith('zzq-slot')
   })
 
+  it('lets the session tree own Close, so the menu cannot be the quieter answer', () => {
+    // The tree's ✕ closes the card AND the sessions under it, asking first when
+    // that destroys running work. This menu sits on the same card — and on a phone
+    // it is the card's ONLY close control — so a surface that passes `onClose`
+    // takes the connected single-session close out of the picture entirely.
+    const onClose = vi.fn()
+    setup({ onClose })
+    fireEvent.click(btn('Close session'))
+    expect(onClose).toHaveBeenCalledWith('zzq-slot')
+    expect(actions.close).not.toHaveBeenCalled()
+  })
+
+  it('a tree close reads as a short action over a muted line that wraps', () => {
+    const onClose = vi.fn()
+    setup({ onClose, closeLabel: 'Close all 5', closeHint: 'This session and the 4 under it.' })
+    const item = btn(/^Close all 5/)
+    const hint = screen.getByTestId('close-item-hint')
+    expect(hint).toHaveTextContent('This session and the 4 under it.')
+    expect(item).toContainElement(hint)
+    // Wraps instead of truncating: a phone's menu is the card's only close.
+    expect(hint.className).toContain('whitespace-normal')
+    expect(hint.className).not.toContain('truncate')
+    fireEvent.click(item)
+    expect(onClose).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('a close that would refuse reads muted but stays selectable', () => {
+    const onClose = vi.fn()
+    setup({ onClose, closeLabel: "Can't close: 2 sessions are still running", closeMuted: true })
+    const item = btn(/^Can't close: 2 sessions/)
+    expect(item.className).toContain('text-muted')
+    expect(item.className).not.toContain('text-danger')
+    fireEvent.click(item)
+    expect(onClose).toHaveBeenCalledWith('zzq-slot')
+  })
+
   it('wires Reload session to the slot and disables it while a turn runs', () => {
     const { unmount } = setup()
     fireEvent.click(btn('Reload session'))

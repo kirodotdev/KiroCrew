@@ -9294,6 +9294,36 @@
     "theme": {
       "high_contrast": "🔆 高对比度"
     },
+    "useCloseSessionTree": {
+      "body": "打开一个正在运行的会话并按“停止生成”（聊天输入框里的方形按钮），或等它完成。",
+      "body_can_close": "等它下面的会话都完成后，就可以关闭此会话。",
+      "body_can_close_self": "等此会话完成后，就可以关闭它。",
+      "body_can_close_with_self": "等此会话及其下的会话都完成后，就可以关闭它。",
+      "closed_named_other": "已关闭 {{count}} 个会话：{{names}}",
+      "closed_other": "已关闭 {{count}} 个会话",
+      "dismiss": "好",
+      "finished": "已完成",
+      "kept_below_other": "已保持打开：{{names}}，因为其下的 {{cause}} 没有关闭。",
+      "kept_running_other": "已保持打开：{{names}}，因为它们开始运行了。",
+      "kept_unknown_other": "已保持打开：{{names}}，因为无法读取它们的状态。",
+      "level_other": "下 {{count}} 层",
+      "level_self": "此会话",
+      "open_running": "打开此会话并按“停止生成”，或等它完成",
+      "pref_body": "它们都已完成。关闭后会移到较早的会话，之后可以从那里重新打开。",
+      "pref_confirm_other": "全部关闭（{{count}}）",
+      "pref_title_other": "关闭此会话及其下的 {{count}} 个会话？",
+      "refused_other": "仍然打开：{{names}}。稍后再关一次试试。",
+      "refused_title": "有些会话没有关闭",
+      "reopen_elsewhere": "请在较早的会话中重新打开 {{names}}。",
+      "running": "运行中",
+      "running_background": "后台运行中",
+      "title_including_self_other": "无法关闭：包括此会话在内，仍有 {{count}} 个会话在运行",
+      "title_other": "无法关闭：此会话下有 {{count}} 个会话仍在运行",
+      "title_self": "无法关闭：此会话仍在运行",
+      "undo": "撤销",
+      "undo_failed_other": "未重新打开：{{names}}。你仍可以在较早的会话中打开它们。",
+      "undo_failed_title": "有些会话没有重新打开"
+    },
     "useCronActions": {
       "failed_to_cancel_job": "取消任务失败",
       "failed_to_pause_job": "暂停任务失败",
@@ -11350,6 +11380,8 @@
       "clear_search": "清除搜索",
       "close": "关闭",
       "close_session": "关闭会话",
+      "close_session_tree_other": "全部关闭（{{total}}）：此会话及其下的 {{count}} 个（可以撤销，或在较早的会话中重新打开）",
+      "close_count_hint_other": "{{count}} 个会话",
       "closed": "已关闭",
       "collapse_folder_name": "折叠文件夹 {{name}}",
       "collapse_group_results": "折叠 {{group}} 的结果",
@@ -11602,7 +11634,11 @@
       "deleting_folders": "正在删除…",
       "archived_sessions_kept_other": "{{count}} 个已归档会话保留在“较早的会话”中",
       "archived_count_other": "已归档 {{count}} 个",
-      "waiting_for_memory": "等待空闲内存"
+      "waiting_for_memory": "等待空闲内存",
+      "close_all_other": "全部关闭（{{count}}）",
+      "close_session_tree_hint_other": "此会话及其下的 {{count}} 个。可以撤销，或在较早的会话中重新打开。",
+      "close_blocked_other": "无法关闭：{{count}} 个会话仍在运行",
+      "close_blocked_short_other": "无法关闭：{{count}} 个在运行"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

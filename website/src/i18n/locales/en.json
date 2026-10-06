@@ -6702,6 +6702,8 @@
       "clear_search": "Clear search",
       "close": "Close",
       "close_session": "Close session",
+      "close_session_tree_one": "Close all {{total}}: this session and the {{count}} under it (you can undo or reopen them from Older sessions)",
+      "close_session_tree_other": "Close all {{total}}: this session and the {{count}} under it (you can undo or reopen them from Older sessions)",
       "closed": "Closed",
       "column_filter": "Column filter",
       "column_name_optional": "Column name (optional)",

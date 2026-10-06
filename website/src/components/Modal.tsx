@@ -165,7 +165,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       style={{ maxWidth, height, maxHeight: '90vh' }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 px-5 h-12 shrink-0 border-b border-border">
+      <div className="flex items-center justify-between gap-3 px-5 min-h-12 py-2 shrink-0 border-b border-border">
         <span id={titleId} className="text-base font-semibold text-text-strong truncate">{title}</span>
         <div className="flex items-center gap-1.5 shrink-0">
           {headerActions}

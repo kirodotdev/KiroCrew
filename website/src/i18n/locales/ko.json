@@ -9294,6 +9294,36 @@
     "theme": {
       "high_contrast": "🔆 고대비"
     },
+    "useCloseSessionTree": {
+      "body": "실행 중인 세션을 열고 '생성 중지'(채팅 메시지 상자의 사각형 버튼)을 누르거나 완료될 때까지 기다리세요.",
+      "body_can_close": "이 아래 세션이 모두 완료되면 이 세션을 닫을 수 있습니다.",
+      "body_can_close_self": "이 세션이 완료되면 닫을 수 있습니다.",
+      "body_can_close_with_self": "이 세션과 그 아래 세션이 모두 완료되면 이 세션을 닫을 수 있습니다.",
+      "closed_named_other": "{{count}}개 세션을 닫았습니다: {{names}}",
+      "closed_other": "{{count}}개 세션을 닫았습니다",
+      "dismiss": "확인",
+      "finished": "완료",
+      "kept_below_other": "열어 둠: {{names}}. 그 아래 {{cause}}이(가) 닫히지 않았기 때문입니다.",
+      "kept_running_other": "열어 둠: {{names}}. 실행이 시작되었기 때문입니다.",
+      "kept_unknown_other": "열어 둠: {{names}}. 상태를 읽을 수 없었기 때문입니다.",
+      "level_other": "{{count}}단계 아래",
+      "level_self": "이 세션",
+      "open_running": "이 세션을 열어 '생성 중지'을 누르거나 완료될 때까지 기다리기",
+      "pref_body": "모두 완료되었습니다. 닫으면 이전 세션으로 이동하며, 거기서 다시 열 수 있습니다.",
+      "pref_confirm_other": "모두 닫기({{count}})",
+      "pref_title_other": "이 세션과 그 아래 {{count}}개 세션을 닫으시겠습니까?",
+      "refused_other": "아직 열려 있음: {{names}}. 잠시 후 다시 닫아 보세요.",
+      "refused_title": "일부 세션이 닫히지 않았습니다",
+      "reopen_elsewhere": "{{names}}은(는) 이전 세션에서 다시 여세요.",
+      "running": "실행 중",
+      "running_background": "백그라운드에서 실행 중",
+      "title_including_self_other": "닫을 수 없음: 이 세션을 포함해 {{count}}개 세션이 아직 실행 중입니다",
+      "title_other": "닫을 수 없음: 이 아래 {{count}}개 세션이 아직 실행 중입니다",
+      "title_self": "닫을 수 없음: 이 세션이 아직 실행 중입니다",
+      "undo": "실행 취소",
+      "undo_failed_other": "다시 열리지 않음: {{names}}. 이전 세션에서 열 수 있습니다.",
+      "undo_failed_title": "일부 세션을 다시 열지 못했습니다"
+    },
     "useCronActions": {
       "failed_to_cancel_job": "작업을 취소하지 못했습니다",
       "failed_to_pause_job": "작업을 일시중지할 수 없습니다",
@@ -11350,6 +11380,8 @@
       "clear_search": "검색 지우기",
       "close": "닫기",
       "close_session": "세션 닫기",
+      "close_session_tree_other": "모두 닫기({{total}}): 이 세션과 그 아래 {{count}}개 (실행 취소하거나 이전 세션에서 다시 열 수 있습니다)",
+      "close_count_hint_other": "세션 {{count}}개",
       "closed": "닫힘",
       "collapse_folder_name": "{{name}} 폴더 접기",
       "collapse_group_results": "{{group}} 결과 접기",
@@ -11602,7 +11634,11 @@
       "deleting_folders": "삭제 중…",
       "archived_sessions_kept_other": "보관된 세션 {{count}}개는 이전 세션에 남습니다",
       "archived_count_other": "보관됨 {{count}}개",
-      "waiting_for_memory": "여유 RAM 대기 중"
+      "waiting_for_memory": "여유 RAM 대기 중",
+      "close_all_other": "모두 닫기({{count}})",
+      "close_session_tree_hint_other": "이 세션과 그 아래 {{count}}개. 실행 취소하거나 이전 세션에서 다시 열 수 있습니다.",
+      "close_blocked_other": "닫을 수 없음: {{count}}개 세션이 아직 실행 중입니다",
+      "close_blocked_short_other": "닫을 수 없음: {{count}}개 실행 중"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

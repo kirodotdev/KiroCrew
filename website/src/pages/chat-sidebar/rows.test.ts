@@ -778,7 +778,7 @@ describe('row views compare by value', () => {
     expect(sameRowView(rows.views(scene()).view(b, AT), moved.view(b, AT))).toBe(false)
   })
 
-  const EXTRAS: ConductorRowView = { depth: 1, childCount: 2, expanded: false, aggregate: { needsYou: 1, running: 0 }, orphanOf: null, citesParent: null, anchorOnly: false }
+  const EXTRAS: ConductorRowView = { depth: 1, childCount: 2, subtreeCount: 3, subtreeRunning: 0, expanded: false, aggregate: { needsYou: 1, running: 0 }, orphanOf: null, citesParent: null, anchorOnly: false }
   const withExtras = (c: ConductorRowView | undefined) => rows.views(scene()).view(a, { ...AT, conductor: c })
 
   it('compares the conductor extras by value', () => {

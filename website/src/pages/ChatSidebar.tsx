@@ -48,6 +48,8 @@ import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { useCloseSessionTree } from '../hooks/useCloseSessionTree'
+import { sidebarRowBackgroundOnly, sidebarRowRunning } from '../lib/sessionCloseTree'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { platformShortcut } from '../utils/platform'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -792,6 +794,8 @@ interface SessionRowActions {
   onRenameCommit: (key: string, value: string) => void
   onRenameCancel: () => void
   onDuplicate: (key: string) => void
+  /** The row's ✕. In the nesting conductor lane this is the tree close, so a card
+   *  with sessions under it closes its subtree (see `useCloseSessionTree`). */
   onCloseSession: (key: string) => void
   onMenuCloseAutoFocus: (e: Event) => void
   onSelectSlot?: (key: string) => void
@@ -840,6 +844,29 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
     opensElsewhere, peerId, peerName,
   } = view
   const conductor = view.conductor
+  // A card with sessions under it in the nesting conductor lane closes its whole
+  // subtree, so its ✕ and row menu say how many: the row model's `subtreeCount`
+  // is taken over the lane's kept rows, the same rows the close plans over.
+  // When the press would refuse (this card or a session under it is running),
+  // the ✕ and the menu say so first: muted, "Can't close: N running", and still
+  // pressable, because the press opens the notice that lists who is running.
+  const closeBlockedCount = conductor && conductor.subtreeCount > 0 && conductor.subtreeRunning > 0 ? conductor.subtreeRunning : undefined
+  const closeSessionCount = !closeBlockedCount && conductor && conductor.subtreeCount > 0 ? conductor.subtreeCount + 1 : undefined
+  const closeSessionLabel = closeBlockedCount
+    ? i18nT('pages.chatSidebar.close_blocked', { count: closeBlockedCount })
+    : conductor && conductor.subtreeCount > 0
+      ? i18nT('pages.chatSidebar.close_session_tree', { count: conductor.subtreeCount, total: conductor.subtreeCount + 1 })
+      : undefined
+  // The row menu splits the same reach over two lines: the action, then a muted
+  // line that wraps, so a phone's narrow menu never cuts the sentence off.
+  const closeMenuLabel = closeBlockedCount
+    ? closeSessionLabel
+    : conductor && conductor.subtreeCount > 0
+      ? i18nT('pages.chatSidebar.close_all', { count: conductor.subtreeCount + 1 })
+      : undefined
+  const closeMenuHint = !closeBlockedCount && conductor && conductor.subtreeCount > 0
+    ? i18nT('pages.chatSidebar.close_session_tree_hint', { count: conductor.subtreeCount })
+    : undefined
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex,
@@ -1560,10 +1587,21 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
       mode,
       onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
+      // The same close the row's ✕ performs, also scoped to the conductor lane:
+      // `treeClose` resolves to `closeSessionTree` there and `sessionActions.close`
+      // everywhere else, so the menu never silently collapses a subtree that is
+      // not visible in the current lane.
+      onClose: onCloseSession,
+      // When the conductor lane shows a card with nested sessions, the menu's
+      // Close item does what the ✕ does: close the whole subtree. Give it the
+      // same scoped label so the user knows what the press reaches.
+      closeLabel: closeMenuLabel,
+      closeHint: closeMenuHint,
+      closeMuted: closeBlockedCount != null,
       // A row menu opens from inside this panel, where the folder-order banner
       // (when there is one) sits over the tree -- the menu need not repeat it.
       sidebarOnScreen: true,
-    }), [rowKey, mode, onRenameStart, scope, rowTitle, onOpenSlotInNewTab])
+    }), [rowKey, mode, onRenameStart, scope, rowTitle, onOpenSlotInNewTab, onCloseSession, closeMenuLabel, closeMenuHint, closeBlockedCount])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
         <DropdownMenu>
@@ -1586,11 +1624,33 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
           </DropdownMenuContent>
         </DropdownMenu>
         <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
-        <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
+        <IconButton variant={closeBlockedCount ? 'default' : 'danger'} title={closeSessionLabel ?? i18nT('pages.chatSidebar.close')} aria-label={closeSessionLabel ?? i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }} className={closeBlockedCount ? 'flex shrink-0 items-center gap-0.5 whitespace-nowrap opacity-60' : closeSessionCount ? 'flex shrink-0 items-center gap-0.5 whitespace-nowrap' : undefined} data-testid={closeBlockedCount ? 'row-close-blocked' : closeSessionCount ? 'row-close-tree' : undefined} aria-describedby={closeSessionCount ? `row-close-hint-${rowKey}` : undefined}>
+          <X size={12} />
+          {closeBlockedCount ? (
+            <span aria-hidden="true" className="text-[11px] font-semibold leading-none tabular-nums" data-testid="row-close-blocked-label">
+              {i18nT('pages.chatSidebar.close_blocked_short', { count: closeBlockedCount })}
+            </span>
+          ) : null}
+          {/* The reach, on the button itself: it reads "Close 5" whenever it is
+              shown. A bare count read as an unread or alert badge, and the word
+              alone hid that the press reaches more than this one session.
+              Decorative for a screen reader, which already hears the full label. */}
+          {closeSessionCount ? (
+            <span className="flex items-baseline gap-1 text-[11px] font-semibold leading-none tabular-nums">
+              <span aria-hidden="true" data-testid="row-close-word">{i18nT('pages.chatSidebar.close')}</span>
+              <span aria-hidden="true" data-testid="row-close-count">{closeSessionCount}</span>
+              {/* What the number counts, for a screen reader: read as the
+                  button's description after its full label. */}
+              <span id={`row-close-hint-${rowKey}`} className="sr-only" data-testid="row-close-hint">
+                {i18nT('pages.chatSidebar.close_count_hint', { count: closeSessionCount })}
+              </span>
+            </span>
+          ) : null}
+        </IconButton>
       </IconButtonGroup>
     )) : null
     // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
-    ), [renamingHere, foreignRow, isMobile, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, rowKey, langGen])
+    ), [renamingHere, foreignRow, isMobile, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeSessionLabel, closeSessionCount, closeBlockedCount, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
         <SessionActionsMenu variant="context" {...rowMenuProps} />
@@ -2059,10 +2119,12 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                 secondary line down by a full line box on some rows, which is what
                 made the list read as ragged. The full string stays reachable
                 through the `title` attribute, and the rename box below is the one
-                place it is shown in full. */}
+                place it is shown in full. On a touch screen the row's buttons stay
+                shown, so a card with "Close 5" reserves room for it and the title
+                truncates first, never the control. */}
             <div
               data-session-title
-              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
+              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}${(closeSessionCount || closeBlockedCount) && !isMobile ? ' [@media(hover:none)]:pr-24' : ''}`}
               title={s.title && s.title !== s.key ? s.title : s.key}
             >
               {/* No separate fork glyph: forked titles already carry the
@@ -2850,6 +2912,26 @@ function ChatSidebar({
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
     expandConductorAncestors,
   } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, laneOrder, flatSlots })
+  // The rows the conductor lane may show, by identity: every match, plus each
+  // ancestor a match needs to hang from. The lane draws exactly these, the ✕
+  // label counts exactly these, and the tree close plans over exactly these, so
+  // a press can never reach a worker the filter or a hidden folder kept off screen.
+  const conductorKept = useMemo(() => {
+    const kept = new Set<string>()
+    if (!lineage) return kept
+    const onLane = new Set(conductorRows.map(s => sessionRowIdentity(s)))
+    for (const id of conductorMatching) {
+      if (!onLane.has(id)) continue
+      kept.add(id)
+      for (const up of ancestorsOf(id, lineage.parentOf)) kept.add(up)
+    }
+    return kept
+  }, [lineage, conductorRows, conductorMatching])
+  const conductorSearching = slotFilter.trim() !== ''
+  const treeCloseRows = useMemo(
+    () => localSlots.filter(s => conductorKept.has(sessionRowIdentity(s))),
+    [localSlots, conductorKept],
+  )
   // Reveal opens the crew group holding the target, then the lane's own ancestors.
   // Looked up in `allRows`: the reveal may be clearing the filter that hides it.
   const expandRevealAncestors = useCallback((identity: string) => {
@@ -2916,6 +2998,34 @@ function ChatSidebar({
   // each behaviour has one definition. Rename + Tags stay local (they drive this
   // component's inline-edit + tag-popover state).
   const sessionActions = useSessionActions(mode)
+  // The row ✕ closes the card AND the sessions nested under it, so on a lead it can
+  // end several workers' turns at once. `useCloseSessionTree` owns that: it plans the
+  // subtree from the same lineage edges this lane nests by, asks before destroying
+  // work still in flight, and falls back to `sessionActions.close` verbatim for a card
+  // with nothing under it. `runningSet` is passed as the predicate so the
+  // dialog marks exactly the rows the lane draws as running.
+  // Passed plain, not memoized: the hook reads its inputs through a ref so that
+  // `closeSessionTree` keeps one identity for the sidebar's life, which is what
+  // lets it ride into each row's memoized menu props without busting the row memo.
+  // `subagentCounts[s.key] > 0`: a worker whose own turn has ended while its
+  // background subagent is still working looks idle to `runningSet`, but it has
+  // active work that the tree close would silently cancel. Include it in the
+  // guard so those workers block the cascade the same way a running turn does.
+  const { closeSessionTree, closeTreeDialog, closeTreeError, closeTreeNotice } = useCloseSessionTree({
+    rows: treeCloseRows,
+    allRows: localSlots,
+    isRunning: (s: Slot) => sidebarRowRunning(s, runningSet, subagentCounts),
+    isBackgroundOnly: (s: Slot) => sidebarRowBackgroundOnly(s, runningSet, subagentCounts),
+    closeOne: sessionActions.close,
+    // The still-running notice links each running session to itself, opened the
+    // same way a press on its row opens it, so the person can stop it there.
+    openOne: (key: string) => { dispatch(switchSlot({ key, announceOnMissing: true })); onSelectSlot?.(key) },
+  })
+  // The tree-close guard is scoped to the conductor lane while it nests: tree
+  // nesting is only visible there. In the flat, folder and board lanes, and in the
+  // conductor lane while a search flattens it, the user sees no nested structure,
+  // so pressing ✕ on a session closes exactly that one session.
+  const treeClose = conductorLaneActive && !conductorSearching ? closeSessionTree : sessionActions.close
   // Which sessions are currently open in a popped-out window (shared singleton).
   const { poppedOut } = useChatPopouts()
   const {
@@ -3242,7 +3352,7 @@ function ChatSidebar({
   // reference, so none of these may take a new identity per render.
   const rowActions = useMemo(() => ({
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
-    onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close,
+    onDuplicate: sessionActions.duplicate, onCloseSession: treeClose,
     onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource,
     onOpenPeerSession: openPeerSession,
     onNativeDragStart: startBoardCardDrag, onNativeDragEnd: endNativeSessionDrag,
@@ -3250,7 +3360,7 @@ function ChatSidebar({
     openElsewhere, toggleConductor: toggleConductorExpanded,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
-    sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
+    sessionActions.duplicate, treeClose, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     onOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     openElsewhere, toggleConductorExpanded,
   ])
@@ -5273,6 +5383,12 @@ function ChatSidebar({
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
       />
+      {/* A confirmed subtree close that the server refused per session. It sits in
+       *  this same band because it is the same kind of fact: a write on the rows
+       *  below failed, the list already agrees with what did happen, and the row
+       *  staying put is the only other trace the person would get. */}
+      {closeTreeError}
+      {closeTreeNotice}
       {/* The folder order (dashboard.folder_sort) could not be read AND there is
        *  no body to fall back on: the tree is drawn in the stored order meanwhile
        *  and sibling drags are withdrawn, so the person is told why the order they
@@ -5417,7 +5533,7 @@ function ChatSidebar({
             {(() => {
               const tree = lineage
               if (!tree) return null
-              const searching = slotFilter.trim() !== ''
+              const searching = conductorSearching
               // Keyed by identity, exactly as `lineage` is: a raw-key map would let a
               // federated peer row overwrite the local row it collides with, so one
               // session would vanish and the other would render twice.
@@ -5427,12 +5543,7 @@ function ChatSidebar({
               // did not admit it -- so it renders dimmed and still carries its chevron.
               // Without it a filtered-out conductor's workers each resolved no parent
               // and scattered to the top level, which is what switching on Unread did.
-              const kept = new Set<string>()
-              for (const id of conductorMatching) {
-                if (!byKey.has(id)) continue
-                kept.add(id)
-                for (const up of ancestorsOf(id, tree.parentOf)) kept.add(up)
-              }
+              const kept = conductorKept
               const keptKids = (key: string) =>
                 (tree.children.get(key) ?? []).filter(k => kept.has(k))
               const rows: Array<{ id: string; slot: Slot; depth: number; childCount: number; expanded: boolean; orphanOf: string | null; citesParent?: string | null; anchorOnly: boolean; aggregate: { needsYou: number; running: number } | null }> = []
@@ -5524,6 +5635,18 @@ function ChatSidebar({
                     {renderSessionRow(row.slot, row.depth, showDivider, 'conductor', 'conductor', 'conductor', {
                       depth: row.depth,
                       childCount: row.childCount,
+                      // Every descendant under this card -- what the ✕ label quotes.
+                      // Zero while searching: the lane is flat then and the ✕ closes one session.
+                      subtreeCount: searching ? 0 : descendantsOf(row.id, tree.children).filter(k => kept.has(k)).length,
+                      // What the press would find running, by the close's own predicate,
+                      // so the ✕ says "Can't close" before the press instead of after.
+                      // Only a card with sessions under it: a leaf keeps the plain single close.
+                      subtreeRunning: (() => {
+                        if (searching) return 0
+                        const under = descendantsOf(row.id, tree.children).filter(k => kept.has(k))
+                        if (under.length === 0) return 0
+                        return [row.id, ...under].filter(k => { const s = byKey.get(k); return s != null && sidebarRowRunning(s, runningSet, subagentCounts) }).length
+                      })(),
                       expanded: row.expanded,
                       aggregate: row.aggregate,
                       orphanOf: row.orphanOf,
@@ -6525,6 +6648,11 @@ function ChatSidebar({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* The close-tree confirm, one instance for the whole sidebar: a press lands
+       *  on one row at a time, and the hook already answers an earlier ask "no"
+       *  when a second arrives. */}
+      {closeTreeDialog}
 
       {/* One folder create/settings modal for the whole sidebar. Rendered here
        *  rather than per-row so a folder shown in several board columns can only
