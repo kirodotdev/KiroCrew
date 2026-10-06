@@ -141,6 +141,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_KAS_MCP_RESET_SERVER,
@@ -177,12 +178,14 @@ from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.kiro_cli import installed_kiro_cli_version
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
     pooled_session_servers,
 )
+from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -191,6 +194,10 @@ from kiro_crew.metrics.events import (
     emit_counter,
 )
 from kiro_crew.owner_only_files import ensure_directory
+from kiro_crew.platform.tool_names import (
+    kas_verified_releases,
+    kas_vocabulary_drift,
+)
 from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.runtime_ownership import authorize_runtime_kill, outstanding_leases
@@ -239,6 +246,26 @@ from kiro_crew.start_priority import (
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
+
+#: Engine versions the KAS tool-vocabulary drift warning has been logged for in
+#: this process (``AcpRuntime._warn_kas_vocabulary_drift``): once per release,
+#: not once per session.
+_KAS_DRIFT_WARNED: set[str] = set()
+
+#: Most engine versions ``_KAS_DRIFT_WARNED`` retains. The key is a
+#: harness-written string reached once per KAS ``initialize`` and the set lives
+#: for the process, so without a count bound a run of distinct versions would
+#: grow it until restart; a gateway sees a handful of upgrades in its lifetime.
+#: Past the cap the drift warning stops being retained and says so once.
+_KAS_DRIFT_WARNED_MAX = 32
+
+#: Whether the cap above has been reported in this process.
+_KAS_DRIFT_WARNED_OVERFLOWED = False
+
+#: Longest ``agentInfo.version`` the drift warning will parse. A release string
+#: is a dozen characters; the bound exists so a harness-written value cannot
+#: reach ``int()`` with a component past CPython's digit limit.
+_MAX_VERSION_TEXT_LEN = 64
 
 
 def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
@@ -1478,6 +1505,82 @@ class AcpRuntime:
         """
         return self._acp_backend
 
+    async def _kas_drift_version(self) -> str:
+        """The kiro-cli version the drift warning compares, ``""`` when unknown.
+
+        KAS's ``initialize`` response carries NO ``agentInfo`` on the wire (the
+        recorded fixture says so, and the live handshake agrees), so a warning
+        fed only ``agentInfo.version`` would never fire on the one harness it
+        exists for. The handshake's version is preferred when a harness reports
+        one; otherwise the pinned kiro-cli binary's own ``--version`` -- the
+        binary the relay is spawned from and the same reading the doctor row
+        takes -- stands in. Off the event loop: the probe is one bounded spawn
+        on the first call per binary identity, cached thereafter. Members of the
+        KAS vocabulary set only; no other harness is compared.
+        """
+        if self._acp_backend not in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return ""
+        if self._agent_version:
+            return self._agent_version
+        installed = await asyncio.to_thread(installed_kiro_cli_version)
+        return ".".join(str(p) for p in installed) if installed else ""
+
+    def _warn_kas_vocabulary_drift(self, agent_version: str) -> None:
+        """Say once per engine release, at KAS session start, that the installed
+        kiro-cli is not the one the KAS tool-vocabulary tables were measured on.
+
+        The mount direction fails silent on an id a different engine does not
+        recognise and the policy direction fails permissive on one the tables
+        do not know, so an operator relying on kiro-cli-spelled denies binding
+        on KAS should see the drift where sessions start, not only in a doctor
+        command they must run by hand. Members of
+        ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` only -- the set of
+        harnesses the KAS vocabulary tables describe; they describe no other.
+        Once per process per reported version: the gateway spawns many
+        sessions and the fact does not change between them. Same comparison as
+        the doctor row (``kas_vocabulary_drift``). Never raises: an unparseable
+        version is the doctor's "unknown" and is not worth a warning per spawn.
+        """
+        if self._acp_backend not in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return
+        # Bounded before parsing: ``agentInfo.version`` is a harness-written string
+        # with no length bound of its own, and ``int()`` on a component past
+        # CPython's digit limit raises. A version longer than any release string
+        # is read as unknown, like an unparseable one.
+        if not agent_version or len(agent_version) > _MAX_VERSION_TEXT_LEN:
+            return
+        version = parse_kiro_cli_version(agent_version)
+        drift = kas_vocabulary_drift(version)
+        if drift in ("", "unknown") or version is None:
+            return
+        if agent_version in _KAS_DRIFT_WARNED:
+            return
+        # A bound on the count as well as on the string: at the cap nothing more
+        # is retained, and the operator is told once that later releases go
+        # unreported until restart rather than the set growing unbounded.
+        if len(_KAS_DRIFT_WARNED) >= _KAS_DRIFT_WARNED_MAX:
+            global _KAS_DRIFT_WARNED_OVERFLOWED
+            if not _KAS_DRIFT_WARNED_OVERFLOWED:
+                _KAS_DRIFT_WARNED_OVERFLOWED = True
+                logger.warning(
+                    "kas backend: the tool-vocabulary drift warning has been logged for %d "
+                    "distinct kiro-cli versions in this process, its bound; further versions "
+                    "are not reported until the gateway restarts (kirocrew doctor still is)",
+                    _KAS_DRIFT_WARNED_MAX,
+                )
+            return
+        _KAS_DRIFT_WARNED.add(agent_version)
+        logger.warning(
+            "kas backend: installed kiro-cli %s is %s the releases the KAS tool-name tables were "
+            "verified on (%s); a renamed, added or absent built-in would mount or be governed "
+            "under a name Crew does not know (kirocrew doctor reports the same; re-measure per "
+            "test/fixtures/kas_builtin_tool_ids.json and append the release to its "
+            "verified_kiro_cli_versions)",
+            agent_version,
+            {"older": "older than", "newer": "newer than", "unverified": "not among"}[drift],
+            kas_verified_releases(),
+        )
+
     @property
     def _harness(self) -> HarnessAdapter:
         """This backend's strategy object -- the runtime's only per-host answer.
@@ -2476,6 +2579,11 @@ class AcpRuntime:
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._agent_version = agent_version_from_init(init_resp)
+            # Positively gated on the KAS vocabulary set (H13): the comparison,
+            # and the off-loop version probe it may need, exist for no other
+            # harness, so the first-class path awaits nothing here.
+            if self._acp_backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+                self._warn_kas_vocabulary_drift(await self._kas_drift_version())
 
             # The subprocess has now read its agent spec, which closes the window the
             # pre-spawn snapshot opened: a write landing before this point is caught

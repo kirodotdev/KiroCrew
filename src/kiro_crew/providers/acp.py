@@ -2480,6 +2480,7 @@ class AcpProvider(LLMProvider):
             spawn_target=e.spawn_target,
             tool_identity_trusted=e.tool_identity_trusted,
             mcp_identity_trusted=e.mcp_identity_trusted,
+            mcp_identity_unreadable=e.mcp_identity_unreadable,
             server_name=e.server_name,
             oauth_url=e.oauth_url,
             subagents=e.subagents,

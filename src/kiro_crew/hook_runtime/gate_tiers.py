@@ -50,6 +50,8 @@ if TYPE_CHECKING:
         is_sensitive_bash_command,
         is_sensitive_write_path,
         mcp_identity_ref,
+        policy_alias_split,
+        policy_aliases,
         security,
         sensitive_path_refusal,
         target_paths,
@@ -292,9 +294,39 @@ class GateFacts:
                 # Already past the scan ceiling in the targets tier.
                 if raw_command not in targets:
                     targets.append(raw_command)
+            targets.extend(a for a in self.policy_alias_names if a not in targets)
             return targets
 
         return self._once("deny_targets", compute)  # type: ignore[no-any-return]
+
+    @property
+    def policy_alias_names(self) -> tuple[str, ...]:
+        """A KAS built-in under the kiro-cli name a rule about it is written in.
+
+        ``kas_agents`` mounts kiro-cli's ``fs_write`` on KAS as ``str_replace`` and
+        ``fs_append`` (``platform.tool_names``), so an operator's
+        ``auto_deny_tools: ["fs_write"]`` -- the natural spelling, since Crew's
+        specs are authored in kiro-cli vocabulary -- names a tool that never
+        reaches the deny tier under that name. Governance gets the same aliases.
+
+        IDENTITY ONLY, never the title. The title is ``select_tool_title``'s pick,
+        which prefers the model-authored ``description`` verbatim; a shell call the
+        model described as ``str_replace`` would fold to ``fs_write`` and an
+        operator's ``deny fs_write`` would refuse a command it never named. The
+        fold reads only what the engine stamped: ``mcp_tool``
+        (``_meta.kiro.toolName`` on kiro-cli, ``_meta.kiro.toolId`` on KAS).
+
+        BUILT-INS ONLY. The table speaks about the engine's own tools; an MCP
+        server is free to name a tool ``read_file`` too, and that tool is not
+        kiro-cli's ``fs_read``. Folding it would apply a fence the operator wrote
+        for a built-in to a server they never named. kiro-cli stamps
+        ``mcpServerName`` on every MCP-served call, so a non-empty server is the
+        discriminator; an MCP call keeps exactly the targets it had.
+        """
+        call = self.call
+        if call.mcp_tool and not call.mcp_server:
+            return policy_aliases(call.mcp_tool)
+        return ()
 
     @property
     def governance_mcp_ref(self) -> str:
@@ -353,6 +385,17 @@ def _tier_unverifiable_shell(facts: GateFacts, tier: GateTier) -> ToolHookResult
     if call.is_shell and not call.command:
         return ToolHookResult.deny(
             "Blocked: shell command could not be verified for security policy (deny-by-default)"
+        )
+    # The frame PRESENTED an MCP server or tool name longer than Crew's own tool
+    # surface admits (``ToolCall.identity_unreadable``). ``mcp_tool`` is empty
+    # because the name could not be retained, not because there was none, so the
+    # exact ``@server/tool`` deny it may be under cannot be checked below, and
+    # judging it by title would hand a denied tool to the grant tiers. Denied
+    # outright, the same shape as a shell command that cannot be read.
+    if call.identity_unreadable:
+        return ToolHookResult.deny(
+            "Blocked: MCP tool identity could not be read (name over the "
+            "tool-surface bound; deny-by-default)"
         )
     return None
 
@@ -509,7 +552,7 @@ def _tier_write_protected(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
         # (``edit_target_candidates``): a backend may stream params that carry no
         # path key at all and name the file only in that block, so the params
         # alone can judge nothing.
-        candidates = edit_target_candidates(call.raw_params, call.diff_path)
+        candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
         if candidates.truncated:
             # Unreachable while the param-paths tier denies a truncated walk first,
             # but this tier keeps its own fail-closed reading so a reorder of the
@@ -660,13 +703,40 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     deny on any identity denies the call.
     """
     call = facts.call
-    # The trusted name and, where kiro-cli stamped an alias (``read``) on a
-    # built-in, the spelling a rule is written in (``fs_read``) -- the same
+    # A KAS built-in with a kiro-cli policy name is asked as ONE identity with two
+    # spellings (``gate_decision``'s ``alias_groups``): an explicit deny on either
+    # spelling binds (a deny-mode ``tools.deny: ["str_replace"]`` still refuses),
+    # and otherwise one permitted spelling admits the call. Neither appending nor
+    # replacing is right: governance profiles are written in kiro-cli vocabulary
+    # and an ALLOW-mode profile requires every queried item to match, so a raw id
+    # asked BESIDE its alias becomes a second required entry no operator wrote and
+    # a permitted write is refused; asked INSTEAD, a raw-id deny stops binding.
+    # The deny tier reads both spellings unconditionally, because a deny target
+    # can only deny.
+    #
+    # One alias is deny-only (``policy_alias_split``): ``delete_file`` reads under
+    # ``fs_write`` so a write deny reaches it, but kiro-cli's ``fs_write`` cannot
+    # delete, so an allow-mode ``tools: ["fs_write"]`` must not admit a deletion.
+    # That id is asked on its own name (``extra_titles``) and ``fs_write`` only for
+    # an explicit deny (``deny_aliases``).
+    #
+    # Otherwise the trusted name and, where kiro-cli stamped an alias (``read``)
+    # on a built-in, the spelling a rule is written in (``fs_read``) -- the same
     # spelling the read-only proof resolves it to. A server's own ``read`` is
     # not the host's file reader and gets no alias. Both in the one query;
     # neither repeats the title.
-    alias = "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
-    extra_titles = tuple(name for name in (call.mcp_tool, alias) if name and name != call.title)
+    identity: tuple[str, ...] = ()
+    alias_groups: tuple[tuple[str, ...], ...] = ()
+    deny_aliases: tuple[str, ...] = ()
+    if facts.policy_alias_names:
+        admitting, deny_aliases = policy_alias_split(call.mcp_tool)
+        if admitting:
+            alias_groups = ((call.mcp_tool, *admitting),)
+        elif call.mcp_tool != call.title:
+            identity = (call.mcp_tool,)
+    else:
+        alias = "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
+        identity = tuple(name for name in (call.mcp_tool, alias) if name and name != call.title)
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -677,7 +747,9 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         call.raw_params,
         diff_path=call.diff_path,
         mcp_ref=facts.governance_mcp_ref,
-        extra_titles=extra_titles,
+        extra_titles=identity,
+        alias_groups=alias_groups,
+        deny_aliases=deny_aliases,
         spawn_target=call.spawn_target,
     )
     if gov_reason:

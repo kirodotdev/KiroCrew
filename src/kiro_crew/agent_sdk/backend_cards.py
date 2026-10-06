@@ -482,6 +482,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "wrong membership either shows a failure as an answer or an answer as a "
         "failure, which is a defect"
     ),
+    "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": (
+        "whether a kindless permission frame takes its tool_call's kind so the "
+        "gate's kind-keyed tiers see the harness's classification. Both states are "
+        "the gate working as measured for that harness; a wrong membership is a "
+        "vetoed read or an unrouted delete, which is a defect, not a feature the "
+        "reader would choose a harness by"
+    ),
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"

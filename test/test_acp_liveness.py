@@ -1571,3 +1571,31 @@ def test_tracker_idless_judged_call_clears_when_nothing_remains():
     assert changed is True
     assert tr.current is None
     assert tr.active_calls == {}
+
+
+def test_tracker_bound_evicts_the_oldest_and_keeps_the_new_call():
+    """At ``max_calls`` a NEW id evicts the oldest stored call, the call just
+    dispatched is kept and judged, a re-dispatch under a held id evicts nothing,
+    and ``evicted`` stays set until ``clear``."""
+    tr = liveness.InFlightToolTracker(max_calls=2)
+    tr.dispatch("a", _ts("a"))
+    tr.dispatch("b", _ts("b"))
+    assert tr.evicted is False
+    tr.dispatch("b", _ts("b2"))
+    assert list(tr.active_calls) == ["a", "b"] and tr.evicted is False
+    newest = _ts("c")
+    tr.dispatch("c", newest)
+    assert list(tr.active_calls) == ["b", "c"]
+    assert tr.current is newest and tr.evicted is True
+    tr.result("b", terminal=True)
+    tr.result("c", terminal=True)
+    assert tr.any_active is False and tr.evicted is True
+    tr.clear()
+    assert tr.evicted is False
+
+
+def test_tracker_without_a_bound_never_evicts():
+    tr = liveness.InFlightToolTracker()
+    for i in range(300):
+        tr.dispatch(f"t{i}", _ts())
+    assert len(tr.active_calls) == 300 and tr.evicted is False

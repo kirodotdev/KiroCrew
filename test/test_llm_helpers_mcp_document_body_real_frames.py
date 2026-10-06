@@ -11,10 +11,12 @@ Tool Search resident and deferred, and KAS ``--agent-engine v3``) through the
 real ``_dispatch`` builders and the real ``_resolve_permission``. Session ids,
 toolCallIds and a workspace path are anonymised; nothing else is changed.
 
-The default engine stores the document. Everything else keeps
-the full deny scan: another tool, another server, a non-body field, a shell
-kind, a frame whose identity is only on the permission payload, and KAS (whose identity this
-change does not parse, so it stays fail-closed).
+The default engine stores the document, and so does KAS for a resident call,
+whose server+tool pair the permission frame states and the tool_call's server
+confirms. Everything else keeps the full deny scan: another tool, another
+server, a non-body field, a shell kind, a frame whose identity is only on the
+permission payload, and a KAS deferred call (its body is nested under the
+meta-tool's ``arguments``, and only a top-level body is exempt).
 """
 
 from __future__ import annotations
@@ -255,21 +257,53 @@ class TestEverythingElseKeepsTheFullScan:
         assert approved is False
 
 
-class TestKasStaysFailClosed:
-    """KAS identity is not parsed by this change, so the scan still denies."""
+class TestKasReadsTheSameBarFromItsOwnFrames:
+    """KAS stamps an MCP call's server on the tool_call (``_meta.kiro.serverName``)
+    and the server+tool pair on the permission request
+    (``_meta.kiro.mcpTool.identity``); ``build_permission_event`` adopts the tool
+    half only when the request's server AGREES with the cached one. A resident
+    call therefore reaches the exemption on the same trusted pair the default
+    engine does. A deferred call does not: its arguments sit under the
+    model-written ``arguments`` wrapper, and only a TOP-LEVEL body is exempt, so
+    the full scan still denies it (fail closed)."""
+
+    def test_the_resident_frame_carries_the_trusted_pair(self) -> None:
+        ev = _replay(_KAS_TOOL_CALLS["resident"], _KAS_PERMISSION, kas=True)
+        assert ev.mcp_identity_trusted is True
+        assert ev.is_shell is False
+        assert (ev.mcp_server_name, ev.tool_name) == ("kirocrew-core", "knowledge_add_document")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode", ["resident", "deferred"])
-    async def test_the_body_is_still_denied(self, mode: str) -> None:
-        ev = _replay(_KAS_TOOL_CALLS[mode], _KAS_PERMISSION, kas=True)
-        assert ev.mcp_server_name == ""
-        approved, _ = await _resolve(ev)
+    async def test_a_resident_body_is_not_read_as_a_command(self) -> None:
+        approved, err = await _resolve(
+            _replay(_KAS_TOOL_CALLS["resident"], _KAS_PERMISSION, kas=True)
+        )
+        assert approved is True, err
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_body_is_still_denied(self) -> None:
+        ev = _replay(_KAS_TOOL_CALLS["deferred"], _KAS_PERMISSION, kas=True)
+        # Same pair, but the body is nested, so nothing is exempt.
+        assert (ev.mcp_server_name, ev.tool_name) == ("kirocrew-core", "knowledge_add_document")
+        approved, err = await _resolve(ev)
+        assert approved is False
+        assert err
+
+    @pytest.mark.asyncio
+    async def test_the_same_tool_on_another_server_is_denied(self) -> None:
+        tc = _with(
+            _KAS_TOOL_CALLS["resident"],
+            _meta={"kiro": {"serverName": "notes", "toolOrigin": "client"}},
+        )
+        # The request names kirocrew-core; the tool_call named notes. Two
+        # harness-authored frames disagree, so no pair is adopted.
+        approved, _ = await _resolve(_replay(tc, _KAS_PERMISSION, kas=True))
         assert approved is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["resident", "deferred"])
     async def test_a_benign_body_is_approved(self, mode: str) -> None:
-        # Control: the denial above is the body, not the frame.
+        # Control: the deferred denial above is the body, not the frame.
         tc = copy.deepcopy(_KAS_TOOL_CALLS[mode])
         args = tc["rawInput"].get("arguments", tc["rawInput"])
         args["content"] = "hello world"

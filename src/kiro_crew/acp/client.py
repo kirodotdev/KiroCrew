@@ -249,6 +249,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
     ACP_BACKEND_PROCESS_NAMES,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     launch_for,
     model_refusal_phrase,
@@ -2180,6 +2181,11 @@ class AcpClient:
         # toolCallId -> the tool's own name its tool_call frame stated, for the
         # permission event's harness_tool_id (see _dispatch.harness_tool_name).
         self._tool_call_harness_tool_name: dict[str, str] = {}
+        # toolCallId -> True when the tool_call frame PRESENTED an MCP identity half
+        # the name bound refused (``mcp_identity_unreadable``); the permission
+        # request is then refused in ``_handle_permission`` rather than judged
+        # under the empty name. Mirrors AcpSessionHandle._tool_call_identity_unreadable.
+        self._tool_call_identity_unreadable: dict[str, bool] = {}
         # Structured raw tool params (rawInput dict) keyed by toolCallId, cached
         # from the ToolCall notification so the later request_permission event —
         # which carries only a truncated title — can recover the real path/url
@@ -8922,6 +8928,7 @@ class AcpClient:
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._tool_call_harness_tool_name.clear()
+        self._tool_call_identity_unreadable.clear()
         self._tool_call_params.clear()
         self._tool_call_diff_path.clear()
         # Reset the per-turn observed-tool-call bookkeeping (see __init__).
@@ -11008,6 +11015,13 @@ class AcpClient:
                 _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
                 if _harness_names is not None:
                     _harness_names[tool_call_id] = harness_tool_name(update)
+                # KAS only (H13): the mark and the refusal it earns are a KAS
+                # refusal mode; a first-class harness's frame is never marked.
+                if (
+                    identity.identity_unreadable
+                    and self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+                ):
+                    self._tool_call_identity_unreadable[tool_call_id] = True
             title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
@@ -11497,6 +11511,12 @@ class AcpClient:
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             harness_tool_name_cache=getattr(self, "_tool_call_harness_tool_name", None),
+            # Handed only on the KAS harness, the same gate as the kind carry (H13).
+            identity_unreadable_cache=(
+                getattr(self, "_tool_call_identity_unreadable", None)
+                if self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+                else None
+            ),
             # Set only for a session running Kiro Crew's gate extension, whose
             # dialogs carry the nonce this spawn issued; ``None`` everywhere else,
             # so no other harness's permission frame is ever read as an envelope.
