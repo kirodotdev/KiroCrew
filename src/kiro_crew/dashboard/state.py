@@ -10018,10 +10018,7 @@ class DashboardState:
         what makes an idle tree -- or a burst that moved nothing visible -- cost no
         frame. The memory is pruned to the live keys on each pass.
         """
-        under_construction = getattr(self, "_slots_under_construction", None) or ()
-        rows: list[dict[str, Any]] = [
-            {"key": k} for k in list(self._slots) if k not in under_construction
-        ]
+        rows = self._lineage_rows()
         if not rows:
             return
         _attach_slot_parents(rows, getattr(self, "spend_slot_by_session", None))
@@ -10045,6 +10042,29 @@ class DashboardState:
             self.push_slots_update(legacy_only=True)
         if self._has_slot_patch_clients():
             self._send_slot_patch({"slots": changed})
+
+    def _lineage_rows(self) -> list[dict[str, Any]]:
+        """One row per live slot carrying exactly what the lineage join reads.
+
+        The key, plus the two mint-witness fields ``serialize_slot`` writes for the
+        full frame. A child dispatched and not yet run has no node in the fold, and
+        the join nests it from ``created_by`` only when ``lineage_minted`` vouches for
+        it, so a row with the key alone would answer ``parent: None`` for that child
+        and a patch would detach a session the full frame nests.
+        """
+        under_construction = getattr(self, "_slots_under_construction", None) or ()
+        rows: list[dict[str, Any]] = []
+        for k, slot in list(self._slots.items()):
+            if k in under_construction:
+                continue
+            rows.append(
+                {
+                    "key": k,
+                    "created_by": getattr(slot, "_created_by", ""),
+                    "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
+                }
+            )
+        return rows
 
     def push_slot_removed(self, key: str) -> None:
         """Publish that slot *key* left the registry without re-sending the list.
@@ -10091,10 +10111,7 @@ class DashboardState:
         if self._has_legacy_slots_audience():
             self.push_slots_update(legacy_only=True)
         if self._has_slot_patch_clients():
-            under_construction = getattr(self, "_slots_under_construction", None) or ()
-            rows: list[dict[str, Any]] = [
-                {"key": k} for k in list(self._slots) if k not in under_construction
-            ]
+            rows = self._lineage_rows()
             _attach_slot_parents(rows, getattr(self, "spend_slot_by_session", None))
             orphans = [
                 {"key": row["key"], "parent": row["parent"]}

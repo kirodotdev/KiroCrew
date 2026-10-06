@@ -431,6 +431,72 @@ def test_a_moved_parent_is_pushed_once_as_a_patch(state, monkeypatch):
     ]
 
 
+def _opened_log(sid: str, slot: str, *, parent: str | None = None) -> None:
+    """One session log on disk, opened the way the emitter opens one."""
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    handle = CrewLog.create(lg.KIND_SESSION, sid, owner="raymond", agent="kirocrew", slot=slot)
+    data: dict[str, object] = {
+        "agent": "kirocrew",
+        "slot": slot,
+        "model": "opus",
+        "cwd": "/w",
+        "owner": "raymond",
+        "resumed": False,
+    }
+    if parent:
+        data["parent"] = {"slot": parent}
+    handle.append("session/opened", data, src="gateway")
+    del handle
+
+
+def _dispatch(state, key: str, creator: str) -> None:
+    """A child minted by *creator* through ``session_create``, before its first turn."""
+    child = state.get_or_create_slot(key, origin=SlotOrigin.USER)
+    child._created_by = creator
+    child._lineage_minted = True
+
+
+def test_a_sibling_s_first_log_keeps_a_pending_child_nested(state):
+    """Two dispatched workers; A opens its log first and the tree's patch fires.
+
+    B still has no node, so only its own mint witness can place it. The patch must
+    nest B under the lead exactly as the full frame does, not send ``parent: null``.
+    """
+    state.get_or_create_slot("lead", origin=SlotOrigin.USER)
+    _dispatch(state, "worker-a", "lead")
+    _dispatch(state, "worker-b", "lead")
+    ws = _WS()
+    state.register_ws(ws)  # type: ignore[arg-type]
+    _opened_log("s-lead", "lead")
+    _opened_log("s-a", "worker-a", parent="lead")
+    stp.projection().ensure_seeded()
+    assert "worker-b" not in stp.projection().nodes(), "B must not have a node yet"
+
+    state.push_lineage_patch()
+
+    rows = {row["key"]: row for frame in ws.patches() for row in frame}
+    assert rows["worker-a"]["parent"] == {"slot": "lead", "key": "lead"}
+    assert rows["worker-b"]["parent"] == {"slot": "lead", "key": "lead"}
+
+
+def test_a_removed_lead_re_states_its_pending_child_as_orphaned(state):
+    """The lead closes before its dispatched child ran: the removal patch must carry
+    the child with ``parent.key: None``, the value the full frame now gives it."""
+    state.get_or_create_slot("lead", origin=SlotOrigin.USER)
+    _dispatch(state, "worker-b", "lead")
+    ws = _WS()
+    state.register_ws(ws)  # type: ignore[arg-type]
+    _opened_log("s-lead", "lead")
+    stp.projection().ensure_seeded()
+
+    state._slots.pop("lead")
+    state.push_slot_removed("lead")
+
+    assert [{"key": "worker-b", "parent": {"slot": "lead", "key": None}}] in ws.patches()
+
+
 def test_the_publisher_coalesces_a_burst_into_one_push():
     from kiro_crew.dashboard.handlers.crew_log import COALESCE_SECONDS, CrewLogPublisher
 
