@@ -2052,14 +2052,14 @@
         "truncated": "· tronqué"
       },
       "manifest": {
-        "description": "Parcours et lis les fichiers de la machine qui exécute Kiro Crew sans quitter le tableau de bord. Garde plusieurs fichiers ouverts dans des onglets, explore l’arborescence avec le statut git de chaque fichier affiché à côté, cherche une chaîne dans tout un dossier et lis le markdown rendu plutôt que brut. Il est en lecture seule par conception : il ouvre les fichiers et y effectue des recherches, mais ne les modifie, déplace ni supprime jamais, et il ne peut atteindre que ton répertoire personnel, /tmp et /opt.",
+        "description": "Parcours et lis les fichiers de la machine qui exécute Kiro Crew sans quitter le tableau de bord. Garde plusieurs fichiers ouverts dans des onglets, explore l’arborescence avec le statut git de chaque fichier affiché à côté, cherche une chaîne dans tout un dossier et lis le markdown rendu plutôt que brut. Il est en lecture seule par conception : il ouvre les fichiers et y effectue des recherches, mais ne les modifie, déplace ni supprime jamais, et il ne peut atteindre que ton répertoire personnel, /tmp, /opt et /workplace.",
         "display_name": "Fichiers",
         "highlight_1": "Lecture seule : ouvre les fichiers et y effectue des recherches, sans jamais les écrire, les déplacer ni les supprimer",
         "highlight_2": "Plusieurs fichiers ouverts en même temps dans des onglets, avec coloration syntaxique",
         "highlight_3": "Les fichiers Markdown s’affichent en texte mis en forme au lieu du source brut",
         "highlight_4": "L’arborescence affiche le statut git de chaque fichier en ligne",
         "highlight_5": "Recherche dans un dossier entier, avec correspondances à la ligne et aperçu du contexte",
-        "highlight_6": "Les chemins accessibles sont limités à ton répertoire personnel, /tmp et /opt — les liens symboliques qui en sortent sont refusés",
+        "highlight_6": "Les chemins accessibles sont limités à ton répertoire personnel, /tmp, /opt et /workplace — les liens symboliques qui en sortent sont refusés",
         "page_label": "Fichiers",
         "use_case_1": "Lis, recherche, prévisualise, télécharge ou discute des fichiers de l'hôte de la passerelle sans accorder d'accès en écriture à la page.",
         "configuration_1": "Active l'app et ouvre un dossier autorisé depuis la barre de chemin ; aucun compte n'est requis, et Git ou ripgrep ajoutent seulement des fonctions facultatives d'état et de recherche."

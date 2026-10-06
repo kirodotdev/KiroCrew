@@ -1064,14 +1064,14 @@
         "truncated": "· truncated"
       },
       "manifest": {
-        "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory plus /tmp and /opt.",
+        "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory plus /tmp, /opt, and /workplace.",
         "display_name": "Files",
         "highlight_1": "Read-only: opens and searches files, and never writes, moves, or deletes them",
         "highlight_2": "Multiple files open at once in tabs, with syntax highlighting",
         "highlight_3": "Markdown files render as formatted text instead of raw source",
         "highlight_4": "Directory tree shows each file's git status inline",
         "highlight_5": "Search across a directory with line-level matches and surrounding preview",
-        "highlight_6": "Reachable paths are limited to your home directory, /tmp, and /opt — symlinks out are refused",
+        "highlight_6": "Reachable paths are your home directory, /tmp, /opt, and /workplace — symlinks out are refused",
         "page_label": "Files",
         "use_case_1": "Read, search, preview, download, or discuss files on the gateway host without granting the page write access.",
         "configuration_1": "Enable the app and open an allowed directory from the path bar; no account is required, and git or ripgrep only add optional status and search enhancements."

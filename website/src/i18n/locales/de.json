@@ -2015,14 +2015,14 @@
         "truncated": "· gekürzt"
       },
       "manifest": {
-        "description": "Durchsuche und lies Dateien auf dem Rechner, der Kiro Crew ausführt, ohne das Dashboard zu verlassen. Halte mehrere Dateien in Tabs offen, gehe den Verzeichnisbaum durch, in dem neben jeder Datei ihr Git-Status steht, suche in einem ganzen Ordner nach einer Zeichenfolge und lies Markdown gerendert statt im Rohtext. Der Zugriff ist bewusst nur lesend: Dateien werden geöffnet und durchsucht, aber nie bearbeitet, verschoben oder gelöscht, und erreichbar sind nur dein Home-Verzeichnis sowie /tmp und /opt.",
+        "description": "Durchsuche und lies Dateien auf dem Rechner, der Kiro Crew ausführt, ohne das Dashboard zu verlassen. Halte mehrere Dateien in Tabs offen, gehe den Verzeichnisbaum durch, in dem neben jeder Datei ihr Git-Status steht, suche in einem ganzen Ordner nach einer Zeichenfolge und lies Markdown gerendert statt im Rohtext. Der Zugriff ist bewusst nur lesend: Dateien werden geöffnet und durchsucht, aber nie bearbeitet, verschoben oder gelöscht, und erreichbar sind nur dein Home-Verzeichnis sowie /tmp, /opt und /workplace.",
         "display_name": "Dateien",
         "highlight_1": "Schreibgeschützt: öffnet und durchsucht Dateien und schreibt, verschiebt oder löscht sie nie",
         "highlight_2": "Mehrere Dateien gleichzeitig in Tabs offen, mit Syntaxhervorhebung",
         "highlight_3": "Markdown-Dateien werden als formatierter Text statt als Rohquelle dargestellt",
         "highlight_4": "Der Verzeichnisbaum zeigt den Git-Status jeder Datei direkt an",
         "highlight_5": "Suche über ein Verzeichnis hinweg mit Treffern auf Zeilenebene und umgebender Vorschau",
-        "highlight_6": "Erreichbare Pfade sind auf dein Home-Verzeichnis, /tmp und /opt begrenzt — Symlinks nach außen werden abgelehnt",
+        "highlight_6": "Erreichbare Pfade sind auf dein Home-Verzeichnis, /tmp, /opt und /workplace begrenzt — Symlinks nach außen werden abgelehnt",
         "page_label": "Dateien",
         "use_case_1": "Lies, durchsuche, zeige, lade oder besprich Dateien auf dem Gateway-Host, ohne der Seite Schreibzugriff zu gewähren.",
         "configuration_1": "Aktiviere die App und öffne über die Pfadleiste ein erlaubtes Verzeichnis; ein Konto ist nicht erforderlich, und Git oder ripgrep ergänzen nur optionale Status- und Suchfunktionen."

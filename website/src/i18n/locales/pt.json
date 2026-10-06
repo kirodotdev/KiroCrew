@@ -1966,14 +1966,14 @@
         "truncated": "· truncado"
       },
       "manifest": {
-        "description": "Navegue e leia arquivos na máquina que executa o Kiro Crew sem sair do painel. Mantenha vários arquivos abertos em abas, percorra a árvore de diretórios com o status git de cada arquivo ao lado, pesquise um texto em uma pasta inteira e leia markdown renderizado em vez de bruto. É somente leitura por princípio: abre e pesquisa arquivos, mas nunca os edita, move ou exclui, e só alcança o seu diretório pessoal, além de /tmp e /opt.",
+        "description": "Navegue e leia arquivos na máquina que executa o Kiro Crew sem sair do painel. Mantenha vários arquivos abertos em abas, percorra a árvore de diretórios com o status git de cada arquivo ao lado, pesquise um texto em uma pasta inteira e leia markdown renderizado em vez de bruto. É somente leitura por princípio: abre e pesquisa arquivos, mas nunca os edita, move ou exclui, e só alcança o seu diretório pessoal, além de /tmp, /opt e /workplace.",
         "display_name": "Arquivos",
         "highlight_1": "Somente leitura: abre e pesquisa arquivos e nunca os grava, move ou exclui",
         "highlight_2": "Vários arquivos abertos ao mesmo tempo em abas, com realce de sintaxe",
         "highlight_3": "Arquivos Markdown são exibidos como texto formatado, em vez do código bruto",
         "highlight_4": "A árvore de diretórios mostra o status git de cada arquivo na própria linha",
         "highlight_5": "Pesquise em um diretório inteiro, com correspondências por linha e uma prévia do entorno",
-        "highlight_6": "Os caminhos acessíveis se limitam ao seu diretório pessoal, /tmp e /opt — links simbólicos para fora são recusados",
+        "highlight_6": "Os caminhos acessíveis se limitam ao seu diretório pessoal, /tmp, /opt e /workplace — links simbólicos para fora são recusados",
         "page_label": "Arquivos",
         "use_case_1": "Leia, pesquise, visualize, baixe ou discuta arquivos no host do gateway sem conceder acesso de gravação à página.",
         "configuration_1": "Ative o app e abra um diretório permitido pela barra de caminho; nenhuma conta é necessária, e Git ou ripgrep apenas acrescentam recursos opcionais de status e pesquisa."

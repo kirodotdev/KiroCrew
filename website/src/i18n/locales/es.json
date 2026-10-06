@@ -1966,14 +1966,14 @@
         "truncated": "· truncado"
       },
       "manifest": {
-        "description": "Explora y lee archivos en la máquina que ejecuta Kiro Crew sin salir del panel. Mantén varios archivos abiertos en pestañas, recorre el árbol de directorios con el estado de git de cada archivo al lado, busca una cadena en toda una carpeta y lee el markdown renderizado en lugar del código fuente. Es de solo lectura por diseño: abre y busca archivos, pero nunca los edita, los mueve ni los elimina, y solo puede llegar a tu directorio home más /tmp y /opt.",
+        "description": "Explora y lee archivos en la máquina que ejecuta Kiro Crew sin salir del panel. Mantén varios archivos abiertos en pestañas, recorre el árbol de directorios con el estado de git de cada archivo al lado, busca una cadena en toda una carpeta y lee el markdown renderizado en lugar del código fuente. Es de solo lectura por diseño: abre y busca archivos, pero nunca los edita, los mueve ni los elimina, y solo puede llegar a tu directorio home más /tmp, /opt y /workplace.",
         "display_name": "Archivos",
         "highlight_1": "Solo lectura: abre y busca archivos, y nunca los escribe, los mueve ni los elimina",
         "highlight_2": "Varios archivos abiertos a la vez en pestañas, con resaltado de sintaxis",
         "highlight_3": "Los archivos Markdown se muestran como texto con formato en lugar del código fuente",
         "highlight_4": "El árbol de directorios muestra el estado de git de cada archivo en línea",
         "highlight_5": "Busca en un directorio con coincidencias por línea y una vista previa del contexto",
-        "highlight_6": "Las rutas accesibles se limitan a tu directorio home, /tmp y /opt — los enlaces simbólicos hacia fuera se rechazan",
+        "highlight_6": "Las rutas accesibles se limitan a tu directorio home, /tmp, /opt y /workplace — los enlaces simbólicos hacia fuera se rechazan",
         "page_label": "Archivos",
         "use_case_1": "Lee, busca, previsualiza, descarga o comenta archivos del host del gateway sin conceder a la página acceso de escritura.",
         "configuration_1": "Activa la app y abre un directorio permitido desde la barra de ruta; no se requiere ninguna cuenta, y Git o ripgrep solo añaden funciones opcionales de estado y búsqueda."

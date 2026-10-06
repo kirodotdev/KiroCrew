@@ -16,8 +16,13 @@ the root since KiroCrew strips the prefix):
   GET  /complete?path=<p>&kind=<dir|all>&limit=<n> → {"parent","prefix","entries":[...]}
 
 Path safety: callers may only access paths under the user's home dir or the
-system temp dir on any OS, plus ``/home/`` and ``/opt/`` on POSIX (after
-symlink resolution).  Paths outside the allow-list return 403.
+system temp dir on any OS, plus ``/home/``, ``/opt/`` and ``/workplace/`` on
+POSIX (after symlink resolution).  Paths outside the allow-list return 403.
+
+``/workplace`` is a top-level workspace mount present on some hosts; it is
+included only when it exists and is subject to the same guarantees as every
+other root — ``_is_sensitive`` still runs on every resolved path, and a symlink
+must still resolve INTO an allowed root ("symlinks out are refused").
 
 Size / depth caps are tunable via env vars but have safe defaults.
 """
@@ -90,10 +95,16 @@ def _compute_allowed_roots(home: Path, tmp: Path) -> list[Path]:
     """
     roots = [home, tmp]
     if platform_compat.IS_POSIX:
-        # /home and /opt are POSIX-only conventions; on Windows they resolve
-        # to nonexistent C:\home / C:\opt and would be dropped by the
-        # exists() filter.
-        roots += [Path("/home").resolve(), Path("/opt").resolve()]
+        # /home, /opt and /workplace are POSIX-only conventions; on Windows they
+        # resolve to nonexistent C:\home / C:\opt / C:\workplace and would be
+        # dropped by the exists() filter. /workplace is a top-level workspace
+        # mount present on some hosts — included where it exists, dropped
+        # elsewhere.
+        roots += [
+            Path("/home").resolve(),
+            Path("/opt").resolve(),
+            Path("/workplace").resolve(),
+        ]
     # De-dupe and only keep ones that exist
     return list(dict.fromkeys(p for p in roots if p.exists()))
 

@@ -1966,14 +1966,14 @@
         "truncated": "· troncato"
       },
       "manifest": {
-        "description": "Sfoglia e leggi i file sulla macchina che esegue Kiro Crew senza uscire dalla dashboard. Tieni aperti più file in schede, percorri l’albero delle cartelle con accanto lo stato git di ciascun file, cerca una stringa in un’intera cartella e leggi il markdown formattato anziché grezzo. È di sola lettura per scelta: apre e cerca nei file ma non li modifica, non li sposta e non li elimina mai, e può raggiungere solo la tua home più /tmp e /opt.",
+        "description": "Sfoglia e leggi i file sulla macchina che esegue Kiro Crew senza uscire dalla dashboard. Tieni aperti più file in schede, percorri l’albero delle cartelle con accanto lo stato git di ciascun file, cerca una stringa in un’intera cartella e leggi il markdown formattato anziché grezzo. È di sola lettura per scelta: apre e cerca nei file ma non li modifica, non li sposta e non li elimina mai, e può raggiungere solo la tua home più /tmp, /opt e /workplace.",
         "display_name": "File",
         "highlight_1": "Sola lettura: apre e cerca nei file, e non li scrive, sposta o elimina mai",
         "highlight_2": "Più file aperti contemporaneamente in schede, con evidenziazione della sintassi",
         "highlight_3": "I file Markdown vengono resi come testo formattato invece che come sorgente grezzo",
         "highlight_4": "L’albero delle cartelle mostra in linea lo stato git di ogni file",
         "highlight_5": "Cerca in tutta una cartella con corrispondenze riga per riga e anteprima del contesto",
-        "highlight_6": "I percorsi raggiungibili si limitano alla tua home, /tmp e /opt — i symlink che escono da lì vengono rifiutati",
+        "highlight_6": "I percorsi raggiungibili si limitano alla tua home, /tmp, /opt e /workplace — i symlink che escono da lì vengono rifiutati",
         "page_label": "File",
         "use_case_1": "Leggi, cerca, visualizza in anteprima, scarica o discuti i file sull'host del gateway senza concedere alla pagina accesso in scrittura.",
         "configuration_1": "Attiva l'app e apri una directory consentita dalla barra del percorso; non serve un account e Git o ripgrep aggiungono solo funzioni opzionali per stato e ricerca."
