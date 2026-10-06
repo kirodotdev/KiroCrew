@@ -3358,7 +3358,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         widget_density=section.get("widget_density"),
         use_builtin_browser=section.read("use_builtin_browser", _safe_bool),
         browser_view_port=_port_or_unset(section.get("browser_view_port")),
-        verbosity=section.get("verbosity"),
+        verbosity=_sections.normalize_verbosity(section.get("verbosity")),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
         terminal=section.get("terminal"),

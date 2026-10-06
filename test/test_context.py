@@ -885,13 +885,19 @@ class TestContextBuilder:
         msg, _ = builder.build_message("first turn", is_new_session=True, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" not in msg
 
-    def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path):
+    def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path, monkeypatch):
         """Mirrors the session-start gate (`inject_skills = ... not is_custom`).
 
         A custom agent's session-start context deliberately carries no skills
         block, so re-injecting one would ADD context rather than restore what
         compaction dropped.
         """
+        # This test counts the skills reinjection only; keep the reply-style
+        # block (on by default, answer_only) out of the count.
+        monkeypatch.setattr(
+            "kiro_crew.context_assembly.sections._response_preferences_apply",
+            lambda *a, **k: False,
+        )
         builder = self._reinject_builder(tmp_path)
         msg, _ = builder.build_message(
             "carry on",

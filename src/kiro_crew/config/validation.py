@@ -516,6 +516,14 @@ def validate_config_data(data: dict) -> dict:
     if "auto_update" in data and not isinstance(data["auto_update"], bool):
         data["auto_update"] = _coerce_bool(data["auto_update"], False)
 
+    # 3c. A retired verbosity level is renamed, not rejected: the enum check
+    # would otherwise delete it and drop the user back to the verbose default.
+    dashboard = data.get("dashboard")
+    if isinstance(dashboard, dict) and "verbosity" in dashboard:
+        from kiro_crew.config.sections import normalize_verbosity
+
+        dashboard["verbosity"] = normalize_verbosity(dashboard["verbosity"])
+
     # 3a. Resolve the STT provider and model through the loader's own degradation
     # rules before the enum check can discard them. Both fields accept values that
     # are deliberately absent from their enum (a retired provider, and a model name

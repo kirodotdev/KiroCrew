@@ -321,7 +321,7 @@ export interface DashboardConfig {
   default_memory_mode: MemoryMode
   widget_density: 'more' | 'less'
   use_builtin_browser: boolean
-  verbosity: 'default' | 'concise' | 'ultra' | 'answer_only'
+  verbosity: 'default' | 'concise' | 'answer_only'
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean

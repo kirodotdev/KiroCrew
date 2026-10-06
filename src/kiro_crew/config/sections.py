@@ -21,7 +21,7 @@ import re as _re
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, Field, dataclass, field, fields
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import model_registry
@@ -2515,6 +2515,33 @@ CHAT_ENTRY_CACHE_BYTES_MIN = 4 * 1024 * 1024
 CHAT_ENTRY_CACHE_BYTES_MAX = 512 * 1024 * 1024
 CHAT_ENTRY_CACHE_BYTES_DEFAULT = 32 * 1024 * 1024
 
+#: The ``dashboard.verbosity`` levels a writer may store.
+VERBOSITY_LEVELS: tuple[str, ...] = ("default", "concise", "answer_only")
+#: Retired levels and the level each one now means. ``ultra`` sat between
+#: ``concise`` and ``answer_only`` and was folded into the terser neighbour, so a
+#: config or an older client that still says ``ultra`` keeps a terse reply style.
+LEGACY_VERBOSITY_ALIASES: dict[str, str] = {"ultra": "answer_only"}
+
+
+@overload
+def normalize_verbosity(raw: str) -> str: ...
+
+
+@overload
+def normalize_verbosity(raw: object) -> object: ...
+
+
+def normalize_verbosity(raw: object) -> object:
+    """Map a retired ``dashboard.verbosity`` level onto its replacement.
+
+    Anything that is not a known alias is returned unchanged, so the existing
+    validation (enum check, the UI's own narrowing) still decides what an
+    unknown value becomes.
+    """
+    if isinstance(raw, str):
+        return LEGACY_VERBOSITY_ALIASES.get(raw, raw)
+    return raw
+
 
 @dataclass
 class DashboardConfig:
@@ -2781,14 +2808,15 @@ class DashboardConfig:
         ),
     )
     verbosity: str = field(
-        default="default",
+        # A fresh install starts terse. An existing config already carries the
+        # key (every full save writes the whole section), so it keeps its level.
+        default="answer_only",
         metadata=_meta(
             "Response Verbosity",
-            "Controls how terse the agent's prose is. 'default' is normal; "
+            "Controls how terse the agent's prose is. New installs start at "
+            "'answer_only'. 'default' is normal length; "
             "'concise' injects brevity guidelines (lead with the answer, cut "
-            "filler, keep code/errors verbatim); 'ultra' writes for an ADHD "
-            "reader — the answer lands in a 3-sentence opening, and any detail "
-            "after it must be scannable bullets rather than prose; "
+            "filler, keep code/errors verbatim); "
             "'answer_only' drops explanation altogether — the answer alone, drawn "
             "as a picture when it has a shape, in sentences of at most twelve "
             "plain words; detail only when the user asks for it, plus one undo "
@@ -2796,7 +2824,7 @@ class DashboardConfig:
             "touching security, data or spend. At every level security warnings and "
             "irreversible-action confirmations always appear but stay brief, "
             "and ordered multi-step instructions stay complete.",
-            enum=["default", "concise", "ultra", "answer_only"],
+            enum=list(VERBOSITY_LEVELS),
         ),
     )
     link_previews: bool = field(

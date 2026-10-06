@@ -1,4 +1,4 @@
-"""Tests for Response Verbosity (``default`` / ``concise`` / ``ultra`` / ``answer_only``).
+"""Tests for Response Verbosity (``default`` / ``concise`` / ``answer_only``; retired ``ultra``).
 
 Lives under ``test/`` (the collected root per setup.cfg ``testpaths``) so these
 run in CI. Covers four layers: the [RESPONSE PREFERENCES] block built from the
@@ -21,6 +21,7 @@ from dashboard_owner_helpers import as_owner
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig, config_path
+from kiro_crew.config.sections import VERBOSITY_LEVELS, normalize_verbosity
 from kiro_crew.context import (
     _MULTIBYTE_TABLE,
     _RESPONSE_PREFERENCES_FOOTER,
@@ -89,7 +90,7 @@ class TestResponsePreferencesSection:
     def test_the_frame_is_identical_across_levels(self):
         """Only the rules differ; the wrapper the model learns to spot does not."""
         heads = set()
-        for level in ("concise", "ultra", "answer_only"):
+        for level in ("concise", "answer_only"):
             block = _section(verbosity=level)
             heads.add(block.split("## Reply style:", 1)[0])
         assert len(heads) == 1
@@ -141,141 +142,32 @@ class TestResponsePreferencesSection:
         assert _build_response_preferences_section(fake_cfg) == ""
 
 
-class TestUltraConciseBlock:
-    """``ultra`` is a distinct, stricter level — not an alias of ``concise``."""
+class TestRetiredUltraLevel:
+    """``ultra`` was retired; a config that still names it reads as ``answer_only``."""
 
-    def test_ultra_emits_its_own_block(self):
-        result = _section(verbosity="ultra")
-        assert "## Reply style: Ultra-Brief (ADHD reader)" in result
-        assert "simulate the reader" in result
-        # The concise block must NOT leak in — the branches are exclusive.
-        assert "Concise mode is on" not in result
+    def test_ultra_renders_the_answer_only_block(self):
+        assert _section(verbosity="ultra") == _section(verbosity="answer_only")
 
-    def test_ultra_constrains_the_whole_response_not_just_the_opening(self):
-        """Regression: the ORIGINAL ultra prompt capped only the opening, then
-        said "supporting detail is welcome" and "length after it is fine" —
-        which the model read as a licence to expand. Measured output averaged
-        1,407 chars, LONGER than default and 76% longer than concise, defeating
-        the whole point of the mode. The rewrite removes that licence: the
-        suppression must apply to the entire reply, not a lede budget.
-        """
-        result = _section(verbosity="ultra")
-        assert "Open with THE answer in 1–2 sentences" in result
-        # The expansion licences that caused the bug must be GONE.
-        assert "supporting detail is welcome" not in result
-        assert "governs the OPENING, not the whole response" not in result
-        assert "Length after it is fine" not in result
+    def test_the_old_ultra_rules_are_gone(self):
+        for level in ("default", "concise", "ultra", "answer_only"):
+            assert "Ultra-Brief" not in _section(verbosity=level)
 
-    def test_ultra_overrides_the_completionist_bias(self):
-        """The mechanism that actually shortens output: naming and opposing the
-        model's own drive toward completeness, so it stops volunteering detail.
-        """
-        result = _section(verbosity="ultra")
-        assert "strong bias toward completeness. Override it" in result
-        assert "80% complete in 2 lines beats 100% complete in 20 lines" in result
+    def test_ultra_is_no_longer_an_advertised_level(self):
+        assert "ultra" not in VERBOSITY_LEVELS
+        assert normalize_verbosity("ultra") == "answer_only"
 
-    def test_ultra_models_the_reader_who_stops_reading(self):
-        """Ultra is written for a reader who will not scroll — the prompt must
-        say so explicitly, because that framing is what drives prioritization.
-        """
-        result = _section(verbosity="ultra")
-        assert "first 2 sentences" in result
-        assert "close the tab" in result
-        assert "wasted tokens" in result
+    def test_normalize_leaves_other_values_alone(self):
+        for raw in ("default", "concise", "answer_only", "bogus", None, ["ultra"]):
+            assert normalize_verbosity(raw) == raw
 
-    def test_ultra_bans_the_structures_that_inflate_output(self):
-        """Regression: the original prompt ENCOURAGED tables and structure as
-        "signposts", which added tokens instead of removing them. Structure is
-        now a banned expansion vector, not an endorsed navigation aid.
-        """
-        result = _section(verbosity="ultra")
-        assert "Do NOT add: tables, headers" in result
-        assert "would the reader be stuck without this line?" in result
-        # The old "structure is not padding" endorsement must be gone.
-        assert "it is not padding" not in result
+    def test_load_maps_a_stored_ultra_to_answer_only(self, tmp_path):
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps({"dashboard": {"verbosity": "ultra"}}), encoding="utf-8")
+        with patch("kiro_crew.config.loader.config_path", return_value=p):
+            assert KiroCrewConfig.load().dashboard.verbosity == "answer_only"
 
-    def test_ultra_caps_supporting_bullets(self):
-        """Detail is permitted only when its absence blocks the reader, and is
-        bounded — an unbounded bullet list is how the old prompt leaked length.
-        """
-        result = _section(verbosity="ultra")
-        assert "only if the reader would be STUCK without them" in result
-        assert "Max 3" in result
 
-    def test_ultra_takes_a_position(self):
-        result = _section(verbosity="ultra")
-        assert "Take a position. Name your pick" in result
-        assert 'Resolve "it depends" immediately' in result
-
-    def test_ultra_marks_the_critical_point_for_scanners(self):
-        """The reader scans for emphasis before reading — exactly one anchor."""
-        result = _section(verbosity="ultra")
-        assert "Bold the single most critical point" in result
-
-    def test_ultra_never_cuts_a_required_output_format(self):
-        """Regression guard: the brevity rules must not eat a surface-required
-        element (an options line, a diff block, a PR URL), which renders the
-        response broken rather than terse.
-        """
-        result = _section(verbosity="ultra")
-        assert "Required output formats are sacred and never cut" in result
-        assert "[OPTIONS:] lines" in result
-        assert "diff blocks for file changes" in result
-        assert "full PR/MR URLs" in result
-
-    def test_ultra_exempts_explicitly_requested_long_output(self):
-        """Brevity constrains UNSOLICITED verbosity — never requested depth."""
-        result = _section(verbosity="ultra")
-        assert "When the user ASKS for something long" in result
-        assert "deliver what was asked" in result
-
-    def test_ultra_is_stricter_than_concise(self):
-        ultra = _section(verbosity="ultra")
-        concise = _section(verbosity="concise")
-        assert ultra != concise
-        # concise explicitly ALLOWS a brief progress note; ultra does not.
-        assert "Keep progress signal brief, not absent" in concise
-        assert "Keep progress signal brief, not absent" not in ultra
-        # ultra carries the anti-completionist override; concise does not.
-        assert "Override it" in ultra
-        assert "Override it" not in concise
-
-    def test_ultra_keeps_safety_carveout(self):
-        """The brevity floor: a terse reply must never OMIT a security
-        warning, a destructive-action confirmation, or a step in an ordered
-        procedure — those failures cause mistakes, not just terseness.
-        """
-        result = _section(verbosity="ultra")
-        assert "security warnings" in result
-        assert "irreversible" in result
-        assert "multi-step" in result
-        # Correctness carve-out: code/errors are never compressed.
-        assert "verbatim" in result
-
-    def test_ultra_bounds_the_stakes_carveout_to_omission_not_length(self):
-        """The old carve-out ("Never compress for brevity: security warnings,
-        ...") was an unbounded length licence: it authorised the model to stay
-        verbose exactly at high stakes, the one place ultra's whole framing
-        (the reader closes the tab) makes a wall of text most costly. Recast on
-        the same single axis answer_only uses — stakes govern what may not be
-        OMITTED, never how long the reply is — the warning is mandatory but
-        one line; an ordered procedure keeps its full length because a dropped
-        step IS an omission, and payload (code, commands, errors) was already
-        exempt as correctness, not stakes.
-        """
-        result = " ".join(_section(verbosity="ultra").split())
-        # The unbounded length licence is gone — including its echo in the
-        # required-formats bullet, which listed security warnings as a
-        # never-cut format ("regardless of brevity").
-        assert "Never compress for brevity" not in result
-        assert "URLs, security warnings" not in result
-        # The bounded, omission-focused form is in: the warning must APPEAR,
-        # and it is one line.
-        assert "Stakes change what you must not omit, never the length" in result
-        assert "always appear, each as one line naming the call, the risk" in result
-        assert "whether it can be undone" in result
-        assert "the mechanism and the failure modes are not required" in result
-
+class TestUnknownLevel:
     def test_unknown_level_falls_back_to_empty(self):
         result = _section(verbosity="bogus")
         assert result == ""
@@ -519,19 +411,10 @@ class TestAnswerOnlyBlock:
         assert "Reply in the user's language." in self._block()
 
     def test_the_three_checks_are_unique_to_answer_only(self):
-        for level in ("concise", "ultra"):
+        for level in ("concise",):
             other = _section(verbosity=level)
             assert "Shape check" not in other
             assert "at most 12 words" not in other
-
-    def test_answer_only_is_stricter_than_ultra(self):
-        answer_only = self._block()
-        ultra = _section(verbosity="ultra")
-        assert answer_only != ultra
-        # ultra budgets an explanation (bullets); answer_only grants none.
-        assert "Max 3" in ultra
-        assert "Max 3" not in answer_only
-        assert "Say only the answer" not in ultra
 
 
 class TestTokenRetired:
@@ -611,21 +494,21 @@ class TestSessionContextCarriesPreferences:
 
     @pytest.mark.parametrize("session_key", ("dashboard:abc", "slack:C1:1.2", "cli:local"))
     def test_injected_on_every_transport(self, tmp_path, session_key):
-        _seed_verbosity("ultra")
+        _seed_verbosity("answer_only")
         msg, _ = _builder(tmp_path).build_message(
             "first turn", is_new_session=True, session_key=session_key
         )
         assert _folded(_RESPONSE_PREFERENCES_HEADER) in msg
 
     def test_withheld_from_a_subagent_session(self, tmp_path):
-        _seed_verbosity("ultra")
+        _seed_verbosity("answer_only")
         msg, _ = _builder(tmp_path).build_message(
             "first turn", is_new_session=True, session_key="subagent:abc123"
         )
         assert _folded(_RESPONSE_PREFERENCES_HEADER) not in msg
 
     def test_the_trusted_runtime_source_decides_not_the_key(self, tmp_path):
-        _seed_verbosity("ultra")
+        _seed_verbosity("answer_only")
         builder = _builder(tmp_path)
         msg, _ = builder.build_message(
             "first turn",
@@ -755,9 +638,9 @@ class TestReinjectedAfterCompaction:
         _seed_verbosity("concise")
         b = _builder(tmp_path)
         b.build_session_context(session_key="dashboard:main")
-        _seed_verbosity("ultra")
+        _seed_verbosity("answer_only")
         msg, _ = b.build_message("carry on", is_new_session=False, needs_reinjection=True)
-        assert "## Reply style: Ultra-Brief (ADHD reader)" in msg
+        assert "## Reply style: Answer Only" in msg
         assert "## Reply style: Concise" not in msg
 
 
@@ -771,15 +654,30 @@ class TestVerbosityRoundTrip:
         with patch("kiro_crew.config.loader.config_path", return_value=p):
             yield p
 
-    def test_defaults_to_default(self):
-        assert KiroCrewConfig().dashboard.verbosity == "default"
+    def test_fresh_install_defaults_to_answer_only(self):
+        assert KiroCrewConfig().dashboard.verbosity == "answer_only"
+
+    def test_config_without_the_key_loads_answer_only(self, cfg_file):
+        assert KiroCrewConfig.load().dashboard.verbosity == "answer_only"
+
+    def test_a_stored_default_is_kept(self, cfg_file):
+        """Every full save writes the key, so an existing install keeps its level."""
+        cfg_file.write_text(json.dumps({"dashboard": {"verbosity": "default"}}), encoding="utf-8")
+        assert KiroCrewConfig.load().dashboard.verbosity == "default"
+        cfg = KiroCrewConfig.load()
+        cfg.save()
+        assert json.loads(cfg_file.read_text())["dashboard"]["verbosity"] == "default"
+
+    def test_first_save_materializes_answer_only(self, cfg_file):
+        KiroCrewConfig.load().save()
+        assert json.loads(cfg_file.read_text())["dashboard"]["verbosity"] == "answer_only"
 
     def test_answer_only_is_an_advertised_enum_value(self):
         """The Settings UI and the config-patch validator both read this enum;
         a level missing here is a level the user cannot select.
         """
         field = KiroCrewConfig().dashboard.__dataclass_fields__["verbosity"]
-        assert field.metadata["enum"] == ["default", "concise", "ultra", "answer_only"]
+        assert field.metadata["enum"] == ["default", "concise", "answer_only"]
 
     def test_answer_only_round_trips(self, cfg_file):
         cfg = KiroCrewConfig()
@@ -838,11 +736,12 @@ async def test_handler_put_verbosity_concise(handler_app, cfg_file):
 
 
 @pytest.mark.asyncio
-async def test_handler_put_verbosity_ultra(handler_app, cfg_file):
+async def test_handler_put_retired_ultra_stores_answer_only(handler_app, cfg_file):
+    """An older client that still sends ``ultra`` is not rejected."""
     async with TestClient(TestServer(handler_app)) as client:
         resp = await client.put("/api/dashboard/config", json={"verbosity": "ultra"})
         assert resp.status == 200
-    assert KiroCrewConfig.load().dashboard.verbosity == "ultra"
+    assert KiroCrewConfig.load().dashboard.verbosity == "answer_only"
 
 
 @pytest.mark.asyncio
@@ -860,8 +759,9 @@ async def test_handler_rejection_names_every_accepted_level(handler_app, cfg_fil
         resp = await client.put("/api/dashboard/config", json={"verbosity": "aggressive"})
         assert resp.status == 400
         message = (await resp.json())["error"]
-    for level in ("default", "concise", "ultra", "answer_only"):
+    for level in ("default", "concise", "answer_only"):
         assert level in message, level
+    assert "ultra" not in message
 
 
 @pytest.mark.asyncio
@@ -870,7 +770,7 @@ async def test_handler_put_verbosity_rejects_invalid(handler_app, cfg_file):
         resp = await client.put("/api/dashboard/config", json={"verbosity": "aggressive"})
         assert resp.status == 400
     # bad value must not be persisted
-    assert KiroCrewConfig.load().dashboard.verbosity == "default"
+    assert KiroCrewConfig.load().dashboard.verbosity == "answer_only"
 
 
 @pytest.mark.asyncio

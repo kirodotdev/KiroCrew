@@ -126,6 +126,9 @@ class _Rig:
         self.tmp = tmp_path
         self.monkeypatch = monkeypatch
         self.cfg = KiroCrewConfig()
+        # Goldens pin composition, not reply style: start every scenario at
+        # normal length; scenarios that test a level set it themselves.
+        self.cfg.dashboard.verbosity = "default"
         monkeypatch.setattr(ctx, "datetime", _FrozenClock)
         monkeypatch.setattr(ctx, "get_local_tz", lambda: ("UTC", timezone.utc))
         monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda *a, **k: self.cfg)
@@ -238,7 +241,6 @@ _STABLE_TEXT = {
     "member_how_you_work_unavailable": lambda: (
         ctx._MEMBER_HOW_YOU_WORK_COMMON + ctx._MEMBER_BRIEFING_ITEM_UNAVAILABLE
     ),
-    "reply_ultra": lambda: ctx._reply_style_rules("ultra"),
     "reply_concise": lambda: ctx._reply_style_rules("concise"),
     "reply_answer_only": lambda: ctx._reply_style_rules("answer_only"),
     "response_preferences_frame": lambda: (
@@ -258,7 +260,6 @@ _STABLE_TEXT_SHA256 = {
     "member_how_you_work_unavailable": "0c77e7625768a1a10f8a5ea309f85a10137457e94699a9ac22ac0f08c1676d25",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
-    "reply_ultra": "6a0c7d259cc93b4f39bc612d23fa25704e1524635322ab157bade6757d552592",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
     "ui_language_ja": "1ff57b08f963a1d5cab08ba0d58655ca56dd0bdcc81e7567fb00cf1d9ffed168",
 }
@@ -457,7 +458,7 @@ def _user_range_with_prefix(rig: _Rig) -> str:
 
 def _subagent_scope(rig: _Rig) -> str:
     rig.seed_memory()
-    rig.cfg.dashboard.verbosity = "ultra"
+    rig.cfg.dashboard.verbosity = "answer_only"
     return _turn(
         rig,
         "sub task",

@@ -239,50 +239,11 @@ def _reply_style_rules(level: str) -> str:
 
     ``""`` for ``default`` and for any value the enum does not know, so a
     config edited by hand to an unrecognised level injects nothing rather
-    than a half-formed block.
+    than a half-formed block. A retired level is read as its replacement.
     """
-    if level == "ultra":
-        return (
-            "## Reply style: Ultra-Brief (ADHD reader)\n\n"
-            "Before responding, simulate the reader: they will read the "
-            "first 2 sentences, scan for bold text and code blocks, then "
-            "close the tab. Anything they won't reach is wasted tokens. "
-            "Structure for THAT reader, not an attentive one.\n\n"
-            "You have a strong bias toward completeness. Override it. The "
-            "reader's time costs more than your thoroughness. An answer "
-            "that's 80% complete in 2 lines beats 100% complete in 20 "
-            "lines. Missing a caveat is acceptable. Missing an edge case "
-            "is acceptable.\n\n"
-            "Rules:\n"
-            "- Open with THE answer in 1–2 sentences. Bold the single most "
-            "critical point.\n"
-            "- Supporting bullets only if the reader would be STUCK without "
-            "them. Max 3. Each bullet is one short sentence.\n"
-            '- Take a position. Name your pick. Resolve "it depends" '
-            "immediately.\n"
-            "- Do NOT add: tables, headers, numbered lists > 3 items, "
-            '"common pitfalls", "also consider", multi-section layouts, '
-            'or any content that fails the test: "would the reader be '
-            'stuck without this line?"\n'
-            "- Code blocks and commands are the answer — never cut them.\n"
-            "- Stakes change what you must not omit, never the length: "
-            "security warnings and irreversible-action confirmations "
-            "always appear, each as one line naming the call, the risk, "
-            "and whether it can be undone; the mechanism and the failure "
-            "modes are not required. Ordered multi-step instructions "
-            "where a dropped step causes a mistake stay complete, and "
-            "code, commands, paths, identifiers and error strings stay "
-            "verbatim.\n"
-            "- When the user ASKS for something long (design doc, tutorial, "
-            "full implementation), ignore these constraints and deliver "
-            "what was asked.\n"
-            "- Required output formats are sacred and never cut: "
-            "[OPTIONS:] lines, diff blocks for file changes, full PR/MR "
-            "URLs, and any format the rendering surface "
-            "needs. These go in their required position regardless of "
-            "brevity.\n"
-            "- Preserve the user's language."
-        )
+    from kiro_crew.config.sections import normalize_verbosity
+
+    level = normalize_verbosity(level)
     if level == "concise":
         return (
             "## Reply style: Concise\n\n"
@@ -365,7 +326,7 @@ def _response_preferences_apply(session_key: str, runtime_source: str | None = N
     every session whose final message a person reads — dashboard, every
     messaging channel, a cron digest. A ``subagent:`` session is the one kind
     whose final message is read by its PARENT agent instead: the parent needs
-    the caveats and edge cases the ``ultra`` and ``answer_only`` levels tell
+    the caveats and edge cases the ``answer_only`` level tells
     the writer to drop, so the block is withheld there. Resolved through the
     same runtime-source seam as ``[RUNTIME]``, so a sub-agent is recognised the
     way every other transport is.
@@ -392,8 +353,7 @@ def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
     that carries its own style guidance; a bare ``##`` heading in the middle of
     the context would have no stated rank against it.
 
-    Returns ``""`` when the level is ``default`` or unrecognised, so installs
-    that never touched the setting see byte-identical context.
+    Returns ``""`` when the level is ``default`` or unrecognised.
     """
     level = getattr(getattr(cfg, "dashboard", None), "verbosity", "default")
     rules = _reply_style_rules(level if isinstance(level, str) else "default")

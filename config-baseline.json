@@ -7091,7 +7091,7 @@
         "widget_density": "more",
         "use_builtin_browser": true,
         "browser_view_port": 0,
-        "verbosity": "default",
+        "verbosity": "answer_only",
         "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
@@ -7591,15 +7591,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Response Verbosity",
-      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim); 'ultra' writes for an ADHD reader — the answer lands in a 3-sentence opening, and any detail after it must be scannable bullets rather than prose; 'answer_only' drops explanation altogether — the answer alone, drawn as a picture when it has a shape, in sentences of at most twelve plain words; detail only when the user asks for it, plus one undo line for a destructive command and one risk line for anything touching security, data or spend. At every level security warnings and irreversible-action confirmations always appear but stay brief, and ordered multi-step instructions stay complete.",
+      "help": "Controls how terse the agent's prose is. New installs start at 'answer_only'. 'default' is normal length; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim); 'answer_only' drops explanation altogether — the answer alone, drawn as a picture when it has a shape, in sentences of at most twelve plain words; detail only when the user asks for it, plus one undo line for a destructive command and one risk line for anything touching security, data or spend. At every level security warnings and irreversible-action confirmations always appear but stay brief, and ordered multi-step instructions stay complete.",
       "hasChildren": false,
       "enumValues": [
         "default",
         "concise",
-        "ultra",
         "answer_only"
       ],
-      "defaultValue": "default"
+      "defaultValue": "answer_only"
     },
     {
       "path": "dashboard.link_previews",

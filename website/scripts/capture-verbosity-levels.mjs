@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Response Verbosity row after adding `answer_only`.
+ * Screenshot harness for the Response Verbosity row (default / concise / answer_only).
  *
  * Runs the REAL built SPA (website/dist) behind the shared `serveDist` server and
  * answers every /api/** call from fixtures through `stubDashboardApi`. No gateway,
@@ -30,7 +30,6 @@ mkdirSync(OUT, { recursive: true })
 const EXPECTED_OPTIONS = [
   'Default — normal length',
   'Concise — trim filler and narration',
-  'Ultra-concise — answer first, minimal prose',
   'Answer only — plainest words, details on request',
 ]
 
@@ -130,7 +129,7 @@ console.log('re-read value:', after)
 if (!after.includes('Answer only')) throw new Error(`did not round-trip, saw: ${after}`)
 await shootRow('04-answer-only-after-reload.png')
 
-console.log('OK: 4 labelled levels, answer_only selectable and round-trips through the API')
+console.log('OK: 3 labelled levels, answer_only selectable and round-trips through the API')
 await context.close()
 await browser.close()
 srv.close()

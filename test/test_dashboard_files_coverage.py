@@ -1415,7 +1415,7 @@ class TestDashboardConfigPut:
             "merge_queued_messages": True,
             "default_memory_mode": "temporary",
             "widget_density": "less",
-            "verbosity": "ultra",
+            "verbosity": "answer_only",
             "quick_send": True,
             "session_grid": True,
             "mcp_app_panel": True,

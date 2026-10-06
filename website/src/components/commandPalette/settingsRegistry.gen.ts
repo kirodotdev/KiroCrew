@@ -1201,7 +1201,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.response-verbosity",
     "label": "Response Verbosity",
     "labelKey": "pages.settings.chatPanel.response_verbosity",
-    "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level; security warnings always appear but stay brief, and multi-step instructions stay complete. Answer-only goes further and drops explanation entirely: one sentence at most, and detail only when you ask for it — or when a decision is consequential enough (security, exposure, data loss, spend, anything hard to undo) that you need the reasoning to choose correctly.",
+    "description": "How terse the agent's prose is. Concise trims filler and narration. Answer only gives just the answer in the plainest words, with detail when you ask. At every level, code, commands and error strings stay verbatim, security warnings still appear, and multi-step instructions stay complete.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,

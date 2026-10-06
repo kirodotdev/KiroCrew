@@ -312,17 +312,19 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 )
             updates["use_builtin_browser"] = val
         if "verbosity" in body:
+            # An older client may still send the retired ``ultra``; store
+            # what it now means instead of rejecting the write. Spelled out
+            # here (mirrors config.sections.LEGACY_VERBOSITY_ALIASES) because a
+            # file_api owner may not import project modules at runtime.
             val = body["verbosity"]
-            if val not in ("default", "concise", "ultra", "answer_only"):
+            if val == "ultra":
+                val = "answer_only"
+            if val not in ("default", "concise", "answer_only"):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {
-                        "error": (
-                            "verbosity must be 'default', 'concise', 'ultra' " "or 'answer_only'"
-                        )
-                    },
+                    {"error": "verbosity must be 'default', 'concise' or 'answer_only'"},
                     status=400,
                 )
             updates["verbosity"] = val
