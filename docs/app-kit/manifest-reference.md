@@ -1125,6 +1125,61 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 cloud/remote environment with no display, the endpoint returns the command for
 the user to run locally instead of executing it on the server.
 
+#### `openCommand` — Environment
+
+The command runs as `/bin/sh -c "<openCommand>"` under the standard sandbox
+tier and the cgroup resource ceiling, with an **allowlisted environment** — not
+the gateway's. An installed app is untrusted content, so the launcher gets the
+same allowlist the manifest's install and build commands get, plus the location
+hints a desktop launch needs:
+
+- **The allowlist** (`_SAFE_ENV_KEYS` / `minimal_env` in
+  `src/kiro_crew/apps/registry_pipeline/subprocess_env.py` — that source file
+  is the list): shell and locale basics such as `HOME` and `PATH`, the XDG
+  directories (including `XDG_RUNTIME_DIR`), toolchain roots (Java, Node,
+  Python, Conda, Gradle/Maven), the git SSH overrides, and the Windows
+  equivalents of the basics.
+- **Removed again before the spawn** (`sandbox.scrub_env`): of the allowlisted
+  names, the SSH agent socket `SSH_AUTH_SOCK`. The install and build commands
+  run git against the owner's own repositories and need it; a launcher does
+  not, and an app-authored shell holding it authenticates as the operator. The
+  scrub's other targets (`AWS_SECRET*` / `AWS_SESSION*`, `GNUPGHOME`,
+  `GIT_ASKPASS`, the gateway's channel credentials) are not in the allowlist to
+  begin with.
+- **Desktop hints copied on top**, each only when the gateway itself has it:
+  `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`,
+  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`.
+
+The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
+`DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
+path. The sandbox's restore-then-drop of those two variables applies to spawns
+that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Whether
+a standard-mode launcher should hold a live user-bus address at all is under
+review in [#16520](https://github.com/kirodotdev/KiroCrew/issues/16520) — do
+not build a launcher that depends on `DBUS_SESSION_BUS_ADDRESS` being set.
+`XDG_RUNTIME_DIR` is not in question: it is where the Wayland socket lives.
+
+Anything not listed above — the gateway's own model credentials, API keys you
+exported in the gateway's shell, `EDITOR`, `BROWSER`, custom `MYAPP_*`
+variables — is **absent**. Set what your launcher needs inside the command
+string itself (`"openCommand": "MYAPP_MODE=tray myapp"`), or have the launcher
+read its own config file.
+
+**Failures are silent.** The endpoint spawns the shell and answers
+`{"ok": true, "pid": …}` immediately; it does not wait, and the child's stdout
+and stderr go to `/dev/null`. A launcher that exits because a variable it
+expected is missing still shows as a successful launch in the dashboard, and
+the audit log records only `app_open … launched` — neither reflects the exit.
+If your launcher can fail, have it write its own log, and create the log
+directory first — a `>>` into a directory that does not exist makes `sh` exit
+before it runs your command, which is the same silent failure:
+
+```json
+{
+  "openCommand": "mkdir -p \"$HOME/.cache/myapp\" && myapp >>\"$HOME/.cache/myapp/open.log\" 2>&1"
+}
+```
+
 ## Validation Rules
 
 - `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case)

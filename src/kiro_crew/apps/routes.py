@@ -170,25 +170,31 @@ logger = logging.getLogger(__name__)
 #: accident. ``XDG_RUNTIME_DIR`` is absent because the allowlist already
 #: carries it.
 #:
-#: ``DBUS_SESSION_BUS_ADDRESS`` belongs here, and withholding it would buy
-#: nothing. Three things decide that.
+#: ``DBUS_SESSION_BUS_ADDRESS`` belongs here, and the child KEEPS it. Two
+#: things to know about that.
 #:
-#: The sandbox owns it, not this list. ``sandbox._CGROUP_SCOPE_BUS_ENV_KEYS``
-#: pairs it with ``XDG_RUNTIME_DIR`` as the ``systemd-run --user`` wrapper's
-#: OWN dependency: the cgroup ceiling needs the caller's session bus to place
-#: the child in a scope, so both are restored after the credential scrub and
-#: then dropped again INSIDE the scope with an ``env -u`` shim. A sandboxed
-#: child therefore never keeps either one, whatever this list says.
+#: This list decides it, not the sandbox. :func:`handle_open_app` wraps with
+#: ``wrap_argv`` + ``cgroup_scope_argv`` and spawns with an explicit ``env``
+#: built from ``scrub_env(minimal_env())`` plus these keys. The standard-mode
+#: credential scrub names neither locator, and ``cgroup_scope_argv`` only
+#: prepends the ``systemd-run`` wrapper. The restore-then-drop that
+#: ``sandbox._CGROUP_SCOPE_BUS_ENV_KEYS`` describes -- both locators put back
+#: after the scrub for ``systemd-run``'s own use, then removed again INSIDE
+#: the scope with an ``env -u`` shim -- happens only in
+#: ``sandbox.sandboxed_spawn_argv``, and this path does not call it. So the
+#: ``openCommand`` child holds ``XDG_RUNTIME_DIR`` (from the allowlist) and
+#: ``DBUS_SESSION_BUS_ADDRESS`` (from here) in every sandbox mode. The
+#: positive control in ``test/test_s29_spawn_env_regression.py`` pins the env
+#: and ``test/test_open_command_bus_locators.py`` pins the argv chain; change
+#: this comment and those tests together.
 #:
-#: Dropping the address closes no door anyway. libdbus falls back to
+#: Dropping the address alone would close no door. libdbus falls back to
 #: ``$XDG_RUNTIME_DIR/bus``, and ``XDG_RUNTIME_DIR`` is in ``minimal_env``'s
 #: allowlist because it is also where the Wayland socket lives -- so removing
 #: it to close the fallback would break every Wayland launch, which is the
-#: legitimate use this endpoint exists for.
-#:
-#: What is left reaches only the operator's opt-in unconfined mode, where the
-#: same shell can already run any program it likes. Withholding a bus address
-#: from a process that can spawn anything is not a control.
+#: legitimate use this endpoint exists for. Whether a standard-mode
+#: ``openCommand`` child should hold a live user-bus address at all is a
+#: sandbox question, and not one this list settles.
 _OPEN_COMMAND_DESKTOP_ENV_KEYS = (
     "DISPLAY",
     "WAYLAND_DISPLAY",

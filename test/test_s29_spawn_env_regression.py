@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import os
 import stat
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
@@ -78,14 +79,45 @@ MODEL_CREDENTIAL_KEYS = ("AWS_ACCESS_KEY_ID", "ANTHROPIC_API_KEY", "KIRO_API_KEY
 # ---------------------------------------------------------------------------
 
 
-async def _open_app_child_env(tmp_path, monkeypatch) -> dict[str, str]:
-    """POST the open route for an admitted app; return the child's env dict.
+#: The two variables ``systemd-run --user`` finds the caller's session bus
+#: through. ``sandbox._CGROUP_SCOPE_BUS_ENV_KEYS`` is the production tuple;
+#: spelled out here so the positive control names what it pins. The sandbox
+#: restores them after its scrub and drops them again inside the cgroup scope,
+#: but only on the ``sandboxed_spawn_argv`` path, which the open route does not
+#: take -- so the openCommand child keeps both. ``XDG_RUNTIME_DIR`` arrives via
+#: the ``minimal_env`` allowlist, ``DBUS_SESSION_BUS_ADDRESS`` via
+#: ``DISPLAY_KEYS``.
+BUS_LOCATOR_KEYS = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+RUNTIME_DIR_VALUE = "/run/user/s29-planted"
 
-    Everything the route decides is production code. The spawn primitive is the
-    one seam replaced, and only to read back the ``env`` the route handed it --
-    the observable under test.
+
+@dataclass
+class OpenAppSpawn:
+    """What the open route handed its spawn, plus every link of the argv chain."""
+
+    argv: list[str]
+    env: dict[str, str]
+    #: ``(received, returned)`` per call of the recording ``wrap_argv`` stub.
+    wrap_calls: list[tuple[list[str], list[str]]] = field(default_factory=list)
+    #: ``(received, returned)`` per call of the recording ``cgroup_scope_argv`` stub.
+    scope_calls: list[tuple[list[str], list[str]]] = field(default_factory=list)
+    #: The env each ``sandbox.cgroup_scope_bus_env`` call received (expected: none).
+    bus_env_calls: list[dict[str, str]] = field(default_factory=list)
+
+
+async def open_app_spawn(tmp_path, monkeypatch) -> OpenAppSpawn:
+    """POST the open route for an admitted app; return what the spawn received.
+
+    Everything the route decides is production code. ``wrap_argv`` and
+    ``cgroup_scope_argv`` are replaced by RECORDING identities (what each received
+    and returned is kept) so the chain from the manifest's shell command to the
+    spawn primitive can be compared link by link; ``sandbox.cgroup_scope_bus_env``
+    is spied on in the sandbox module, where ``sandboxed_spawn_argv`` would look it
+    up; and ``create_subprocess_limited`` is the one seam replaced to read back
+    the ``argv`` and ``env`` the route handed it -- the observables under test.
     """
     import kiro_crew.apps.routes as routes
+    from kiro_crew import sandbox
     from kiro_crew.apps import execution
 
     _install_test_app(
@@ -96,31 +128,65 @@ async def _open_app_child_env(tmp_path, monkeypatch) -> dict[str, str]:
     )
     for key in DISPLAY_KEYS:
         monkeypatch.setenv(key, f"{key.lower()}-value")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", RUNTIME_DIR_VALUE)
     for key in MODEL_CREDENTIAL_KEYS:
         monkeypatch.setenv(key, MARKER)
     monkeypatch.setenv(AGENT_SOCKET_KEY, MARKER)
     monkeypatch.setenv(PROBE_KEY, MARKER)
     monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: True)
-    monkeypatch.setattr(routes, "wrap_argv", lambda argv, **kwargs: (argv, None))
-    monkeypatch.setattr(routes, "cgroup_scope_argv", lambda argv: argv)
 
-    captured: dict[str, dict[str, str]] = {}
+    wrap_calls: list[tuple[list[str], list[str]]] = []
+    scope_calls: list[tuple[list[str], list[str]]] = []
+    bus_env_calls: list[dict[str, str]] = []
+    captured: dict[str, object] = {}
+
+    def _wrap(argv, **kwargs):
+        wrap_calls.append((list(argv), list(argv)))
+        return list(argv), None
+
+    def _scope(argv):
+        wrapped = ["<scope>", *argv]
+        scope_calls.append((list(argv), wrapped))
+        return wrapped
+
+    real_bus_env = sandbox.cgroup_scope_bus_env
+
+    def _bus_env(env):
+        bus_env_calls.append(dict(env))
+        return real_bus_env(env)
 
     async def _spawn(*argv, **kwargs):
+        captured["argv"] = list(argv)
         captured["env"] = kwargs.get("env")
         return SimpleNamespace(pid=_UNALLOCATABLE_PID)
 
+    monkeypatch.setattr(routes, "wrap_argv", _wrap)
+    monkeypatch.setattr(routes, "cgroup_scope_argv", _scope)
+    monkeypatch.setattr(sandbox, "cgroup_scope_bus_env", _bus_env)
     monkeypatch.setattr(routes, "create_subprocess_limited", _spawn)
     async with TestClient(TestServer(as_owner(_route_app()))) as client:
         response = await client.post("/api/apps/execution-test-app/open")
         assert response.status == 200, await response.text()
-    assert "env" in captured, "the route never reached the spawn"
-    env = captured["env"]
-    assert env is not None, (
+    assert "argv" in captured, "the route never reached the spawn"
+    argv_out, env_out = captured["argv"], captured["env"]
+    assert isinstance(argv_out, list)
+    assert env_out is not None, (
         "handle_open_app spawned the manifest's openCommand with no env=, so the "
         "child inherits this process's environment whole"
     )
-    return dict(env)
+    assert isinstance(env_out, dict)
+    return OpenAppSpawn(
+        argv=argv_out,
+        env=dict(env_out),
+        wrap_calls=wrap_calls,
+        scope_calls=scope_calls,
+        bus_env_calls=bus_env_calls,
+    )
+
+
+async def _open_app_child_env(tmp_path, monkeypatch) -> dict[str, str]:
+    """The child's env dict alone -- see :func:`open_app_spawn`."""
+    return (await open_app_spawn(tmp_path, monkeypatch)).env
 
 
 @pytest.mark.asyncio
@@ -181,6 +247,11 @@ async def test_open_command_child_still_reaches_the_desktop_session(tmp_path, mo
             f"{key} must survive: without it an openCommand app cannot reach the "
             f"running desktop session"
         )
+    assert env.get("XDG_RUNTIME_DIR") == RUNTIME_DIR_VALUE, (
+        "XDG_RUNTIME_DIR must survive: it is where the Wayland socket lives, and the "
+        "rationale comment on _OPEN_COMMAND_DESKTOP_ENV_KEYS documents that this path "
+        "keeps both bus locators -- change the comment and this test together"
+    )
     assert env.get("PATH") == os.environ.get("PATH")
     assert env.get("HOME") == os.environ.get("HOME")
 
