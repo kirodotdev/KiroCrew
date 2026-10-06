@@ -492,9 +492,23 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
 def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
     """Select call arguments from an attributed ACP MCP envelope.
 
-    The MCP server hashes its arguments directly. Codex wraps those arguments
-    beside the adapter-resolved server and tool; unwrap only when both match
-    the independently attributed call. Never derive identity from this input.
+    The MCP server hashes its arguments directly, so the consumer must hash the
+    same inner arguments whatever envelope the frame wraps them in:
+
+    - Codex wraps them beside the adapter-resolved server and tool; unwrap only
+      when both match the independently attributed call.
+    - A Tool Search deferred call reaches the server through the backend's
+      ``tool_call`` meta-tool, so the frame's input is
+      ``{"tool_id": "<server>::<tool>", "arguments": {...}}`` while the server
+      receives only ``{...}``. Unwrap only when ``tool_id`` names the core server
+      and the very directive *tool* this call already resolved to, and the
+      envelope carries nothing else besides ``_meta``. Measured on KAS
+      (kiro-cli 2.27.1), whose frame carries no ``_meta.kiro`` identity, so
+      this branch is keyed on the envelope and *tool*, not on *server*/*name*,
+      and holds for any provider that emits the same envelope.
+
+    Never derive identity from this input: the resolved *tool* is the gate, and
+    the envelope only selects which arguments to hash.
     """
     if (
         server == CORE_MCP_SERVER
@@ -502,6 +516,13 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         and isinstance(raw_args, dict)
         and raw_args.get("server") == server
         and raw_args.get("tool") == name
+        and isinstance(raw_args.get("arguments"), dict)
+    ):
+        raw_args = raw_args["arguments"]
+    elif (
+        isinstance(raw_args, dict)
+        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
+        and raw_args.get("tool_id") == f"{CORE_MCP_SERVER}::{tool}"
         and isinstance(raw_args.get("arguments"), dict)
     ):
         raw_args = raw_args["arguments"]

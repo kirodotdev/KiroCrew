@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import kiro_cli
 from kiro_crew.acp.harness.base import (
     HarnessAdapter,
     NotificationAliases,
@@ -41,66 +42,41 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     METHOD_SUBAGENT_LIST_UPDATE,
 )
-from kiro_crew.agent_sdk.tool_search import MANDATORY_MCPS_ENV, mandatory_mcps_env_value
 
-__all__ = ["KIRO_FAMILY_ALIASES", "MembershipHarness", "apply_mandatory_mcps_env"]
+__all__ = [
+    "KIRO_FAMILY_ALIASES",
+    "MANDATORY_MCPS_ENV",
+    "MembershipHarness",
+    "pin_mandatory_mcps_env",
+]
+
+#: kiro-cli keeps every server named here out of Tool Search deferral. It reads
+#: the variable from the process environment once, at spawn.
+MANDATORY_MCPS_ENV = "ASBX_KIRO_MANDATORY_MCPS"
 
 
-def apply_mandatory_mcps_env(env: dict[str, str]) -> None:
-    """Exempt Crew's own MCP servers from kiro-cli's Tool Search deferral.
+def pin_mandatory_mcps_env(env: dict[str, str], *, spawned_binary: str | None = None) -> None:
+    """Pin Tool Search exemptions to the operator's value or the engine's version.
 
-    Lives here because BOTH kiro-family harnesses need it and the reason is the
-    same one this module exists for: KAS is reached through kiro-cli's own ACP
-    relay. Crew launches it as ``kiro-cli acp --agent-engine v3``, the same ``acp``
-    subcommand the kiro path uses, and that subcommand reads
-    :data:`~kiro_crew.agent_sdk.tool_search.MANDATORY_MCPS_ENV` unconditionally --
-    the read is not gated on ``--agent-engine``. So the exemption applies to both,
-    and stating it once is what keeps them from drifting.
-
-    **Why the exemption exists.** Loading a deferred MCP spec REWRITES the
-    request's ``tools`` array, and an extended-thinking model's thinking blocks
-    carry a signature bound to the array they were minted under. Replay one across
-    a load and the provider rejects the whole request -- "The ``tools`` list differs
-    from the one this block was created with" -- and because it is rejecting the
-    conversation's history, every later turn fails identically. The session is
-    bricked, not slowed. Crew's own servers are what churn the array: they are the
-    infrastructure an agent reaches for in nearly every session. Third-party
-    servers keep deferring -- they carry most of the spec weight and are reached
-    rarely.
-
-    **The operator's AMBIENT value wins; a per-session overlay never does.** That
-    distinction is why this reads :data:`os.environ` rather than the *env* mapping
-    handed in. That mapping is already ``{**os.environ, **extra_env}``
-    (``acp.runtime._spawn_admitted``), and ``extra_env`` carries per-session
-    overlays -- among them a cron job's own ``env`` block, which
-    ``cron_job_env_without_reserved`` passes through for every key outside
-    ``_CRON_RESERVED_ENV_KEYS``, and which an app manifest's ``crons[].env`` can
-    author. An overlay that set this key to ``""`` would suppress the exemption for
-    that cron's sessions, and the variable is fixed at spawn, so the next run
-    inherits the same manifest and re-bricks: no code-level recovery, and the
-    rejected history is gone. So an overlay value is overwritten, and removed
-    outright when Crew has no servers to name -- an overlay may neither disable
-    this nor invent it.
-
-    An ambient value is a different actor: the operator's own environment, honoured
-    verbatim **including an explicit empty one**. Empty is the only spelling that
-    says "exempt nothing", since the engine reads an empty variable as an absent
-    one, so truthiness would leave that choice unexpressible.
-
-    Applied regardless of the Tool Search toggle: the engine ignores the list while
-    deferral is off, so a value that does not depend on the toggle cannot disagree
-    with it, and a resume cannot arrive carrying a different exemption than the
-    spawn it resumes.
-
-    Mutates *env* in place, matching the ``apply_spawn_env`` contract it serves.
+    An ambient value wins verbatim, including an empty one; per-session overlays
+    never decide the list. Crew's servers defer only when the spawn runs the pinned
+    kiro-cli install (or its chat sibling) at >= 2.27.0. Any other executable, older or
+    unknown versions keep every Crew-owned server resident to avoid the
+    thinking-signature "tools list differs" rejection that bricks a session.
     """
     ambient = os.environ.get(MANDATORY_MCPS_ENV)
     if ambient is not None:
         env[MANDATORY_MCPS_ENV] = ambient
         return
-    mandatory = mandatory_mcps_env_value(agent_mod.crew_owned_mcp_servers())
-    if mandatory:
-        env[MANDATORY_MCPS_ENV] = mandatory
+
+    if kiro_cli.mandatory_mcps_drop_allowed(spawned_binary):
+        env.pop(MANDATORY_MCPS_ENV, None)
+        return
+
+    # Not emission_eligible_mcp_servers(): granted opt-in servers serve tools too.
+    servers = agent_mod.crew_owned_mcp_servers()
+    if servers:
+        env[MANDATORY_MCPS_ENV] = ",".join(sorted(servers))
     else:
         env.pop(MANDATORY_MCPS_ENV, None)
 

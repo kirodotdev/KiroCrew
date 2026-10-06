@@ -26,28 +26,15 @@ mirrored as the defaults of ``AgentConfig.tool_search_min_pct`` /
 ``tool_search_min_tokens``; a test pins the two spellings together. KAS accepts the same two
 keys on the wire; whether it honours them as a floor is its own business, and
 they are forwarded verbatim either way so one setting means one thing.
-
-Deferral is per-server exemptible, and that is what :data:`MANDATORY_MCPS_ENV`
-carries. A server named there keeps every one of its specs in the model's tool
-list even while deferral is active, so its tools are never loaded mid-turn. The
-exemption exists because loading a tool REWRITES the request's ``tools`` array,
-and an extended-thinking model's signed thinking blocks are bound to the array
-they were minted under -- the provider rejects the whole request with "The
-``tools`` list differs from the one this block was created with" and every later
-turn on that conversation fails the same way. Crew's own servers are the ones
-worth exempting: they are infrastructure the agent reaches for every session,
-so deferring them buys little and churns the array constantly.
 """
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
-    "MANDATORY_MCPS_ENV",
     "TOOL_SEARCH_DEFAULT_MIN_PCT",
     "TOOL_SEARCH_DEFAULT_MIN_TOKENS",
     "TOOL_SEARCH_LOADER_TOOL",
@@ -55,7 +42,6 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "kas_client_meta_settings",
-    "mandatory_mcps_env_value",
     "spec_grants_tool_search",
     "with_client_meta_settings",
 ]
@@ -67,32 +53,6 @@ TOOL_SEARCH_DEFAULT_MIN_TOKENS = 50_000
 #: The built-in that loads a deferred spec. Its spelling is the same in an agent
 #: spec's ``tools`` list on both kiro engines.
 TOOL_SEARCH_LOADER_TOOL = "tool_search"
-
-#: The env var kiro-cli's Rust engine reads the never-defer server list from.
-#: A THIRD channel, next to the cli.json overlay and the initialize handshake:
-#: the engine takes it from the process environment at ACP session-manager
-#: construction, so it is set on the spawn env and cannot be changed after.
-MANDATORY_MCPS_ENV = "ASBX_KIRO_MANDATORY_MCPS"
-
-
-def mandatory_mcps_env_value(server_names: Iterable[str]) -> str:
-    """The :data:`MANDATORY_MCPS_ENV` value naming *server_names*.
-
-    Comma-separated and sorted, so the same set renders the same string on every
-    spawn -- a resume must not look like a different tool surface.
-
-    Returns ``""`` for an empty set, which the caller treats as "set no variable
-    at all". Writing an empty value instead would be read by the engine as an
-    explicit empty list -- same behaviour today, but it puts a variable on the
-    child that says nothing, and the engine's own ``filter(|s| !s.is_empty())``
-    already spells that as absent.
-
-    Takes the server names as they come from :func:`agent.crew_owned_mcp_servers`
-    -- a set of non-empty ``str`` keys from a module constant and an edition
-    adapter. It does not re-validate them: a blank or non-string name would be a
-    defect in that map, and swallowing it here would hide it rather than fix it.
-    """
-    return ",".join(sorted(server_names))
 
 
 def clamp_min_pct(value: object) -> int:

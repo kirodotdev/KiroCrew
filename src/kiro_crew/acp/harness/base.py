@@ -288,12 +288,13 @@ class HarnessAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    def apply_spawn_env(self, env: dict[str, str]) -> None:
+    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Mutate the child's environment in place for this host.
 
         Called after the generic environment is assembled and before it is
         scrubbed, so a host can both add its own variables and remove one the
         generic path would otherwise pass through.
+        ``spawned_binary`` names the executable before sandbox and scope wrappers.
         """
 
     @property

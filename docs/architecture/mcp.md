@@ -1591,13 +1591,19 @@ See [browser](../system-specs/modules/browser.md).
 `kirocrew-core` is the surface EVERY session carries. kiro-cli reads `tools/list`
 once per session, so a tool listed there spends context in every request of every
 session for as long as the session lives — whether or not that session will ever
-use it. `agent.tool_search` is on by default, but **Crew's own servers are exempt
-from its deferral** (see below), so a tool in core costs its FULL JSON schema in
-every request, not a name plus a description.
+use it. With `agent.tool_search` on (the default), kiro defers MCP specs once they
+cross `agent.tool_search_min_pct` or `agent.tool_search_min_tokens`, and Crew's own
+servers defer like any other when the spawn runs the pinned kiro-cli install or its
+`kiro-cli-chat`, and both are >= 2.27.0. For any other executable (a pod bundle, a `kiro-cli`
+found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
+servers resident to avoid the thinking-signature
+"tools list differs" rejection that bricks a session. A deferred tool costs a name
+plus a description rather than a full JSON schema; it is smaller, not zero, and it
+scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
+(comma-separated server names) in the gateway's environment always wins, including
+an explicit empty value; per-session overlays cannot change it.
 
-That makes the placement question a real one rather than a matter of taste —
-and the exemption is why it is sharper than it looks, since core is the one
-server deferral will never shrink:
+That makes the placement question a real one rather than a matter of taste:
 
 - **Core** is for capabilities a session may need *without being asked* —
   subagents, messaging, memory, artifacts, session-bound directives.
@@ -1619,78 +1625,6 @@ gates nothing an unreferenced server was not already denying.
 **Granularity: the set, not the tool.** A spec that references a server gets
 every tool in it. So a capability that must be grantable *separately* belongs in
 a server of its own, not alongside a set someone might want for other reasons.
-
-### Crew's own servers are exempt from Tool Search deferral
-
-`harness._common.apply_mandatory_mcps_env` sets `ASBX_KIRO_MANDATORY_MCPS` on the
-child from `agent.crew_owned_mcp_servers()`, and **both** kiro-family harnesses call
-it from their `apply_spawn_env`. kiro-cli keeps a named server's specs in the model's
-tool list even while deferral is active, so a Crew tool is never loaded mid-turn.
-Third-party servers keep deferring: they hold most of the spec weight and are
-reached rarely.
-
-**The harness hook is the only place both kiro spawn paths meet**, which is why it
-is not done at a call site. A session-serving child is spawned by `AcpRuntime` —
-kiro is in `ACP_BACKENDS_ACP_RUNTIME`, and `_start_kiro_runtime_impl` keeps its
-`AcpClient` for config storage and never spawns it — so an `AcpClient._spawn` hook
-would set the variable on none of the processes a user talks to. The auxiliary
-`AcpClient` kiro children (the knowledge pool, connection minting) run tool-less
-agents, so deferral has nothing to defer for them either way.
-
-**The reason is correctness, not cost.** Loading a deferred spec REWRITES the
-request's `tools` array, and an extended-thinking model's thinking blocks carry a
-signature bound to the array they were minted under. Replaying one across a load
-makes the provider reject the entire request —
-
-> Invalid `signature` in `thinking` block. … The `tools` list differs from the one
-> this block was created with.
-
-— and because the rejection is of the conversation's history, **every later turn
-on that session fails the same way**: the session is bricked, not slowed. Crew's
-own servers are the ones that trigger it, because they are the infrastructure an
-agent reaches for in nearly every session (measured on one heavy install: Crew's
-servers were 82% of all deferred loads and every observed failure, third-party
-servers 2.6%). So deferring them bought little and churned the array constantly.
-
-Three consequences worth knowing:
-
-- **The env var is a THIRD channel**, next to the `cli.json` overlay and the
-  `initialize` handshake (`agent_sdk.tool_search`). kiro-cli reads it from the
-  process environment when it builds the ACP session manager, so it is fixed at
-  spawn and cannot be changed on a live child.
-- **The list is every Crew-owned name, not the emitted ones.**
-  `crew_owned_mcp_servers()` deliberately includes `opt_in` servers, which
-  `emission_eligible_mcp_servers()` drops — a granted `kirocrew-work` serves tools
-  and would otherwise still churn. Naming an absent server matches no tool, so
-  erring wide is free and erring narrow is the defect. It also carries the edition
-  seam's extras, which are contributed by an edition ADAPTER rather than user
-  config, so they are Crew's own servers in the same sense the managed map is; the
-  seam does not constrain its keys, so nothing may assume a `kirocrew-` prefix.
-- **The operator's AMBIENT value wins; a per-session OVERLAY never does.** That is
-  why the hop reads `os.environ` rather than the `env` mapping it is handed, which is
-  already `{**os.environ, **extra_env}`. An ambient value is the operator's own
-  choice and is honoured verbatim, **including an explicit empty one** — the engine
-  reads an empty variable as an absent one, so `ASBX_KIRO_MANDATORY_MCPS=""` is the
-  only way to say "exempt nothing" and take the resident schema cost back off, and
-  truthiness would leave that unexpressible. `extra_env`, by contrast, carries
-  per-session overlays: a cron job's own `env` block reaches it through
-  `cron_job_env_without_reserved`, which passes every key outside
-  `_CRON_RESERVED_ENV_KEYS`, and an app manifest's `crons[].env` can author that.
-  An overlay value is therefore **overwritten**, and **removed** when Crew has no
-  servers to name — an overlay may neither disable the exemption nor invent it.
-  Letting one through would brick that cron's sessions with no code-level recovery,
-  since the variable is fixed at spawn and the next run inherits the same manifest.
-
-**KAS is covered too, because the relay IS kiro-cli.** Crew launches it as
-`kiro-cli acp --agent-engine v3` (`kas_transport.build_kas_argv`) — the same `acp`
-subcommand the kiro path uses — and that subcommand reads the variable
-unconditionally, not gated on `--agent-engine`. KAS is the more exposed of the two:
-it takes Tool Search over the `initialize` wire and defers every MCP spec whenever
-the setting is on, with no token threshold to stay under.
-
-This does not fix the underlying client bug — kiro-cli forwards a signed block
-without checking the tool set it was signed against — it stops Crew from being
-what walks into it.
 
 **A grant is not authority over everything the tools can name.** Assignment says
 which agent may call a set; it does not say what that agent may reach. The

@@ -2726,6 +2726,7 @@ class AcpRuntime:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self._acp_backend
         )
+        spawned_kiro_bin = argv[0] if argv else None
         # The host's credential mask, resolved with its argv and applied here.
         # Empty for a host whose privileged tools ask by construction; for one this
         # core's tool gate ENFORCES it is the compensating control, so a spawn that
@@ -2848,7 +2849,7 @@ class AcpRuntime:
             # silently override the credential the operator signed in with.
             # Called here, before the scrub below, so a host can both add its own
             # variables and remove one this generic path would pass through.
-            self._harness.apply_spawn_env(env)
+            self._harness.apply_spawn_env(env, spawned_binary=spawned_kiro_bin)
 
         await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
         # Parent-side equivalent of the launcher scrub. This is required on

@@ -1153,7 +1153,7 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
   elif [ "$OS" = "windows" ]; then
     # Administrative extraction lays out the MSI payload without installing it:
     # no PATH or registry writes, and no dependency on a pre-existing kiro-cli.
-    # The verified 2.24.0 MSI has no custom actions and carries one executable.
+    # The verified 2.27.1 MSI has no custom actions and carries one executable.
     local tmp archive_win tmp_win extracted
     tmp="$(mktemp -d)"
     archive_win="$(cygpath -w "$archive")"

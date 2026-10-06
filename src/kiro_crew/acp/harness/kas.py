@@ -28,7 +28,7 @@ from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
-    apply_mandatory_mcps_env,
+    pin_mandatory_mcps_env,
 )
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
@@ -101,28 +101,20 @@ class KasHarness(MembershipHarness):
             )
         return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
 
-    def apply_spawn_env(self, env: dict[str, str]) -> None:
-        """Take the API key OUT of the child's environment, and exempt Crew's own
-        MCP servers from Tool Search deferral.
+    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
+        """Take the API key OUT of the child's environment.
 
         The relay expects an OIDC bearer from the callback, not a Crew API key,
         and an ambient key would be sent with the wrong token type. Removing it
         is the positive action here, not an omission.
 
-        The exemption applies here for the same reason this harness speaks
-        kiro-cli's notification dialect: the relay IS kiro-cli. Crew launches it as
-        ``kiro-cli acp --agent-engine v3`` (:func:`acp.kas_transport.build_kas_argv`),
-        the same ``acp`` subcommand the kiro path uses, and that subcommand reads the
-        variable unconditionally -- the read is not gated on ``--agent-engine``. KAS
-        is in fact the more exposed of the two: it takes Tool Search over the
-        ``initialize`` wire and defers every MCP spec whenever the setting is on,
-        with no token threshold to stay under. Rules and rationale:
-        :func:`apply_mandatory_mcps_env`.
+        The relay is kiro-cli, so it reads the same Tool Search never-defer list;
+        :func:`pin_mandatory_mcps_env` pins it by operator override or engine version.
         """
         from kiro_crew.config.loader import strip_kiro_cli_api_key
 
         strip_kiro_cli_api_key(env)
-        apply_mandatory_mcps_env(env)
+        pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
 
     @property
     def verifies_agent_activation(self) -> bool:

@@ -1780,3 +1780,51 @@ def test_codex_digest_does_not_unwrap_conflicting_identity():
         session_directive.event_input_digest("monitor_start", raw, "kirocrew-core", "monitor_stop")
         != expected
     )
+
+
+# ── Tool Search deferred calls: the frame wraps the arguments in tool_call ───
+
+# What the frame's rawInput carries when the backend defers kirocrew-core under
+# Tool Search: the model calls the ``tool_call`` meta-tool, which forwards only
+# ``arguments`` to the MCP server.
+DEFERRED_FRAME_INPUT = {"tool_id": "kirocrew-core::monitor_start", "arguments": CALL_ARGS}
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_tool_call_frame_claims_its_parked_record(tmp_path, monkeypatch):
+    state = _stub_state(tmp_path)
+    slot = state.get_or_create_slot("kas-deferred")
+    slot._titled = True
+    events = _kas_events(
+        "Monitor loop requested.", raw_input=DEFERRED_FRAME_INPUT, tool_call_id="tc-deferred"
+    )
+    spy = await _drive(state, slot, events, monkeypatch)
+    spy.assert_called_once()
+    assert spy.call_args.args[3] == "monitor_start"
+    assert spy.call_args.args[4] == VALIDATED_ARGS
+    assert directive_queue.depth(effective_session_key(slot)) == 0
+
+
+def test_deferred_digest_matches_the_servers_digest_without_frame_identity():
+    expected = session_directive.call_input_digest("monitor_start", CALL_ARGS)
+    assert session_directive.event_input_digest("monitor_start", DEFERRED_FRAME_INPUT, "", "") == (
+        expected
+    )
+    with_meta = {**DEFERRED_FRAME_INPUT, "_meta": {"_isValid": True}}
+    assert session_directive.event_input_digest("monitor_start", with_meta, "", "") == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"tool_id": "kirocrew-core::monitor_update", "arguments": CALL_ARGS},
+        {"tool_id": "other-server::monitor_start", "arguments": CALL_ARGS},
+        {"tool_id": "monitor_start", "arguments": CALL_ARGS},
+        {"tool_id": "kirocrew-core::monitor_start", "arguments": CALL_ARGS, "extra": 1},
+        {"tool_id": "kirocrew-core::monitor_start", "arguments": json.dumps(CALL_ARGS)},
+    ],
+    ids=["other-tool", "other-server", "bare-id", "extra-key", "non-dict-args"],
+)
+def test_deferred_digest_does_not_unwrap_a_mismatched_envelope(raw):
+    expected = session_directive.call_input_digest("monitor_start", CALL_ARGS)
+    assert session_directive.event_input_digest("monitor_start", raw, "", "") != expected

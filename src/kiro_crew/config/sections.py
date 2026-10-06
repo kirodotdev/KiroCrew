@@ -1270,11 +1270,11 @@ class AgentConfig:
             "when many MCP servers are configured. kiro-cli backend only. "
             "Deferral only starts once the specs cross tool_search_min_pct or "
             "tool_search_min_tokens; disabling reverts to sending full tool "
-            "specs. Kiro Crew's OWN servers are exempt and always send full "
-            "specs, whatever this is set to: loading one mid-turn would change "
-            "the tools list a thinking block's signature is bound to and the "
-            "provider would reject the conversation. No effect on an alternate "
-            "ACP backend.",
+            "specs. Crew's servers defer only when the spawn runs the pinned "
+            "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
+            "other executable, an older or unknown version keeps them resident. To override the never-defer list, set "
+            "ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the "
+            "gateway's environment. No effect on an alternate ACP backend.",
         ),
     )
     tool_search_min_pct: int = field(
