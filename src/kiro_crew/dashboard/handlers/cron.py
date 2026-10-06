@@ -2482,6 +2482,11 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         rows = [row for row in rows if row.get("job_id") in owned]
         total = len(rows)
         runs = rows[offset : offset + limit]
+        # Record the ownership scoping decision: this branch applies an
+        # access-control filter to an app token's read, and token-auth events
+        # log only authentication while dashboard GET auditing is excluded, so
+        # without this SEL row no event records that the app was confined to its
+        # own runs. One row per request on this on-demand (not polled) route.
         _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
     else:
         runs, total = await state.crons.get_history().get_all_history(
@@ -3259,6 +3264,24 @@ async def api_crons(request: web.Request) -> web.Response:
     # loop with the store read/hash. The hot per-connection status push and the
     # other mutation handlers keep using the cache-only list_jobs().
     jobs = await state.crons.list_jobs_async(include_disabled=True)
+    # An app token reaches this list route, but like every per-job cron route
+    # it sees only the jobs it created, judged by the same host-written
+    # ``created_by`` ``app:<name>`` stamp ``_refuse_foreign_app_job`` reads.
+    # Without this the dashboard's polling endpoint would hand an app every
+    # job's ``message``, ``last_result``, ``last_error``, ``command`` and
+    # ``script`` -- exactly the run data the per-job gates on this PR protect --
+    # leaving the trust boundary open on the one route that returns it in bulk.
+    # Filtered here so every field below is already scoped. The app-only branch
+    # writes one SEL row recording the ownership scoping decision: token-auth
+    # events log only authentication and dashboard GET auditing is excluded, so
+    # this is the only record that the app was confined to its own jobs. The
+    # row is written ONLY on the app path -- the owner, dashboard and
+    # internal-secret callers (``app == ""``) skip the filter and the audit, so
+    # the owner-view poll stays unaudited and unaffected, as before.
+    app = _app_caller(request)
+    if app:
+        jobs = [j for j in jobs if app_owner_name(j.created_by) == app]
+        _audit_app_cron(app, "crons.list", "allowed", f"jobs={len(jobs)}")
     now = time.time()
     tz_name, _ = get_local_tz()
     # Secret-grant metadata is owner-view only (see the field comment below).

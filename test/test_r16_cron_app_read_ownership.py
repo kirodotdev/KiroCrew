@@ -47,18 +47,18 @@ SCRIPT_BODY = f"def run(ctx):\n    ctx.notify('{MARK}')\n"
 
 
 @pytest.fixture
-def sel_calls(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+def sel_calls(_floor_monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     import kiro_crew.sel as sel_mod
 
     recorder = MagicMock()
-    monkeypatch.setattr(sel_mod, "sel", lambda: recorder)
+    _floor_monkeypatch.setattr(sel_mod, "sel", lambda: recorder)
     return recorder
 
 
 @pytest.fixture(autouse=True)
-def _grant(monkeypatch: pytest.MonkeyPatch, sel_calls: MagicMock) -> None:
+def _grant(_floor_monkeypatch: pytest.MonkeyPatch, sel_calls: MagicMock) -> None:
     # Both apps' manifests declare /api/crons, as App Kit allows.
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         token_auth,
         "_app_api_allowlist",
         lambda name: ("/api/crons",) if name in (APP_A, APP_B) else (),
@@ -139,7 +139,9 @@ def _server(svc: CronService, app_claim: str) -> web.Application:
         owner_id="",
         conversation_log=None,
         push_slots_update=MagicMock(),
+        has_slot=lambda _key: False,
     )
+    app.router.add_get("/api/crons", h.api_crons)
     app.router.add_get("/api/crons/history", h.api_cron_history_all)
     app.router.add_get("/api/crons/{job_id}/history", h.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", h.api_cron_history_detail)
@@ -215,6 +217,32 @@ async def test_owner_reads_every_job(svc, script_reads, injected, route, target)
         assert MARK in text
 
 
+async def test_list_route_shows_app_only_its_own_jobs(svc, sel_calls) -> None:
+    # GET /api/crons returns one dict per job. The run data this PR protects --
+    # message, last_result, last_error, command -- rides on that dict, so an app
+    # must see only its own job here, not just on the per-job routes.
+    ids = await _seed(svc)
+    status, text = await _call(svc, APP_A, "GET", "/api/crons")
+    assert status == 200, (status, text)
+    body = json.loads(text)
+    assert [j["id"] for j in body["jobs"]] == [ids["a"][0]]
+    # Each job's message is on the dict; the foreign ones must not leak.
+    assert "task a" in text
+    assert "task owner" not in text and "task b" not in text
+    # The app-only branch records one ownership-scoping SEL row under app:<name>.
+    assert _app_rows(sel_calls, "crons.list") == ["allowed"]
+
+
+async def test_list_route_owner_sees_every_job(svc, sel_calls) -> None:
+    ids = await _seed(svc)
+    status, text = await _call(svc, "", "GET", "/api/crons")
+    assert status == 200, (status, text)
+    body = json.loads(text)
+    assert {j["id"] for j in body["jobs"]} == {ids[k][0] for k in ("owner", "a", "b")}
+    # The owner path skips the app filter and its audit -- no crons.list row.
+    assert _app_rows(sel_calls, "crons.list") == []
+
+
 async def test_all_history_lists_only_the_apps_own_runs(svc, sel_calls) -> None:
     ids = await _seed(svc)
     status, text = await _call(svc, APP_A, "GET", "/api/crons/history")
@@ -223,6 +251,7 @@ async def test_all_history_lists_only_the_apps_own_runs(svc, sel_calls) -> None:
     assert [r["job_id"] for r in body["runs"]] == [ids["a"][0]]
     assert body["total"] == 1
     assert f"{MARK}-trace-owner" not in text and f"{MARK}-trace-b" not in text
+    # The ownership scoping decision is recorded once under app:<name>.
     assert _app_rows(sel_calls, "crons.history_all") == ["allowed"]
 
 
