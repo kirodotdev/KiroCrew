@@ -16,13 +16,16 @@ Gating:
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -60,25 +63,59 @@ MIN_EXECUTED_SPECS = 239
 # tag are never collected, so they do not count here.
 MAX_SKIPPED_SPECS = 0
 
+# Flaky specs: ones that failed and then passed on a CI retry. Retries are a
+# detector, never the fix (docs/ci/e2e-gate.md), so a run that needed MORE retried
+# passes than this fails, and each title is printed so the spec gets fixed.
+# Measured 0 in two full local passes (323 specs each, CI=1, so retries were on).
+# SHRINK-ONLY: it cannot go lower, and raising it hides a flake.
+MAX_FLAKY_SPECS = 0
 
-def _assert_suite_not_darkened(report: Path) -> None:
-    """Fail if the run executed fewer specs than the floor, or skipped any.
+# A bound on the WHOLE Playwright run, taken from the CI job's budget so the run's
+# report survives. It is not a lost-run ceiling (that bounds one wait inside a test
+# at 10x its measured worst case), and it can stop a slow run that would have
+# passed. ci.yml's 25-minute `e2e` job reaches this step about 5 minutes in, and
+# the suite took 12.8 min there (run 37340204150; 9-10 min locally). 17 min of
+# Playwright plus _STOP_GRACE_SECS leaves about 2 min to read the report and write
+# the job summary. It sits below the 1800 s pytest timeout of setup.py test_e2e.
+PLAYWRIGHT_RUN_CEILING_SECS = 1020
 
-    Reads Playwright's JSON report rather than scraping stdout. `expected` and
-    `flaky` both mean "ran and ultimately passed"; counting only `expected` would
-    trip the floor whenever CI's retries absorb a flake.
-    """
+# A stopped run first gets SIGINT, so Playwright can run its reporters and close
+# its browsers, and is killed with its whole process group after this long.
+_STOP_GRACE_SECS = 60.0
+
+# How often the run checks that the gateway it drives is still alive. A dead
+# gateway turns every remaining spec and every retry into a timeout against
+# nothing, which is what a retry must never be mistaken for. Only an exited
+# gateway stops the run: a slow one under load is still the subject.
+_GATEWAY_POLL_SECS = 2.0
+
+
+def _read_counts(report: Path) -> tuple[dict, list[str]]:
+    """``(stats, flaky titles)`` from Playwright's JSON report; fails if unreadable."""
     try:
         stats = json.loads(report.read_text()).get("stats") or {}
     except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - defensive
         pytest.fail(f"could not read Playwright JSON report at {report}: {exc}")
+    return stats, _flaky_titles(report)
 
+
+def _counts_line(stats: dict) -> str:
     executed = int(stats.get("expected", 0)) + int(stats.get("flaky", 0))
     skipped = int(stats.get("skipped", 0))
-    print(
-        f"[test:e2e:playwright] executed={executed} skipped={skipped} stats={stats}",
-        flush=True,
-    )
+    return f"[test:e2e:playwright] executed={executed} skipped={skipped} stats={stats}"
+
+
+def _assert_suite_not_darkened(report: Path) -> None:
+    """Fail if the run executed fewer specs than the floor, skipped any, or was flaky.
+
+    Reads Playwright's JSON report rather than scraping stdout. `expected` and
+    `flaky` both mean "ran and ultimately passed", so both count as executed; a
+    flaky spec is then failed by the separate MAX_FLAKY_SPECS ceiling.
+    """
+    stats, flaky = _read_counts(report)
+    executed = int(stats.get("expected", 0)) + int(stats.get("flaky", 0))
+    skipped = int(stats.get("skipped", 0))
+    print(_counts_line(stats), flush=True)
 
     assert executed >= MIN_EXECUTED_SPECS, (
         f"only {executed} specs executed, floor is {MIN_EXECUTED_SPECS}. "
@@ -92,6 +129,124 @@ def _assert_suite_not_darkened(report: Path) -> None:
         "green while verifying nothing. Seed the precondition in a fixture instead "
         "of skipping on its absence."
     )
+    flaky_count = max(int(stats.get("flaky", 0)), len(flaky))
+    assert flaky_count <= MAX_FLAKY_SPECS, (
+        f"{flaky_count} spec(s) passed only on a retry, ceiling is {MAX_FLAKY_SPECS}: "
+        + ("; ".join(flaky) or "titles not in the report")
+        + ". A retry detects a flaky spec, it does not fix it: fix the spec "
+        "(website/docs/testing.md § Rules every test keeps), never raise retries or "
+        "this ceiling."
+    )
+
+
+def _flaky_titles(report: Path) -> list[str]:
+    """``file > describe > title`` for every test the JSON report marks flaky.
+
+    A top-level suite is the spec file, so only nested suite titles (the
+    ``describe`` blocks) join the path. Duplicates stay: each is a flaky test.
+    """
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    found: list[str] = []
+
+    def walk(suite: dict, path: list[str]) -> None:
+        for spec in suite.get("specs") or ():
+            for test in spec.get("tests") or ():
+                if test.get("status") == "flaky":
+                    found.append(" > ".join([spec.get("file", "?"), *path, spec.get("title", "?")]))
+        for child in suite.get("suites") or ():
+            walk(child, path + [child["title"]] if child.get("title") else path)
+
+    for suite in data.get("suites") or ():
+        walk(suite, [])
+    return sorted(found)
+
+
+def _salvaged_counts(report: Path) -> tuple[str, list[str]] | None:
+    """``(counts line, flaky titles)`` from whatever report a run left, or ``None``.
+
+    Never fails: a stopped run can leave no report or a partial one, and its stop
+    reason must stay the failure the reader sees.
+    """
+    try:
+        stats = json.loads(report.read_text()).get("stats") or {}
+        return _counts_line(stats), _flaky_titles(report)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _write_step_summary(line: str, flaky: list[str]) -> None:
+    """Append the run's counts, and any flaky spec titles, to the job summary.
+
+    Best effort: a runner whose summary file this user cannot write (the CodeBuild
+    fleet's) still gets both in the log and in the assertion message.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    body = [f"`{line}`", ""]
+    if flaky:
+        body.append(f"**{len(flaky)} flaky spec(s)** (passed only on a retry):")
+        body.extend(f"- {title}" for title in flaky)
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(body) + "\n")
+    except OSError as exc:
+        print(f"[test:e2e:playwright] job summary not written ({exc})", flush=True)
+
+
+def _run_playwright(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    gateway,
+    poll_secs: float = _GATEWAY_POLL_SECS,
+    ceiling_secs: float = PLAYWRIGHT_RUN_CEILING_SECS,
+    grace_secs: float = _STOP_GRACE_SECS,
+) -> tuple[int | None, str | None]:
+    """Run Playwright; return ``(exit code, why it was stopped)``.
+
+    A run that ends on its own returns ``(code, None)``. A run is stopped when the
+    gateway it drives exits (retrying against a dead gateway only replays timeouts)
+    or when it outlives *ceiling_secs*; it then gets SIGINT so its reporters write,
+    and after *grace_secs* its whole process group is killed. Playwright never
+    outlives this call, whatever ends it.
+    """
+    from kiro_crew import platform_compat
+
+    proc = subprocess.Popen(argv, cwd=str(cwd), env=env, start_new_session=True)
+    started = time.monotonic()
+    try:
+        while True:
+            try:
+                return proc.wait(timeout=poll_secs), None
+            except subprocess.TimeoutExpired:
+                pass
+            elapsed = time.monotonic() - started
+            if gateway.proc.poll() is not None:
+                diagnostics = getattr(gateway, "diagnostics", None)
+                reason = (
+                    f"the gateway exited with {gateway.proc.returncode} after {elapsed:.0f}s; "
+                    "stopped Playwright instead of letting its retries replay against it"
+                    + (f"\n{diagnostics()}" if callable(diagnostics) else "")
+                )
+                break
+            if elapsed > ceiling_secs:
+                reason = f"Playwright ran {elapsed:.0f}s, past the {ceiling_secs:.0f}s bound"
+                break
+        if platform_compat.IS_POSIX:  # Windows has no group SIGINT: killed below
+            with contextlib.suppress(OSError):
+                platform_compat.kill_process_group(proc.pid, signal.SIGINT)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=grace_secs)
+        return proc.returncode, reason
+    finally:
+        if proc.poll() is None:
+            platform_compat.kill_popen_tree(proc)
+            proc.wait(timeout=poll_secs * 15)
 
 
 def _node_major(node_bin: str) -> int | None:
@@ -261,8 +416,9 @@ def test_dashboard_playwright_suite() -> None:
                         "KIROCREW_E2E_EPHEMERAL": "1",
                         "KIROCREW_E2E_LEGACY_MEMBERS": json.dumps(legacy_members),
                         "KIROCREW_E2E_INVALID_MEMORY_BINDINGS": json.dumps(invalid_memory_bindings),
-                        # CI mode: serial workers + retries:2 (absorbs gateway-load
-                        # timeout flakes) + html reporter, per playwright.config.ts.
+                        # CI mode: serial workers + retries:2 (a detector: a spec that
+                        # passes only on a retry counts against MAX_FLAKY_SPECS) + html
+                        # reporter, per playwright.config.ts.
                         "CI": "1",
                         # Machine-readable counts for the darkening floor below.
                         "PLAYWRIGHT_JSON_OUTPUT_NAME": str(report),
@@ -275,13 +431,20 @@ def test_dashboard_playwright_suite() -> None:
                 )
                 # html keeps the CI artifact the config asks for; json adds the
                 # counts. A CLI --reporter replaces the config value, so name both.
-                rc = subprocess.call(
+                rc, stopped = _run_playwright(
                     [str(pw_bin), "test", "--reporter=html,json"],
-                    cwd=str(website),
+                    cwd=website,
                     env=env,
+                    gateway=gw,
                 )
-            # Assert the counts even on failure: a red run plus a collapsed spec
-            # count points at darkening rather than at the reported failure.
+            salvaged = _salvaged_counts(report)
+            if salvaged is not None:
+                _write_step_summary(*salvaged)
+            # A stopped run fails with why it stopped, plus whatever counts its
+            # report salvaged. Otherwise assert the counts even on failure: a red run
+            # plus a collapsed spec count points at darkening, not at the failure.
+            if stopped:
+                pytest.fail(f"{stopped}\n{salvaged[0] if salvaged else 'no readable report'}")
             _assert_suite_not_darkened(report)
             assert rc == 0, f"playwright test exited {rc}"
     finally:
@@ -309,11 +472,13 @@ def test_floor_accepts_a_run_at_the_floor(tmp_path: Path) -> None:
 
 
 def test_floor_counts_flaky_as_executed(tmp_path: Path) -> None:
-    """CI runs retries:2, so a flake absorbed by a retry still ran."""
+    """CI runs retries:2, so a flake absorbed by a retry still ran: the floor counts
+    it, and only the flaky ceiling fails the run."""
     report = _write_report(
         tmp_path, expected=MIN_EXECUTED_SPECS - 1, flaky=1, skipped=0
     )
-    _assert_suite_not_darkened(report)  # must not raise
+    with pytest.raises(AssertionError, match="passed only on a retry"):
+        _assert_suite_not_darkened(report)
 
 
 def test_floor_rejects_a_collapsed_spec_count(tmp_path: Path) -> None:
@@ -338,3 +503,190 @@ def test_floor_fails_when_the_report_is_missing(tmp_path: Path) -> None:
         pytest.fail.Exception, match="could not read Playwright JSON report"
     ):
         _assert_suite_not_darkened(tmp_path / "absent.json")
+
+
+def _report_with(tmp_path: Path, tests: list[tuple[str, str]]) -> Path:
+    """A JSON report whose specs carry the given ``(title, status)`` tests."""
+    report = tmp_path / "results.json"
+    specs = [
+        {"title": title, "file": "a.spec.ts", "tests": [{"status": status}]}
+        for title, status in tests
+    ]
+    flaky = sum(1 for _title, status in tests if status == "flaky")
+    stats = {"expected": MIN_EXECUTED_SPECS, "flaky": flaky, "skipped": 0}
+    suites = [{"title": "a.spec.ts", "suites": [{"title": "", "specs": specs}]}]
+    report.write_text(json.dumps({"stats": stats, "suites": suites}))
+    return report
+
+
+def test_flaky_titles_are_read_from_nested_suites(tmp_path: Path) -> None:
+    report = _report_with(tmp_path, [("opens", "flaky"), ("closes", "expected"), ("x", "flaky")])
+    assert _flaky_titles(report) == ["a.spec.ts > opens", "a.spec.ts > x"]
+
+
+def test_a_flaky_title_names_its_describe_blocks_and_keeps_duplicates(tmp_path: Path) -> None:
+    spec = {"title": "opens", "file": "a.spec.ts", "tests": [{"status": "flaky"}]}
+    suites = [
+        {"title": "a.spec.ts", "suites": [{"title": "menu", "specs": [spec]}]},
+        {"title": "a.spec.ts", "suites": [{"title": "menu", "specs": [spec]}]},
+    ]
+    report = tmp_path / "results.json"
+    report.write_text(json.dumps({"stats": {}, "suites": suites}))
+    assert _flaky_titles(report) == ["a.spec.ts > menu > opens"] * 2
+
+
+def test_floor_rejects_more_flaky_specs_than_the_ceiling(tmp_path: Path) -> None:
+    tests = [(f"spec {i}", "flaky") for i in range(MAX_FLAKY_SPECS + 1)]
+    with pytest.raises(AssertionError, match="passed only on a retry"):
+        _assert_suite_not_darkened(_report_with(tmp_path, tests))
+
+
+def test_the_counts_and_flaky_titles_reach_the_step_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _write_step_summary("[test:e2e:playwright] executed=3", ["a.spec.ts > opens"])
+    text = summary.read_text(encoding="utf-8")
+    assert "executed=3" in text and "- a.spec.ts > opens" in text
+
+
+def test_an_unwritable_step_summary_does_not_fail_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))  # a directory: open() raises
+    _write_step_summary("[test:e2e:playwright] executed=3", ["a.spec.ts > opens"])
+
+
+def test_the_floor_never_writes_the_job_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _assert_suite_not_darkened(_write_report(tmp_path, expected=MIN_EXECUTED_SPECS))
+    assert not summary.exists()
+
+
+# Unit-test bounds for _run_playwright: a stop is noticed within a few polls, and a
+# child that never gets going is given up on after _TEST_LOST_RUN_SECS.
+_TEST_POLL_SECS = 0.05
+_TEST_GRACE_SECS = 10.0
+_TEST_LOST_RUN_SECS = 60.0
+
+
+#: The child records its pid in a sibling file and renames it into place, so
+#: ``child.pid`` only ever appears complete; a reader never sees it half written.
+_CHILD_CODE = (
+    "import os, sys, time\n"
+    "path = sys.argv[1]\n"
+    "with open(path + '.tmp', 'w') as handle:\n"
+    "    handle.write(str(os.getpid()))\n"
+    "os.replace(path + '.tmp', path)\n"
+    "time.sleep(600)\n"
+)
+
+
+def _child(tmp_path: Path, code: str = _CHILD_CODE) -> list[str]:
+    """A child that records its pid, then would sleep far past every bound here."""
+    import sys
+
+    return [sys.executable, "-c", code, str(tmp_path / "child.pid")]
+
+
+def _recorded_pid(tmp_path: Path) -> int | None:
+    """The child's pid once ``child.pid`` holds a whole positive number, else None."""
+    try:
+        text = (tmp_path / "child.pid").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() and int(text) > 0 else None
+
+
+def test_a_run_is_stopped_when_its_gateway_exits(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    gateway = SimpleNamespace(
+        proc=SimpleNamespace(poll=lambda: 1, returncode=1), diagnostics=lambda: "stderr tail"
+    )
+    _rc, reason = _run_playwright(
+        _child(tmp_path),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        gateway=gateway,
+        poll_secs=_TEST_POLL_SECS,
+        grace_secs=_TEST_GRACE_SECS,
+    )
+    assert reason is not None and "the gateway exited with 1" in reason and "stderr tail" in reason
+
+
+def test_a_run_is_stopped_past_its_bound(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    alive = SimpleNamespace(proc=SimpleNamespace(poll=lambda: None, returncode=None))
+    _rc, reason = _run_playwright(
+        _child(tmp_path),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        gateway=alive,
+        poll_secs=_TEST_POLL_SECS,
+        ceiling_secs=0.0,
+        grace_secs=_TEST_GRACE_SECS,
+    )
+    assert reason is not None and "past the 0s bound" in reason
+
+
+def test_playwright_is_reaped_when_the_poll_raises(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.platform_compat import pid_exists
+
+    started: list[int] = []
+
+    def poll():
+        pid = _recorded_pid(tmp_path)
+        if pid is None:
+            return None
+        started.append(pid)
+        raise RuntimeError("poll failed")
+
+    gateway = SimpleNamespace(proc=SimpleNamespace(poll=poll, returncode=None))
+    with pytest.raises(RuntimeError, match="poll failed"):
+        _run_playwright(
+            _child(tmp_path),
+            cwd=tmp_path,
+            env=dict(os.environ),
+            gateway=gateway,
+            poll_secs=_TEST_POLL_SECS,
+            ceiling_secs=_TEST_LOST_RUN_SECS,
+        )
+    assert started and not pid_exists(started[0])
+
+
+def test_a_run_that_finishes_reports_its_exit_code(tmp_path: Path) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    alive = SimpleNamespace(proc=SimpleNamespace(poll=lambda: None, returncode=None))
+    argv = [sys.executable, "-c", "raise SystemExit(3)"]
+    assert _run_playwright(
+        argv,
+        cwd=tmp_path,
+        env=dict(os.environ),
+        gateway=alive,
+        poll_secs=_TEST_POLL_SECS,
+        ceiling_secs=_TEST_LOST_RUN_SECS,
+    ) == (3, None)
+
+
+def test_a_partial_or_missing_report_salvages_nothing_and_never_raises(tmp_path: Path) -> None:
+    report = tmp_path / "results.json"
+    assert _salvaged_counts(report) is None
+    report.write_text('{"stats": {"expected": 3, "fla')
+    assert _salvaged_counts(report) is None
+    report.write_text('["not", "an", "object"]')
+    assert _salvaged_counts(report) is None
+    report.write_text(json.dumps({"stats": {"expected": 3, "skipped": 0}}))
+    assert _salvaged_counts(report) == (
+        "[test:e2e:playwright] executed=3 skipped=0 stats={'expected': 3, 'skipped': 0}",
+        [],
+    )

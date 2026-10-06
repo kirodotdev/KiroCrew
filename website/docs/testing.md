@@ -303,8 +303,23 @@ backend checkout is depth 1 today, so the ratchet is a local, pre-push gate: run
   for every such value the assertion reads, in the file's `…Ready()` helper.
 - **An `act()` warning is a finding.** "not wrapped in act(...)" means a state update
   landed after the test's last barrier. Fix the barrier; never add the warning to a
-  filter. `vite.config.ts`'s `onConsoleLog` drops that line from the run log today, so
-  the shard will not show it to you.
+  filter. `integration/setup.ts` counts these warnings per file. A file listed in
+  `integration/act-warning-baseline.json` still emits them; there they are kept out of
+  the log, and a run of all its tests that emits none prints an
+  `[act-warnings] ... emitted none` line so you can remove it from the list. Any other
+  file prints its warnings as usual plus an `[act-warnings] <file>: N act() warning(s)`
+  line on stderr at its end. `KIROCREW_ACT_STRICT=1` also fails the test that emitted
+  it. The list only shrinks: never add a file to quiet a new warning.
+- **Each test undoes the fake timers and storage writes it leaves.** `integration/setup.ts`
+  undoes them when the test finishes: fake timers the test installed go back to real
+  ones, and `localStorage` / `sessionStorage` go back to what the test inherited. A
+  `beforeAll` that installs fake timers or seeds storage keeps it for the whole file;
+  a test that turns such inherited fake timers OFF leaves them off for the tests after
+  it, so restore them yourself.
+  `unstubEnvs` resets every `vi.stubEnv` before each test, a `beforeAll` one included,
+  so stub env in `beforeEach` or the test. Globals are not restored, so undo your own
+  `vi.stubGlobal`. A test that reads storage an earlier test wrote fails here; the two
+  files that still do are listed in `STORAGE_CARRYOVER_FILES` until they are fixed.
 - **No absolute time budget under `--coverage`.** Instrumentation multiplies every
   executed line, so `expect(elapsed).toBeLessThan(N)` measures the instrumentation and
   the host. Assert the work (calls, items, frames) instead.
@@ -314,10 +329,9 @@ backend checkout is depth 1 today, so the ratchet is a local, pre-push gate: run
     barrier.
   - `locator.isVisible({ timeout })` ignores its timeout and samples once, so never
     branch on it.
-  - Keep the count of flaky specs at zero. CI's `retries` let a flaky spec pass, and the
-    reports' `flaky` count is where that shows up; a spec that passes only on a retry is
-    broken and gets fixed, never given more retries
-    ([e2e-gate](../../docs/ci/e2e-gate.md)).
+  - Keep the count of flaky specs at zero. CI's `retries` let a flaky spec pass its
+    retry, and the gate's `MAX_FLAKY_SPECS` ceiling then fails the run naming it: it
+    gets fixed, never given more retries ([e2e-gate](../../docs/ci/e2e-gate.md)).
   - A spec cleans up only the ids it created. A global reset races every other spec
     sharing the gateway.
 

@@ -760,6 +760,11 @@ export default defineConfig({
       },
     },
     setupFiles: './integration/setup.ts',
+    // Reset every vi.stubEnv before each test, a beforeAll or module-level stub
+    // included, so env is stubbed in beforeEach or the test (a full-suite trial broke
+    // nothing). unstubGlobals stays off: it would undo a file-wide stub such as
+    // pipelineBoardCard.test.ts's module-level CSSStyleSheet.
+    unstubEnvs: true,
     css: true,
     pool: 'forks',  // More stable than threads on ARM64 build fleet (avoids ERR_IPC_CHANNEL_CLOSED)
     // Bound fork memory. Without a cap, vitest spawns one worker per core
@@ -802,8 +807,8 @@ export default defineConfig({
     // load-induced flakes while still failing real hangs.
     testTimeout: 15000,
     include: ['integration/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
+    // act() warnings are counted per file by integration/setup.ts, never filtered here.
     onConsoleLog: (log) =>
-      !log.includes('was not wrapped in act(') &&
       // TipCard's useTipTrigger issues tipsStatus/tipsNext queries; the 232
       // tests that vi.mock('../api/client') without stubbing those two fields
       // leave queryFn undefined, so React Query logs "No queryFn was passed"
