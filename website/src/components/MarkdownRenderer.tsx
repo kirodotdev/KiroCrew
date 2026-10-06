@@ -461,7 +461,8 @@ const MD_COMPONENTS = {
     // rule as FENCE_OPEN (useBlockAssembler) / fixCodeFences.
     const match = /language-(\S+)/.exec(className || '')
     const lang = match?.[1]
-    const codeStr = String(children).replace(/\n$/, '')
+    // An empty fence has no children; String(undefined) would show "undefined".
+    const codeStr = String(children ?? '').replace(/\n$/, '')
 
     // `rehypeRedactionMarkers` stamps the ordinal of this block's first
     // credential tag when it holds any this reply has a record for. It is
@@ -611,9 +612,11 @@ export function fixCodeFences(s: string): string {
     return num + '\\.' + trail
   })
   // Ensure blank line before opening fences that are glued to preceding text.
-  // The info string is the whole backtick-free line, including attributes and
-  // a leading space, matching FENCE_OPEN in useBlockAssembler.
-  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
+  // The info string may be a tag (FENCE_OPEN's tag rule in useBlockAssembler,
+  // after optional whitespace) plus an optional `{...}` attribute block, and
+  // nothing more: a ``` run followed by more words is a mid-sentence mention,
+  // and moving it onto its own line would open a fence over the prose after it.
+  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB

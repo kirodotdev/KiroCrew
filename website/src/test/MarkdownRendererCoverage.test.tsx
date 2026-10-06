@@ -295,6 +295,39 @@ describe('MarkdownRenderer structural elements', () => {
   })
 })
 
+describe('MarkdownRenderer mid-sentence ``` runs', () => {
+  const labels = (c: HTMLElement) => Array.from(c.querySelectorAll('.code-block')).map(b => b.querySelector('span')?.textContent)
+
+  it('renders the run and the prose after it as prose, beside a real code block', () => {
+    const content = [
+      'Use a ```diff block for file changes.',
+      'This line stays prose.',
+      '',
+      '```text',
+      'separator',
+      '```',
+    ].join('\n')
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(labels(container)).toEqual(['text'])
+    expect(container.textContent).toContain('Use a ```diff block for file changes.')
+    expect(container.textContent).toContain('This line stays prose.')
+  })
+
+  it('still renders a streaming glued fence as a code block', () => {
+    const { container } = render(<MarkdownRenderer content={'Here is code:```python\nprint(1)'} streaming />)
+    expect(labels(container)).toEqual(['python'])
+    expect(container.querySelector('.code-block')!.textContent).toContain('print(1)')
+  })
+
+  it('renders an empty fence without the word "undefined"', () => {
+    // parseBlocks keeps the indented fence in the markdown block; the glue pass
+    // moves it to column 0, and it reaches the fenced-code override with no children.
+    const { container } = render(<MarkdownRenderer content={'  ```diff\n  ```'} />)
+    expect(labels(container)).toEqual(['diff'])
+    expect(container.querySelector('.code-block')!.textContent).not.toContain('undefined')
+  })
+})
+
 // ── block routing ──────────────────────────────────────────────────────────
 
 describe('MarkdownRenderer block routing', () => {

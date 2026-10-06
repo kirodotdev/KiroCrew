@@ -138,3 +138,23 @@ describe('fixCodeFences — info strings beyond \\w', () => {
     expect(fixCodeFences('```\ncode\n```358KB')).toBe('```\ncode\n```\n358KB')
   })
 })
+
+describe('fixCodeFences — a ``` run in the middle of prose', () => {
+  const line = "plus the subagent's programmatic edits (which need a ```diff block). Let me produce a compact structural diff."
+
+  it('leaves the line and the prose after it unchanged', () => {
+    for (const input of [
+      line + '\n',
+      line + '\nThis line stays prose.\nSo does this one.',
+      'Use a ```diff block for file changes.\n\n```text\nseparator\n```\n\nAfter.',
+      'Use a ```diff block for file changes.\n\n```\nseparator\n```\n\nAfter.',
+      '- Type ``` then Enter to start a code block\n- second item',
+    ]) expect(fixCodeFences(input)).toBe(input)
+  })
+
+  it('still separates a glued fence whose closer has not streamed in yet', () => {
+    // While a reply streams, the markdown block ends inside the fence body.
+    expect(fixCodeFences('Here is code:```python\nprint(1)')).toBe('Here is code:\n\n```python\nprint(1)')
+    expect(fixCodeFences('note```js {1,3}\r\nx')).toBe('note\n\n```js {1,3}\r\nx')
+  })
+})

@@ -11,7 +11,7 @@ import type { ContentBlock } from '../types'
 // whose label was truncated to the first `\w+` run, followed by a phantom empty
 // "code" block that ran to the end of the message. Group 2 is the tag; the
 // rest of the info string is accepted and ignored, including leading whitespace
-// before the tag. Same rule fixCodeFences and the code-block label regex apply.
+// before the tag. Same tag rule fixCodeFences and the code-block label regex apply.
 const FENCE_OPEN = /^(`{3,})\s*([^`\s]*)[^`]*$/
 // Escape ALL regex metacharacters before interpolating a captured fence run
 // into a dynamic RegExp. The capture is currently backtick-only, but a
