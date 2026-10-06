@@ -11,23 +11,40 @@ Every test patches ``sel`` so nothing is written to the real security event log.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import autonudge_authz
-from kiro_crew.autonudge import MonitorUpdateConflict
+from kiro_crew.autonudge import (
+    AutoNudgeService,
+    MonitorUpdateConflict,
+    NudgeAdmissionReason,
+    NudgeAdmissionRefused,
+    NudgeLoop,
+)
 from kiro_crew.autonudge_authz import (
     authorize_and_add_nudge,
     authorize_and_update_nudge,
     normalize_banner,
 )
+from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
 from kiro_crew.constants import MAX_BANNER_CHARS
-from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
+from kiro_crew.dashboard.handlers import autonudge as autonudge_handler
+from kiro_crew.monitoring.models import (
+    MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+    MonitorOutcome,
+    MonitorState,
+)
 
 
 class RecordingSvc:
@@ -182,6 +199,285 @@ async def test_update_audits_then_reraises_a_service_failure(audits: list[dict])
         await authorize_and_update_nudge(svc=svc, loop_id="l1", message="hi", source="dashboard")
     errors = [a for a in audits if a["outcome"] == "error"]
     assert errors and "svc.update failed: RuntimeError" in errors[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_maps_closed_admission_to_503(audits: list[dict], tmp_path: Path) -> None:
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.shutdown()
+
+    loop, error, status = await authorize_and_update_nudge(
+        svc=svc,
+        loop_id="loop-1",
+        message="new",
+        source="dashboard",
+    )
+
+    assert (loop, error, status) == (None, "AutoNudge service is shutting down", 503)
+    assert audits[-1]["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_closed_service_arm_preserves_active_loop_stop_sentinel_and_state(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    slot_key = "chat-1-1"
+    sentinel = tmp_path / "stop-chat-1-1"
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await svc.add(
+        slot_key=slot_key,
+        message="existing goal",
+        idle_secs=300,
+        stop_sentinel_path=str(sentinel),
+    )
+    await svc.shutdown()
+    sentinel.write_text("stop", encoding="utf-8")
+    before_memory = deepcopy(existing)
+    before_store = await asyncio.to_thread(svc._path.read_bytes)
+    trust_writes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
+    )
+    monkeypatch.setattr(
+        autonudge_authz,
+        "record_self_arm",
+        lambda loop_id, key: trust_writes.append((loop_id, key)),
+    )
+    monkeypatch.setattr(autonudge_authz, "forget_self_arm", lambda _loop_id: None)
+    member_state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="member",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+    refused, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=member_state,
+        slot_key=slot_key,
+        message="self-armed replacement",
+        source="mcp-directive",
+        initiator_slot_key=slot_key,
+    )
+    assert (refused, error, status) == (None, SERVICE_SHUTTING_DOWN_MESSAGE, 503)
+    assert [event["outcome"] for event in audits] == ["denied"]
+    assert trust_writes == [], "closed admission reached the self-arm trust store"
+    audits.clear()
+
+    monkeypatch.setattr(autonudge_handler, "_autonudge_get", lambda: svc)
+    monkeypatch.setattr(
+        autonudge_handler,
+        "sel",
+        lambda: SimpleNamespace(log_api_access=lambda **kwargs: None),
+    )
+    request_state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+    request_state.owner_id = ""
+    app = web.Application()
+    app["state"] = request_state
+    request = make_mocked_request("POST", "/api/autonudge", app=app)
+    request["user"] = "local-app"
+    request["app"] = ""
+    request.json = AsyncMock(  # type: ignore[method-assign]
+        return_value={"slot_key": slot_key, "message": "replacement goal"}
+    )
+
+    try:
+        response = await autonudge_handler.api_autonudge_start(request)
+
+        assert response.status == 503
+        assert isinstance(response.body, bytes)
+        assert json.loads(response.body.decode("utf-8")) == {
+            "error": SERVICE_SHUTTING_DOWN_MESSAGE,
+            "code": "autonudge_not_armed",
+        }
+        assert sentinel.read_text(encoding="utf-8") == "stop"
+        assert svc.get_by_slot(slot_key) == before_memory
+        assert await asyncio.to_thread(svc._path.read_bytes) == before_store
+        assert [event["outcome"] for event in audits] == ["denied"]
+        assert trust_writes == [], "closed admission reached the self-arm trust store"
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_racing_shutdown_keeps_existing_default_stop_sentinel(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    slot_key = "chat-1-1"
+    sentinel = tmp_path / "stop-chat-1-1"
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await svc.add(
+        slot_key=slot_key,
+        message="existing goal",
+        idle_secs=300,
+        stop_sentinel_path=str(sentinel),
+    )
+    sentinel.write_text("stop", encoding="utf-8")
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
+    )
+    admitted_add = svc.add
+
+    async def close_then_add(**kwargs: Any) -> NudgeLoop:
+        await svc.shutdown()
+        return await admitted_add(**kwargs)
+
+    monkeypatch.setattr(svc, "add", close_then_add)
+    state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+
+    try:
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=state,
+            slot_key=slot_key,
+            message="replacement goal",
+            source="dashboard",
+        )
+
+        assert (loop, error, status) == (
+            None,
+            SERVICE_SHUTTING_DOWN_MESSAGE,
+            503,
+        )
+        assert sentinel.read_text(encoding="utf-8") == "stop"
+        assert svc.get_by_slot(slot_key) is existing
+        assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_keeps_session_changed_admission_as_409(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    svc = RecordingSvc(
+        add_error=NudgeAdmissionRefused(
+            "session changed before nudge arm committed",
+            reason=NudgeAdmissionReason.SESSION_CHANGED,
+        )
+    )
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(
+            slots={
+                "chat-1-1": SimpleNamespace(
+                    workspace="default",
+                    mode="",
+                    memory_mode="persistent",
+                    is_closing=False,
+                )
+            }
+        ),
+        slot_key="chat-1-1",
+        message="watch",
+        stop_sentinel_path=str(tmp_path / "stop"),
+        source="dashboard",
+    )
+
+    assert (loop, error, status) == (
+        None,
+        "session changed before nudge arm committed",
+        409,
+    )
+    assert audits[-1]["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_update_monitor_maps_closed_admission_to_503(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.shutdown()
+
+    loop, error, status = await autonudge_authz.authorize_and_update_monitor(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(mode="", memory_mode="persistent")}),
+        loop_id="monitor-1",
+        session_key="chat-1-1",
+        patch={"cadence_secs": 300},
+        source="dashboard",
+    )
+
+    assert (loop, error, status) == (None, "AutoNudge service is shutting down", 503)
+    assert audits[-1]["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_stop_monitor_maps_closed_admission_to_503(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.shutdown()
+
+    loop, error, status = await autonudge_authz.authorize_and_stop_monitor(
+        svc=svc,
+        loop_id="monitor-1",
+        session_key="chat-1-1",
+        source="dashboard",
+    )
+
+    assert (loop, error, status) == (None, "AutoNudge service is shutting down", 503)
+    assert audits[-1]["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_clear_monitor_maps_closed_admission_to_503(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.shutdown()
+    monitor = MonitorState(
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        created_ts=1_000.0,
+        outcome=MonitorOutcome.USER_STOP,
+    )
+    loop = NudgeLoop(
+        id="monitor-1",
+        slot_key="chat-1-1",
+        message="watch",
+        active=False,
+        monitor=monitor,
+    )
+    svc._loops[loop.id] = loop
+
+    cleared, error, status = await autonudge_authz.authorize_and_clear_monitor(
+        svc=svc,
+        loop_id=loop.id,
+        session_key=loop.slot_key,
+        source="dashboard",
+    )
+
+    assert (cleared, error, status) == (False, "AutoNudge service is shutting down", 503)
+    assert svc.get_by_id(loop.id) is loop
+    assert audits[-1]["outcome"] == "denied"
 
 
 # --------------------------------------------------------------------------- #
@@ -571,18 +867,23 @@ async def test_add_rejects_a_sensitive_stop_sentinel_path(audits: list[dict]) ->
 
 
 @pytest.mark.asyncio
-async def test_add_defaults_the_sentinel_for_a_channel_loop(
+async def test_add_removes_a_stale_default_sentinel_only_after_successful_arm(
     audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Channel-bound loops get a per-session sentinel derived from the slot key
-    (no dashboard slot to read a workspace from), and a stale sentinel left by a
-    previous loop is cleared so the new loop is not stopped on its first tick."""
+    """A new channel loop gets its per-session sentinel and clears a stale marker
+    only after the service has accepted the arm."""
     sentinel = tmp_path / "stop-slack"
     sentinel.write_text("stale", encoding="utf-8")
     monkeypatch.setattr(
         autonudge_authz, "resolve_stop_sentinel", lambda key, *a, **kw: str(sentinel)
     )
-    svc = RecordingSvc()
+
+    class SentinelObservingSvc(RecordingSvc):
+        async def add(self, **kw: Any) -> Any:
+            assert sentinel.exists(), "the stale sentinel was unlinked before admission"
+            return await super().add(**kw)
+
+    svc = SentinelObservingSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=_state(sessions=SimpleNamespace(get_channel=lambda key: SimpleNamespace())),
@@ -592,7 +893,7 @@ async def test_add_defaults_the_sentinel_for_a_channel_loop(
     )
     assert error is None and status == 200 and loop is not None
     assert svc.added[0]["stop_sentinel_path"] == str(sentinel)
-    assert not sentinel.exists()  # stale sentinel cleared before arming
+    assert not sentinel.exists(), "the successful arm left its stale sentinel in place"
 
 
 @pytest.mark.asyncio
@@ -603,7 +904,7 @@ async def test_a_new_goal_after_a_stop_file_finish_is_not_killed_by_the_stale_fi
     removed. The per-slot sentinel path is the same for the next goal on that
     slot, so the person's sequence -- Clear, then set a new goal -- must not
     end on the new loop's first tick. The arm chokepoint unlinks the stale
-    file before the new loop exists, which is what this pins end to end."""
+    file after the replacement commits, which is what this pins end to end."""
     from kiro_crew.autonudge import STOP_SENTINEL_REASON, AutoNudgeService
 
     sentinel = tmp_path / ".stop-chat-1-1"
@@ -631,7 +932,7 @@ async def test_a_new_goal_after_a_stop_file_finish_is_not_killed_by_the_stale_fi
             svc=svc, state=state, slot_key="chat-1-1", message="second goal", source="dashboard"
         )
         assert error is None and status == 200 and second is not None
-        assert not sentinel.exists(), "the stale stop file is gone before the new loop exists"
+        assert not sentinel.exists(), "the successful arm left the stale stop file in place"
         svc._cancel_timer(second.id)
         await svc._timer(second, delay=0)
         live = svc.get_by_slot("chat-1-1")
@@ -713,6 +1014,84 @@ async def test_update_monitor_bound_failure_is_an_audited_client_error(
     assert loop is None and status == 400
     assert error == "max_runtime_secs must be an integer between 1 and 3600 (1 hour)"
     assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+
+
+@pytest.mark.asyncio
+async def test_credential_update_store_must_run_post_commit_continuation(
+    audits: list[dict],
+) -> None:
+    prior = NudgeLoop(
+        id="monitor-1",
+        slot_key="chat-1-1",
+        message="",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+        ),
+    )
+
+    class ForeignMonitorSvc:
+        def __init__(self) -> None:
+            self.loop = prior
+            self.updated: NudgeLoop | None = None
+            self.rollback_calls: list[tuple[str, Any, Any]] = []
+
+        def mutate_returned_update(self) -> None:
+            assert self.updated is not None and self.updated.monitor is not None
+            self.updated.monitor.target = "owner/repo#late-change"
+
+        async def update_monitor(
+            self,
+            _loop_id: str,
+            *,
+            _prior_snapshot_out: list[Any],
+            **patch: Any,
+        ) -> Any:
+            _prior_snapshot_out.append(deepcopy(self.loop))
+            updated = deepcopy(self.loop)
+            assert updated.monitor is not None
+            updated.monitor.target = patch["target"]
+            self.loop = updated
+            self.updated = updated
+            asyncio.get_running_loop().call_soon(self.mutate_returned_update)
+            return updated
+
+        async def rollback_monitor_update(
+            self,
+            monitor_id: str,
+            prior_loop: Any,
+            failed_update: Any,
+        ) -> bool:
+            assert [event["outcome"] for event in audits] == ["invoked"]
+            self.rollback_calls.append((monitor_id, prior_loop, failed_update))
+            self.loop = prior_loop
+            return True
+
+    svc = ForeignMonitorSvc()
+    loop, error, status = await autonudge_authz.authorize_and_update_monitor(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(mode="", memory_mode="persistent")}),
+        loop_id=prior.id,
+        session_key=prior.slot_key,
+        patch={"target": "owner/repo#456"},
+        source="dashboard",
+        grant_owner_provider_credentials=True,
+    )
+
+    assert loop is None and status == 503
+    assert error == "monitor credential authorization unavailable — prior monitor restored"
+    assert len(svc.rollback_calls) == 1
+    monitor_id, restored, failed = svc.rollback_calls[0]
+    assert monitor_id == prior.id
+    assert restored.monitor is not None and restored.monitor.target == "owner/repo#123"
+    assert failed.monitor is not None and failed.monitor.target == "owner/repo#456"
+    assert svc.updated is not None and svc.updated.monitor is not None
+    assert svc.updated.monitor.target == "owner/repo#late-change"
+    assert svc.loop is restored
+    assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+    assert audits[-1]["error"] == "monitor authorization requires a rollback-capable loop store"
 
 
 @pytest.mark.asyncio

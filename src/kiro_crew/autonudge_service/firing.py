@@ -1,10 +1,13 @@
 """One tick: its terminal bounds, the fire, its bookkeeping and the re-arm.
 
-:func:`_timer` is the body of every loop's timer task. It applies the kill switch and
+:func:`_timer` is the body of every loop's timer task. Past its sleep it admits the
+callback under a multi-write mutation lease for the writes its own task makes, and
+:func:`_run_timer_callback` then applies the kill switch and
 the terminal bounds in their fixed order (cycle cap, approval hold, runtime budget,
 start-failure stand-down) before a turn can be spent, lets the gate decide a quiet
-tick, and runs :func:`_run_fire_cycle` inside the loop's fire window, which charges a
-delivered turn exactly once, keeps a refused turn owed and decides the re-arm.
+tick, and runs :func:`_run_fire_cycle` inside the loop's fire window, whose settlement
+(:func:`_settle_fire_cycle`, then :func:`_finish_fire_cycle`) charges a delivered turn
+exactly once, keeps a refused turn owed and decides the re-arm.
 :func:`fire_now` brings the next cycle forward through that same body.
 
 Its functions are :class:`~kiro_crew.autonudge.AutoNudgeService` methods: each is bound
@@ -24,15 +27,15 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import shutdown_event
 from kiro_crew.autonudge_service.gate import _WAKE_FOLLOWUP_TICKS, _record_delivered_revision
-from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     CONSECUTIVE_FAILURE_REASON,
-    MONITOR_TERMINAL_REASON,
+    SERVICE_SHUTTING_DOWN_MESSAGE,
     SESSION_START_FAILURE_REASON,
     STOP_SENTINEL_REASON,
+    NudgeAdmissionRefused,
     NudgeLoop,
     is_channel_key,
     is_structured_monitor_loop,
@@ -43,8 +46,8 @@ from kiro_crew.autonudge_service.timers import (
     _REARM_BACKOFF_SECS,
     _REARM_MAX_BACKOFF_SECS,
     _current_task_or_none,
+    _drained_bookkeeping,
 )
-from kiro_crew.monitoring.models import MonitorOutcome
 
 if TYPE_CHECKING:
     from kiro_crew.autonudge import AutoNudgeService
@@ -54,12 +57,46 @@ logger = logging.getLogger("kiro_crew.autonudge")
 
 
 async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = None) -> None:
+    # A re-armed timer may inherit the detached transaction's owner context and
+    # its submission token. This task starts a new callback lifetime, so it must
+    # not retain that chain or count its writes toward that transaction.
+    self._admitted_transaction_owner.set(None)
+    self._admitted_transaction_submissions.set(None)
     try:
         await asyncio.sleep(loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
     if shutdown_event.is_set():
         return
+    # The post-sleep boundary is the admission point: a callback that crosses it
+    # before shutdown closes admission owns a multi-write lease for the writes its
+    # own task makes. It is NOT a drained owner while it probes or delivers --
+    # ``shutdown()`` cancels it like a dormant timer -- and the lease is what lets
+    # the bookkeeping a cancelled delivery performs on its way out still commit.
+    # Bookkeeping a delivery already earned registers the task for the drain
+    # itself (``_drained_bookkeeping``). One that wakes after closure does nothing.
+    try:
+        admission = self._admit_mutation(allow_multiple_persistence=True)
+    except NudgeAdmissionRefused:
+        return
+    owner = _current_task_or_none()
+    if owner is not None:
+        self._running_callbacks.add(owner)
+    token = self._mutation_admission.set(admission)
+    try:
+        await self._run_timer_callback(loop)
+    finally:
+        self._mutation_admission.reset(token)
+        # A re-armed timer copied this context while the lease still named the
+        # current task. The copied context may retain the lease, but the lease
+        # must not retain every completed timer task in the re-arm chain.
+        admission.owner_task = None
+        if owner is not None:
+            self._running_callbacks.discard(owner)
+
+
+async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
+    """Run one admitted post-sleep callback through durable bookkeeping."""
     # Whether THIS tick is one a worker's push armed. Moved off the armed-timer mark
     # the moment the tick starts, so a push landing from here on is news this tick may
     # not see and is free to arm the next one; and reset on every tick, so a tick that
@@ -113,8 +150,8 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # Kill switch: sentinel file present? The goal is finished, so the record is
     # KEPT under its own reason rather than removed: a removed row left the goal
     # popover on its empty form with nothing saying the goal was met. The file
-    # stays where it was written -- the next arm on this slot unlinks it before
-    # the new loop exists (``authorize_and_add_nudge``), and an inactive loop's
+    # stays where it was written -- the next arm on this slot unlinks it once the
+    # new loop is armed (``authorize_and_add_nudge``), and an inactive loop's
     # timer is never armed, so the stale file can kill nothing in between. No
     # ``expired`` here: that event says the loop stopped SHORT of its goal, and
     # this stop is the agent reporting the goal reached.
@@ -402,8 +439,16 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
 
     Runs entirely inside the caller's ``_firing`` window so a concurrent
     ``update()`` never cancels this task between delivery and persistence.
+    Gateway shutdown is the one canceller that may cut the delivery itself, and a
+    terminal settlement's provider re-probe after it; the bookkeeping on either
+    side of that re-probe is drained instead (:func:`_settle_fire_cycle`,
+    :func:`_finish_fire_cycle`).
     """
     if self._on_fire is None:
+        return
+    # Not one delivery after closure: shutdown cancels a delivering callback, and
+    # a callback it drained for bookkeeping must not start another turn.
+    if not self._accepting_mutations:
         return
     # Mark the fire window so a concurrent update() defers its re-arm
     # instead of cancelling this task mid-turn (see update()). The window
@@ -428,6 +473,26 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 loop.id,
                 self._rearm_fail_count.get(loop.id, 0) + 1,
             )
+    await self._settle_fire_cycle(loop, delivered)
+    if not delivered:
+        return
+    monitor = loop.monitor
+    if monitor is not None and monitor.terminal_delivered:
+        # Between the two drained sections, never inside one: shutdown cancels this
+        # provider re-probe with the callback instead of waiting on it.
+        await self._settle_delivered_terminal(loop)
+    await self._finish_fire_cycle(loop)
+
+
+@_drained_bookkeeping
+async def _settle_fire_cycle(self: AutoNudgeService, loop: NudgeLoop, delivered: bool) -> None:
+    """Charge and persist one fire whose delivery has returned; re-arm a refused one.
+
+    Drained bookkeeping: entered with no await after ``_on_fire`` returns, so a
+    shutdown either cut the delivery before it or finds this task registered and
+    drains it, and the delivered cycle reaches the store. An owed terminal turn
+    that landed leaves here durably marked delivered, ahead of its re-probe.
+    """
     claimed_wake = loop.id in self._pending_monitor_wake
     self._pending_monitor_wake.discard(loop.id)
     claimed_floor = loop.id in self._pending_floor_tick
@@ -509,120 +574,21 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
             loop.judge_wake_pending = False
             self._persist_soon()
     if delivered and loop.monitor is not None and loop.monitor.terminal_pending:
-        # The owed turn landed, so the watch can be closed now -- and only now.
-        # Until this point the loop stayed live on purpose, so a refused fire
-        # would re-arm and retry rather than leave the channel unaware. The
-        # probe re-raises a terminal state on every tick (it is not deduped),
-        # which is what makes that retry converge.
-        # SERIALIZED, like the gate's own settlement. ``update`` takes the
-        # MAINTENANCE lock and awaits inside it, so without holding that same
-        # lock a retarget could land between the read and the write here and
-        # have its new subject deactivated by the old subject's finish. This is
-        # the site the previous round named as still open; closing it needs the
-        # lock, not merely the ordering fix that round shipped.
-        #
-        # Safe to take here: this runs after ``_on_fire`` has returned, and the
-        # timer that called us does not hold the lock -- the same evidence that
-        # lets the gate's settlement take it.
-        settle_lock = await self._acquire_mutation_lock(loop.id)
-        # No early RETURN in here: the rest of this fire cycle still has to
-        # charge the wake and run its re-arm bookkeeping. Skipping that to bail
-        # out of a settlement would trade one defect for another.
-        if settle_lock is not None:
-            try:
-                # Re-read under the lock, and re-check that the monitor is still
-                # THERE. Waiting for the lock is an await, so a retarget can
-                # clear ``loop.monitor`` to None in that gap -- and dereferencing
-                # it then raises out of the fire cycle, which leaves the newly
-                # retargeted loop active with no timer: a watch that never ticks
-                # again. The earlier checks covered the debt and the
-                # registration but not the object itself.
-                monitor = loop.monitor
-                pending = monitor.terminal_pending if monitor is not None else ""
-                settle_now = bool(monitor is not None and pending and loop.id in self._loops)
-                if settle_now and monitor is not None:
-                    if not await self._terminal_still_holds(loop, monitor):
-                        # The subject came back while the turn was being delivered.
-                        # Every earlier guard for a reopened subject lives on the
-                        # NEXT TICK -- the debt clearing and the forced
-                        # re-observation -- and this
-                        # settlement runs before any tick can happen, so the window
-                        # between the terminal observation and the turn landing had
-                        # no evidence in it at all. A channel turn runs inline and
-                        # can take minutes, which is long enough for a pull request
-                        # to be reopened.
-                        #
-                        # Settling is the one action that STOPS work, so it needs a
-                        # CONFIRMED terminal rather than merely an unrefuted one:
-                        # anything else -- reopened, or simply unobservable -- leaves
-                        # the watch alive. Failure resolves toward spending, here as
-                        # everywhere else in this file.
-                        #
-                        # SKIPPED, not returned from. This block's own comment forbids
-                        # an early exit because the rest of the fire cycle still has
-                        # to run, and a re-raise leaving through the same door breaks
-                        # that exact rule.
-                        monitor.terminal_pending = ""
-                        self._persist_soon()
-                        logger.info(
-                            "AutoNudge: loop %s had its subject come back while the "
-                            "final turn was delivered -- dropping the owed settlement "
-                            "and keeping the watch alive",
-                            loop.id,
-                        )
-                        settle_now = False
-                if settle_now and monitor is not None:
-                    restore = (
-                        pending,
-                        monitor.outcome,
-                        monitor.stopped_reason,
-                        monitor.stopped_at,
-                        loop.active,
-                        loop.stopped_reason,
-                    )
-                    monitor.terminal_pending = ""
-                    monitor.outcome = (
-                        MonitorOutcome.SUCCESS if pending == "success" else MonitorOutcome.BLOCKED
-                    )
-                    monitor.stopped_reason = MONITOR_TERMINAL_REASON
-                    monitor.stopped_at = time.time()
-                    loop.stopped_reason = MONITOR_TERMINAL_REASON
-                    loop.active = False
-                    # PERSIST BEFORE ANNOUNCING -- the same rule the gate's own
-                    # settlement follows. This site was added two rounds later
-                    # and did not inherit it: the delivered path does reach a
-                    # write further down, but it is AFTER the emit, so a failed
-                    # write left memory reporting a finish while the record
-                    # still said active-and-owed, and the restart would deliver
-                    # the final turn a second time.
-                    try:
-                        async with self._lock:
-                            await self._write_monitor_snapshot_locked()
-                    except asyncio.CancelledError:
-                        # Committed before the cancellation propagates, so the
-                        # user must hear it now or never -- a restart reads the
-                        # loop as settled, owing no further turn.
-                        self._emit("expired", loop)
-                        raise
-                    except Exception:
-                        (
-                            monitor.terminal_pending,
-                            monitor.outcome,
-                            monitor.stopped_reason,
-                            monitor.stopped_at,
-                            loop.active,
-                            loop.stopped_reason,
-                        ) = restore
-                        logger.exception(
-                            "AutoNudge: could not persist the delivered terminal "
-                            "settlement for %s -- leaving the watch live so it "
-                            "retries",
-                            loop.id,
-                        )
-                    else:
-                        self._emit("expired", loop)
-            finally:
-                _release_mutation_lock(settle_lock)
+        # Delivery and settlement are separate durable states. Move the owed outcome
+        # into ``terminal_delivered`` and persist it before the shared helper's single
+        # provider re-probe, so a restart can finish settlement without repeating the
+        # channel turn, and a gateway that predates the field reads nothing owed.
+        monitor = loop.monitor
+        monitor.terminal_delivered = monitor.terminal_pending
+        monitor.terminal_pending = ""
+        try:
+            await self._persist_locked()
+        except Exception:
+            logger.exception(
+                "AutoNudge: could not persist terminal delivery for %s -- "
+                "keeping the delivered marker in memory for the cycle persist",
+                loop.id,
+            )
     if claimed_wake and delivered and loop.monitor is not None:
         # The turn happened, so it is a wake, and only now does the agent own
         # work the probe cannot see -- which is what the follow-up allowance
@@ -707,6 +673,18 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
         loop.cycle_count,
         loop.slot_key,
     )
+
+
+@_drained_bookkeeping
+async def _finish_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
+    """Announce one delivered fire and decide its re-arm, after any terminal settlement.
+
+    Drained bookkeeping like :func:`_settle_fire_cycle`, entered with no await after
+    it unless a terminal settlement's re-probe runs in between. When shutdown cancels
+    that re-probe this step is skipped, and nothing it does is owed: arming is refused
+    after closure, and a restart applies a spent runtime budget before it spends a
+    turn.
+    """
     # Only for a loop still in the store: a default patrol displaced mid-wake
     # (``mutations.detach_firing_default_timer``) still delivers, and a "fired"
     # frame for its removed row would resurrect it in the dashboard.
@@ -1033,7 +1011,7 @@ async def fire_now(
     immediate arm every caller had before the parameter existed; a caller with a
     person behind it keeps it, since nobody presses a button to wait a minute.
 
-    Three refusals, and each one is load-bearing rather than defensive:
+    Five refusals, and each one is load-bearing rather than defensive:
 
     * **Not registered** -> 404. Nothing to fire. This is also where the stop
       SENTINEL lands: it goes through ``remove``, so the loop is gone rather
@@ -1043,6 +1021,9 @@ async def fire_now(
       registered but inactive, so this ONE condition covers them without
       restating the list. A manual press must not buy a turn past a bound the
       user armed.
+    * **Terminal settlement in flight** -> 409. A delivered terminal's ``holds``
+      transition is staged while the live loop remains active. Arming during its
+      write would report success for a timer the settlement immediately retires.
     * **Mid-fire** -> 409. :meth:`_arm_timer` cancels the existing timer
       task, and during the fire window that task may be parked on
       ``_persist_locked()`` writing the delivered cycle; cancelling it there
@@ -1060,6 +1041,10 @@ async def fire_now(
       The same flag marks the tick it does arm as a worker's push: that tick observes
       the subject instead of spending the post-wake follow-up, and a quiet answer keeps
       the loop's earlier deadline.
+    * **Service shutting down** -> 503. :meth:`_arm_timer` deliberately returns
+      without arming after mutation admission closes. Reporting 200 over that
+      no-op tells the caller a cycle is coming when none is, and records a false
+      successful audit outcome.
 
     NO SUSPENSION POINT, and that is the design rather than an omission.
     ``async def`` for the caller's convenience, but nothing inside awaits, so
@@ -1099,6 +1084,8 @@ async def fire_now(
         return None, "loop not found", 404
     if not loop.active:
         return None, "loop is not active", 409
+    if loop_id in self._terminal_settlement_writes:
+        return None, "loop terminal settlement is in progress", 409
     if loop_id in self._firing:
         if defer_if_firing:
             # The refusal still STANDS as this call's answer -- nothing is armed now, and
@@ -1111,6 +1098,8 @@ async def fire_now(
             # out the conductor's whole patrol cadence.
             self._pulled_forward.add(loop_id)
         return None, "loop is already firing", 409
+    if not self._accepting_mutations:
+        return None, SERVICE_SHUTTING_DOWN_MESSAGE, 503
     armed_in = _pushed_arm_delay(loop, delay, time.time())
     self._arm_timer(loop, delay=armed_in)
     if defer_if_firing:

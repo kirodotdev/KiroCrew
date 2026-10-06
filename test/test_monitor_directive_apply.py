@@ -1378,12 +1378,12 @@ async def test_stale_wake_stop_preserves_pause_landing_before_remove(tmp_path, k
     real_acquire = service._acquire_mutation_lock
     stop_waiting = False
 
-    async def _pause_before_stop_acquires(loop_id):
+    async def _pause_before_stop_acquires(loop_id, **kwargs):
         nonlocal stop_waiting
         if not stop_waiting:
             stop_waiting = True
             await service.update(loop_id, active=False)
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _pause_before_stop_acquires)
     try:
@@ -1488,12 +1488,12 @@ async def test_stale_wake_stop_preserves_pause_landing_before_research_update(
     real_acquire = service._acquire_mutation_lock
     stop_waiting = False
 
-    async def _pause_before_stop_acquires(loop_id):
+    async def _pause_before_stop_acquires(loop_id, **kwargs):
         nonlocal stop_waiting
         if not stop_waiting:
             stop_waiting = True
             await service.update(loop_id, active=False)
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _pause_before_stop_acquires)
     try:
@@ -1538,12 +1538,12 @@ async def test_stale_wake_stop_of_row_deleted_before_remove_is_idempotent_succes
     real_acquire = service._acquire_mutation_lock
     stop_waiting = False
 
-    async def _delete_before_stop_acquires(loop_id):
+    async def _delete_before_stop_acquires(loop_id, **kwargs):
         nonlocal stop_waiting
         if not stop_waiting:
             stop_waiting = True
             assert await service.remove(loop_id, stop_reason="dashboard_delete")
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _delete_before_stop_acquires)
     audit = MagicMock()
@@ -1582,12 +1582,12 @@ async def test_stale_wake_stop_of_row_deleted_before_research_update_is_idempote
     real_acquire = service._acquire_mutation_lock
     stop_waiting = False
 
-    async def _delete_before_stop_acquires(loop_id):
+    async def _delete_before_stop_acquires(loop_id, **kwargs):
         nonlocal stop_waiting
         if not stop_waiting:
             stop_waiting = True
             assert await service.remove(loop_id, stop_reason="dashboard_delete")
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _delete_before_stop_acquires)
     audit = MagicMock()
@@ -1636,7 +1636,7 @@ async def test_stale_wake_stop_of_row_replaced_before_write_is_refused(
     replacement = None
     stop_waiting = False
 
-    async def _replace_before_stop_acquires(loop_id):
+    async def _replace_before_stop_acquires(loop_id, **kwargs):
         nonlocal replacement, stop_waiting
         if not stop_waiting:
             stop_waiting = True
@@ -1644,7 +1644,7 @@ async def test_stale_wake_stop_of_row_replaced_before_write_is_refused(
             replacement = await service.add(
                 slot_key=slot_key, message="the replacement", idle_secs=86400
             )
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _replace_before_stop_acquires)
     audit = MagicMock()
@@ -1683,7 +1683,7 @@ async def test_stale_wake_stop_that_never_took_the_lock_is_not_reported_stopped(
     service = AutoNudgeService(base_dir=tmp_path)
     loop = await service.add(slot_key="chat-1", message="still running", idle_secs=86400)
 
-    async def _quiesced(_loop_id):
+    async def _quiesced(_loop_id, **_kwargs):
         return None
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _quiesced)
@@ -1729,7 +1729,7 @@ async def test_user_stop_that_never_took_the_lock_is_not_reported_stopped(
     service = AutoNudgeService(base_dir=tmp_path)
     loop = await service.add(slot_key=slot_key, message="still running", idle_secs=86400)
 
-    async def _quiesced(_loop_id):
+    async def _quiesced(_loop_id, **_kwargs):
         return None
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _quiesced)
@@ -1777,7 +1777,7 @@ async def test_user_stop_of_row_replaced_before_write_is_refused(
     replacement = None
     stop_waiting = False
 
-    async def _replace_before_stop_acquires(loop_id):
+    async def _replace_before_stop_acquires(loop_id, **kwargs):
         nonlocal replacement, stop_waiting
         if not stop_waiting:
             stop_waiting = True
@@ -1785,7 +1785,7 @@ async def test_user_stop_of_row_replaced_before_write_is_refused(
             replacement = await service.add(
                 slot_key=slot_key, message="the replacement", idle_secs=86400
             )
-        return await real_acquire(loop_id)
+        return await real_acquire(loop_id, **kwargs)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _replace_before_stop_acquires)
     audit = MagicMock()

@@ -28,6 +28,7 @@ from kiro_crew.autonudge_service.maintenance import (
     _assert_mutation_lock_owned,
     _claim_mutation_lock,
     _maintenance_lock,
+    _monitor_mutation_guard,
     _release_mutation_lock,
     _unclaim_mutation_lock,
 )
@@ -40,11 +41,14 @@ from kiro_crew.autonudge_service.model import (
     FINISHED_LOOP_REASONS,
     MANUAL_STOP_REASON,
     RUNTIME_BUDGET_REASON,
+    SERVICE_SHUTTING_DOWN_MESSAGE,
     STOP_SENTINEL_REASON,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
+    NudgeAdmissionReason,
     NudgeAdmissionRefused,
     NudgeLoop,
+    _MutationAdmission,
     _stopped_row_is_replaceable,
     budget_elapsed,
     cap_reached,
@@ -58,6 +62,7 @@ from kiro_crew.autonudge_service.subject import (
     needs_session_texts,
     read_session_texts,
 )
+from kiro_crew.autonudge_service.timers import _run_admitted_transaction
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorCreationSurface
 
@@ -107,6 +112,7 @@ async def add(
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     default_patrol: bool = False,
 ) -> NudgeLoop:
+    admission = self._admit_mutation()
     # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
     # the awaiting caller is cancelled mid-write, a bare await would release
     # ``_lock`` while the executor write is still running — a subsequent
@@ -138,6 +144,7 @@ async def add(
             loop_id=loop_id,
             creation_surface=creation_surface,
             default_patrol=default_patrol,
+            admission=admission,
         )
     )
     self._inflight_adds.add(inner)
@@ -206,6 +213,7 @@ async def _add_locked(
     loop_id: str | None = None,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     default_patrol: bool = False,
+    admission: _MutationAdmission | None = None,
 ) -> NudgeLoop:
     async with _maintenance_lock(self._base_dir):
         return await self._add_unserialized(
@@ -226,6 +234,7 @@ async def _add_locked(
             loop_id=loop_id,
             creation_surface=creation_surface,
             default_patrol=default_patrol,
+            admission=admission,
         )
 
 
@@ -249,6 +258,7 @@ async def _add_unserialized(
     loop_id: str | None = None,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     default_patrol: bool = False,
+    admission: _MutationAdmission | None = None,
 ) -> NudgeLoop:
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
@@ -263,8 +273,16 @@ async def _add_unserialized(
         else None
     )
     async with self._lock:
+        if not self._mutation_allowed(admission):
+            raise NudgeAdmissionRefused(
+                SERVICE_SHUTTING_DOWN_MESSAGE,
+                reason=NudgeAdmissionReason.SERVICE_SHUTTING_DOWN,
+            )
         if admission_check is not None and not admission_check():
-            raise NudgeAdmissionRefused("session changed before nudge arm committed")
+            raise NudgeAdmissionRefused(
+                "session changed before nudge arm committed",
+                reason=NudgeAdmissionReason.SESSION_CHANGED,
+            )
         # One loop per slot — replace any existing loop on this slot.
         # persist=False: the offloaded write below persists the combined
         # removal+add atomically, avoiding a duplicate blocking save here.
@@ -446,7 +464,7 @@ async def _add_unserialized(
         # propagates to the caller before the loop is reported armed.
         payload = self._serialize_state()
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            await asyncio.shield(self._start_persistence(payload, admission=admission))
         except BaseException:
             self._loops.pop(loop.id, None)
             if existing is not None:
@@ -454,8 +472,14 @@ async def _add_unserialized(
                 if restore_existing_provider_credentials:
                     await self._restore_provider_credentials(existing)
                 if detached_timer is not None and not detached_timer.done():
-                    # Still delivering: give it back rather than arm a second timer.
-                    self._timers[existing.id] = detached_timer
+                    # Still delivering: give it back rather than arm a second timer --
+                    # but only while admission is open. Once ``shutdown()`` has closed
+                    # it, the timer table is emptied and this tick is either a running
+                    # callback shutdown cancelled or one it drains through its own
+                    # bookkeeping section, so putting it back would register it behind
+                    # the teardown: the repopulation ``_arm_timer`` refuses after closure.
+                    if self._accepting_mutations:
+                        self._timers[existing.id] = detached_timer
                 elif existing.active:
                     self._arm_from_deadline(existing)
             raise
@@ -505,6 +529,7 @@ async def update(
     every case (the reconciler re-arms and a ``monitor_update`` bound raise,
     where a fresh allowance is not what was asked).
     """
+    admission = self._admit_mutation()
     # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
     # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
     # release ``_lock`` while the executor write is still in flight — which
@@ -527,6 +552,7 @@ async def update(
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
             on_absent=on_absent,
+            admission=admission,
         )
     )
     self._inflight_adds.add(inner)
@@ -564,8 +590,9 @@ async def _update_locked(
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
     on_absent: Callable[[], None] | None = None,
+    admission: _MutationAdmission | None = None,
 ) -> NudgeLoop | None:
-    lock = await self._acquire_mutation_lock(loop_id)
+    lock = await self._acquire_mutation_lock(loop_id, admission=admission)
     if lock is None:
         return None
     try:
@@ -585,6 +612,7 @@ async def _update_locked(
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
             on_absent=on_absent,
+            admission=admission,
         )
     finally:
         _release_mutation_lock(lock)
@@ -608,6 +636,7 @@ async def _update_unserialized(
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
     on_absent: Callable[[], None] | None = None,
+    admission: _MutationAdmission | None = None,
 ) -> NudgeLoop | None:
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
@@ -1043,14 +1072,13 @@ async def _update_unserialized(
                 if loop.active:
                     loop.stopped_reason = ""
                     # Spent only by an actual REVIVAL, hence ``not
-                    # was_active``. A still-active loop also receives
-                    # ``active=True`` from an ordinary settings save (the
-                    # goal popover sends it on every edit), and treating
-                    # that as an answer would erase evidence recorded
-                    # moments earlier and let one more doomed cycle fire.
-                    # Keeping it costs at most a resumable stop the operator
-                    # can undo; dropping it costs a wasted cycle and the
-                    # silence this stop exists to end.
+                    # was_active``. A still-active loop may still receive
+                    # an idempotent ``active=True`` from API or app callers,
+                    # and treating that as an answer would erase evidence
+                    # recorded moments earlier and let one more doomed cycle
+                    # fire. Keeping it costs at most a resumable stop the
+                    # operator can undo; dropping it costs a wasted cycle and
+                    # the silence this stop exists to end.
                     if not was_active:
                         loop.approval_stalled = False
                         loop.waiting_on_person = False
@@ -1149,7 +1177,7 @@ async def _update_unserialized(
         payload = self._serialize_state()
         claim_was_held = claim_discarded_for_retarget
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            await asyncio.shield(self._start_persistence(payload, admission=admission))
         except BaseException:
             for field_name, value in previous.items():
                 setattr(loop, field_name, value)
@@ -1212,6 +1240,8 @@ def remove_sync(
     loop = self._loops.pop(loop_id, None)
     if loop is None:
         return None
+    if not self._monitor_mutation_lock_users.get(loop_id, 0):
+        self._monitor_mutation_locks.pop(loop_id, None)
     self._cancel_timer(loop_id)
     self._rearm_fail_count.pop(loop_id, None)
     self._start_failure_deferred.pop(loop_id, None)
@@ -1316,21 +1346,67 @@ async def remove(
     stop_reason: str = "",
     stop_detail: str = "",
 ) -> bool:
-    """Remove a loop if its live row satisfies ``precondition`` under the lock."""
-    lock = await self._acquire_mutation_lock(loop_id)
-    if lock is None:
-        return False
-    try:
-        return await self._remove_unserialized(
+    """Remove a loop if its live row satisfies ``precondition`` under the lock.
+
+    The admitted transaction runs in a supervised, shielded child task, so
+    cancellation of the handler awaiting it cannot abort a lock wait or a write.
+    A handler cancelled while the transaction still waits for a lock stops waiting
+    at once; one cancelled once the write is in flight is held until the write
+    settles and then receives the cancellation. Shutdown drains that child to its
+    durable boundary without waiting on the caller's remaining lifetime. A timer
+    callback that owns the call is cancelled only after the child settles when
+    admission has closed.
+    """
+    admission = self._admit_mutation()
+    return await _run_admitted_transaction(
+        self,
+        _remove_admitted(
+            self,
             loop_id,
             precondition=precondition,
             on_absent=on_absent,
             stop_reason=stop_reason,
             stop_detail=stop_detail,
-            mutation_lock=lock,
-        )
-    finally:
-        _release_mutation_lock(lock)
+            admission=admission,
+        ),
+        cancel_callback_on_exit=True,
+        on_failure_log="AutoNudge: detached remove() failed",
+    )
+
+
+async def _remove_admitted(
+    svc: AutoNudgeService,
+    loop_id: str,
+    *,
+    precondition: Callable[[NudgeLoop], bool] | None,
+    on_absent: Callable[[], None] | None,
+    stop_reason: str,
+    stop_detail: str,
+    admission: _MutationAdmission,
+) -> bool:
+    """The legacy removal transaction ``remove`` owns once admitted."""
+    # Give an active maintenance quiesce its existing first refusal point, but
+    # never wait on this monitor's continuation while holding the data-home lock.
+    preflight_lock = await svc._acquire_mutation_lock(loop_id, admission=admission)
+    if preflight_lock is None:
+        return False
+    _release_mutation_lock(preflight_lock)
+    async with _monitor_mutation_guard(svc, loop_id):
+        lock = await svc._acquire_mutation_lock(loop_id, admission=admission)
+        if lock is None:
+            return False
+        try:
+            return await svc._remove_unserialized(
+                loop_id,
+                precondition=precondition,
+                on_absent=on_absent,
+                stop_reason=stop_reason,
+                stop_detail=stop_detail,
+                mutation_lock=lock,
+                admission=admission,
+            )
+        finally:
+            _release_mutation_lock(lock)
 
 
 async def remove_by_slot(self: AutoNudgeService, slot_key: str) -> NudgeLoop | None:
@@ -1379,17 +1455,46 @@ async def clear_terminal_monitor(self: AutoNudgeService, monitor_id: str) -> boo
             return False
         return not state.wake_in_flight
 
-    lock = await self._acquire_mutation_lock(monitor_id)
-    if lock is None:
-        return False
-    try:
-        return await self._remove_unserialized(
+    admission = self._admit_mutation()
+    return await _run_admitted_transaction(
+        self,
+        _clear_terminal_monitor_admitted(
+            self,
             monitor_id,
             precondition=_still_terminal,
-            mutation_lock=lock,
-        )
-    finally:
-        _release_mutation_lock(lock)
+            admission=admission,
+        ),
+        cancel_callback_on_exit=True,
+        on_failure_log="AutoNudge: detached terminal monitor clear failed",
+        expected=(NudgeAdmissionRefused,),
+    )
+
+
+async def _clear_terminal_monitor_admitted(
+    svc: AutoNudgeService,
+    monitor_id: str,
+    *,
+    precondition: Callable[[NudgeLoop], bool],
+    admission: _MutationAdmission,
+) -> bool:
+    """The terminal-row removal ``clear_terminal_monitor`` owns once admitted."""
+    preflight_lock = await svc._acquire_mutation_lock(monitor_id, admission=admission)
+    if preflight_lock is None:
+        return False
+    _release_mutation_lock(preflight_lock)
+    async with _monitor_mutation_guard(svc, monitor_id):
+        lock = await svc._acquire_mutation_lock(monitor_id, admission=admission)
+        if lock is None:
+            return False
+        try:
+            return await svc._remove_unserialized(
+                monitor_id,
+                precondition=precondition,
+                mutation_lock=lock,
+                admission=admission,
+            )
+        finally:
+            _release_mutation_lock(lock)
 
 
 async def _remove_unserialized(
@@ -1401,6 +1506,7 @@ async def _remove_unserialized(
     stop_reason: str = "",
     stop_detail: str = "",
     mutation_lock: asyncio.Lock | None = None,
+    admission: _MutationAdmission | None = None,
 ) -> bool:
     """Remove one loop. Returns whether the removal happened.
 
@@ -1420,6 +1526,13 @@ async def _remove_unserialized(
     if mutation_lock is not _maintenance_lock(self._base_dir):
         raise RuntimeError("mutation lock must be the service maintenance lock")
     async with self._lock:
+        # Before the live row is touched: a caller without a live or inherited
+        # admission must not begin a removal after closure.
+        if not self._mutation_allowed(admission):
+            raise NudgeAdmissionRefused(
+                SERVICE_SHUTTING_DOWN_MESSAGE,
+                reason=NudgeAdmissionReason.SERVICE_SHUTTING_DOWN,
+            )
         existed = loop_id in self._loops
         if not existed and loop_id not in self._store.pending_removals:
             if on_absent is not None:
@@ -1464,7 +1577,7 @@ async def _remove_unserialized(
                     autonudge_stop_log.safe_text(stop_detail, autonudge_stop_log.DETAIL_MAX_CHARS),
                 )
         payload = self._serialize_state()
-        fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        fut: asyncio.Future[None] | None = None
 
         async def _restore_failed_removal() -> None:
             self._store.pending_removals.discard(loop_id)
@@ -1477,8 +1590,13 @@ async def _remove_unserialized(
                 self._arm_from_deadline(removed_loop)
 
         try:
+            # Submission is part of the transaction: admission may close or the
+            # executor may reject work here, and either failure must restore the
+            # live row just like a write failure does.
+            fut = self._start_persistence(payload, admission=admission)
             await asyncio.shield(fut)
         except asyncio.CancelledError:
+            assert fut is not None
             # Caller cancelled mid-write: the executor thread can't be
             # cancelled and is still fsyncing. shield re-raised on us
             # immediately, so DRAIN the write to completion before this

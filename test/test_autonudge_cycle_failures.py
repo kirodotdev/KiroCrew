@@ -631,7 +631,7 @@ async def test_a_failed_durable_write_rolls_the_increment_back(svc, _nosleep):
     class _WriteBoom(RuntimeError):
         pass
 
-    async def _boom(payload=None):
+    async def _boom(payload=None, **_kwargs):
         raise _WriteBoom
 
     svc._write_monitor_snapshot_locked = _boom  # type: ignore[method-assign]
@@ -661,7 +661,7 @@ async def test_a_cancel_during_the_committed_write_keeps_the_increment(svc, _nos
     await _fail(svc, loop)
     assert svc._loops[loop.id].consecutive_failed_cycles == 1
 
-    async def _write_then_cancel(payload=None):
+    async def _write_then_cancel(payload=None, **_kwargs):
         # Mirror the real writer's post-settle re-raise: the write is observed
         # as complete, THEN the cancellation surfaces.
         raise asyncio.CancelledError

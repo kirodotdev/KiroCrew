@@ -16,8 +16,13 @@ import math
 import secrets
 import time
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, retained_outcome_blocks_rearm
+
+if TYPE_CHECKING:
+    import asyncio
 
 #: ``stopped_reason`` for a loop whose watched subject finished (a merged or
 #: closed pull request). Distinct from the bound reasons because there is nothing
@@ -36,8 +41,9 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 #: unchanged here), so the record is KEPT and deactivated under this reason rather
 #: than removed -- a removed row left the goal popover on its empty form with
 #: nothing saying the goal was met.
-#: The stop file itself is left where it was written; the arm path unlinks it
-#: before a new loop is armed on the slot (``authorize_and_add_nudge``).
+#: The stop file itself is left where it was written. After a new loop is
+#: successfully armed on the slot, the arm path unlinks the stale file
+#: (``authorize_and_add_nudge``).
 STOP_SENTINEL_REASON = "stop_sentinel"
 
 #: The two FINISHED stops -- the agent created its stop file, or the watched
@@ -152,8 +158,63 @@ class AutoNudgeStaleBaseline(RuntimeError):
     """
 
 
+#: Stable caller-facing text for the admission refusal raised after shutdown closes.
+#: Authorizers return it unchanged, so callers that must distinguish this 503 from
+#: audit or credential outages compare against this value rather than copying text.
+SERVICE_SHUTTING_DOWN_MESSAGE = "AutoNudge service is shutting down"
+
+
+class NudgeAdmissionReason(str, Enum):
+    """The typed causes an admission refusal can expose at a caller boundary."""
+
+    SESSION_CHANGED = "session_changed"
+    SERVICE_SHUTTING_DOWN = "service_shutting_down"
+    PERSISTENCE_LEASE_CONSUMED = "persistence_lease_consumed"
+
+
 class NudgeAdmissionRefused(RuntimeError):
-    """The session authorized for an arm disappeared before its commit point."""
+    """A mutation cannot enter or finish under its requested admission."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: NudgeAdmissionReason = NudgeAdmissionReason.SESSION_CHANGED,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+@dataclass
+class _MutationAdmission:
+    """One service-generation lease for durable mutation writes.
+
+    Captured by a mutation before its first await, so a shutdown that closes
+    admission while the caller waits on a lock still lets that already-admitted
+    owner reach its durable boundary. ``generation`` ties the lease to one
+    ``start()``; a single-use lease (the default) admits exactly one store write,
+    while a timer callback that crossed its post-sleep boundary holds a
+    multi-write lease for the writes its own task makes (``owner_task``).
+    """
+
+    generation: int
+    owner_task: "asyncio.Task[Any] | None" = None
+    allow_multiple_persistence: bool = False
+    persistence_submitted: bool = False
+
+
+@dataclass
+class _TransactionSubmissions:
+    """How many store writes one admitted transaction has started.
+
+    ``_run_admitted_transaction`` creates one for the child it supervises and carries
+    it in that child's copied context, so only a write the transaction itself starts
+    counts. A detached write under the same lease runs in another context and leaves
+    it untouched. The caller's cancellation hold reads it: a caller cancelled before
+    this transaction submitted anything leaves at once.
+    """
+
+    count: int = 0
 
 
 # The two stops where a bound the user typed ran out, each the ending ``_timer``
@@ -640,6 +701,36 @@ def terminal_notification_delivery_matches(
 
 class MonitorUpdateConflict(ValueError):
     """A structured mutation would break active action correlation."""
+
+
+class MonitorCredentialFollowUpFailed(RuntimeError):
+    """A committed monitor update's credential follow-up failed."""
+
+    def __init__(
+        self,
+        loop: NudgeLoop,
+        *,
+        kind: Literal["revoke", "grant"],
+        rolled_back: bool,
+    ) -> None:
+        self.loop = loop
+        self.kind = kind
+        self.rolled_back = rolled_back
+        super().__init__(f"monitor credential {kind} follow-up failed")
+
+
+class MonitorCredentialRollbackFailed(RuntimeError):
+    """A credential follow-up and its monitor compensation both failed."""
+
+    def __init__(
+        self,
+        loop: NudgeLoop,
+        *,
+        kind: Literal["revoke", "grant"],
+    ) -> None:
+        self.loop = loop
+        self.kind = kind
+        super().__init__(f"monitor credential {kind} rollback failed")
 
 
 def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:

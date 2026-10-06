@@ -164,10 +164,11 @@ _BASE_REACHED_IMPORTS = frozenset(
 #: included, with its kind, default and annotation, and the return annotation.
 _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "__init__": ("method", "38ac57f125dd"),
-    "_acquire_mutation_lock": ("method+async", "e26080a5a8bc"),
-    "_add_locked": ("method+async", "4c98efc62188"),
-    "_add_monitor_locked": ("method+async", "55179b26aeff"),
-    "_add_unserialized": ("method+async", "4c98efc62188"),
+    "_acquire_mutation_lock": ("method+async", "34bd8c98b4d6"),
+    "_add_locked": ("method+async", "b8ff3630e3dc"),
+    "_add_monitor_locked": ("method+async", "6b137fb5f8ae"),
+    "_add_unserialized": ("method+async", "b8ff3630e3dc"),
+    "_admit_mutation": ("method", "f52a8c13366d"),
     "_append_judge_labels": ("method", "05f9e694d3d7"),
     "_apply_monitor_budget_stop": ("method", "c05b26fec956"),
     "_apply_monitor_user_stop": ("method", "0d02c6c3b88e"),
@@ -183,9 +184,11 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_deactivate_and_wait_unserialized": ("method+async", "4aa7e82c7c52"),
     "_deactivate_unwired_monitor": ("method+async", "f7956b1e6531"),
     "_drop_quarantine_sidecar": ("method", "35d06f40fb45"),
+    "_effective_admission": ("method", "fb2622357af7"),
     "_emit": ("method", "2a11698d553e"),
     "_end_maintenance_quiesce": ("method", "f7956b1e6531"),
     "_find_by_slot": ("method", "1a9a46af4d72"),
+    "_finish_fire_cycle": ("method+async", "fa9fb3019298"),
     "_judge_quiet_streak_floor": ("method", "a149538e830d"),
     "_judge_tick_is_quiet": ("method+async", "13350afdc048"),
     "_label_judge_delivery_locked": ("method+async", "ebb80b654e73"),
@@ -195,10 +198,11 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_monitor_tick_is_quiet": ("method+async", "3a33d55b099b"),
     "_move_aside_locked": ("method", "8bdc12b93966"),
     "_move_aside_unreadable_sidecar": ("method", "35d06f40fb45"),
+    "_mutation_allowed": ("method", "359131a1c6db"),
     "_persist_judge_state": ("method+async", "3a33d55b099b"),
-    "_persist_locked": ("method+async", "35d06f40fb45"),
+    "_persist_locked": ("method+async", "64c46df75286"),
     "_persist_soon": ("method", "35d06f40fb45"),
-    "_persist_staged_monitor_locked": ("method+async", "1eecbc416bc8"),
+    "_persist_staged_monitor_locked": ("method+async", "273f9f2cfd40"),
     "_provider_credentials_authorized": ("static+async", "1009d6af5d26"),
     "_publish_pr_observation": ("method+async", "c0572291a250"),
     "_quarantine_rows_on_disk": ("method", "f21967637259"),
@@ -206,28 +210,36 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_reconcile_forever": ("method+async", "35d06f40fb45"),
     "_reconcile_once": ("method", "35d06f40fb45"),
     "_record_judge_verdict": ("method", "6b6aa33c7755"),
+    "_record_monitor_turn_completion_admitted": ("method+async", "83cbb4dc3924"),
     "_record_stops_committed": ("method", "b02c548f23ec"),
     "_refuse_writes_and_preserve_sidecar": ("method", "35d06f40fb45"),
-    "_remove_unserialized": ("method+async", "f25b8e2642a7"),
+    "_remove_unserialized": ("method+async", "2daef84659bd"),
     "_restore_provider_credentials": ("static+async", "c0e5298bfbb4"),
     "_retain_accepted_terminal_completion": ("method", "0d02c6c3b88e"),
     "_revoke_provider_credentials_before_removal": ("static+async", "631ee4d210f4"),
     "_revoke_self_arm": ("static", "631ee4d210f4"),
     "_revoke_self_arm_for": ("method", "fa9fb3019298"),
     "_run_fire_cycle": ("method+async", "fa9fb3019298"),
+    "_run_timer_callback": ("method+async", "fa9fb3019298"),
     "_save": ("method", "35d06f40fb45"),
     "_serialize_loop": ("static", "25c5a9ba35d5"),
     "_serialize_state": ("method", "070d0bf328d9"),
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
+    "_settle_delivered_terminal": ("method+async", "fa9fb3019298"),
+    "_settle_fire_cycle": ("method+async", "6e027e58f647"),
     "_sidecar_transaction": ("method", "140eaa502228"),
+    "_start_persistence": ("method", "3582b2532748"),
+    "_stop_monitor_admitted": ("method+async", "5cc2e2081504"),
     "_sync_terminal_completion_timer": ("method", "fa9fb3019298"),
-    "_terminal_still_holds": ("method+async", "75f382f079fb"),
+    "_terminal_still_holds": ("method+async", "938b69872e36"),
     "_extend_for_open_ledger": ("method+async", "1d8c864f30a4"),
     "_holds_for_person_wait": ("method+async", "3a33d55b099b"),
     "_timer": ("method+async", "e290ef84f151"),
-    "_update_locked": ("method+async", "db9765212236"),
-    "_update_unserialized": ("method+async", "db9765212236"),
+    "_unpublish": ("method", "35d06f40fb45"),
+    "_update_locked": ("method+async", "426a50e84b7e"),
+    "_update_monitor_admitted": ("method+async", "2ab8db5d1e90"),
+    "_update_unserialized": ("method+async", "426a50e84b7e"),
     "_waits_for_terminal_completion": ("method", "3a33d55b099b"),
     "_withdraw_judge_suppression": ("method", "fa9fb3019298"),
     "_worker_running": ("method", "490393185551"),
@@ -236,7 +248,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     # Reads one loop's monitor kind: the startup resume treats a work-ledger
     # watch differently, because its news arrives by a push a restart loses.
     "_observes_work_ledger": ("method", "3a33d55b099b"),
-    "_write_monitor_snapshot_locked": ("method+async", "048a7479cdcf"),
+    "_write_monitor_snapshot_locked": ("method+async", "4ddd0126133b"),
     "_write_quarantine_rows": ("method", "54f84a64e0fe"),
     "_write_quarantine_sidecar": ("method", "35d06f40fb45"),
     "_write_quarantine_sidecar_locked": ("method", "35d06f40fb45"),
@@ -266,7 +278,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "notify_turn_complete": ("method", "295ffab180e4"),
     "notify_user_input": ("method", "fad3ce03aadf"),
     "record_monitor_completion_evidence_unavailable": ("method+async", "400845dc24be"),
-    "release_approval_hold": ("method+async", "3e62765820c2"),
+    "release_approval_hold": ("method+async", "d9496ee75440"),
     "record_monitor_dispatch_busy": ("method+async", "400845dc24be"),
     "record_monitor_dispatch_failure": ("method+async", "716192392c13"),
     "record_monitor_dispatched": ("method+async", "400845dc24be"),
@@ -278,8 +290,9 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "retire_monitor_for_session_close": ("method+async", "d67247ca6bd0"),
     "rollback_monitor_replacement": ("method+async", "61dc2e194fa8"),
     "rollback_monitor_update": ("method+async", "d86807019e86"),
+    "shutdown": ("method+async", "35d06f40fb45"),
     "start": ("method+async", "35d06f40fb45"),
-    "stop": ("method", "35d06f40fb45"),
+    "stop": ("method", "10e8f4686a48"),
     "stop_monitor": ("method+async", "bddc1c278f12"),
     "stop_monitor_if_budget_exhausted": ("method+async", "7ab50d99dd32"),
     "subscribe": ("method", "7a1b8e1c52f1"),
@@ -969,7 +982,7 @@ class TestInstanceSeamsReachEveryInternalCaller:
         svc = AutoNudgeService(base_dir=tmp_path)
         persisted = asyncio.Event()
 
-        async def _persist():
+        async def _persist(*, admission=None):
             persisted.set()
 
         monkeypatch.setattr(svc, "_persist_locked", _persist)
@@ -999,7 +1012,7 @@ class TestInstanceSeamsReachEveryInternalCaller:
             assert events == [("added", "mut00001")]
             assert cancelled[-1] == "mut00001"
 
-            async def _claimed_by_maintenance(loop_id):
+            async def _claimed_by_maintenance(loop_id, *, admission=None):
                 return None
 
             monkeypatch.setattr(svc, "_acquire_mutation_lock", _claimed_by_maintenance)
@@ -1019,13 +1032,13 @@ class TestInstanceSeamsReachEveryInternalCaller:
         real_staged = svc._persist_staged_monitor_locked
         real_snapshot = svc._write_monitor_snapshot_locked
 
-        async def _staged(loop, replacement):
+        async def _staged(loop, replacement, *, admission=None):
             staged.append(loop.id)
-            await real_staged(loop, replacement)
+            await real_staged(loop, replacement, admission=admission)
 
-        async def _snapshot(payload=None):
+        async def _snapshot(payload=None, *, admission=None):
             written.append(len(payload["loops"]) if payload else -1)
-            await real_snapshot(payload)
+            await real_snapshot(payload, admission=admission)
 
         monkeypatch.setattr(svc, "_persist_staged_monitor_locked", _staged)
         monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _snapshot)
@@ -1132,6 +1145,7 @@ _BINDINGS = {
     "_commit_judge_pr_seen": "gate",
     "_publish_pr_observation": "gate",
     "_monitor_tick_is_quiet": "gate",
+    "_settle_delivered_terminal": "gate",
     "_terminal_still_holds": "gate",
     "_judge_quiet_streak_floor": "judge_tick",
     "_judge_tick_is_quiet": "judge_tick",
@@ -1142,9 +1156,12 @@ _BINDINGS = {
     "_append_judge_labels": "judge_tick",
     "_persist_judge_state": "judge_tick",
     "_timer": "firing",
+    "_run_timer_callback": "firing",
     "_extend_for_open_ledger": "firing",
     "_holds_for_person_wait": "firing",
     "_run_fire_cycle": "firing",
+    "_settle_fire_cycle": "firing",
+    "_finish_fire_cycle": "firing",
     "fire_now": "firing",
     "add": "mutations",
     "_mint_loop_id": "mutations",
@@ -1174,13 +1191,16 @@ _BINDINGS = {
     "stop_monitor_if_budget_exhausted": "monitor_records",
     "_set_monitor_deadline": "monitor_records",
     "stop_monitor": "monitor_records",
+    "_stop_monitor_admitted": "monitor_records",
     "mark_terminal_notification_delivered": "monitor_records",
     "retire_monitor_for_session_close": "monitor_records",
     "restore_monitor_after_failed_session_close": "monitor_records",
     "update_monitor": "monitor_records",
+    "_update_monitor_admitted": "monitor_records",
     "rollback_monitor_update": "monitor_records",
     "mark_monitor_action_in_flight": "monitor_records",
     "record_monitor_turn_completion": "monitor_records",
+    "_record_monitor_turn_completion_admitted": "monitor_records",
     "_apply_monitor_budget_stop": "monitor_records",
     "_apply_monitor_user_stop": "monitor_records",
     "_retain_accepted_terminal_completion": "monitor_records",
@@ -1210,7 +1230,7 @@ _OWNER_ORDER = (
     "monitor_records",
 )
 
-#: The names owner code reads through ``kiro_crew.autonudge`` at call time: the four
+#: The names owner code reads through ``kiro_crew.autonudge`` at call time: the five
 #: tests patch there, and the four that stay defined there (a redactor-calling scrub
 #: helper, the singleton, and the two lock registries the boot smoke tracks by name).
 _SEAMS = frozenset(
@@ -1218,6 +1238,7 @@ _SEAMS = frozenset(
         "_INSTANCE",
         "_MAINTENANCE_LOCKS",
         "_MUTATION_LOCK_OWNERS",
+        "_DRAIN_CANCEL_GRACE_SECS",
         "_OVERDUE_REARM_SECS",
         "_RECONCILE_INTERVAL_SECS",
         "fsync_dir",
