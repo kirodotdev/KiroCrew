@@ -366,18 +366,19 @@ def _display_redactor(text: str) -> str:
     return redact_credentials(text)[0]
 
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
+# Bang commands and the slash subcommand each is deprecated in favour of; the
+# slash trigger word is ``slack.command`` and is prepended where the text is posted.
 _BANG_TO_SLASH: dict[str, str] = {
-    "!yolo": "/kirocrew yolo",
-    "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
-    "!agent": "/kirocrew agent",
-    "!dashboard": "/kirocrew dashboard",
-    "!ta": "/kirocrew agent",
+    "!yolo": "yolo",
+    "!stop": "stop",
+    "!voice": "voice",
+    "!agent": "agent",
+    "!dashboard": "dashboard",
+    "!ta": "agent",
     # "!allowlist" removed — multi-user access disabled for security
-    "!channel": "/kirocrew channel",
-    "!link-to-dashboard": "/kirocrew link-to-dashboard",
-    "!restart": "/kirocrew restart",
+    "!channel": "channel",
+    "!link-to-dashboard": "link-to-dashboard",
+    "!restart": "restart",
 }
 
 # Approval modes (UX-level, not provider-specific)

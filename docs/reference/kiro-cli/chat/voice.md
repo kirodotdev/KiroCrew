@@ -154,7 +154,8 @@ Open the **More actions** menu on any non-blank assistant reply and choose
 
 ### Slack Voice Replies
 
-Use the `/kirocrew voice` slash command to open a settings modal where you can
+Use the `/<command> voice` slash command (`<command>` is your `slack.command`
+value) to open a settings modal where you can
 configure voice, engine, speed, and pitch.
 
 The legacy `!voice` inline commands still work but are deprecated:

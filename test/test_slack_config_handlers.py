@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.config.loader as loader
@@ -238,24 +239,19 @@ def test_save_proceeds_with_warning_when_slack_unreachable(tmp_path, monkeypatch
     assert "SLACK_BOT_TOKEN=xoxb-offline" in env.read_text(encoding="utf-8")
 
 
-def test_manifest_endpoint_renders_alias_and_url(monkeypatch) -> None:
-    """Manifest endpoint uses a non-identifying default alias (never $USER)
-    and builds Slack's deep link; explicit ?alias= is honored."""
+def test_manifest_endpoint_renders_alias_and_url() -> None:
+    """Manifest endpoint renders the caller's alias and builds Slack's deep link."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
-    monkeypatch.setenv("USER", "hostaccount")
-    req = make_mocked_request("GET", "/api/slack/manifest")
+    req = make_mocked_request("GET", "/api/slack/manifest?alias=myteam")
     resp = asyncio.run(mod.api_slack_manifest(req))
     assert resp.status == 200
     body = json.loads(resp.text)
-    assert body["alias"] == "kirocrew"  # $USER must NOT leak as the default
-    assert "hostaccount" not in body["manifest"]
-    assert body["create_url"].startswith("https://api.slack.com/apps?new_app=1&manifest_yaml=")
-
-    req = make_mocked_request("GET", "/api/slack/manifest?alias=myteam")
-    body = json.loads(asyncio.run(mod.api_slack_manifest(req)).text)
     assert body["alias"] == "myteam"
+    assert body["create_url"].startswith("https://api.slack.com/apps?new_app=1&manifest_yaml=")
     assert "KiroCrew-myteam" in body["manifest"]
+    assert "command: /kirocrew-myteam" in body["manifest"]
+    assert body["command"] == "kirocrew-myteam"
 
 
 def test_manifest_endpoint_rejects_bad_alias() -> None:
@@ -264,6 +260,35 @@ def test_manifest_endpoint_rejects_bad_alias() -> None:
     req = make_mocked_request("GET", "/api/slack/manifest?alias=../evil")
     resp = asyncio.run(mod.api_slack_manifest(req))
     assert resp.status == 400
+
+
+@pytest.mark.parametrize("query", ["", "?alias=", "?alias=%20"])
+def test_manifest_endpoint_requires_an_alias(query: str, monkeypatch) -> None:
+    """No alias renders nothing: a default would name a command every install shares."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    monkeypatch.setenv("USER", "hostaccount")
+    req = make_mocked_request("GET", f"/api/slack/manifest{query}")
+    resp = asyncio.run(mod.api_slack_manifest(req))
+    assert resp.status == 400
+    assert json.loads(resp.text) == {"error": "alias required"}
+
+
+def test_manifest_endpoint_rejects_alias_too_long_for_command() -> None:
+    """The endpoint has no length check of its own: ``valid_alias`` is bounded so
+    that every alias it admits renders a /kirocrew-<alias> Slack accepts."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+    from kiro_crew import slack_manifest
+
+    longest = "a" * slack_manifest.ALIAS_MAX
+    req = make_mocked_request("GET", f"/api/slack/manifest?alias={longest}")
+    body = json.loads(asyncio.run(mod.api_slack_manifest(req)).text)
+    assert len(body["command"]) == slack_manifest.SLASH_COMMAND_MAX
+
+    req = make_mocked_request("GET", f"/api/slack/manifest?alias={longest}a")
+    resp = asyncio.run(mod.api_slack_manifest(req))
+    assert resp.status == 400
+    assert json.loads(resp.text) == {"error": "invalid alias"}
 
 
 def test_clear_flags_must_be_strict_booleans(tmp_path, monkeypatch) -> None:
