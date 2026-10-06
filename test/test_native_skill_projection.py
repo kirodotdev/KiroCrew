@@ -58,6 +58,14 @@ def _alias_is_live(directory, alias):
     return alias in live_aliases
 
 
+@pytest.fixture(autouse=True)
+def _prune_on_every_spawn(monkeypatch):
+    """These tests prepare views back to back and assert each one's prune; the
+    burst throttle is pinned by its own test."""
+    monkeypatch.setattr(projection, "_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS", 0.0)
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+
+
 @pytest.fixture
 def cyclic_gc_quiesced():
     """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
@@ -1316,6 +1324,95 @@ def test_projection_lock_covers_alias_publication_and_pruning(native_tree, monke
     prepared = projection.prepare_native_skill_projection(project)
     assert prepared is not None
     assert _alias_file(agents, prepared).exists()
+
+
+def test_concurrent_threads_of_one_process_queue_instead_of_timing_out(tmp_path, monkeypatch):
+    """N starts in ONE gateway must not each race the file lock on its own clock.
+
+    Each holder keeps the lock 0.15 s and the file-lock ceiling is 0.3 s, so
+    eight threads racing the file lock directly exceed it; queued in-process,
+    each one's file-lock wait is near zero.
+    """
+    monkeypatch.setattr(projection, "_PROJECTION_LOCK_TIMEOUT_SECS", 0.3)
+    directory = tmp_path / "agents"
+    failures: list[BaseException] = []
+    start = threading.Barrier(8)
+
+    def hold() -> None:
+        start.wait()
+        try:
+            with projection._projection_alias_lock(directory):
+                time.sleep(0.15)
+        except OSError as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=hold) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads)
+    assert failures == []
+
+
+def test_in_process_wait_is_bounded_and_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(projection, "_IN_PROCESS_PROJECTION_WAIT_SECS", 0.1)
+    directory = tmp_path / "agents"
+    result: list[BaseException] = []
+
+    def contend() -> None:
+        try:
+            with projection._projection_alias_lock(directory):
+                pass
+        except OSError as exc:
+            result.append(exc)
+
+    with projection._projection_alias_lock(directory):
+        t = threading.Thread(target=contend)
+        t.start()
+        t.join(timeout=10)
+    assert len(result) == 1 and "inside this process" in str(result[0])
+    # The holder released both locks, so the next acquire succeeds at once.
+    with projection._projection_alias_lock(directory):
+        pass
+
+
+def test_a_failed_file_lock_releases_the_in_process_lock(tmp_path, monkeypatch):
+    directory = tmp_path / "agents"
+
+    @contextmanager
+    def refusing_file_lock(fd, **kwargs):
+        raise OSError("held elsewhere")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(projection.platform_compat, "file_lock", refusing_file_lock)
+    with pytest.raises(OSError, match="held elsewhere"):
+        projection._projection_alias_lock(directory)
+    local = projection._in_process_projection_lock(directory)
+    assert local.acquire(blocking=False)
+    local.release()
+
+
+def test_a_burst_of_spawns_prunes_once_per_interval(native_tree, monkeypatch):
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    monkeypatch.setattr(projection, "_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS", 60.0)
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+    calls = 0
+    real_prune = projection._prune_stale_managed_aliases
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_prune(*args, **kwargs)
+
+    monkeypatch.setattr(projection, "_prune_stale_managed_aliases", counted)
+    for _ in range(3):
+        assert projection.prepare_native_skill_projection(project) is not None
+    assert calls == 1
+    monkeypatch.setattr(projection, "_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS", 0.0)
+    assert projection.prepare_native_skill_projection(project) is not None
+    assert calls == 2
 
 
 @requires_symlinks

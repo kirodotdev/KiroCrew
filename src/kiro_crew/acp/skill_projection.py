@@ -133,6 +133,22 @@ _PROJECTION_METADATA_DIR_NAME = ".kirocrew-skill-projection-metadata"
 # jitter and short Windows rename retries without inheriting the generic five-minute
 # lock ceiling on the native startup path.
 _PROJECTION_LOCK_TIMEOUT_SECS = 2.0
+# Threads of THIS process queue on an in-process lock before the file lock, so
+# the file lock's ceiling above measures cross-process contention only. Without
+# it, N concurrent session starts in one gateway each race the file lock on
+# their own clock, and in a burst the later ones time out and start without
+# their skill view although no other process holds the lock. The in-process
+# wait is bounded well under the session/new budget; every caller runs off the
+# event loop.
+_IN_PROCESS_PROJECTION_WAIT_SECS = 30.0
+_IN_PROCESS_PROJECTION_LOCKS: dict[str, threading.Lock] = {}
+_IN_PROCESS_PROJECTION_LOCKS_GUARD = threading.Lock()
+# Queued starts pay for each other's locked sections one after another, and the
+# per-spawn prune walk is most of a section. Pruning only reclaims stale files,
+# so a burst gets one walk per this interval per agents directory; the boot
+# drain prunes on its own schedule and is unaffected.
+_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS = 5.0
+_LAST_PER_SPAWN_PRUNE: dict[str, float] = {}
 # The share of that ceiling the prune walk must leave to the rest of its locked
 # section: the publication writes (two atomic writes per alias plus the settings
 # commit) and scheduler jitter. The lease scan's budget is taken out on its own.
@@ -763,9 +779,41 @@ def _active_aliases() -> set[str]:
     return {alias for projection in projections for alias in projection.aliases.values()}
 
 
+def _in_process_projection_lock(directory: Path) -> threading.Lock:
+    """The one in-process lock for *directory*'s alias publication and pruning."""
+    key = directory.absolute().as_posix()
+    with _IN_PROCESS_PROJECTION_LOCKS_GUARD:
+        lock = _IN_PROCESS_PROJECTION_LOCKS.get(key)
+        if lock is None:
+            lock = _IN_PROCESS_PROJECTION_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def _per_spawn_prune_due(directory: Path) -> bool:
+    """Whether this spawn runs the prune walk; call under the alias lock."""
+    key = directory.absolute().as_posix()
+    now = time.monotonic()
+    last = _LAST_PER_SPAWN_PRUNE.get(key)
+    if last is not None and 0.0 <= now - last < _PER_SPAWN_PRUNE_MIN_INTERVAL_SECS:
+        return False
+    _LAST_PER_SPAWN_PRUNE[key] = now
+    return True
+
+
 def _projection_alias_lock(directory: Path) -> ExitStack:
-    """Acquire the bounded cross-process lock for alias publication and pruning."""
+    """Acquire the bounded cross-process lock for alias publication and pruning.
+
+    Threads of this process first queue on :func:`_in_process_projection_lock`,
+    so only one of them at a time competes for the file lock.
+    """
     stack = ExitStack()
+    local = _in_process_projection_lock(directory)
+    if not local.acquire(timeout=_IN_PROCESS_PROJECTION_WAIT_SECS):
+        raise OSError(
+            "skill projection lock still busy inside this process after "
+            f"{_IN_PROCESS_PROJECTION_WAIT_SECS:g}s"
+        )
+    stack.callback(local.release)
     try:
         directory.mkdir(parents=True, exist_ok=True)
         lock_path = directory / _PROJECTION_LOCK_NAME
@@ -2970,6 +3018,7 @@ def prepare_native_skill_projection(
             )
             return None
         _register_active_projection(prepared)
-        _prune_stale_managed_aliases(directory, crew_home_id, keep=set(aliases.values()))
+        if _per_spawn_prune_due(directory):
+            _prune_stale_managed_aliases(directory, crew_home_id, keep=set(aliases.values()))
 
     return prepared
