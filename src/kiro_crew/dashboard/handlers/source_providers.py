@@ -227,8 +227,6 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_fetch_github_checks",
         "_fetch_github_issue",
         "_github_check",
-        "_github_check_identity",
-        "_github_check_rank",
         "_github_checks",
         "_github_comment",
         "_github_issue_comment",

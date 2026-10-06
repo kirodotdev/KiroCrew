@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import github_runner
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.dashboard.source_providers import github as github_source
 from kiro_crew.sandbox import spawn_shim_argv
 
 
@@ -92,88 +93,143 @@ def test_github_check_active_status_is_pending_even_with_success_conclusion() ->
     assert check["bucket"] == "pending"
 
 
-def test_github_checks_keep_only_the_latest_run_per_check() -> None:
-    """One head sha can carry several runs of the same check (two dispatches of
-    the same workflow), which inflated every count the panel reported."""
-    rollup = [
-        {
-            "name": "GPT Review",
-            "workflowName": "GPT Review",
-            "status": "COMPLETED",
-            "conclusion": "CANCELLED",
-            "startedAt": "2026-07-28T21:17:23Z",
-            "completedAt": "2026-07-28T21:18:00Z",
-        },
-        {
-            "name": "GPT Review",
-            "workflowName": "GPT Review",
-            "status": "COMPLETED",
-            "conclusion": "FAILURE",
-            "startedAt": "2026-07-28T21:20:44Z",
-            "completedAt": "2026-07-28T21:25:00Z",
-        },
-        {
-            "name": "GPT Review",
-            "workflowName": "GPT Review",
-            "status": "COMPLETED",
-            "conclusion": "SUCCESS",
-            "startedAt": "2026-07-28T21:43:12Z",
-            "completedAt": "2026-07-28T21:47:00Z",
-        },
-    ]
-
-    checks = source._github_checks(rollup)
-
-    assert [(check["name"], check["conclusion"]) for check in checks] == [("GPT Review", "SUCCESS")]
+def _run_row(
+    name: str,
+    *,
+    run: int,
+    conclusion: str,
+    run_conclusion: str,
+    status: str = "COMPLETED",
+    definition: int = 1,
+    event: str = "pull_request",
+    workflow: str = "CI",
+) -> dict:
+    """One check-run row in the flat shape `_github_rollup_read` hands the collapse."""
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "workflowName": workflow,
+        "workflowRunId": run,
+        "workflowRunEvent": event,
+        "workflowDefinitionId": definition,
+        "workflowRunConclusion": run_conclusion,
+    }
 
 
-def test_github_checks_superseded_cancellation_does_not_paint_ci_red() -> None:
+def test_github_checks_drop_a_row_its_cancelled_run_left_behind() -> None:
     """A concurrency-group cancellation whose replacement run passed must not
-    roll up to `failed` — that red survived every refresh, because the stale row
-    is still genuinely in the provider payload."""
+    roll up to `failed` -- the stale row is still genuinely in the payload."""
     rollup = [
-        {
-            "name": "Review",
-            "workflowName": "Review",
-            "status": "COMPLETED",
-            "conclusion": "CANCELLED",
-            "startedAt": "2026-07-28T20:56:29Z",
-            "completedAt": "2026-07-28T20:57:00Z",
-        },
-        {
-            "name": "Review",
-            "workflowName": "Review",
-            "status": "COMPLETED",
-            "conclusion": "SUCCESS",
-            "startedAt": "2026-07-28T20:58:05Z",
-            "completedAt": "2026-07-28T21:00:24Z",
-        },
-    ]
-
-    buckets = [check["bucket"] for check in source._github_checks(rollup)]
-
-    assert buckets == ["passed"]
-    assert source._rollup_ci(buckets) == "passed"
-
-
-def test_github_checks_queued_rerun_outranks_the_run_it_supersedes() -> None:
-    """GitHub leaves `startedAt` null while a check-run is QUEUED. Ranking that
-    row below the completed run it replaces would show a stale pass."""
-    rollup = [
-        {
-            "name": "CI",
-            "workflowName": "CI",
-            "status": "COMPLETED",
-            "conclusion": "SUCCESS",
-            "startedAt": "2026-07-28T20:00:00Z",
-            "completedAt": "2026-07-28T20:05:00Z",
-        },
-        {"name": "CI", "workflowName": "CI", "status": "QUEUED", "conclusion": None},
+        _run_row("Review", run=10, conclusion="CANCELLED", run_conclusion="CANCELLED"),
+        _run_row("Review", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
     ]
 
     checks = source._github_checks(rollup)
 
-    assert [check["bucket"] for check in checks] == ["pending"]
+    assert [check["bucket"] for check in checks] == ["passed"]
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "passed"
+
+
+def test_github_checks_keep_a_failure_from_an_older_run() -> None:
+    """A newer run id proves only that a run started later, not that it replaced
+    the older one; an older run that FAILED is a live verdict and stays."""
+    rollup = [
+        _run_row("Review", run=10, conclusion="FAILURE", run_conclusion="FAILURE"),
+        _run_row("Review", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert [check["conclusion"] for check in checks] == ["FAILURE", "SUCCESS"]
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+@pytest.mark.parametrize("failure_first", [True, False])
+def test_github_checks_keep_both_rows_of_one_run(failure_first: bool) -> None:
+    """A workflow can publish a check run under its own job's display name, so
+    two rows of ONE run are both live. Both arrival orders: under a last-wins
+    rule one order passes for the wrong reason."""
+    failure = _run_row("Fork PR Description", run=5, conclusion="FAILURE", run_conclusion="FAILURE")
+    success = _run_row("Fork PR Description", run=5, conclusion="SUCCESS", run_conclusion="FAILURE")
+    rollup = [failure, success] if failure_first else [success, failure]
+
+    checks = source._github_checks(rollup)
+
+    assert len(checks) == 2
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_do_not_group_two_workflow_files_sharing_one_name() -> None:
+    """Two workflow files may carry one `name:`; the identity is the workflow
+    DEFINITION, so one file's newer run cannot displace the other's rows."""
+    rollup = [
+        _run_row("Lint", run=10, conclusion="CANCELLED", run_conclusion="CANCELLED", definition=1),
+        _run_row("Lint", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS", definition=2),
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert len(checks) == 2
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_do_not_group_runs_of_different_events() -> None:
+    """One file on `push` and `pull_request` runs twice for one commit; those are
+    concurrent dispatches, not an attempt and its replacement."""
+    rollup = [
+        _run_row("CI", run=10, conclusion="CANCELLED", run_conclusion="CANCELLED", event="push"),
+        _run_row("CI", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+    ]
+
+    assert len(source._github_checks(rollup)) == 2
+
+
+def test_github_checks_keep_a_cancelled_row_of_a_live_run() -> None:
+    """A row reaches CANCELLED inside a live run too (fail-fast, a failed
+    `needs`); only a run that was itself cancelled proves displacement."""
+    rollup = [
+        _run_row("CI", run=10, conclusion="CANCELLED", run_conclusion="FAILURE"),
+        _run_row("CI", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+    ]
+
+    assert len(source._github_checks(rollup)) == 2
+
+
+def test_github_checks_keep_a_cancelled_newest_run() -> None:
+    """Dropping the newest run's cancellation would revive the verdict it replaced."""
+    rollup = [
+        _run_row("CI", run=10, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+        _run_row("CI", run=11, conclusion="CANCELLED", run_conclusion="CANCELLED"),
+    ]
+
+    assert [check["conclusion"] for check in source._github_checks(rollup)] == [
+        "SUCCESS",
+        "CANCELLED",
+    ]
+
+
+def test_github_checks_keep_rows_without_a_run_identity() -> None:
+    """A row the host did not identify takes no part in the collapse."""
+    rollup = [
+        {"name": "Review", "workflowName": "Review", "status": "COMPLETED", "conclusion": c}
+        for c in ("CANCELLED", "SUCCESS")
+    ]
+
+    assert len(source._github_checks(rollup)) == 2
+
+
+def test_github_checks_queued_rerun_keeps_the_glyph_pending() -> None:
+    """A queued re-run is live; the panel must not read green over it."""
+    rollup = [
+        _run_row("CI", run=10, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+        _run_row("CI", run=11, conclusion="", run_conclusion="", status="QUEUED"),
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "running"
 
 
 def test_github_checks_do_not_collapse_across_publishers() -> None:
@@ -319,21 +375,16 @@ def test_github_checks_never_collapse_workflowless_check_runs() -> None:
     assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
 
 
-def test_github_checks_preserve_first_appearance_order() -> None:
-    """A re-run replaces a row in place instead of reshuffling the list."""
+def test_github_checks_preserve_input_order() -> None:
+    """Collapsing removes rows; it never reshuffles the ones it keeps."""
     rollup = [
-        {"name": "A", "workflowName": "W", "status": "COMPLETED", "conclusion": "SUCCESS"},
-        {"name": "B", "workflowName": "W", "status": "COMPLETED", "conclusion": "SUCCESS"},
-        {
-            "name": "A",
-            "workflowName": "W",
-            "status": "COMPLETED",
-            "conclusion": "FAILURE",
-            "startedAt": "2026-07-28T21:00:00Z",
-        },
+        _run_row("A", run=10, conclusion="CANCELLED", run_conclusion="CANCELLED"),
+        _run_row("B", run=10, conclusion="CANCELLED", run_conclusion="CANCELLED"),
+        _run_row("C", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
+        _run_row("A", run=11, conclusion="SUCCESS", run_conclusion="SUCCESS"),
     ]
 
-    assert [check["name"] for check in source._github_checks(rollup)] == ["A", "B"]
+    assert [check["name"] for check in source._github_checks(rollup)] == ["B", "C", "A"]
 
 
 def test_safe_error_redacts_credentials_and_exfiltration_urls() -> None:
@@ -2182,6 +2233,29 @@ def test_parse_source_url_rejects_untrusted_shapes(url: str) -> None:
         source.parse_source_url(url)
 
 
+def _rollup_reply(rows: list[dict], head: str = "abc123") -> dict:
+    """A one-page `gh api graphql` rollup reply carrying *rows* at *head*."""
+    nodes = [
+        {"__typename": "StatusContext" if "context" in row else "CheckRun", **row} for row in rows
+    ]
+    contexts = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+    commit = {"oid": head, "statusCheckRollup": {"contexts": contexts}}
+    pull = {"headRefOid": head, "commits": {"nodes": [{"commit": commit}]}}
+    return {"data": {"repository": {"pullRequest": pull}}}
+
+
+def _suite(run: int, run_conclusion: str, *, definition: int = 1, event: str = "pull_request"):
+    """The check-suite edge GitHub nests a check run's workflow-run identity under."""
+    return {
+        "conclusion": run_conclusion,
+        "workflowRun": {
+            "databaseId": run,
+            "event": event,
+            "workflow": {"databaseId": definition, "name": "Review"},
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeypatch) -> None:
     limits: dict[str, int | None] = {}
@@ -2248,6 +2322,8 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
                     "line": 9,
                 }
             ]
+        if "statusCheckRollup" in command:
+            return _rollup_reply([{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}])
         if "graphql" in command:
             return {
                 "data": {
@@ -2310,8 +2386,12 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
         == source._DISCUSSION_OUTPUT_BYTES
     )
     assert (
-        next(limit for command, limit in limits.items() if "graphql" in command)
+        next(limit for command, limit in limits.items() if "reviewThreads" in command)
         == source._DISCUSSION_OUTPUT_BYTES
+    )
+    assert (
+        next(limit for command, limit in limits.items() if "statusCheckRollup" in command)
+        == source._CHECKS_OUTPUT_BYTES
     )
 
 
@@ -2334,10 +2414,12 @@ async def test_fetch_github_marks_failed_secondary_endpoints_partial(
         should_fail = (
             (failed_endpoint == "files" and "/files?" in command)
             or (failed_endpoint == "comments" and "/comments?" in command)
-            or (failed_endpoint == "threads" and "graphql" in command)
+            or (failed_endpoint == "threads" and "reviewThreads" in command)
         )
         if should_fail:
             raise source.SourceProviderError("secondary request failed")
+        if "statusCheckRollup" in command:
+            return _rollup_reply([])
         return {} if "graphql" in command else []
 
     monkeypatch.setattr(source, "_run_json", fake_run)
@@ -2362,12 +2444,7 @@ async def test_fetch_github_reads_rollup_outside_the_core_field_set(monkeypatch)
         command = " ".join(argv)
         commands.append((command, kwargs.get("max_output_bytes")))
         if "statusCheckRollup" in command:
-            return {
-                "statusCheckRollup": [
-                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
-                ],
-                "headRefOid": "abc123",
-            }
+            return _rollup_reply([{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}])
         if "pr view" in command:
             return {"number": 12, "title": "Split", "state": "OPEN", "headRefOid": "abc123"}
         return {} if "graphql" in command else []
@@ -2387,7 +2464,8 @@ async def test_fetch_github_reads_rollup_outside_the_core_field_set(monkeypatch)
         (command, limit) for command, limit in commands if "statusCheckRollup" in command
     ]
     assert len(rollup_reads) == 1
-    assert rollup_reads[0][0].endswith("statusCheckRollup,headRefOid")
+    assert rollup_reads[0][0].startswith("gh api graphql -f query=")
+    assert rollup_reads[0][0].endswith("-f o=acme -f r=repo -F n=12")
     assert rollup_reads[0][1] == source._CHECKS_OUTPUT_BYTES
     assert data["checks"][0]["bucket"] == "passed"
     assert "checks" not in data["partialSections"]
@@ -2431,12 +2509,10 @@ async def test_fetch_github_discards_rollup_from_a_different_head(monkeypatch) -
     async def fake_run(*argv: str, **_kwargs: int):
         command = " ".join(argv)
         if "statusCheckRollup" in command:
-            return {
-                "statusCheckRollup": [
-                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
-                ],
-                "headRefOid": "pushed-after-core-read",
-            }
+            return _rollup_reply(
+                [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+                head="pushed-after-core-read",
+            )
         if "pr view" in command:
             return {"number": 12, "state": "OPEN", "headRefOid": "abc123"}
         return {} if "graphql" in command else []
@@ -2672,24 +2748,22 @@ async def test_fetch_github_checks_collapses_superseded_runs(monkeypatch) -> Non
     resurrect the inflated counts and the superseded failure it just fixed."""
 
     async def fake_run(*_argv: str, **_kwargs: int):
-        return {
-            "statusCheckRollup": [
+        return _rollup_reply(
+            [
                 {
                     "name": "Review",
-                    "workflowName": "Review",
                     "status": "COMPLETED",
                     "conclusion": "CANCELLED",
-                    "startedAt": "2026-07-28T20:56:29Z",
+                    "checkSuite": _suite(10, "CANCELLED"),
                 },
                 {
                     "name": "Review",
-                    "workflowName": "Review",
                     "status": "COMPLETED",
                     "conclusion": "SUCCESS",
-                    "startedAt": "2026-07-28T20:58:05Z",
+                    "checkSuite": _suite(11, "SUCCESS"),
                 },
             ]
-        }
+        )
 
     monkeypatch.setattr(source, "_run_json", fake_run)
 
@@ -2697,34 +2771,107 @@ async def test_fetch_github_checks_collapses_superseded_runs(monkeypatch) -> Non
         source.parse_source_url("https://github.com/acme/repo/pull/12")
     )
 
+    assert [(check["workflow"], check["bucket"]) for check in checks] == [("Review", "passed")]
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_checks_keeps_both_rows_of_one_run(monkeypatch) -> None:
+    """Measured shape: a workflow publishing a check run under its own job's
+    display name leaves two rows of ONE run, SUCCESS and FAILURE. The read must
+    keep both whichever arrives first, or the glyph reads green over red."""
+    failure = {
+        "name": "Fork PR Description",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE",
+        "checkSuite": _suite(7, "FAILURE"),
+    }
+    success = {**failure, "conclusion": "SUCCESS"}
+    for rows in ([failure, success], [success, failure]):
+
+        async def fake_run(*_argv: str, _rows: list = rows, **_kwargs: int):
+            return _rollup_reply(_rows)
+
+        monkeypatch.setattr(source, "_run_json", fake_run)
+
+        checks = await source._fetch_github_checks(
+            source.parse_source_url("https://github.com/acme/repo/pull/12")
+        )
+
+        assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_github_rollup_read_follows_pages_and_refuses_a_moved_head(monkeypatch) -> None:
+    """Pages are joined before the collapse (a successor can sit on a later page),
+    and a page naming another head discards the whole read."""
+    first = _rollup_reply(
+        [
+            {
+                "name": "Review",
+                "status": "COMPLETED",
+                "conclusion": "CANCELLED",
+                "checkSuite": _suite(10, "CANCELLED"),
+            }
+        ]
+    )
+    contexts = first["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"][
+        "statusCheckRollup"
+    ]["contexts"]
+    contexts["pageInfo"] = {"hasNextPage": True, "endCursor": "CUR1"}
+    second_rows = [
+        {
+            "name": "Review",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "checkSuite": _suite(11, "SUCCESS"),
+        }
+    ]
+    commands: list[str] = []
+    second_head = "abc123"
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        commands.append(command)
+        return _rollup_reply(second_rows, head=second_head) if "c=CUR1" in command else first
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    ref = source.parse_source_url("https://github.com/acme/repo/pull/12")
+
+    checks, head = await source._github_rollup_read(ref)
+
+    assert head == "abc123"
+    assert len(commands) == 2
     assert [check["bucket"] for check in checks] == ["passed"]
+
+    second_head = "pushed-mid-read"
+    with pytest.raises(source.SourceProviderError):
+        await source._github_rollup_read(ref)
 
 
 @pytest.mark.asyncio
 async def test_github_check_status_collapses_superseded_runs(monkeypatch) -> None:
-    """The chip glyph reads the same latest-run-per-check collapse the panel
-    does, so a superseded CANCELLED row cannot leave the sidebar red."""
+    """The chip glyph reads the same collapse the panel does, so a superseded
+    CANCELLED row cannot leave the sidebar red."""
 
-    async def fake_run(*_argv: str, **_kwargs: int):
-        return {
-            "state": "OPEN",
-            "statusCheckRollup": [
-                {
-                    "name": "Review",
-                    "workflowName": "Review",
-                    "status": "COMPLETED",
-                    "conclusion": "CANCELLED",
-                    "startedAt": "2026-07-28T20:56:29Z",
-                },
-                {
-                    "name": "Review",
-                    "workflowName": "Review",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "startedAt": "2026-07-28T20:58:05Z",
-                },
-            ],
-        }
+    async def fake_run(*argv: str, **_kwargs: int):
+        if "statusCheckRollup" in " ".join(argv):
+            return _rollup_reply(
+                [
+                    {
+                        "name": "Review",
+                        "status": "COMPLETED",
+                        "conclusion": "CANCELLED",
+                        "checkSuite": _suite(10, "CANCELLED"),
+                    },
+                    {
+                        "name": "Review",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "checkSuite": _suite(11, "SUCCESS"),
+                    },
+                ]
+            )
+        return {"state": "OPEN"}
 
     monkeypatch.setattr(source, "_run_json", fake_run)
 
@@ -2741,7 +2888,7 @@ async def test_github_check_status_carries_settled_merge_state(monkeypatch) -> N
     async def fake_run(*argv: str, **_kwargs: int):
         command = " ".join(argv)
         if "statusCheckRollup" in command:
-            return {"statusCheckRollup": [], "headRefOid": "abc123"}
+            return _rollup_reply([])
         assert "mergeable,mergeStateStatus" in command
         return {"state": "OPEN", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
 
@@ -2759,7 +2906,9 @@ async def test_github_check_status_omits_unsettled_merge_state(
 ) -> None:
     """"Still computing" must not overwrite the answer the full payload has."""
 
-    async def fake_run(*_argv: str, **_kwargs: int):
+    async def fake_run(*argv: str, **_kwargs: int):
+        if "statusCheckRollup" in " ".join(argv):
+            return _rollup_reply([])
         return {"state": "OPEN", "mergeable": raw_mergeable, "mergeStateStatus": "UNKNOWN"}
 
     monkeypatch.setattr(source, "_run_json", fake_run)
@@ -2802,12 +2951,10 @@ async def test_github_check_status_marks_stale_rollup_unavailable(monkeypatch) -
     async def fake_run(*argv: str, **_kwargs: int):
         command = " ".join(argv)
         if "statusCheckRollup" in command:
-            return {
-                "statusCheckRollup": [
-                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
-                ],
-                "headRefOid": "pushed-after-core-read",
-            }
+            return _rollup_reply(
+                [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+                head="pushed-after-core-read",
+            )
         return {"state": "OPEN", "headRefOid": "abc123"}
 
     monkeypatch.setattr(source, "_run_json", fake_run)
@@ -2827,7 +2974,7 @@ async def test_github_check_status_still_fails_when_core_read_fails(monkeypatch)
     async def fake_run(*argv: str, **_kwargs: int):
         command = " ".join(argv)
         if "statusCheckRollup" in command:
-            return {"statusCheckRollup": [], "headRefOid": "abc123"}
+            return _rollup_reply([])
         raise source.SourceProviderError("core read failed")
 
     monkeypatch.setattr(source, "_run_json", fake_run)
@@ -3944,11 +4091,9 @@ async def test_fetch_github_checks_uses_one_call_without_rewriting_cache(monkeyp
     source._CACHE[url] = (1.0, 21, {"provider": "github", "checks": []})
     cached = source._CACHE[url]
     run = AsyncMock(
-        return_value={
-            "statusCheckRollup": [
-                {"name": "test", "status": "IN_PROGRESS", "conclusion": "SUCCESS"}
-            ]
-        }
+        return_value=_rollup_reply(
+            [{"name": "test", "status": "IN_PROGRESS", "conclusion": "SUCCESS"}]
+        )
     )
     monkeypatch.setattr(source, "_run_json", run)
 
@@ -3956,11 +4101,16 @@ async def test_fetch_github_checks_uses_one_call_without_rewriting_cache(monkeyp
 
     run.assert_awaited_once_with(
         "gh",
-        "pr",
-        "view",
-        url,
-        "--json",
-        "statusCheckRollup,headRefOid",
+        "api",
+        "graphql",
+        "-f",
+        f"query={github_source._GITHUB_ROLLUP_QUERY}",
+        "-f",
+        "o=acme",
+        "-f",
+        "r=repo",
+        "-F",
+        "n=12",
         max_output_bytes=source._CHECKS_OUTPUT_BYTES,
     )
     assert checks[0]["bucket"] == "pending"
