@@ -869,6 +869,28 @@ with "Loop detected" on the third attempt. Pinned by
 `test/test_task_error_fingerprint.py::TestErrorFingerprint` and by
 `test/test_scenarios_v2_logic.py::TestScenarioCycleDetection::test_different_errors_no_cycle`.
 
+Bracketed pytest parametrize ids (`test_x[1s]`, `test_x[30m]`) are identity, not
+noise, and are left unmasked so a volatile pattern cannot collapse the
+successive cases of a `pytest -x` run that steps through time-unit ids. Only a
+`[...]` ATTACHED to an identifier is a node id; one masking pass
+(`_FINGERPRINT_MASK_RE`) alternates the node-id span against the volatile
+patterns and returns a matched node-id span verbatim while masking every other
+match. A bracketed log prefix that stands on its own (`[2026-09-29T05:00:00Z]
+...`, `[pid 9912]`, `[120ms]`) is NOT a node id, so its volatile contents are
+still masked and an error whose only moving part is such a prefix still compares
+equal across retries.
+
+Test-run identity is the pytest short-summary (`FAILED` / `ERROR`) lines PLUS
+each failure's location -- the `E` assertion lines and the
+`<path>:<line>: <ExcType>` traceback lines, all of which `run_tests` keeps in
+the tail. The location is folded in because on a non-tty pytest truncates each
+short-summary line after ` - ` to the terminal width: without the location, a
+test that the agent is converging on -- it fixes one assertion and the same test
+then fails at the next -- would share one truncated summary line across attempts
+and be mis-read as a loop. A different failing line or assertion now yields a
+different fingerprint, while a genuinely stuck test (same location, same
+assertion, only a volatile value moving) still collapses to one.
+
 Fingerprints are comparison-only; `task.error` always keeps the raw text.
 
 ## Step Prompt Context

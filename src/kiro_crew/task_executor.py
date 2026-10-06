@@ -189,6 +189,21 @@ _ERROR_FINGERPRINT_LEN = 1000
 #: run to its last 2000 chars, so the head of the text is not the stable part --
 #: these lines are.
 _TEST_SUMMARY_RE = re.compile(r"^[ \t]*(?:FAILED|ERROR)[ \t]+\S+.*$", re.MULTILINE)
+#: The short-summary names the failing test, but on a non-tty pytest truncates
+#: its ``FAILED <id> - <msg>`` line to the terminal width, so the assertion
+#: message is often cut off. Then a test that FAILS IN A DIFFERENT PLACE each
+#: attempt -- the agent fixes one assertion and the next one fails -- would share
+#: one summary line and read as a loop, the exact misfire this feature exists to
+#: avoid. So the failing LOCATION is folded into the identity too: pytest's
+#: traceback shows ``<path>:<line>: <ExcType>`` for each failure, and the ``E``
+#: assertion lines carry the failing expression. Both sit in the tail
+#: ``run_tests`` keeps, so a different failing line or assertion yields a
+#: different fingerprint while a genuinely stuck test (same location, same
+#: assertion) still collapses to one.
+_TEST_LOCATION_RE = re.compile(
+    r"^(?:[ \t]*E[ \t].*|\S.*?:\d+: \S.*)$",
+    re.MULTILINE,
+)
 #: Only a test-run error (see the ``task.error`` assignment after ``run_tests``)
 #: is reduced to its summary lines; a generic exception that happens to carry
 #: ``ERROR ...`` log lines keeps its own first lines as identity.
@@ -202,10 +217,30 @@ _TEST_FAILURE_PREFIX = "Tests failed:"
 _VOLATILE_PATTERNS = (
     re.compile(r"0x[0-9a-fA-F]{6,}"),
     re.compile(r"\b\d+(?:\.\d+)?(?:ms|us|ns|s|m|h)\b"),
-    re.compile(r"\b(?:port|pid)[ \t:=]+\d+\b", re.IGNORECASE),
+    re.compile(r"\b(?i:port|pid)[ \t:=]+\d+\b"),
     re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"),
 )
 _VOLATILE_WS_RE = re.compile(r"\s+")
+#: pytest parametrize ids are bracketed node-id spans (``test_x[2s]``,
+#: ``test_x[1h-cold]``). They are identity, not noise: ``[1s]`` and ``[2s]`` are
+#: the next case of a steadily-advancing run, and a duration/port/hex volatile
+#: pattern would otherwise collapse them so the third failure trips loop
+#: detection and overwrites the real error with "Loop detected". A node-id span
+#: is a ``[...]`` that is ATTACHED to an identifier (``(?<=\w)``); a bracketed
+#: log prefix like ``[2026-09-29T05:00:00Z]`` or ``[pid 9912]`` stands on its
+#: own and is NOT protected, so its volatile contents are still masked.
+#:
+#: One alternation masks volatile runs AND protects node-id spans in a single
+#: ``re.sub`` pass: the first branch is the node-id span (named ``nodeid``), the
+#: rest are the volatile patterns above. ``_mask`` returns a matched node-id span
+#: verbatim and replaces every other match with ``#``. The node-id branch is
+#: first, so an identifier-attached ``[...]`` wins the alternation and is never
+#: masked, while a volatile form outside a node id is. One pass with no
+#: lift/restore means nothing is ever rewritten into a sentinel, so there is no
+#: placeholder collision and no restore step to make total.
+_FINGERPRINT_MASK_RE = re.compile(
+    "|".join([r"(?P<nodeid>(?<=\w)\[[^\[\]]*\])", *(p.pattern for p in _VOLATILE_PATTERNS)])
+)
 
 
 def _error_fingerprint(error: str) -> str:
@@ -214,19 +249,41 @@ def _error_fingerprint(error: str) -> str:
     Exact equality misses real loops (timestamps, durations, ports, PIDs, temp
     paths change every attempt) and never fires on test failures (the full
     output is embedded). For a test run the identity is the ``FAILED`` /
-    ``ERROR`` summary; otherwise it is the first lines. Only genuinely volatile
-    forms are masked, and whitespace is collapsed. Distinct failures (different
-    missing modules, different test names, a different parametrized case) still
-    differ; only the volatile runs vary. Comparison-only: ``task.error`` keeps
-    the raw text.
+    ``ERROR`` summary lines PLUS each failure's location -- the ``E`` assertion
+    lines and the ``<path>:<line>: <ExcType>`` traceback lines -- so a test that
+    fails in a DIFFERENT place each attempt (the agent fixes one assertion and
+    the next fails) does not collapse into a false loop; otherwise it is the
+    first lines. Only genuinely volatile forms are masked, and whitespace is
+    collapsed. Distinct failures (different missing modules, different test
+    names, a different parametrized case, a different failing line) still differ;
+    only the volatile runs vary. Comparison-only: ``task.error`` keeps the raw
+    text.
     """
-    summary = _TEST_SUMMARY_RE.findall(error) if error.startswith(_TEST_FAILURE_PREFIX) else []
-    if summary:
-        text = "\n".join(summary)
+    if error.startswith(_TEST_FAILURE_PREFIX):
+        # The failing-test identity is its FAILED/ERROR summary lines (which name
+        # the test) together with its failure LOCATION (E lines + file:line
+        # traceback lines). The summary alone is width-truncated on a non-tty, so
+        # a test failing at two different assertions would otherwise share one
+        # fingerprint and read as a loop while the agent is still converging.
+        identity = _TEST_SUMMARY_RE.findall(error) + _TEST_LOCATION_RE.findall(error)
+    else:
+        identity = []
+    if identity:
+        text = "\n".join(identity)
     else:
         text = "\n".join(error.splitlines()[:_ERROR_FINGERPRINT_LINES])
-    for pattern in _VOLATILE_PATTERNS:
-        text = pattern.sub("#", text)
+
+    # One pass masks volatile runs and leaves identifier-attached node-id spans
+    # (``test_x[1s]``) alone, so a volatile pattern cannot collapse the
+    # successive cases of a ``pytest -x`` run that steps through ``[1s]``,
+    # ``[2s]``, ``[30m]`` into one fingerprint. A bracketed log prefix that is
+    # NOT attached to an identifier (``[2026-09-29T05:00:00Z] ...``, ``[pid
+    # 9912]``, ``[120ms]``) is not a node id, so its volatile contents are still
+    # masked and the fingerprint stays equal across retries.
+    def _mask(match: re.Match[str]) -> str:
+        return match.group(0) if match.lastgroup == "nodeid" else "#"
+
+    text = _FINGERPRINT_MASK_RE.sub(_mask, text)
     text = _VOLATILE_WS_RE.sub(" ", text).strip()
     if len(text) > _ERROR_FINGERPRINT_LEN:
         return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
