@@ -375,6 +375,7 @@ from kiro_crew.metrics.http_metrics import (  # noqa: F401
     make_route_latency_middleware,
     record_boot_to_ready,
 )
+from kiro_crew.notifications.attribution import system_origin  # noqa: F401
 from kiro_crew.platform import (
     async_safe_context_call,
     current_context,
