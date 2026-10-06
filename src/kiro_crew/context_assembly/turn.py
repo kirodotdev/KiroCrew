@@ -41,6 +41,7 @@ def post_compaction_parts(
     is_cc: bool,
     private_owner: bool,
     blocks_reads: bool,
+    minimal_context: bool,
     context_groups: frozenset[str] | None,
     workspace: str | None,
     memory_store: str | None,
@@ -58,6 +59,11 @@ def post_compaction_parts(
     CURRENT folder steering. The member section is re-injected by the caller,
     through the member lifecycle chokepoint. Also starts the session's shown-lesson
     record again, since the compaction dropped those blocks too.
+
+    A minimal-context turn (shared and guest channel turns, minimal crons) gets back
+    only what its minimal session start carried: the agent contract and the
+    reply-style preferences. The operator's memory, skills and folder steering stay
+    out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -80,6 +86,22 @@ def post_compaction_parts(
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The reply-style block is session-start context too, and unlike
+    # the skills index its loss is invisible: the model simply drifts
+    # back to default-length prose. Re-read the CURRENT setting so a
+    # level changed mid-session lands here as well. Trusted framing
+    # (config enum, no user text), so no payload scrub is needed.
+    _prefs = (
+        _sections._build_response_preferences_section(ctx.KiroCrewConfig.load())
+        if _sections._response_preferences_apply(session_key or "", runtime_source)
+        else ""
+    )
+    # A minimal session start carries only the contract and the reply style, so
+    # a minimal turn gets nothing more back (see the docstring).
+    if minimal_context:
+        if _prefs:
+            parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
+        return parts
     # The stored-memory half routes through the same config intersection
     # as the session-start build: this path restores a block that build
     # withheld, so reading the caller scope alone would hand back the
@@ -116,16 +138,6 @@ def post_compaction_parts(
                 + ctx._neutralize_structural_markers(skills_ctx)
                 + "\n[END REINJECTED]\n\n"
             )
-    # The reply-style block is session-start context too, and unlike
-    # the skills index its loss is invisible: the model simply drifts
-    # back to default-length prose. Re-read the CURRENT setting so a
-    # level changed mid-session lands here as well. Trusted framing
-    # (config enum, no user text), so no payload scrub is needed.
-    _prefs = (
-        _sections._build_response_preferences_section(ctx.KiroCrewConfig.load())
-        if _sections._response_preferences_apply(session_key or "", runtime_source)
-        else ""
-    )
     if _prefs:
         parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
     # Folder steering is session-start context too, and unlike kiro's

@@ -1028,6 +1028,9 @@ class TelegramDispatcher:
         # turn consumed the one-shot flag, and whether it landed (recorded success).
         _needs_reinjection = False
         _turn_landed = False
+        # The turn's driver, for the finally: it records whether the backend
+        # compacted the session, on every exit path.
+        driver: TurnDriver | None = None
         try:
             # Ack placeholder first (before the potentially slow cold-start);
             # on_turn_start is idempotent so the driver's later call no-ops.
@@ -1485,10 +1488,15 @@ class TelegramDispatcher:
             # and leaves the real window armed past the end of its turn.
             _APPROVAL_REGISTRY.discard_session(session_key)
             # A turn that consumed the post-compaction flag but never landed
-            # discarded the prompt carrying the re-injected context; put the
-            # flag back so the next turn re-injects it.
+            # discarded the prompt carrying the re-injected context, and a backend
+            # that compacted the session during the turn dropped it; either way
+            # the flag is set so the next turn re-injects it.
             rearm_reinjection(
-                self.sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+                self.sessions,
+                session_key,
+                consumed=_needs_reinjection,
+                landed=_turn_landed,
+                compacted=getattr(driver, "compaction_completed", False) is True,
             )
             rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
             # Always finalize the placeholder (no perma-"🤔 …"), even if

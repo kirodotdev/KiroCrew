@@ -572,10 +572,10 @@ unavailable. Every variable payload runs through `_scrub_member_payload` first.
 
 `members.py` → `member_turn_context` is the single chokepoint deciding, per
 session lifecycle, whether the section is delivered and whether the rules gate
-runs: `FRESH` (session start), `WARM_REINJECTION` (post-compaction), `WARM` (gate
-only — the section is still live in the conversation), `SLIM_RESUME` (re-inject
-the *current* section over the restored, possibly stale copy), `MINIMAL` (cron;
-none).
+runs: `FRESH` (session start), `WARM_REINJECTION` (post-compaction; a minimal
+turn stays `WARM`, gate only), `WARM` (gate only — the section is still live in
+the conversation), `SLIM_RESUME` (re-inject the *current* section over the
+restored, possibly stale copy), `MINIMAL` (cron; none).
 
 ### Member-scoped memory
 

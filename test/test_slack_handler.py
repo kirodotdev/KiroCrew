@@ -3429,6 +3429,25 @@ class TestTransientCompactionRetry:
         assert sessions.replay_gaps == [("open", "thread1"), ("close", "thread1")]
 
     @pytest.mark.asyncio
+    async def test_a_compaction_the_abandoned_attempt_reported_is_not_armed_after_it(self):
+        """The reset popped the session that compacted and the replay cold-starts a
+        new one, so arming the flag would make the next turn inject it twice."""
+        compacted_then_abandoned = [
+            LLMEvent(kind="compaction_status", text="completed"),
+            *_abandoned(),
+        ]
+        provider = _SequencedProvider([compacted_then_abandoned, _answered()], transient=True)
+        sessions = FakeSessionManager(provider)
+        marks: list[str] = []
+        sessions.consume_needs_reinjection = lambda key: False
+        sessions.mark_needs_reinjection = marks.append
+
+        await handle_message(MockSlackClient(), sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert provider.turns == 2, "the message was replayed"
+        assert marks == []
+
+    @pytest.mark.asyncio
     async def test_a_permanent_failure_keeps_the_give_up_behaviour(self):
         slack = MockSlackClient()
         provider = _SequencedProvider([_abandoned(), _answered()], transient=False)

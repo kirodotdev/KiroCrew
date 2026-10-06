@@ -2564,8 +2564,12 @@ class ChannelTurns:
             if self._approvals.discard is not None:
                 self._approvals.discard(session_key)
             # A turn that consumed the post-compaction flag but never landed
-            # discarded the prompt carrying the re-injected context; the bracket puts
-            # the flag back, then settles the skill-body dedup writes.
+            # discarded the prompt carrying the re-injected context, and a backend
+            # that compacted the session during the turn dropped it; the bracket
+            # arms the flag for either, then settles the skill-body dedup writes.
+            # ``driver`` is the latest attempt's: a replay after a COMPACTION_FAILED
+            # reset reports on the successor session, not the one the reset replaced.
+            bracket.compacted(driver)
             bracket.settle()
             # Always finalize the turn, even if get_or_create raised before the
             # semaphore was held. Only release if we actually acquired it.

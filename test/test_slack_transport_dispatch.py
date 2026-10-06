@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.acp.types import (
+    EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -812,6 +813,45 @@ class TestTransportCompactionReinjection:
         self._run(sessions, cb)
         assert cb.captured.get("needs_reinjection") is True
         assert failures == [canonical_key(_MSG_TS)]
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    def test_a_backend_compaction_arms_the_flag_for_the_next_turn(self, monkeypatch, status, marks):
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though this turn landed, so the next turn must send it.
+        self._prep(monkeypatch)
+        sessions = _CapturingSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text="hi"),
+                    make_event(EVENT_COMPACTION_STATUS, text=status),
+                    make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+        self._run(sessions, _CapturingCtxBuilder())
+        assert ledger["marks"] == marks and ledger["armed"] is bool(marks)
+
+    def test_a_backend_compaction_arms_the_flag_when_the_turn_then_dies(self, monkeypatch):
+        self._prep(monkeypatch)
+
+        class _CompactThenDie(ScriptedProvider):
+            async def stream(self, message):
+                self.stream_calls += 1
+                yield make_event(EVENT_COMPACTION_STATUS, text="completed")
+                raise RuntimeError("backend died after compacting")
+
+        sessions = _CapturingSessions(_CompactThenDie([]))
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+
+        async def _record_failure(key):
+            return None
+
+        sessions.record_failure = _record_failure
+        self._run(sessions, _CapturingCtxBuilder())
         assert ledger["marks"] == 1 and ledger["armed"] is True
 
 

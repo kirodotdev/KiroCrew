@@ -6152,10 +6152,14 @@ tracks failures, not compactions.
 On the dashboard, confirmed provider-native and manual `/compact` completion
 arms `SessionManager.mark_needs_reinjection` for the effective session key.
 The next dashboard turn consumes that one-shot flag to restore the skills
-context. Failed deferred compaction does not arm it. The heartbeat arms the flag
-the same way when a task's stream reports a completed compaction, and the next
-task of the cycle consumes it. This completion hook does not add skills
-reinjection to messaging surfaces or the task runner.
+context. Failed deferred compaction does not arm it. Every other turn loop that
+consumes the flag arms it when its turn's stream reports a completed compaction:
+the channel pipeline (`TurnDriver.compaction_completed` through
+`TurnBracket.compacted`), the Slack and Telegram transports, the Slack handler,
+both cron turns, the task runner and the heartbeat, each passing
+`compacted=True` to `rearm_reinjection` as its turn settles. The next turn on
+that session consumes it. A turn path that never consumes the flag, such as the
+Slack thread's auto-nudge turn, does not arm it either.
 
 #### Model-window metadata
 
@@ -6216,6 +6220,9 @@ it is not the public turn's slim-resume path.
 
 Post-compaction reinjection separately refreshes bounded skill discovery,
 protected skill bodies, memory navigation, reply preferences and member identity.
+A minimal-context turn refreshes only what its minimal session start carried, the
+agent contract and reply preferences; memory navigation, skills, folder steering
+and the member section stay withheld.
 
 The owner copy dialog names its destination member. Recovery distinguishes
 **Restore experience** from whole-store **Restore backup**. A dirty store switch

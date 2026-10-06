@@ -887,6 +887,50 @@ class TestTheReinjectionFlag:
         assert ctx.builds[0]["needs_reinjection"] is False
         assert outcome.verdict is Verdict.ANSWERED
 
+    @pytest.mark.parametrize("drift", DRIFTS)
+    def test_a_backend_compaction_arms_the_flag_for_the_next_turn(self, drift) -> None:
+        provider = ScriptedProvider(
+            [text("the reply"), compaction_status("completed"), complete()], answer()
+        )
+        sessions = FakeSessions(provider)
+        ctx = RecordingCtxBuilder(ledger=sessions.ledger)
+        turns = _turns(sessions, ctx=ctx, drift=drift)
+
+        _answer(turns)
+        _answer(turns)
+
+        assert [build["needs_reinjection"] for build in ctx.builds] == [False, True]
+        # Armed as the compacting turn settles, before its skill bodies commit.
+        names = sessions.names()
+        assert names.index("mark_reinjection") < names.index("commit_skill_bodies")
+        assert sessions.reinjection_armed is False, "the next turn consumed it"
+
+    def test_a_backend_compaction_arms_the_flag_when_the_turn_then_fails(self) -> None:
+        sessions = FakeSessions(
+            ScriptedProvider([compaction_status("completed"), RuntimeError("provider fell over")])
+        )
+        _answer(_turns(sessions))
+        assert sessions.reinjection_armed is True
+
+    def test_a_failed_backend_compaction_arms_nothing(self) -> None:
+        sessions = FakeSessions(ScriptedProvider([compaction_status("failed"), *answer()]))
+        _answer(_turns(sessions))
+        assert sessions.count("mark_reinjection") == 0
+
+    def test_a_compaction_reported_before_a_replay_is_not_counted_after_it(self) -> None:
+        """The reset replaced the session that compacted; the replay's own session
+        starts cold, so arming it would inject the context twice."""
+        first = ScriptedProvider(
+            [compaction_status("completed"), *_abandoned()], transient=True, name="first"
+        )
+        second = ScriptedProvider(answer("the reply"), name="second")
+        sessions = FakeSessions(first, second, is_new=[False, True])
+
+        outcome = _answer(_turns(sessions))
+
+        assert outcome.verdict is Verdict.ANSWERED and sessions.count("reset") == 1
+        assert sessions.count("mark_reinjection") == 0
+
 
 # ── the origin and own-mirror bind ───────────────────────────────────────────
 

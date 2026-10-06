@@ -1,10 +1,11 @@
 """The turn bracket: one turn's re-injection and skill-body settle, through its interface.
 
 ``TurnBracket`` consumes the post-compaction re-injection flag per attempt, records
-whether the turn landed from whatever evidence the engine holds, and settles once:
-re-arm the flag when it was taken and the turn did not land, THEN commit or roll back
-the skill-body dedup writes. These tests observe that through the two collaborators
-it is handed, which share one ordered ledger.
+whether the turn landed and whether the backend compacted the session from whatever
+evidence the engine holds, and settles once: re-arm the flag when it was taken and
+the turn did not land, or when the backend compacted the session, THEN commit or roll
+back the skill-body dedup writes. These tests observe that through the two
+collaborators it is handed, which share one ordered ledger.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from channel_turn_fakes import FakeSessions, RecordingCtxBuilder
@@ -92,6 +94,51 @@ def test_a_landed_turn_keeps_the_flag_consumed_and_commits() -> None:
 
     assert sessions.reinjection_armed is False and sessions.count("mark_reinjection") == 0
     assert ctx.settles == [("commit", KEY)]
+
+
+@pytest.mark.parametrize(
+    ("evidence", "compacted"),
+    [
+        pytest.param(SimpleNamespace(compaction_completed=True), True, id="driver-that-saw-it"),
+        pytest.param(SimpleNamespace(compaction_completed=False), False, id="driver-that-did-not"),
+        pytest.param(None, False, id="no-driver-yet"),
+        pytest.param(object(), False, id="driver-stand-in-without-the-field"),
+        pytest.param(MagicMock(), False, id="mock-stand-in"),
+    ],
+)
+def test_compacted_reads_every_kind_of_evidence(evidence: Any, compacted: bool) -> None:
+    bracket, _sessions, _ctx = _bracket(armed=False)
+    assert bracket.compacted(evidence) is compacted
+
+
+def test_a_backend_compaction_arms_the_flag_even_when_the_turn_landed() -> None:
+    """The backend dropped the session-start context mid-turn, so the next turn
+    needs it again however this one ended."""
+    bracket, sessions, ctx = _bracket(armed=False)
+    bracket.take_reinjection()
+    bracket.landed(True)
+    bracket.compacted(SimpleNamespace(compaction_completed=True))
+
+    bracket.settle()
+
+    assert sessions.reinjection_armed is True
+    assert sessions.names() == [
+        "consume_reinjection",
+        "mark_reinjection",
+        "commit_skill_bodies",
+    ]
+    assert ctx.settles == [("commit", KEY)]
+
+
+def test_a_turn_with_no_compaction_reported_leaves_a_landed_flag_consumed() -> None:
+    bracket, sessions, _ctx = _bracket(armed=True)
+    bracket.take_reinjection()
+    bracket.landed(True)
+    bracket.compacted(SimpleNamespace(compaction_completed=False))
+
+    bracket.settle()
+
+    assert sessions.count("mark_reinjection") == 0
 
 
 def test_a_turn_that_took_nothing_arms_nothing() -> None:

@@ -6,7 +6,8 @@ in-place compaction dropped its session-start context. The two cron turn loops i
 ``execute_task`` loop are their own copies of the turn loop, so each must
 read-and-clear the flag itself, forward it to ``build_message``, and put it back
 when the turn that consumed it never lands -- the contract the dashboard runner
-keeps in its ``finally``.
+keeps in its ``finally``. Each also arms the flag when its turn's stream reports
+that the backend compacted the session on its own.
 
 The cron harness mirrors ``test_cron_acp_retry.py``: a ``GatewayOrchestrator``
 built with ``__new__`` and mocked sessions, with the cron callback captured off
@@ -248,6 +249,47 @@ class TestSingleAgentCronTurn:
         assert _reinjection_kwargs(gw) == [True, False]
         gw.sessions.mark_needs_reinjection.assert_not_called()
 
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    def test_a_backend_compaction_arms_the_flag_for_the_next_run(
+        self, gw_and_cb, status, marks
+    ) -> None:
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though the turn landed, so the next run must send it.
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.sessions.consume_needs_reinjection = MagicMock(return_value=False)
+
+        async def compacts(*a: Any, **k: Any) -> str:
+            k["on_compaction"](SimpleNamespace(text=status))
+            _completed(*a, **k)
+            return "done"
+
+        _run(gw, get_cb, capture_cron, _job(), compacts)
+
+        assert gw.sessions.mark_needs_reinjection.call_count == marks
+
+    def test_a_compaction_the_dead_session_reported_does_not_arm_the_replacement(
+        self, gw_and_cb
+    ) -> None:
+        from kiro_crew.acp.client import AcpError
+
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.sessions.consume_needs_reinjection = MagicMock(return_value=False)
+        calls = {"n": 0}
+
+        async def compacts_then_dies_once(*a: Any, **k: Any) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                k["on_compaction"](SimpleNamespace(text="completed"))
+                raise AcpError("ACP process not running")
+            _completed(*a, **k)
+            return "recovered"
+
+        result = _run(gw, get_cb, capture_cron, _job(), compacts_then_dies_once)
+
+        assert result == "recovered" and calls["n"] == 2
+        gw.sessions.reset.assert_awaited()
+        gw.sessions.mark_needs_reinjection.assert_not_called()
+
 
 class TestAgentSequenceCronTurn:
     def test_each_agent_turn_reads_its_own_key(self, gw_and_cb) -> None:
@@ -277,6 +319,22 @@ class TestAgentSequenceCronTurn:
 
         assert _reinjection_kwargs(gw) == [True]
         gw.sessions.mark_needs_reinjection.assert_called_once_with("cron:j1:alpha")
+
+    def test_a_backend_compaction_arms_the_flag_under_that_agents_key(self, gw_and_cb) -> None:
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.sessions.consume_needs_reinjection = MagicMock(return_value=False)
+        calls = {"n": 0}
+
+        async def beta_compacts(*a: Any, **k: Any) -> str:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                k["on_compaction"](SimpleNamespace(text="completed"))
+            _completed(*a, **k)
+            return "done"
+
+        _run(gw, get_cb, capture_cron, _job(agent_sequence=["alpha", "beta"]), beta_compacts)
+
+        gw.sessions.mark_needs_reinjection.assert_called_once_with("cron:j1:beta")
 
 
 # ── task runner ──────────────────────────────────────────────────────────────
@@ -315,7 +373,11 @@ def _task_sessions() -> MagicMock:
 
 
 def _task_provider(
-    *, fail: bool = False, stop_reason: str = "end_turn", complete: bool = True
+    *,
+    fail: bool = False,
+    stop_reason: str = "end_turn",
+    complete: bool = True,
+    compaction: str = "",
 ) -> MagicMock:
     provider = MagicMock()
 
@@ -323,6 +385,8 @@ def _task_provider(
         if fail:
             raise RuntimeError("provider fell over")
         yield LLMEvent(kind="text_chunk", text="done")
+        if compaction:
+            yield LLMEvent(kind="compaction_status", text=compaction)
         if complete:
             yield LLMEvent(kind="complete", stop_reason=stop_reason)
 
@@ -436,3 +500,21 @@ class TestTaskRunnerTurn:
         sessions.record_success.assert_not_called()
         assert _task_reinjection_kwargs(ctx)[0] is True
         sessions.mark_needs_reinjection.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    async def test_a_backend_compaction_arms_the_flag_for_the_next_turn(
+        self, tmp_path, status, marks
+    ):
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though the step passed, so the session's next turn must send it.
+        sessions = _task_sessions()
+        sessions.consume_needs_reinjection = MagicMock(return_value=False)
+        sessions.get_or_create = AsyncMock(
+            return_value=(_task_provider(compaction=status), False, False)
+        )
+
+        step = await _run_one_task(sessions, _task_ctx(), tmp_path)
+
+        assert step.status == StepStatus.PASSED
+        assert sessions.mark_needs_reinjection.call_count == marks

@@ -49,6 +49,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
@@ -1472,9 +1473,11 @@ async def handle_message(
 
     client: LLMProvider | None = None
     # Post-compaction re-injection bookkeeping for the finally: whether this
-    # turn consumed the one-shot flag, and whether it landed (recorded success).
+    # turn consumed the one-shot flag, whether it landed (recorded success), and
+    # whether the backend reported that it compacted the session.
     _needs_reinjection = False
     _turn_landed = False
+    _turn_compacted = False
     # This turn's thread-replies read; its watermark moves in the finally.
     _thread_replies: ThreadReplies | None = None
 
@@ -1489,7 +1492,7 @@ async def handle_message(
         needs no queue drain from whoever dispatched the original -- the
         interaction paths dispatch ``handle_message`` without one.
         """
-        nonlocal _acquired, _replayed, _needs_reinjection, _working_ts
+        nonlocal _acquired, _replayed, _needs_reinjection, _turn_compacted, _working_ts
         # This attempt's permit died with the session the reset popped; the
         # successor's belongs to the replay, whose own ``finally`` releases it,
         # so this frame must not release again.
@@ -1497,9 +1500,11 @@ async def handle_message(
         _replayed = True
         # The reset popped the session, so the replay cold-starts a NEW one whose
         # first prompt carries the full session-start context anyway; re-arming
-        # the one-shot flag for this abandoned prompt would only make the turn
-        # after the replay inject it twice.
+        # the one-shot flag for this abandoned prompt, or for a compaction the
+        # popped session reported, would only make the turn after the replay
+        # inject it twice.
         _needs_reinjection = False
+        _turn_compacted = False
         # This attempt is over: stop its reaction ladder and stall watchdog now
         # (idempotent, so the ``finally`` re-call is a no-op), and take down what
         # it posted -- the Working block and a reasoning placeholder that a
@@ -2095,6 +2100,12 @@ async def handle_message(
                     await answer.on_tool_rejected()
                     break
 
+            elif event.kind == CONTEXT_EVENT_COMPACTION:
+                # The backend compacted the session on its own: the session-start
+                # context is gone from its window, and the finally arms the flag.
+                if event.text == "completed":
+                    _turn_compacted = True
+
             elif event.kind == EVENT_COMPLETE:
                 status_ctrl.on_progress()
                 _stop_reason = event.stop_reason
@@ -2380,8 +2391,15 @@ async def handle_message(
     finally:
         # A turn that consumed the post-compaction flag but never landed (an
         # error arm, a cancel) discarded the prompt carrying the re-injected
-        # context; put the flag back so the next turn re-injects it.
-        rearm_reinjection(sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed)
+        # context, and a backend that compacted the session during the turn
+        # dropped it; either way the flag is set so the next turn re-injects it.
+        rearm_reinjection(
+            sessions,
+            session_key,
+            consumed=_needs_reinjection,
+            landed=_turn_landed,
+            compacted=_turn_compacted,
+        )
         # The replies watermark moves only past a turn that landed after a good
         # read; a cancelled or failed turn discarded the prompt that carried them.
         if _turn_landed and _thread_replies is not None and _thread_replies.read_ok:

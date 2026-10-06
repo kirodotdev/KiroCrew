@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from kiro_crew import git_coord, platform_compat, runtime_death, shutdown_event, tool_permission
 from kiro_crew.acp.client import AcpProcessDied
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_CANCELLED,
     STOP_CLASS_FAILED,
@@ -769,9 +770,11 @@ async def execute_task(
 
         _acquired = False
         # Post-compaction re-injection bookkeeping for the finally: whether this
-        # turn consumed the one-shot flag, and whether it landed (recorded success).
+        # turn consumed the one-shot flag, whether it landed (recorded success),
+        # and whether the backend reported that it compacted the session.
         _needs_reinjection = False
         _turn_landed = False
+        _turn_compacted = False
         # Whether this attempt's stream produced output or a tool call: a death
         # after either may have left work done, so its retry resumes rather than
         # restates the step (the chat runner's ``turn_emitted``).
@@ -898,6 +901,12 @@ async def execute_task(
                     _spec = await turn_spec_hooks(client, event.text or "")
                     _policy = _policy_for(spec=_spec)
                     await refuse_stale_switch(client, event.text or "")
+                elif event.kind == CONTEXT_EVENT_COMPACTION:
+                    # The backend compacted the session on its own: the
+                    # session-start context is gone from its window, and the
+                    # finally arms the flag.
+                    if event.text == "completed":
+                        _turn_compacted = True
                 elif event.kind == EVENT_TOOL_CALL:
                     _attempt_emitted = True
                     # Fire PreToolUse hooks for auto-approved tools (informational only).
@@ -1327,10 +1336,15 @@ async def execute_task(
             return False
         finally:
             # A turn that consumed the post-compaction flag but never landed
-            # discarded the prompt carrying the re-injected context; put the
-            # flag back so the next attempt re-injects it.
+            # discarded the prompt carrying the re-injected context, and a
+            # backend that compacted the session during the turn dropped it;
+            # either way the flag is set so the next attempt re-injects it.
             rearm_reinjection(
-                sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+                sessions,
+                session_key,
+                consumed=_needs_reinjection,
+                landed=_turn_landed,
+                compacted=_turn_compacted,
             )
             rollback_skill_bodies(ctx, session_key, landed=_turn_landed)
             if _acquired:

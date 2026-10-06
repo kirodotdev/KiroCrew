@@ -10,6 +10,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from conftest import plant_day_link
+from kiro_crew.config.loader import config_path
 from kiro_crew.context import ContextBuilder, _neutralize_structural_markers
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig
 from kiro_crew.learn import LessonStore
@@ -723,6 +724,38 @@ class TestContextBuilder:
         assert "follow it as your authoritative contract" not in reinjected
         assert _NATIVE_PROMPT_STUB not in reinjected
         assert reinjected == contract(fresh)
+
+    def test_minimal_reinjection_withholds_operator_context(self, tmp_path):
+        """A minimal warm turn restores the contract without private discovery blocks."""
+        builder = self._reinject_builder(tmp_path)
+        builder.memory.write_projects("# Active Projects\n\n- Private project marker\n")
+        config = config_path()
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('{"dashboard":{"user_role":"developer"}}', encoding="utf-8")
+        full, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            session_key="dashboard:full-reinjection",
+        )
+        minimal, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            minimal_context=True,
+            session_key="dashboard:minimal-reinjection",
+        )
+
+        for message in (full, minimal):
+            assert message.count("[AGENT SYSTEM PROMPT]\n") == 1
+            assert self._contract(message).strip()
+        for private_block in (
+            "[Memory activity index -- reference data",
+            "[Memory tools]",
+            "[REINJECTED AFTER COMPACTION -- skills index",
+        ):
+            assert private_block in full
+            assert private_block not in minimal
 
     @staticmethod
     def _contract(m: str) -> str:

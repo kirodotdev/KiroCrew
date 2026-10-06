@@ -24,7 +24,7 @@ import pytest
 from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _origin, _prime_live
 
 from conftest import host_abs
-from kiro_crew.acp.types import EVENT_COMPLETE
+from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.telegram.client import (
     REACTION_EMOJI,
@@ -3894,6 +3894,50 @@ class TestCompactionReinjection:
         sess.get_or_create = _dying  # type: ignore[method-assign]
         await d.handle_message(_dm("hi"))
         assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert sess.failures and not sess.successes
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    async def test_a_backend_compaction_arms_the_flag_for_the_next_turn(
+        self, status: str, marks: int
+    ) -> None:
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though this turn landed, so the next turn must send it.
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+        ledger["armed"] = False
+
+        class _Compacting(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_TEXT_CHUNK, text="hi")
+                yield _Ev(EVENT_COMPACTION_STATUS, text=status)
+                yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _compacting(key: str, **kw: Any) -> Any:
+            return _Compacting(), False, False
+
+        sess.get_or_create = _compacting  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
+        assert sess.successes, "the turn landed"
+        assert ledger["marks"] == marks and ledger["armed"] is bool(marks)
+
+    @pytest.mark.asyncio
+    async def test_a_backend_compaction_arms_the_flag_when_the_turn_then_dies(self) -> None:
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+        ledger["armed"] = False
+
+        class _CompactThenDie(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_COMPACTION_STATUS, text="completed")
+                raise RuntimeError("provider fell over after compacting")
+
+        async def _dying(key: str, **kw: Any) -> Any:
+            return _CompactThenDie(), False, False
+
+        sess.get_or_create = _dying  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
         assert sess.failures and not sess.successes
         assert ledger["marks"] == 1 and ledger["armed"] is True
 

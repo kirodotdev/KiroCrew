@@ -599,6 +599,18 @@ class TestReinjectedAfterCompaction:
         assert _folded(_RESPONSE_PREFERENCES_HEADER) in msg
         assert "## Reply style: Concise" in msg
 
+    def test_reinjected_on_a_minimal_continuing_session(self, tmp_path):
+        _seed_verbosity("concise")
+        msg, _ = _builder(tmp_path).build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            minimal_context=True,
+        )
+        assert _folded("[REINJECTED AFTER COMPACTION — response preferences]") in msg
+        assert _folded(_RESPONSE_PREFERENCES_HEADER) in msg
+        assert "## Reply style: Concise" in msg
+
     def test_not_reinjected_without_the_flag(self, tmp_path):
         _seed_verbosity("concise")
         msg, _ = _builder(tmp_path).build_message("carry on", is_new_session=False)

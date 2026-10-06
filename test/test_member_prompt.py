@@ -581,6 +581,37 @@ class TestMemberSectionInjection:
         assert "[MEMBER IDENTITY]" in full
         assert "Never merge PRs." in full
 
+    def test_minimal_member_reinjection_withholds_member_section(self, tmp_path):
+        write_member_rules(CREW, member=CREW, text="Never merge PRs.")
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            minimal, _ = _builder(tmp_path).build_message(
+                "hello again",
+                False,
+                "dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                needs_reinjection=True,
+                minimal_context=True,
+            )
+        assert "[MEMBER IDENTITY]" not in minimal
+        assert "Never merge PRs." not in minimal
+
+    def test_minimal_member_reinjection_enforces_unreadable_rules(self, tmp_path):
+        path = member_rules_path(CREW)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json {", encoding="utf-8")
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            with pytest.raises(MemberRulesUnreadable):
+                _builder(tmp_path).build_message(
+                    "hello again",
+                    False,
+                    "dashboard:member-code-reviewer",
+                    agent=CREW,
+                    member=CREW,
+                    needs_reinjection=True,
+                    minimal_context=True,
+                )
+
     def test_warm_member_turn_still_enforces_unreadable_rules(self, tmp_path):
         """The fail-closed contract must hold PER-TURN, not just on the turns
         that inject the member section: a first-turn abort leaves a warm
