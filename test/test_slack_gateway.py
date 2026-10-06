@@ -2806,6 +2806,194 @@ class TestSubagentFinalSummaryDirective:
         assert slot._subagent_deliveries_inflight == 0
 
 
+class TestSynthesisAfterAOneTurnBatch:
+    """The post-fan-out synthesis runs only when the batch's results reached
+    the parent in two or more completion turns. Completions go through the
+    real ``on_done`` into a real slot, and each completion turn ends through
+    ``chat_runner._finish_queue_cycle``, which takes the fire decision."""
+
+    def _wire(self, tmp_path):
+        from chat_test_helpers import _make_state
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        state = _make_state(tmp_path)
+        orch.dashboard_state = state
+        on_done = TestSubagentFinalSummaryDirective()._capture_on_done(orch)
+        mgr = orch.subagent_mgr
+        # Every fire-gate probe set: a bare MagicMock probe reads as a child.
+        mgr.running_agents_for = MagicMock(return_value=[])
+        mgr.has_in_memory_pending_work_for = MagicMock(return_value=False)
+        mgr.queued_count_for_async = AsyncMock(return_value=0)
+        mgr.queued_count_or_none_async = AsyncMock(return_value=0)
+        mgr.published_queued_depths = MagicMock(return_value={})
+        state.subagents = mgr
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        return on_done, state, slot, mgr
+
+    @staticmethod
+    async def _complete(on_done, slot, agent_id, *, busy=False, **fields):
+        """Route one completion; *busy* parks it behind a turn still running."""
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(
+            id=agent_id, task=f"do {agent_id}", parent_session_key="dashboard:s1", **fields
+        )
+        blocker = asyncio.create_task(asyncio.sleep(30)) if busy else None
+        if blocker is not None:
+            slot.task = blocker
+        try:
+            with (
+                patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()),
+                patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 0.01),
+            ):
+                await on_done(info)
+                turn = slot.task
+                if turn is not None and turn is not blocker:
+                    await turn  # the completion turn (a stub) runs
+        finally:
+            if blocker is not None:
+                blocker.cancel()
+                slot.task = None
+
+    @staticmethod
+    async def _turn_end(state, slot) -> bool:
+        """End the turn that just ran; True when a synthesis turn was started."""
+        from kiro_crew.dashboard import chat_runner
+
+        with (
+            patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth,
+            # A completion still queued drains as a stub turn.
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+        return synth.called
+
+    @staticmethod
+    async def _user_message_drains(state, slot, *, turn_tail=False, **kwargs):
+        """Queue a user message and drain it. *turn_tail* drains it the way a
+        turn's end does (``_hand_off_queue``, with the ending turn still holding
+        the floor); otherwise the direct drain, as the queued card's Run now."""
+        from kiro_crew.dashboard import chat_runner
+
+        qid = slot.queue_append("thanks, carry on")
+        if kwargs.get("allow_user_during_subagents"):
+            kwargs["required_queue_id"] = qid
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            if not turn_tail:
+                assert await chat_runner._start_next_queued_turn(state, slot, **kwargs) is True
+                return
+            assert not kwargs
+            slot.task = ending = asyncio.get_running_loop().create_future()
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+            assert spawn.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy", [False, True], ids=["launched", "queued"])
+    async def test_a_lone_completion_gets_no_synthesis(self, tmp_path, busy):
+        on_done, state, slot, _ = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "a1", busy=busy)
+        assert slot._pending_synthesis is True, "the arm itself is unchanged"
+
+        assert await self._turn_end(state, slot) is False
+        assert slot._pending_synthesis is False, "the arm is consumed, not left for later"
+
+    @pytest.mark.asyncio
+    async def test_a_wave_digest_in_one_turn_gets_no_synthesis(self, tmp_path):
+        """Two members of one spawn wave arrive as ONE digest turn."""
+        on_done, state, slot, _ = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "m1", batch_id="w1", batch_total=2)
+        assert slot._queue == [] and slot.task is None, "the first member is held"
+        await self._complete(on_done, slot, "m2", batch_id="w1", batch_total=2)
+
+        assert await self._turn_end(state, slot) is False
+
+    @pytest.mark.asyncio
+    async def test_completions_in_two_turns_still_get_one_synthesis(self, tmp_path):
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        assert await self._turn_end(state, slot) is False, "a2 is still running"
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+
+        assert await self._turn_end(state, slot) is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_before_the_last_completion_keeps_the_batch(self, tmp_path):
+        """A message run beside the fan-out (the queued card's Run now) does not
+        split the batch: the two results still earn their synthesis."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        await self._turn_end(state, slot)
+        await self._user_message_drains(state, slot, allow_user_during_subagents=True)
+        await self._turn_end(state, slot)
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+
+        assert await self._turn_end(state, slot) is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_after_the_arm_ends_the_batch(self, tmp_path):
+        """The user replies while the last completion's report streams, so the
+        message drains at that turn's end. The user takes over (the armed
+        synthesis is disarmed, as before), and the next lone completion starts
+        a batch of its own."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        await self._turn_end(state, slot)
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+        await self._user_message_drains(state, slot, turn_tail=True)
+        assert slot._pending_synthesis is False
+        assert await self._turn_end(state, slot) is False
+
+        await self._complete(on_done, slot, "a3")
+        assert await self._turn_end(state, slot) is False
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_during_a_follow_up_batch_keeps_its_synthesis(self, tmp_path):
+        """A lone completion's turn spawns b1 and b2, so its arm is still set
+        when b1's completion turn and a Run-now message drain. The message
+        disarms as before but must not zero the count of a batch that is still
+        running: b1 and b2 reached the parent in two turns and earn one
+        synthesis."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "a1")
+        mgr.running_agents_for.return_value = [{"id": "b1"}, {"id": "b2"}]
+        assert await self._turn_end(state, slot) is False, "b1 and b2 are running"
+        mgr.running_agents_for.return_value = [{"id": "b2"}]
+        await self._complete(on_done, slot, "b1")
+        assert await self._turn_end(state, slot) is False, "b2 is still running"
+        await self._user_message_drains(state, slot, allow_user_during_subagents=True)
+        assert await self._turn_end(state, slot) is False
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "b2")
+
+        assert await self._turn_end(state, slot) is True
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_heartbeat
 # ═══════════════════════════════════════════════════════════════════════════

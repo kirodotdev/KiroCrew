@@ -2775,6 +2775,7 @@ class _ChatSlot:
         "_synthesis_inflight",
         "_synthesis_recheck",
         "_synthesis_rechecks",
+        "_synthesis_completion_turns",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -3481,6 +3482,15 @@ class _ChatSlot:
         # its pending timer, cancelled by begin_close, and how many it ran.
         self._synthesis_recheck: asyncio.TimerHandle | None = None
         self._synthesis_rechecks: int = 0
+        # Sub-agent completion turns handed to this slot: one per completion
+        # the gateway queues or launches (a wave digest is one). Zeroed when
+        # the synthesis runs or is dropped, and when a user message drained at
+        # a turn's end disarms it after the fire gate answered clear
+        # (`_hand_off_queue` reads; the drain itself does not); other disarms
+        # keep the count. Exactly 1 means one turn already reported every
+        # result, so the turn-end fire gate drops the arm instead of running a
+        # synthesis that restates it.
+        self._synthesis_completion_turns: int = 0
         # Fix 2 (B1) race guard: number of sub-agent completion deliveries
         # currently in flight for this slot (incremented in gateway._subagent_done
         # from entry until the completion is queued/launched). The synthesis

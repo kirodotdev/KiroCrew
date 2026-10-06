@@ -9521,6 +9521,8 @@ class GatewayOrchestrator:
                     # flag the slot so that once every completion has been
                     # processed and the queue drains, _run_chat fires ONE
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
+                    # The fire gate drops it when one completion turn carried the
+                    # whole batch (slot._synthesis_completion_turns == 1).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
                     # IN MEMORY ONLY, cheapest first, and with no await: the arm
@@ -9620,6 +9622,10 @@ class GatewayOrchestrator:
                                     info.id,
                                     _slot_name,
                                 )
+                                # Each queued completion drains as its own turn
+                                # (a system injection never merges), so it is
+                                # one turn for the synthesis fire gate's count.
+                                _injection_slot._synthesis_completion_turns += 1
                                 # Bounded by the configured turn ceiling
                                 # (chat_turn_timeout_secs, 14400s default):
                                 # _run_chat's finally block drains slot._queue
@@ -9719,6 +9725,9 @@ class GatewayOrchestrator:
                         _run_kwargs: dict[str, Any] = {}
                         if _owes_delivery:
                             _run_kwargs["_on_consumed"] = _note_consumed
+                        # One completion turn for the synthesis fire gate's
+                        # count, as in the queued branch above.
+                        _injection_slot._synthesis_completion_turns += 1
                         _task = asyncio.create_task(
                             bounded_chat_turn(
                                 _run_chat(

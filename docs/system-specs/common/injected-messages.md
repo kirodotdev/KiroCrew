@@ -125,11 +125,15 @@ Usage: <credits> credits · <elapsed>
 races the sub-agents. Your reply is what the user sees, so fold the results into it
 rather than pasting them.
 
-When every agent in a fan-out has completed and each result has been processed, one
-further synthesis turn is fired, prefixed `SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM]
-Sub-agent synthesis:'`. Its visible reply is the consolidated, user-facing summary,
-so treat it as the deliverable: restate the goal, synthesize across the agents
-rather than repeating each in turn, and give concrete next actions.
+When every agent in a fan-out has completed and the results reached you in two or
+more completion turns, one further synthesis turn is fired, prefixed
+`SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM] Sub-agent synthesis:'`. Its visible reply is
+the consolidated, user-facing summary, so treat it as the deliverable: restate the
+goal, synthesize across the agents rather than repeating each in turn, and give
+concrete next actions. A batch whose results all arrived in one turn (a lone
+sub-agent, or one wave digest) normally gets no synthesis turn: that turn's reply
+is the deliverable. The one exception is a task store the turn-end fire gate
+could not read; its later re-check fires the synthesis as before.
 
 The prompt itself is appended to the slot as an `inject` row carrying
 `meta.injectKind = "synthesis"`, and the turn is dispatched with

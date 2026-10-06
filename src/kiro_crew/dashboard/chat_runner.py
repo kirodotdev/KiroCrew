@@ -6518,6 +6518,7 @@ async def _start_next_queued_turn(
     required_queue_id: str | None = None,
     predecessor_actor: str = "",
     predecessor_turn_id: str = "",
+    end_batch: bool = False,
 ) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics.
 
@@ -6527,7 +6528,10 @@ async def _start_next_queued_turn(
     revalidation, so a stale click never starts a different queued message.
     ``predecessor_actor`` and ``predecessor_turn_id`` identify the ending turn,
     so only a recovery stamped by that exact turn avoids a new-turn boundary
-    (:func:`_mark_turn_end`).
+    (:func:`_mark_turn_end`). ``end_batch`` says the caller read the synthesis
+    fire gate as ``clear`` with the floor held, so a user message drained here
+    also zeroes the batch's completion-turn count; the drain itself reads no
+    store.
     """
 
     # A drain that follows a turn's end marks that end before it writes anything:
@@ -6764,6 +6768,17 @@ async def _start_next_queued_turn(
     # at it), so `consumed` holds it alone.
     is_app_message = any(item.get("kind") == MCP_APP_MESSAGE_KIND for item in consumed)
     if not (is_cron or is_subagent or is_recovery or is_app_message):
+        # A user message after the last completion takes over from the armed
+        # synthesis and ends its batch, so its count starts over. Only the
+        # caller that read the fire gate as `clear` with the floor held says so
+        # (`_hand_off_queue`, `_run_pending_synthesis`); every other drain
+        # keeps the count. A `held` or `unknown` verdict means a child may
+        # still be out -- running, delivering, pending in memory, or queued in
+        # the store -- and that batch's later results still earn the synthesis
+        # they would without the message. A stale count costs at most one extra
+        # synthesis; clearing a live batch's count loses its one.
+        if end_batch:
+            slot._synthesis_completion_turns = 0
         slot._pending_synthesis = False
         slot._synthesis_rechecks = 0
 
@@ -7121,7 +7136,10 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             return
         if slot._queue:
             state.push_slots_update()
-            if await _start_next_queued_turn(state, slot):
+            # The caller reached here only on a `clear` verdict
+            # (`_launch_synthesis`), so a user message drained now ends the
+            # batch: no second read.
+            if await _start_next_queued_turn(state, slot, end_batch=True):
                 return
         # The fire gate's verdict was taken by the caller (`_finish_queue_cycle`
         # or the outage re-check), the one place the decision reads the store.
@@ -7129,6 +7147,7 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
         slot._synthesis_rechecks = 0
+        slot._synthesis_completion_turns = 0
         # Same successor boundary as the queue drain (see the finalize comment in
         # `_start_next_queued_turn`): this dispatch is reached from the previous
         # turn's tail without a `chat_done`, so the predecessor's streaming row
@@ -7195,6 +7214,22 @@ def _launch_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     state.push_slots_update()
+
+
+def _drop_single_turn_synthesis(slot: _ChatSlot) -> bool:
+    """Consume a cleared arm whose whole batch reached the slot in one turn.
+
+    That turn (a lone sub-agent's completion, or a wave digest) already
+    reported every result, so the synthesis prompt would only restate it.
+    Exactly one counted turn drops it. Any other count fires, including 0:
+    an arm nothing counted is not judged.
+    """
+    if slot._synthesis_completion_turns != 1:
+        return False
+    slot._pending_synthesis = False
+    slot._synthesis_rechecks = 0
+    slot._synthesis_completion_turns = 0
+    return True
 
 
 def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
@@ -7283,7 +7318,7 @@ async def _finish_queue_cycle(
         # Running, delivering, pending in memory, or queued in the store: the
         # one fire-gate read (`synthesis_fire_verdict`).
         verdict = await synthesis_fire_verdict(state, slot)
-        will_synthesize = verdict == SYNTHESIS_CLEAR
+        will_synthesize = verdict == SYNTHESIS_CLEAR and not _drop_single_turn_synthesis(slot)
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
         if not will_synthesize and drain and slot._queue and not slot._last_turn_auth_required:
@@ -7427,12 +7462,26 @@ async def _hand_off_queue(
     # Steers outrank queued messages, so they go to the head before the drain.
     _requeue_unconsumed_steers(state, slot)
     if drain and slot._queue:
+        # A user message drained at a turn's end ends an armed synthesis's
+        # batch only when no child of it is still out (running, delivering,
+        # pending in memory, or queued in the store): the same
+        # `synthesis_fire_verdict` read `_finish_queue_cycle` takes. Read here,
+        # not in the drain, because the ending turn still holds `slot.task`
+        # through this await (released by `_finish_queue_cycle`), so a
+        # completion queues behind it and nothing can take the floor during the
+        # read; the drain itself then keeps origin/main's await-free dequeue.
+        # Unarmed hand-offs read no store.
+        end_batch = (
+            bool(slot._pending_synthesis)
+            and await synthesis_fire_verdict(state, slot) == SYNTHESIS_CLEAR
+        )
         state.push_slots_update()
         if await _start_next_queued_turn(
             state,
             slot,
             predecessor_actor=predecessor_actor,
             predecessor_turn_id=predecessor_turn_id,
+            end_batch=end_batch,
         ):
             return
     await _finish_queue_cycle(
