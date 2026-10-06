@@ -732,8 +732,8 @@ class StreamRedactor:
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
-
             i = len(self._buf) - cap
+            i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
 
             # The floor was computed after Phase A, so re-check complete token
             # parameters against the actual cut. Advancing through the value is

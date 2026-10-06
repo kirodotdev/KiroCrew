@@ -1473,7 +1473,7 @@ _TOKEN_PARAM_NAME_PREFIX_RE = (
     + ")"
 )
 _TOKEN_PARAM_RE = re.compile(
-    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
+    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}(?!\$\{{)({_TOKEN_PARAM_VALUE_CLASS}+)"
 )
 
 # The in-progress form of the same anchor, for `StreamRedactor.feed`'s
