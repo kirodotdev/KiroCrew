@@ -34,6 +34,7 @@ import { initReactI18next } from 'react-i18next'
 import { EN_TRANSLATION, mergeCatalogs } from './enCatalog'
 import { DEFAULT_LANGUAGE, SUPPORTED_CODES } from './languages'
 import { readStoredLanguage, resolveLanguage } from './detect'
+import { installRecursionGuard } from './recursionGuard'
 
 /** The one namespace every catalog uses — keys carry their own domain prefix. */
 const NAMESPACE = 'translation'
@@ -234,6 +235,11 @@ export function initI18n(initialLanguage?: string): typeof i18next {
       useSuspense: false,
     },
   })
+
+  // Bound translate re-entry so a cyclic catalog value degrades to a readable
+  // fallback instead of overflowing the stack and crashing the whole route.
+  // Installed after init(), when the translator exists.
+  installRecursionGuard(i18next as unknown as { translator?: { translate: (...args: unknown[]) => unknown } })
 
   return i18next
 }
