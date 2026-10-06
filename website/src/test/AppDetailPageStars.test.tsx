@@ -1,11 +1,10 @@
 /**
  * GitHub star count on the app detail page.
  *
- * The registry-only (not-installed) branch spreads the RAW `listRegistry()`
- * payload — it never passes through `normalizeRegistryApp` — so the page must
- * sanitize the display-only star count itself (`sanitizeStargazersCount`).
- * These tests pin both halves: a valid count renders in the hero subtitle
- * (compact) AND the Details card (exact), and a malformed value from a
+ * The page normalizes the `listRegistry()` payload with `normalizeRegistryApp`
+ * where it fetches it, which is what sanitizes the display-only star count for
+ * the registry-only (not-installed) branch. These tests pin both halves: a
+ * valid count renders in the hero subtitle (compact) AND the Details card (exact), and a malformed value from a
  * hostile/older gateway is suppressed rather than rendered as NaN/-1/1e308.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
