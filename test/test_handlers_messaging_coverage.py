@@ -2155,8 +2155,10 @@ class TestSlackManifest:
         assert "{{ALIAS}}" not in data["manifest"]
         assert data["create_url"].startswith("https://api.slack.com/apps?new_app=1&manifest_yaml=")
 
-    def test_defaults_to_a_non_identifying_alias(self) -> None:
-        assert _payload(_run(mod.api_slack_manifest, _Req(_state())))["alias"] == "kirocrew"
+    def test_400_without_an_alias(self) -> None:
+        resp = _run(mod.api_slack_manifest, _Req(_state()))
+        assert resp.status == 400
+        assert _payload(resp)["error"] == "alias required"
 
 
 class _FakeBus:

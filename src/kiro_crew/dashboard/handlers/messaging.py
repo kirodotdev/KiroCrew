@@ -2349,9 +2349,9 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     """
     from kiro_crew import slack_manifest
 
-    # Default to a non-identifying alias: $USER is a host account name and
-    # should not be volunteered to every authenticated client.
-    alias = request.query.get("alias", "").strip() or "kirocrew"
+    alias = request.query.get("alias", "").strip()
+    if not alias:
+        return web.json_response({"error": "alias required"}, status=400)
     if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
     try:
@@ -2364,6 +2364,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "alias": alias,
             "manifest": rendered,
             "create_url": create_url,
+            "command": slack_manifest.slash_command(alias),
         }
     )
 

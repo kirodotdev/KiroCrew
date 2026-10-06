@@ -6790,6 +6790,13 @@
       "slackPanel": {
         "auto_link_sessions": "Connect new sessions to Slack automatically",
         "auto_link_sessions_desc": "Every new dashboard session gets a Slack thread on its first message, in your private direct message with the bot. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone. A session connected this way does not count as a Slack session for the folder setting below: it stays where it is in the sidebar, and only conversations that start in Slack are filed.",
+        "alias": "Alias",
+        "alias_description": "Names the app and its slash command /kirocrew-<alias>; the Slash command below follows it until you edit that field. Letters, digits, - and _ only, up to 23 characters.",
+        "alias_invalid_chars": "Only letters, digits, - and _ are allowed.",
+        "alias_too_long": "Too long: 23 characters at most.",
+        "alias_placeholder": "johndoe",
+        "alias_required_hint": "Enter an alias to enable Create Slack app and Copy manifest YAML.",
+        "command_follows_alias": "Follows the alias. Saved only when you click Save Slack settings.",
         "create_the_slack_app_from_the_manifest": "Create the Slack app from the pre-filled manifest below (Socket Mode and permissions\n            included, named KiroCrew-{{alias}}). Install it to your\n            workspace, then paste the bot token and app-level token here.",
         "connected": "Connected",
         "copy_manifest_yaml": "Copy manifest YAML",

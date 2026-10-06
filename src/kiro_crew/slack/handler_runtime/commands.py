@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         run_config_write,
         safety_override,
         sel,
+        slack_cfg,
         spawn_command_reply,
         task_command_reply,
         yolo_policy_permits,
@@ -85,8 +86,9 @@ async def _handle_slash_command(
     cmd = cmd_text.split()[0].lower()
 
     # ── Deprecation warning for all bang commands ──
-    slash_equiv = _BANG_TO_SLASH.get(cmd)
-    if slash_equiv:
+    subcommand = _BANG_TO_SLASH.get(cmd)
+    if subcommand:
+        slash_equiv = f"/{slack_cfg().slack.command} {subcommand}"
         logger.warning("Deprecated bang command %s used — suggest %s", cmd, slash_equiv)
         warn_block = deprecation_warning_block(cmd, slash_equiv)
         await slack.post_blocks(channel, [warn_block], f"{cmd} is deprecated", reply_ts)
@@ -120,7 +122,7 @@ async def _handle_slash_command(
     # Catch-all: unrecognized ! command — post error instead of falling through to LLM
     await slack.post_message(
         channel,
-        f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
+        f"❌ Unknown command `{cmd}`. Type `/{slack_cfg().slack.command} help` for available commands.",
         reply_ts,
     )
     return ""

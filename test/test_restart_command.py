@@ -189,8 +189,11 @@ class TestRestartBangAlias:
         orch = _make_orch()
         seen = SeenCache()
         event = {
-            "user": "U_OWNER", "channel": "D1234", "text": "!restart",
-            "ts": "10.0", "team": "TTEST",
+            "user": "U_OWNER",
+            "channel": "D1234",
+            "text": "!restart",
+            "ts": "10.0",
+            "team": "TTEST",
         }
         with (
             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm,
@@ -217,8 +220,11 @@ class TestRestartBangAlias:
         orch = _make_orch()
         seen = SeenCache()
         event = {
-            "user": "U_OTHER", "channel": "D1234", "text": "!restart",
-            "ts": "10.0", "team": "TTEST",
+            "user": "U_OTHER",
+            "channel": "D1234",
+            "text": "!restart",
+            "ts": "10.0",
+            "team": "TTEST",
         }
         with (
             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm,
@@ -240,4 +246,4 @@ class TestRestartBangAlias:
         fall through to command handling instead of swallowing it into a slot."""
         from kiro_crew.slack.handler import _BANG_TO_SLASH
 
-        assert _BANG_TO_SLASH.get("!restart") == "/kirocrew restart"
+        assert _BANG_TO_SLASH.get("!restart") == "restart"

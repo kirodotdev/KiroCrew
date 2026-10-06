@@ -365,7 +365,11 @@ class _Config:
 
     def __init__(self) -> None:
         self.slack = SimpleNamespace(
-            reactions_enabled=True, show_thinking=True, sessions_limit=10, reactions={}
+            reactions_enabled=True,
+            show_thinking=True,
+            sessions_limit=10,
+            reactions={},
+            command="kirocrew",
         )
         self.agent = SimpleNamespace(default_agent="")
         self.raw: dict = {}
