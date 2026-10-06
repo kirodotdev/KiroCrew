@@ -150,6 +150,10 @@ class Project:
     workflow_revision: int = 0
     derived_from_workflow_id: str = ""  # saved ancestor after the plan is adapted
     derived_from_revision: int = 0
+    # The agent this run was started with, kept on the run rather than read off
+    # the runner's ``_agent`` (which the next start overwrites), so every notice
+    # this run raises names the agent it actually ran.
+    agent: str = ""
 
 
 # ``NotifyCallback`` moved to ``task_reporter``, which owns the notification
