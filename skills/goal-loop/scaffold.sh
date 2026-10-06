@@ -62,11 +62,13 @@ Loop retires when all Definition-of-Done criteria in \`LOOP.md\` are true.
 ## Issue-discovery sources
 
 Every cycle, if the todo column is empty, the agent must run these and
-\`kanban-md create\` a card for each **new** finding (skip findings already
-on the board by title match):
+\`kanban-md --dir $ANCHOR/board create "<title>" --status todo\` a card for
+each **new** finding (skip findings already on the board by title match):
 
-- **Tree grep.** \`grep -rnE '(TODO|FIXME|XXX|TBD)' $ANCHOR\` scoped to the
-  project tree. Obfuscate the markers in any card body you write (e.g.
+- **Tree grep.** \`grep -rnE '(T[O]DO|F[I]XME|X[X]X|T[B]D)' <PROJECT_TREE>\`,
+  where \`<PROJECT_TREE>\` is the code the goal is about (replace it before
+  arming), not this anchor directory. The bracketed pattern keeps this file
+  from matching itself. Obfuscate the markers in any card body you write (e.g.
   \`T\${""}ODO\`) so DoD-4 zero-markers stays satisfiable.
 - **Failed tests** (if applicable). Last ToD / CI / pytest run in the
   project. Each failure = one card.
@@ -81,15 +83,21 @@ cycle cost.
 Re-read \`LOOP.md §"Operating invariants"\` every cycle. One cycle = one
 atomic step. Never more than 5 tool calls per cycle.
 
+Record each step with \`session_ledger_record\` (phase, \`next\` as a
+concrete intent, approaches tried and rejected); on resume, read
+\`session_ledger_read\` before re-deriving state from the board.
+
 Card lifecycle: **todo → in-progress → review**. Never move to done yourself
 — human approves.
 
 ## Persistence rule (CRITICAL — re-read every cycle)
 
-The loop stops in **exactly two cases**, nothing else:
+This rule overrides LOOP.md's nudge where they differ (its "all blocked" exit
+included). The loop stops in **exactly three cases**, nothing else:
 
-1. **Goal achieved** — all DoD criteria in \`LOOP.md\` check green.
-2. **Unrecoverable infrastructure error** — host/tooling itself broken
+1. **User stop** — \`$ANCHOR/STOP\` exists → \`autonudge_stop(reason="sentinel")\`.
+2. **Goal achieved** — all DoD criteria in \`LOOP.md\` check green.
+3. **Unrecoverable infrastructure error** — host/tooling itself broken
    (disk full, network down, auth provider out, kanban-md missing from
    PATH, kernel OOM). Log one-line diagnosis and stop.
 
@@ -103,7 +111,8 @@ Everything else is a problem to solve, not a stop condition:
 - Cycle budget feels tight → the service enforces \`max_cycles\`, not you.
 
 When in doubt: keep going, find another angle, create a new card, and tick.
-Only write \`STOP\` or call \`autonudge_stop\` for the two cases above.
+Never create \`STOP\` yourself — it is the user's switch. Call
+\`autonudge_stop\` only for the three cases above.
 
 ## Kill switches
 
@@ -121,5 +130,7 @@ Next:
   1. Fill 5 DoD criteria in: $ANCHOR/LOOP.md
   2. Review discovery sources in: $GOAL_MD_PATH
   3. ls $ANCHOR/STOP  (must say "No such file")
-  4. Arm the loop (UI 🎯 "Set a goal" or REST) — see $ANCHOR/LOOP.md §"Start the loop (REST)"
+  4. Arm the loop (UI 🎯 "Set a goal" or REST) — see $ANCHOR/LOOP.md §"Start the loop (REST)".
+     Paste LOOP.md's nudge with this line first, or GOAL.md is never read:
+       Every cycle, read $GOAL_MD_PATH first; its rules override this nudge where they differ.
 EOF

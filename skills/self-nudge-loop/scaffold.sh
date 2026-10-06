@@ -57,7 +57,7 @@ The loop retires itself when **all** are true:
 1. <TODO: boolean criterion 1 — shell-checkable if possible>
 2. <TODO: boolean criterion 2>
 3. <TODO: boolean criterion 3>
-4. **Zero stale markers.** \`grep -rn "TODO\\|FIXME\\|XXX\\|TBD" $ANCHOR\` returns empty.
+4. **Zero stale markers.** \`grep -rnE '(T[O]DO|F[I]XME|X[X]X|T[B]D)' $ANCHOR\` returns empty (the bracketed pattern keeps this line from matching itself; fill criteria 1-3 first).
 5. **Board drained** (if using kanban-md): no cards in todo/in-progress/review.
 
 When all five are true, agent posts the DoD checklist with ticks, calls \`autonudge_stop(reason="DoD met")\`, stays silent.
@@ -79,13 +79,12 @@ When all five are true, agent posts the DoD checklist with ticks, calls \`autonu
 ## Start the loop (REST)
 
 \`\`\`bash
-# 1. Get a local user token (loopback only; requires X-Local-Secret header).
-SECRET=\$(cat ~/.kiro/crew/.local_secret)
-TOKEN=\$(curl -sf -H "X-Local-Secret: \$SECRET" \\
-  "http://127.0.0.1:5476/api/token/local?ttl=1h" \\
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+# Human-controlled terminal only. Obtain a short-lived dashboard token (for
+# example with \`kirocrew token\`) without exposing it to an agent; agents arm
+# with the monitor_start MCP tool and never read local-secret files.
+TOKEN='<short-lived dashboard token>'
 
-# 2. Arm the loop — ?token= query param (NOT Authorization: Bearer).
+# Arm the loop — ?token= query param (NOT Authorization: Bearer).
 curl -X POST "http://127.0.0.1:5476/api/autonudge?token=\$TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -101,7 +100,7 @@ curl -X POST "http://127.0.0.1:5476/api/autonudge?token=\$TOKEN" \\
 |---|---|---|
 | GET | \`/api/autonudge\` | list all loops |
 | GET | \`/api/autonudge/slot/{slot_key}\` | loop bound to a slot |
-| POST | \`/api/autonudge\` | start / replace a loop |
+| POST | \`/api/autonudge\` | start a loop (409 if the slot already has one) |
 | PATCH | \`/api/autonudge/{loop_id}\` | edit nudge / idle / active |
 | DELETE | \`/api/autonudge/{loop_id}\` | stop + remove |
 
@@ -132,13 +131,10 @@ EXECUTE (<=5 tool calls per cycle, hard cap):
 
 RECORD:
 11. Append progress to the claimed card (kanban-md --dir \$BOARD edit <id> --claim "loop-$PROJECT" --append-body "<note>") or to a Cycle Log section in LOOP.md.
-12. DM the owner a tick via send_message (owner DM is default — no channel arg). Template:
-    "🎯 $PROJECT cycle-<n> · <task-id>  Done: <1-line>  Next: <1-line>  Status: <col>"
-    One DM per productive cycle. Skip halted / no-op cycles.
+12. Notify only on a phase boundary, blocker, or completion. send_message with no session arg is a dashboard notification only; pass session=slack (or another channel) for an owner DM. No routine per-cycle tick.
 13. If task complete: kanban-md --dir \$BOARD handoff <id> --claim "loop-$PROJECT" --note "<summary>" --release to Review (NOT Done — human approves Done).
 
 STAY SILENT in the chat panel unless: DoD met, hard blocker needs user decision, or STOP sentinel tripped.
-(send_message DMs are expected every productive cycle — that is the progress channel, not the chat.)
 One cycle = one step.
 \`\`\`
 
@@ -175,7 +171,7 @@ One cycle = one step.
 
 | Symptom | Check |
 |---|---|
-| UI icon dim | \`echo \$KIROCREW_AUTONUDGE\` should be \`1\`. |
+| UI icon dim | AutoNudge is on unless the GATEWAY's env sets \`KIROCREW_AUTONUDGE\` to \`0\`, \`false\` or \`no\` (your shell's value does not matter). \`GET /api/autonudge\` returns \`"enabled": false\` while it is disabled. |
 | Nudge never fires | \`cat ~/.kiro/crew/autonudge.json\` — loop \`active:true\`? Right slot_key? |
 | Loop fires but agent does nothing | STOP sentinel present? \`ls $STOP_PATH\`. |
 | \`code=-15 SIGTERM\` after ~100 cycles | Context-window overflow. Re-arm with \`max_cycles: 30\`. |

@@ -4,7 +4,7 @@ The data home is ``~/.kiro/crew`` (nested under kiro-cli's ``~/.kiro``), not the
 top-level ``~/.kirocrew``. A skill that points at the legacy path makes agents
 run commands against a path that does not exist, and the scripts some skills
 execute (``kirocrew-prepare-pr``'s ``$SKILL_DIR/scripts/*.py``,
-``self-nudge-loop``'s ``.local_secret`` read, ``feature-demo-recording``'s venv)
+``self-nudge-loop``'s ``autonudge.json`` path, ``feature-demo-recording``'s venv)
 fail outright.
 
 These tests keep the fix from silently regressing: a skill that reintroduces the

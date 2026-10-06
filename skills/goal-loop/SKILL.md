@@ -22,8 +22,9 @@ After running this skill's `scaffold.sh`, the anchor directory contains:
 └── board/         ← kanban-md board, 6 columns (only when kanban-md is installed)
 ```
 
-The loop agent re-reads `GOAL.md` + `LOOP.md` every cycle. That's the
-"mission briefing" — everything else is session state.
+The loop agent re-reads `GOAL.md` + `LOOP.md` every cycle — but only because
+the nudge you arm tells it to (step 4 under "Run it"): LOOP.md's own nudge never
+names `GOAL.md`. That's the "mission briefing" — everything else is session state.
 
 ## When to use
 
@@ -100,17 +101,23 @@ cd ~/.kiro/crew/skills/goal-loop
 Then:
 
 1. Open `<anchor>/LOOP.md` — fill in 5 shell-checkable DoD criteria.
-2. Open `<anchor>/GOAL.md` — confirm issue-discovery sources (defaults: tree
-   grep, kanban backlog). Add/remove.
+2. Open `<anchor>/GOAL.md` — replace `<PROJECT_TREE>` and confirm the
+   issue-discovery sources (defaults: tree grep, failed tests, user-reported
+   issues). Add/remove.
 3. `ls <anchor>/STOP` must say "No such file".
-4. Arm the loop: `monitor_start(message, interval_secs, max_cycles, max_runtime_secs)` from a live
+4. Arm the loop with LOOP.md's "Ready-to-paste nudge", prefixed with the line
+   `Every cycle, read <anchor>/GOAL.md first; its rules override this nudge where they differ.`
+   (the scaffold prints it). Without that line the agent never reads GOAL.md and
+   follows LOOP.md's nudge alone, including its "all blocked" exit. Arm via
+   `monitor_start(message, interval_secs, max_cycles, max_runtime_secs)` from a live
    session, the UI 🎯 "Set a goal", or `POST /api/autonudge`. Revise a running
    loop in place with `PATCH /api/autonudge/{loop_id}` (or `monitor_update`),
    which keeps its cycle count; `DELETE /api/autonudge/{loop_id}` stops it.
 
 ## The goal-loop cycle (what the agent does)
 
-The nudge written by this skill instructs the agent to, every cycle:
+LOOP.md's nudge plus GOAL.md (read first, per the armed prefix) instruct the
+agent to, every cycle:
 
 1. **STOP / DoD checks first** — if STOP exists or all DoD criteria met, call
    `autonudge_stop` and stop.
@@ -129,7 +136,9 @@ The nudge written by this skill instructs the agent to, every cycle:
    Review with `kanban-md --dir <BOARD> handoff <id> --claim loop-<project> --note "<summary>" --release`
    (`--release` drops the claim so the next cycle's `--claimed-by` scan does
    not resume a card already in Review).
-6. **DM the user** — one-line progress tick via `send_message`.
+6. **Notify on milestones only** — a phase boundary, blocker or completion, via
+   `send_message`. With no `session` argument it is a dashboard notification;
+   pass `session="slack"` (or another channel) for an owner DM. No per-cycle tick.
 
 ## Operating invariants
 
