@@ -44,7 +44,7 @@ Follow these rules for every `gh` invocation below:
   conversation and pass them as a double-quoted literal. Do not paste raw user
   text (with its punctuation/metacharacters) into the search string.
 - If you cannot safely pass a value, fall back to the copy/paste option
-  (Option 2) instead of shelling out.
+  (Option 1) instead of shelling out.
 
 ## Workflow
 
@@ -94,7 +94,7 @@ whether direct submission (Option 3) will work on this host:
 
 In either failure case **say so now, before drafting**, so the user is not
 surprised after approving a draft. Nothing is lost: the flow still drafts the
-issue and hands it back as copy/paste text (Option 2), which needs neither `gh`
+issue and hands it back as copy/paste text (Option 1), which needs neither `gh`
 nor Browser — only that the user is signed in to GitHub in their own browser to
 submit it. Do not silently proceed as if submission will work and only reveal
 the gap at the submit step. The duplicate search can still be skipped on failure;
@@ -166,17 +166,18 @@ value you could not read.
 ### 6. Submit — Offer the Options
 
 What you can offer depends on the capability check in step 3. If `gh` worked,
-all three options below are available. If it did not, offer Options 1 and 2 only
-and say Option 3 is unavailable on this host.
+all three options below may apply. If it did not, Option 3 is unavailable on this
+host; offer Option 1, and Option 2 only when its query string is short (see
+below).
 
 Lead with the routes that reliably reach the user. Crew's chat redacts any
 model-written URL whose query string is 200 characters or longer, with no
 exception for issue links (this is intentional — injected content could hide
 private context in a prefilled `body=`, and the issue it creates is public). A
 prefilled link carrying a drafted title and body almost always crosses that
-length, so **in chat it renders as `[REDACTED: suspicious URL]` rather than a
-clickable link.** Offer it, but do not make it the only route, and tell the user
-it may be redacted.
+length and would render as `[REDACTED: suspicious URL]` rather than a clickable
+link, so Option 1 is the primary route and Option 2 is offered only in the rare
+short-query case where it survives redaction.
 
 **Option 1: Copy/paste** (always works, nothing to install)
 
@@ -197,25 +198,30 @@ to survive redaction:
 https://github.com/kirodotdev/KiroCrew/issues/new?template=feature_request.yml
 ```
 
-**Option 2: Pre-filled URL** (convenient when it is not redacted)
+**Option 2: Pre-filled URL** (only when its query string is short)
 
 Build a GitHub new-issue URL with query params:
 
 ```
-https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY&labels=URL_ENCODED_LABELS
+https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY
 ```
 
-`labels=` takes the comma-separated names chosen in step 5. **Percent-encode each
-label name in full**, not just its spaces: an unencoded `&` starts a new query
-param and an unencoded `#` pushes the remainder into the URL fragment, either of
-which silently drops the drafted body from the pre-filled issue. Encode the
-separating comma as `%2C`.
+Do **not** add a `labels=` parameter: GitHub answers 404 to a `labels` query
+from anyone without permission to label issues in this repo, which is most
+users (chosen labels apply only through Option 3, and triage labels the rest).
+**Percent-encode the title and body in full**, not just their spaces: an
+unencoded `&` starts a new query param and an unencoded `#` pushes the remainder
+into the URL fragment, either of which silently drops the drafted body from the
+pre-filled issue.
 
-URL-encode the title and body. Because the query string is long, this link is
-usually redacted in chat as noted above — if the user sees a redaction
-placeholder instead of a link, that is expected; fall back to Option 1. If the
-total URL exceeds ~4000 chars, it may also be truncated by GitHub; recommend
-Option 1 in that case too.
+You build this URL, so you know its length: offer it **only when its query
+string is under 200 characters** (a short title and little or no body). At or
+above 200, Crew redacts it in chat as a suspicious URL (intentional, no
+exception for issue links), so do not offer it — leave it out silently and use
+Option 1 rather than handing the user a link that renders as a
+`[REDACTED: suspicious URL]` placeholder. (A URL over ~4000 chars may also be
+truncated by GitHub, another reason the short-query case is the only one worth
+offering here.)
 
 **Option 3: Direct creation via `gh` CLI** (only if the step 3 check succeeded)
 
