@@ -3012,6 +3012,23 @@ _EDITABLE_CONFIG["decisions.nudge_wake.llm_model"] = {
     "validate_fn": _validate_role_model,
 }
 
+# The routing judge's two per-point settings, on the same terms as the wake
+# judge's above: ``decisions.model_route_judge`` chooses between the two
+# destinations the machine is already authorized for, and ``llm_model`` names a
+# model on the provider every turn already uses. Neither widens what a turn can be
+# routed TO -- that is the ``decisions.model_route.<tier>`` map, set only through
+# this route or the file -- so both are ordinary preferences here.
+_EDITABLE_CONFIG["decisions.model_route_judge.provider"] = {
+    "type": "enum",
+    "values": list(JUDGE_PROVIDERS),
+}
+_EDITABLE_CONFIG["decisions.model_route_judge.llm_model"] = {
+    "type": "str",
+    "max_len": 64,
+    "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+    "validate_fn": _validate_role_model,
+}
+
 
 def _beacon_governance_pinned_off() -> bool:
     """Return whether a ceiling pins ``capabilities.telemetry`` off (blocking).

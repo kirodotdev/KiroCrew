@@ -44,7 +44,7 @@ import re
 import threading
 import time
 from hashlib import sha256
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew import credential_patterns as _cred
 from kiro_crew.config.sections import (
@@ -83,7 +83,7 @@ DECISION_POINT_NAMES = (
     "nudge.wake",
 )
 
-#: The ONE point that has two providers, and therefore the one point whose
+#: The first point that had two providers, and therefore the first whose
 #: authority is not simply "the keystone consents". Named here because the lane
 #: selection below is keyed on it; the point's own module, which the core wake-judge
 #: change adds beside the six in ``decisions/points/``,
@@ -91,12 +91,51 @@ DECISION_POINT_NAMES = (
 #: answered.
 JUDGE_POINT = "nudge.wake"
 
+#: The second two-lane point. ``model.route`` asks which difficulty tier a chat
+#: turn is in, and the small model can answer that as well as Jev can; the point
+#: module (``decisions/points/model_route.py``) maps the tier to the owner's pins
+#: and never learns which lane answered.
+ROUTE_POINT = "model.route"
+
 #: The two lanes. ``jev`` is the shipped ``JevOracle`` over HTTP; ``llm`` is
 #: ``impl_llm.LlmOracle`` over one tool-less model call on the session's own
-#: provider. ``decisions.nudge_wake.provider`` also accepts ``auto``, which resolves to
+#: provider. ``decisions.nudge_wake.provider`` and
+#: ``decisions.model_route_judge.provider`` also accept ``auto``, which resolves to
 #: one of these two at decision time rather than being a third lane.
 LANE_JEV = "jev"
 LANE_LLM = "llm"
+
+
+class _LanePoint(NamedTuple):
+    """How one two-lane point reads its lane knob and arms each of its two sides."""
+
+    #: The ``decisions.<section>`` carrying this point's ``provider`` and
+    #: ``llm_model``.
+    section: str
+    #: Whether the Jev side is ARMED only with the point's OWN egress scope on top
+    #: of the endpoint consent. True for a point whose Jev request carries a
+    #: category the main switch was not reviewed for; False for one that sends
+    #: nothing beyond the message excerpt that switch names.
+    jev_needs_scope: bool
+    #: Whether the LLM side needs the KEYSTONE switch as an act of OWNERSHIP. False
+    #: for the judge: a loop whose owner wrote a brief is the act, the lane is
+    #: subtractive, and ``auto`` may fall to the small model with nothing recorded.
+    #: True for ``model.route``: a routed turn can run on a dearer model, the lane
+    #: knob lives in agent-writable ``config.json``, and a slot on ``auto`` that
+    #: nobody armed has no act behind it -- so the one owner-only, sandbox-readonly
+    #: bit the seam has is required, read for ownership rather than for egress, and
+    #: ``auto`` without it lands on the (refused) Jev side rather than on the model.
+    llm_needs_keystone: bool
+
+
+#: Every point with a lane knob, and where that knob lives. The ONE table the
+#: resolver, the model reader and the authority walk, so a point added here gets
+#: all three with no edit elsewhere; a point absent from it has exactly one lane
+#: (Jev) and exactly one authority (the keystone), which is every other point.
+LANE_POINTS: dict[str, _LanePoint] = {
+    JUDGE_POINT: _LanePoint("nudge_wake", True, False),
+    ROUTE_POINT: _LanePoint("model_route_judge", False, True),
+}
 
 #: The LLM lane's budget floor and ceiling, in seconds. The seam's own
 #: ``provider.timeout_ms`` is sized for Jev (1 s by default, ~100 ms in practice)
@@ -106,6 +145,12 @@ LANE_LLM = "llm"
 #: therefore CLAMPED UP into this window rather than replaced, so an operator who
 #: deliberately raised ``timeout_ms`` still gets what they asked for, up to a
 #: ceiling that keeps one tick from holding its loop for a minute.
+#:
+#: The same window serves ``model.route``, which sits in front of a chat turn
+#: rather than behind a tick, and the bounds are not re-tuned for it: the floor is
+#: what one small model call needs whichever point asks, and the ceiling is only
+#: reached by an operator who raised ``timeout_ms`` past 60 s on purpose. A second
+#: knob would be a second number to explain for a difference no default reaches.
 _LLM_TIMEOUT_MIN_SECS = 8.0
 _LLM_TIMEOUT_MAX_SECS = 60.0
 
@@ -533,44 +578,76 @@ def timeout_secs(config: Any | None = None, *, lane: str = LANE_JEV) -> float:
     return secs
 
 
-def _judge_config(config: Any | None) -> Any | None:
-    """The ``decisions.nudge_wake`` section of *config*, or of the live snapshot.
+def _lane_config(config: Any | None, point: str) -> Any | None:
+    """The section carrying *point*'s lane knob, per :data:`LANE_POINTS`, or ``None``.
 
     Read through ``getattr`` rather than by attribute access so a config object
     that predates the section -- an older snapshot, a test double, a hand-trimmed
     file -- reads as absent instead of raising. Absent resolves to every default.
+    A point with no lane knob has no section and reads ``None`` too.
     """
-    return getattr(_decisions_config(config), "nudge_wake", None)
+    entry = LANE_POINTS.get(point)
+    if entry is None:
+        return None
+    return getattr(_decisions_config(config), entry.section, None)
 
 
-def judge_lane(config: Any | None = None, *, jev_consented: bool) -> str:
-    """Which lane :data:`JUDGE_POINT` would use: :data:`LANE_JEV` or :data:`LANE_LLM`.
-
-    ``decisions.nudge_wake.provider`` decides, and ``auto`` -- the default -- means
-    "Jev when it is ARMED for this point, the small model otherwise". *jev_consented*
-    is that arming, resolved by the caller: consent for the configured endpoint AND
-    this point's own scope. That is what makes the feature real on a machine with no
-    Jev key without asking its owner to choose a provider they have never heard of.
-
-    An explicit ``jev`` is honoured even with no consent, and the caller then
-    refuses: the owner named a lane, and silently answering from a different model
-    than the one they named would be worse than doing nothing.
-
-    Never raises: an unreadable section resolves the same way an absent one does.
-    """
+def _configured_provider(config: Any | None, point: str) -> str:
+    """*point*'s ``provider`` word, lower-cased and stripped; ``""`` when unreadable."""
     try:
-        provider = str(getattr(_judge_config(config), "provider", "") or "").strip().lower()
+        return str(getattr(_lane_config(config, point), "provider", "") or "").strip().lower()
     except Exception:
-        provider = ""
+        return ""
+
+
+def point_lane(point: str, config: Any | None = None, *, jev_consented: bool) -> str:
+    """Which lane *point* would use: :data:`LANE_JEV` or :data:`LANE_LLM`.
+
+    The point's own ``provider`` decides. A pinned ``jev`` or ``llm`` is honoured
+    as written, even with no consent, and the caller then refuses what it cannot
+    authorize: the owner named a lane, and silently answering from a different
+    model than the one they named would be worse than doing nothing.
+
+    ``auto`` -- the default -- resolves against *jev_consented*, the Jev side's
+    arming as the caller resolved it (consent for the configured endpoint AND, for
+    a point whose Jev side needs one, its own scope). Where it falls when Jev is
+    NOT armed is the one thing the two points do differently, and the table says
+    which: the judge falls to the small model, which is what makes a wake judge real
+    on a machine with no Jev key without asking its owner to choose a provider they
+    have never heard of; ``model.route`` stays on Jev, because its small-model side
+    needs the keystone as an act of ownership (``_LanePoint.llm_needs_keystone``),
+    and a slot whose owner said ``Auto (Jev)`` and never gave that act gets the
+    refusal the Jev side gives, not a substitution from a model nobody named.
+
+    A point with no lane knob is always :data:`LANE_JEV`, which is what every point
+    outside :data:`LANE_POINTS` has always been. Never raises: an unreadable
+    section resolves the same way an absent one does.
+    """
+    entry = LANE_POINTS.get(point)
+    if entry is None:
+        return LANE_JEV
+    provider = _configured_provider(config, point)
     if provider == LANE_JEV:
         return LANE_JEV
     if provider == LANE_LLM:
         return LANE_LLM
-    return LANE_JEV if jev_consented else LANE_LLM
+    if jev_consented or entry.llm_needs_keystone:
+        return LANE_JEV
+    return LANE_LLM
 
 
-def lane_model(config: Any | None = None, *, lane: str) -> str:
-    """The model id *lane* would name, for the scrub to bound before anything is sent.
+def judge_lane(config: Any | None = None, *, jev_consented: bool) -> str:
+    """Which lane :data:`JUDGE_POINT` would use. :func:`point_lane` for the judge.
+
+    Kept under its own name because the judge's callers and tests were written
+    against it before a second point had a lane; the rule lives in the generic
+    resolver and this is a thin wrapper.
+    """
+    return point_lane(JUDGE_POINT, config, jev_consented=jev_consented)
+
+
+def lane_model(config: Any | None = None, *, lane: str, point: str = JUDGE_POINT) -> str:
+    """The model id *lane* would name for *point*, for the scrub to bound before send.
 
     Both lanes put an id somewhere an agent-writable config value should not reach
     unbounded -- the Jev lane onto the wire, the LLM lane into the session layer's
@@ -578,18 +655,19 @@ def lane_model(config: Any | None = None, *, lane: str) -> str:
     in :func:`scrub_reason`.
 
     For :data:`LANE_JEV` this is exactly ``provider.model`` with the shipped
-    fallback, which is what every point other than the judge has always sent. For
-    :data:`LANE_LLM` an empty ``llm_model`` resolves to
+    fallback, which is what every one-lane point has always sent. For
+    :data:`LANE_LLM` an empty ``llm_model`` in *point*'s own section resolves to
     ``impl_llm.JUDGE_MODEL_DEFAULT``, the word this build uses for "inherit": the
     runner passes no model at all in that case and the judge agent's own resolves,
     so the id the scrub bounds and the log records is the same word the operator
-    sees on the picker.
+    sees on the picker. *point* defaults to the judge because that is the one
+    callers before the second lane point named without saying so.
     """
     if lane == LANE_LLM:
         from kiro_crew.decisions.impl_llm import JUDGE_MODEL_DEFAULT
 
         try:
-            configured = str(getattr(_judge_config(config), "llm_model", "") or "").strip()
+            configured = str(getattr(_lane_config(config, point), "llm_model", "") or "").strip()
         except Exception:
             configured = ""
         return configured or JUDGE_MODEL_DEFAULT
@@ -645,34 +723,84 @@ def _point_scope_granted(point: str, state: dict) -> bool:
         return False
 
 
-def _judge_authority(
-    config: Any | None, session_key: str | None, *, jev_consented: bool
+def _jev_armed(point: str, jev_consented: bool) -> bool:
+    """Whether *point*'s Jev side is ARMED: consented, plus its own scope where it has one.
+
+    For the judge that scope is the whole difference between "consented to the
+    endpoint" and "authorized to send this point's evidence", read fail-closed
+    through :func:`_point_scope_granted`. ``model.route`` sends nothing beyond the
+    message excerpt the main switch names, so for it the consent IS the arming, and
+    reading a scope it does not have would refuse a lane nothing withheld. The
+    table says which; the keystone is read only for a point that needs it.
+    Filesystem IO on this thread for that point.
+    """
+    entry = LANE_POINTS.get(point)
+    if entry is None or not jev_consented:
+        return jev_consented
+    if not entry.jev_needs_scope:
+        return True
+    return _point_scope_granted(point, _consent.load_state())
+
+
+def _keystone_enabled() -> bool:
+    """Whether the keystone's owner-only switch is on, whatever endpoint it names.
+
+    The ownership read the ``model.route`` LLM lane needs: not consent to any
+    egress (the lane adds none), but the one bit an agent cannot write from inside
+    the sandbox. Read fresh rather than folded into ``jev_consented``, because that
+    reading also holds the recorded endpoint and the fleet ceiling, and a keystone
+    that names another endpoint is still the owner's act.
+    """
+    return _consent.is_enabled(_consent.load_state())
+
+
+def _lane_authority(
+    point: str, config: Any | None, session_key: str | None, *, jev_consented: bool
 ) -> tuple[str, bool]:
-    """``(lane, authorized)`` for :data:`JUDGE_POINT`. Filesystem IO on this thread.
+    """``(lane, authorized)`` for a point in :data:`LANE_POINTS`. Filesystem IO on this thread.
 
     There is no feature toggle, and the two lanes are authorized by different things,
-    because they send to different places:
+    because they send to different places and spend in different directions:
 
     * The Jev lane sends conversation state to a paid third party, so it needs the
-      keystone in full -- consent for the configured endpoint AND the point's own
-      ``nudge_evidence`` scope, which is what that scope MEANS: a category of THAT
-      egress. ``jev_consented`` is the endpoint read, already taken by the caller
-      off the event loop, and it already folds the fleet ceiling in; the scope is
-      read here, fail-closed, through :func:`_point_scope_granted`.
+      keystone -- consent for the configured endpoint AND, for a point whose Jev
+      request carries a category of its own (the judge's ``nudge_evidence``), that
+      point's scope, which is what that scope MEANS: a category of THAT egress.
+      ``jev_consented`` is the endpoint read, already taken by the caller off the
+      event loop, and it already folds the fleet ceiling in; the scope is read
+      here, fail-closed, through :func:`_jev_armed`.
     * The LLM lane adds no destination. Its state goes to the model provider the
-      owner's sessions already send to every turn, and the evidence is the owner's
-      own children's transcripts, which that provider already received when those
-      sessions ran. The judge only chooses QUIET against firing and is fail-open, so
-      the worst case is one delayed wake, bounded by the quiet-streak floor, and it
-      spends less than the ticks it removes. So
+      owner's sessions already send to every turn. For the judge the evidence is the
+      owner's own children's transcripts, which that provider already received when
+      those sessions ran; the judge only chooses QUIET against firing and is
+      fail-open, so the worst case is one delayed wake, bounded by the quiet-streak
+      floor, and it spends less than the ticks it removes. So
       ``decisions.nudge_wake.provider = llm`` plus a ``judge`` spec on the loop is
       the whole authorization: no keystone involvement, no second consent row
-      (RFC ``rfc-wake-judge``, Providers).
+      (RFC ``rfc-wake-judge``, Providers). For ``model.route`` the state is the
+      message excerpt the main switch was reviewed for, sent to the same provider,
+      but the spend is not subtractive: a routed turn may run on a dearer model, and
+      the lane knob ``decisions.model_route_judge.provider`` lives in
+      ``config.json``, an ordinary settings file that is not owner-gated: the
+      sandbox mounts it read-only against the agent's own file tools, but nothing
+      marks a write there as the owner's, so a pin found in it is not an owner's
+      act (spec section 11 keeps ``jev_route`` off disk for the same reason). So
+      this lane requires the KEYSTONE ``enabled: true`` too, read for OWNERSHIP
+      rather than for egress (:func:`_keystone_enabled`): the one owner-only,
+      sandbox-readonly bit the seam has, which keeps one switch on the card. What
+      bounds the spend once armed is the tier map in ``decisions.model_route``, set
+      only by the owner's PATCH route or the file: routing reaches only the three
+      ids pinned there, so the lane widens WHO answers the tier question, never
+      WHAT a turn can be routed to.
 
-    ``auto`` resolves against the Jev side ARMED rather than merely consented, so an
-    owner who consented to the endpoint but never granted this point's scope gets the
-    small model instead of a refusal. An explicitly pinned ``jev`` still refuses:
-    they named a lane, and quietly answering from a different one would be worse.
+    ``auto`` resolves against the Jev side ARMED rather than merely consented. For
+    the judge an owner who consented to the endpoint but never granted its scope gets
+    the small model instead of a refusal. For ``model.route`` ``auto`` without Jev
+    armed stays on the Jev side and refuses (:func:`point_lane`): the pick was named
+    ``Auto (Jev)``, and with the keystone the one switch both lanes share, "keystone
+    on and Jev not consented" is the redirected-endpoint state, which refuses
+    everywhere. An explicitly pinned ``jev`` still refuses with no consent: they
+    named a lane, and quietly answering from a different one would be worse.
 
     The FLEET ceiling still binds both. A managed install that pinned
     ``capabilities.decisions`` off has withdrawn the seam, not merely one provider's
@@ -681,19 +809,93 @@ def _judge_authority(
     inside ``_consented_for``.
 
     Fail-closed on anything unreadable: ``(LANE_JEV, False)`` refuses, and a refusal
-    here is a tick that fires exactly as the ungated timer would. A build with no
-    scope registered for the point closes the JEV lane only; ``auto`` then lands on
-    the LLM lane, which that scope does not govern.
+    here is a tick that fires exactly as the ungated timer would, or a turn that keeps
+    its session's model. A build with no scope registered for a scoped point closes
+    its JEV lane only; the judge's ``auto`` then lands on the LLM lane, which that
+    scope does not govern.
     """
     try:
-        jev_armed = jev_consented and _point_scope_granted(JUDGE_POINT, _consent.load_state())
-        lane = judge_lane(config, jev_consented=jev_armed)
+        entry = LANE_POINTS[point]
+        jev_armed = _jev_armed(point, jev_consented)
+        lane = point_lane(point, config, jev_consented=jev_armed)
         if lane == LANE_JEV:
             return LANE_JEV, jev_armed
+        if entry.llm_needs_keystone and not _keystone_enabled():
+            return LANE_LLM, False
         return LANE_LLM, not _capability_denied(session_key)
     except Exception as exc:
-        logger.debug("decisions: judge authority unreadable (%s)", type(exc).__name__)
+        logger.debug("decisions: %s lane authority unreadable (%s)", point, type(exc).__name__)
         return LANE_JEV, False
+
+
+def _judge_authority(
+    config: Any | None, session_key: str | None, *, jev_consented: bool
+) -> tuple[str, bool]:
+    """``(lane, authorized)`` for :data:`JUDGE_POINT`. :func:`_lane_authority` for the judge.
+
+    Kept under its own name for the callers and tests written before a second point
+    had a lane; the reasoning lives on the generic function.
+    """
+    return _lane_authority(JUDGE_POINT, config, session_key, jev_consented=jev_consented)
+
+
+def route_lane(config: Any | None = None, *, jev_consented: bool) -> str | None:
+    """The lane ``model.route`` runs on, or ``None`` when nothing routes.
+
+    :func:`point_lane` narrowed to what an OWNER'S act stands behind, for the
+    reason :func:`judge_evidence_scope_granted` is narrower than :func:`is_enabled`
+    on the judge. A slot on ``auto`` that nobody armed at the picker has no act of
+    its own, and the shipped install is consent off with every slot on ``auto``, so
+    a rule that answered them from the small model would put a model call in front
+    of every turn of every default install. *jev_consented* is the caller's keystone
+    read against the configured endpoint (:func:`_consented_for`), and the same
+    predicate serves the explicit arm (``slot.jev_route``), because a pick named
+    ``Auto (Jev)`` made before consent was withdrawn must stop routing when it is:
+
+    * :data:`LANE_JEV` when the resolver lands on Jev and *jev_consented* -- the
+      consent is the act, exactly as it was before the second lane existed;
+    * :data:`LANE_LLM` when the owner pinned ``provider = llm``; the caller then
+      holds the keystone against it (:func:`_lane_authority`), because the pin
+      alone is agent-writable;
+    * ``None`` for a pinned or resolved ``jev`` with no consent. Nothing routes,
+      which is what every default install does today.
+
+    IO-free. :func:`route_armed` resolves the consent and holds the keystone, the
+    fleet ceiling and the sampled share against the answer.
+    """
+    lane = point_lane(ROUTE_POINT, config, jev_consented=jev_consented)
+    if lane == LANE_LLM:
+        return LANE_LLM
+    return LANE_JEV if jev_consented else None
+
+
+def route_armed(*, session_key: str | None = None, config: Any | None = None) -> bool:
+    """Whether ``model.route`` runs for this session, on either arm. Never raises.
+
+    The ONE predicate ``_route_model_for_turn`` asks for the explicit arm
+    (``slot.jev_route``) and the implicit one (a slot nobody armed) alike, so a
+    withdrawn consent or a keystone switched off stops a picker-armed slot the way
+    it did before the second lane existed. :func:`is_enabled` for this point,
+    restricted to the lane :func:`route_lane` says an act stands behind, and
+    composed from the same primitives :func:`decide` runs -- the keystone reads,
+    the fleet probe, the sampled share -- rather than a second rule, so a session
+    this admits is one ``decide`` will answer for; a consent withdrawn between this
+    read and ``decide``'s own is refused there. Filesystem IO on the caller's
+    thread, which the chat runner already pushes off the event loop.
+    """
+    try:
+        cfg = config if config is not None else _snapshot()
+        if cfg is None:
+            return False
+        consented = _consented_for(cfg, session_key, ROUTE_POINT)
+        lane = route_lane(cfg, jev_consented=consented)
+        if lane is None:
+            return False
+        _, authorized = _lane_authority(ROUTE_POINT, cfg, session_key, jev_consented=consented)
+        return _sampled(ROUTE_POINT, session_key, cfg, consented=authorized)
+    except Exception as exc:
+        logger.debug("decisions: route arming unreadable (%s)", type(exc).__name__)
+        return False
 
 
 def judge_evidence_scope_granted(
@@ -896,13 +1098,13 @@ def is_enabled(point: str, *, session_key: str | None = None, config: Any | None
         if cfg is None:
             return False
         consented = _consented_for(cfg, session_key, point)
-        # The judge is the one point whose authority is not simply the keystone:
-        # its LLM lane runs on the provider key alone. Resolved here as well as in
-        # ``decide`` so a hook that skips expensive state building on a False reads
-        # the same answer the call would give.
+        # A two-lane point's authority is not simply the keystone: its LLM lane
+        # runs on the provider key alone. Resolved here as well as in ``decide`` so
+        # a hook that skips expensive state building on a False reads the same
+        # answer the call would give.
         authorized = (
-            _judge_authority(cfg, session_key, jev_consented=consented)[1]
-            if point == JUDGE_POINT
+            _lane_authority(point, cfg, session_key, jev_consented=consented)[1]
+            if point in LANE_POINTS
             else consented
         )
         return _sampled(point, session_key, cfg, consented=authorized)
@@ -951,6 +1153,10 @@ async def decide(
     ``None`` rather than claiming a refusal while the append is still running. A caller
     that supplies no receipt returns when the write budget expires and pays no grace.
     This additive signal does not change ``None`` as the only failure return.
+    The receipt also carries ``lane`` -- :data:`LANE_JEV` or :data:`LANE_LLM`, the
+    oracle this call resolved to -- once the config is read, so a two-lane point
+    can put "which oracle answered" on the row it writes without learning the
+    resolver's rule. Absent when the config could not be read at all.
     """
     if receipt is not None:
         receipt["row_written"] = False
@@ -971,18 +1177,30 @@ async def decide(
         # The keystone is a file read, so it leaves the event loop; everything
         # else `_sampled` checks is attribute reads on the snapshot.
         consented = await asyncio.to_thread(_consented_for, cfg, session_key, point)
-        # Which provider answers, and on whose authority. Every point but the judge
-        # has exactly one lane and exactly one authority -- the keystone -- so this
-        # is inert for all of them. The judge's LLM lane runs on its provider key
-        # alone, because it adds no destination: the model provider the session
-        # already sends to. ``_judge_authority`` is where that reasoning lives.
-        # Off the loop for the same reason the keystone read is: it may run the
-        # governed capability probe, which reads from disk.
+        # Which provider answers, and on whose authority. Every point outside
+        # ``LANE_POINTS`` has exactly one lane and exactly one authority -- the
+        # keystone -- so this is inert for all of them. A two-lane point's LLM
+        # lane adds no destination (the model provider the session already sends
+        # to), so it needs no egress consent; whether it needs the keystone as an
+        # act of OWNERSHIP is the point's own row in that table.
+        # ``_lane_authority`` is where that reasoning lives. Off the loop for the
+        # same reason the keystone read is: it reads the keystone and may run the
+        # governed capability probe, both from disk.
         lane, authorized = LANE_JEV, consented
-        if point == JUDGE_POINT:
+        if point in LANE_POINTS:
             lane, authorized = await asyncio.to_thread(
-                _judge_authority, cfg, session_key, jev_consented=consented
+                _lane_authority, point, cfg, session_key, jev_consented=consented
             )
+            # Every row a two-lane point writes says which oracle it was on, the
+            # answered one and every refusal alike, so a timeout on the small model
+            # is not read as a Jev timeout. Merged under the caller's extra: the
+            # gate resolved the lane, so the gate's word wins over a stale one.
+            extra = {**(extra or {}), "lane": lane}
+        if receipt is not None:
+            # Reported before the sampling refusal so a caller that reads the
+            # receipt on a refused call still learns which lane was resolved; the
+            # point's own row is where "which oracle answered" ends up.
+            receipt["lane"] = lane
         if not _sampled(point, session_key, cfg, consented=authorized):
             return None
         budget = timeout_secs(cfg, lane=lane)
@@ -1046,9 +1264,9 @@ async def decide(
                 receipt["row_written"] = row_written
 
     # The model id the SELECTED lane will name, so the scanned id IS the sent id.
-    # For every lane but the judge's LLM one this is ``provider.model`` with the
-    # same fallback ``JevOracle`` applies, unchanged.
-    model = lane_model(cfg, lane=lane)
+    # For every lane but a two-lane point's LLM one this is ``provider.model`` with
+    # the same fallback ``JevOracle`` applies, unchanged.
+    model = lane_model(cfg, lane=lane, point=point)
     refusal = scrub_reason(state, questions, model=model)
     if refusal is not None:
         await _write(latency_ms=0, answers=None, error=refusal)

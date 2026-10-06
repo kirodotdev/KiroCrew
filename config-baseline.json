@@ -4249,6 +4249,10 @@
           "medium": "",
           "complex": ""
         },
+        "model_route_judge": {
+          "provider": "auto",
+          "llm_model": ""
+        },
         "provider": {
           "endpoint": "https://api.typesafe.ai/v1/systemone",
           "api_key": "secret://TYPESAFE_API_KEY",
@@ -4321,6 +4325,51 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "decisions.model_route_judge",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Routing judge",
+      "help": "Which judge answers the difficulty question at model.route, and the model id for the small-model lane. The Jev lane needs this card's main consent switch; the small-model lane needs no consent row, because it sends the same message excerpt to the model provider your sessions already use. Either judge only picks a tier: the model a tier runs on is the map above.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "provider": "auto",
+        "llm_model": ""
+      }
+    },
+    {
+      "path": "decisions.model_route_judge.provider",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Routing judge provider",
+      "help": "Which judge puts a chat turn in a difficulty tier at model.route: 'jev' (the System One model this card's consent switch covers), 'llm' (a small text-only model on the provider this machine already uses, no extra key needed), or 'auto', which is Jev. Anything else reads as 'auto'. Either lane runs only with this card's switch on: 'jev' also needs its consent, and 'llm' needs the switch as your say-so, because this file can be written by an agent. The small model answers in seconds rather than the Jev lane's fraction of one, and the turn waits for it before the prompt is sent. It still only picks a tier: the model each tier runs on is the map above, and nothing else is reachable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "auto"
+    },
+    {
+      "path": "decisions.model_route_judge.llm_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Routing judge model (LLM lane)",
+      "help": "The model id the 'llm' lane answers the tier question with, spelled as your provider advertises it. EMPTY INHERITS: the judge keeps the model its background agent already resolves, which is the default. A value that is not a short model id is ignored rather than sent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "decisions.provider",

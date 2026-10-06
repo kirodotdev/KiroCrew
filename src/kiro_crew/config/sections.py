@@ -4529,13 +4529,115 @@ def coerce_model_route(raw: object) -> dict[str, str]:
     return {tier: normalize_agent_model(section.get(tier)) for tier in DECISION_MODEL_ROUTE_TIERS}
 
 
-# The providers ``decisions.nudge_wake.provider`` may name. ``auto`` resolves at
-# decision time -- Jev when the keystone consents to it, the LLM lane otherwise --
-# so a machine that later gains or loses a Jev key needs no config edit.
+# The providers ``decisions.nudge_wake.provider`` and
+# ``decisions.model_route_judge.provider`` may name. ``auto`` resolves at decision
+# time, and the two points resolve it differently. For the wake judge it is Jev when
+# the keystone consents to it and the LLM lane otherwise, so a machine that later
+# gains or loses a Jev key needs no config edit. For the routing judge ``auto`` is
+# the Jev side only: with the keystone off nothing routes, because the LLM lane there
+# is an arming act the owner has to pin (``gate._LanePoint.llm_needs_keystone``).
+# ONE set for both points: the words mean the same two lanes, and a second set would
+# let the two pickers drift apart in what they accept.
 JUDGE_PROVIDER_AUTO = "auto"
 JUDGE_PROVIDER_JEV = "jev"
 JUDGE_PROVIDER_LLM = "llm"
 JUDGE_PROVIDERS = (JUDGE_PROVIDER_AUTO, JUDGE_PROVIDER_JEV, JUDGE_PROVIDER_LLM)
+
+
+def _coerce_judge_provider(raw: object) -> str:
+    """One of :data:`JUDGE_PROVIDERS`, else ``auto``.
+
+    An unknown name reads as ``auto`` rather than as an error: a typo must not
+    become a third lane and must not stop the gateway booting.
+    """
+    provider = raw.strip().lower() if isinstance(raw, str) else ""
+    return provider if provider in JUDGE_PROVIDERS else JUDGE_PROVIDER_AUTO
+
+
+def _coerce_llm_model(raw: object) -> str:
+    """The LLM lane's model id as written, stripped; ``""`` for anything else.
+
+    Kept verbatim and validated where it is USED, against
+    ``decisions.types.MODEL_ID_RE``: storing ``""`` for an id this build cannot use
+    would make the saved config disagree with what the operator wrote, and the
+    bound that matters is at the call that names a model.
+    """
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+@dataclass
+class ModelRouteJudgeConfig:
+    """Which oracle answers the tier question at ``model.route``, and on which model.
+
+    A SIBLING of ``decisions.model_route`` rather than two keys inside it, because
+    that section is a ``{tier: model_id}`` map that hand-edited configs and the
+    dashboard PATCH already carry: a ``provider`` key inside it would be a fourth
+    tier to every reader that walks the map.
+
+    Deliberately carries NO ``enabled``, for the reason :class:`NudgeWakeConfig`
+    gives: the two lanes are authorized by different things and neither is a
+    toggle. The Jev lane needs the Decisions keystone (the main switch; this point
+    has no scope of its own, because the message excerpt is what the main switch
+    was reviewed for). The ``llm`` lane needs no consent ROW of its own: it adds no
+    destination (the model provider the session's own turns already go to) and no
+    data class (the same excerpt). It does need the keystone's switch ON, read for
+    OWNERSHIP rather than for egress: this file is not owner-gated (nothing marks a
+    write here as the owner's; the sandbox only mounts it read-only against the
+    agent's own file tools), so ``provider = llm`` here is not by itself an owner's
+    act, and unlike the wake judge the spend is not subtractive -- ``nudge.wake``
+    can only omit a wake, while a routed turn may run on a dearer model. The
+    keystone is the one owner-only, sandbox-readonly bit the seam has, and reusing
+    it keeps one switch on the card. What bounds the spend once armed is the tier
+    map in ``decisions.model_route``, set only by the owner's PATCH route or the
+    file -- routing reaches only the three ids pinned there -- so this section
+    widens WHO answers the tier question, never WHAT a turn can be routed to.
+
+    Hot-applied: the gate reads the live snapshot per call.
+    """
+
+    provider: str = field(
+        default=JUDGE_PROVIDER_AUTO,
+        metadata=_meta(
+            "Routing judge provider",
+            "Which judge puts a chat turn in a difficulty tier at model.route: 'jev' "
+            "(the System One model this card's consent switch covers), 'llm' (a "
+            "small text-only model on the provider this machine already uses, no "
+            "extra key needed), or 'auto', which is Jev. Anything else reads as "
+            "'auto'. Either lane runs only with this card's switch on: 'jev' also "
+            "needs its consent, and 'llm' needs the switch as your say-so, because "
+            "this file can be written by an agent. The small model answers in "
+            "seconds rather than the Jev lane's fraction of one, and the turn waits "
+            "for it before the prompt is sent. It still only picks a tier: the "
+            "model each tier runs on is the map above, and nothing else is "
+            "reachable.",
+        ),
+    )
+    llm_model: str = field(
+        default="",
+        metadata=_meta(
+            "Routing judge model (LLM lane)",
+            "The model id the 'llm' lane answers the tier question with, spelled as "
+            "your provider advertises it. EMPTY INHERITS: the judge keeps the model "
+            "its background agent already resolves, which is the default. A value "
+            "that is not a short model id is ignored rather than sent.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "ModelRouteJudgeConfig":
+        """Normalize rather than reject, the posture the whole section takes.
+
+        Every unreadable value resolves to the shipped default. Neither key can
+        reach a destination the session does not already send to, nor a model the
+        tier map does not name, so a hand-edit that fails to parse costs a
+        preference, not a permission.
+        """
+        if not isinstance(section, dict):
+            return cls()
+        return cls(
+            provider=_coerce_judge_provider(section.get("provider")),
+            llm_model=_coerce_llm_model(section.get("llm_model")),
+        )
 
 
 @dataclass
@@ -4612,18 +4714,13 @@ class NudgeWakeConfig:
         """
         if not isinstance(section, dict):
             return cls()
-        raw_provider = section.get("provider")
-        provider = raw_provider.strip().lower() if isinstance(raw_provider, str) else ""
-        raw_model = section.get("llm_model")
         return cls(
-            # An unknown name reads as ``auto`` rather than as an error: a typo must
-            # not become a third lane and must not stop the gateway booting.
-            provider=provider if provider in JUDGE_PROVIDERS else JUDGE_PROVIDER_AUTO,
-            # Kept verbatim (stripped) and validated where it is USED, against
-            # ``decisions.types.MODEL_ID_RE``: storing "" for an id this build
-            # cannot use would make the saved config disagree with what the operator
-            # wrote, and the bound that matters is at the call that names a model.
-            llm_model=raw_model.strip() if isinstance(raw_model, str) else "",
+            # An unknown name reads as ``auto`` rather than as an error, and the model
+            # is kept verbatim: both rules live in the two coercers shared with
+            # ``ModelRouteJudgeConfig``, so the two pickers cannot accept different
+            # spellings for the same two lanes.
+            provider=_coerce_judge_provider(section.get("provider")),
+            llm_model=_coerce_llm_model(section.get("llm_model")),
             # Absent, malformed and negative all read as 0, which the engine resolves
             # to its shipped floor. The ceiling is NOT clamped here: it is the engine's
             # own constant, and importing it would invert this module's dependency on
@@ -4693,7 +4790,8 @@ class DecisionsConfig:
     same placement as ``computer_use.json`` and ``aws_service_consent.json``. This
     section carries only the knobs that grant nothing on their own: the sampling
     share, the prior-conversation budget (0 by default, so raising it is a choice),
-    the tier-to-model map ``model.route`` reads, and the provider. There is no
+    the tier-to-model map ``model.route`` reads, which judge answers that point and
+    ``nudge.wake`` (each a two-lane point), and the provider. There is no
     per-point arm and no shadow mode: two points ship (``skills.select``,
     ``model.route``), each reached only through its own owner-made choice --
     a non-zero ``skills.max_triggered`` and the picker's ``Auto (Jev)`` entry.
@@ -4747,6 +4845,18 @@ class DecisionsConfig:
             "records why in the decision log. Routing a turn to a dearer model "
             "costs more, which is why it happens only for a session whose owner "
             "picked 'Auto (Jev)' -- a manual model choice is never overridden.",
+        ),
+    )
+    model_route_judge: ModelRouteJudgeConfig = field(
+        default_factory=ModelRouteJudgeConfig,
+        metadata=_meta(
+            "Routing judge",
+            "Which judge answers the difficulty question at model.route, and the "
+            "model id for the small-model lane. The Jev lane needs this card's main "
+            "consent switch; the small-model lane needs no consent row, because it "
+            "sends the same message excerpt to the model provider your sessions "
+            "already use. Either judge only picks a tier: the model a tier runs on "
+            "is the map above.",
         ),
     )
     provider: DecisionProviderConfig = field(
@@ -4846,6 +4956,7 @@ class DecisionsConfig:
             # map, since this key cannot widen anything -- every id is still held
             # against the provider's advertised list at routing time.
             model_route=coerce_model_route(section.get("model_route")),
+            model_route_judge=ModelRouteJudgeConfig.from_raw(section.get("model_route_judge")),
             provider=provider,
             nudge_wake=NudgeWakeConfig.from_raw(section.get("nudge_wake")),
         )

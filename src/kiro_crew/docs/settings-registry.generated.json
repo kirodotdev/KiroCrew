@@ -1003,6 +1003,13 @@
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.model-for-the-small-model-routing-judge",
+      "label": "Model for the small-model routing judge",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.model-for-the-small-model-routing-judge",
+      "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
+    },
+    {
       "id": "developer.remote-crew-sessions",
       "label": "Remote crew sessions",
       "tab": "developer",
@@ -1035,6 +1042,13 @@
       "label": "Which judge answers",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.which-judge-answers"
+    },
+    {
+      "id": "developer.which-judge-rates-the-turn",
+      "label": "Which judge rates the turn",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.which-judge-rates-the-turn",
+      "description": "Jev sends the message to the address above, which this card's switch covers. The small model sends it to the model provider this machine already uses, so it needs no key and no extra agreement. Either judge only picks a difficulty level: the model each level runs on is set above, and nothing else is reachable. If the judge cannot answer, the turn keeps its session's model."
     },
     {
       "id": "display.command-completion",
