@@ -40,6 +40,8 @@ import pose9 from '../assets/avatarPoses/pose-9.svg?raw'
 import pose10 from '../assets/avatarPoses/pose-10.svg?raw'
 import pose11 from '../assets/avatarPoses/pose-11.svg?raw'
 
+import { contentHash } from './contentHash'
+
 /** The pose id as stored on the record (`{kind:'icon', pose}`) → its raw SVG. */
 const POSE_SVG: Record<string, string> = {
   'pose-1': pose1,
@@ -101,6 +103,34 @@ const hasPose = (pose: string): boolean => Object.hasOwn(POSE_SVG, pose)
  *  unknown trait. */
 export function resolvePose(pose: string | undefined): string {
   return pose && hasPose(pose) ? pose : DEFAULT_POSE
+}
+
+/**
+ * The pose a FRESH icon draft starts on, derived from the crew's seed string
+ * (its name) — the icon tier's parity with the ghost, whose fresh default is
+ * likewise seeded from the name (`seededTraits(name)` in `CrewAvatarBuilder`).
+ *
+ * Without this a brand-new icon crew always opened on `pose-1`, so a roster of
+ * un-customized icon crews read as identical faces — the "too samey" feedback
+ * the ghost's name-seeding already avoids. A `djb2` hash of the name (the same
+ * stable, non-cryptographic fingerprint `contentHash` gives everywhere else)
+ * picks a stable index into `POSE_IDS`, so the same crew always opens on the
+ * same pose and two different names spread across the set.
+ *
+ * This is a DEFAULT only: it seeds the builder's initial draft, and the user's
+ * explicit pick overrides it. An empty/whitespace name falls back to the first
+ * pose rather than hashing to an arbitrary one — a nameless crew has nothing to
+ * vary on, and `DEFAULT_POSE` is the honest "no basis to seed" answer.
+ */
+export function seedIconPose(name: string | undefined): string {
+  const seed = (name ?? '').trim()
+  if (!seed) return DEFAULT_POSE
+  // contentHash is base36; parse it back to an integer for a modulo index.
+  // Guard NaN (defensive — base36 of a djb2 hash is always parseable) to
+  // DEFAULT_POSE rather than letting an out-of-range index pick `undefined`.
+  const n = parseInt(contentHash(seed), 36)
+  if (!Number.isFinite(n)) return DEFAULT_POSE
+  return POSE_IDS[n % POSE_IDS.length]
 }
 
 /** Resolve a stored background to a legal hex, or the default. */

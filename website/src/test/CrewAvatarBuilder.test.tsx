@@ -14,7 +14,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ACCESSORIES, BROWS, BRAND_PURPLE, EYES, MOUTHS, PROPS, TILES } from '../lib/kiroGhostAvatar'
-import { DEFAULT_POSE, POSE_IDS } from '../lib/avatarPoses'
+import { POSE_IDS, seedIconPose } from '../lib/avatarPoses'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -247,10 +247,13 @@ describe('CrewAvatarBuilder — icon tier', () => {
     expect((saved as { bg: string }).bg).toMatch(/^#[0-9a-f]{6}$/)
   })
 
-  it('a fresh draft applies the default pose without any pick', () => {
+  it('a fresh draft applies the name-seeded default pose without any pick', () => {
     const { onSave } = mount()
     apply()
-    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', pose: DEFAULT_POSE })
+    // The builder mounts with name="radar"; a fresh icon draft seeds its pose
+    // from the name (parity with the ghost's name-seeded default), so it is the
+    // seeded pose rather than the static first one.
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', pose: seedIconPose('radar') })
   })
 
   it('every shipped pose is offered as a swatch', () => {

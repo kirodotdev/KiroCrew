@@ -66,12 +66,12 @@ import {
 import { SOUND_PRESETS, loadSoundSettings, playPreset, type SoundPreset } from '../hooks/useNotificationSound'
 import CrewAvatar, { seededTraits, type CrewAvatarOverride } from './CrewAvatar'
 import {
-  DEFAULT_POSE,
   DEFAULT_POSE_BG,
   POSE_BG_RE,
   POSE_IDS,
   poseDataUri,
   resolvePoseBg,
+  seedIconPose,
 } from '../lib/avatarPoses'
 import CrewAvatarLibraryTab from './CrewAvatarLibraryTab'
 import ErrorNotice from './ErrorNotice'
@@ -443,7 +443,7 @@ export default function CrewAvatarBuilder({
    *  theme-derived background — so a fresh crew opens on a face that already
    *  matches the dashboard. Held even while another tier is selected (like the
    *  ghost draft), so a trip through another tab never discards it. */
-  const [iconPose, setIconPose] = useState<string>(value?.kind === 'icon' ? value.pose : DEFAULT_POSE)
+  const [iconPose, setIconPose] = useState<string>(value?.kind === 'icon' ? value.pose : seedIconPose(name))
   const [iconBg, setIconBg] = useState<string>(
     value?.kind === 'icon' ? resolvePoseBg(value.bg) : seedIconBg(),
   )
@@ -484,7 +484,7 @@ export default function CrewAvatarBuilder({
       setTier(tierOf(value))
       setPane(tierOf(value))
       setPackId(value?.kind === 'pack' ? value.id : null)
-      setIconPose(value?.kind === 'icon' ? value.pose : DEFAULT_POSE)
+      setIconPose(value?.kind === 'icon' ? value.pose : seedIconPose(name))
       setIconBg(value?.kind === 'icon' ? resolvePoseBg(value.bg) : seedIconBg())
       setMotions(value?.kind === 'ghost' ? (value.motions ?? {}) : {})
       setSounds(value?.kind === 'ghost' ? (value.sounds ?? {}) : {})
@@ -493,7 +493,7 @@ export default function CrewAvatarBuilder({
       setDragOver(false)
       pickGen.current += 1
     }
-  }, [open, value])
+  }, [open, value, name])
 
   // While the Picture pane is showing, a file dropped ANYWHERE but the small
   // dashed zone (the preview image above it, the dialog body, the page) would
@@ -1236,7 +1236,7 @@ export default function CrewAvatarBuilder({
                 // Reset the icon draft to the fresh-crew defaults too, so a
                 // later switch to the Icon tier starts clean rather than on a
                 // half-edited pose from before the reset.
-                setIconPose(DEFAULT_POSE)
+                setIconPose(seedIconPose(name))
                 setIconBg(seedIconBg())
                 // The default face has no reactions either: this link is the
                 // one control that means "everything back to the default" — and
