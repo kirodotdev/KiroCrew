@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from kiro_crew.config.fields import _meta
+from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
 
 # Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
@@ -99,12 +99,14 @@ class MessagingConfig:
 
     def __post_init__(self) -> None:
         # Fail safe on hand-edited values (mirrors WeComConfig): an unknown scope
-        # or mode falls back to the safe default, and the reset windows clamp to
-        # valid ranges so a bad config can't wedge dispatch.
+        # narrows to per-peer sessions whatever the default is, since "unified"
+        # puts two people's DMs in one session; an unknown mode falls back to the
+        # field default; and the reset windows clamp to valid ranges so a bad
+        # config can't wedge dispatch.
         if self.dm_scope not in ("per-channel-peer", "unified"):
             self.dm_scope = "per-channel-peer"
         if self.queue_mode not in ("steer", "queue"):
-            self.queue_mode = "steer"
+            self.queue_mode = field_default(MessagingConfig, "queue_mode")
         self.idle_reset_minutes = max(0, self.idle_reset_minutes)
         if not 0 <= self.daily_reset_hour <= 23:
             self.daily_reset_hour = -1

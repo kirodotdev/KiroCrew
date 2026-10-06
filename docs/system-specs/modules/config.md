@@ -41,12 +41,12 @@ representative seams of each kind.
 
 | Owner | Owns |
 |---|---|
-| `config/fields.py` | `_meta` field metadata and the `_safe_*` value coercers every section shares. A leaf: it imports nothing from `kiro_crew`. |
+| `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. It also holds `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
 | `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
-| `config/section_builders.py` | The `_build_*` helper of 27 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so a builder restates no field default; the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
+| `config/section_builders.py` | The `_build_*` helper of 27 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so an omitted key builds the DTO field's default and a `read()` coercer falls back to it; the values a builder keeps of its own and the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
 | `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, the legacy `skills.lazy_load` cohort test, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
@@ -1407,8 +1407,58 @@ included, or the default declared on the DTO's field when the section omits the
 key. `read(key, coerce, *bounds, **options)` calls
 `coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
 that same default. A `default_factory` field gives a
-fresh value on each read, and a key with no field raises `KeyError`. The deliberate
-departures, all unchanged by the reader:
+fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
+`__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
+stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
+`_read_skip_permissions`, the STT validators and the like), read a fallback that
+is the field's default from the field as well: through a `SectionReader` of their
+own; through
+`fields.field_default(DTO, name)`, which `SectionReader.default` reads through too,
+so the rule has one implementation, and which serves a normalizer or single-value
+reader with no section mapping to wrap, in `sections` and in the section owners
+(which cannot import `sections`); or through the class attribute that holds a
+plain default (`DecisionProviderConfig`). Two fallbacks are the exceptions:
+`monitoring.max_runtime_secs` and an unrecognised `stt.model` are coerced in
+modules the config package imports (`monitoring.limits.coerce_runtime_ceiling`,
+`stt.models.resolve`), which cannot import the DTO at module scope, so a
+malformed value falls back to `DEFAULT_RUNTIME_CEILING_SECS` or
+`stt.models.DEFAULT_MODEL`, the constants the fields' defaults name.
+
+A few readers keep a value of their own that equals the field's default, because
+their rule is about the value rather than the default. Apart from the MCP
+stub-roster migration (the last item), an omitted key still reads the field; only
+a present value the reader cannot use takes the reader's value:
+
+- The empty container or string that a type guard, a shape coercer or a
+  fail-closed check returns (`_safe_list`, `_safe_dict`, the id, host,
+  link-pattern and session-folder coercers, the Telegram-account parser and the
+  Jira-auth row filter, `_safe_color`, `_safe_avatar`, and the effort, bot-name and
+  refusal-fallback sanitizers among them), so a malformed `slack.trusted_bot_ids`
+  trusts no bot and a malformed `mcp.extra_path_dirs` adds no directory.
+- A narrowing or safe value that holds whatever the default is: `mention` for an
+  invalid `slack.channels.<id>.activation`, `true` for a non-boolean
+  `dashboard.tailscale.bind_refresh_chains`, `node` for an unrecognised
+  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
+  `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
+  two people's DMs), and unset (`0`) for a malformed or out-of-range
+  `dashboard.browser_view_port` (never a port nobody named).
+- `None` for an out-of-domain `resource_limits` value, and `local` for a retired
+  `stt.provider` (the recogniser that user already had).
+- The sentinel a clamp lands on, among them automatic for a negative
+  `instances.warm_set_cap`; disabled for an out-of-range
+  `messaging.daily_reset_hour` and a negative `messaging.idle_reset_minutes` or
+  `skills.max_triggered`; and no pruning or cap for a negative
+  `telemetry.retention_days` or `max_total_mb`.
+- The MCP stub-roster migration (`_resolve_stub_roster`), which reproduces the
+  stub set a legacy install was running, whatever the field defaults are. When
+  `mcp_gateway` omits `stub_servers`, it reads an omitted or non-boolean `enabled`
+  as off and the roster as empty, and with `enabled: true` an omitted
+  `poolable_servers` as an empty roster.
+
+This list describes the build stage. Values that the read stage's schema
+validation rejects never reach it. The deliberate departures, all unchanged by the
+reader:
 
 - An omitted key that does not read the field default:
   - `agent.sandbox_allow_unsandboxed_exec` folds in the platform default
@@ -1416,14 +1466,35 @@ departures, all unchanged by the reader:
   - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
   - An external registry entry that omits `branch` keeps the legacy `mainline`.
   - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
-    `dashboard.onboarded`, and `dashboard.model_picker_configured` is inferred
-    from `model_picker_hidden_models`.
+    `dashboard.onboarded` when omitted or malformed, and
+    `dashboard.model_picker_configured` is inferred from
+    `model_picker_hidden_models`.
 - A built value that is not the bare dataclass's although the default is:
   `agent.member_acp_backend` passes the selectable-backend gate, and an empty
-  `workspaces` or `memory_stores` table gains a `default` entry.
-- A malformed value that does not fall back to the field default: `auto_update`
-  reads as off, and `instances.connect_timeout_secs` / `mint_timeout_secs` fall back
-  to the transport constants.
+  `workspaces` or `memory_stores` table gains a `default` entry. While the
+  dashboard section or the whole file is degraded, or was observed degraded,
+  `dashboard.default_memory_mode` builds `temporary` whatever the section holds:
+  `build_config`'s fail-closed override, applied before the reader runs.
+- A malformed value that does not fall back to the field default:
+  - `auto_update` reads as off, and `skills.project_skills_enabled` and
+    `mcp.honour_auto_approve` honour only a real `true`.
+  - An unknown `stt.provider` reads as `off`, an unrecognised
+    `dashboard.default_memory_mode` as `temporary`, and an invalid
+    `slack.dm_activation` or `telegram.forum_activation` as `mention`: each
+    narrows instead.
+  - A `telemetry.beacon_endpoint` that is not a usable `https://` URL is cleared,
+    which turns the beacon off.
+  - `dashboard.loop_stall_exit_after_secs` reads as `LOOP_STALL_EXIT_AFTER_DEFAULT`
+    rather than automatic, and `instances.connect_timeout_secs` /
+    `mint_timeout_secs` as the transport constants. Validation removes a value of
+    the wrong type at these keys and at `mcp.honour_auto_approve`, so through
+    `load()` they read their field default (when jsonschema is installed).
+  - The read stage reads a present non-boolean `auto_update` as off
+    (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
+    `agent.member_dispatch`, `agent.crew_panel` or `skills.project_skills_enabled`
+    as `false` before validation can remove it, and resolves `stt.provider` and
+    `dashboard.default_memory_mode` by the builders' rules, so those keys load as
+    above.
 
 `test_config_load_pipeline.py` builds every section from an empty one and compares
 each field with the bare dataclass, allowing two declared exceptions: the
@@ -1432,6 +1503,13 @@ platform-resolved `agent.sandbox_allow_unsandboxed_exec` and
 not part of that comparison). It also checks the inline entry reads and pins the
 registry branch, the pool-size seam and the platform fold-in. The top-level reads
 use `KiroCrewConfig`'s own field defaults even when `load()` builds a subclass.
+`test_config_load_pipeline_field_defaults.py` loads a value of the wrong type for
+every section field outside the declared exceptions above and the fields another
+suite owns, through the read and build stages, allowing only the read-stage repairs
+above; pins what each malformed-value departure builds and loads; and moves field
+defaults to show that the builders, the DTO normalizers and the shared readers
+follow the field, and that a value a reader keeps of its own, or either constant
+above, does not.
 
 ### `KiroCrewConfig._resolve_agent_model() -> str`
 Reads model from installed agent config (`~/.kiro/agents/kirocrew.json`),

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from kiro_crew.config.fields import _meta
+from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
@@ -290,12 +290,13 @@ DEFAULT_AUTO_INGEST_ARTIFACT_KINDS = ["markdown", "text", "html", "json"]
 def _coerce_embedding_provider(raw: str) -> str:
     """Normalize legacy or unknown embedding_provider values.
 
-    Embeddings are always-on: every value coerces to ``"llama_cpp"``. Old configs
-    may carry ``"ollama"`` (a retired runtime) or ``"none"`` (the disabled setting);
-    both are transparently upgraded. Unknown values also coerce so a config file
-    from a newer/older version never crashes.
+    Embeddings are always-on: every value coerces to the field's default,
+    ``"llama_cpp"``, the one provider. Old configs may carry ``"ollama"`` (a retired
+    runtime) or ``"none"`` (the disabled setting); both are transparently upgraded.
+    Unknown values also coerce so a config file from a newer/older version never
+    crashes.
     """
-    return "llama_cpp"
+    return field_default(MemoryConfig, "embedding_provider")
 
 
 @dataclass
@@ -507,13 +508,13 @@ def _read_auto_add_documents(knowledge_data: dict) -> bool:
     Canonical spelling is ``auto_add_documents``, which is what ``save()`` writes,
     so a save/load round-trip settles on it.
 
-    Absent both keys the feature is OFF: auto-ingest is opt-in, so a config that
-    never mentioned it must not start adding documents.
+    Absent both keys it reads the field's default, OFF: auto-ingest is opt-in, so a
+    config that never mentioned it must not start adding documents.
     """
     for key in ("auto_add_documents", "auto_ingest_doc_links"):
         if key in knowledge_data:
             return bool(knowledge_data.get(key))
-    return False
+    return field_default(KnowledgeConfig, "auto_add_documents")
 
 
 @dataclass
@@ -719,11 +720,13 @@ class SkillsConfig:
             logger.warning("auto_min_tool_calls %d < 2, using 2", self.auto_min_tool_calls)
             object.__setattr__(self, "auto_min_tool_calls", 2)
         if not 0.0 <= self.auto_similarity_threshold <= 1.0:
+            threshold = field_default(SkillsConfig, "auto_similarity_threshold")
             logger.warning(
-                "auto_similarity_threshold %.2f out of range [0.0, 1.0], using 0.85",
+                "auto_similarity_threshold %.2f out of range [0.0, 1.0], using %.2f",
                 self.auto_similarity_threshold,
+                threshold,
             )
-            object.__setattr__(self, "auto_similarity_threshold", 0.85)
+            object.__setattr__(self, "auto_similarity_threshold", threshold)
         if self.auto_refine_on_deviation and not self.auto_create_from_sessions:
             logger.warning(
                 "auto_refine_on_deviation requires auto_create_from_sessions; "

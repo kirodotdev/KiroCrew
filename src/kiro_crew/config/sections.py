@@ -14,12 +14,11 @@ validation modules, and the owners it re-exports never import it.
 
 from __future__ import annotations
 
-import functools
 import logging
 import math
 import re as _re
 from collections.abc import Callable, Mapping
-from dataclasses import MISSING, Field, dataclass, field, fields
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit as _urlsplit
@@ -39,6 +38,7 @@ from kiro_crew.appearance_packs import safe_pack_id as _safe_pack_id
 from kiro_crew.config.fields import (  # noqa: F401
     _COLOR_HEX_RE,
     _coerce_int,
+    _declared_fields,
     _meta,
     _port_or_unset,
     _safe_bool,
@@ -48,6 +48,7 @@ from kiro_crew.config.fields import (  # noqa: F401
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    field_default,
 )
 from kiro_crew.config.integration_sections import (  # noqa: F401
     _CONNECT_TIMEOUT_CEILING,
@@ -127,12 +128,6 @@ _T = TypeVar("_T")
 _ABSENT = object()
 
 
-@functools.cache
-def _declared_fields(dto: type) -> Mapping[str, Field[Any]]:
-    """*dto*'s dataclass fields by name, computed once per DTO class."""
-    return {f.name: f for f in fields(dto)}
-
-
 class SectionReader:
     """Read one ``config.json`` section against its DTO's declared field defaults.
 
@@ -152,20 +147,16 @@ class SectionReader:
       fall back to.
     """
 
-    __slots__ = ("_data", "_fields")
+    __slots__ = ("_data", "_dto", "_fields")
 
     def __init__(self, dto: type, data: Mapping[str, Any]) -> None:
         self._data = data
+        self._dto = dto
         self._fields = _declared_fields(dto)
 
     def default(self, key: str) -> Any:
         """The default declared on *key*'s field (a fresh one for a factory field)."""
-        spec = self._fields[key]
-        if spec.default is not MISSING:
-            return spec.default
-        if spec.default_factory is not MISSING:
-            return spec.default_factory()
-        raise KeyError(key)
+        return field_default(self._dto, key)
 
     def get(self, key: str) -> Any:
         """The stored value of *key*, or its field's default when the section omits it."""
@@ -405,19 +396,19 @@ def coerce_fallback_model(raw: object) -> str:
     :func:`model_registry.to_provider_id` for the ``acp`` provider (registry
     canonical keys and aliases land as the kiro-cli id the wire needs;
     unregistered ids pass through unchanged — existing registry behavior).
-    Absent/junk input (``None``, non-string) collapses to the ``"auto"``
-    default. ``"auto"`` is matched case-insensitively; an unregistered id that
-    the registry maps to ``""`` also collapses to ``"auto"`` rather than
+    Absent/junk input (``None``, non-string) collapses to the field's
+    ``"auto"`` default. ``"auto"`` is matched case-insensitively; an unregistered
+    id that the registry maps to ``""`` also collapses to that default rather than
     silently disabling the feature.
     """
     if raw is None or not isinstance(raw, str):
-        return "auto"
+        return field_default(AgentConfig, "fallback_model")
     s = raw.strip()
     if not s:
         return ""
     if s.lower() == "auto":
         return "auto"
-    return model_registry.to_provider_id(s, "acp") or "auto"
+    return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
 
 
 def coerce_refusal_fallback_model(raw: object) -> str:
@@ -761,17 +752,19 @@ def _sanitize_bot_name(raw: str) -> str:
 def _archive_retention_days(session_data: dict) -> int:
     """Resolve session.archive_retention_days, normalizing the disable sentinel.
 
-    ``null`` (absent/None in JSON) and any negative value both mean "disable
+    An explicit ``null`` (``None``) and any negative value both mean "disable
     automatic cleanup"; both normalize to ``-1``.  A non-negative integer is the
-    retention window in days.  Defaults to 30 when unset.
+    retention window in days.  An omitted key, or a value ``int()`` cannot read,
+    takes the field's default (30).
     """
-    raw = session_data.get("archive_retention_days", 30)
+    section = SectionReader(SessionConfig, session_data)
+    raw = section.get("archive_retention_days")
     if raw is None:
         return -1
     try:
         val = int(raw)
     except (TypeError, ValueError):
-        return 30
+        return section.default("archive_retention_days")
     return val if val >= 0 else -1
 
 
@@ -2300,8 +2293,9 @@ def _tailscale_config_from(
             type(raw).__name__,
         )
     data = _safe_dict(raw)
-    enabled = _safe_bool(data.get("enabled"), False)
-    trust_identity = _safe_bool(data.get("trust_identity"), False)
+    section = SectionReader(TailscaleConfig, data)
+    enabled = section.read("enabled", _safe_bool)
+    trust_identity = section.read("trust_identity", _safe_bool)
     if "trust_identity" in data and not isinstance(data.get("trust_identity"), bool):
         # The same class as the allowlist itself, one field over, and the field
         # is the restriction's own ON switch -- so it is the most permissive
@@ -2387,12 +2381,12 @@ def _tailscale_config_from(
             "not what was written, so any peer it does not name is DENIED "
             "until the file is fixed and the gateway restarted",
         )
-    allowed_logins = [
-        entry.strip()
-        for entry in (raw_logins if isinstance(raw_logins, list) else [])
-        if isinstance(entry, str) and entry.strip()
-    ]
-    pin_scope = str(data.get("pin_scope") or "node").strip().lower()
+    allowed_logins = (
+        [entry.strip() for entry in raw_logins if isinstance(entry, str) and entry.strip()]
+        if isinstance(raw_logins, list)
+        else section.default("allowed_logins")
+    )
+    pin_scope = str(data.get("pin_scope") or section.default("pin_scope")).strip().lower()
     if pin_scope not in ("node", "login"):
         logger.warning(
             "dashboard.tailscale.pin_scope %r is not recognised; falling back to "
@@ -2416,8 +2410,8 @@ def _tailscale_config_from(
         # narrowing-only field like the two rules above, so an operator typo may
         # only ever leave the binding ON, never silently reopen the replay path
         # the binding closes.
-        bind_refresh_chains=_safe_bool(data.get("bind_refresh_chains"), True),
-        keep_awake=_safe_bool(data.get("keep_awake"), True),
+        bind_refresh_chains=_safe_bool(section.get("bind_refresh_chains"), True),
+        keep_awake=section.read("keep_awake", _safe_bool),
     )
 
 
@@ -3805,13 +3799,16 @@ class ChannelConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> ChannelConfig:
-        activation = data.get("activation", ACTIVATION_MENTION)
+        section = SectionReader(cls, data)
+        activation = section.get("activation")
         if activation not in _VALID_ACTIVATIONS:
+            # Narrows to mention whatever the default is: a typo must not widen who
+            # the channel answers.
             activation = ACTIVATION_MENTION
         return cls(
             activation=activation,
-            agent=data.get("agent", ""),
-            thread_follow=data.get("thread_follow", True),
+            agent=section.get("agent"),
+            thread_follow=section.get("thread_follow"),
         )
 
 
@@ -3899,7 +3896,9 @@ def stt_provider_resolution(value: object) -> str:
     """
     if value in _VALID_STT_PROVIDERS:
         return str(value)
-    if value is None or value in _RETIRED_STT_PROVIDERS:
+    if value is None:
+        return field_default(SttConfig, "provider")
+    if value in _RETIRED_STT_PROVIDERS:
         return STT_PROVIDER_LOCAL
     return STT_PROVIDER_OFF
 
@@ -3958,8 +3957,9 @@ def _validated_stt_model(value: object) -> str:
     the default.
     """
     if not isinstance(value, str) or not value:
-        logger.warning("Non-string STT model %r; using %r", value, _STT_DEFAULT_MODEL)
-        return _STT_DEFAULT_MODEL
+        model = field_default(SttConfig, "model")
+        logger.warning("Non-string STT model %r; using %r", value, model)
+        return model
     return _resolve_stt_model(value).name
 
 
@@ -4005,7 +4005,7 @@ def _validated_transcribe_vocabulary(value: object) -> str:
     global _LAST_WARNED_TRANSCRIBE_VOCABULARY
 
     if value is None:
-        return ""
+        return field_default(SttConfig, "transcribe_vocabulary")
     name = transcribe_vocabulary_name(value)
     if name is not None:
         return name
@@ -4041,7 +4041,8 @@ _YOLO_DURATION_SECS: dict[str, int] = {
     "12h": 43200,
     "24h": 86400,
 }
-_YOLO_DURATION_DEFAULT = "6h"
+# The field's default label, read once for ``yolo_duration_to_secs``'s unknown label.
+_YOLO_DURATION_DEFAULT = field_default(AgentConfig, "yolo_duration")
 # Not a timed value: an ad-hoc grant that stays on with no expiry until the
 # gateway process stops. In-memory only, so it cannot survive a restart.
 YOLO_UNTIL_SHUTDOWN = "until_shutdown"
@@ -4067,8 +4068,9 @@ def _read_skip_permissions(agent_data: dict) -> bool:
     "explicitly disabled" into the standing, unattended tool-auto-approve
     grant this key controls. A non-bool value is never treated as an
     affirmative grant; it falls through to check the next spelling, then to
-    the ``False`` default.
+    ``False``. With no spelling present at all it reads the field's default.
     """
+    malformed = False
     for key in ("dangerously_skip_permissions", "dangerouslySkipPermissions", "yolo"):
         if key in agent_data:
             value = agent_data[key]
@@ -4079,22 +4081,25 @@ def _read_skip_permissions(agent_data: dict) -> bool:
                 key,
                 value,
             )
-    return False
+            malformed = True
+    if malformed:
+        return False
+    return field_default(AgentConfig, "dangerously_skip_permissions")
 
 
-def _normalize_yolo_duration(value: object) -> str:
+def _normalize_yolo_duration(value: object, default: str) -> str:
     """Coerce ``agent.yolo_duration`` to a supported ad-hoc duration label.
 
-    Anything unrecognised (typo, removed value, wrong type) falls back to the
-    default rather than failing the whole config load — the value only widens or
-    narrows an already-bounded ad-hoc grant, and the 24h ceiling on timed values
-    is enforced independently in ``SafetyOverride``.
+    Anything unrecognised (typo, removed value, wrong type) falls back to
+    *default*, the field's, rather than failing the whole config load — the value
+    only widens or narrows an already-bounded ad-hoc grant, and the 24h ceiling on
+    timed values is enforced independently in ``SafetyOverride``.
     """
     if isinstance(value, str):
         v = value.strip().lower()
         if v in _YOLO_DURATION_SECS or v == YOLO_UNTIL_SHUTDOWN:
             return v
-    return _YOLO_DURATION_DEFAULT
+    return default
 
 
 def yolo_duration_to_secs(label: str) -> int:
@@ -4222,20 +4227,20 @@ def _migrate_workspaces(raw_workspaces: dict) -> dict[str, WorkspaceConfig]:
     """Auto-migrate workspaces from flat or structured format.
 
     - String values → WorkspaceConfig(dir=value)
-    - Dict values with ``dir`` key → WorkspaceConfig(dir=value["dir"])
+    - Dict values → WorkspaceConfig(dir=value["dir"]), the field default without ``dir``
     - Non-string/non-dict values → default WorkspaceConfig()
-    - Empty input → {"default": WorkspaceConfig(dir="workspace")}
+    - Empty input → {"default": WorkspaceConfig()}
     """
     result: dict[str, WorkspaceConfig] = {}
     for name, value in raw_workspaces.items():
         if isinstance(value, str):
             result[name] = WorkspaceConfig(dir=value)
         elif isinstance(value, dict):
-            result[name] = WorkspaceConfig(dir=value.get("dir", "workspace"))
+            result[name] = WorkspaceConfig(dir=SectionReader(WorkspaceConfig, value).get("dir"))
         else:
             result[name] = WorkspaceConfig()
     if not result:
-        result["default"] = WorkspaceConfig(dir="workspace")
+        result["default"] = WorkspaceConfig()
     return result
 
 
@@ -4449,7 +4454,7 @@ class SttConfig:
     def __post_init__(self) -> None:
         language = self.language_code
         if not isinstance(language, str) or not language.strip():
-            language = STT_LANGUAGE_AUTO
+            language = field_default(SttConfig, "language_code")
         else:
             language = language.strip()
         if language.lower() == STT_LANGUAGE_AUTO:
@@ -4612,24 +4617,27 @@ class NudgeWakeConfig:
         """
         if not isinstance(section, dict):
             return cls()
+        reader = SectionReader(cls, section)
         raw_provider = section.get("provider")
         provider = raw_provider.strip().lower() if isinstance(raw_provider, str) else ""
         raw_model = section.get("llm_model")
         return cls(
             # An unknown name reads as ``auto`` rather than as an error: a typo must
             # not become a third lane and must not stop the gateway booting.
-            provider=provider if provider in JUDGE_PROVIDERS else JUDGE_PROVIDER_AUTO,
+            provider=provider if provider in JUDGE_PROVIDERS else reader.default("provider"),
             # Kept verbatim (stripped) and validated where it is USED, against
             # ``decisions.types.MODEL_ID_RE``: storing "" for an id this build
             # cannot use would make the saved config disagree with what the operator
             # wrote, and the bound that matters is at the call that names a model.
-            llm_model=raw_model.strip() if isinstance(raw_model, str) else "",
+            llm_model=(
+                raw_model.strip() if isinstance(raw_model, str) else reader.default("llm_model")
+            ),
             # Absent, malformed and negative all read as 0, which the engine resolves
             # to its shipped floor. The ceiling is NOT clamped here: it is the engine's
             # own constant, and importing it would invert this module's dependency on
             # the loop engine (which imports ``config.loader`` at module scope). The
             # engine clamps on every read, so an over-large value never takes effect.
-            quiet_streak_floor=_safe_int(section.get("quiet_streak_floor", 0), 0, 0),
+            quiet_streak_floor=reader.read("quiet_streak_floor", _safe_int, 0),
         )
 
 
@@ -4790,6 +4798,7 @@ class DecisionsConfig:
         if not isinstance(section, dict):
             return cls()
 
+        reader = SectionReader(cls, section)
         raw_provider = section.get("provider")
         raw_provider = raw_provider if isinstance(raw_provider, dict) else {}
 
@@ -4836,11 +4845,7 @@ class DecisionsConfig:
             # configured number against the consent keystone's ceiling, so an
             # unreadable value still sends at most what the owner reviewed. Floored
             # at 0 so a negative number cannot read as unbounded.
-            history_budget_chars=_safe_int(
-                section.get("history_budget_chars", DECISION_HISTORY_BUDGET_DEFAULT),
-                DECISION_HISTORY_BUDGET_DEFAULT,
-                0,
-            ),
+            history_budget_chars=reader.read("history_budget_chars", _safe_int, 0),
             # Per-TIER fallback rather than per-map: see `coerce_model_route`. An
             # absent section and one naming no known tier both read as the shipped
             # map, since this key cannot widen anything -- every id is still held
@@ -5380,12 +5385,13 @@ def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
         token = str(acct_data.get("bot_token", "")).strip()
         if not token:
             continue
+        account = SectionReader(TelegramAccountConfig, acct_data)
         out[account_id] = TelegramAccountConfig(
             bot_token=token,
-            allowed_user_ids=_coerce_int_ids(acct_data.get("allowed_user_ids")),
-            allow_forum=_safe_bool(acct_data.get("allow_forum"), False),
-            allowed_forum_chat_ids=_coerce_int_ids(acct_data.get("allowed_forum_chat_ids")),
-            soft_threshold_pct=_threshold_pct(acct_data.get("soft_threshold_pct"), 80),
+            allowed_user_ids=_coerce_int_ids(account.get("allowed_user_ids")),
+            allow_forum=account.read("allow_forum", _safe_bool),
+            allowed_forum_chat_ids=_coerce_int_ids(account.get("allowed_forum_chat_ids")),
+            soft_threshold_pct=account.read("soft_threshold_pct", _threshold_pct),
         )
     return out
 
@@ -6302,7 +6308,9 @@ class IMessageConfig:
         # per send, turning a typo into a channel that accepts messages and
         # never answers. Fall back to the safe default instead.
         service = (self.service or "").strip().lower()
-        self.service = service if service in IMESSAGE_SERVICES else "imessage"
+        self.service = (
+            service if service in IMESSAGE_SERVICES else field_default(IMessageConfig, "service")
+        )
 
 
 @dataclass

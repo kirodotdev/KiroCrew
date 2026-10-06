@@ -21,7 +21,7 @@ from kiro_crew.computer_use.types import (
 )
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
-from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list
+from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list, field_default
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
@@ -96,7 +96,9 @@ def _resolve_stub_overrides(mcp_gateway_data: dict) -> dict[str, bool]:
     be an operator's typo, and guessing which way they meant it is worse than
     leaving that server on the roster's answer.
     """
-    raw = _safe_dict(mcp_gateway_data.get("stub_overrides"))
+    raw = _safe_dict(
+        mcp_gateway_data.get("stub_overrides", field_default(McpGatewayConfig, "stub_overrides"))
+    )
     return {
         name: value
         for name, value in raw.items()
@@ -845,18 +847,21 @@ class InstancesConfig:
             )
             object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)
         if not (1 <= self.tunnel_base_port <= 65535):
+            port = field_default(InstancesConfig, "tunnel_base_port")
             logger.warning(
                 "instances.tunnel_base_port %d out of range [1, 65535], using %d",
                 self.tunnel_base_port,
-                _DEFAULT_TUNNEL_BASE_PORT,
+                port,
             )
-            object.__setattr__(self, "tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
+            object.__setattr__(self, "tunnel_base_port", port)
         if self.connect_timeout_secs is not None and self.connect_timeout_secs < 1.0:
             logger.warning(
                 "instances.connect_timeout_secs %s < 1, using the transport default",
                 self.connect_timeout_secs,
             )
-            object.__setattr__(self, "connect_timeout_secs", None)
+            object.__setattr__(
+                self, "connect_timeout_secs", field_default(InstancesConfig, "connect_timeout_secs")
+            )
         elif (
             self.connect_timeout_secs is not None
             and self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING
@@ -874,7 +879,9 @@ class InstancesConfig:
                 self.mint_timeout_secs,
                 _MINT_TIMEOUT_FLOOR,
             )
-            object.__setattr__(self, "mint_timeout_secs", None)
+            object.__setattr__(
+                self, "mint_timeout_secs", field_default(InstancesConfig, "mint_timeout_secs")
+            )
         elif self.mint_timeout_secs is not None and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING:
             logger.warning(
                 "instances.mint_timeout_secs %s > %s, clamping to %s",
@@ -884,12 +891,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "mint_timeout_secs", _MINT_TIMEOUT_CEILING)
         if self.max_recovery_attempts < 1:
+            attempts = field_default(InstancesConfig, "max_recovery_attempts")
             logger.warning(
                 "instances.max_recovery_attempts %d < 1, using %d",
                 self.max_recovery_attempts,
-                _DEFAULT_MAX_RECOVERY,
+                attempts,
             )
-            object.__setattr__(self, "max_recovery_attempts", _DEFAULT_MAX_RECOVERY)
+            object.__setattr__(self, "max_recovery_attempts", attempts)
         elif self.max_recovery_attempts > _MAX_RECOVERY_CEILING:
             logger.warning(
                 "instances.max_recovery_attempts %d > %d, clamping to %d "
@@ -900,12 +908,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "max_recovery_attempts", _MAX_RECOVERY_CEILING)
         if self.recover_backoff_max_secs <= 0:
+            backoff = field_default(InstancesConfig, "recover_backoff_max_secs")
             logger.warning(
                 "instances.recover_backoff_max_secs %s <= 0, using %s",
                 self.recover_backoff_max_secs,
-                _DEFAULT_BACKOFF_MAX,
+                backoff,
             )
-            object.__setattr__(self, "recover_backoff_max_secs", _DEFAULT_BACKOFF_MAX)
+            object.__setattr__(self, "recover_backoff_max_secs", backoff)
         elif self.recover_backoff_max_secs > _RECOVER_BACKOFF_CEILING:
             logger.warning(
                 "instances.recover_backoff_max_secs %s > %s, clamping to %s "
@@ -916,12 +925,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "recover_backoff_max_secs", _RECOVER_BACKOFF_CEILING)
         if self.probe_failure_threshold < 1:
+            threshold = field_default(InstancesConfig, "probe_failure_threshold")
             logger.warning(
                 "instances.probe_failure_threshold %d < 1, using %d",
                 self.probe_failure_threshold,
-                _DEFAULT_PROBE_FAILS,
+                threshold,
             )
-            object.__setattr__(self, "probe_failure_threshold", _DEFAULT_PROBE_FAILS)
+            object.__setattr__(self, "probe_failure_threshold", threshold)
 
 
 @dataclass

@@ -2703,7 +2703,7 @@ def load_loop_stall_exit_after(
     return resolve_loop_stall_exit_after(dashboard_data, environ)
 
 
-def _subagent_timeout_from(raw: object) -> int:
+def _subagent_timeout_from(raw: object, default: int) -> int:
     """Coerce ``agent.subagent_timeout_secs``, preserving its ``0`` sentinel.
 
     ``0`` means "use the default" and is normalized by the manager, so it must
@@ -2711,13 +2711,13 @@ def _subagent_timeout_from(raw: object) -> int:
     documented sentinel into a 60-second deadline that kills healthy subagents.
     Coercion still happens here as well as in ``_clamp_security_bounds``, because
     that clamp skips non-int values and a numeric STRING (``"30"``) reaches this
-    site unbounded.
+    site unbounded. A value it cannot read takes *default*, the field's.
     """
-    value = _safe_int(raw, SUBAGENT_TIMEOUT_SECS, 0, SUBAGENT_TIMEOUT_MAX)
+    value = _safe_int(raw, default, 0, SUBAGENT_TIMEOUT_MAX)
     return value if value == 0 else max(SUBAGENT_TIMEOUT_MIN, value)
 
 
-def _clamp_compact_wait_secs(raw: object) -> float:
+def _clamp_compact_wait_secs(raw: object, default: float) -> float:
     """Coerce ``session.compact_wait_secs``, preserving its ``0`` sentinel.
 
     ``0`` means "use the built-in budget" and the resolver falls back to
@@ -2725,9 +2725,10 @@ def _clamp_compact_wait_secs(raw: object) -> float:
     positive value is lifted to at least ``COMPACT_WAIT_SECS_MIN`` and capped
     at ``COMPACT_WAIT_SECS_MAX``: ``_safe_float`` with ``lo=0`` collapses a
     negative to the sentinel, then the floor keeps a hand-edited near-zero
-    value from arming a budget that restarts every compaction.
+    value from arming a budget that restarts every compaction. A value it cannot
+    read takes *default*, the field's.
     """
-    value = _safe_float(raw, 0.0, lo=0.0, hi=_sections.COMPACT_WAIT_SECS_MAX)
+    value = _safe_float(raw, default, lo=0.0, hi=_sections.COMPACT_WAIT_SECS_MAX)
     return value if value == 0 else max(_sections.COMPACT_WAIT_SECS_MIN, value)
 
 
@@ -2739,8 +2740,8 @@ def _default_memory_mode_from(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
 
 
-def _folder_sort_from(raw: object) -> str:
-    """Normalize the sidebar folder sort mode; anything unknown is ``custom``.
+def _folder_sort_from(raw: object, default: str) -> str:
+    """Normalize the sidebar folder sort mode; anything unknown is *default*, ``custom``.
 
     ``custom`` is the stored-order behaviour every install had before the field
     existed, so a missing, hand-edited or downgraded value changes nothing the
@@ -2748,7 +2749,7 @@ def _folder_sort_from(raw: object) -> str:
     """
     if isinstance(raw, str) and raw in _sections.FOLDER_SORT_MODES:
         return raw
-    return _sections.FOLDER_SORT_DEFAULT
+    return default
 
 
 # (section, key, min, max) for each bounded field clamped at load time. The
@@ -2977,8 +2978,8 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         approval_mode=section.get("approval_mode"),
         streaming=section.get("streaming"),
         model=section.get("model"),
-        role_models=coerce_role_models(agent_data.get("role_models")),
-        role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
+        role_models=coerce_role_models(section.get("role_models")),
+        role_efforts=coerce_role_efforts(section.get("role_efforts")),
         fallback_model=coerce_fallback_model(section.get("fallback_model")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
             section.get("refusal_fallback_model")
@@ -2987,7 +2988,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         provider=section.get("provider"),
         mcp_registry_mode=section.read("mcp_registry_mode", _safe_bool),
         mcp_quarantine_after_failures=section.read("mcp_quarantine_after_failures", _safe_int),
-        acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
+        acp_backend=_normalize_acp_backend(section.get("acp_backend")),
         member_acp_backend=_normalize_acp_backend(section.get("member_acp_backend")),
         default_agent=section.get("default_agent"),
         # Through the module alias rather than a new top-level import: the loader's
@@ -2995,7 +2996,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # (``test_config_module_boundaries.test_loader_reexports_historical_snapshot_by_identity``),
         # so a new name joins it only by being an old one. Same shape as
         # ``coerce_refusal_fallback_model`` above.
-        deepseek_env=_sections.coerce_deepseek_env(agent_data.get("deepseek_env")),
+        deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
         sandbox=section.get("sandbox"),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
@@ -3031,7 +3032,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
-        yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),
+        yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),
         notify_override_expiry=section.get("notify_override_expiry"),
         tool_search=bool(section.get("tool_search")),
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
@@ -3162,7 +3163,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         subagent_max_turns=section.read(
             "subagent_max_turns", _safe_int, 1, SUBAGENT_MAX_TURNS_CEILING
         ),
-        subagent_timeout_secs=_subagent_timeout_from(section.get("subagent_timeout_secs")),
+        subagent_timeout_secs=section.read("subagent_timeout_secs", _subagent_timeout_from),
         subagent_stall_idle_secs=section.read("subagent_stall_idle_secs", _safe_int),
         completion_keep=_validated_completion_keep(section.get("completion_keep")),
         completion_keep_chars=section.read(
@@ -3231,7 +3232,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # hand-edited negative collapses to 0 (fallback) and an oversized value
         # is capped. Bounds are referenced via the module handle, not imported:
         # this module's top-level names are a frozen compatibility facade.
-        compact_wait_secs=_clamp_compact_wait_secs(section.get("compact_wait_secs")),
+        compact_wait_secs=section.read("compact_wait_secs", _clamp_compact_wait_secs),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,
@@ -3268,16 +3269,17 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     )
 
 
-def _title_refresh_every_turns(value: object) -> int:
+def _title_refresh_every_turns(value: object, default: int) -> int:
     """Parse ``dashboard.title_refresh_every_turns``: 0, or MIN..MAX.
 
-    0 and every negative value parse to 0, the built-in schedule, as does any value
-    ``_safe_int`` rejects (a bool, a fractional float, unparseable text). A value
-    from 1 to MIN - 1 is raised to MIN, so a user who asked for frequent refreshes
-    gets the most frequent cadence allowed rather than the built-in schedule. A
-    value above MAX is capped at MAX.
+    0 and every negative value parse to 0, the built-in schedule. Any value
+    ``_safe_int`` rejects (a bool, a fractional float, unparseable text) takes
+    *default*, the field's, which is that same 0. A value from 1 to MIN - 1 is
+    raised to MIN, so a user who asked for frequent refreshes gets the most
+    frequent cadence allowed rather than the built-in schedule. A value above MAX
+    is capped at MAX.
     """
-    every = _safe_int(value, 0, 0, _sections.TITLE_REFRESH_EVERY_TURNS_MAX)
+    every = _safe_int(value, default, 0, _sections.TITLE_REFRESH_EVERY_TURNS_MAX)
     return every if every == 0 else max(every, _sections.TITLE_REFRESH_EVERY_TURNS_MIN)
 
 
@@ -3303,17 +3305,17 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         bot_name=section.get("bot_name"),
         avatar=section.get("avatar"),
         merge_queued_messages=section.get("merge_queued_messages"),
-        title_refresh_every_turns=_title_refresh_every_turns(
-            section.get("title_refresh_every_turns")
+        title_refresh_every_turns=section.read(
+            "title_refresh_every_turns", _title_refresh_every_turns
         ),
         mcp_probe_timeout_secs=section.read(
             "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),
         loop_stall_exit_after_secs=(
             None
-            if dashboard_data.get("loop_stall_exit_after_secs") is None
+            if (loop_stall := section.get("loop_stall_exit_after_secs")) is None
             else _safe_int(
-                dashboard_data.get("loop_stall_exit_after_secs"),
+                loop_stall,
                 LOOP_STALL_EXIT_AFTER_DEFAULT,
                 LOOP_STALL_EXIT_AFTER_MIN,
                 LOOP_STALL_EXIT_AFTER_MAX,
@@ -3340,13 +3342,13 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             if "model_picker_configured" in dashboard_data
             else any(
                 isinstance(raw, str) and raw.strip() not in ("", "auto")
-                for raw in _safe_list(dashboard_data.get("model_picker_hidden_models"))
+                for raw in _safe_list(section.get("model_picker_hidden_models"))
             )
         ),
         model_picker_hidden_models=list(
             dict.fromkeys(
                 model
-                for raw in _safe_list(dashboard_data.get("model_picker_hidden_models"))
+                for raw in _safe_list(section.get("model_picker_hidden_models"))
                 if isinstance(raw, str) and (model := raw.strip()) and model != "auto"
             )
         ),
@@ -3370,7 +3372,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
-        folder_sort=_folder_sort_from(section.get("folder_sort")),
+        folder_sort=section.read("folder_sort", _folder_sort_from),
         update_nudge=(
             nudge
             if isinstance(nudge := section.get("update_nudge"), dict)
@@ -3404,14 +3406,24 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         tips_recency_decay=section.read("tips_recency_decay", _safe_float, lo=0.0, hi=1.0),
         tips_model=str(section.get("tips_model")),
         tips_explore_ratio=section.read("tips_explore_ratio", _safe_float, lo=0.0, hi=1.0),
-        gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
-        jira_hosts=_coerce_jira_hosts(dashboard_data.get("jira_hosts")),
-        link_patterns=_sections._coerce_link_patterns(dashboard_data.get("link_patterns")),
-        jira_auth=[
-            _jira_auth_entry(entry)
-            for entry in (dashboard_data.get("jira_auth") or [])
-            if isinstance(entry, dict) and entry.get("host")
-        ],
+        gitlab_hosts=_coerce_gitlab_hosts(section.get("gitlab_hosts")),
+        jira_hosts=_coerce_jira_hosts(section.get("jira_hosts")),
+        # These two parse raw JSON entries into DTOs, so they are handed only a
+        # stored value; an omitted key is the field default as built.
+        link_patterns=(
+            _sections._coerce_link_patterns(dashboard_data["link_patterns"])
+            if "link_patterns" in dashboard_data
+            else section.default("link_patterns")
+        ),
+        jira_auth=(
+            [
+                _jira_auth_entry(entry)
+                for entry in (dashboard_data["jira_auth"] or [])
+                if isinstance(entry, dict) and entry.get("host")
+            ]
+            if "jira_auth" in dashboard_data
+            else section.default("jira_auth")
+        ),
     )
 
 
@@ -5149,7 +5161,7 @@ def build_config(
     # repair these values (publish.allowed_destinations is fail-closed
     # there — repairing an OPEN default silently widens), so the loader
     # must be the layer that survives them.
-    _dests_raw = publish_data.get("allowed_destinations", [])
+    _dests_raw = _sections.SectionReader(PublishConfig, publish_data).get("allowed_destinations")
     if not isinstance(_dests_raw, list):
         _degraded.add("publish")
         _OBSERVED_DEGRADED_SECTIONS.add("publish")
@@ -5193,8 +5205,9 @@ def build_config(
     stt_data = _coerced_section(data, "stt", _degraded)
     computer_use_data = _coerced_section(data, "computer_use", _degraded)
     instances_data = _coerced_section(data, "instances", _degraded)
-    connect_timeout_raw = instances_data.get("connect_timeout_secs")
-    mint_timeout_raw = instances_data.get("mint_timeout_secs")
+    instances = _sections.SectionReader(InstancesConfig, instances_data)
+    connect_timeout_raw = instances.get("connect_timeout_secs")
+    mint_timeout_raw = instances.get("mint_timeout_secs")
     mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
     mcp_data = _coerced_section(data, "mcp", _degraded)
     heartbeat = _sections.SectionReader(
@@ -5287,7 +5300,7 @@ def build_config(
                     # (test_config_module_boundaries), and post-split
                     # internals are reached through the module, not
                     # re-exported from here.
-                    avatar=_sections._safe_avatar(entry.get("avatar")),
+                    avatar=_sections._safe_avatar(crew.get("avatar")),
                 )
 
     # Migrate workspaces from flat or structured format
