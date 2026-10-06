@@ -8,6 +8,7 @@ import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
 import { Btn, IconButton } from './ui'
 import { isEditableTarget } from '../utils/editableTarget'
+import { overlayCaptionClearancePx } from '../lib/electron'
 
 /** Diagram zoom bounds. `1` is fit-to-viewport. The ceiling is higher than the
  *  image viewer's because the content is vector: a mermaid label at 8px in a
@@ -57,6 +58,7 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
   const dialogRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const reduceMotion = useReducedMotion()
+  const captionTop = overlayCaptionClearancePx()
   useDialogFocusTrap(dialogRef, onClose)
 
   // A finished pinch or double-tap is not a click-out. Without this the click
@@ -244,7 +246,13 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
         if (!el.closest('svg') && !el.closest('button')) onClose()
       }}
     >
-      <div className="flex items-center justify-end gap-2 px-4 h-12 shrink-0">
+      {/* Drops below a frameless window's caption band so the close button is
+          not under the OS caption buttons or in the drag strip (#11732). */}
+      <div
+        className="flex items-center justify-end gap-2 px-4 h-12 shrink-0"
+        style={captionTop > 0 ? { marginTop: `${captionTop}px` } : undefined}
+        data-testid="diagram-lightbox-header"
+      >
         {fitted && zoom > DIAGRAM_ZOOM_MIN && (
           <Btn
             aria-label={t('components.markdownRenderer.reset_zoom')}

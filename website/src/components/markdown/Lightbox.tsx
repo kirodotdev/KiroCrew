@@ -11,9 +11,18 @@ import {
 } from '../ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
+import { overlayCaptionClearancePx } from '../../lib/electron'
 
 type LightboxImage = { src: string; alt: string }
 type LightboxDetail = { images: LightboxImage[]; index: number }
+
+/** `margin-top` that drops the top-anchored toolbar (and the "copied" pill under
+ *  it) below a frameless window's caption band; undefined when there is none, so
+ *  the `top-safe-offset-*` class stands alone. See overlayCaptionClearancePx. */
+function captionClearanceStyle(): React.CSSProperties | undefined {
+  const px = overlayCaptionClearancePx()
+  return px > 0 ? { marginTop: `${px}px` } : undefined
+}
 
 /** Lightbox zoom (enlarge) bounds. `1` is fit-to-screen; each step scales the
  *  fit box up so the image can overflow the viewport and be panned via the
@@ -704,8 +713,13 @@ export function Lightbox() {
       </div>
       {/* Control cluster sits on its own translucent, blurred pill so the
           white icons stay legible even when a light/enlarged image is panned
-          up behind the toolbar. */}
-      <div className="fixed top-safe-offset-4 right-safe-offset-4 flex items-center gap-0.5 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-1 py-1">
+          up behind the toolbar. On a frameless desktop window it drops below
+          the caption band (#11732). */}
+      <div
+        className="fixed top-safe-offset-4 right-safe-offset-4 flex items-center gap-0.5 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-1 py-1"
+        style={captionClearanceStyle()}
+        data-testid="lightbox-toolbar"
+      >
         {/* Zoom segment: − / reset (magnifier) / + always visible as a group. */}
         <button
           aria-label={i18nT('components.markdownRenderer.zoom_out')}
@@ -813,6 +827,7 @@ export function Lightbox() {
         className={copyState === 'ok'
           ? 'fixed top-safe-offset-16 right-safe-offset-4 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-3 py-1 text-sm text-white/90'
           : 'sr-only'}
+        style={copyState === 'ok' ? captionClearanceStyle() : undefined}
       >
         {copyState === 'ok' ? i18nT('components.markdownRenderer.image_copied') : ''}
       </div>
@@ -822,7 +837,10 @@ export function Lightbox() {
           navigate away from unsaved work (same decision as MarkdownTable /
           MermaidBlock). */}
       {copyState === 'failed' && (
-        <div className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-2rem))]">
+        <div
+          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-2rem))]"
+          style={captionClearanceStyle()}
+        >
           <ErrorNotice
             variant="inline"
             className="rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-3 py-1"
