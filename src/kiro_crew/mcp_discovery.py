@@ -2989,7 +2989,21 @@ async def probe_server(
                     await asyncio.to_thread(
                         platform_compat.kill_process_tree, probe_pid, platform_compat.SIGKILL
                     )
-                except (ProcessLookupError, OSError):
+                except ProcessLookupError:
+                    # The probe already exited before this post-probe reap, so
+                    # ``taskkill /T /F`` returned rc=128 and kill_process_tree
+                    # mapped it to ProcessLookupError (the Windows analog of the
+                    # POSIX ESRCH silently absorbed above). Nothing leaked — a
+                    # traceback here makes a routine cleanup race look identical
+                    # to a genuine reap failure, so log it without one.
+                    logger.debug(
+                        "Probe tree already gone for %s (pid %s)",
+                        server.name,
+                        probe_pid,
+                    )
+                except OSError:
+                    # A genuine cleanup failure (taskkill access-denied,
+                    # spawn error, etc.) keeps its traceback-bearing diagnostic.
                     logger.debug(
                         "Probe tree reap failed for %s (pid %s)",
                         server.name,
