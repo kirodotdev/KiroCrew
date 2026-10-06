@@ -1121,6 +1121,207 @@ class TestRunMarker:
         assert d.is_dir()
 
 
+# ── Windows sharing-violation retry on the sidecar readers (GH-12364) ──
+
+
+class TestRunMarkerSidecarReadRetry:
+    """A sidecar reader must not fold a transient Windows sharing violation into
+    ``""`` / ``None``.
+
+    The markers are published with ``mkstemp`` + ``os.replace``
+    (``write_marker``). On Windows a reader that lands in the ``os.replace``
+    window raises ``PermissionError`` (``WinError 32``). The old plain
+    ``read_text`` folded that into ``""`` -- indistinguishable from a genuinely
+    absent marker, so a caller checking whether a gateway runs on a port got a
+    silent FALSE NEGATIVE. Every reader now goes through
+    ``atomic_write.read_bytes_with_retry``, which retries that bounded window.
+
+    ``read_sharing_violation`` patches ``Path.read_bytes`` and so covers the
+    uncapped readers (``read_secret`` / ``read_launcher`` via ``_read_sidecar``).
+    The capped readers (``read_pid`` and the ``.start`` sidecar) pass
+    ``max_bytes`` and so read through ``_read_bytes``; those are faulted by
+    patching ``atomic_write._read_bytes``, the single chokepoint both branches of
+    the helper call. POSIX permits the read, so this fault only reproduces on the
+    simulator here and on a real Windows host -- it is skipped on this Linux
+    worker's live filesystem, which is why the simulator exists. Not run on a
+    real Windows host.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff_sleep(self, _floor_monkeypatch):
+        """Keep the bounded retry instant; attempt COUNT is what matters here.
+
+        Patches through ``_floor_monkeypatch`` (the isolation floor's own
+        ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
+        used the shared instance would be lifted by any test here that called
+        ``monkeypatch.undo()`` mid-body, silently restoring the real backoff
+        sleep for the rest of that test (D11 / semgrep
+        ``kirocrew.test-autouse-shared-monkeypatch``).
+        """
+        from kiro_crew import atomic_write as aw
+
+        _floor_monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    def _write_full_marker(self, run_marker, port, monkeypatch, tmp_path):
+        """Fabricate a venv launcher and write a full marker set for *port*."""
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+        run_marker.write_marker(port)
+        return launcher
+
+    def test_read_secret_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """A transient fault on the credential sidecar retries, not folds to ""."""
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        atomic_write(run_marker.secret_path(6776), "s3cr3t-value", mode=0o600)
+
+        with read_sharing_violation(match="gateway-6776.secret", times=2) as sim:
+            got = run_marker.read_secret(6776)
+
+        assert got == "s3cr3t-value"  # not "" -- the window was ridden out
+        assert sim["n"] == 3  # 2 faults + the successful read
+
+    def test_read_launcher_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """The marker (launcher path) reader rides the window out too."""
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        launcher = self._write_full_marker(run_marker, 6776, monkeypatch, tmp_path)
+
+        with read_sharing_violation(match="gateway-6776.bin", times=2) as sim:
+            got = run_marker.read_launcher(6776)
+
+        assert got == str(launcher)  # not None
+        assert sim["n"] == 3
+
+    def test_read_pid_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """read_pid -- the identity claim the issue names -- must not fold to None.
+
+        read_pid reads through the capped path (``max_bytes``), so it is faulted
+        at ``_read_bytes`` rather than ``Path.read_bytes``.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import atomic_write as aw
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        self._write_full_marker(run_marker, 6776, monkeypatch, tmp_path)
+        pid_name = run_marker.pid_path(6776).name
+
+        real_read_bytes = aw._read_bytes
+        state = {"n": 0}
+
+        def _faulting(target, max_bytes):
+            if target.name == pid_name:
+                state["n"] += 1
+                if state["n"] <= 2:
+                    raise PermissionError(
+                        f"[WinError 32] simulated sharing violation reading {target}"
+                    )
+            return real_read_bytes(target, max_bytes)
+
+        monkeypatch.setattr(aw, "_read_bytes", _faulting)
+        got = run_marker.read_pid(6776)
+
+        assert got == os.getpid()  # not None -- the window was ridden out
+        assert state["n"] == 3
+
+    def test_absent_marker_still_reads_as_empty(self, tmp_path, monkeypatch):
+        """A GENUINELY absent file still yields ""/None -- absence is unchanged.
+
+        FileNotFoundError is not a sharing violation; the helper does not retry
+        it and the readers fold it to their empty value exactly as before.
+        """
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        # No marker set written at all. Even under an active fault simulator, a
+        # missing file raises FileNotFoundError, not PermissionError, so it is
+        # not retried and the empty return is preserved.
+        with read_sharing_violation(times=10_000):
+            assert run_marker.read_secret(9999) == ""
+            assert run_marker.read_launcher(9999) is None
+        assert run_marker.read_pid(9999) is None
+
+    def test_no_contention_common_path_is_unchanged(self, tmp_path, monkeypatch):
+        """With no concurrent writer the readers return the same values as before.
+
+        The retry helper is a plain read on POSIX and on the no-fault Windows
+        path, so the common case is byte-for-byte prior behaviour.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        launcher = self._write_full_marker(run_marker, 7001, monkeypatch, tmp_path)
+        assert run_marker.read_launcher(7001) == str(launcher)
+        assert run_marker.read_pid(7001) == os.getpid()
+
+    def test_concurrent_rewrites_never_fold_to_a_false_absence(self, tmp_path, monkeypatch):
+        """The issue's own reproduction, on real files.
+
+        One thread rewrites a sidecar in a tight ``atomic_write`` (mkstemp +
+        os.replace) loop while the main thread reads it thousands of times. On
+        POSIX no sharing violation occurs, so this asserts the positive invariant
+        that holds on every platform: a read that returns a value never returns a
+        TORN or EMPTY one -- it is always a value some writer published, never ""
+        while the file exists. (The Windows-specific fold is covered
+        deterministically by the simulator tests above.)
+
+        The launcher-marker sidecar stands in for the whole sidecar family here:
+        the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
+        reader, so the concurrent-rewrite invariant is identical whichever sidecar
+        is exercised. ``read_secret`` has its own deterministic coverage above.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.instances import run_marker
+
+        marker = run_marker.marker_path(6776)
+        values = {f"/opt/venv-{i}/bin/kirocrew" for i in range(50)}
+        atomic_write(marker, "/opt/venv-0/bin/kirocrew\n", mode=0o600)
+
+        stop = threading.Event()
+
+        def _rewrite():
+            i = 0
+            while not stop.is_set():
+                atomic_write(marker, f"/opt/venv-{i % 50}/bin/kirocrew\n", mode=0o600)
+                i += 1
+
+        writer = threading.Thread(target=_rewrite, daemon=True)
+        writer.start()
+        try:
+            for _ in range(3000):
+                got = run_marker.read_launcher(6776)
+                # The sidecar exists for the whole run, so a reader must never
+                # see it as absent, and must only ever see a published value.
+                assert got is not None, "a reader folded a concurrent write into a false absence"
+                assert got in values, f"a reader saw a torn value: {got!r}"
+        finally:
+            stop.set()
+            writer.join(timeout=5)
+
+
 # ── run-marker port discovery (clients find a gateway on a non-default port) ──
 
 
