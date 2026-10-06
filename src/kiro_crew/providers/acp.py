@@ -51,7 +51,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
-    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
 )
 from kiro_crew.acp.types import (
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION as ACP_BACKENDS_HARNESS_MANAGED,
@@ -1839,6 +1838,11 @@ class AcpProvider(LLMProvider):
         resolves. Called before every (re)spawn so resume/restart keeps the same
         level.
 
+        KAS is written too, though kiro-cli's KAS engine never reads the file:
+        Crew does, re-seeding the slot's levels from it at construction, so a
+        level set on a KAS session survives a gateway restart. The live level
+        there travels as the ``effortLevel`` config option instead.
+
         Membership rather than "not claude": the companion clear
         (``_clear_cli_overlay_effort`` in :meth:`change_effort`) is already
         membership-gated, so a negation here writes an overlay for a harness the
@@ -2041,8 +2045,10 @@ class AcpProvider(LLMProvider):
                 model,
             )
             return False
-        via_config_option = self._client.backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
-        via_slash_command = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+        # The capability answers, not raw set membership: KAS sits in both sets
+        # and the capability layer is where the config option wins for it.
+        via_config_option = self.capabilities.effort_via_config_option
+        via_slash_command = self.capabilities.effort_via_slash_command
         if not (via_config_option or via_slash_command):
             # Both channels are opt-in, so a harness in neither has to be reported
             # unsupported here. Guessing one would push into a verb the adapter
@@ -2190,9 +2196,9 @@ class AcpProvider(LLMProvider):
                 await self.reapply_live_effort(own)
             elif self.supports_effort():
                 # Live only: persisting it would overwrite the target's stored state.
-                if self._client.backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
+                if self.capabilities.effort_via_config_option:
                     await self._set_effort_config_option(carried)
-                elif self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+                elif self.capabilities.effort_via_slash_command:
                     await self._client.send_command("/effort", args={"level": carried})
         except Exception:
             # The model DID switch; failing here would make a fallback walk skip it.
@@ -2252,7 +2258,12 @@ class AcpProvider(LLMProvider):
                     model,
                 )
                 return None
-            await self._client.send_command("/effort", args={"level": level})
+            # Same channel choice as change_effort: KAS takes the level as a
+            # config option, not the kiro-cli slash command.
+            if self.capabilities.effort_via_config_option:
+                await self._set_effort_config_option(level)
+            else:
+                await self._client.send_command("/effort", args={"level": level})
             logger.info("ACP effort cleared to workspace default %s (kiro)", level)
             return True
         # No default to push live — clear the overlay and let the caller reset
@@ -2389,14 +2400,15 @@ class AcpProvider(LLMProvider):
         ``session/set_config_option`` is a fact the table already holds, and
         "runs on the shared runtime" is a different fact. The kiro family is
         outside the channel set because it reads effort from the spawn-time
-        cli.json overlay instead, so it still skips the push; opencode is
+        cli.json overlay instead, so it still skips the push; KAS is the
+        exception, since it reads no overlay and is a member; opencode is
         outside it because its ``session/new`` advertises no ``effort`` option at
         all. Reading the runtime answer here instead drops a codex session's
         configured effort as soon as the preview switch puts codex on the
         runtime, because codex IS in the channel set and takes effort no other
         way.
         """
-        if self._client.backend not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
+        if not self.capabilities.effort_via_config_option:
             return
         level = self._resolve_effort()
         if not level:

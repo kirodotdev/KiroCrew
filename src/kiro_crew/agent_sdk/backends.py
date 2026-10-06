@@ -1751,8 +1751,23 @@ def model_refusal_phrase(backend: str) -> str:
 # effort one offering off, low, high and max. It advertises that option under its own
 # id, ``reasoning_effort``, which ``EFFORT_CONFIG_OPTION_IDS`` below records --
 # membership says the channel exists, the table says what to call it.
+#
+# kas IS a member, under its own id ``effortLevel`` (category ``thought_level``).
+# KAS serves that select once the session has a concrete model -- it is absent on
+# ``auto`` and appears in the ``session/set_config_option model=...`` result -- and
+# offers the model's own levels (low through max on the Claude 5.x family). It
+# reads none of the cli.json ``chat.modelDefaults`` overlay the kiro family spawns
+# with, so without this channel a KAS session always ran at the model's built-in
+# default. A value KAS does not offer is answered with success and left unchanged
+# (probed against kiro-cli 2.28.0), so the step-down ladder never fires on it.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_PI,
+    }
 )
 
 # Backends whose ADVERTISED model ids are ``<model>[<effort>]`` pairs that the
@@ -1769,8 +1784,8 @@ ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 
 # The ``configId`` each backend spells its reasoning-effort option with. One home
 # for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
-# advertises ``effort``, codex-acp advertises ``reasoning_effort`` and pi-acp
-# advertises ``thought_level``, and a session that writes another one's spelling is
+# advertises ``effort``, codex-acp advertises ``reasoning_effort``, KAS advertises
+# ``effortLevel`` and pi-acp advertises ``thought_level``, and a session that writes another one's spelling is
 # answered with "unknown config option" and silently keeps whatever effort it
 # already had.
 #
@@ -1785,6 +1800,7 @@ ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_CODEX: "reasoning_effort",
     ACP_BACKEND_DEEPSEEK: "reasoning_effort",
+    ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
 }
 

@@ -18,6 +18,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_PI,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     effort_config_option_id,
@@ -33,6 +34,7 @@ BACKEND_CASES = {
     ACP_BACKEND_CLAUDE: ("claude-opus-4.7", "claude-sonnet-4.6", True),
     ACP_BACKEND_CODEX: ("openai.gpt-6-astra", "openai.gpt-5.5-codex", True),
     ACP_BACKEND_DEEPSEEK: ("deepseek-3.2", "deepseek-v4", True),
+    ACP_BACKEND_KAS: ("claude-opus-5", "claude-opus-5.5", True),
     ACP_BACKEND_PI: ("pi-model-a", "pi-model-b", True),
 }
 

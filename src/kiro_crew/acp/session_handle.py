@@ -3561,13 +3561,24 @@ class AcpSessionHandle:
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level).
 
-        Sends session/set_config_option JSON-RPC request.
+        Sends session/set_config_option JSON-RPC request. When the response
+        carries the session's full ``configOptions`` (the ACP response shape),
+        they replace the cached ones: a write can change which options exist --
+        KAS serves its ``effortLevel`` select only once a concrete model is set --
+        and the matching ``config_option_update`` notification sits buffered on
+        the queue until the next turn drains it, so a follow-up write gated on
+        :meth:`supports_config_option` would otherwise read the stale list.
         """
         req_id = await self._send_awaited(
             METHOD_SET_CONFIG_OPTION,
             {"sessionId": self._session_id, "configId": config_id, "value": value},
         )
-        await self._wait_for_response(req_id, timeout=10.0)
+        msg = await self._wait_for_response(req_id, timeout=10.0)
+        result = getattr(msg, "result", None)
+        config_options = result.get("configOptions") if isinstance(result, dict) else None
+        if isinstance(config_options, list):
+            self._config_options = config_options
+            self._sync_effort_levels()
 
     async def _send_awaited(self, method: str, params: dict[str, Any]) -> int:
         """Send a request whose response a following _wait_for_response claims.

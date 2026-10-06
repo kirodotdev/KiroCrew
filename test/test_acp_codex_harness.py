@@ -1134,17 +1134,21 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
         )
 
     @pytest.mark.asyncio
-    async def test_the_kiro_family_still_takes_effort_from_its_overlay(self):
-        """The skip the runtime gate stands in for, held by the channel set instead."""
-        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
-            provider = _effort_provider(backend, "claude-fable-5")
-            provider._effort_per_model = {"claude-fable-5": "high"}
-            await provider._apply_initial_effort()
-            provider._client.set_config_option.assert_not_awaited()
+    async def test_kiro_still_takes_effort_from_its_overlay(self):
+        """The skip the runtime gate stands in for, held by the channel set instead.
 
-    def test_codex_is_in_the_channel_set_and_the_kiro_family_is_not(self):
+        KAS is not part of this skip: it reads no overlay and takes effort as its
+        ``effortLevel`` config option (``test_acp_kas_effort``).
+        """
+        provider = _effort_provider(ACP_BACKEND_KIRO, "claude-fable-5")
+        provider._effort_per_model = {"claude-fable-5": "high"}
+        await provider._apply_initial_effort()
+        provider._client.set_config_option.assert_not_awaited()
+
+    def test_codex_and_kas_are_in_the_channel_set_and_kiro_is_not(self):
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
-        assert not ({ACP_BACKEND_KIRO, ACP_BACKEND_KAS} & ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION)
+        assert ACP_BACKEND_KAS in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
 
 
 def _handle_on(backend: str) -> AcpSessionHandle:
