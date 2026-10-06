@@ -23,6 +23,7 @@ from kiro_crew.cron import (
     CronStoreUnreadable,
     _job_tz,
     _RunClaim,
+    build_cron_session_context,
     compute_next_run_ts,
     cron_expr_matches,
     validate_cron_expr,
@@ -648,6 +649,29 @@ class TestCronJobProjectPath:
         updated = svc.update_job(job.id, project_path="")
         assert updated is not None
         assert updated.project_path == ""
+
+    @pytest.mark.parametrize("marker", [True, "false", None, [], {}])
+    def test_unbound_fire_does_not_carry_a_bound_result_into_its_prompt(
+        self, tmp_path: Path, marker: object
+    ) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        svc = CronService(base_dir=tmp_path / "cron_home")
+        job = svc.add_job(
+            name="test",
+            message="read the current project",
+            every_secs=300,
+            project_path=str(project_dir),
+        )
+        job.set_run_result("private project content")
+        job.last_result_project_bound = marker  # type: ignore[assignment]
+        updated = svc.update_job(job.id, project_path="")
+        assert updated is not None
+
+        _key, prompt = build_cron_session_context(updated)
+
+        assert prompt == "read the current project"
+        assert "private project content" not in prompt
 
     def test_update_job_invalid_project_path_rejected_leaves_existing_unchanged(
         self,

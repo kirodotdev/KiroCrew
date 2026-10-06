@@ -791,14 +791,20 @@ def inject_cron_result_to_dashboard(
                 "user",
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
+                meta={"project_bound": bool(job.project_path)},
             )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
+        result_meta: dict[str, Any] = {
+            "project_bound": bool(job.project_path) or bool(job.last_result_project_bound)
+        }
+        if turn_stats:
+            result_meta["turn_stats"] = dict(turn_stats)
         _reflect(
             "assistant",
             f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
             "msg msg-a",
-            meta={"turn_stats": dict(turn_stats)} if turn_stats else None,
+            meta=result_meta,
         )
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()

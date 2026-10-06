@@ -6966,7 +6966,7 @@ def resolve_crew_identity(
 # moment one side is reworded.
 RESOLVED_SOURCE_MEMBER_SHADOWED = "member_shadowed_by_project"
 
-#: A project's own ``.kiro/agents`` definition WON over a same-named alias. Named
+#: A project's own ``.kiro/agents`` definition of an alias's template WON. Named
 #: for the same reason as its sibling above: slack/gateway.py reads it to decide a
 #: sequence member's dispatch execution, because that member's resolution is not
 #: handed the job's own carrier and so cannot have been projected inside
@@ -6981,16 +6981,14 @@ def _resolve_agent_selection(
 
     Returns ``(record, alias, passthrough, requested_resolved, source)``.
 
-    Within a bound *project_dir* a project's own ``.kiro/agents`` definition BEATS a
-    same-named ``config.agents`` alias: a project's agents join the crew as
-    subject-matter experts for that project, and the precedence is contextual, so
-    outside that directory the alias is untouched and a chat session opened in the
-    folder resolves the name the same way a cron bound to it does. It is also the
-    precedence of the layer beneath -- kiro-cli searches ``<project>/.kiro/agents``
-    before the user-level registry and resolves a same-name conflict in the
-    project's favour, and the session runs with that directory as its cwd -- so the
-    project file answers whichever definition this step names, and naming the alias
-    would advertise one answer while another runs.
+    An explicit ``config.agents`` alias is authored config and is NOT displaced by a
+    project file that merely shares its NAME: the alias dispatches its own
+    ``kiro_agent``, and kiro-cli looks a project file up only by the name it is
+    asked to run. So within a bound *project_dir* the project wins only when it
+    declares the alias's ``kiro_agent`` TEMPLATE -- kiro-cli searches
+    ``<project>/.kiro/agents`` first and the session runs with that directory as its
+    cwd, so that file is what answers, and naming the alias would advertise one
+    answer while another runs. The winner dispatches that template.
 
     The override deliberately carries the alias's INFRASTRUCTURE away with it: once a
     project file wins there is no ``config.agents`` record, so bindings come from
@@ -7044,17 +7042,11 @@ def _resolve_agent_selection(
     # A matched alias has another backend-visible name: the provider template in
     # its config record. The member opt-out checks that effective name in the SAME
     # project-name lookup as the alias; otherwise a project file named after the
-    # template runs under the alias's private memory. Ordinary callers keep the
-    # alias-only probe, and that leaves a RESIDUAL rather than answering the same
-    # question: a differently named project template does not displace their
-    # explicit alias SELECTION, but it is still the name the backend activates in
-    # that cwd, so the project's file can answer under the alias's own store.
-    # Widening here does not close it -- the store a chat turn runs under comes
-    # from the session's captured execution record, not from this answer (see
-    # docs/system-specs/modules/config.md, "an ORDINARY caller's probe judges the
-    # selected name only", for why that seam owns it and what an operator can do).
-    # The cron fire re-checks the DISPATCHED template instead, at the one site
-    # where a bound folder was newly put in front of a captured private store
+    # template runs under the alias's private memory. Ordinary callers probe the
+    # template alone: it is the name the backend activates in that cwd, so a
+    # project file of that name wins below and lands on the default store, while
+    # a file sharing only the alias's NAME is never run and displaces nothing.
+    # The cron fire also re-checks the DISPATCHED template read off its carrier
     # (slack/gateway.py, _unshadowed_dispatch_execution).
     #
     # `not allow_project_override` is what keeps the widening safe. Only the
@@ -7065,12 +7057,14 @@ def _resolve_agent_selection(
     # EVERY turn of an app-bound session, where a scan stalls chat, WebSocket and
     # heartbeat processing).
     effective_name = config.agents[agent_name].kiro_agent if alias_hit else agent_name
+    # The member opt-out probes the alias AND its template; an ordinary alias hit
+    # probes the template alone, the only name kiro-cli resolves for it.
     project_declares_same_name = (
         bool(agent_name)
         and bool(project_dir)
         and (alias_hit or not allow_project_override)
         and _project_declares_agent(
-            agent_name,
+            agent_name if not allow_project_override else effective_name,
             project_dir,
             effective_name=effective_name if not allow_project_override else "",
         )
@@ -7115,7 +7109,7 @@ def _resolve_agent_selection(
     passthrough = (
         ""
         if alias_hit or (selection_kind == "member" and not project_wins)
-        else _materialized_kiro_agent(agent_name, project_dir)
+        else _materialized_kiro_agent(effective_name, project_dir)
     )
     requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
     if alias_hit:
@@ -7178,7 +7172,7 @@ def resolve_agent_bindings(
 
     Resolution:
     1. If agent_name is given and exists in config.agents → use its bindings,
-       UNLESS *project_dir* declares an agent of the same name, which wins (see
+       UNLESS *project_dir* declares the alias's ``kiro_agent``, which wins (see
        :func:`_resolve_agent_selection`) and carries the alias's infrastructure away
        with it, landing on ``default_agent``'s bindings like any project-only agent.
     2. Otherwise use config.default_agent (guaranteed to exist by load()), but

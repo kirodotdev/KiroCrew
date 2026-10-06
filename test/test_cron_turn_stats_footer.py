@@ -75,7 +75,8 @@ def test_injected_result_row_carries_turn_stats(tmp_path) -> None:
     # The stats ride the append itself, so the live broadcast an open tab
     # receives carries the footer, not only the stored row.
     appended_metas = [c.kwargs.get("meta") for c in spy.call_args_list if c.args[1] == "assistant"]
-    assert appended_metas == [{"turn_stats": stats}]
+    # The row also carries its own ``project_bound`` provenance now.
+    assert appended_metas == [{"project_bound": True, "turn_stats": stats}]
     slot = state.get_slot("cron-abc123")
     result_rows = [m for m in slot.messages if m.get("role") == "assistant"]
     assert len(result_rows) == 1

@@ -1468,13 +1468,11 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     Also surfaces the requesting session's project-scope agents
     (``<project>/.kiro/agents``, resolved via ``X-Session-Key``) tagged
     ``scope="project"`` — these dispatch from that slot because kiro-cli runs
-    with the slot's project as cwd, so the picker must offer them. A name
-    declared by BOTH the project and ``config.agents`` is listed once, as the
-    PROJECT row, and its global row is dropped: a project definition shadows a
-    same-named config alias in dispatch (``_resolve_agent_selection``'s
-    project-override step, mirroring kiro-cli's own project-first lookup in
-    that cwd), so the project row is what would answer and the alias row would
-    advertise a definition that cannot run here.
+    with the slot's project as cwd, so the picker must offer them. An alias whose
+    ``kiro_agent`` template the project declares loses its global row
+    (``_resolve_agent_selection``'s project-override step, mirroring kiro-cli's
+    project-first lookup of that template); a project name equal only to an
+    alias's name stays the alias's global row.
     """
     cfg = KiroCrewConfig.load()
     # Caller class, resolved once for the whole response. It decides only VALUE
@@ -1679,17 +1677,16 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
         # shadowed crew's private memory store would turn "land a branch" into a
         # read of that crew's memory.
         project_default = KiroCrewAgentConfig()
-        # A name declared BOTH in cfg.agents and by the project is emitted as the
-        # PROJECT row, and its global row is dropped. The project definition is
-        # what a fire in this directory actually resolves -- kiro-cli searches
-        # ``<project>/.kiro/agents`` before the user-level directory and the fire
-        # runs with the bound folder as cwd -- so emitting the global row would
-        # advertise an agent that cannot run here.
+        # An alias whose ``kiro_agent`` TEMPLATE the project declares has its
+        # global row dropped: kiro-cli resolves that template project-first in
+        # this cwd, so the project file is what answers. A project file sharing
+        # only an alias's NAME displaces nothing -- the alias dispatches its own
+        # template -- so that name keeps its global row and gets no project row.
         #
         # Re-derived from ``cfg.agents`` instead of filtering ``agents`` in
         # place: ``redact`` masks a row's ``name`` for an app token, so a row
         # name cannot be compared against a raw project name.
-        shadowed = project_names & set(cfg.agents.keys())
+        shadowed = {n for n, a in cfg.agents.items() if a.kiro_agent in project_names}
         if shadowed:
             agents = [
                 _agent_roster_row(name, "global", agent_cfg, redact=redact)
@@ -1698,7 +1695,7 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
             ]
         agents.extend(
             _agent_roster_row(name, "project", project_default, redact=redact)
-            for name in sorted(project_names)
+            for name in sorted(project_names - (set(cfg.agents) - shadowed))
         )
 
     # Reorder by usage frequency (most-used first). Derived read-only from chat

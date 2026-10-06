@@ -36,13 +36,41 @@ from kiro_crew.dashboard.handlers.cron import (
     api_cron_to_chat,
 )
 
+_OWNER_GATE = "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request"
+_INJECT = "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
+
 # ── shared fixtures ──────────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
-def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
+def _isolate_cron_store(_floor_monkeypatch, tmp_path):
+    _floor_monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
+
+
+@pytest.fixture
+def crons(tmp_path):
+    return CronService(base_dir=tmp_path)
+
+
+@pytest.fixture
+def unbound_job(crons):
+    return crons.add_job(name="n", message="m", every_secs=3600)
+
+
+@pytest.fixture
+def bound_job(crons, tmp_path):
+    return crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+
+
+@pytest.fixture
+def mock_inject():
+    with patch(_INJECT) as mock:
+        yield mock
+
+
+def _owner_is(owner: bool):
+    return patch(_OWNER_GATE, lambda request: owner)
 
 
 def _history_app(handler, path):
@@ -71,13 +99,28 @@ class _Read:
 async def _history_request(crons: CronService, path: str, handler, route: str, *, owner: bool):
     app = _history_app(handler, route)
     app["state"] = MagicMock(crons=crons)
-    with patch(
-        "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-        lambda request: owner,
-    ):
+    with _owner_is(owner):
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(path)
             return _Read(resp.status, await resp.json())
+
+
+def _job_history(crons, job_id, *, owner):
+    route = "/api/crons/{job_id}/history"
+    return _history_request(
+        crons, f"/api/crons/{job_id}/history", api_cron_history, route, owner=owner
+    )
+
+
+def _run_detail(crons, job_id, run_id, *, owner):
+    route = "/api/crons/{job_id}/history/{run_id}"
+    path = f"/api/crons/{job_id}/history/{run_id}"
+    return _history_request(crons, path, api_cron_history_detail, route, owner=owner)
+
+
+def _all_history(crons, *, owner):
+    route = "/api/crons/history"
+    return _history_request(crons, route, api_cron_history_all, route, owner=owner)
 
 
 # ── B1: provenance write (cron.py) ──────────────────────────────────────────
@@ -91,8 +134,7 @@ class TestProjectBoundStampedAtWriteTime:
     """
 
     @pytest.mark.asyncio
-    async def test_bound_run_persists_project_bound_true(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
+    async def test_bound_run_persists_project_bound_true(self, crons):
         history = crons.get_history()
         await history.append(
             CronRunRecord(
@@ -108,8 +150,7 @@ class TestProjectBoundStampedAtWriteTime:
         assert runs[0]["project_bound"] is True
 
     @pytest.mark.asyncio
-    async def test_unbound_run_persists_project_bound_false(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
+    async def test_unbound_run_persists_project_bound_false(self, crons):
         history = crons.get_history()
         await history.append(
             CronRunRecord(job_id="j2", status="success", summary="ok", project_bound=False)
@@ -118,12 +159,11 @@ class TestProjectBoundStampedAtWriteTime:
         assert runs[0]["project_bound"] is False
 
     @pytest.mark.asyncio
-    async def test_legacy_row_with_no_project_bound_key_omits_it(self, tmp_path):
+    async def test_legacy_row_with_no_project_bound_key_omits_it(self, tmp_path, crons):
         """A row written before this field existed has no key at all -- proving
         the backfill decision (treat-as-bound) is a READ-time policy, not
         something this write path retroactively injects.
         """
-        crons = CronService(base_dir=tmp_path)
         history = crons.get_history()
         job_path = tmp_path / "cron-history" / "j3.jsonl"
         job_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,16 +221,14 @@ class TestProjectBoundStampedAtWriteTime:
 
 class TestHistoryRoutesWithholdOnPersistedProvenance:
     @pytest.mark.asyncio
-    async def test_paginated_history_withholds_bound_row_after_job_unbound(self, tmp_path):
+    async def test_paginated_history_withholds_bound_row_after_job_unbound(self, crons, bound_job):
         """The defect this closes: job.project_path cleared AFTER a bound run
         wrote its row. The OLD code re-derived _withhold from the live job and
         would have served this row unredacted to a non-owner.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
         await crons.get_history().append(
             CronRunRecord(
-                job_id=job.id,
+                job_id=bound_job.id,
                 status="success",
                 summary="agent read /private/proj/secret.txt",
                 project_bound=True,
@@ -198,111 +236,83 @@ class TestHistoryRoutesWithholdOnPersistedProvenance:
         )
         # Owner clears the binding on the LIVE job -- the row already on disk
         # keeps its own stamp.
-        job.project_path = ""
+        bound_job.project_path = ""
 
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history",
-            api_cron_history,
-            "/api/crons/{job_id}/history",
-            owner=False,
-        )
+        resp = await _job_history(crons, bound_job.id, owner=False)
         assert resp.status == 200
         body = await resp.json()
         assert body["runs"][0]["summary"] == ""
 
     @pytest.mark.asyncio
-    async def test_paginated_history_owner_still_sees_bound_row(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+    async def test_paginated_history_owner_still_sees_bound_row(self, crons, bound_job):
         await crons.get_history().append(
-            CronRunRecord(job_id=job.id, status="success", summary="secret", project_bound=True)
+            CronRunRecord(
+                job_id=bound_job.id, status="success", summary="secret", project_bound=True
+            )
         )
-        job.project_path = ""
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history",
-            api_cron_history,
-            "/api/crons/{job_id}/history",
-            owner=True,
-        )
+        bound_job.project_path = ""
+        resp = await _job_history(crons, bound_job.id, owner=True)
         body = await resp.json()
         assert body["runs"][0]["summary"] == "secret"
 
     @pytest.mark.asyncio
-    async def test_paginated_history_never_bound_row_unaffected_for_non_owner(self, tmp_path):
+    async def test_paginated_history_never_bound_row_unaffected_for_non_owner(
+        self, crons, unbound_job
+    ):
         """MANDATORY negative pin: a run that was never project-bound must read
         identically for owner and non-owner (only path-strip, never withhold).
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
         await crons.get_history().append(
             CronRunRecord(
-                job_id=job.id, status="success", summary="plain result", project_bound=False
+                job_id=unbound_job.id, status="success", summary="plain result", project_bound=False
             )
         )
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history",
-            api_cron_history,
-            "/api/crons/{job_id}/history",
-            owner=False,
-        )
+        resp = await _job_history(crons, unbound_job.id, owner=False)
         body = await resp.json()
         assert body["runs"][0]["summary"] == "plain result"
 
     @pytest.mark.asyncio
-    async def test_history_detail_withholds_bound_row_after_job_deleted(self, tmp_path):
+    async def test_history_detail_withholds_bound_row_after_job_deleted(self, crons, bound_job):
         """The row's own job is absent at read time -- get_run_detail has
         no live job to consult at all, so this pins that the withhold decision
         comes from the row, not a (missing) job lookup.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
         record = CronRunRecord(
-            job_id=job.id,
+            job_id=bound_job.id,
             status="success",
             summary="agent read /private/proj/secret.txt",
             trace="agent read /private/proj/secret.txt",
             project_bound=True,
         )
         await crons.get_history().append(record)
-        crons.remove_job(job.id, actor="test", source="test")
+        crons.remove_job(bound_job.id, actor="test", source="test")
 
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history/{record.run_id}",
-            api_cron_history_detail,
-            "/api/crons/{job_id}/history/{run_id}",
-            owner=False,
-        )
+        resp = await _run_detail(crons, bound_job.id, record.run_id, owner=False)
         assert resp.status == 200
         body = await resp.json()
         assert body["summary"] == ""
         assert body["trace"] == ""
 
     @pytest.mark.asyncio
-    async def test_history_detail_owner_sees_bound_row_after_job_deleted(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+    async def test_history_detail_owner_sees_bound_row_after_job_deleted(self, crons, bound_job):
         record = CronRunRecord(
-            job_id=job.id, status="success", summary="secret", trace="secret", project_bound=True
+            job_id=bound_job.id,
+            status="success",
+            summary="secret",
+            trace="secret",
+            project_bound=True,
         )
         await crons.get_history().append(record)
-        crons.remove_job(job.id, actor="test", source="test")
+        crons.remove_job(bound_job.id, actor="test", source="test")
 
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history/{record.run_id}",
-            api_cron_history_detail,
-            "/api/crons/{job_id}/history/{run_id}",
-            owner=True,
-        )
+        resp = await _run_detail(crons, bound_job.id, record.run_id, owner=True)
         body = await resp.json()
         assert body["summary"] == "secret"
 
     @pytest.mark.asyncio
-    async def test_history_detail_legacy_row_reads_as_not_bound_for_non_owner(self, tmp_path):
+    async def test_history_detail_legacy_row_reads_as_not_bound_for_non_owner(
+        self, tmp_path, crons, unbound_job
+    ):
         """Backfill decision: an absent project_bound key reads as NOT bound.
 
         Every row this code writes carries the key (``asdict``), so an absent
@@ -311,13 +321,11 @@ class TestHistoryRoutesWithholdOnPersistedProvenance:
         would hide all pre-existing history from a legitimate non-owner to
         guard a case that cannot exist; the path strip still applies.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        record = CronRunRecord(job_id=job.id, status="success", summary="legacy secret")
+        record = CronRunRecord(job_id=unbound_job.id, status="success", summary="legacy secret")
         # Simulate a pre-migration row: write it, then strip the key from disk
         # the way a record written before the field existed would look.
         await crons.get_history().append(record)
-        job_path = tmp_path / "cron-history" / f"{job.id}.jsonl"
+        job_path = tmp_path / "cron-history" / f"{unbound_job.id}.jsonl"
         import json
 
         lines = job_path.read_text(encoding="utf-8").strip().splitlines()
@@ -326,50 +334,32 @@ class TestHistoryRoutesWithholdOnPersistedProvenance:
             row.pop("project_bound", None)
         job_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 
-        resp = await _history_request(
-            crons,
-            f"/api/crons/{job.id}/history/{record.run_id}",
-            api_cron_history_detail,
-            "/api/crons/{job_id}/history/{run_id}",
-            owner=False,
-        )
+        resp = await _run_detail(crons, unbound_job.id, record.run_id, owner=False)
         body = await resp.json()
         assert body["summary"] == "legacy secret"
 
     @pytest.mark.asyncio
-    async def test_all_history_withholds_bound_row_after_job_unbound(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+    async def test_all_history_withholds_bound_row_after_job_unbound(self, crons, bound_job):
         await crons.get_history().append(
-            CronRunRecord(job_id=job.id, status="success", summary="secret", project_bound=True)
+            CronRunRecord(
+                job_id=bound_job.id, status="success", summary="secret", project_bound=True
+            )
         )
-        job.project_path = ""
+        bound_job.project_path = ""
 
-        resp = await _history_request(
-            crons,
-            "/api/crons/history",
-            api_cron_history_all,
-            "/api/crons/history",
-            owner=False,
-        )
+        resp = await _all_history(crons, owner=False)
         assert resp.status == 200
         body = await resp.json()
         assert body["runs"][0]["summary"] == ""
 
     @pytest.mark.asyncio
-    async def test_all_history_never_bound_row_unaffected(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+    async def test_all_history_never_bound_row_unaffected(self, crons, unbound_job):
         await crons.get_history().append(
-            CronRunRecord(job_id=job.id, status="success", summary="fine", project_bound=False)
+            CronRunRecord(
+                job_id=unbound_job.id, status="success", summary="fine", project_bound=False
+            )
         )
-        resp = await _history_request(
-            crons,
-            "/api/crons/history",
-            api_cron_history_all,
-            "/api/crons/history",
-            owner=False,
-        )
+        resp = await _all_history(crons, owner=False)
         body = await resp.json()
         assert body["runs"][0]["summary"] == "fine"
 
@@ -382,6 +372,12 @@ def _to_chat_app(state):
     app["state"] = state
     app.router.add_post("/api/crons/{job_id}/to-chat", api_cron_to_chat)
     return app
+
+
+async def _post_to_chat(state, job_id):
+    async with TestClient(TestServer(_to_chat_app(state))) as client:
+        _r = await client.post(f"/api/crons/{job_id}/to-chat")
+        return _Read(_r.status, await _r.json())
 
 
 def _make_to_chat_state(crons, history_messages=None):
@@ -416,87 +412,55 @@ def _make_to_chat_state(crons, history_messages=None):
 
 class TestToChatOwnerGateLiveJob:
     @pytest.mark.asyncio
-    async def test_non_owner_cannot_open_a_bound_jobs_result(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job.last_result = "agent read /private/proj/secret.txt"
+    async def test_non_owner_cannot_open_a_bound_jobs_result(self, crons, bound_job, mock_inject):
+        bound_job.last_result = "agent read /private/proj/secret.txt"
         state = _make_to_chat_state(crons)
-        with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: False,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, bound_job.id)
         assert resp.status == 403
         body = await resp.json()
         assert body["code"] == "project_bound_job_owner_required"
         mock_inject.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_owner_can_still_open_a_bound_jobs_result(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job.last_result = "secret"
+    async def test_owner_can_still_open_a_bound_jobs_result(self, crons, bound_job, mock_inject):
+        bound_job.last_result = "secret"
         state = _make_to_chat_state(crons)
-        with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: True,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(True):
+            resp = await _post_to_chat(state, bound_job.id)
         assert resp.status == 200
         mock_inject.assert_called_once_with(
-            state, job, "secret", history=ANY, dismissed=ANY, include_prompt=False
+            state, bound_job, "secret", history=ANY, dismissed=ANY, include_prompt=False
         )
 
     @pytest.mark.asyncio
-    async def test_non_owner_can_still_open_an_unbound_jobs_result(self, tmp_path):
+    async def test_non_owner_can_still_open_an_unbound_jobs_result(
+        self, crons, unbound_job, mock_inject
+    ):
         """MANDATORY negative pin: a never-bound job is unaffected for a
         non-owner reader -- the gate must not become a blanket to-chat lock.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "fine to see"
+        unbound_job.last_result = "fine to see"
         # A never-bound job that RAN has a row stamped unbound. Without one the
         # gate sees retained output and no row to read, which is the ambiguous
         # case it now withholds -- so the pin has to describe a real run.
         await crons.get_history().append(
             CronRunRecord(
-                job_id=job.id, status="success", summary="fine to see", project_bound=False
+                job_id=unbound_job.id, status="success", summary="fine to see", project_bound=False
             )
         )
         state = _make_to_chat_state(crons)
-        with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: False,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, unbound_job.id)
         assert resp.status == 200
         mock_inject.assert_called_once_with(
-            state, job, "fine to see", history=ANY, dismissed=ANY, include_prompt=False
+            state, unbound_job, "fine to see", history=ANY, dismissed=ANY, include_prompt=False
         )
 
     @pytest.mark.asyncio
-    async def test_a_result_less_agent_run_after_unbinding_does_not_un_withhold(self, tmp_path):
+    async def test_a_result_less_agent_run_after_unbinding_does_not_un_withhold(
+        self, crons, bound_job
+    ):
         """THE CHAIN: a project-bound run succeeds, the owner clears the
         binding, then a result-less AGENT run fires. That run carries the prior
         reply forward -- ``clear_carried_result`` clears only for
@@ -507,34 +471,27 @@ class TestToChatOwnerGateLiveJob:
         The stamp travels with the text, so the answer does not move when a
         later run writes a row that describes only itself.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job.set_run_result("agent read /private/proj/secret.txt")
-        job.project_path = ""
+        bound_job.set_run_result("agent read /private/proj/secret.txt")
+        bound_job.project_path = ""
         # The result-less agent run: ``clear_carried_result`` is reached only for
         # a ``command``/``script`` job, so an agent run never clears the carried
         # reply -- it simply survives, and the run stamps its own row from the
         # now-unbound job.
-        assert job.last_result == "agent read /private/proj/secret.txt", (
+        assert bound_job.last_result == "agent read /private/proj/secret.txt", (
             "an agent run carries the prior reply forward, which is what makes "
             "the newest-row read wrong"
         )
         await crons.get_history().append(
-            CronRunRecord(job_id=job.id, status="success", project_bound=False)
+            CronRunRecord(job_id=bound_job.id, status="success", project_bound=False)
         )
         state = _make_to_chat_state(crons)
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, bound_job.id)
         assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_non_owner_cannot_open_a_result_after_the_owner_clears_the_binding(
-        self, tmp_path
+        self, crons, bound_job, mock_inject
     ):
         """THE FINDING (GPT 5.6): the owner binds a job, it fires, then the
         owner CLEARS ``project_path`` on the still-LIVE job while the agent's
@@ -547,67 +504,47 @@ class TestToChatOwnerGateLiveJob:
         later result-less run can stamp an unbound row over a retained bound
         reply, which is the disclosure the travelling stamp closes.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
         # Produce the result through the real write path WHILE bound, so the
         # stamp is set the way a live run sets it.
-        job.set_run_result("agent read /private/proj/secret.txt")
+        bound_job.set_run_result("agent read /private/proj/secret.txt")
         await crons.get_history().append(
             CronRunRecord(
-                job_id=job.id,
+                job_id=bound_job.id,
                 status="success",
                 summary="a later result-less run",
                 project_bound=False,
             )
         )
         # Owner clears the binding on the STILL-LIVE job.
-        job.project_path = ""
+        bound_job.project_path = ""
         state = _make_to_chat_state(crons)
-        with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: False,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, bound_job.id)
         assert resp.status == 403
         body = await resp.json()
         assert body["code"] == "project_bound_job_owner_required"
         mock_inject.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_owner_still_opens_a_result_after_clearing_the_binding(self, tmp_path):
+    async def test_owner_still_opens_a_result_after_clearing_the_binding(
+        self, crons, bound_job, mock_inject
+    ):
         """The owner is never gated: after clearing the binding they still get
         their own retained reply verbatim.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
         await crons.get_history().append(
-            CronRunRecord(job_id=job.id, status="success", summary="secret", project_bound=True)
+            CronRunRecord(
+                job_id=bound_job.id, status="success", summary="secret", project_bound=True
+            )
         )
-        job.last_result = "secret"
-        job.project_path = ""
+        bound_job.last_result = "secret"
+        bound_job.project_path = ""
         state = _make_to_chat_state(crons)
-        with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: True,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job.id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(True):
+            resp = await _post_to_chat(state, bound_job.id)
         assert resp.status == 200
         mock_inject.assert_called_once_with(
-            state, job, "secret", history=ANY, dismissed=ANY, include_prompt=False
+            state, bound_job, "secret", history=ANY, dismissed=ANY, include_prompt=False
         )
 
 
@@ -615,10 +552,8 @@ class TestToChatOwnerGateDeletedJob:
     """The job is gone; the gate has to ask the run's own history file."""
 
     @pytest.mark.asyncio
-    async def test_non_owner_cannot_open_history_of_a_deleted_bound_job(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job_id = job.id
+    async def test_non_owner_cannot_open_history_of_a_deleted_bound_job(self, crons, bound_job):
+        job_id = bound_job.id
         await crons.get_history().append(
             CronRunRecord(job_id=job_id, status="success", summary="secret", project_bound=True)
         )
@@ -629,13 +564,8 @@ class TestToChatOwnerGateDeletedJob:
             {"role": "assistant", "content": "agent read /private/proj/secret.txt"},
         ]
         state = _make_to_chat_state(crons, history_messages=history_messages)
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job_id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, job_id)
         assert resp.status == 403
         body = await resp.json()
         assert body["code"] == "project_bound_job_owner_required"
@@ -646,10 +576,8 @@ class TestToChatOwnerGateDeletedJob:
         )
 
     @pytest.mark.asyncio
-    async def test_owner_can_open_history_of_a_deleted_bound_job(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job_id = job.id
+    async def test_owner_can_open_history_of_a_deleted_bound_job(self, crons, bound_job):
+        job_id = bound_job.id
         await crons.get_history().append(
             CronRunRecord(job_id=job_id, status="success", summary="secret", project_bound=True)
         )
@@ -660,48 +588,53 @@ class TestToChatOwnerGateDeletedJob:
             {"role": "assistant", "content": "secret result"},
         ]
         state = _make_to_chat_state(crons, history_messages=history_messages)
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: True,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job_id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(True):
+            resp = await _post_to_chat(state, job_id)
         assert resp.status == 200
         slot = state.get_or_create_slot(name=f"cron-{job_id}")
         assert len(slot.messages) == 2
 
     @pytest.mark.asyncio
-    async def test_non_owner_can_open_history_of_a_deleted_never_bound_job(self, tmp_path):
+    async def test_non_owner_can_open_history_of_a_deleted_never_bound_job(
+        self, crons, unbound_job
+    ):
         """MANDATORY negative pin, deleted-job branch: a never-bound job's
         history stays reachable for a non-owner after deletion.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job_id = job.id
+        job_id = unbound_job.id
         await crons.get_history().append(
-            CronRunRecord(job_id=job_id, status="success", summary="fine", project_bound=False)
+            CronRunRecord(
+                job_id=job_id,
+                status="success",
+                summary="fine",
+                started_at=1_700_000_000.0,
+                finished_at=1_700_000_010.0,
+                project_bound=False,
+            )
         )
         crons.remove_job(job_id, actor="test", source="test")
 
         history_messages = [
-            {"role": "user", "content": "run it"},
-            {"role": "assistant", "content": "fine result"},
+            {
+                "role": "user",
+                "content": "run it",
+                "ts": datetime.fromtimestamp(1_700_000_001.0, tz=timezone.utc).isoformat(),
+            },
+            {
+                "role": "assistant",
+                "content": "fine result",
+                "ts": datetime.fromtimestamp(1_700_000_005.0, tz=timezone.utc).isoformat(),
+            },
         ]
         state = _make_to_chat_state(crons, history_messages=history_messages)
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post(f"/api/crons/{job_id}/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, job_id)
         assert resp.status == 200
         slot = state.get_or_create_slot(name=f"cron-{job_id}")
         assert len(slot.messages) == 2
 
     @pytest.mark.asyncio
-    async def test_non_owner_deleted_job_no_history_row_is_withheld(self, tmp_path):
+    async def test_non_owner_deleted_job_no_history_row_is_withheld(self, crons):
         """A deleted job with NO history row cannot prove it ran UNBOUND either,
         and the fallback it would reach is the notification body -- which carries
         the reply the run produced and is only path/credential-redacted, never
@@ -711,16 +644,10 @@ class TestToChatOwnerGateDeletedJob:
         inside a private directory. A deleted job that stamped itself unbound
         still serves, which is the positive control above.
         """
-        crons = CronService(base_dir=tmp_path)
         state = _make_to_chat_state(crons)
         state._notification_log = [{"job_id": "ghost1", "body": "Cron completed"}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
-            async with TestClient(TestServer(_to_chat_app(state))) as client:
-                _r = await client.post("/api/crons/ghost1/to-chat")
-                resp = _Read(_r.status, await _r.json())
+        with _owner_is(False):
+            resp = await _post_to_chat(state, "ghost1")
         assert resp.status == 403
 
 
@@ -738,43 +665,37 @@ class TestRetainedResultProvenanceSurvivesRestart:
 
         return _job_from_record(job_record(job))
 
-    def test_a_bound_retained_result_is_still_bound_after_a_round_trip(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        job.set_run_result("agent read /private/proj/secret.txt")
-        assert job.last_result_project_bound is True
-        job.project_path = ""
+    def test_a_bound_retained_result_is_still_bound_after_a_round_trip(self, crons, bound_job):
+        bound_job.set_run_result("agent read /private/proj/secret.txt")
+        assert bound_job.last_result_project_bound is True
+        bound_job.project_path = ""
 
-        restored = self._round_trip(job)
+        restored = self._round_trip(bound_job)
 
         assert restored.last_result == "agent read /private/proj/secret.txt"
         assert (
             restored.last_result_project_bound is True
         ), "the stamp must round-trip, or a restart serves the retained bound reply"
 
-    def test_a_record_written_before_the_field_existed_reads_unbound(self, tmp_path):
+    def test_a_record_written_before_the_field_existed_reads_unbound(self, crons, unbound_job):
         from kiro_crew.cron_service.store import _job_from_record, job_record
 
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.set_run_result("ordinary unbound output")
-        record = job_record(job)
+        unbound_job.set_run_result("ordinary unbound output")
+        record = job_record(unbound_job)
         del record["last_result_project_bound"]
 
         assert _job_from_record(record).last_result_project_bound is False
 
-    def test_a_present_but_malformed_stamp_withholds(self, tmp_path):
+    def test_a_present_but_malformed_stamp_withholds(self, crons, unbound_job):
         from kiro_crew.cron_service.store import _job_from_record, job_record
 
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.set_run_result("output")
-        record = job_record(job)
+        unbound_job.set_run_result("output")
+        record = job_record(unbound_job)
         record["last_result_project_bound"] = "yes"
 
         assert _job_from_record(record).last_result_project_bound is True
 
-    def test_the_string_false_withholds_rather_than_serving(self, tmp_path):
+    def test_the_string_false_withholds_rather_than_serving(self, crons, unbound_job):
         """The one malformed value worth naming on its own, because the
         permissive reading of it looks reasonable: a stored ``"false"``.
 
@@ -789,25 +710,21 @@ class TestRetainedResultProvenanceSurvivesRestart:
         """
         from kiro_crew.cron_service.store import _job_from_record, job_record
 
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.set_run_result("output")
-        record = job_record(job)
+        unbound_job.set_run_result("output")
+        record = job_record(unbound_job)
         record["last_result_project_bound"] = "false"
 
         assert _job_from_record(record).last_result_project_bound is True
 
-    def test_a_real_boolean_still_round_trips_both_ways(self, tmp_path):
+    def test_a_real_boolean_still_round_trips_both_ways(self, crons, unbound_job):
         """The guard must not become a blanket withhold: a genuine ``False``
         is taken at face value, which is what keeps an unbound result readable
         by a non-owner after a restart.
         """
         from kiro_crew.cron_service.store import _job_from_record, job_record
 
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.set_run_result("output")
-        record = job_record(job)
+        unbound_job.set_run_result("output")
+        record = job_record(unbound_job)
         assert record["last_result_project_bound"] is False
         assert _job_from_record(record).last_result_project_bound is False
 
@@ -839,13 +756,8 @@ class TestToChatTranscriptIsFilteredPerRun:
         state = _make_to_chat_state(crons, history_messages=rows)
         state._notification_log = [{"job_id": job_id, "body": "agent read /private/proj/secret"}]
         with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: owner,
-            ),
-            patch(
-                "kiro_crew.dashboard.handlers.cron.inject_cron_result_to_dashboard"
-            ) as mock_inject,
+            _owner_is(owner),
+            patch(_INJECT) as mock_inject,
         ):
             async with TestClient(TestServer(_to_chat_app(state))) as client:
                 resp = await client.post(f"/api/crons/{job_id}/to-chat")
@@ -877,131 +789,181 @@ class TestToChatTranscriptIsFilteredPerRun:
         )
 
     @pytest.mark.asyncio
-    async def test_bound_rows_are_withheld_while_unbound_rows_are_served(self, tmp_path):
+    async def test_bound_rows_are_withheld_while_unbound_rows_are_served(self, crons, unbound_job):
         """GPT's exact chain: bound fire, owner clears the binding, a later
         unbound run re-stamps the retained result, non-owner to-chat. The
         latest-result gate PASSES here by design -- the bound text is in the
         replayed transcript, not in ``last_result``.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
+        unbound_job.last_result = "unbound latest"
         rows = [
             self._row(self.T0 + 5, "agent read /private/proj/secret.txt"),
             self._row(self.T0 + 105, "public ok"),
         ]
-        runs = [self._bound(job.id), self._unbound(job.id)]
-        status, served = await self._run(job.id, rows, runs, crons)
+        runs = [self._bound(unbound_job.id), self._unbound(unbound_job.id)]
+        status, served = await self._run(unbound_job.id, rows, runs, crons)
         assert status == 200
         assert served == ["public ok"]
 
     @pytest.mark.asyncio
-    async def test_the_owner_still_sees_the_whole_transcript(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
+    @pytest.mark.parametrize("marker", [True, "false", None, [], {}])
+    async def test_explicit_or_malformed_row_provenance_overrides_unbound_window(
+        self, crons, unbound_job, marker
+    ):
+        unbound_job.last_result = "unbound latest"
+        row = self._row(self.T0 + 105, "retained bound result")
+        row["meta"] = {"project_bound": marker}
+
+        status, served = await self._run(
+            unbound_job.id, [row], [self._unbound(unbound_job.id)], crons
+        )
+
+        assert status == 200
+        assert served == []
+
+    @pytest.mark.asyncio
+    async def test_the_owner_still_sees_the_whole_transcript(self, crons, unbound_job):
+        unbound_job.last_result = "unbound latest"
         rows = [self._row(self.T0 + 5, "bound text"), self._row(self.T0 + 105, "public ok")]
-        runs = [self._bound(job.id), self._unbound(job.id)]
-        status, served = await self._run(job.id, rows, runs, crons, owner=True)
+        runs = [self._bound(unbound_job.id), self._unbound(unbound_job.id)]
+        status, served = await self._run(unbound_job.id, rows, runs, crons, owner=True)
         assert status == 200
         assert served == ["bound text", "public ok"]
 
     @pytest.mark.asyncio
-    async def test_a_never_bound_job_keeps_its_whole_transcript(self, tmp_path):
-        """MANDATORY negative pin: the filter must not become a blanket
-        transcript lock. A job with runs on record and none bound has nothing
-        to protect, so even unattributable slot chatter survives.
+    async def test_a_never_bound_job_serves_only_retained_unbound_windows(self, crons, unbound_job):
+        """Rows outside retained run windows have unknown provenance.
+
+        Even when every retained record is unbound, an older bound record may
+        have been pruned while its transcript rows survive. Only rows positively
+        covered by an unbound window are safe to replay.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "fine"
-        rows = [self._row(self.T0 + 105, "in window"), self._row(self.T0 + 5000, "slot chatter")]
-        status, served = await self._run(job.id, rows, [self._unbound(job.id)], crons)
+        unbound_job.last_result = "fine"
+        rows = [self._row(self.T0 + 105, "in window"), self._row(self.T0 + 5000, "unknown")]
+        status, served = await self._run(
+            unbound_job.id, rows, [self._unbound(unbound_job.id)], crons
+        )
         assert status == 200
-        assert served == ["in window", "slot chatter"]
+        assert served == ["in window"]
 
     @pytest.mark.asyncio
-    async def test_a_row_in_no_window_or_with_an_unreadable_stamp_is_withheld(self, tmp_path):
+    async def test_pruned_bound_record_does_not_release_its_surviving_transcript(
+        self, crons, unbound_job
+    ):
+        """The 101st record prunes the bound run, not its transcript rows."""
+        unbound_job.last_result = "latest unbound result"
+        runs = [self._bound(unbound_job.id)]
+        for index in range(100):
+            started = self.T0 + 100 + index * 20
+            runs.append(self._unbound(unbound_job.id, started=started, finished=started + 10))
+        rows = [
+            self._row(self.T0 + 5, "private row whose bound record is pruned"),
+            self._row(self.T0 + 100 + 99 * 20 + 5, "retained unbound row"),
+        ]
+        status, served = await self._run(unbound_job.id, rows, runs, crons)
+        assert status == 200
+        assert served == ["retained unbound row"]
+
+    @pytest.mark.asyncio
+    async def test_a_row_in_no_window_or_with_an_unreadable_stamp_is_withheld(
+        self, crons, unbound_job
+    ):
         """Three fail-closed cases on a job that HAS a bound run: a row no run
         accounts for, a row with no stamp, and a stamp that will not parse.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
+        unbound_job.last_result = "unbound latest"
         rows = [
             self._row(self.T0 + 50, "between runs"),
             {"role": "assistant", "content": "no stamp at all"},
             {"role": "assistant", "content": "unparseable", "ts": "not-a-date"},
             self._row(self.T0 + 105, "public ok"),
         ]
-        runs = [self._bound(job.id), self._unbound(job.id)]
-        status, served = await self._run(job.id, rows, runs, crons)
+        runs = [self._bound(unbound_job.id), self._unbound(unbound_job.id)]
+        status, served = await self._run(unbound_job.id, rows, runs, crons)
         assert status == 200
         assert served == ["public ok"]
 
     @pytest.mark.asyncio
-    async def test_an_empty_run_read_withholds_the_whole_transcript(self, tmp_path):
+    async def test_an_empty_run_read_withholds_the_whole_transcript(self, crons, unbound_job):
         """No run record is not evidence of a job that never ran bound: the
         records are capped per job and the read degrades to empty on an
         unreadable store, while the transcript survives either way.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
+        unbound_job.last_result = "unbound latest"
         rows = [self._row(self.T0 + 5, "could be anything")]
-        status, served = await self._run(job.id, rows, [], crons)
+        status, served = await self._run(unbound_job.id, rows, [], crons)
         assert status == 200
         assert served == []
 
     @pytest.mark.asyncio
-    async def test_a_bound_run_with_no_placeable_window_withholds_everything(self, tmp_path):
+    async def test_a_bound_run_with_no_placeable_window_withholds_everything(
+        self, crons, unbound_job
+    ):
         """A bound run whose ``started_at`` is absent could account for ANY
         row, so nothing is served rather than everything outside a window it
         cannot state.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
-        runs = [self._bound(job.id, started=0.0, finished=0.0), self._unbound(job.id)]
+        unbound_job.last_result = "unbound latest"
+        runs = [
+            self._bound(unbound_job.id, started=0.0, finished=0.0),
+            self._unbound(unbound_job.id),
+        ]
         status, served = await self._run(
-            job.id, [self._row(self.T0 + 105, "looks unbound")], runs, crons
+            unbound_job.id, [self._row(self.T0 + 105, "looks unbound")], runs, crons
         )
         assert status == 200
         assert served == []
 
     @pytest.mark.asyncio
-    async def test_an_unfinished_bound_run_is_open_ended(self, tmp_path):
+    async def test_an_unfinished_bound_run_is_open_ended(self, crons, unbound_job):
         """A bound run still in flight has no finish on record, so its output
         is still arriving: everything at or after its start is withheld rather
         than treated as an empty window.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
-        job.last_result = "unbound latest"
+        unbound_job.last_result = "unbound latest"
         runs = [
-            self._unbound(job.id, started=self.T0, finished=self.T0 + 10),
-            self._bound(job.id, started=self.T0 + 100, finished=0.0),
+            self._unbound(unbound_job.id, started=self.T0, finished=self.T0 + 10),
+            self._bound(unbound_job.id, started=self.T0 + 100, finished=0.0),
         ]
         rows = [
             self._row(self.T0 + 5, "earlier unbound"),
             self._row(self.T0 + 900, "after the bound start"),
         ]
-        status, served = await self._run(job.id, rows, runs, crons)
+        status, served = await self._run(unbound_job.id, rows, runs, crons)
         assert status == 200
         assert served == ["earlier unbound"]
 
     @pytest.mark.asyncio
-    async def test_a_deleted_jobs_notification_body_is_withheld_once_a_run_was_bound(
-        self, tmp_path
-    ):
+    async def test_a_deleted_jobs_notification_body_is_withheld_once_a_run_was_bound(self, crons):
         """With the job gone the notification body has no provenance of its own
         and no live stamp to consult, so it is withheld rather than served as
         the fallback for a transcript this filter just emptied. The newest row
         is unbound, so the gate above LETS THIS THROUGH.
         """
-        crons = CronService(base_dir=tmp_path)
         runs = [self._bound("gone"), self._unbound("gone")]
         rows = [self._row(self.T0 + 5, "bound text")]
         status, served = await self._run("gone", rows, runs, crons)
         assert status == 403
         assert served is None
+
+    @pytest.mark.asyncio
+    async def test_an_empty_transcript_does_not_release_a_bound_notification(self, crons):
+        """A hide_in_chat job writes no transcript; a bound run's body is still
+        the OLDEST note, and the newest run is unbound so the gate passes."""
+        for record in (self._bound("hid"), self._unbound("hid")):
+            await crons.get_history().append(record)
+        state = _make_to_chat_state(crons)
+        state._notification_log = [
+            {"job_id": "hid", "body": "bound secret", "project_bound": True},
+            {"job_id": "hid", "body": "unbound", "project_bound": False},
+        ]
+        with _owner_is(False):
+            resp = await _post_to_chat(state, "hid")
+        assert resp.status == 403
+        assert state.get_or_create_slot(name="cron-hid").messages == []
+        with _owner_is(True):
+            resp = await _post_to_chat(state, "hid")
+        assert resp.status == 200
+        assert [m["content"] for m in state.get_or_create_slot(name="cron-hid").messages] == [
+            "unbound"
+        ]

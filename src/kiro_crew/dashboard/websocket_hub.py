@@ -170,6 +170,40 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
+        from kiro_crew.dashboard.handlers.source_providers import (
+            project_output_visible_to_non_owner,
+        )
+
+        owners = getattr(self._owner, "_owner_ws_clients", None) or set()
+        # Only a dict frame can carry provenance (`project_bound`, or a
+        # `cron-` slot name), so only a dict frame is judged here. A list or
+        # scalar payload -- the `slots` array, a count -- is structural rather
+        # than cron output, and withholding it would deny every non-owner
+        # dashboard frame while protecting nothing.
+        if (
+            ws not in owners
+            and isinstance(data, dict)
+            and not project_output_visible_to_non_owner(data)
+        ):
+            try:
+                from kiro_crew.dashboard.ws_event_scope import (
+                    DASHBOARD_USER_AUDITEE,
+                    _audit_deny,
+                )
+
+                auditee = (
+                    DASHBOARD_USER_AUDITEE
+                    if ws.get("_is_dashboard_user", False)
+                    else str(ws.get("_app", "") or "<unknown>")
+                )
+                _audit_deny(auditee, msg_type, "project_bound_owner_only")
+            except Exception:
+                self._log.debug(
+                    "state: SEL audit for project-bound deny %s failed",
+                    msg_type,
+                    exc_info=True,
+                )
+            return False
         if ws.get("_is_dashboard_user", False):
             # The per-member event log is the owner's view of the crew, the
             # boundary the ``/api/members`` reads apply. A non-owner dashboard

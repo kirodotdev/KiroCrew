@@ -48,26 +48,42 @@ def _update_request(body: dict, crons: CronService, job_id: str) -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
+def _isolate_cron_store(_floor_monkeypatch, tmp_path):
+    _floor_monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
+
+
+@pytest.fixture
+def crons(tmp_path) -> CronService:
+    return CronService(base_dir=tmp_path)
+
+
+_OWNER_GATE = "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request"
+
+
+def _owner_is(owner: bool):
+    return patch(_OWNER_GATE, lambda request: owner)
+
+
+def _add_job(crons: CronService, **kwargs):
+    return crons.add_job(name="n", message="m", every_secs=3600, **kwargs)
+
+
+def _bind_before_locked_write(crons: CronService, project_path: str) -> None:
+    real_locked_kw = crons._update_job_locked_kw
+
+    def _bind_concurrently_then_write(job_id: str, kwargs: dict):
+        crons._update_job_locked(job_id, project_path=project_path)
+        return real_locked_kw(job_id, kwargs)
+
+    crons._update_job_locked_kw = _bind_concurrently_then_write  # type: ignore[method-assign]
 
 
 class TestProjectBoundJobEnableOwnerGate:
     @pytest.mark.asyncio
-    async def test_non_owner_cannot_reenable_a_bound_disabled_job(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(
-            name="n",
-            message="m",
-            every_secs=3600,
-            project_path=str(tmp_path),
-            enabled=False,
-        )
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
+    async def test_non_owner_cannot_reenable_a_bound_disabled_job(self, tmp_path, crons):
+        job = _add_job(crons, project_path=str(tmp_path), enabled=False)
+        with _owner_is(False):
             resp = await api_cron_enable(_enable_request({"enabled": True}, crons, job.id))
         assert resp.status == 403
         assert (
@@ -75,59 +91,40 @@ class TestProjectBoundJobEnableOwnerGate:
         ), "a denied re-enable must leave the job disabled"
 
     @pytest.mark.asyncio
-    async def test_owner_can_still_reenable_a_bound_disabled_job(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(
-            name="n",
-            message="m",
-            every_secs=3600,
-            project_path=str(tmp_path),
-            enabled=False,
-        )
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: True,
-        ):
+    async def test_owner_can_still_reenable_a_bound_disabled_job(self, tmp_path, crons):
+        job = _add_job(crons, project_path=str(tmp_path), enabled=False)
+        with _owner_is(True):
             resp = await api_cron_enable(_enable_request({"enabled": True}, crons, job.id))
         assert resp.status == 200
         assert crons.list_jobs()[0].enabled is True
 
     @pytest.mark.asyncio
-    async def test_non_owner_can_still_disable_a_bound_job(self, tmp_path):
+    async def test_non_owner_can_still_disable_a_bound_job(self, tmp_path, crons):
         # Only the RE-ENABLE direction is gated -- disabling stops execution
         # rather than starting it, so it must be unaffected.
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
+        job = _add_job(crons, project_path=str(tmp_path))
+        with _owner_is(False):
             resp = await api_cron_enable(_enable_request({"enabled": False}, crons, job.id))
         assert resp.status == 200
         assert crons.list_jobs(include_disabled=True)[0].enabled is False
 
     @pytest.mark.asyncio
-    async def test_non_owner_can_still_reenable_an_unbound_job(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, enabled=False)
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
+    async def test_non_owner_can_still_reenable_an_unbound_job(self, crons):
+        job = _add_job(crons, enabled=False)
+        with _owner_is(False):
             resp = await api_cron_enable(_enable_request({"enabled": True}, crons, job.id))
         assert resp.status == 200
         assert crons.list_jobs()[0].enabled is True
 
     @pytest.mark.asyncio
-    async def test_a_concurrent_rebind_on_reenable_is_audited_as_denied(self, tmp_path):
+    async def test_a_concurrent_rebind_on_reenable_is_audited_as_denied(self, tmp_path, crons):
         """GPT 5.6 Review F2: same audit gap as api_cron_update's identical
         CAS re-check -- see its test. The job must start UNBOUND so the
         non-owner passes the upfront owner-gate (job.project_path truthy
         denies outright, before any CAS is reached); the concurrent BIND
         lands between that snapshot read and the actual mutation, which is
         exactly the race expect_project_path exists to close."""
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, enabled=False)
+        job = _add_job(crons, enabled=False)
 
         real_get_job_async = crons.get_job_async
 
@@ -140,10 +137,7 @@ class TestProjectBoundJobEnableOwnerGate:
         crons.get_job_async = _get_job_then_bind_concurrently  # type: ignore[method-assign]
 
         with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: False,
-            ),
+            _owner_is(False),
             patch("kiro_crew.dashboard.handlers.cron._sel") as mock_sel,
         ):
             resp = await api_cron_enable(_enable_request({"enabled": True}, crons, job.id))
@@ -160,7 +154,7 @@ class TestProjectBoundJobEnableOwnerGate:
 
 class TestUpdatePathBindingToctou:
     @pytest.mark.asyncio
-    async def test_a_concurrent_bind_is_audited_as_denied(self, tmp_path):
+    async def test_a_concurrent_bind_is_audited_as_denied(self, tmp_path, crons):
         """The refusal now fires INSIDE the lock, and it must still be audited.
 
         Every sibling non-owner denial in this handler logs a SEL event; this one
@@ -171,22 +165,12 @@ class TestUpdatePathBindingToctou:
         because the check is a precondition of the write rather than a separate
         earlier read.
         """
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+        job = _add_job(crons)
 
-        real_locked_kw = crons._update_job_locked_kw
-
-        def _bind_concurrently_then_write(job_id: str, kwargs: dict):
-            crons._update_job_locked(job_id, project_path=str(tmp_path))
-            return real_locked_kw(job_id, kwargs)
-
-        crons._update_job_locked_kw = _bind_concurrently_then_write  # type: ignore[method-assign]
+        _bind_before_locked_write(crons, str(tmp_path))
 
         with (
-            patch(
-                "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-                lambda request: False,
-            ),
+            _owner_is(False),
             patch("kiro_crew.dashboard.handlers.cron._sel") as mock_sel,
         ):
             resp = await api_cron_update(_update_request({"message": "new"}, crons, job.id))
@@ -204,6 +188,7 @@ class TestUpdatePathBindingToctou:
     async def test_a_concurrent_bind_between_check_and_write_is_rejected_not_applied(
         self,
         tmp_path,
+        crons,
     ):
         # Simulates the race at its tightest: an owner's bind lands after the
         # handler has accepted a non-owner's message edit and immediately before
@@ -212,57 +197,43 @@ class TestUpdatePathBindingToctou:
         # the newly-bound job. The refusal is a precondition of the write itself,
         # so there is no check-then-write window to widen -- this pins that the
         # ordering holds even when the bind is as late as possible.
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+        job = _add_job(crons)
 
-        real_locked_kw = crons._update_job_locked_kw
+        _bind_before_locked_write(crons, str(tmp_path))
 
-        def _bind_concurrently_then_write(job_id: str, kwargs: dict):
-            crons._update_job_locked(job_id, project_path=str(tmp_path))
-            return real_locked_kw(job_id, kwargs)
-
-        crons._update_job_locked_kw = _bind_concurrently_then_write  # type: ignore[method-assign]
-
-        with patch(
-            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
-            lambda request: False,
-        ):
+        with _owner_is(False):
             resp = await api_cron_update(_update_request({"message": "new"}, crons, job.id))
         assert resp.status == 403
         assert (
             crons.list_jobs()[0].message == "m"
         ), "the refused update must leave the message unchanged"
 
-    def test_the_locked_core_refuses_a_bound_job_when_asked_to(self, tmp_path):
+    def test_the_locked_core_refuses_a_bound_job_when_asked_to(self, tmp_path, crons):
         # The update path's own precondition: unlike expect_project_path, which
         # compares against a caller's snapshot, this one needs no snapshot at all
         # -- it refuses any non-empty binding, decided under the write's lock.
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+        job = _add_job(crons, project_path=str(tmp_path))
         with pytest.raises(CronProjectBoundDenied):
             crons._update_job_locked_kw(job.id, {"message": "new", "refuse_project_bound": True})
         assert crons.list_jobs()[0].message == "m"
 
-    def test_the_locked_core_allows_an_unbound_job_under_the_same_precondition(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+    def test_the_locked_core_allows_an_unbound_job_under_the_same_precondition(self, crons):
+        job = _add_job(crons)
         updated = crons._update_job_locked_kw(
             job.id, {"message": "new", "refuse_project_bound": True}
         )
         assert updated is not None
         assert updated.message == "new"
 
-    def test_the_locked_core_raises_on_a_project_path_mismatch(self, tmp_path):
+    def test_the_locked_core_raises_on_a_project_path_mismatch(self, tmp_path, crons):
         # Direct unit check of the precondition itself, independent of the
         # handler-level race simulation above.
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+        job = _add_job(crons, project_path=str(tmp_path))
         with pytest.raises(CronPendingMismatch):
             crons._update_job_locked(job.id, message="new", expect_project_path="")
 
-    def test_the_locked_core_accepts_a_matching_project_path_precondition(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+    def test_the_locked_core_accepts_a_matching_project_path_precondition(self, tmp_path, crons):
+        job = _add_job(crons, project_path=str(tmp_path))
         updated = crons._update_job_locked(
             job.id,
             message="new",
@@ -286,9 +257,9 @@ class TestRunPathBindingToctou:
     async def test_run_refuses_when_the_binding_changed_before_the_task_actually_starts(
         self,
         tmp_path,
+        crons,
     ):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+        job = _add_job(crons)
         # Simulate the owner binding the project between the handler's check
         # (which saw it unbound) and run_job's own later re-sync.
         crons._update_job_locked(job.id, project_path=str(tmp_path))
@@ -302,17 +273,15 @@ class TestRunPathBindingToctou:
         ), "a refused run must never actually execute against the newly-bound project"
 
     @pytest.mark.asyncio
-    async def test_run_still_executes_when_the_binding_is_unchanged(self, tmp_path):
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600, project_path=str(tmp_path))
+    async def test_run_still_executes_when_the_binding_is_unchanged(self, tmp_path, crons):
+        job = _add_job(crons, project_path=str(tmp_path))
         ok = await crons.run_job(job.id, expect_project_path=str(tmp_path))
         assert ok is True
 
     @pytest.mark.asyncio
-    async def test_run_is_unaffected_without_a_precondition(self, tmp_path):
+    async def test_run_is_unaffected_without_a_precondition(self, crons):
         # The owner's own request path passes no precondition at all -- an
         # unbound job must run normally regardless.
-        crons = CronService(base_dir=tmp_path)
-        job = crons.add_job(name="n", message="m", every_secs=3600)
+        job = _add_job(crons)
         ok = await crons.run_job(job.id)
         assert ok is True

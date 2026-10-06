@@ -1,17 +1,10 @@
-"""``GET /api/agents?project_path=`` serves the PROJECT row on a name collision.
+"""``GET /api/agents?project_path=`` on a collision with an alias's TEMPLATE.
 
-A name declared both in ``cfg.agents`` and by the bound project resolves to the
-project's definition at fire time: kiro-cli searches ``<project>/.kiro/agents``
-before the user-level directory and the fire runs with the bound folder as cwd.
-The roster therefore has to serve the project row and suppress the global one --
-serving the global row would advertise an agent that cannot run in that
-directory, so the picker would offer one definition while another answers.
-
-The endpoint must not compute ``project_names - set(cfg.agents.keys())``: that
-keeps the losing side, so a colliding project agent produces NO row at all and
-the global row is served in its place. It also makes the picker's ``overrides
-global`` marker unreachable, because the frontend can only mark a collision it
-can see.
+An alias dispatches its ``kiro_agent``; kiro-cli resolves that template
+``<project>/.kiro/agents``-first in the bound cwd. So a project declaring the
+template is what answers: the roster serves its project row and drops the
+alias's global row. A project file sharing only the alias's NAME is never run,
+so that name stays the alias's global row.
 """
 
 from __future__ import annotations
@@ -90,12 +83,12 @@ def _seed(tmp_path, *names: str):
 class TestProjectRowWinsACollision:
     @pytest.mark.asyncio
     async def test_colliding_name_is_served_as_the_project_row(self, tmp_path):
-        proj = _seed(tmp_path, "reviewer")
+        proj = _seed(tmp_path, "reviewer-template")
         state = _make_state(tmp_path)
 
         data = await _roster(state, str(proj))
 
-        rows = [a for a in data["agents"] if a["name"] == "reviewer"]
+        rows = [a for a in data["agents"] if a["name"] == "reviewer-template"]
         assert len(rows) == 1, (
             "exactly one row per name -- two rows would offer a choice the job's "
             f"bare-string agent field cannot record, got {rows}"
@@ -113,15 +106,23 @@ class TestProjectRowWinsACollision:
         Leaving it in would keep the frontend's dedup responsible for choosing a
         winner -- the split responsibility that produced the original defect.
         """
+        proj = _seed(tmp_path, "reviewer-template")
+        state = _make_state(tmp_path)
+
+        data = await _roster(state, str(proj))
+
+        assert not [
+            a for a in data["agents"] if a["name"] == "reviewer"
+        ], "the shadowed global row must be suppressed"
+
+    @pytest.mark.asyncio
+    async def test_a_project_file_sharing_only_the_alias_name_displaces_nothing(self, tmp_path):
         proj = _seed(tmp_path, "reviewer")
         state = _make_state(tmp_path)
 
         data = await _roster(state, str(proj))
 
-        assert [a["scope"] for a in data["agents"] if a["name"] == "reviewer"] == ["project"]
-        assert not [
-            a for a in data["agents"] if a["name"] == "reviewer" and a["scope"] == "global"
-        ], "the shadowed global row must be suppressed"
+        assert [a["scope"] for a in data["agents"] if a["name"] == "reviewer"] == ["global"]
 
     @pytest.mark.asyncio
     async def test_the_project_row_does_not_inherit_the_shadowed_private_store(self, tmp_path):
@@ -131,12 +132,12 @@ class TestProjectRowWinsACollision:
         branch. Inheriting the shadowed crew's named memory store would turn
         landing a branch into a read of that crew's memory.
         """
-        proj = _seed(tmp_path, "reviewer")
+        proj = _seed(tmp_path, "reviewer-template")
         state = _make_state(tmp_path)
 
         data = await _roster(state, str(proj))
 
-        row = next(a for a in data["agents"] if a["name"] == "reviewer")
+        row = next(a for a in data["agents"] if a["name"] == "reviewer-template")
         assert (
             row["memory_store"] != "reviewer-private"
         ), "the project row must not carry the shadowed alias's private store"
@@ -152,7 +153,7 @@ class TestProjectRowWinsACollision:
         A project-only agent still appears, and an unrelated global alias is not
         collaterally dropped by the suppression.
         """
-        proj = _seed(tmp_path, "reviewer", "repo-only")
+        proj = _seed(tmp_path, "reviewer-template", "repo-only")
         state = _make_state(tmp_path)
 
         data = await _roster(state, str(proj))
@@ -199,7 +200,7 @@ class TestProjectRowWinsACollision:
         must agree with the behaviour above. Saying "listed once, as the alias:
         dispatch resolves aliases first, so the alias is what would answer"
         states the inverse of both the row the code serves AND of dispatch,
-        where a project definition shadows a same-named alias
+        where a project file declaring an alias's template shadows it
         (``_resolve_agent_selection``'s project-override step). A contract that
         states the inverse of the tested behaviour is worse than none."""
         from kiro_crew.dashboard.handlers.agents import api_kirocrew_agents
@@ -211,9 +212,9 @@ class TestProjectRowWinsACollision:
         )
         assert "dispatch resolves aliases first" not in doc, (
             "the docstring still claims dispatch resolves aliases first; a project "
-            "definition shadows a same-named alias in dispatch"
+            "file declaring an alias's template shadows it in dispatch"
         )
-        assert "PROJECT row" in doc and "shadows" in doc, (
-            "the docstring must state that a colliding name is served as the "
-            "project row because the project definition shadows the alias"
+        assert "kiro_agent" in doc and "template" in doc, (
+            "the docstring must state that the collision is judged on the alias's "
+            "kiro_agent template"
         )

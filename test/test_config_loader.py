@@ -5977,15 +5977,9 @@ class TestAppAgentDispatch(unittest.TestCase):
         assert r.kiro_agent == "kirocrew"
         assert r.requested_resolved is False
 
-    def test_project_agent_beats_a_same_named_alias(self):
-        # Contextual precedence: within a bound project a project definition WINS
-        # over a same-named config alias, because a project's agents join the crew
-        # as that project's subject-matter experts. It also matches how the layer
-        # beneath resolves the name -- kiro-cli searches <project>/.kiro/agents
-        # before the user-level registry and resolves a same-name conflict in the
-        # project's favour, and the session runs with that directory as its cwd, so
-        # the project file answers whatever this step prefers. Outside the directory
-        # the alias is untouched -- see the sibling test below.
+    def test_alias_still_wins_over_a_project_agent(self):
+        # An explicit Kiro Crew alias is authored config; it must not be displaced by
+        # a file that happens to share its name.
         import kiro_crew.config.loader as loader
 
         with tempfile.TemporaryDirectory() as td:
@@ -5995,7 +5989,21 @@ class TestAppAgentDispatch(unittest.TestCase):
                 r = loader.resolve_agent_bindings(
                     self._config(), agent_name="default", project_dir=str(proj)
                 )
-        assert r.kiro_agent == "default"
+        assert r.kiro_agent == "kirocrew"
+
+    def test_project_agent_beats_an_alias_whose_template_it_declares(self):
+        # kiro-cli resolves the alias's kiro_agent project-first in the bound cwd,
+        # so a project file named after that TEMPLATE is what answers.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"kirocrew.json": {"name": "kirocrew"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(
+                    self._config(), agent_name="default", project_dir=str(proj)
+                )
+        assert r.kiro_agent == "kirocrew"
         assert r.resolved_source == "project"
         assert r.requested_resolved is True
 
@@ -6051,7 +6059,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             agents = self._agents_dir(Path(td), {})
-            proj = self._project_dir(Path(td), {"dev.json": {"name": "dev"}})
+            proj = self._project_dir(Path(td), {"dev-template.json": {"name": "dev-template"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
                 won = loader.resolve_agent_bindings(
                     cfg,
@@ -6066,7 +6074,7 @@ class TestAppAgentDispatch(unittest.TestCase):
                 control = loader.resolve_agent_bindings(
                     cfg, agent_name="dev", validate_memory_files=False
                 )
-        assert won.kiro_agent == "dev"
+        assert won.kiro_agent == "dev-template"
         assert won.resolved_source == "project"
         assert won.memory_store_name != "dev-private"
         assert won.execution_context is not None
@@ -6075,7 +6083,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         assert control.memory_store_name == "dev-private"
         assert control.resolved_source == "alias"
 
-    def test_a_project_file_named_like_a_crews_template_neither_shadows_nor_leaks(self):
+    def test_a_project_file_named_like_a_crews_template_wins_without_its_store(self):
         # The override reasoning turns on a name COLLIDING with a definition, so it
         # must be exercised where the alias and its physical template are spelled
         # differently AND the collision is on the physical name. The other pins
@@ -6084,20 +6092,10 @@ class TestAppAgentDispatch(unittest.TestCase):
         # template a differently-named alias points AT when a checkout ships a file
         # of that template's name. Two distinct guarantees ride on it:
         #
-        #  (1) The alias is resolved BY ITS OWN NAME, which the checkout does not
-        #      declare, so nothing displaces it -- it keeps its own template and its
-        #      own private store. That is a statement about SELECTION and is NOT a
-        #      claim that the project's file cannot answer the turn: the dispatched
-        #      template IS the colliding name, and kiro-cli resolves it
-        #      project-first in that cwd. The residual is recorded in
-        #      docs/system-specs/modules/config.md ("an ORDINARY caller's probe
-        #      judges the selected name only") together with why widening this
-        #      probe would not close it -- the store a chat turn runs under comes
-        #      from the session's captured execution record. Where this change put
-        #      a bound folder in front of a captured PRIVATE store (the cron fire),
-        #      the dispatched template is re-checked there instead; see
-        #      test_cron_gateway_integration.py's
-        #      TestAProjectFileNamedLikeTheDispatchedTemplate.
+        #  (1) The alias, resolved BY ITS OWN NAME, dispatches the colliding
+        #      template, which kiro-cli resolves project-first in that cwd -- so the
+        #      project file wins and lands on the DEFAULT store, never the alias's
+        #      private one.
         #  (2) The colliding template NAME, asked for directly with that checkout
         #      bound, is re-pointed at the project's own file under the DEFAULT
         #      store, not answered with the crew's private-store bindings -- so
@@ -6134,8 +6132,7 @@ class TestAppAgentDispatch(unittest.TestCase):
             # The checkout ships a file named after the TEMPLATE, not the alias.
             proj = self._project_dir(Path(td), {"dev-template.json": {"name": "dev-template"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
-                # (1) Resolving the alias by its own name: the checkout declares no
-                # "dev", so the alias stands, template and private store intact.
+                # (1) Resolving the alias by its own name: its template is declared.
                 by_alias = loader.resolve_agent_bindings(
                     cfg, agent_name="dev", project_dir=str(proj), validate_memory_files=False
                 )
@@ -6155,10 +6152,10 @@ class TestAppAgentDispatch(unittest.TestCase):
                     validate_memory_files=False,
                     allow_project_override=False,
                 )
-        # (1) Alias untouched: its own name is not the colliding one.
-        assert by_alias.resolved_source == "alias"
+        # (1) The project's template file wins, off the crew's private store.
+        assert by_alias.resolved_source == "project"
         assert by_alias.kiro_agent == "dev-template"
-        assert by_alias.memory_store_name == "dev-private"
+        assert by_alias.memory_store_name == "default"
         assert by_alias.requested_resolved is True
         # (2a) Re-pointed at the project's file, NOT the crew's private store.
         assert repoint.resolved_source == "materialized"
@@ -6236,7 +6233,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         # this refusal is the opposite of the truth.
         assert r.resolved_source == loader.RESOLVED_SOURCE_MEMBER_SHADOWED
         assert control.requested_resolved is True
-        assert control.resolved_source == "project"
+        assert control.resolved_source == "alias"
 
     def test_a_member_alias_whose_dispatched_template_is_shadowed_is_refused(self):
         """A project cannot borrow a member alias's private store via its template."""
@@ -6467,7 +6464,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             agents = self._agents_dir(Path(td), {})
-            proj = self._project_dir(Path(td), {"dev.json": {"name": "dev"}})
+            proj = self._project_dir(Path(td), {"dev-template.json": {"name": "dev-template"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
                 shadowed = loader.resolve_agent_bindings(
                     cfg,
@@ -6485,7 +6482,7 @@ class TestAppAgentDispatch(unittest.TestCase):
             "a member-kind selection shadowed by a project file resolved as "
             "unavailable -- the bound chat slot raises on every turn"
         )
-        assert shadowed.kiro_agent == "dev"
+        assert shadowed.kiro_agent == "dev-template"
         assert shadowed.resolved_source == "project"
         assert shadowed.selection_kind == "template"
         assert shadowed.memory_store_name != "dev-private"
@@ -6510,7 +6507,10 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             agents = self._agents_dir(Path(td), {"default.json": {"name": "default"}})
-            proj = self._project_dir(Path(td), {"default.json": {"name": "default"}})
+            proj = self._project_dir(
+                Path(td),
+                {"default.json": {"name": "default"}, "kirocrew.json": {"name": "kirocrew"}},
+            )
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
                 picked = loader.resolve_agent_bindings(
                     self._config(),

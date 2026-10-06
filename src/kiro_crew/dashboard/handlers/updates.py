@@ -2479,6 +2479,12 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     # publishing it to an unscoped client. Mirrors `api_ws`'s
     # `ws["_is_dashboard_user"]`. Consumed by the chat_message arm below.
     is_dashboard_user: bool = bool(request.get("is_dashboard_user", False))
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        project_output_visible_to_non_owner,
+    )
+
+    is_owner = is_owner_dashboard_request(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -2497,6 +2503,8 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                 try:
                     note = client_q.get_nowait()
                     msg_type = note.get("_type", "")
+                    if not is_owner and not project_output_visible_to_non_owner(note):
+                        continue
                     if msg_type == "slots":
                         payload = note["slots"]
                         await resp.write(f"event: slots\ndata: {payload}\n\n".encode())

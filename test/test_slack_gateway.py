@@ -2436,7 +2436,7 @@ class TestInitCron:
         cfg = KiroCrewConfig(
             agents={
                 "default": KiroCrewAgentConfig(kiro_agent="kirocrew"),
-                "dev": KiroCrewAgentConfig(kiro_agent="dev-template", memory_store="dev-private"),
+                "dev": KiroCrewAgentConfig(kiro_agent="dev", memory_store="dev-private"),
                 "helper": KiroCrewAgentConfig(kiro_agent="helper"),
             },
             default_agent="default",
@@ -4647,7 +4647,7 @@ class TestCronFailurePaths:
         (agents_dir / "planner.json").write_text(_json.dumps({"name": "planner"}), encoding="utf-8")
 
         cfg = KiroCrewConfig.load()
-        cfg.agents["planner"] = KiroCrewAgentConfig(kiro_agent="planner-template")
+        cfg.agents["planner"] = KiroCrewAgentConfig(kiro_agent="planner")
         cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="writer-template")
         cfg.save()
 
@@ -4707,8 +4707,11 @@ class TestCronFailurePaths:
         assert won.store.store_id == "default"
         assert won.selection_kind == "template"
         # The alias member, which no project file displaced, keeps the job's
-        # execution exactly as before -- this fix changes only the won case.
-        assert executions["writer-template"].template_id == "kirocrew"
+        # store but dispatches under its OWN template, which its spawn
+        # allowlist is read from -- never the job-level "kirocrew" fallback.
+        writer = executions["writer-template"]
+        assert writer.template_id == "writer-template"
+        assert writer.selection_kind == "template"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

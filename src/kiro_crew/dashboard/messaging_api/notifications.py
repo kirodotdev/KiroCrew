@@ -20,9 +20,17 @@ if TYPE_CHECKING:
 
 async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
-    return web.json_response(
-        {"notifications": state._notification_log, "unread": state._unread_count}
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        project_output_visible_to_non_owner,
     )
+
+    notifications = state._notification_log
+    if not is_owner_dashboard_request(request):
+        notifications = [
+            note for note in notifications if project_output_visible_to_non_owner(note)
+        ]
+    return web.json_response({"notifications": notifications, "unread": state._unread_count})
 
 
 async def api_notification_delete(request: web.Request) -> web.Response:

@@ -4124,7 +4124,7 @@ class GatewayOrchestrator:
 
                 Re-points the STORE only. The project file IS what runs, so the
                 template stays dispatched and the fire is not skipped -- the
-                alias-name collision's own ruling, that a winning project
+                resolver's own collision ruling, that a winning project
                 definition carries the crew's infrastructure away and lands on
                 Global memory, rather than the member opt-out's refusal.
 
@@ -5656,8 +5656,12 @@ class GatewayOrchestrator:
                         # template switch, whose `.store` is `cron_execution`'s
                         # unchanged, so the memory_store fallback below resolves
                         # to the same value either way.
+                        # A bound step the folder does not shadow gets the job's
+                        # own execution back; it still dispatches under the step's
+                        # template, or its spawn allowlist reads the job's.
                         _seq_execution = _seq_executions.get(agent)
-                        if _seq_execution is None:
+                        _seq_job_execution = _seq_execution is cron_execution
+                        if _seq_execution is None or _seq_job_execution:
                             _seq_execution = cron_execution.with_template(
                                 step.dispatch_agent, step.crew or step.alias
                             )
@@ -5707,7 +5711,7 @@ class GatewayOrchestrator:
                             agent=_resolved_seq_agent,
                             memory_store=(
                                 _seq_execution.store.legacy_name or None
-                                if _seq_execution is not cron_execution
+                                if not _seq_job_execution
                                 else cron_memory_store or _seq_store or None
                             ),
                             execution_context=_seq_execution,
@@ -6418,7 +6422,10 @@ class GatewayOrchestrator:
                                 "cron",
                                 title,
                                 redacted_for_dash,
-                                meta={"job_id": job.id},
+                                meta={
+                                    "job_id": job.id,
+                                    "project_bound": bool(job.project_path),
+                                },
                             )
 
                         sel().log_tool_invocation(
@@ -6505,7 +6512,10 @@ class GatewayOrchestrator:
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)
                     safe_name, _ = redact_exfiltration_urls(job.name)
                     safe_name, _ = redact_credentials(safe_name)
-                    notify_meta: dict[str, str] = {"job_id": job.id}
+                    notify_meta: dict[str, object] = {
+                        "job_id": job.id,
+                        "project_bound": bool(job.project_path),
+                    }
                     # Gate the slot linkage on not hide_in_chat for parity with the
                     # three inject sites above. Without this, a job flipped to
                     # hide_in_chat=True that still owns an older cron-{id} slot would

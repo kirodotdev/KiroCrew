@@ -134,8 +134,32 @@ def _make_job(
     # Rendered by the PRODUCTION renderer rather than hand-written, so the fake
     # cannot drift from the spelling the executor actually persists.
     job.last_result_stamp = CronJob._render_run_stamp(job, last_result_ts)
+    job.last_result_project_bound = False
+    job.project_path = ""
     job.agent_id = ""
     return job
+
+
+def test_injected_rows_carry_project_bound_provenance():
+    state = _make_state()
+    job = _make_job()
+    job.project_path = "/private/project"
+    job.last_result_project_bound = True
+
+    _inject(state, job, "private result")
+
+    slot = state.get_or_create_slot(name=f"cron-{job.id}")
+    assert [row["meta"]["project_bound"] for row in slot.messages] == [True, True]
+
+
+def test_injected_unbound_rows_carry_negative_provenance():
+    state = _make_state()
+    job = _make_job()
+
+    _inject(state, job, "ordinary result")
+
+    slot = state.get_or_create_slot(name=f"cron-{job.id}")
+    assert [row["meta"]["project_bound"] for row in slot.messages] == [False, False]
 
 
 def _inject(state, job, result_text, **kw):

@@ -1189,6 +1189,34 @@ class TestNotificationRoutes:
         resp = _run(mod.api_notifications, _Req(state))
         assert _payload(resp) == {"notifications": [{"ts": "1"}], "unread": 3}
 
+    def test_list_withholds_project_bound_notifications_from_non_owner(self) -> None:
+        state = _state(
+            _notification_log=[
+                {"ts": "bound", "kind": "cron", "body": "private", "project_bound": True},
+                {"ts": "plain", "kind": "cron", "body": "safe", "project_bound": False},
+                {"ts": "other", "kind": "agent", "body": "ordinary"},
+            ],
+            _unread_count=3,
+        )
+        req = _Req(state, extra={"user": "U0OTHER0000"})
+        body = _payload(_run(mod.api_notifications, req))
+        assert [note["ts"] for note in body["notifications"]] == ["plain", "other"]
+
+    @pytest.mark.parametrize("bad", ["false", 0, None, [], {}])
+    def test_list_withholds_malformed_project_bound_provenance(self, bad: Any) -> None:
+        state = _state(
+            _notification_log=[
+                {"ts": "bad", "kind": "cron", "body": "private", "project_bound": bad}
+            ]
+        )
+        req = _Req(state, extra={"user": "U0OTHER0000"})
+        assert _payload(_run(mod.api_notifications, req))["notifications"] == []
+
+    def test_owner_still_reads_project_bound_notifications(self) -> None:
+        note = {"ts": "bound", "kind": "cron", "body": "private", "project_bound": True}
+        state = _state(_notification_log=[note], _unread_count=1)
+        assert _payload(_run(mod.api_notifications, _Req(state)))["notifications"] == [note]
+
     @pytest.mark.parametrize(
         "handler",
         [mod.api_notification_delete, mod.api_notification_ack, mod.api_notification_unack],

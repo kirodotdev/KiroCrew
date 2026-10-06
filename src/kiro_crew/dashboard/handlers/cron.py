@@ -51,7 +51,10 @@ from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     require_owner_dashboard_request,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    project_output_visible_to_non_owner,
+)
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
@@ -339,18 +342,20 @@ async def _non_owner_transcript_rows(
     is withheld when it falls inside a bound window, when it falls in NO window
     at all (slot chatter no run accounts for), when its stamp will not parse,
     and when it predates the oldest record this read can see. An empty or
-    degraded run read proves nothing either way, so it withholds everything;
-    only POSITIVE evidence of runs with none of them bound serves a transcript
-    whole. A bound run whose window cannot be placed could account for any row,
-    so it too withholds everything.
+    degraded run read proves nothing either way, so it withholds everything,
+    and a transcript is NEVER served whole: with no bound window on record the
+    rows a retained unbound window covers are still all that is served, because
+    retention prunes a bound RECORD while its rows survive. A bound run whose
+    window cannot be placed could account for any row, so it too withholds
+    everything.
 
     The second return value says whether a bound run is on record, which the
     deleted-job branch needs: with the job gone its notification body is the
     one payload carrying no provenance at all and no live stamp to consult, so
-    "cannot tell" has to mean withhold there too.
+    "cannot tell" has to mean withhold there too. An EMPTY transcript is not
+    exempt: a ``hide_in_chat`` job writes none, yet its bound runs still left a
+    notification body behind, so it reports the run records' own verdict.
     """
-    if not history:
-        return [], False
     runs, _total = await state.crons.get_history().get_job_history(
         job_id, limit=_TRANSCRIPT_PROVENANCE_RUN_PAGE, offset=0
     )
@@ -364,7 +369,12 @@ async def _non_owner_transcript_rows(
     for run in runs:
         started = _run_window_ts(run.get("started_at"))
         finished = _run_window_ts(run.get("finished_at"))
-        if run.get("project_bound", False):
+        project_bound = run.get("project_bound", False)
+        if not isinstance(project_bound, bool):
+            # A disclosure bit the writer cannot produce is not evidence that
+            # any transcript row is safe.
+            return [], True
+        if project_bound:
             if started <= 0:
                 return [], True
             # An unfinished bound run is open-ended rather than empty: its
@@ -373,10 +383,15 @@ async def _non_owner_transcript_rows(
             bound_windows.append((started, finished if finished >= started else float("inf")))
         elif started > 0 and finished >= started:
             unbound_windows.append((started, finished))
-    if not bound_windows:
-        return list(history), False
+    if not history:
+        return [], bool(bound_windows)
     kept: list[dict[str, Any]] = []
     for row in history:
+        # Explicit row provenance outranks the run-window fallback: a current
+        # timestamp cannot relabel retained bound content as unbound. Only a
+        # dict can carry the marker.
+        if isinstance(row, dict) and not project_output_visible_to_non_owner(row):
+            continue
         bucket, epoch = transcript_sort_key(str(row.get("ts") or ""))
         if bucket != 0:
             continue
@@ -384,7 +399,10 @@ async def _non_owner_transcript_rows(
             continue
         if any(start <= epoch <= end for start, end in unbound_windows):
             kept.append(row)
-    return kept, True
+    # Same verdict as the empty-transcript exit: the flag says whether a BOUND
+    # run is on record. A read that saw runs and found none bound must not
+    # refuse -- the fail-closed cases already returned early.
+    return kept, bool(bound_windows)
 
 
 def _cron_unreadable_response(exc: CronStoreUnreadable) -> web.Response:
@@ -2769,8 +2787,16 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                     },
                     status=403,
                 )
+            # Newest first, and for a non-owner only a note whose own stamp
+            # proves an unbound run: the log is append-ordered and also keeps
+            # the bound runs' bodies.
             notif = next(
-                (n for n in state._notification_log if n.get("job_id") == job_id),
+                (
+                    n
+                    for n in reversed(state._notification_log)
+                    if n.get("job_id") == job_id
+                    and (_owner_view or project_output_visible_to_non_owner(n))
+                ),
                 None,
             )
             if not notif:

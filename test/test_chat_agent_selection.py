@@ -216,8 +216,8 @@ def test_project_override_survives_the_wrapper_instead_of_being_restored(tmp_pat
     agents_dir.mkdir()
     proj = tmp_path / "repo"
     (proj / ".kiro" / "agents").mkdir(parents=True)
-    (proj / ".kiro" / "agents" / "dev.json").write_text(
-        json.dumps({"name": "dev"}), encoding="utf-8"
+    (proj / ".kiro" / "agents" / "dev-template.json").write_text(
+        json.dumps({"name": "dev-template"}), encoding="utf-8"
     )
     monkeypatch.setattr("kiro_crew.config.loader.kiro_agents_dir", lambda: agents_dir)
 
@@ -226,7 +226,7 @@ def test_project_override_survives_the_wrapper_instead_of_being_restored(tmp_pat
     )
 
     assert bindings.resolved_source == "project"
-    assert bindings.kiro_agent == "dev"
+    assert bindings.kiro_agent == "dev-template"
     assert bindings.memory_store_name == "default"
     assert bindings.execution_context is not None
     assert bindings.execution_context.member_id is None

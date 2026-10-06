@@ -69,8 +69,11 @@ def _make_state(jobs=None, history_messages=None, notifications=None):
     # rather than exercise it, and an EMPTY read is not the same input: with the
     # job gone and no row to read, the gate cannot tell and withholds, so the
     # stub has to supply the row that says "ran, unbound" to mean what it says.
+    # It also needs a real WINDOW: the replay filter serves a row only when an
+    # unbound run's bounds cover its timestamp, and ``_run_window_ts`` reads
+    # those as NUMERIC epoch seconds -- an ISO string reads as 0.0.
     async def _unbound_job_history(job_id, limit=1, offset=0):
-        return [{"project_bound": False}], 1
+        return [{"project_bound": False, "started_at": 1.0, "finished_at": 4_000_000_000.0}], 1
 
     state.crons.get_history.return_value.get_job_history = AsyncMock(
         side_effect=_unbound_job_history
@@ -128,8 +131,8 @@ class TestApiCronToChat:
     @pytest.mark.asyncio
     async def test_deleted_job_with_history_creates_slot(self):
         history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "world"},
+            {"role": "user", "content": "hello", "ts": "2026-01-01T00:00:01+00:00"},
+            {"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:02+00:00"},
         ]
         state = _make_state(history_messages=history)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -147,7 +150,7 @@ class TestApiCronToChat:
         # the transcript's dismissed source-link set, or a re-surfaced one-shot
         # session shows a chip the user unlinked and its next save erases the
         # tombstone. Readable metadata -> the set is restored.
-        history = [{"role": "assistant", "content": "world"}]
+        history = [{"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:03+00:00"}]
         state = _make_state(history_messages=history)
         key = "phor5::pull::11"
         state.conversation_log.get_metadata_status.return_value = (
@@ -180,7 +183,7 @@ class TestApiCronToChat:
         # the off-loop read, so a periodic flush during the await carries the
         # on-disk line forward instead of erasing it. An unreadable read leaves it
         # deferred (never restored to True).
-        history = [{"role": "assistant", "content": "world"}]
+        history = [{"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:04+00:00"}]
         state = _make_state(history_messages=history)
         state.conversation_log.get_metadata_status.return_value = ({}, False)  # unreadable
         slot_holder = {}
@@ -206,7 +209,7 @@ class TestApiCronToChat:
         # restore is skipped and the slot stays _dismissed_hydrated=False (union-
         # carry). A must NOT survive, or the carry-forward save would fold it into
         # THIS session's transcript and hide its matching chip.
-        history = [{"role": "assistant", "content": "world"}]
+        history = [{"role": "assistant", "content": "world", "ts": "2026-01-01T00:00:05+00:00"}]
         state = _make_state(history_messages=history)
         state.conversation_log.get_metadata_status.return_value = ({}, False)  # unreadable
         stale = "phor5::pull::11"

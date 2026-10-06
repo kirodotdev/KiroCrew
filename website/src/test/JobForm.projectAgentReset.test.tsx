@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import type { ComponentProps } from 'react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import JobForm from '../components/JobForm'
 import type { KiroCrewAgent } from '../components/AgentSelector'
@@ -28,10 +29,36 @@ function messageJob(overrides: Partial<CronJob> = {}): CronJob {
   } as CronJob
 }
 
+const builtInAgent: KiroCrewAgent = {
+  name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
+  description: 'built-in', source: 'kirocrew',
+}
+const eaDevAgent: KiroCrewAgent = {
+  name: 'ea-dev', kiro_agent: 'ea-dev', workspace: 'ea', memory_store: 'ea',
+  description: 'ea agent', source: 'kirocrew',
+}
+const withDefaultAgent = { agents: [builtInAgent], defaultAgent: 'default' }
+
+/** Renders JobForm with the props every test shares; `overrides` varies any one. */
+function renderJobForm(overrides: Partial<ComponentProps<typeof JobForm>> = {}) {
+  return renderWithProviders(
+    <JobForm
+      job={messageJob()}
+      agents={[]}
+      defaultAgent=""
+      onSaved={() => {}}
+      layout="vertical"
+      {...overrides}
+    />,
+  )
+}
+
 beforeEach(() => {
   vi.mocked(api.kirocrewAgents).mockReset()
   vi.mocked(api.kirocrewAgents).mockResolvedValue({ agents: [], default_agent: '' })
 })
+
+afterEach(() => { vi.useRealTimers() })
 
 /**
  * GPT 5.6 Review F2: switching the project directory from project A to
@@ -64,18 +91,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
         default_agent: '',
       })
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/repo-a' },
@@ -122,18 +138,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
         default_agent: '',
       })
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/repo-a' },
@@ -161,18 +166,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
       .mockResolvedValueOnce({ agents: [], default_agent: '' })
       .mockResolvedValueOnce({ agents: [], default_agent: '' })
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[
-          { name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default', description: 'built-in', source: 'kirocrew' },
-          { name: 'ea-dev', kiro_agent: 'ea-dev', workspace: 'ea', memory_store: 'ea', description: 'ea agent', source: 'kirocrew' },
-        ]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm({ agents: [builtInAgent, eaDevAgent], defaultAgent: 'default' })
 
     fireEvent.click(screen.getByLabelText('Switch agent'))
     fireEvent.click(screen.getByRole('option', { name: /ea-dev/ }))
@@ -208,15 +202,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
         default_agent: '',
       })
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm()
 
     const projectDirectory = screen.getByLabelText('Project directory')
     fireEvent.change(projectDirectory, { target: { value: '/Users/you/projects/repo-a' } })
@@ -254,15 +240,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
       })
       .mockResolvedValueOnce({ agents: [globalFromProjectRoster], default_agent: '' })
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm()
 
     const projectDirectory = screen.getByLabelText('Project directory')
     fireEvent.change(projectDirectory, { target: { value: '/Users/you/projects/repo-a' } })
@@ -292,15 +270,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
       default_agent: '',
     }))
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm()
 
     const projectDirectory = screen.getByLabelText('Project directory')
     fireEvent.change(projectDirectory, { target: { value: initialPath } })
@@ -349,18 +319,7 @@ describe('JobForm reconciles the agent picker when the project directory switche
       default_agent: '',
     }))
 
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
 
     const projectDirectory = screen.getByLabelText('Project directory')
     fireEvent.change(projectDirectory, { target: { value: initialPath } })
@@ -414,18 +373,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -459,18 +407,7 @@ describe('JobForm clears a project-only agent selection when the project directo
     // A global agent that happens to be selected must survive the folder
     // clearing -- this gate only targets names the global roster does not
     // recognize.
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[
-          { name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default', description: 'built-in', source: 'kirocrew' },
-          { name: 'ea-dev', kiro_agent: 'ea-dev', workspace: 'ea', memory_store: 'ea', description: 'ea agent', source: 'kirocrew' },
-        ]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm({ agents: [builtInAgent, eaDevAgent], defaultAgent: 'default' })
 
     fireEvent.click(screen.getByLabelText('Switch agent'))
     fireEvent.click(screen.getByRole('option', { name: /ea-dev/ }))
@@ -493,15 +430,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm()
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -526,15 +455,7 @@ describe('JobForm clears a project-only agent selection when the project directo
     // message job while the roster fetch failed or is still in flight would
     // silently clear its persisted agent binding, and a later save would
     // overwrite it with the default even though the user changed nothing.
-    renderWithProviders(
-      <JobForm
-        job={messageJob({ agent: 'ea-dev' })}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm({ job: messageJob({ agent: 'ea-dev' }) })
 
     // The job's saved agent must still be shown as selected -- not reset to
     // the (also empty) default just because the roster hasn't loaded.
@@ -561,15 +482,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[]}
-        defaultAgent=""
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm()
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -610,18 +523,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -632,11 +534,12 @@ describe('JobForm clears a project-only agent selection when the project directo
     fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
     await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
 
+    vi.useFakeTimers()
     fireEvent.change(screen.getByLabelText('Project directory'), { target: { value: '' } })
-    await waitFor(() => expect(screen.getByTestId('jobform-agent-reset-note')).toBeInTheDocument())
+    expect(screen.getByTestId('jobform-agent-reset-note')).toBeInTheDocument()
 
-    // Past the 250ms debounce, so the query-disabling re-run has happened.
-    await new Promise(resolve => setTimeout(resolve, 600))
+    // Settle the 250ms debounce and flush the query-disabling re-render.
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
 
     const note = screen.getByTestId('jobform-agent-reset-note')
     expect(note).toHaveTextContent('repo-bot')
@@ -657,18 +560,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
     const field = screen.getByLabelText('Project directory')
 
     for (const round of [1, 2]) {
@@ -678,15 +570,14 @@ describe('JobForm clears a project-only agent selection when the project directo
       fireEvent.click(screen.getByRole('option', { name: /repo-bot/ }))
       await waitFor(() => expect(screen.getByLabelText('Switch agent')).toHaveTextContent('repo-bot'))
 
+      vi.useFakeTimers()
       fireEvent.change(field, { target: { value: '' } })
-      await waitFor(
-        () => expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-bot'),
-        { timeout: 2000 },
-      )
-      await new Promise(resolve => setTimeout(resolve, 600))
+      expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-bot')
+      await act(async () => { await vi.advanceTimersByTimeAsync(250) })
       expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent(
         'project directory was cleared',
       )
+      vi.useRealTimers()
     }
   })
 
@@ -709,18 +600,7 @@ describe('JobForm clears a project-only agent selection when the project directo
       }],
       default_agent: '',
     })
-    renderWithProviders(
-      <JobForm
-        job={messageJob()}
-        agents={[{
-          name: 'default', kiro_agent: 'default', workspace: 'default', memory_store: 'default',
-          description: 'built-in', source: 'kirocrew',
-        }]}
-        defaultAgent="default"
-        onSaved={() => {}}
-        layout="vertical"
-      />,
-    )
+    renderJobForm(withDefaultAgent)
     const field = screen.getByLabelText('Project directory')
     fireEvent.change(field, { target: { value: '/Users/you/projects/repo' } })
     fireEvent.click(screen.getByLabelText('Switch agent'))
@@ -761,9 +641,7 @@ describe('JobForm clears a project-only agent selection when the project directo
 describe('JobForm project roster fetch failure stays out of the form-wide error', () => {
   it('shows the roster failure beside the project-directory field, not in the form-wide notice', async () => {
     vi.mocked(api.kirocrewAgents).mockRejectedValueOnce(new Error('network unreachable'))
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={() => {}} layout="vertical" />,
-    )
+    renderJobForm()
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -788,9 +666,7 @@ describe('JobForm project roster fetch failure stays out of the form-wide error'
     vi.mocked(api.kirocrewAgents).mockRejectedValueOnce(new Error('network unreachable'))
     vi.mocked(api.updateCron).mockResolvedValue({ ok: true })
     const onSaved = vi.fn()
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={onSaved} layout="vertical" />,
-    )
+    renderJobForm({ onSaved })
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -814,9 +690,7 @@ describe('JobForm project roster fetch failure stays out of the form-wide error'
     vi.mocked(api.kirocrewAgents)
       .mockRejectedValueOnce(new Error('network unreachable'))
       .mockResolvedValueOnce({ agents: [], default_agent: '' })
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={() => {}} layout="vertical" />,
-    )
+    renderJobForm()
 
     const input = screen.getByLabelText('Project directory')
     fireEvent.change(input, { target: { value: '/Users/you/projects/myrepo' } })
@@ -835,9 +709,7 @@ describe('JobForm project roster fetch failure stays out of the form-wide error'
     // "Couldn't load this project's agents: {}." Bare punctuation is worse than
     // no clause, so the non-prose shapes take the detail-less sentence instead.
     vi.mocked(api.kirocrewAgents).mockRejectedValue(new Error('{}'))
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={() => {}} layout="vertical" />,
-    )
+    renderJobForm()
 
     const input = screen.getByLabelText('Project directory')
     fireEvent.change(input, { target: { value: '/Users/you/projects/myrepo' } })
@@ -852,9 +724,7 @@ describe('JobForm project roster fetch failure stays out of the form-wide error'
 
   it('keeps the detail clause when the error IS prose', async () => {
     vi.mocked(api.kirocrewAgents).mockRejectedValue(new Error('network unreachable'))
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={() => {}} layout="vertical" />,
-    )
+    renderJobForm()
 
     const input = screen.getByLabelText('Project directory')
     fireEvent.change(input, { target: { value: '/Users/you/projects/myrepo' } })
@@ -871,9 +741,7 @@ describe('JobForm project roster fetch failure stays out of the form-wide error'
     vi.mocked(api.kirocrewAgents)
       .mockRejectedValueOnce(new Error('network unreachable'))
       .mockResolvedValueOnce({ agents: [], default_agent: '' })
-    renderWithProviders(
-      <JobForm job={messageJob()} agents={[]} defaultAgent="" onSaved={() => {}} layout="vertical" />,
-    )
+    renderJobForm()
 
     fireEvent.change(screen.getByLabelText('Project directory'), {
       target: { value: '/Users/you/projects/myrepo' },
@@ -942,15 +810,7 @@ const collisionProjectRoster = {
 
 async function openWithCollisionFolder(): Promise<HTMLElement> {
   vi.mocked(api.kirocrewAgents).mockResolvedValueOnce(collisionProjectRoster)
-  renderWithProviders(
-    <JobForm
-      job={messageJob()}
-      agents={collisionGlobalRoster}
-      defaultAgent="default"
-      onSaved={() => {}}
-      layout="vertical"
-    />,
-  )
+  renderJobForm({ agents: collisionGlobalRoster, defaultAgent: 'default' })
   fireEvent.change(screen.getByLabelText('Project directory'), {
     target: { value: '/Users/you/projects/myrepo' },
   })

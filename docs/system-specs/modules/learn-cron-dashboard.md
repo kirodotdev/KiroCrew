@@ -361,25 +361,17 @@ them. An explicitly bound folder outranks the resolved agent's configured
 for member startup: the person binding it holds the owner gate below and said so
 deliberately, where a configured workspace is only a default.
 
-**Precedence inside a bound folder.** A project definition WINS over a
-same-named global alias — a project's agents join the crew as subject-matter
-experts for that project. This follows the scope precedence of the layer
-underneath rather than choosing against it: kiro-cli searches
-`<project>/.kiro/agents` before `~/.kiro/agents` and resolves a same-name
-conflict in the project's favour, and the fire runs with the bound folder as its
-cwd. The folder therefore decides which definition answers whatever this step
-prefers, so the step matches it instead of advertising the other one. The
-precedence is contextual, not global: outside that folder the global alias is
-untouched, so a chat session opened in the folder and a cron bound to it resolve
-the same name the same way. The cost is accepted deliberately — a same-named
-global agent is unreachable in that folder.
-
-Step 1 runs only for a bound job, so an UNBOUND job resolves a collision the way
-`test_alias_still_wins_over_a_project_agent` pins it: with no folder there is no
-declaration of intent, and an alias must not be displaced by a file that happens
-to share its name. Binding the folder is that declaration — an owner passed the
-owner-gated `project_path` and pointed the job at a checkout that declares this
-name.
+**Precedence inside a bound folder.** An explicit global alias is authored
+config and is NOT displaced by a project file that merely shares its NAME
+(`test_alias_still_wins_over_a_project_agent`): the alias dispatches its own
+`kiro_agent`, and kiro-cli looks a project file up only by the name it is asked
+to run. A *collision* is therefore a project declaring the alias's `kiro_agent`
+TEMPLATE: kiro-cli searches `<project>/.kiro/agents` before `~/.kiro/agents` and
+the fire runs with the bound folder as its cwd, so that file is what answers, and
+the project definition wins rather than the step advertising the alias. The
+precedence is contextual, not global: outside that folder the alias is untouched,
+so a chat session opened in the folder and a cron bound to it resolve the same
+name the same way.
 
 The job form makes the override visible rather than leaving it to be inferred: on
 a collision the picker offers the PROJECT row (the one dispatch resolves) and
@@ -421,7 +413,7 @@ therefore runs on the default crew's memory unless the job names a crew, and two
 projects' same-named experts share that store.
 
 A won override carries the shadowed alias's INFRASTRUCTURE away with it: once a
-project file beats a same-named crew there is no `config.agents` record in play,
+project file beats a crew there is no `config.agents` record in play,
 so bindings land on `default_agent`'s exactly as a project-only agent's do. That
 is the safe direction as well as the consistent one — a project file is writable
 by anyone who can write that checkout, or land a branch in it, so letting one
@@ -463,6 +455,10 @@ it could not answer — and the backend still resolves the project file first, s
 keeping the captured store would hand a `<project>/.kiro/agents` definition
 sharing the alias's name that crew's private memory. Global memory is a lost
 capability; the captured store handed to a project file is an exposure.
+For a sequence step the folder does not shadow, the projection hands back
+`cron_execution` itself; the step still dispatches under
+`cron_execution.with_template(step)`, because its spawn allowlist is read from
+the published template and the job's floor `()` admits every child.
 
 **A project agent requires its folder.** A global agent may be bound to a folder
 or not; a project agent exists only within its folder, so clearing the folder
@@ -743,7 +739,10 @@ whenever a new consumer of `last_result`/`summary`/`trace` is added.
 |---|---|---|---|---|
 | 1 | List serializer `last_result` — `handlers/cron.py` `api_crons` | agent reply | **withheld** (empty→`None`) | live binding **OR** `last_result_project_bound`, the stamp travelling with the retained text (`_live_job_result_is_project_bound`) |
 | 2 | `to-chat` refusal — `_cron_to_chat_project_bound_refusal` | the retained agent reply | **403** outright (no redaction chokepoint on this route) | live binding **OR** `last_result_project_bound` (helper); deleted job → newest history row, absent stamp OR empty read ⇒ bound. Answers for the LATEST result only — the cumulative replay is row 2b |
-| 2b | `to-chat` replay filter — `_non_owner_transcript_rows` | the replayed `cron:{id}` transcript, and a deleted job's notification body | **per-row withhold** (the row is dropped; the request still serves what survives) | each row's own timestamp against the `started_at`/`finished_at` window of the run records, DERIVED because the rows carry no stamp of their own and none can be back-filled. A row is served only when it falls inside an UNBOUND run's window; a row inside a bound window, in no window at all, with an unparseable stamp, or older than the oldest record the read can see is withheld. An empty or degraded run read withholds everything, and so does a bound run whose window has no `started_at`; only POSITIVE evidence of runs with none bound serves a transcript whole. With the job DELETED the notification body carries no provenance and has no live stamp to consult, so it is refused (403) once any run on record was bound |
+| 2b | `to-chat` replay filter — `_non_owner_transcript_rows` | the replayed `cron:{id}` transcript, and a deleted job's notification body | **per-row withhold** (the row is dropped; the request still serves what survives) | each row's timestamp against the `started_at`/`finished_at` window of retained run records. A row is served only when it falls inside an UNBOUND run's window; a row inside a bound window, in no window at all, with an unparseable stamp, or older than the oldest retained record is withheld. An empty/degraded run read, a malformed `project_bound`, or a bound run with no `started_at` withholds everything. An EMPTY transcript is judged too (a `hide_in_chat` job writes none), so a deleted job with a bound run on record, or none readable, withholds its notification body; the body fallback takes the NEWEST note for the job, and for a non-owner only one `project_output_visible_to_non_owner` admits. No-bound-window is not a whole-transcript shortcut: pruning can remove the bound record while leaving its transcript, so retained unbound windows prove only the rows they cover. |
+| 2c | Notification feed — `messaging_api/notifications.py` + dashboard SSE/WS fanout | the normal and duplicate-result notification body | **withheld** | the gateway stamps a real boolean `project_bound` into the persisted note. HTTP, SSE, and WebSocket reads admit it to a non-owner only when the stamp is exactly `False`; a malformed stamp, or an unstamped cron notification, is unknown and withheld. |
+| 2d | Cron chat row — `cron_inject.py`, direct slot detail, SSE/WS fanout | the injected prompt and result rows | **per-row withhold** | each new row carries a real boolean `meta.project_bound`; live SSE/WS delivery admits it only to the owner unless exactly `False`. Direct `GET /api/chat/slots/cron-{id}` first withholds an explicit bound or malformed stamp, then applies the retained run-window proof from row 2b to legacy unstamped rows. A current unbound-run timestamp therefore cannot relabel retained bound content. |
+| 2e | Persistent carried result — `cron_service/identity.py` `build_cron_session_context` | the previous agent reply injected into the next run's prompt | **omitted after unbinding** | an unbound fire carries the prior result only when `last_result_project_bound` is exactly `False`; `True`, malformed or unknown provenance is withheld. A still-bound fire may carry it because derived output remains owner-only. |
 | 3 | Paginated history `summary`/`trace` — `api_cron_history` | agent reply | **withheld** | the row's own `project_bound` stamp — already correct |
 | 4 | Run detail `summary`/`trace` — `api_cron_history_detail` | agent reply | **withheld** | the row's own `project_bound` stamp — already correct |
 | 5 | Unified history `summary`/`trace` — `api_cron_history_all` | agent reply | **withheld** | the row's own `project_bound` stamp — already correct |
