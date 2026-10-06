@@ -203,8 +203,19 @@ async def api_spawn(request: web.Request) -> web.Response:
             else ("", ())
         )
         if parent_execution is None:
+            # A parentless spawn (an app token calling /api/spawn with no parent
+            # session) still has a verified producer: the request's own app, set by
+            # the token-auth middleware. Carry it into the admitted context so it
+            # reaches SubagentInfo.app and the completion note's producer_app subject,
+            # or the bridge vets only the permissive host profile and the app's own
+            # channel denial is bypassed on the result DM. Added only -- an empty app
+            # (an ordinary dashboard-user spawn) leaves host-only vetting unchanged.
             parent_execution = ExecutionContext(
-                None, MemoryStoreRef("default"), "template", agent or "kirocrew"
+                None,
+                MemoryStoreRef("default"),
+                "template",
+                agent or "kirocrew",
+                app=str(request.get("app") or ""),
             )
         config = await asyncio.to_thread(KiroCrewConfig.load) if crew else None
         if crew and config is not None and crew not in config.agents:
