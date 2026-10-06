@@ -7198,17 +7198,23 @@ def _resolve_agent_selection(
     # EVERY turn of an app-bound session, where a scan stalls chat, WebSocket and
     # heartbeat processing).
     effective_name = config.agents[agent_name].kiro_agent if alias_hit else agent_name
+    # The shadow probe compares the name kiro-cli is handed, which is the
+    # template AFTER dispatch_kiro_agent maps a file stem (``KiroPkg-captain``)
+    # to the name its file declares (``captain``). Probing the stem would let a
+    # project file declaring ``captain`` answer a member-bound fire under that
+    # member's private store. ``effective_name`` itself stays raw for the
+    # passthrough lookup below. Computed only when the probe runs, so a call
+    # with no folder (or an ordinary non-alias name) does no extra work.
+    probe_runs = (
+        bool(agent_name) and bool(project_dir) and (alias_hit or not allow_project_override)
+    )
+    probe_template = dispatch_kiro_agent(effective_name) if probe_runs else effective_name
     # The member opt-out probes the alias AND its template; an ordinary alias hit
     # probes the template alone, the only name kiro-cli resolves for it.
-    project_declares_same_name = (
-        bool(agent_name)
-        and bool(project_dir)
-        and (alias_hit or not allow_project_override)
-        and _project_declares_agent(
-            agent_name if not allow_project_override else effective_name,
-            project_dir,
-            effective_name=effective_name if not allow_project_override else "",
-        )
+    project_declares_same_name = probe_runs and _project_declares_agent(
+        agent_name if not allow_project_override else probe_template,
+        project_dir or "",
+        effective_name=probe_template if not allow_project_override else "",
     )
     if not allow_project_override and project_declares_same_name:
         # Named refusal, not a silent substitution: the caller opted OUT of
@@ -7247,10 +7253,15 @@ def _resolve_agent_selection(
     # explicit member pick in such a folder would have recorded the member's
     # PRIVATE store under a name the project file answers -- the leak the
     # override exists to prevent. `project_wins` therefore bypasses the arm.
+    # A won override looks up the name the probe matched: an alias recording the
+    # file stem ``KiroPkg-captain`` won because the project declares ``captain``,
+    # and only ``captain`` is what that project file answers to.
     passthrough = (
         ""
         if alias_hit or (selection_kind == "member" and not project_wins)
-        else _materialized_kiro_agent(effective_name, project_dir)
+        else _materialized_kiro_agent(
+            probe_template if project_wins else effective_name, project_dir
+        )
     )
     requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
     if alias_hit:

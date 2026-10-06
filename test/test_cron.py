@@ -1237,9 +1237,9 @@ class TestCancelAgainstFinishedTask:
         with patch("kiro_crew.sel.sel"):
             cancelled = await svc.cancel(job.id)
 
-        assert not stale_claim.cancelled, (
-            "cancel() against a finished task flagged a run that had already ended as cancelled"
-        )
+        assert (
+            not stale_claim.cancelled
+        ), "cancel() against a finished task flagged a run that had already ended as cancelled"
         assert cancelled is False, "cancel() reported a cancellation with nothing running"
         # The leftovers are released, so the next Run and the next due-scan see
         # the job idle...

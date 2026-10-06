@@ -613,6 +613,27 @@ class TestGetOrCreatePoolIntegration:
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
 
     @pytest.mark.asyncio
+    async def test_pool_decision_log_names_no_cwd_path(self, caplog):
+        """The INFO line reaches every dashboard-user socket via the log replay.
+
+        A project-bound cron job's folder is withheld from non-owners by the
+        cron API, so the line carries only the cwd's relation to the pool's.
+        """
+        import logging
+
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=_make_provider())
+        project = "/Users/alice/workspace/secret-proj"
+
+        with caplog.at_level(logging.INFO):
+            await mgr.get_or_create("test-key", agent="kirocrew", cwd=project)
+
+        lines = [r.getMessage() for r in caplog.records if "Pool decision" in r.getMessage()]
+        assert lines, "the pool decision line was not emitted"
+        assert all("secret-proj" not in line for line in lines)
+        assert any("cwd=other" in line for line in lines)
+
+    @pytest.mark.asyncio
     async def test_claims_pool_with_model_override_and_switches(self):
         """get_or_create claims pool even with model_override, then calls set_model."""
         from kiro_crew.providers.acp import AcpProvider

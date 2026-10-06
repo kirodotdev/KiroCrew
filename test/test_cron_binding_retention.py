@@ -222,3 +222,43 @@ def test_failed_removal_save_keeps_active_session_key_and_suppresses_observer(
         service.stale_session_key(job.id) == active_key
     ), "save failure discarded the only exact handle to the live cron session"
     assert removed == [], "observer was notified about a deletion that did not persist"
+
+
+@pytest.mark.asyncio
+async def test_a_job_removed_by_another_process_evicts_its_bindings(tmp_path) -> None:
+    # The CLI/MCP delete runs in another process, so this service only sees it
+    # as an external reload in _sync. That reload must publish the removal the
+    # same way a local delete does, or retained bindings grow without bound.
+    gateway = _gateway()
+    gateway._cron_binding_loop = asyncio.get_running_loop()
+    service = CronService(base_dir=tmp_path, on_jobs_removed=gateway._cron_jobs_removed)
+    gone = await asyncio.to_thread(service.add_job, name="gone", message="run", every_secs=300)
+    kept = await asyncio.to_thread(service.add_job, name="kept", message="run", every_secs=300)
+    gateway._cron_session_binding = {
+        f"cron:{gone.id}": _binding(),
+        f"cron:{gone.id}:step": _binding(),
+        f"cron:{kept.id}": _binding(),
+    }
+    service.register_active_session_key(gone.id, f"cron:{gone.id}:step")
+
+    other_process = CronService(base_dir=tmp_path)
+    assert other_process.remove_job(gone.id, actor="cli", source="cli")
+
+    await service.list_jobs_async()
+    await asyncio.sleep(0)
+
+    assert set(gateway._cron_session_binding) == {f"cron:{kept.id}"}
+    assert service.stale_session_key(gone.id) is None
+
+
+def test_an_unreadable_external_reload_reports_no_removals(tmp_path) -> None:
+    # A failed load empties the in-memory list without proving a single row was
+    # deleted, so it must not tell the observer that every job is gone.
+    removed: list[set[str]] = []
+    service = CronService(base_dir=tmp_path, on_jobs_removed=removed.append)
+    service.add_job("kept", "run", every_secs=300)
+    (tmp_path / "crons.json").write_text("{not json", encoding="utf-8")
+
+    service._synced_snapshot(include_disabled=True)
+
+    assert removed == []

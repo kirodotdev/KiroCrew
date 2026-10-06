@@ -495,6 +495,70 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
     return replace(execution, template_id=template_id).to_record()
 
 
+def _is_own_cron_execution(record: ExecutionContext, job_execution: ExecutionContext) -> bool:
+    """Whether *record* is an identity this job's own dispatch could have published.
+
+    A project-bound single-agent fire publishes one of two shapes under its
+    stable key: the job's captured execution (possibly under another template),
+    or the project-override projection of it -- an unowned template on Global
+    memory (:func:`kiro_crew.execution_context.execution_for_project_override`).
+    The template half is exactly what a binding change moves, so it is not
+    compared. The member, store and app are: a record naming anyone else's is
+    not this job's to overwrite, and stays refused by the plain bind.
+    """
+    if record.app != job_execution.app:
+        return False
+    if record.member_id == job_execution.member_id and record.store == job_execution.store:
+        return True
+    return record.member_id is None and record.store.store_id == "default"
+
+
+def rebind_own_cron_execution(
+    session_key: str,
+    job_execution: ExecutionContext,
+    dispatch_execution: ExecutionContext,
+) -> bool:
+    """Replace a stale durable identity this job itself published, before dispatch.
+
+    The single-agent fire binds its dispatch identity with a plain
+    :func:`bind_session_execution`, which refuses any record that differs. A
+    project-bound job's dispatch identity is not constant: when the checkout
+    starts (or stops) declaring the dispatched template, the store moves between
+    the captured one and Global, and a binding change can move the template.
+    ``_cron_session_binding_requires_reset`` resets the live session for that,
+    but nothing rewrote the durable record, so every later fire raised "session
+    already belongs to another execution" before acquisition and the job failed
+    on every tick until it auto-paused. The sequence path already replaces under
+    a compare-and-set against a fresh read; this is the same replace for the
+    single-agent key, restricted to records :func:`_is_own_cron_execution`
+    recognises. Not conditioned on "the binding changed on THIS fire": a fire
+    that reset and then failed to acquire leaves the binding retained and the
+    record stale, and the next fire must still repair it.
+
+    Returns whether a replace happened. A record this job did not publish, an
+    absent record, and one that already matches are all left alone.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+    from kiro_crew.memory_stores import MissingExecutionIdentity
+
+    try:
+        current = read_session_execution(session_key)
+    except MissingExecutionIdentity:
+        return False
+    if current is None:
+        return False
+    if replace(current, memory_mode=dispatch_execution.memory_mode) == dispatch_execution:
+        return False
+    if not _is_own_cron_execution(current, job_execution):
+        return False
+    bind_session_execution(
+        session_key, dispatch_execution, replace_existing=True, expected=current, vouch=False
+    )
+    return True
+
+
 def bind_cron_memory(job: CronJob) -> None:
     """Capture existing member or creator once inside the new job record."""
     from dataclasses import replace

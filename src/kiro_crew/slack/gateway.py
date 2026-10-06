@@ -1065,6 +1065,56 @@ async def _project_directory_vanished(job: Any) -> bool:
     return True
 
 
+def _cron_replay_carries_project_output(conversation_log: Any, session_key: str) -> bool:
+    """Whether *session_key*'s transcript holds a project-bound cron row.
+
+    A fresh cron session gets its thread history from the conversation log
+    (``build_session_context``'s fallback), and that replay keeps no row
+    provenance. Once a job's binding is cleared, its next fire is unbound and
+    its output reaches non-owners, so replaying turns from an earlier
+    project-bound run would hand owner-only output to a prompt that can quote
+    it back. The caller withholds the replay for an unbound fire when this
+    returns True.
+
+    Scans the whole log rather than the replay window: the window is a quota
+    tail, and a row that sits just outside it on this read can be inside it on
+    the next. An unreadable log is treated as carrying such output, the same
+    unknown-is-withheld rule the slot previews apply. Synchronous file I/O, so
+    callers offload it.
+    """
+    if conversation_log is None:
+        return False
+    try:
+        rows = conversation_log.read_messages(session_key)
+    except Exception:  # noqa: BLE001 -- unknown provenance withholds the replay
+        logger.debug("cron replay provenance read failed", exc_info=True)
+        return True
+    for row in rows:
+        meta = row.get("meta") if isinstance(row, dict) else None
+        if isinstance(meta, dict) and meta.get("project_bound") is True:
+            return True
+    return False
+
+
+async def _cron_history_override(gateway: Any, job: Any, session_key: str) -> str | None:
+    """``compressed_history`` for a cron fire's ``build_message`` call.
+
+    ``""`` suppresses the transcript replay (see
+    :func:`_cron_replay_carries_project_output`); ``None`` keeps the normal
+    fallback. A bound fire keeps it: its output stays inside the owner
+    boundary the earlier rows came from.
+    """
+    if job.project_path:
+        return None
+    conversation_log = getattr(getattr(gateway, "ctx_builder", None), "conversation_log", None)
+    if conversation_log is None:
+        return None
+    carries = await asyncio.to_thread(
+        _cron_replay_carries_project_output, conversation_log, session_key
+    )
+    return "" if carries else None
+
+
 def _cron_crew_alias(config: KiroCrewConfig, member: str, resolved_alias: str) -> str:
     """Return the config.agents name for a cron member, or its safe fallback."""
     if not member:
@@ -1085,6 +1135,24 @@ def _cron_crew_alias(config: KiroCrewConfig, member: str, resolved_alias: str) -
             resolved_alias,
         )
         return resolved_alias
+
+
+def _cron_project_crew_alias(
+    config: KiroCrewConfig, member: str, resolved_alias: str, resolved_source: str
+) -> str:
+    """Crew identity for a project-bound fire, from its resolved bindings.
+
+    A name that resolved to a project file or a materialized template is not a
+    crew member: ``resolved_alias`` is then only the DEFAULT alias the bindings
+    fell back to. Handing that alias on as ``crew_agent`` would start the default
+    member's capability preparation in this job's folder, which refuses with
+    ``project_identity_changed`` whenever that member is enrolled for another
+    workspace. Those resolutions therefore get ``""``, the explicit no-crew value.
+    An alias hit, the default with no name, and a member-bound job keep their crew.
+    """
+    if not member and resolved_source not in ("alias", ""):
+        return ""
+    return _cron_crew_alias(config, member, resolved_alias)
 
 
 #: Budget for pinning kiro-cli's path before an unattended spawn. The lookup is
@@ -5139,6 +5207,10 @@ class GatewayOrchestrator:
                     env["KIROCREW_APPROVAL_MODE"] = "auto"
                 return env or None
 
+            # The model a fallback actually gave up on: a project alias's own
+            # model when the job pins none, so the downgrade notice can name it.
+            _downgraded_from: dict[str, str] = {"model": ""}
+
             async def _acquire_with_model_fallback(
                 key: str,
                 agent_id: str | None,
@@ -5282,6 +5354,7 @@ class GatewayOrchestrator:
                         _model,
                         model_exc,
                     )
+                    _downgraded_from["model"] = _model
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
                         agent=agent_id,
@@ -5313,7 +5386,8 @@ class GatewayOrchestrator:
             def _annotate_model_downgrade(text: str) -> str:
                 # job.model is LLM-controllable via MCP; redact before it
                 # reaches Slack/dashboard through last_result.
-                safe_model = redact_credentials(redact_exfiltration_urls(job.model)[0])[0]
+                failed_model = _downgraded_from["model"] or job.model
+                safe_model = redact_credentials(redact_exfiltration_urls(failed_model)[0])[0]
                 return f"⚠️ Model '{safe_model}' unavailable; ran with default.\n\n" + text
 
             # ── Sequential agent execution ──
@@ -5466,11 +5540,13 @@ class GatewayOrchestrator:
                             # member_id is its persisted (lossy) identity.
                             # Resolve the ID back to its name; if the member was
                             # deleted or became ambiguous, preserve the current
-                            # safe fallback instead of crashing the fire.
-                            _cron_crew_alias(
+                            # safe fallback instead of crashing the fire. A
+                            # project or template answer carries no crew.
+                            _cron_project_crew_alias(
                                 _seq_cfg,
                                 job.member_id,
                                 _seq_bindings.resolved_alias,
+                                _seq_bindings.resolved_source,
                             ),
                         )
                     # Recorded for EVERY job, bound or not: this feeds the
@@ -5584,6 +5660,7 @@ class GatewayOrchestrator:
                 # retained identity names what the next cold acquisition builds.
                 for _seq_key, _seq_binding in _seq_binding_snapshot.items():
                     if self._cron_session_binding_requires_reset(_seq_key, _seq_binding):
+                        # Stateless ``cron:`` key: the reset alone cold-starts it.
                         await self.sessions.reset(_seq_key)
                         if self.cron_svc is not None:
                             self.cron_svc.clear_active_session_key(job.id, _seq_key)
@@ -5746,6 +5823,9 @@ class GatewayOrchestrator:
                             # empty parent ("notification only (parent=)") unless an
                             # unrelated surface happened to be mid-turn.
                             await publish_turn_identity(self.sessions, agent_session_key)
+                            _seq_history = await _cron_history_override(
+                                self, job, agent_session_key
+                            )
                             # A compaction drops session-start context. Read-and-clear
                             # the one-shot flag so this turn re-injects it exactly
                             # once; the finally re-arms it if the turn never lands.
@@ -5778,6 +5858,7 @@ class GatewayOrchestrator:
                                 needs_reinjection=_seq_reinjection,
                                 minimal_context=job.minimal_context,
                                 project=job.project_path or None,
+                                compressed_history=_seq_history,
                             )
                             # Wall clock for the cron agent turn: acp never assigns
                             # TurnUsage.duration_ms, so the row falls back to this.
@@ -6184,11 +6265,13 @@ class GatewayOrchestrator:
                     # crew_agent consumers key config.agents by NAME, not by
                     # the persisted member_id field. Resolve the ID back to its
                     # name; a stale/ambiguous ID keeps resolved_alias so a
-                    # deleted member cannot crash this fire.
-                    _alias_crew_agent = _cron_crew_alias(
+                    # deleted member cannot crash this fire. A project or
+                    # template answer carries no crew (see the helper).
+                    _alias_crew_agent = _cron_project_crew_alias(
                         _cfg_for_bindings,
                         job.member_id,
                         _bindings.resolved_alias,
+                        _bindings.resolved_source,
                     )
                 else:
                     # No folder, so nothing above resolved this job's agent --
@@ -6297,8 +6380,10 @@ class GatewayOrchestrator:
                 if job.execution_context is not None:
                     from kiro_crew.cron_service.identity import rebind_cron_session_template
 
+                    # Against the identity this fire binds: a project-bound job
+                    # dispatches the folder's projection, not the bare capture.
                     await asyncio.to_thread(
-                        rebind_cron_session_template, session_key, cron_execution, job.name
+                        rebind_cron_session_template, session_key, _dispatch_execution, job.name
                     )
                 # A live persistent session ignores the cwd/agent passed to
                 # get_or_create below and is reused exactly as it last was --
@@ -6361,6 +6446,9 @@ class GatewayOrchestrator:
                         )
                         _defer_cron_before_dispatch(job, "binding changed while subagents pending")
                         return None
+                    # A plain reset is enough: ``cron:`` keys are stateless, so the
+                    # next acquisition never resumes the mapped conversation and
+                    # cold-starts under the new binding.
                     await self.sessions.reset(session_key)
                     if self.cron_svc is not None:
                         self.cron_svc.clear_active_session_key(job.id, session_key)
@@ -6374,6 +6462,24 @@ class GatewayOrchestrator:
                 # a refused binding must not gain a second, unbounded identity.
                 if self.cron_svc is not None:
                     self.cron_svc.register_active_session_key(job.id, session_key)
+                # The reset above drops the live session but not the durable
+                # identity record, and the plain bind inside acquisition refuses
+                # a record that differs -- so a job whose dispatch identity moved
+                # (its checkout started declaring the template or stopped, or the
+                # folder was unbound) would fail every later fire. Replace it
+                # here, only when the record is one this job itself published.
+                from kiro_crew.cron_service.identity import rebind_own_cron_execution
+
+                if await asyncio.to_thread(
+                    rebind_own_cron_execution,
+                    session_key,
+                    cron_execution,
+                    _dispatch_execution,
+                ):
+                    logger.info(
+                        "Cron '%s': replaced its session's stale execution identity",
+                        redact_log_via_context(job.name),
+                    )
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
                     session_key,
                     _resolved_agent_id,
@@ -6395,6 +6501,7 @@ class GatewayOrchestrator:
                         + "\n".join(f"- {a}" for a in job.acked_items)
                     )
                 _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                _history_override = await _cron_history_override(self, job, session_key)
                 # A compaction drops session-start context. Read-and-clear the
                 # one-shot flag so this turn re-injects it exactly once; the
                 # finally re-arms it if the turn never lands.
@@ -6417,6 +6524,7 @@ class GatewayOrchestrator:
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
                     project=job.project_path or None,
+                    compressed_history=_history_override,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )

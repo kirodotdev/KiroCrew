@@ -440,8 +440,11 @@ def test_every_binder_declares_whether_it_vouches():
     #
     # `rebind_cron_session_template` rebinds a `cron:` key, which is never the
     # caller slot of an own-store admission, so it publishes with `vouch=False`.
+    # `rebind_own_cron_execution` replaces a stale identity on the same `cron:` key
+    # for the same reason.
     expected = {
         ("cron_service/identity.py", "rebind_cron_session_template"): "False",
+        ("cron_service/identity.py", "rebind_own_cron_execution"): "False",
         ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
         ("dashboard/chat_persistence.py", "_pin_private_agent_assignment"): "True",
         ("dashboard/handlers/hooks.py", "bind_captured"): "False",

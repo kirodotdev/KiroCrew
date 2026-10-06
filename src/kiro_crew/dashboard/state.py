@@ -332,6 +332,45 @@ MAX_LIVE_SLOTS = 500
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
 _SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "title", "folder_id"})
 
+#: Slot-summary fields that quote a turn's text, with the value each takes when
+#: withheld. See :func:`_slot_output_owner_only`.
+_SLOT_OUTPUT_PREVIEW_FIELDS: dict[str, Any] = {
+    "last_message": "",
+    "prompt_preview": "",
+    "has_options": False,
+    "options_ts": "",
+    "options": [],
+}
+
+
+def _slot_output_owner_only(slot: Any) -> bool:
+    """Whether this slot's text previews must stay inside the owner boundary.
+
+    A project-bound cron run's output is owner-only: the notification and chat
+    frames carrying it are withheld from non-owner sockets by
+    ``project_output_visible_to_non_owner``. The slot LIST is a separate channel
+    -- every row quotes its newest turn in ``last_message`` and, for an options
+    turn, ``prompt_preview`` -- so a visible project-bound job's sidebar row
+    carried the same output to every dashboard user. Judged per row, on the
+    message the previews actually quote (the newest non-notice user/assistant
+    row with text), and with the same unknown-is-withheld rule: inside a
+    ``cron-`` slot only an explicit ``project_bound: False`` proves the text
+    safe, so an unstamped row (a follow-up typed into the slot, an older run)
+    is withheld too. Non-cron slots are unaffected.
+    """
+    if not str(getattr(slot, "key", "") or "").startswith("cron-"):
+        return False
+    for message in reversed(getattr(slot, "messages", None) or ()):
+        role = message.get("role")
+        meta = message.get("meta") or {}
+        if role not in ("user", "assistant") or is_system_notice(role, meta):
+            continue
+        if not message.get("content"):
+            continue
+        return not (isinstance(meta, dict) and meta.get("project_bound") is False)
+    return False
+
+
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
 #: distribution, so a single automated creator working through a nudge loop can
@@ -9307,6 +9346,17 @@ class DashboardState:
         payload = slot.to_dict(
             include_check_status=include_check_status, dashboard_user=dashboard_user
         )
+        if not include_check_status and _slot_output_owner_only(slot):
+            # ``include_check_status`` is this projector's owner boundary (the
+            # owner WS frame, an owner GET, an owner connect). Everything else --
+            # the dashboard-user frame, SSE, app tokens -- gets the row without
+            # the quoted text. See _slot_output_owner_only.
+            payload.update(
+                {
+                    field: list(value) if isinstance(value, list) else value
+                    for field, value in _SLOT_OUTPUT_PREVIEW_FIELDS.items()
+                }
+            )
         links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
         payload.update(
             {
@@ -9423,6 +9473,14 @@ class DashboardState:
             view["source_links"] = slot.source_links_view(
                 include_check_status=include_check_status, dashboard_user=dashboard_user
             )
+            if include_check_status and _slot_output_owner_only(slot):
+                # The bare list withheld this row's quoted text; the owner view
+                # is the one audience entitled to it. Re-projected only for the
+                # rows that need it, so the single-pass saving still holds.
+                full = slot.to_dict(include_check_status=True)
+                for field in _SLOT_OUTPUT_PREVIEW_FIELDS:
+                    if field in full:
+                        view[field] = full[field]
             out.append(view)
         return out
 
