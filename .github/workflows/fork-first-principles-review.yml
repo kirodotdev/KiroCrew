@@ -1473,26 +1473,46 @@ jobs:
               heading="⏭️ skipped"
               body="_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
             fi
+            {
+              echo "$MARKER"
+              echo "## First Principles Review (Opus 5.5, fork) — $heading"
+              echo
+              echo "$body"
+            } > "$RUNNER_TEMP/fp-comment.md"
+            # #13595: a first-time skip must CREATE the keyed slot (an existing
+            # verdict is left untouched), and the body names `$HEAD` in prose,
+            # which is the per-head marker readiness scopes the skip exemption on
+            # (pr_status.py `slots_naming_head`). This is NOT a verdict and does
+            # not carry a `[*-REVIEWED]` stamp, so it does not go through
+            # guarded_comment_upsert (whose call sites are the lane's verdict
+            # publications); it uses a dedicated create-or-patch below. Head
+            # FIRST, slot read LAST, mirroring the human-override arm.
+            #
+            # The slot read can sleep up to 75s across its retries, and runs are
+            # grouped per trigger, so a run for a newer head is not cancelled and
+            # can publish its verdict in that gap. The CREATE arm is safe from
+            # that -- an empty slot it saw a minute ago is still empty-or-newer,
+            # and the head confirmed before the read still holds for a POST that
+            # adds a slot. But the PATCH arm OVERWRITES: a head confirmed before
+            # the read is stale by the time it writes, so it would replace a
+            # newer revision's verdict with this superseded revision's notice,
+            # which nothing restores. So the PATCH re-confirms the head AFTER the
+            # read, immediately before the write, and declines on a moved or
+            # unreadable head -- the destructive direction fails closed.
+            confirm_head
             find_existing
-            # This arm replaces a comment already in the slot and never creates one, so
-            # the head question is only asked once an occupant is found: asking it first
-            # makes a run with an empty slot report a withheld notice that this arm was
-            # never going to write.
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               confirm_head
               if [ "$head_unchanged" -eq 1 ]; then
-                {
-                  echo "$MARKER"
-                  echo "## First Principles Review (Opus 5.5, fork) — $heading"
-                  echo
-                  echo "$body"
-                } > "$RUNNER_TEMP/fp-comment.md"
                 gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
                   --field body="$(cat "$RUNNER_TEMP/fp-comment.md")" >/dev/null || true
                 echo "Updated existing first-principles-review comment #$existing to skip notice"
               fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "$RUNNER_TEMP/fp-comment.md" || true
+              echo "Created first-principles-review skip notice for $HEAD"
             elif [ "$lookup_ok" -eq 0 ]; then
-              echo "::warning::This lane's slot was unreadable after 6 attempts, so a comment already in it still shows an earlier revision's outcome rather than the notice for $HEAD."
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the first-principles skip notice for $HEAD was not written. Re-run this lane to record the notice."
             fi
             exit 0
           fi

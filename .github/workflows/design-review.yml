@@ -837,9 +837,36 @@ jobs:
             echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # #13595: the skip arm must leave a keyed slot for THIS head even on a
+          # first-time skip, CREATING one when none exists rather than patching
+          # only an occupant. The body names `$HEAD` in prose, which is the
+          # per-head marker readiness scopes the skip exemption on (pr_status.py
+          # `slots_naming_head`). Head FIRST, slot read LAST, mirroring the
+          # human-override arm above.
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: design review skipped (no Bedrock secrets/OIDC)."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "## Design Review (Opus 5.5) — ⏭️ skipped"
+              echo
+              echo "_Revision \`$HEAD\` is a Dependabot pull request, which runs with no Bedrock secrets/OIDC, so the design review was skipped. Advisory — does not block merge._"
+            } > "${RUNNER_TEMP:-/tmp}/design-comment.md"
+            confirm_head
+            find_existing
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/design-comment.md")" >/dev/null || true
+                echo "Updated existing design-review comment #$existing to skip notice"
+              fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/design-comment.md" || true
+              echo "Created design-review skip notice for $HEAD"
+            elif [ "$lookup_ok" -eq 0 ]; then
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the design skip notice for $HEAD was not written. Re-run this lane to record the notice."
+            fi
             exit 0
           fi
           # Capture the model's final review text from the run transcript

@@ -472,9 +472,36 @@ jobs:
             echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # #13595: a skip arm must leave a keyed slot for THIS head even on a
+          # first-time skip, so an absent slot on a `success` conclusion means
+          # the lane could not publish rather than chose not to review. The body
+          # names `$HEAD` in prose, which is the per-head marker readiness scopes
+          # the skip exemption on (pr_status.py `slots_naming_head`). Head FIRST,
+          # slot read LAST, mirroring the human-override and no-contract arms.
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: first-principles review skipped (no Bedrock secrets/OIDC)."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
+              echo
+              echo "_Revision \`$HEAD\` is a Dependabot pull request, which runs with no Bedrock secrets/OIDC, so the first-principles review was skipped. Advisory — does not block merge._"
+            } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
+            confirm_head
+            find_existing
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+                echo "Updated existing first-principles-review comment #$existing to skip notice"
+              fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
+              echo "Created first-principles-review skip notice for $HEAD"
+            elif [ "$lookup_ok" -eq 0 ]; then
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the first-principles skip notice for $HEAD was not written. Re-run this lane to record the notice."
+            fi
             exit 0
           fi
           if [ "$SURFACE" = "true" ] && [ "$CONTRACT" = "false" ]; then
@@ -502,8 +529,11 @@ jobs:
             # and another run on this same head can fill the slot inside that gap.
             find_existing
             if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+              fi
             elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
               gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
             elif [ "$lookup_ok" -eq 0 ]; then
@@ -514,26 +544,26 @@ jobs:
           if [ "$SURFACE" != "true" ]; then
             echo "No added surface: first-principles review skipped."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
+              echo
+              echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
+            } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
+            confirm_head
             find_existing
-            # This arm replaces a comment already in the slot and never creates one, so
-            # the head question is only asked once an occupant is found: asking it first
-            # makes a run with an empty slot report a withheld notice that this arm was
-            # never going to write.
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               confirm_head
               if [ "$head_unchanged" -eq 1 ]; then
-                {
-                  echo "$MARKER"
-                  echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
-                  echo
-                  echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
-                } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
                 gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
                   --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
                 echo "Updated existing first-principles-review comment #$existing to skip notice"
               fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
+              echo "Created first-principles-review skip notice for $HEAD"
             elif [ "$lookup_ok" -eq 0 ]; then
-              echo "::warning::This lane's slot was unreadable after 6 attempts, so a comment already in it still shows an earlier revision's outcome rather than the skip notice for $HEAD."
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the first-principles skip notice for $HEAD was not written. Re-run this lane to record the notice."
             fi
             exit 0
           fi
