@@ -8899,6 +8899,7 @@
       "uncommitted": "{{count}} अनकमिटेड",
       "branch_unavailable": "ब्रांच उपलब्ध नहीं",
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी। कमिट इतिहास पुराना हो सकता है।",
+      "status_failed_collapsed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",
       "status_failed_no_history": "यह एक अलग समस्या है। बदलाव की सूची पढ़ी नहीं जा सकी। दोबारा कोशिश करने के लिए रिफ़्रेश करें।",
       "log_failed": "कमिट लॉग पढ़ा नहीं जा सका।",
       "uncommitted_capped": "{{count}} से अधिक अनकमिटेड",
@@ -8913,7 +8914,10 @@
       "filter_refused_title_unreadable_changes": "Kiro अभी बदलाव नहीं दिखा सकता",
       "filter_refused_title_unreadable_history": "Kiro अभी इतिहास नहीं दिखा सकता",
       "ask_agent_changes": "बदलाव के बारे में एजेंट से पूछें",
-      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें"
+      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें",
+      "nested_title": "इस फ़ोल्डर में रिपॉज़िटरी",
+      "nested_failed": "इस फ़ोल्डर की रिपॉज़िटरी की सूची नहीं बनाई जा सकी।",
+      "nested_truncated": "सभी रिपॉज़िटरी सूची में नहीं हैं। बाकी देखने के लिए किसी सबफ़ोल्डर को प्रोजेक्ट के रूप में खोलें।"
     },
     "workspaceTree": {
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",

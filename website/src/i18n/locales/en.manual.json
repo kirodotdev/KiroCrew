@@ -3503,6 +3503,7 @@
       "not_a_repository": "Not a Git repository",
       "not_a_repository_help": "This project folder is not a Git repository. If the repository is in a subfolder, click the folder name below the message box.",
       "status_failed": "Couldn’t read the repository status. Commit history may be out of date.",
+      "status_failed_collapsed": "Couldn’t read the repository status.",
       "status_failed_no_history": "A separate problem: couldn’t read the changes list. Refresh to try again.",
       "log_failed": "Couldn’t read the commit log.",
       "uncommitted_capped": "{{count}}+ uncommitted",
@@ -3517,7 +3518,10 @@
       "filter_refused_title_unreadable_changes": "Kiro can't show changes right now",
       "filter_refused_title_unreadable_history": "Kiro can't show history right now",
       "ask_agent_changes": "Ask the agent about the changes",
-      "ask_agent_history": "Ask the agent about the history"
+      "ask_agent_history": "Ask the agent about the history",
+      "nested_title": "Repositories in this folder",
+      "nested_failed": "Couldn’t list the repositories in this folder.",
+      "nested_truncated": "Not every repository is listed. Open a subfolder as the project to see the rest."
     },
     "workspaceTree": {
       "status_failed": "Couldn’t read the repository status.",

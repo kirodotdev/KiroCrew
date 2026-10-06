@@ -8777,6 +8777,7 @@
       "uncommitted": "{{count}} 个未提交",
       "branch_unavailable": "分支不可用",
       "status_failed": "无法读取仓库状态。提交历史可能已过时。",
+      "status_failed_collapsed": "无法读取仓库状态。",
       "status_failed_no_history": "这是另一个问题。无法读取更改列表。请刷新后重试。",
       "log_failed": "无法读取提交记录。",
       "uncommitted_capped": "超过 {{count}} 个未提交",
@@ -8791,7 +8792,10 @@
       "filter_refused_title_unreadable_changes": "Kiro 目前无法显示更改",
       "filter_refused_title_unreadable_history": "Kiro 目前无法显示历史",
       "ask_agent_changes": "就更改询问代理",
-      "ask_agent_history": "就历史询问代理"
+      "ask_agent_history": "就历史询问代理",
+      "nested_title": "此文件夹中的仓库",
+      "nested_failed": "无法列出此文件夹中的仓库。",
+      "nested_truncated": "未列出所有仓库。将某个子文件夹设为项目即可查看其余仓库。"
     },
     "workspaceTree": {
       "status_failed": "无法读取仓库状态。",

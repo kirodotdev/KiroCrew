@@ -8899,6 +8899,7 @@
       "uncommitted": "{{count}}টি আনকমিটেড",
       "branch_unavailable": "ব্রাঞ্চ পাওয়া যাচ্ছে না",
       "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি। কমিট ইতিহাসটি পুরোনো হতে পারে।",
+      "status_failed_collapsed": "রিপোজিটরির অবস্থা পড়া যায়নি।",
       "status_failed_no_history": "এটি একটি আলাদা সমস্যা। পরিবর্তনের তালিকা পড়া যায়নি। আবার চেষ্টা করতে রিফ্রেশ করো।",
       "log_failed": "কমিট লগ পড়া যায়নি।",
       "uncommitted_capped": "{{count}}টির বেশি আনকমিটেড",
@@ -8913,7 +8914,10 @@
       "filter_refused_title_unreadable_changes": "Kiro এখন পরিবর্তন দেখাতে পারছে না",
       "filter_refused_title_unreadable_history": "Kiro এখন ইতিহাস দেখাতে পারছে না",
       "ask_agent_changes": "পরিবর্তন সম্পর্কে এজেন্টকে জিজ্ঞাসা করো",
-      "ask_agent_history": "ইতিহাস সম্পর্কে এজেন্টকে জিজ্ঞাসা করো"
+      "ask_agent_history": "ইতিহাস সম্পর্কে এজেন্টকে জিজ্ঞাসা করো",
+      "nested_title": "এই ফোল্ডারের রিপোজিটরি",
+      "nested_failed": "এই ফোল্ডারের রিপোজিটরিগুলোর তালিকা দেখানো যায়নি।",
+      "nested_truncated": "সব রিপোজিটরি তালিকায় নেই। বাকিগুলো দেখতে কোনো সাবফোল্ডারকে প্রজেক্ট হিসেবে খোলো।"
     },
     "workspaceTree": {
       "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।",

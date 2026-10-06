@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { i18next, initI18n } from '../i18n/all'
@@ -15,6 +15,7 @@ const H = vi.hoisted(() => ({
   api: {
     projectGitStatus: vi.fn(),
     projectGitLog: vi.fn(),
+    projectGitRepos: vi.fn(),
   },
 }))
 
@@ -55,6 +56,7 @@ beforeEach(async () => {
     files: [],
   })
   H.api.projectGitLog.mockReset().mockResolvedValue({ repo: true, commits: [] })
+  H.api.projectGitRepos.mockReset().mockResolvedValue({ repos: [], truncated: false })
 })
 
 afterEach(async () => {
@@ -810,5 +812,186 @@ describe('GitPanel log route outage', () => {
       i18next.t('components.gitPanel.log_failed'),
     )
     expect(notice).toHaveTextContent('LOG-DETAIL')
+  })
+})
+
+describe('GitPanel nested repositories', () => {
+  // Every nested view sits behind a chain of queries: the root status read
+  // resolves `repo: false`, GitPanel then mounts NestedReposPanel, its
+  // `projectGitRepos` read resolves before any section mounts, and each section
+  // then runs its own status read (a failing one is retried once). One explicit
+  // deadline covers that whole chain on a loaded shard.
+  const CHAIN_TIMEOUT = { timeout: 5000 }
+
+  function statusByRepo(byRepo: Record<string, object>) {
+    H.api.projectGitStatus.mockImplementation(async (_path: string, repo?: string) =>
+      repo === undefined ? { repo: false, files: [] } : byRepo[repo],
+    )
+  }
+
+  it('shows one collapsed section per repository found inside a non-repository folder', async () => {
+    statusByRepo({
+      'src/a': {
+        repo: true,
+        repoRoot: `${PROJECT}/src/a`,
+        branch: 'main',
+        files: [{ path: 'x.ts', status: 'M', staged: false }],
+      },
+      'src/b': { repo: true, repoRoot: `${PROJECT}/src/b`, branch: 'dev', files: [] },
+    })
+    H.api.projectGitRepos.mockResolvedValue({
+      repos: [{ path: 'src/a' }, { path: 'src/b' }],
+      truncated: false,
+    })
+
+    mount()
+
+    // Root status -> repos list: the nested header and the sections.
+    expect(await screen.findByText('Repositories in this folder', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    const sections = await screen.findAllByTestId('git-panel-repo', {}, CHAIN_TIMEOUT)
+    expect(sections).toHaveLength(2)
+    const [a, b] = sections
+    // -> each section's own status read: its branch, and its pill from the same response.
+    expect(await within(a).findByText('main', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    expect(within(a).getByText('1 uncommitted')).toBeInTheDocument()
+    expect(await within(b).findByText('clean', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    expect(screen.queryByText(/This project folder is not a Git repository/)).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
+
+    const toggle = within(a).getByRole('button', { name: 'src/a' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(a).queryByTitle('x.ts')).toBeNull()
+    expect(H.api.projectGitLog).not.toHaveBeenCalledWith(PROJECT, 20, 'src/a')
+
+    fireEvent.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    // Expanding renders the cached status rows, then enables that section's log read.
+    expect(await within(a).findByTitle('x.ts', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    await waitFor(() => expect(H.api.projectGitLog).toHaveBeenCalledWith(PROJECT, 20, 'src/a'), CHAIN_TIMEOUT)
+    expect(H.api.projectGitLog).not.toHaveBeenCalledWith(PROJECT, 20, 'src/b')
+  })
+
+  it('shows a collapsed section’s status failure through ErrorNotice, not only a muted label', async () => {
+    H.api.projectGitStatus.mockImplementation(async (_path: string, repo?: string) => {
+      if (repo === undefined) return { repo: false, files: [] }
+      if (repo === 'broken') throw new Error('status unavailable')
+      return { repo: true, repoRoot: `${PROJECT}/${repo}`, branch: 'main', files: [] }
+    })
+    H.api.projectGitRepos.mockResolvedValue({
+      repos: [{ path: 'broken' }, { path: 'fine' }],
+      truncated: false,
+    })
+
+    mount()
+
+    // Root status -> repos list -> the sections.
+    const [broken, fine] = await screen.findAllByTestId('git-panel-repo', {}, CHAIN_TIMEOUT)
+    expect(within(broken).getByRole('button', { name: 'broken' })).toHaveAttribute('aria-expanded', 'false')
+    // -> the failing section's status read and its one retry.
+    const notice = await within(broken).findByTestId('git-panel-status-error', {}, CHAIN_TIMEOUT)
+    // A collapsed section shows no history, so the notice does not warn about it.
+    expect(notice).toHaveTextContent('Couldn’t read the repository status.')
+    expect(notice).not.toHaveTextContent('Commit history')
+    expect(within(fine).queryByTestId('git-panel-status-error')).toBeNull()
+  })
+
+  it('keeps an opened section open across a failed root status read', async () => {
+    let rootFails = false
+    H.api.projectGitStatus.mockImplementation(async (_path: string, repo?: string) => {
+      if (repo === undefined) {
+        if (rootFails) throw new Error('gateway restarting')
+        return { repo: false, files: [] }
+      }
+      return { repo: true, repoRoot: `${PROJECT}/${repo}`, branch: 'main', files: [] }
+    })
+    H.api.projectGitRepos.mockResolvedValue({
+      repos: [{ path: 'one' }, { path: 'two' }],
+      truncated: false,
+    })
+
+    mount()
+
+    // Root status -> repos list -> the sections, both collapsed.
+    fireEvent.click(await screen.findByRole('button', { name: 'one' }, CHAIN_TIMEOUT))
+    expect(screen.getByRole('button', { name: 'one' })).toHaveAttribute('aria-expanded', 'true')
+
+    rootFails = true
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    // The header refresh -> the root status read and its one retry failing: the outage view.
+    expect(await screen.findByTestId('git-panel-status-error', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'one' })).toBeNull()
+
+    rootFails = false
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    // -> the root status read answering again: the sections, the opened one still open.
+    expect(await screen.findByRole('button', { name: 'one' }, CHAIN_TIMEOUT)).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'two' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('does not read a collapsed section’s log when its branch moves', async () => {
+    let branch = 'main'
+    H.api.projectGitStatus.mockImplementation(async (_path: string, repo?: string) =>
+      repo === undefined
+        ? { repo: false, files: [] }
+        : { repo: true, repoRoot: `${PROJECT}/${repo}`, branch, files: [] },
+    )
+    H.api.projectGitRepos.mockResolvedValue({
+      repos: [{ path: 'one' }, { path: 'two' }],
+      truncated: false,
+    })
+
+    mount()
+
+    // Root status -> repos list -> each section's status read: the first branch.
+    const [one] = await screen.findAllByTestId('git-panel-repo', {}, CHAIN_TIMEOUT)
+    expect(await within(one).findByText('main', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+
+    branch = 'feature'
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    // The header refresh -> each section's status read again: the moved branch.
+    expect(await within(one).findByText('feature', {}, CHAIN_TIMEOUT)).toBeInTheDocument()
+    // Flush the effects of the commit that rendered it: that is where a
+    // branch move would call refetchLog.
+    await act(async () => {})
+    expect(H.api.projectGitLog).not.toHaveBeenCalledWith(PROJECT, 20, 'one')
+    expect(H.api.projectGitLog).not.toHaveBeenCalledWith(PROJECT, 20, 'two')
+  })
+
+  it('opens the only repository found', async () => {
+    statusByRepo({ app: { repo: true, repoRoot: `${PROJECT}/app`, branch: 'main', files: [] } })
+    H.api.projectGitRepos.mockResolvedValue({ repos: [{ path: 'app' }], truncated: false })
+
+    mount()
+
+    // Root status -> repos list -> the one section.
+    const toggle = await screen.findByRole('button', { name: 'app' }, CHAIN_TIMEOUT)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('says when the listing stopped at its limit', async () => {
+    statusByRepo({ app: { repo: true, repoRoot: `${PROJECT}/app`, branch: 'main', files: [] } })
+    H.api.projectGitRepos.mockResolvedValue({ repos: [{ path: 'app' }], truncated: true })
+
+    mount()
+
+    // Root status -> repos list carrying `truncated`.
+    expect(await screen.findByTestId('git-panel-nested-truncated', {}, CHAIN_TIMEOUT)).toHaveTextContent(
+      'Not every repository is listed. Open a subfolder as the project to see the rest.',
+    )
+  })
+
+  it('reports a failed listing through ErrorNotice instead of claiming there are no repositories', async () => {
+    H.api.projectGitStatus.mockResolvedValue({ repo: false, files: [] })
+    H.api.projectGitRepos.mockRejectedValue(new Error('listing unavailable'))
+
+    mount()
+
+    // Root status -> repos list failing, then its one retry.
+    expect(await screen.findByTestId('git-panel-nested-error', {}, CHAIN_TIMEOUT)).toHaveTextContent(
+      'Couldn’t list the repositories in this folder.',
+    )
+    expect(screen.queryByText(/This project folder is not a Git repository/)).toBeNull()
   })
 })
