@@ -91,8 +91,7 @@ def write_plan(path: Path, crew: str, candidates: dict[str, list[Candidate]]) ->
                 entry["blocked"] = c.blocked
             entries.append(entry)
         body[kind] = entries
-    _destination._refuse_unusable_parent(path, what="the plan")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _destination._mkdir_guarded(path, what="the plan")
     # newline="" here is uniformity, not correctness: the plan is written before the
     # digest is taken and is carried into the bundle afterwards, so bundle_digest never
     # covers it, and read_plan goes through json.loads, which does not care. It is pinned

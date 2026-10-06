@@ -13,7 +13,9 @@ outcome the caller sees -- a clean ``ExportRefused`` -- and on the disk being le
 
 from __future__ import annotations
 
+import contextlib
 import os
+import stat
 
 import pytest
 
@@ -109,3 +111,66 @@ def test_rebuilding_over_a_previous_bundle_still_works(tmp_path):
     _build(mod, crew, out)
     _build(mod, crew, out)
     assert (out / "manifest.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# the mkdir itself failing -- a parent that passes the shape check but cannot be
+# written. ``_refuse_unusable_parent`` only judges shape (not a link, no file in
+# the way); a parent that exists and IS a directory but is unwritable makes the
+# ``mkdir`` of a child under it raise ``PermissionError``. Before ``_mkdir_guarded``
+# that escaped as a traceback -- the "mkdir on the parent escapes" crash the
+# inventory pinned for ``write_plan`` and ``_write_guarded``. These assert the
+# failure now arrives as a stated ``ExportRefused`` naming the path.
+
+
+@contextlib.contextmanager
+def _write_denied(path):
+    """Drop the write bit on *path* for the body, then restore its original mode.
+
+    Restores the mode captured by ``stat`` rather than a hardcoded literal, so the test
+    neither assumes nor re-grants a specific permission set -- it puts back exactly what the
+    directory had, which is what ``tmp_path`` cleanup then needs.
+    """
+    original = stat.S_IMODE(os.stat(path).st_mode)
+    os.chmod(path, original & ~0o222)  # clear write for user/group/other: mkdir under it fails
+    try:
+        yield
+    finally:
+        os.chmod(path, original)
+
+
+@_posix_only
+def test_mkdir_guarded_converts_an_unwritable_parent_to_a_refusal(tmp_path):
+    mod = load_build()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    with _write_denied(locked):
+        target = locked / "sub" / "plan.json"
+        with pytest.raises(mod.ExportRefused) as caught:
+            mod._mkdir_guarded(target, what="the plan")
+        message = str(caught.value)
+        assert "the plan" in message
+        assert str(target.parent) in message
+
+
+@_posix_only
+def test_mkdir_guarded_does_not_disturb_the_ordinary_case(tmp_path):
+    """A writable parent still gets its directories created, no refusal."""
+    mod = load_build()
+    target = tmp_path / "a" / "b" / "plan.json"
+    mod._mkdir_guarded(target, what="the plan")
+    assert target.parent.is_dir()
+
+
+@_posix_only
+def test_write_plan_refuses_cleanly_when_its_parent_cannot_be_created(tmp_path):
+    """The ``plan`` command's own mkdir escape becomes a stated reason, not a traceback."""
+    mod = load_build()
+    crew = _crew(mod, tmp_path)
+    candidates = mod.enumerate_all(crew, mod.read_agent_spec(crew))
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    with _write_denied(locked):
+        plan_path = locked / "sub" / mod.PLAN_FILENAME
+        with pytest.raises(mod.ExportRefused):
+            mod.write_plan(plan_path, "frontdesk", candidates)
