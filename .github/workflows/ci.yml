@@ -2679,7 +2679,7 @@ jobs:
 
       - name: Windows port-identity tests
         working-directory: website/electron
-        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js
 
   frontend-test:
     name: Frontend Tests
