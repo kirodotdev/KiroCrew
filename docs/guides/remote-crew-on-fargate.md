@@ -39,7 +39,7 @@ except the ones marked optional is **required** for the lane to register.
 | `subnets` | yes | list of subnet ids; at least one |
 | `security_groups` | yes | list of security-group ids; at least one |
 | `image` | yes | the crew container image, **digest-pinned only** — `<repo>@sha256:<64-hex>`; a movable tag is refused |
-| `secrets` | yes | list of `[canonical-name, ARN]` pairs; **one must name your model credential**. Identifiers only — never a secret value; the task's execution role fetches the value from Secrets Manager at start |
+| `secrets` | yes | list of `[canonical-name, ARN]` pairs; each name has the form `kirocrew/crew/<crew>/<KEY>`, and **one must be your model credential, named `kirocrew/crew/<crew>/KIRO_IDENTITY`**. That secret holds one KasToken JSON document, not an API key. Identifiers only — never a secret value; the task's execution role fetches the value from Secrets Manager at start |
 | `cpu_architecture` | no | `X86_64` (default) or `ARM64` |
 | `assign_public_ip` | no | JSON boolean; defaults to `false`. A public subnet with no NAT gateway cannot pull the image without this |
 | `task_ttl_seconds` | no | JSON integer above zero; how long one task may run before the launcher stops it. Omitted takes the engine's own default |
@@ -61,7 +61,7 @@ removes the lane — no gateway restart.
     "subnets": ["subnet-0abc123", "subnet-0def456"],
     "security_groups": ["sg-0abc123"],
     "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/kirocrew-crew@sha256:<64-hex>",
-    "secrets": [["KIRO_API_KEY", "arn:aws:secretsmanager:us-east-1:123456789012:secret:kirocrew/KIRO_API_KEY-AbCdEf"]],
+    "secrets": [["kirocrew/crew/<crew>/KIRO_IDENTITY", "arn:aws:secretsmanager:us-east-1:123456789012:secret:kirocrew/crew/<crew>/KIRO_IDENTITY-AbCdEf"]],
     "cpu_architecture": "X86_64",
     "assign_public_ip": false,
     "task_ttl_seconds": 21600
@@ -90,13 +90,22 @@ crews.
 ## After the lane registers
 
 Once the block is complete, the `aws_fargate` provisioner lane is offered through
-the dashboard's provisioner API. Note two current limits, both tracked upstream:
+the dashboard's provisioner API. What to expect from it:
 
 - The lane is **not** in the Set-up picker — no frontend renderer claims its
   `kind` yet, so the dashboard skips it in that selector.
-- Registry registration after launch is still manual (tracked in #12511); a launch
-  that cannot auto-register is reported as launched with the reason on its connect
-  step, because the task is running and billing either way.
+- Every `POST /api/cloud/launch` for this lane must carry `confirm_recipient`
+  equal to the descriptor's `confirm_before_launch` value, which
+  `GET /api/cloud/provisioners` publishes. A missing or different value is
+  refused with `400 recipient_not_confirmed` before any task registers. See
+  "The credential recipient is confirmed at launch" in
+  [`../system-specs/modules/cloud.md`](../system-specs/modules/cloud.md).
+- A launch adds the task to the Instances registry on its own, with connection
+  method `fargate`. Add it by hand under **Settings → Remote Crew** only when the
+  connect step reports that it could not; the launch is then reported as
+  launched with that reason, because the task is running and billing either way.
+- A launched task keeps its data home on the task's own disk, so its sessions and
+  transcripts are lost when the task stops. No persistent store is configurable.
 
 A running crew is then reached through the instances layer's `fargate` connection
 method, surfaced as **Settings → Remote Crew**.

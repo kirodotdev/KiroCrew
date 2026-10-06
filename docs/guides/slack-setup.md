@@ -408,8 +408,9 @@ A dashboard chat session can be linked to a Slack thread for two-way sync.
 2. Pick a target from the link list. The Slack DM entry is always offered; other
    entries come from your configured channel targets
 3. A new thread is posted in that conversation, titled from the session title
-   (falling back to a snippet of the first prompt), followed by the last five
-   messages as context. Titles and message text are redacted before posting
+   (falling back to a snippet of the first prompt), followed by the opening
+   turn, a gap marker when turns were skipped, and the last five turns (user and
+   assistant) as context. Titles and message text are redacted before posting
 4. The menu then shows a "Connected" row for the link, plus actions to post a
    reminder into the thread or to unlink
 
@@ -465,7 +466,11 @@ match falls through to it.
 
 ### Owner-Only Bang Commands
 
-These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`.
+These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`. Most of them
+are deprecated in favour of `/kirocrew` sub-commands: `!yolo`, `!stop`, `!voice`,
+`!agent`, `!ta`, `!dashboard`, `!channel`, `!link-to-dashboard` and `!restart`
+still run, and the reply carries a deprecation notice naming the slash command
+to use instead.
 
 | Command | Purpose |
 |---------|---------|
@@ -490,9 +495,12 @@ Available in DMs or @mentions.
 | `status` | Show runtime stats summary |
 | `spawn <task>` | Start a background subagent |
 | `bg <task>` | Alias for `spawn <task>` |
-| `spawn list` | List active subagents |
+| `spawn list` / `spawn status` | List active subagents |
 | `cron list` | List cron jobs |
 | `cron remove <id>` | Remove a cron job |
+| `cron remove all` | Remove every cron job |
+| `cron pause <id>` / `cron resume <id>` | Pause or resume a cron job |
+| `run <spec-path>` | Start the task runner on a spec file |
 | `sessions` | List recent sessions with resume buttons |
 
 ---
