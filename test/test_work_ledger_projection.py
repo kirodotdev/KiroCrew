@@ -1454,7 +1454,12 @@ async def test_a_read_never_publishes_a_mutation_the_record_then_rolls_back(reco
         return False
 
     monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", _held_append)
-    report = asyncio.ensure_future(_report(WORKER, {"status": "done", "summary": "never landed"}))
+    report = asyncio.ensure_future(
+        _report(
+            WORKER,
+            {"status": "done", "summary": "never landed", "artifacts": {"commit": "abc1234"}},
+        )
+    )
     # The commit has happened and the append is in flight: the window.
     assert await asyncio.to_thread(entered.wait, 5)
     assert wl.read_work_item(CONDUCTOR, item_id).status == "done"
@@ -2100,7 +2105,9 @@ async def test_a_rebuild_never_reclaims_a_worker_another_board_now_holds(monkeyp
     points at the terminal item (the worker never moved on) is kept."""
     _real_units(monkeypatch)
     item_id = await _board()
-    status, body = await _report(WORKER, {"status": "done", "summary": "finished"})
+    status, body = await _report(
+        WORKER, {"status": "done", "summary": "finished", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200, body
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}

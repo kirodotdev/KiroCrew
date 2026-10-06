@@ -158,7 +158,10 @@ saying how many characters were dropped, and `work_report`'s reply repeats it
 with the length the caller sent, so a worker learns it overran in the same
 round-trip that accepted the report instead of spending another one rewriting
 it. Evidence goes in `artifacts` as pointers — a branch, a commit, a path, a
-pull request number. `artifacts`, `pr` and `status` are still refused when they
+pull request number. A `done` with no `artifacts` and no `pr` is refused
+`done_without_evidence`; a check that could not run is still an artifact when
+it says so, e.g. `{"tests": "not run: harness unavailable"}`.
+`artifacts`, `pr` and `status` are still refused when they
 are wrong or oversized: a truncated pointer is a broken pointer, while prose cut
 at the cap still reads.
 

@@ -545,6 +545,10 @@ async def api_work_brief(request: web.Request) -> web.Response:
     return web.json_response({"brief": brief})
 
 
+#: A route refusal rather than a store code: the store never sees the report.
+_CODE_DONE_WITHOUT_EVIDENCE = "done_without_evidence"
+
+
 async def api_work_report(request: web.Request) -> web.Response:
     """POST /api/work-ledger/report — this worker's status against its own item.
 
@@ -588,6 +592,24 @@ async def api_work_report(request: web.Request) -> web.Response:
         cleaned = crew_log_emit.safe_work_fields(cleaned)
     except crew_log_emit.WorkFieldError as exc:
         return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc))
+    if cleaned.get("status") == "done" and not cleaned.get("artifacts") and not cleaned.get("pr"):
+        # A ``done`` names what the conductor should check. One pointer is enough,
+        # and a check that could not run is still a pointer when it says so.
+        _audit(
+            key,
+            "work_report",
+            "denied",
+            resources=item_id,
+            error=_CODE_DONE_WITHOUT_EVIDENCE,
+        )
+        return _refuse_400(
+            _CODE_DONE_WITHOUT_EVIDENCE,
+            "a 'done' report must carry its evidence in this report: at least one "
+            "artifacts pointer (commit, test command and exit code, path) or a pr. "
+            "If a check could not run, say so in an artifact, e.g. "
+            '{"tests": "not run: harness unavailable"}',
+            field="artifacts",
+        )
 
     # The record is refused BEFORE the cache commits: the widest entry this report
     # can produce (the committed `pr` may be an earlier report's) must fit a line.

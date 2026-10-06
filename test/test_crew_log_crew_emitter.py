@@ -536,7 +536,9 @@ async def test_only_the_bind_action_records_a_dispatch(open_routes):
 async def test_a_worker_report_through_the_route_records_the_answer(open_routes):
     _seed_session(entries=4)
     item_id = await _bound_item()
-    status, body = await _report(WORKER, {"status": "done", "summary": "shipped it"})
+    status, body = await _report(
+        WORKER, {"status": "done", "summary": "shipped it", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200, body
     entries = _crew_entries()
     assert [entry["type"] for entry in entries] == [emit.CREW_DISPATCH, emit.CREW_REPORT]
@@ -571,7 +573,9 @@ async def test_a_board_on_an_ordinary_chat_slot_records_no_crew_entry(open_route
     chat_conductor = "chat-9-conductor"
     _seed_session(entries=2)
     item_id = await _bound_item(chat_conductor)
-    status, body = await _report(WORKER, {"status": "done", "summary": "shipped it"})
+    status, body = await _report(
+        WORKER, {"status": "done", "summary": "shipped it", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200, body
     assert item_id
     assert not lg.crew_log_dir(lg.KIND_CREW, CREW).exists()

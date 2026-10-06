@@ -437,7 +437,9 @@ async def test_item_closed_is_409_for_both_halves():
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
     assert status == 200
-    status, body = await _report(WORKER_A, {"status": "done", "summary": "too late"})
+    status, body = await _report(
+        WORKER_A, {"status": "done", "summary": "too late", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 409
     assert body["code"] == wl.CODE_ITEM_CLOSED
     status, body = await _record(
@@ -706,7 +708,9 @@ async def test_each_batch_entry_carries_the_items_status_unfiltered():
     assert entry["status"] == "progress"
     assert entry["accept"] == {"kind": "human_approval"}
 
-    status, _ = await _report(WORKER_A, {"status": "done", "summary": "met"})
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "met", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200
     _, body = await _read(CONDUCTOR_A)
     entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
@@ -719,7 +723,9 @@ async def test_a_done_item_waiting_on_the_conductor_is_not_stale():
     next move is the conductor's or a human's, so the flag must not point back at the
     reader — a quiet ``done`` item is silent because it is finished."""
     ids = await two_by_two()
-    status, _ = await _report(WORKER_A, {"status": "done", "summary": "opened the pr"})
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "opened the pr", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200
     item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
     assert item is not None
@@ -1672,3 +1678,43 @@ def test_the_schema_ceiling_restates_the_route_caps():
     assert state.allowed == wl.ITEM_STATES
     item_id = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "item_id")
     assert item_id.pattern is not None and item_id.pattern.pattern == wl._ITEM_ID_RE.pattern
+
+
+# ── a done names its evidence ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_done_with_no_evidence_is_refused_and_writes_nothing():
+    ids = await two_by_two()
+    before = wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "all tests pass"})
+    assert status == 400
+    assert body["code"] == "done_without_evidence"
+    assert body["field"] == "artifacts"
+    assert "not run" in body["error"]
+    assert wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"artifacts": {"tests": "pytest test/test_x.py exit=0"}},
+        {"artifacts": {"tests": "not run: harness unavailable"}},
+        {"pr": 42},
+    ],
+)
+async def test_a_done_with_one_pointer_is_recorded(evidence):
+    ids = await two_by_two()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "met", **evidence})
+    assert status == 200, body
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None and item.status == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_value", ["progress", "blocked", "question"])
+async def test_only_done_needs_evidence(status_value):
+    await two_by_two()
+    status, body = await _report(WORKER_A, {"status": status_value, "summary": "still going"})
+    assert status == 200, body
