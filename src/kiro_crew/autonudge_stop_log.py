@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from kiro_crew.autonudge_service.model import STOP_SENTINEL_REASON
 from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.platform import redact_log_via_context
@@ -105,14 +106,20 @@ def active_summaries(rows: Iterable[Any]) -> dict[str, dict[str, Any]]:
 
 
 def _stored_reason(row: Mapping[str, Any]) -> tuple[str, str]:
-    """(reason, detail) a stopped row carries in its own fields."""
+    """(reason, detail) a stopped row carries in its own fields.
+
+    A stop-file finish names its file: the first thing to check when a goal ended
+    as soon as it started is what sits at that path.
+    """
     monitor = row.get("monitor")
     if isinstance(monitor, Mapping):
         reason = str(monitor.get("stopped_reason") or monitor.get("outcome") or "")
         detail = str(monitor.get("user_stop_reason") or "")
         if reason:
             return reason, detail
-    return str(row.get("stopped_reason") or ""), ""
+    reason = str(row.get("stopped_reason") or "")
+    path = row.get("stop_sentinel_path") if reason == STOP_SENTINEL_REASON else ""
+    return reason, str(path or "")
 
 
 def stop_records(

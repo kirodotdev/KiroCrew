@@ -5,7 +5,11 @@ import {
   normalizePullRequestMonitorTarget,
   type StructuredMonitor,
 } from '../monitoring/automation'
-import { canonicalGitHubObservation, structuredMonitorLoop as structuredLoop } from './monitorFixtures'
+import monitorContract from '../monitoring/contract.json'
+import {
+  canonicalGitHubObservation,
+  structuredMonitorLoop as structuredLoop,
+} from './monitorFixtures'
 
 describe('automation transport normalizer', () => {
   it.each([
@@ -67,7 +71,7 @@ describe('automation transport normalizer', () => {
       id: 'loop-7', slot_key: 'chat-7-700', message: 'watch the pull request', idle_secs: 300,
       max_cycles: 24, cycle_count: 3, active: false, last_fire_ts: 1, next_due_ts: 0,
       max_runtime_secs: 14_400, stopped_reason: 'monitor_terminal', gate: true,
-      monitor: { kind: 'gh-pr', outcome: 'success', target: '[redacted]', objective: 'review_ready', version: 1 },
+      monitor: { kind: 'gh-pr', outcome: 'success', target: '[redacted]', objective: 'review_ready', version: monitorContract.monitorStateVersion },
     })
     expect(rest).toMatchObject({
       kind: 'legacy_goal_loop', stoppedReason: 'monitor_terminal', monitorOutcome: 'success', monitorKind: 'gh-pr',
@@ -82,7 +86,7 @@ describe('automation transport normalizer', () => {
     const structured = normalizeAutomationRecord({
       id: 'mon-1', slot_key: 'chat-8-800', message: '', active: true, gate: false,
       monitor: { kind: 'github_pull_request', objective: 'review_ready', target: 'https://github.com/o/r/pull/1',
-        version: 1, cadence_secs: 300, budgets: { max_runtime_secs: 3600, max_agent_turns: 10, max_tokens: 100000 },
+        version: monitorContract.monitorStateVersion, cadence_secs: 300, budgets: { max_runtime_secs: 3600, max_agent_turns: 10, max_tokens: 100000 },
         wake_count: 0, agent_turns: 0, input_tokens: 0, output_tokens: 0, probe_count: 0, provider_error_count: 0,
         consecutive_provider_errors: 0 },
     })
@@ -166,13 +170,29 @@ describe('automation transport normalizer', () => {
     expect(structuredLoop().monitor.last_observation).toEqual(canonicalGitHubObservation)
   })
 
+  it('normalizes the shared fixture to an actionable monitor at the contract version', () => {
+    // The shared fixture is what the popover, websocket and chat-page tests feed the
+    // normalizer. A fixture version that differs from the contract's turns it into the
+    // non-actionable fallback, and those tests stay green without ever normalizing a
+    // valid monitor.
+    expect(normalizeAutomationRecord(structuredLoop())).toMatchObject({
+      kind: 'structured_monitor',
+      actionable: true,
+      version: monitorContract.monitorStateVersion,
+    })
+  })
+
   it('fails closed when a structured marker is malformed or from a future version', () => {
-    const malformed = normalizeAutomationRecord({ ...structuredLoop(), monitor: { version: 1 } })
-    const future = normalizeAutomationRecord(structuredLoop({ version: 2 }))
+    const malformed = normalizeAutomationRecord({ ...structuredLoop(), monitor: { version: monitorContract.monitorStateVersion } })
+    const future = normalizeAutomationRecord(structuredLoop({ version: monitorContract.monitorStateVersion + 1 }))
     const invalidVersion = normalizeAutomationRecord(structuredLoop({ version: 0 }))
 
     expect(malformed).toMatchObject({ kind: 'structured_monitor', actionable: false })
-    expect(future).toMatchObject({ kind: 'structured_monitor', actionable: false, version: 2 })
+    expect(future).toMatchObject({
+      kind: 'structured_monitor',
+      actionable: false,
+      version: monitorContract.monitorStateVersion + 1,
+    })
     expect(invalidVersion).toMatchObject({ kind: 'structured_monitor', actionable: false })
     expect(deriveAutomationStatus(malformed!)).toBe('blocked')
     expect(deriveAutomationStatus(future!)).toBe('blocked')
