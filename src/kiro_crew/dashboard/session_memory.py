@@ -173,10 +173,43 @@ def lineage_parents(
     it takes the nodes alone rather than a whole reading -- which is also what keeps it
     from deciding a question that belongs to its caller.
 
-    An empty *nodes* means no row has a creator (the crew log is off, or nothing
-    on disk cites one), and the storage package stays UNIMPORTED on that path:
-    ``parent_payload`` is imported below the early return, so a flag-off boot
-    never loads it. Existing tests pin that.
+    A row the fold holds NO NODE for falls back to the row's OWN ``created_by``, and
+    that is the whole of how a just-dispatched session nests. Such a row is a child
+    between ``session_create`` and its first turn: its crew log needs an ACP session id
+    that arrives with that turn, so nothing in *nodes* can speak for it, and the fold
+    alone leaves it at the top level for as long as runtime and MCP startup take.
+
+    GATED on the row's ``lineage_minted``, which is the load-bearing half.
+    ``created_by`` is written at birth and REHYDRATED from a metadata line an agent's
+    file tools can edit, so alone it is a claim: a fenced agent that wrote a lead's key
+    into an archived transcript would otherwise have that tab nested under the lead the
+    moment it was revived. ``lineage_minted`` says this gateway process stamped the
+    pair at mint -- the same witness the crew log requires before it will record a
+    creator in ``session/opened.parent``. A restored slot answers false and nests
+    nowhere, which is what base already did.
+
+    A node, once it exists, WINS -- including a node whose ``parent_slot`` is ``None``.
+    That absence is not a gap to fill: it is either a session nobody created or one a
+    ``session/released`` deliberately let go, and reading ``created_by`` over it would
+    put back an edge somebody took away, in the one view a person would look at to
+    confirm the release. So the fallback is keyed on the node's EXISTENCE and never on
+    the value inside it.
+
+    The edge becomes a payload through the same :func:`parent_payload` a folded node
+    goes through, on a node built here, so the two cannot nest the same gateway
+    differently: one join, one rule for when the creator's live key is followed.
+
+    Only the slots payload carries these two fields (``slot_projection.serialize_slot``
+    writes them). The Sessions table's rows come from the session manager's runtime
+    map, so they have neither and this fallback is not reached there -- that view keeps
+    the folded answer alone, which is the behaviour it had before.
+
+    An empty *nodes* means the crew log is off, or nothing on disk cites a creator,
+    and the storage package stays UNIMPORTED on that path: ``parent_payload`` is
+    imported below the early return, so a flag-off boot never loads it. Existing tests
+    pin that. The mint fallback is not reached there either, and that is the right
+    answer rather than a gap: with no folded node anywhere, a creator row would have
+    nothing for the child to nest UNDER.
     """
     if not nodes:
         return {}
@@ -219,8 +252,36 @@ def lineage_parents(
         if not isinstance(key, str) or not key:
             continue
         node = next((nodes[s] for s in slot_spellings(key) if s in nodes), None)
+        if node is None:
+            node = _minted_node(row, key)
         out[key] = parent_payload(node, live_key_of, key)
     return out
+
+
+def _minted_node(row: dict[str, object], key: str) -> "TreeNode | None":
+    """A stand-in node from the row's own mint witness, or ``None``.
+
+    Reached only when no spelling of the row's key is in the fold, which is a child
+    that has not opened a log yet.
+
+    Both fields are required and both are judged HERE rather than at the call site, so
+    one place decides what counts as a witnessed creator. ``lineage_minted`` false
+    covers every row that is not one: a person's own tab, a fork, and -- the case that
+    matters -- a slot restored after a restart, whose ``created_by`` came back from an
+    agent-editable transcript and is therefore a claim rather than this gateway's own
+    record.
+    """
+    if not row.get("lineage_minted"):
+        return None
+    creator = row.get("created_by")
+    if not isinstance(creator, str) or not creator or creator == key:
+        # A blank names nobody, and a row naming itself is not an edge.
+        return None
+    from kiro_crew.crew_log.session_tree import TreeNode as _TreeNode
+
+    # ``cycle`` is false because a slot with no log of its own is cited by nothing, so
+    # it can lie on no cycle of citations.
+    return _TreeNode(slot=key, parent_slot=creator, cycle=False)
 
 
 def session_title(key: str, get_slot: Callable[[str], object]) -> dict[str, object]:

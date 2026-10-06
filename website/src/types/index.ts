@@ -1170,6 +1170,13 @@ export interface ChatSlot {
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
   created_by?: string
+  /** Whether THIS gateway process stamped `created_by` at mint, rather than
+   * rehydrating it from the transcript. `created_by` is restored from a metadata
+   * line an agent's file tools can edit, so on its own it is a claim; this says
+   * whether it is the gateway's own witness. `_attach_slot_parents` requires it
+   * before nesting a row that has no session-tree node yet — a child between
+   * `session_create` and its first turn, which has no crew log to fold. */
+  lineage_minted?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS

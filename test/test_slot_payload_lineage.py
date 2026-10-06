@@ -276,6 +276,120 @@ def test_both_joins_agree_on_every_creator_given_the_same_fold(tmp_path, monkeyp
     assert slot_parents["chat-kid-member"]["key"] == "member-pipeline"
 
 
+# ── the child that has not run yet ─────────────────────────────────────────
+
+
+def _minted(key: str, creator: str) -> dict:
+    """A row for a slot THIS process minted and that has not had a turn.
+
+    The two fields ``serialize_slot`` writes for it, and nothing else: there is no
+    crew log for such a slot, because its opening entry needs an ACP session id that
+    does not exist until its first turn.
+    """
+    return {"key": key, "created_by": creator, "lineage_minted": True}
+
+
+def test_a_child_created_with_no_turn_nests_at_once():
+    """The window this closes: between ``session_create`` and the child's first turn
+    the store holds no edge at all, so the fold has no node and nothing but the row's
+    own witness can place it."""
+    _unit("s-1", "chat-1")
+    _seeded()
+
+    rows = [{"key": "chat-1"}, _minted("chat-2", "chat-1")]
+    _attach_slot_parents(rows)
+
+    assert "chat-2" not in stp.projection().nodes(), "the child must have no node here"
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": "chat-1"}
+
+
+def test_a_restored_child_that_never_ran_nests_nowhere():
+    """``created_by`` is rehydrated from a metadata line an agent's file tools can
+    edit, so alone it is a claim. Without the mint witness a fenced agent that wrote a
+    lead's key into an archived transcript would have that tab nested under the lead
+    the moment it was revived."""
+    _unit("s-1", "chat-1")
+    _seeded()
+
+    restored = {"key": "chat-2", "created_by": "chat-1", "lineage_minted": False}
+    rows = [{"key": "chat-1"}, restored]
+    _attach_slot_parents(rows)
+
+    assert rows[1]["parent"] is None
+
+
+def test_the_childs_own_log_wins_once_it_has_one():
+    """The fallback is for a row with NO node. Once the child's own entry has landed,
+    that entry is the authority and the row's fields are not consulted."""
+    _unit("s-1", "chat-1")
+    _unit("s-9", "chat-9")
+    _unit("s-2", "chat-2", parent="chat-9")
+    _seeded()
+
+    # The row still claims chat-1 minted it; the log says chat-9 opened it.
+    rows = [{"key": "chat-1"}, {"key": "chat-9"}, _minted("chat-2", "chat-1")]
+    _attach_slot_parents(rows)
+
+    assert rows[2]["parent"] == {"slot": "chat-9", "key": "chat-9"}
+
+
+def test_an_adopted_child_stays_under_its_adopter():
+    """A takeover moves the node, and the node wins -- so the creator's own claim on
+    the row does not drag an adopted child back."""
+    _unit("s-1", "chat-1")
+    _unit("s-9", "chat-9")
+    _unit("s-2", "chat-2", parent="chat-1")
+    handle = CrewLog.open(lg.KIND_SESSION, "s-2")
+    handle.append("session/adopted", {"parent": {"slot": "chat-9"}}, src=GATEWAY)
+    del handle
+    _seeded()
+
+    rows = [{"key": "chat-1"}, {"key": "chat-9"}, _minted("chat-2", "chat-1")]
+    _attach_slot_parents(rows)
+
+    assert rows[2]["parent"] == {"slot": "chat-9", "key": "chat-9"}
+
+
+def test_a_released_child_stays_a_root():
+    """A node with no parent is not a gap to fill. It is either a session nobody
+    created or one a ``session/released`` deliberately let go, and reading the row's
+    claim over it would put back an edge somebody took away."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    handle = CrewLog.open(lg.KIND_SESSION, "s-2")
+    handle.append("session/released", {}, src=GATEWAY)
+    del handle
+    _seeded()
+
+    rows = [{"key": "chat-1"}, _minted("chat-2", "chat-1")]
+    _attach_slot_parents(rows)
+
+    assert stp.projection().nodes()["chat-2"].parent_slot is None
+    assert rows[1]["parent"] is None
+
+
+def test_a_child_closed_before_it_ever_ran_has_no_row_to_nest():
+    """The join is against LIVE rows, so a child that was created and closed without
+    running needs no retraction anywhere: it simply is not in the payload."""
+    _unit("s-1", "chat-1")
+    _seeded()
+
+    rows = [{"key": "chat-1"}]
+    _attach_slot_parents(rows)
+
+    assert rows == [{"key": "chat-1", "parent": None}]
+
+
+def test_a_row_claiming_itself_is_not_an_edge():
+    _unit("s-1", "chat-1")
+    _seeded()
+
+    rows = [_minted("chat-1", "chat-1")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] is None
+
+
 def test_a_creator_that_is_not_running_leaves_the_citation_but_no_key():
     """The child stays a root and still says who opened it."""
     _unit("s-1", "chat-1")

@@ -593,6 +593,8 @@ def _attach_slot_parents(
 
         proj = projection()
         if proj.seeded_for_current_store:
+            # A child minted and not yet run has no node, and the join nests it from
+            # the row's own witnessed ``created_by`` -- see ``lineage_parents``.
             parents = lineage_parents(rows, proj.nodes(), aliases)
             # A seed that FAILED leaves a readable but EMPTY state, so the check above
             # is satisfied and this path would otherwise never ask for another one --

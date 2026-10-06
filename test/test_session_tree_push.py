@@ -156,6 +156,38 @@ def test_a_restored_slot_s_first_turn_seeds_before_it_reads():
     assert chat_runner._crew_log_inherited_parent(restored, "s-worker-1") == "lead"
 
 
+@pytest.mark.asyncio
+async def test_a_restored_child_that_never_ran_writes_no_creator_into_its_first_log():
+    """The nesting a just-dispatched child gets is IN MEMORY, and a restart ends it.
+
+    The sidebar nests such a child from the row's own ``created_by``, gated on
+    ``lineage_minted`` -- a witness this process holds and never persists. After a
+    restart the slot comes back with the claim and without the witness, so it nests
+    nowhere and its first ``session/opened`` cites no creator.
+
+    That is base behaviour and it is pinned here on purpose, because the obvious
+    improvement is unsafe: the claim is restored from a transcript an agent's file
+    tools can edit, and a slot KEY is reusable, so promoting it would let a fenced
+    caller that forged an archived tab's ``created_by`` be recorded as that tab's
+    creator in an append-only entry -- which is what
+    ``session_control.revive_session``'s ownership check then reads.
+    """
+    emit.on_session_opened("s-lead", agent="kirocrew-lead", slot="lead")
+    assert emit.flush(timeout=5.0) is True
+    stp.reset_for_tests()
+    emit.reset_caches()
+
+    record = await run_turn(
+        TurnScript(events=_LANDS, setup=_restored_worker), slot=SlotSpec(key="worker")
+    )
+
+    # ``_restored_worker`` carries the claim and not the witness, which is exactly the
+    # shape a restart leaves -- so the refusal below is the rule, not a missing input.
+    [opened] = _opened(record)
+    assert opened["previous_sid"] == ""
+    assert opened["parent_slot"] == ""
+
+
 def test_a_new_slot_on_a_reused_key_inherits_nothing():
     """A key is reusable; the old worker's edge must not attach to a fresh tab."""
     from kiro_crew.dashboard import chat_runner

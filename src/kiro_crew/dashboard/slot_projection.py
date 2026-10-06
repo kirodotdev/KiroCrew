@@ -498,4 +498,13 @@ class SlotProjection:
             # ``slots`` frames on it. A member caller is ownership-fenced to the
             # slots it created (``authorize_target``), so created == driven.
             "created_by": getattr(slot, "_created_by", ""),
+            # Whether THIS gateway process stamped ``created_by`` at mint, as
+            # opposed to rehydrating it from the transcript. The field above is
+            # restored from a metadata line an agent's file tools can edit, so on
+            # its own it is a claim; this says whether it is the gateway's own
+            # witness. Carried onto the row because the one reader that DECIDES
+            # on it -- the sidebar's lineage join -- gets rows and no slots, and
+            # a join that trusted the claim alone would nest a session under
+            # whoever a transcript happened to name.
+            "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
         }

@@ -89,6 +89,7 @@ _TO_DICT_KEYS = (
     "app",
     "origin",
     "created_by",
+    "lineage_minted",
 )
 
 
