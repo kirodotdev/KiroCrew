@@ -10246,11 +10246,74 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
 
+    # The trap stays a catch-all: it must still see EVERY product filesystem
+    # read on the loop thread, including ones outside ``tmp_path`` — the
+    # isolation fixture's data-home pointer (``read_previous_target`` /
+    # ``_staged_target``) and the running checkout's ``src/`` that steps 1–2
+    # reach before the cutover stub redirects them. The only calls that must not
+    # count are pytest's own lazy imports: under ``-n auto`` the first test in a
+    # worker to touch ``pygments`` / ``_pytest.assertion.rewrite`` / ``_pytest._io``
+    # triggers ``lstat``/``realpath`` walks over the interpreter and
+    # ``site-packages`` to resolve each module's ``__file__``; when that lands on
+    # the loop thread inside the trapped window a path-blind trap miscounts them
+    # as product work. So EXCLUDE (never allow-list): drop a call only when its
+    # path is under the interpreter prefixes or a ``site-packages``/
+    # ``dist-packages`` tree. Everything else — any product path, anywhere — is
+    # still recorded, so a regression that moves a real read onto the loop still
+    # fails the test.
+    #
+    # Classification is pure string work (``abspath``/``normpath``, no
+    # ``stat``/``lstat``/``realpath``), so it never re-enters one of the traps.
+    _real_fspath = os.fspath
+    _real_fsdecode = os.fsdecode
+
+    def _norm(p: str) -> str:
+        return os.path.normpath(os.path.abspath(p))
+
+    _interp_roots = {
+        _norm(p)
+        for p in (
+            sys.prefix,
+            sys.base_prefix,
+            sys.exec_prefix,
+            sys.base_exec_prefix,
+            # The stdlib location (dir holding ``os.py``); its ``__file__`` import
+            # walks are tool noise, not product reads.
+            os.path.dirname(os.__file__ or ""),
+        )
+        if p
+    }
+
+    def _is_tooling_path(resolved: str) -> bool:
+        parts = resolved.split(os.sep)
+        if "site-packages" in parts or "dist-packages" in parts:
+            return True
+        for root in _interp_roots:
+            if resolved == root or resolved.startswith(root + os.sep):
+                return True
+        return False
+
+    def _should_record(arg) -> bool:
+        if isinstance(arg, bytes):
+            try:
+                arg = _real_fsdecode(arg)
+            except Exception:
+                return True
+        if not isinstance(arg, (str, os.PathLike)):
+            # A file-descriptor (int) or anything unresolvable to a path: it is
+            # not an interpreter/tooling import walk, so count it conservatively.
+            return True
+        try:
+            resolved = _norm(_real_fspath(arg))
+        except Exception:
+            return True
+        return not _is_tooling_path(resolved)
+
     def _trap(module, name):
         real = getattr(module, name)
 
         def _wrapped(*args, **kwargs):
-            if threading.get_ident() == loop_thread:
+            if threading.get_ident() == loop_thread and args and _should_record(args[0]):
                 on_loop.append(f"{module.__name__}.{name}{args[:1]!r}")
             return real(*args, **kwargs)
 
