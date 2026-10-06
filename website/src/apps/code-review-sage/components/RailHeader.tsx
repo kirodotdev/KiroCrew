@@ -122,7 +122,7 @@ function NavRow({
       // its default blue outline instead.
       aria-label={label}
       title={label}
-      className={`inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 ${
+      className={`inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus-ring-accent ${
         touch ? 'min-h-11 min-w-11' : 'p-1.5'
       } ${
         active

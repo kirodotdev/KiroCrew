@@ -379,7 +379,7 @@ export default function SessionPulseSurveyCard({
                               aria-checked={checked}
                               tabIndex={roving}
                               onClick={() => setSelectedRating(option)}
-                              className={`text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all border font-medium focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${
+                              className={`text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all border font-medium focus-ring-accent ${
                                 checked
                                   ? 'border-accent text-text bg-accent-subtle/60'
                                   : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg font-normal'

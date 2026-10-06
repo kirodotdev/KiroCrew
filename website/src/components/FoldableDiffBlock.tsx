@@ -96,7 +96,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
           state. */}
       <button
         type="button"
-        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
+        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-ring-accent ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
         data-diff-toggle
         data-testid="prose-diff-chip"
         title={headerPath ?? undefined}

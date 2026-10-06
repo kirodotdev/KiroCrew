@@ -155,7 +155,7 @@ export function FileHeaderBreadcrumb({ filePath }: { filePath: string }) {
             below. Same focusable-region pattern as CodeBlock / FileRenderers. */}
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
         <div
-          className="flex items-center min-w-0 outline-hidden focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+          className="flex items-center min-w-0 focus-ring-accent rounded-sm"
           title={filePath}
           role="group"
           aria-label={filePath}

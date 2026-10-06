@@ -129,9 +129,10 @@ describe('card containment', () => {
     expect(document.getElementById(labelId!)?.textContent).toContain('kirocrew-bug-deep-dive')
     // The ring must be inset: the card root's overflow-hidden clips anything
     // painted outside the box, and the global :focus-visible outline is
-    // disabled, so a non-inset ring renders as no indicator at all.
-    expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
-    expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
-    expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)
+    // disabled, so a non-inset ring renders as no indicator at all. The shared
+    // `focus-ring-accent-inset` utility is that inset ring plus an opaque
+    // `--text-strong` hairline that clears WCAG 1.4.11's 3:1 in every theme
+    // (issue #4428).
+    expect(body.classList.contains('focus-ring-accent-inset')).toBe(true)
   })
 })

@@ -1486,8 +1486,16 @@ html:lang(ko) {
      than `:focus` so a pointer click never paints it — the ring is drawn only
      for the keyboard and AT interactions that have no other cue to where focus
      sits. `outline` is used (not border/box-shadow) because it is painted
-     outside the box and so cannot shift layout. */
-  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+     outside the box and so cannot shift layout.
+     The accent `outline` carries the theme's identity but is NOT trusted to
+     carry WCAG 1.4.11's 3:1 non-text contrast: `--accent` falls below 3:1
+     against `--bg` in three light palettes (rosepine-light 2.60, everforest-light
+     2.81, intellij-light 2.92). The `box-shadow` adds a 1px `--text-strong`
+     hairline hard against the box, inside the offset accent outline, so a
+     visible focus cue clears 3:1 against the surface in every theme — worst case
+     6.48:1 (everforest-light). The hairline is `box-shadow`, which like
+     `outline` paints outside the border box and does not shift layout. */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;box-shadow:0 0 0 1px var(--text-strong)}
   @media(prefers-reduced-motion:reduce){*:not([data-virtuoso-scroller] *),*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important}}
   /* The rule above zeroes animation-DURATION but not animation-DELAY, and both
      `animate-rise` and `animate-chip-hop` use fill-mode `backwards` — so a
@@ -2756,7 +2764,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    `outline:none` opts out of the global ring in favour of this border + glow,
    and the extra class raises specificity so the two never stack. */
 .focus-ring:focus-visible{outline:none;border-color:var(--ring);
-  box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
+  box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
 /* The desktop Settings search bar (pages/settings/SettingsSearch.tsx) is a boxed
    input, not a glass pane, so it keeps a focus ring -- the shared shape with a
    neutral colour: a stronger neutral border and a neutral halo, never the theme
@@ -2767,6 +2775,39 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    name only. Same specificity chain plus one class, so it wins here only. */
 .settings-search .focus-ring:focus-visible{border-color:color-mix(in srgb,var(--text) 60%,var(--border));
   box-shadow:0 0 0 3px color-mix(in srgb,var(--text) 22%,transparent),0 0 20px rgba(0,0,0,.06)}
+
+/* ── Shared accent focus ring (WCAG 1.4.11-safe) ── */
+/* The house keyboard-focus cue for controls that want the THEME ACCENT ring
+   rather than the neutral `.focus-ring` glow (completion-card scroll regions,
+   row-pill buttons, icon buttons, text inputs). Replaces the old per-site
+   `focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-hidden`
+   cluster — see issue #4428.
+
+   WHY A SHARED UTILITY AND NOT `ring-accent`: `--accent` is where each theme
+   spends its identity, so it must stay the ring colour, but it is NOT a token
+   with a contrast contract — it falls below WCAG 1.4.11's 3:1 non-text floor
+   against `--bg` in three light palettes (rosepine-light 2.60, everforest-light
+   2.81, intellij-light 2.92) and lower still against the accent-tinted card fill
+   (2.39 / 2.56 / 2.66). A translucent `ring-accent/40` or `/50` cannot reach the
+   floor with ANY opaque token at that alpha. So the identity hue cannot also
+   carry the minimum.
+
+   HOW: hue identifies, a neutral hairline carries the minimum. The inner 1px
+   layer is opaque `--text-strong`, which clears 3:1 against both `--bg` and the
+   card fill in every one of the 36 built-in themes (worst case 6.48:1,
+   everforest-light); the accent band outside it supplies the theme identity. A
+   control stays legible even in the themes where the accent alone would not.
+   `outline:none` opts out of the global `:focus-visible` ring in favour of this
+   one, and the `.focus-ring-accent` class raises specificity so the two never
+   stack. `box-shadow` (like `outline`) paints outside the border box, so it
+   never shifts layout. */
+.focus-ring-accent:focus-visible{outline:none;
+  box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent)}
+/* Inset variant for a scroll region flush inside an `overflow-hidden` box (the
+   completion / compaction / workflow card digests), where an outset ring would
+   be clipped. `inset` draws the same two layers INSIDE the content edge. */
+.focus-ring-accent-inset:focus-visible{outline:none;
+  box-shadow:inset 0 0 0 1px var(--text-strong),inset 0 0 0 3px var(--accent)}
 
 /* ── Colour-swatch hover cue ── */
 /* The colour swatches (session colours, folder/tag colours) carry no built-in

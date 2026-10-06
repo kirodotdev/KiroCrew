@@ -2722,7 +2722,7 @@ export default function CommandBarOverlay({
                 // where you are, what follows is what you type. The focus ring stays,
                 // and unlike the field's it only ever paints on Tab, so it is never the
                 // permanent box.
-                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus-ring-accent rounded"
               >
                 {navName}
               </button>
@@ -2923,7 +2923,7 @@ export default function CommandBarOverlay({
                       // halt on inert text.
                       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
                       tabIndex={0}
-                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-ring-accent"
                     >
                       {resolvePrompt(argCommand, query)}
                     </pre>

@@ -36,7 +36,7 @@ export function MarkdownDisclosureBody({
     <div
       ref={attachScroller}
       id={id}
-      className={`px-3 pb-3 pt-2 min-w-0 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${scrollEdges.bottom ? 'markdown-disclosure-scroll-more' : ''}`}
+      className={`px-3 pb-3 pt-2 min-w-0 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-ring-accent-inset ${scrollEdges.bottom ? 'markdown-disclosure-scroll-more' : ''}`}
       data-testid={testId}
       data-scroll-more={scrollEdges.bottom ? '' : undefined}
       role="region"

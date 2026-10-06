@@ -69,8 +69,8 @@ function Chip({
       onClick={onClick}
       className={
         'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] '
-        + 'font-medium cursor-pointer transition-colors focus:outline-hidden '
-        + 'focus-visible:ring-1 focus-visible:ring-accent/40 '
+        + 'font-medium cursor-pointer transition-colors '
+        + 'focus-ring-accent '
         + (selected ? on : off)
       }
     >

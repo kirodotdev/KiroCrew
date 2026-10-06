@@ -504,12 +504,11 @@ describe('card containment', () => {
     // Focusable is not enough: pre-fix the only indicator was the UA
     // :focus-visible outline, which the card root's overflow-hidden clips to
     // a hairline on the top edge alone — an INSET ring is the one indicator
-    // its own clipping cannot swallow (WCAG 2.4.7). Each class is pinned
-    // literally — dropping any one silently removes the indicator.
-    expect(body.classList.contains('focus-visible:outline-hidden')).toBe(true)
-    expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
-    expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
-    expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)
+    // its own clipping cannot swallow (WCAG 2.4.7). The shared
+    // `focus-ring-accent-inset` utility paints that inset ring plus an opaque
+    // `--text-strong` hairline so it also clears WCAG 1.4.11's 3:1 non-text
+    // contrast in every theme (issue #4428); dropping it removes the indicator.
+    expect(body.classList.contains('focus-ring-accent-inset')).toBe(true)
   })
 })
 
