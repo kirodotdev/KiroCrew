@@ -17410,7 +17410,7 @@
       "pill_idle_since": "Untätig · {{when}}",
       "notes_tab": "Notizen",
       "dashboard_tab": "Dashboard",
-      "notes_error": "Notizen dieses Crew-Kameraden konnten nicht geladen werden.",
+      "notes_error": "Die Notizen konnten nicht geladen werden.",
       "notes_refresh_error": "Diese Notizen konnten nicht aktualisiert werden. Es wird die zuletzt geladene Version angezeigt.",
       "notes_unsupported": "Notizen können auf diesem Computer nicht gelesen werden.",
       "notes_collision": "Zwei Crew-Kameraden teilen sich diesen Kurznamen, daher lassen sich ihre Notizen nicht auseinanderhalten. Benenne einen von ihnen um, um seine Notizen hier zu sehen.",

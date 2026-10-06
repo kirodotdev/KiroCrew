@@ -17660,7 +17660,7 @@
       "pill_idle_since": "Inativo · {{when}}",
       "notes_tab": "Notas",
       "dashboard_tab": "Painel",
-      "notes_error": "Não foi possível carregar as notas deste colega.",
+      "notes_error": "Não foi possível carregar as notas.",
       "notes_refresh_error": "Não foi possível atualizar estas notas. Mostrando a última versão carregada.",
       "notes_unsupported": "As notas não podem ser lidas neste computador.",
       "notes_collision": "Dois colegas compartilham este nome curto, então as notas deles não podem ser distinguidas. Renomeie um deles para ver as notas aqui.",

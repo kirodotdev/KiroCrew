@@ -17660,7 +17660,7 @@
       "pill_idle_since": "Inattivo · {{when}}",
       "notes_tab": "Note",
       "dashboard_tab": "Dashboard",
-      "notes_error": "Impossibile caricare le note di questo compagno.",
+      "notes_error": "Impossibile caricare le note.",
       "notes_refresh_error": "Impossibile aggiornare queste note. Viene mostrata l'ultima versione caricata.",
       "notes_unsupported": "Le note non possono essere lette su questo computer.",
       "notes_collision": "Due compagni condividono questo nome breve, quindi le loro note non si possono distinguere. Rinomina uno dei due per vedere qui le sue note.",

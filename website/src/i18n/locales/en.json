@@ -7437,7 +7437,7 @@
       "pill_idle_since": "Idle · {{when}}",
       "notes_tab": "Notes",
       "dashboard_tab": "Dashboard",
-      "notes_error": "Couldn't load this crewmate's notes.",
+      "notes_error": "Couldn't load the notes.",
       "notes_refresh_error": "Couldn't refresh these notes. Showing the last version that loaded.",
       "notes_unsupported": "Notes can't be read on this computer.",
       "notes_collision": "Two crewmates share this short name, so their notes can't be told apart. Rename one of them to see its notes here.",

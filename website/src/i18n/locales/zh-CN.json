@@ -17160,7 +17160,7 @@
       "pill_idle_since": "空闲 · {{when}}",
       "notes_tab": "笔记",
       "dashboard_tab": "仪表板",
-      "notes_error": "无法加载此队友的笔记。",
+      "notes_error": "无法加载笔记。",
       "notes_refresh_error": "无法刷新这些笔记。当前显示的是上次加载的版本。",
       "notes_unsupported": "这台电脑上无法读取笔记。",
       "notes_collision": "两个队友共用同一个短名称，所以分不清笔记属于谁。给其中一个改名后就能在这里看到它的笔记。",

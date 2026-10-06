@@ -144,7 +144,7 @@ describe("crew webview docked opt-in", () => {
       });
       await waitFor(() => expect(q("crew-webview-docked")).toBeNull());
       expect(q("crew-webview-docked-error")?.textContent).toContain(
-        "This crewmate's status card could not be rendered.",
+        "The status card could not be rendered.",
       );
       mintSpy.mockImplementation((html: string) =>
         Promise.resolve({
@@ -279,7 +279,7 @@ describe("crew webview docked opt-in", () => {
     const notice = q("crew-webview-docked-error") as HTMLElement;
     expect(notice.getAttribute("role")).toBe("alert");
     expect(notice.textContent).toContain(
-      "This crewmate's status card could not be rendered. The full dashboard may still open below.",
+      "The status card could not be rendered. The full dashboard may still open below.",
     );
     expect(notice.querySelector("button, a")).not.toBeNull();
     mintSpy.mockImplementation((html: string) =>

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { ApiError } from '../../api/apiError'
@@ -91,7 +93,20 @@ describe('CrewNotesTab (the crewmate\'s own notes)', () => {
     renderNotes()
     const notice = await screen.findByTestId('member-notes-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent("Couldn't load this crewmate's notes.")
+    // Read the copy out of the catalog rather than typing it here, so a copy
+    // edit moves the pin instead of leaving a stale literal. This notice sits
+    // above an "Ask the agent" hand-off, so it must not name a possessor
+    // ("this crewmate's notes") -- the notice and the hand-off would then point
+    // at two different helpers. The same one-actor-word rule the docked webview
+    // error follows (see CrewWebviewDocked.test.tsx).
+    const notesError = (
+      JSON.parse(
+        readFileSync(resolve(__dirname, '../../i18n/locales/en.json'), 'utf8'),
+      ) as { pages: { membersPage: { notes_error: string } } }
+    ).pages.membersPage.notes_error
+    expect(notesError).not.toMatch(/crewmate['’]s/i)
+    expect(notesError).not.toMatch(/this [^.]*['’]s/i)
+    expect(notice).toHaveTextContent(notesError)
     expect(screen.getByTestId('member-notes-agent-only')).toBeInTheDocument()
     expect(screen.queryByTestId('member-notes-empty')).toBeNull()
     expect(screen.queryByTestId('member-notes-footer')).toBeNull()
