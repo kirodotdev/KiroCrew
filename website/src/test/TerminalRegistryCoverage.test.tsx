@@ -1103,8 +1103,13 @@ describe('terminalRegistry', () => {
       expect(current.value).toBe(original)
       expect(current.blocks).toEqual([block])
       expect(expandAll(current.value, current.blocks)).toBe('! ' + block.content)
-      if (lexicalComposer) expect(within(input).getByTestId('paste-token-1')).toHaveTextContent('Paste #1 · 3 lines')
-      else expect(input).toHaveValue(original)
+      // The pill label is snippet-first (`<first line> · N lines`, see
+      // composer/PasteBlockChip.tsx), not the old `Paste #1 · 3 lines` literal.
+      if (lexicalComposer) {
+        const chip = within(input).getByTestId('paste-token-1')
+        expect(within(chip).getByTestId('paste-chip-snippet')).toHaveTextContent('echo first')
+        expect(chip).toHaveTextContent('· 3 lines')
+      } else expect(input).toHaveValue(original)
 
       act(() => { queued.simulateClose(); unregisterTerminalWs(id); disconnect() })
       let reconnected!: MockWebSocket

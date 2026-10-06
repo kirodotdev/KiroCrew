@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, act, screen, fireEvent } from '@testing-library/react'
+import { awaitComposer, setComposerValue } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -186,9 +187,9 @@ describe('ChatPane shared scroll chrome', () => {
     act(() => { state.scrollTop = 100; scroller.dispatchEvent(new Event('scroll')) })
     expect(screen.getByLabelText('Scroll to bottom')).not.toBeNull()
 
-    const box = screen.getAllByRole('textbox')[0]
+    const box = await awaitComposer()
+    await setComposerValue('are you there?', box)
     await act(async () => {
-      fireEvent.change(box, { target: { value: 'are you there?' } })
       fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     })
     // The pin is deferred past the bubble's commit (SCROLL_AFTER_RENDER_MS),

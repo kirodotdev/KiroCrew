@@ -18,7 +18,7 @@ import type { ComposerBusyMode } from './props'
    renders the stop controls that replace the send button through a stop's soft
    and hard phases. */
 
-export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
+export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, connected, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
   slotId: string | null
   busyMode: ComposerBusyMode
   isRunning: boolean
@@ -27,6 +27,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
   onSteer?: (opts?: { auto?: boolean; text?: string }) => void
   jevAutoAvailable: boolean
   disabled: boolean
+  connected: boolean
   voiceTranscribing: boolean
   value: string
   pasteBlocks: PasteBlock[]
@@ -83,6 +84,10 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
    */
   const fireComposer = useCallback((alternate?: unknown) => {
     if (disabled) return
+    // Enter from the Lexical composer routes directly here, so keep this guard
+    // identical to the Send button and textarea keydown path: offline drafts
+    // must remain untouched regardless of which composer is active.
+    if (!connected) return
     // A batch dictation is still transcribing: block the send so the pending
     // transcript isn't left behind. Otherwise Enter/Send fires the current draft
     // BEFORE the transcript lands, orphaning the dictation into the emptied
@@ -103,7 +108,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     if (value.trim() || pendingFilesCount || pendingSessionsCount || hasQuote) haptic('light')
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount, hasQuote])
+  }, [disabled, connected, voiceTranscribing, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount, hasQuote])
   // Every stop button in the row goes through this, so the tap and the truthiness
   // checks on `onStop` (which decide whether a button renders at all) stay apart.
   const stopWithTap = useCallback(() => {
@@ -221,13 +226,17 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
           mode={effectiveBusyMode}
           onModeChange={setBusySendMode}
           onFire={fireComposer}
-          disabled={disabled}
+          // Offline mid-turn the fire half must read disabled, not sit enabled over
+          // a `fireComposer` that swallows the press — the rule the idle Send
+          // button and steer-only send already follow. The caret stays live:
+          // picking steer-vs-queue is not a send.
+          disabled={disabled || !connected}
           altChordAvailable={sendOnEnter === 'enter'}
           autoAvailable={jevAutoAvailable}
         />
         )
       ) : (
-        <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
+        <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled || !connected} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')} {...offlineProps(connected, 'send', i18nT('components.chatInput.queue_message'))}>
           <ArrowUpFromLine size={18} />
         </button>
       )

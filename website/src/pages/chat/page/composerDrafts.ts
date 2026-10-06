@@ -239,6 +239,22 @@ export function useComposerDraftLifecycle({
     if (carry && activation) createCarryRef.current.delete(activation.requestId)
     while (createCarryRef.current.size > 8) createCarryRef.current.delete(createCarryRef.current.keys().next().value as string)
     let carried: string | null = null
+    // The two candidate destinations this carried payload may be merged into are
+    // both chosen below (a launcher prefill `prompt`, or the stored draft), so
+    // hoist their reads above the carry: `carryPastes` must reserve the carried
+    // block's seq against every marker in its final destination text, or a
+    // marker-shaped literal there captures the block on send. Over-reserving is
+    // harmless (a carried block just takes a higher fresh seq), so the prefill
+    // is peeked WITHOUT its expiry/slot gate — that gate stays exactly as below.
+    const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
+    const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
+    let prefillPrompt = ''
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (typeof parsed?.prompt === 'string') prefillPrompt = parsed.prompt
+      } catch { /* not JSON — no prefill destination to reserve against */ }
+    }
     // Carry only a text-only draft: nothing staged when the create started and
     // nothing staged now. A file or session ref staged at either end belongs
     // with the caption, so the whole draft stays in the old session instead.
@@ -251,7 +267,7 @@ export function useComposerDraftLifecycle({
         // together, renumbered against the new slot's own blocks, or the send
         // would carry the bare token and the content would belong to no draft.
         const blocks = stagedNow.pastes
-        const moved = carryPastes(typed, pruneBlocksUtil(typed, blocks), pasteDrafts.current[activeSlot] ?? [])
+        const moved = carryPastes(typed, pruneBlocksUtil(typed, blocks), pasteDrafts.current[activeSlot] ?? [], `${storedDraft}\n${prefillPrompt}`)
         carried = moved.text
         setPasteDraft(pasteDrafts.current, activeSlot, moved.pastes)
         if (prevSlotVal) {
@@ -260,8 +276,6 @@ export function useComposerDraftLifecycle({
         }
       }
     }
-    const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
-    const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
     // What this switch put in the composer, for the create-carry re-arm below.
     let restoredInput: string | null = null

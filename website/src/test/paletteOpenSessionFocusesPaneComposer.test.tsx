@@ -24,7 +24,7 @@
  */
 import { useState, type ComponentType, type ReactNode } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseSlots } from '../store/dashboardSlice'
@@ -163,9 +163,13 @@ afterEach(() => { localStorage.clear() })
  *  not exist, and the red run fails on focus and not on a missing attribute. */
 async function panes() {
   await waitFor(() => expect(document.querySelectorAll('[data-chat-pane]')).toHaveLength(2))
+  // Each pane's composer is a lazy-loaded Lexical root; the pane marker lands
+  // before the editable root does, so wait for both roots to mount.
+  await waitFor(() => expect(document.querySelectorAll('[data-chat-pane] [data-composer-input]')).toHaveLength(2))
+  await act(async () => {})
   const roots = Array.from(document.querySelectorAll<HTMLElement>('[data-chat-pane]'))
   const composers = roots.map((root) => {
-    const ta = root.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+    const ta = root.querySelector<HTMLElement>('[data-composer-input]')
     if (!ta) throw new Error('pane without a composer')
     return ta
   })

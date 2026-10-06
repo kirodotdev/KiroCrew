@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, waitFor, fireEvent } from '@testing-library/react'
+import { composerPlaceholder } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -165,13 +166,13 @@ describe("a crewmate's chat", () => {
   })
 
   it('the composer addresses the crewmate by name, not the product', async () => {
-    const view = renderPane()
-    await waitFor(() => expect(view.getByPlaceholderText(/Message Radar/)).toBeInTheDocument())
-    expect(view.queryByPlaceholderText(/Message Kiro Crew/)).toBeNull()
+    renderPane()
+    await waitFor(() => expect(composerPlaceholder()).toMatch(/Message Radar/))
+    expect(composerPlaceholder()).not.toMatch(/Message Kiro Crew/)
   })
 
   it('an ordinary chat keeps the product placeholder', async () => {
-    const view = renderPane({ crewmate: false })
-    await waitFor(() => expect(view.getByPlaceholderText(/Message Kiro Crew/)).toBeInTheDocument())
+    renderPane({ crewmate: false })
+    await waitFor(() => expect(composerPlaceholder()).toMatch(/Message Kiro Crew/))
   })
 })

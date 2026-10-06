@@ -24,7 +24,7 @@ import ErrorNotice from './ErrorNotice'
 import PromptLengthNotice from './PromptLengthNotice'
 import RunInTerminalConfirm from './RunInTerminalConfirm'
 import { useTerminalCommand } from '../hooks/useTerminalCommand'
-import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
+import { expandAll as expandPasteTokens, splitDuplicateMarkers } from '../utils/pasteTokens'
 import { Btn } from './ui'
 import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
@@ -215,13 +215,30 @@ function ChatInput({
   // Under a `<Composer draft>` root the text arrives through the root's store,
   // subscribed HERE, so a keystroke re-renders this composer and not its host.
   const draftText = useComposerDraftText()
-  const value = draftText ?? valueProp ?? ''
+  const hostValue = draftText ?? valueProp ?? ''
   // Under a `<Composer pastes>` root the collapsed paste blocks arrive the same
   // way (the Paste atom, `composerPastes.ts`), and the root wins over the two
   // paste props as `draft` wins over `value`. Without one, the props.
   const pasteSlice = useComposerPasteSlice()
-  const pasteBlocks = pasteSlice ? pasteSlice.blocks : pasteBlocksProp
+  const hostPasteBlocks = pasteSlice ? pasteSlice.blocks : pasteBlocksProp
   const onPasteBlocksChange = pasteSlice ? pasteSlice.set : onPasteBlocksChangeProp
+  // Canonicalise the host's value + paste blocks BEFORE either composer is
+  // chosen, so the textarea path (touch devices, chunk-load fallback) is held to
+  // the same contract as the Lexical one: every marker names its own block and
+  // no two blocks share a seq. A persisted draft can violate both (the same
+  // marker twice, or two records carrying one seq), and a marker resolves by seq
+  // alone — `expandAll` would then send one block for both and the textarea's
+  // id-keyed pill removal would drop a twin. `splitDuplicateMarkers` returns the
+  // SAME references when nothing changed; a rewrite is handed back to the host
+  // through the ordinary onChange / onPasteBlocksChange, after which the props
+  // are canonical and this is a no-op.
+  const canonical = useMemo(() => splitDuplicateMarkers(hostValue, hostPasteBlocks), [hostPasteBlocks, hostValue])
+  const value = canonical.text
+  const pasteBlocks = canonical.blocks
+  useEffect(() => {
+    if (value !== hostValue) onChange(value)
+    if (pasteBlocks !== hostPasteBlocks) onPasteBlocksChange?.(pasteBlocks)
+  }, [hostPasteBlocks, hostValue, onChange, onPasteBlocksChange, pasteBlocks, value])
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -306,10 +323,22 @@ function ChatInput({
   const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch })
 
   const {
-    inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed,
-    lexicalFailedNoticeDismissed, setLexicalFailedNoticeDismissed, lexicalControlRevision, markLexicalReady,
-    composerControl, setTextareaRef,
+    inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, markLexicalLoadFailed,
+    lexicalFailedNoticeDismissed, setLexicalFailedNoticeDismissed, lexicalControlRevision, markLexicalReady, composerReady,
+    composerControl, setTextareaRef, replaceLexicalText,
   } = useComposerEngine({ lexicalComposer })
+  // Every whole-value write that is not a keystroke (a menu pick, a picked token,
+  // the optimizer's result) goes through here: the Lexical editor records it as
+  // one undo step via `replaceText`; the textarea path writes the host value as
+  // it always has. The pickers, the `+` menu and the slash menu receive this as
+  // their `onChange` — replacing the draft is the only write they make.
+  const replaceInSlot = useCallback((text: string) => {
+    if (!replaceLexicalText(text)) onChange(text)
+  }, [onChange, replaceLexicalText])
+  // The slot the editor's undo history belongs to: it is cleared exactly when
+  // this changes (see LexicalComposerInput's ControlledValuePlugin), so two
+  // sessions holding the same draft can never undo into each other.
+  const pendingSlot = autoFocusKey ?? slotId
   // Whether the editor held focus when the model chip was pressed. Taken on
   // `mousedown`, which runs BEFORE the browser's default action moves focus
   // onto the chip — by `click` the editor has already lost it. Consumed and
@@ -340,7 +369,7 @@ function ChatInput({
     return () => ro.disconnect()
   }, [lexicalComposer, lexicalLoadFailed, lexicalControlRevision, lexicalControlRef])
   const queryClient = useQueryClient()
-  const pickers = useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
+  const pickers = useComposerPickers({ project, onFileSelect, typedCommandMenus, terminalCommands, value, onChange: replaceInSlot, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
   const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
@@ -363,7 +392,7 @@ function ChatInput({
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
-  const plus = usePlusMenu({ pickers, value, onChange, composerControl })
+  const plus = usePlusMenu({ pickers, value, onChange: replaceInSlot, composerControl, composerReady })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
   // Client-side `accept` is a UX hint only (input-validation guidance: server enforces type via
   // magic bytes, size, and malware scanning — never trust the extension/MIME here).
@@ -375,7 +404,7 @@ function ChatInput({
     setPlusOpen(false)
   }
   const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
-    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
+    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, connected, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
   })
   // All terminal draft sends enter here before agent routing or prompt-length
@@ -501,7 +530,7 @@ function ChatInput({
     attachListContinuation(textarea)
   }, [setTextareaRef, attachListContinuation])
   const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt } = usePromptOptimizer({
-    slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
+    slotId, chatStore, valueRef, pasteBlocks, onChange, replaceInSlot, onOptimizeResult, lexicalComposer, lexicalLoadFailed, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands,
   })
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
@@ -522,7 +551,7 @@ function ChatInput({
     handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut, handleFileInputChange,
   } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime })
   const handleKeyDown = useComposerKeyDown({
-    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
+    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer: promptOptimizer && !terminal.active, connected, composerReady, optimizePrompt, sendOnEnter, onChange, optimizingRef,
     fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef,
   })
   const { handleTextareaChange, handleLexicalChange } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef })
@@ -860,7 +889,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={replaceInSlot} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} typedCommandMenus={typedCommandMenus} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),
@@ -964,7 +993,7 @@ function ChatInput({
             are attachments -- things sent ALONG with the text). */}
         {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} />}
         {lexicalComposer && !lexicalLoadFailed ? (
-          <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
+          <ComposerLoadBoundary onError={markLexicalLoadFailed}>
             <Suspense fallback={
               <div
                 role="status"
@@ -978,6 +1007,7 @@ function ChatInput({
               <LexicalComposerInput
                 value={value}
                 blocks={pasteBlocks}
+                historyKey={pendingSlot}
                 onChange={handleLexicalChange}
                 onBlocksChange={onPasteBlocksChange}
                 showFullPastes={showFullPastes}
@@ -991,6 +1021,7 @@ function ChatInput({
                 onEditLastRequest={onEditLastRequest}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
+                placeholderOneLine={placeholderIsHint}
                 disabled={disabled}
                 readOnly={optimizing}
                 sendOnEnter={sendOnEnter}
@@ -1201,7 +1232,7 @@ function ChatInput({
                 // still in flight — matching the re-entrancy guard in
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected}
+                disabled={!value.trim() || optimizePending || !connected || !composerReady}
                 aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
                 title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
                 {...offlineProps(connected, 'optimize', 'Optimize')}

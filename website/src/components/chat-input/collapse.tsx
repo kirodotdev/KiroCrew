@@ -87,10 +87,11 @@ export function useComposerCollapse({ collapsible, composerControl, value }: {
   /**
    * Typing intent is an implicit expand.
    *
-   * Every programmatic route to the composer resolves through the textarea
-   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
-   * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
-   * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
+   * Every programmatic route to the composer resolves through the editable
+   * element (`queryComposer` finds `[data-composer-input]` — the textarea or the
+   * Lexical root; the `/` shortcut and the autoFocusKey effect call the
+   * composer control's `focus()`), and a collapsed composer has no editable
+   * element -- so without this, `/`, quote-to-compose, a widget
    * send and post-create focus all silently do nothing, and a pre-fill lands in a
    * draft the user cannot see. Review named this correctly against the ghost
    * precedent this collapse otherwise inherits: the ghost is transient and the app

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { composer } from './helpers/composer'
 
 test.describe('Navigation E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
@@ -25,7 +26,7 @@ test.describe('Navigation E2E Tests', () => {
 
     // Navigate to Chat
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByPlaceholder(/message|type|chat/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
 
     // Go back to Overview
     await page.goto('/overview', { waitUntil: 'domcontentloaded' })

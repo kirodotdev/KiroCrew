@@ -76,10 +76,32 @@ export function useComposerEngine({ lexicalComposer }: { lexicalComposer: boolea
     inputRef.current = textarea
     if (textarea || !lexicalComposer || lexicalLoadFailed) composerAnchorRef.current = textarea
   }, [lexicalComposer, lexicalLoadFailed])
+  // Stable identity for the boundary's `onError`: the lazy chunk's error path
+  // must not re-render the boundary just because the parent re-rendered.
+  const markLexicalLoadFailed = useCallback(() => {
+    setLexicalLoadFailed(true)
+  }, [])
+  // Whole-value actions (`+` → `/`, `@`, `$`, Optimize) need the Lexical control
+  // to create their undo entry. Gate those actions during the one-time lazy
+  // mount instead of queuing stale text across a slot/value change. Host-side
+  // writes in that pre-mount window remain the accepted initial-state edge
+  // described by ControlledValuePlugin.
+  const composerReady = !lexicalComposer || lexicalLoadFailed || lexicalControlRevision > 0
+  /** Replace the whole draft through the Lexical editor's own undo-aware
+   *  `replaceText` (one `history-push` step, caret at the end). False when the
+   *  editor is not the active engine or exposes no `replaceText` — the caller
+   *  then writes the host value directly, as the textarea path always has. */
+  const replaceLexicalText = useCallback((text: string) => {
+    if (!lexicalComposer || lexicalLoadFailed) return false
+    const control = lexicalControlRef.current
+    if (!control?.replaceText) return false
+    control.replaceText(text)
+    return true
+  }, [lexicalComposer, lexicalLoadFailed])
 
   return {
-    inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed,
-    lexicalFailedNoticeDismissed, setLexicalFailedNoticeDismissed, lexicalControlRevision, markLexicalReady,
-    composerControl, setTextareaRef,
+    inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed, markLexicalLoadFailed,
+    lexicalFailedNoticeDismissed, setLexicalFailedNoticeDismissed, lexicalControlRevision, markLexicalReady, composerReady,
+    composerControl, setTextareaRef, replaceLexicalText,
   }
 }

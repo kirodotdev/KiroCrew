@@ -12,11 +12,11 @@
  * between onSend and onSteer — mocking the composer would hide it.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, composerRoot, composerValue, setComposerValue, pressInComposer, awaitComposer } from './helpers'
 import { syncSlotRunningFromServer } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatSlot } from '../types'
@@ -160,10 +160,11 @@ beforeEach(() => {
 describe('/side while a turn is running', () => {
   it('Enter routes to steer while running (precondition for the bypass)', async () => {
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: 'plain steer text' } })
+    await awaitComposer()
+    const input = composerRoot()
+    await setComposerValue('plain steer text', input)
     await armRunning(store)
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
     // The steer is the same `/api/chat` POST as a send, flagged `steer`
     // (6th argument), through the chat-core transport; `meta.sendId` is the
     // client-minted correlation id the steer path stamps on its optimistic
@@ -179,15 +180,16 @@ describe('/side while a turn is running', () => {
 
   it('/side opens the side chat instead of being steered into the turn', async () => {
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: '/side' } })
+    await awaitComposer()
+    const input = composerRoot()
+    await setComposerValue('/side', input)
     await armRunning(store)
     // Bare "/side" keeps the slash menu open, so the first Enter is the menu
     // selection (autocompletes to "/side ") and the second Enter fires the
     // composer — same two-Enter sequence a real user produces.
-    fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/side '))
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
+    await waitFor(() => expect(composerValue(input)).toBe('/side '))
+    pressInComposer('Enter', {}, input)
     await waitFor(() => expect(mockSideOpen).toHaveBeenCalledWith(SLOT))
     expect(mockSendChat).not.toHaveBeenCalled()
     expect(store.getState().chat.activityTab).toBe('side')
@@ -195,10 +197,11 @@ describe('/side while a turn is running', () => {
 
   it('/side <message> forwards the body to sideTurn, not to steer', async () => {
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: '/side what is this error about' } })
+    await awaitComposer()
+    const input = composerRoot()
+    await setComposerValue('/side what is this error about', input)
     await armRunning(store)
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
   })
 
@@ -206,10 +209,10 @@ describe('/side while a turn is running', () => {
     // The alias must stay in lockstep with /side in isInterceptedSlashCommand,
     // or a running turn would swallow "/btw ..." as steer text.
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: '/btw what is this error about' } })
+    const input = await awaitComposer()
+    await setComposerValue('/btw what is this error about', input)
     await armRunning(store)
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
     expect(mockSendChat).not.toHaveBeenCalled()
   })
@@ -217,12 +220,13 @@ describe('/side while a turn is running', () => {
   it('restores the composer text when the side turn is rejected', async () => {
     mockSideTurn.mockRejectedValueOnce(new Error('409: side turn already in flight'))
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: '/side my precious question' } })
+    await awaitComposer()
+    const input = composerRoot()
+    await setComposerValue('/side my precious question', input)
     await armRunning(store)
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
     // Cleared optimistically, then restored once the rejection lands.
-    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/side my precious question'))
+    await waitFor(() => expect(composerValue(input)).toBe('/side my precious question'))
   })
 
   it('merges the rejected question below text typed while the rejection was in flight', async () => {
@@ -231,18 +235,19 @@ describe('/side while a turn is running', () => {
       () => new Promise((_, rej) => { rejectTurn = rej }),
     )
     const store = renderRunningChatPage()
-    const input = await screen.findByLabelText('Message input')
-    fireEvent.change(input, { target: { value: '/side my question' } })
+    await awaitComposer()
+    const input = composerRoot()
+    await setComposerValue('/side my question', input)
     await armRunning(store)
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter', {}, input)
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalled())
     // User starts typing something new before the 409 lands.
-    fireEvent.change(input, { target: { value: 'fresh thought' } })
+    await setComposerValue('fresh thought', input)
     act(() => rejectTurn(new Error('409: side turn already in flight')))
     // mergeIntoDraft contract: new typing survives on top, the recovered
     // question appends after a paragraph break — nothing is lost.
     await waitFor(() =>
-      expect((input as HTMLTextAreaElement).value).toBe('fresh thought\n\n/side my question'),
+      expect(composerValue(input)).toBe('fresh thought\n\n/side my question'),
     )
   })
 })

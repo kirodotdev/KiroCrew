@@ -13,11 +13,15 @@ import type { ChatInputProps } from './props'
    device, a bare file-input label on touch, and the cancel control that
    stands in for either while an upload is in flight. */
 
-export function usePlusMenu({ pickers, value, onChange, composerControl }: {
+export function usePlusMenu({ pickers, value, onChange, composerControl, composerReady }: {
   pickers: ReturnType<typeof useComposerPickers>
   value: string
   onChange: (v: string) => void
   composerControl: () => ComposerControl | null
+  /** False only while the lazy Lexical editor chunk is still mounting: the
+   *  `/`, `@`, `$` rows replace the whole draft and need the editor to record
+   *  that as an undo step, so they read disabled instead of queuing stale text. */
+  composerReady: boolean
 }) {
   const { setSlashMenuOpen, setFilePickerOpen, setFileQuery, setSkillPickerOpen, setSkillQuery } = pickers
   // "+" drop-up menu (upload file / image + browse toggle).
@@ -75,7 +79,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl }: {
     requestAnimationFrame(() => composerControl()?.setSelection(nextCaret, nextCaret, { focus: true }))
   }
 
-  return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
+  return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger, composerReady }
 }
 
 export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, directFilePicker, collapsible, fileInputId, openPicker, isMac, isMobile, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
@@ -95,7 +99,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
 }) {
-  const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger } = plus
+  const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger, composerReady } = plus
   /**
    * The exit from an upload in flight, and the reason it REPLACES the attach
    * control rather than sitting beside it.
@@ -234,8 +238,9 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                 {typedCommandMenus && <button
                   type="button"
                   onClick={() => openTrigger('/')}
+                  disabled={!composerReady}
                   title={i18nT('components.chatInput.slash_commands')}
-                  className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                  className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                 >
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">/</span>
                   <div className="min-w-0">
@@ -247,8 +252,9 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   <button
                     type="button"
                     onClick={() => openTrigger('@')}
+                    disabled={!composerReady}
                     title={i18nT('components.chatInput.reference_a_file')}
-                    className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                    className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                   >
                     <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">@</span>
                     <div className="min-w-0">
@@ -260,8 +266,9 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                 {typedCommandMenus && <button
                   type="button"
                   onClick={() => openTrigger('$')}
+                  disabled={!composerReady}
                   title={i18nT('components.chatInput.use_a_skill')}
-                  className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                  className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                 >
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">$</span>
                   <div className="min-w-0">

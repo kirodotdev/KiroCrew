@@ -71,6 +71,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { composerRoot, composerValue, setComposerValue, awaitComposer } from './helpers'
 
 /** The marker has to close its own line for OPTION_MARKER_RE to match. */
 const ASSISTANT_WITH_OPTIONS = 'Ready to proceed.\n\n[OPTIONS: Alpha | Beta]'
@@ -122,10 +123,11 @@ async function renderPane(slotKey: string, slotExtra: Record<string, unknown> = 
   // Hydration is settled once the transcript shows the assistant's prose.
   const settled = messages.some(m => m.content.includes('Plan for')) ? /Plan for: ship it/ : /Ready to proceed/
   await waitFor(() => expect(screen.getByText(settled)).toBeTruthy())
+  await awaitComposer()
   return store
 }
 
-const composer = () => (screen.getAllByRole('textbox')[0]) as HTMLTextAreaElement
+const composer = () => composerRoot()
 const chip = (option: string) => screen.getByRole('button', { name: option })
 
 /** Fire one debounced chip click and let its onSelect run (fake timers active). */
@@ -153,7 +155,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
     vi.useRealTimers()
     fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
@@ -179,12 +181,12 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // being wiped by a message they never composed.
     await renderPane('pane-6')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'my unsent draft' } })
+    await setComposerValue('my unsent draft', composer())
     fireEvent.doubleClick(chip('Alpha'))
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(wireText).toBe('Alpha')
-    expect(composer().value).toBe('my unsent draft')
+    expect(composerValue(composer())).toBe('my unsent draft')
   })
 
   it('unselecting an option splices its own appended text, never a matching substring of the draft', async () => {
@@ -193,12 +195,12 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // The handler appends at the END, so it must remove the LAST occurrence.
     await renderPane('pane-7')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'Please, Alphabet' } })
+    await setComposerValue('Please, Alphabet', composer())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Please, Alphabet, Alpha')
+    expect(composerValue(composer())).toBe('Please, Alphabet, Alpha')
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Please, Alphabet')
+    expect(composerValue(composer())).toBe('Please, Alphabet')
   })
 
   it('leaves earlier draft text alone when the user already deleted the appended option', async () => {
@@ -209,15 +211,15 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // the ", Alpha" the user typed — silently editing their draft.
     await renderPane('pane-8')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    await setComposerValue('Discuss, Alpha home', composer())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Discuss, Alpha home, Alpha')
+    expect(composerValue(composer())).toBe('Discuss, Alpha home, Alpha')
 
     // The chip stays lit; the user removes its generated tail themselves.
-    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    await setComposerValue('Discuss, Alpha home', composer())
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Discuss, Alpha home')
+    expect(composerValue(composer())).toBe('Discuss, Alpha home')
   })
 
   it('un-toggle removes only the chip-owned suffix, not user text inserted mid-draft (#7616)', async () => {
@@ -231,14 +233,14 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
     // The user edits the draft after the first append — this re-baselines
     // ownership so the chip no longer owns the whole "Alpha, Beta" content.
-    fireEvent.change(composer(), { target: { value: 'Alpha and more' } })
+    await setComposerValue('Alpha and more', composer())
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha and more, Beta')
+    expect(composerValue(composer())).toBe('Alpha and more, Beta')
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha and more')
+    expect(composerValue(composer())).toBe('Alpha and more')
   })
 
   it('un-toggle leaves the draft untouched once the user edited the chip-owned tail (#7616)', async () => {
@@ -248,17 +250,17 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // Ownership makes the un-toggle a no-op on the text, only un-highlighting.
     await renderPane('pane-7616-edited')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'note' } })
+    await setComposerValue('note', composer())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('note, Alpha')
+    expect(composerValue(composer())).toBe('note, Alpha')
     // The user rewrites the whole draft to different text that still ENDS with
     // ", Alpha" — a content endsWith() match, but NOT the chip's own append.
-    fireEvent.change(composer(), { target: { value: 'other, Alpha' } })
+    await setComposerValue('other, Alpha', composer())
     await act(async () => { clickOption('Alpha') })
     // Ownership no longer matches the tail → the user's text is preserved.
     // The pre-fix endsWith(', Alpha') would have sliced it to 'other'.
-    expect(composer().value).toBe('other, Alpha')
+    expect(composerValue(composer())).toBe('other, Alpha')
   })
 
   it('un-toggle removes a comma-bearing label as one unit, never mis-split (#7616 F1)', async () => {
@@ -285,10 +287,10 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     vi.useFakeTimers()
     await act(async () => { clickOption('bar') })
     await act(async () => { clickOption('foo, bar') })
-    expect(composer().value).toBe('bar, foo, bar')
+    expect(composerValue(composer())).toBe('bar, foo, bar')
     await act(async () => { clickOption('bar') })
     // Only the "bar" label is removed; the comma-bearing "foo, bar" survives whole.
-    expect(composer().value).toBe('foo, bar')
+    expect(composerValue(composer())).toBe('foo, bar')
   })
 
   it('un-toggle survives StrictMode double-invocation without reclassifying text (#7616 F2)', async () => {
@@ -314,10 +316,10 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha, Beta')
+    expect(composerValue(composer())).toBe('Alpha, Beta')
     await act(async () => { clickOption('Alpha') })
     // Ownership was not rebased by the double-invoked handler: Alpha is removed.
-    expect(composer().value).toBe('Beta')
+    expect(composerValue(composer())).toBe('Beta')
   })
 
   it('un-toggle is a no-op after the user edited and restored the draft byte-for-byte (#7616 F3)', async () => {
@@ -330,13 +332,13 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
     // User edits away and then restores the identical text.
-    fireEvent.change(composer(), { target: { value: 'Alpha draft' } })
-    fireEvent.change(composer(), { target: { value: 'Alpha' } })
+    await setComposerValue('Alpha draft', composer())
+    await setComposerValue('Alpha', composer())
     await act(async () => { clickOption('Alpha') })
     // The edit invalidated ownership, so the user's restored "Alpha" survives.
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
   })
 
   it('offers no pills while the pane is busy, and offers them once busy clears', async () => {
@@ -376,7 +378,7 @@ describe('ChatPane plan-shaped follow-ups', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Go' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Go')
+    expect(composerValue(composer())).toBe('Go')
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 

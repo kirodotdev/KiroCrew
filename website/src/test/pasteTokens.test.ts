@@ -6,6 +6,9 @@ import {
   makePasteId,
   nextSeq,
   findTokenRanges,
+  findAllTokenRanges,
+  carryPastes,
+  mergeCarriedDraft,
   tokenRangeAt,
   pruneBlocks,
   expandAll,
@@ -20,6 +23,7 @@ import {
   PASTE_TOKEN_REGEX,
   type PasteBlock,
 } from '../utils/pasteTokens'
+import { mergeRecoveredDraft } from '../utils/chatDrafts'
 
 const block = (overrides: Partial<PasteBlock> = {}): PasteBlock => ({
   id: overrides.id ?? makePasteId(),
@@ -87,6 +91,120 @@ describe('pasteTokens', () => {
       const r = findTokenRanges(text, [known])
       expect(r).toHaveLength(1)
       expect(r[0].block.id).toBe('k')
+    })
+
+    it('backs only the first occurrence when a marker is repeated', () => {
+      const known = block({ id: 'k', seq: 1 })
+      const marker = formatToken(known)
+      const text = `A ${marker} B ${marker}`
+      const ranges = findTokenRanges(text, [known])
+      expect(ranges).toHaveLength(1)
+      expect(ranges[0]).toEqual(expect.objectContaining({
+        start: text.indexOf(marker),
+        end: text.indexOf(marker) + marker.length,
+        block: known,
+      }))
+    })
+  })
+
+  describe('findAllTokenRanges', () => {
+    it('returns every occurrence of a repeated marker where findTokenRanges returns one', () => {
+      const known = block({ id: 'k', seq: 1 })
+      const marker = formatToken(known)
+      const text = `A ${marker} B ${marker}`
+      const all = findAllTokenRanges(text, [known])
+      expect(all).toHaveLength(2)
+      expect(all.map(r => r.start)).toEqual([text.indexOf(marker), text.lastIndexOf(marker)])
+      expect(all.every(r => r.block === known && r.end - r.start === marker.length)).toBe(true)
+      expect(findTokenRanges(text, [known])).toHaveLength(1)
+    })
+
+    it('still ignores tokens whose seq no block carries', () => {
+      const known = block({ id: 'k', seq: 1 })
+      const text = `${formatToken(known)} ${formatToken(block({ seq: 99 }))}`
+      expect(findAllTokenRanges(text, [known]).map(r => r.block.id)).toEqual(['k'])
+    })
+  })
+
+  describe('carryPastes', () => {
+    const blk = (id: string, seq: number, content: string): PasteBlock =>
+      ({ id, seq, lines: content.split('\n').length, content })
+
+    it('strips EVERY copy of a held block\'s marker from the payload text; `full` keeps them', () => {
+      // The composer already shows block k's token; the refused payload carries
+      // the marker twice (a restored draft, or a short paste of the marker text).
+      // Both copies leave the stripped text — a surviving second copy would ride
+      // into the retried prompt as a stray literal — while `full` stays intact
+      // for the exact-duplicate test.
+      const k = blk('k', 1, 'k\nk\nk')
+      const marker = formatToken(k)
+      const payload = `why?\n${marker}\n${marker}\nthanks`
+      const { text, full, pastes } = carryPastes(payload, [k], [k], '') // no destination text in this scenario
+      expect(text).toBe('why?\nthanks')
+      expect(full).toBe(payload)
+      expect(pastes).toEqual([k])
+    })
+
+    it('a re-sequenced carried marker cannot leave a stray copy that steals the kept block\'s content, in either merge order', () => {
+      // Kept block #1 is in the composer; the carried block was ALSO #1 (minted
+      // in a session that had since been cleared) and its payload holds its
+      // marker twice. If only the first copy moved to #2, the second would still
+      // read #1 — the kept block's seq. Placed before the kept block's own marker,
+      // first-occurrence expansion would bind the kept content to the stray and
+      // send the kept marker raw: content attributed to a different paste.
+      const kept = blk('kept', 1, 'KEPT')
+      const keepText = formatToken(kept)
+      const carried = blk('carried', 1, 'CARRIED')
+      const marker = formatToken(carried)
+      const payload = `${marker} echo ${marker}`
+
+      const out = carryPastes(payload, [carried], [kept], keepText)
+      expect(out.pastes).toEqual([kept, { ...carried, seq: 2 }])
+      expect(out.text).not.toContain('[ Paste #1 ')
+
+      // Kept text first (mergeCarriedDraft's own order).
+      const merged = mergeCarriedDraft(keepText, out)
+      expect(merged.startsWith(keepText)).toBe(true)
+      const expanded = expandAll(merged, out.pastes)
+      expect(expanded.startsWith('KEPT')).toBe(true)
+      expect(expanded.split('KEPT').length - 1).toBe(1)
+      expect(expanded.split('CARRIED').length - 1).toBe(1)
+      expect(expanded).not.toContain('[ Paste #1 ')
+
+      // Payload first: the stray copy would precede the kept marker here.
+      const reversed = mergeRecoveredDraft(out.text, keepText)
+      expect(reversed.endsWith(keepText)).toBe(true)
+      const expandedReversed = expandAll(reversed, out.pastes)
+      expect(expandedReversed.endsWith('KEPT')).toBe(true)
+      expect(expandedReversed.split('KEPT').length - 1).toBe(1)
+      expect(expandedReversed.split('CARRIED').length - 1).toBe(1)
+      expect(expandedReversed).not.toContain('[ Paste #1 ')
+    })
+
+    it('reserves a carried block\'s seq against a marker-shaped destination (create-carry: prefill/draft text)', () => {
+      // The create-carry site merges the carried payload INTO a destination that
+      // is chosen after the carry — a stored draft or a launcher prefill `prompt`.
+      // When that destination holds a literal `[ Paste #1 · 3 lines ]` (arbitrary
+      // caller text) and the carried pill is also seq 1, an unreserved destination
+      // lets `findTokenRanges` (first occurrence) bind the block to the literal and
+      // send the real pill raw. Passing the destination text as `keepText` moves
+      // the carried block off #1 and keeps the literal inert.
+      const carriedBlock = blk('carried', 1, 'l1\nl2\nl3') // 3-line carried pill, seq 1
+      const carriedMarker = formatToken(carriedBlock) // [ Paste #1 · 3 lines ]
+      const destination = `[ Paste #1 · 3 lines ] prefilled` // colliding literal in the prefill
+
+      const out = carryPastes(carriedMarker, [carriedBlock], [], destination)
+      // The carried block was renumbered off 1, and its marker in the text follows.
+      expect(out.pastes).toHaveLength(1)
+      expect(out.pastes[0].seq).not.toBe(1)
+      expect(out.text).toBe(formatToken(out.pastes[0]))
+      // Merged into the destination, the literal expands to itself and only the
+      // carried pill expands to its content.
+      const merged = mergeRecoveredDraft(destination, out.text)
+      const expanded = expandAll(merged, out.pastes)
+      expect(expanded).toContain('[ Paste #1 · 3 lines ] prefilled') // literal untouched
+      expect(expanded).toContain('l1\nl2\nl3') // carried pill expanded once
+      expect(expanded.split('l1\nl2\nl3').length - 1).toBe(1)
     })
   })
 

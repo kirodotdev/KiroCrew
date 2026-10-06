@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+import { composer, expectComposerText } from './helpers/composer'
 
 // Retain successful recordings only for this focused memory spec, not the
 // whole browser suite or its token-exchanging authentication setup project.
@@ -357,7 +358,7 @@ test('an empty private memory opens its exact member conversation and reuses the
   await expect(identityPill).toHaveRole('button')
   await expect(identityPill).toContainText(owner.name)
   await expect(identityPill).toHaveAttribute('title', 'Profile')
-  await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+  await expect(composer(page)).toBeVisible()
 
   // Notes is a pushed page inside Profile. The memory binding is a setting that
   // lives on the crew editor only (asserted below in the editor case), so the
@@ -383,7 +384,7 @@ test('an empty private memory opens its exact member conversation and reuses the
   expect(reloadedResponse.ok(), await reloadedResponse.text()).toBeTruthy()
   expect(await reloadedResponse.json()).toEqual(binding)
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+  await expect(composer(page)).toBeVisible()
   expect(await rows(request, owner.store)).toEqual([])
 })
 
@@ -427,12 +428,12 @@ test('a legacy configured default member keeps V1 while new members receive inde
     slotKey = slot.key
     expect(slotKey).not.toBe('')
     await page.goto(`/chat?sid=${encodeURIComponent(slotKey)}`)
-    const input = page.getByPlaceholder(/message/i)
+    const input = composer(page)
     await expect(input).toBeVisible()
     const prompt = 'Explain the next step for this project.'
     await input.fill(prompt)
     await page.getByRole('button', { name: 'Send', exact: true }).click()
-    await expect(input).toHaveValue('')
+    await expectComposerText(input, '')
     const messages = page.getByLabel('Chat messages', { exact: true })
     await expect(messages.getByText(prompt, { exact: true })).toBeVisible()
     await expect(messages.getByText('pong from the fake ACP backend', { exact: true })).toBeVisible({ timeout: 15000 })
@@ -494,7 +495,7 @@ test('a legacy configured default member keeps V1 while new members receive inde
     expect(fresh.slot_key).not.toBe(slotKey)
     await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === newOwner!.name)
     await expect(page.getByTestId('member-thread-header').getByText(newOwner.name, { exact: true })).toBeVisible()
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+    await expect(composer(page)).toBeVisible()
     await expect.poll(() => readOwner(newOwner!.name)).toMatchObject({
       slot_key: fresh.slot_key, memory_store: store, memory_version: 2, memory_owner: newOwner.name,
     })
