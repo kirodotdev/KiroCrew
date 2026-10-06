@@ -107,7 +107,7 @@ cd KiroCrew
 
 # Build the frontend bundle and stage it into the package
 cd website && npm install && npm run build && cd ..
-cp -R website/dist src/kiro_crew/static/dist
+PYTHONPATH=src python3 -m kiro_crew.frontend stage .
 
 # Install the backend (ships the bundled dashboard)
 pip install .
@@ -188,10 +188,13 @@ What matters, and where it lives:
 | Structured memory | `~/.kiro/crew/workspace/memory/` | `preferences.md`, `projects.md`, daily `history/` |
 | Vector + FTS databases | `~/.kiro/crew/memory.db`, `memory_index.db` | Semantic/episodic memory (`vector_memory.py`) and the FTS5 index (`memory.py`) |
 | Lessons | `~/.kiro/crew/memory.db`; legacy `lessons.jsonl` | Native lesson writes live in the vector store; copy a legacy JSONL separately |
-| Config | `~/.kiro/crew/config.json` | Model preferences, dashboard settings, and integration config; inspect it for legacy inline credentials before copying |
+| Workspace content | `~/.kiro/crew/workspace/knowledge/`, `kb-strategy/`, `kb-docs/`, `kiro-agents/`, `scripts/`, top-level `*.md`/`*.yaml`/`*.json` | Knowledge files, agent definitions and workspace scripts |
+| Config | `~/.kiro/crew/config.json` | Model preferences, dashboard settings, and integration config. The sync overwrites the remote copy, then patches `dashboard.url`; inspect it for legacy inline credentials before copying |
 | Skills | `~/.kiro/crew/skills/` | Custom skill definitions |
-| Webhook hooks | `~/.kiro/crew/hooks.json` | Script-hook definitions (`hooks.py` `ScriptHookStore`) |
-| Cron jobs | `~/.kiro/crew/crons.json` | Scheduled recurring jobs (`cron.py`) |
+| Tasks | `~/.kiro/crew/tasks/` | Task runner state |
+| Webhook hooks | `~/.kiro/crew/hooks.json`, `hooks/` | Script-hook definitions (`hooks.py` `ScriptHookStore`) and their scripts |
+| Cron jobs | `~/.kiro/crew/crons.json` | Scheduled recurring jobs (`cron.py`). Once copied, the jobs run on both hosts unless you pause them on one |
+| Dashboard metadata | `~/.kiro/crew/folders.json`, `tags.json`, `tag_boards.json`, `autonudge.json` | Sidebar folders, tag vocabulary, kanban columns and auto-nudge state |
 
 > **Where lessons actually live.** Both stores exist and the vector store wins
 > when it holds anything. Current `learn` writes go through
@@ -510,7 +513,7 @@ service installer such as `cloudflared service install`).
 > tunnel, for the life of the session — up to 20 hours per access cookie, and
 > indefinitely if the browser keeps rotating its refresh cookie. For the same
 > reason the audit trail records the caller as `127.0.0.1` rather than a client
-> address. Security Posture → Dashboard token auth reports which of the two states
+> address. **Settings → Security → Live Security Posture → Dashboard Token Auth** reports which of the two states
 > you are actually in. The one exception is `tailscale serve` **with
 > `trust_identity` configured** (see above): there the pin binds to the
 > daemon-verified peer identity and is per-client again. For cloudflared, ngrok,
@@ -534,10 +537,12 @@ service installer such as `cloudflared service install`).
 > unchanged. **To cut off remote access entirely, also revoke at the provider's
 > auth layer or tear the tunnel down** — logout ends Kiro Crew's sessions, not
 > the tunnel itself.
-> Note also that config-write and secret-reveal endpoints refuse tunnelled requests:
-> `is_direct_local_request()` treats any request carrying `Forwarded` /
-> `X-Forwarded-*` / `X-Real-IP` as remote, and every standard tunnel and reverse
-> proxy attaches those.
+> Note also that config-write and secret-reveal endpoints refuse requests that
+> carry forwarding headers: `is_direct_local_request()` treats any request
+> carrying `Forwarded` / `X-Forwarded-*` / `X-Real-IP` as remote, and cloudflared,
+> ngrok, `tailscale serve` and standard reverse proxies attach those. An SSH `-L`
+> forward or a socat relay adds no such header, so it looks local and is not
+> refused.
 
 ### Getting a link on your phone
 
@@ -635,7 +640,9 @@ the device binding above — so they survive a gateway restart. On a gateway old
 The dashboard ships a web app manifest
 ([`website/public/manifest.json`](../../website/public/manifest.json)) and
 registers a service worker, so a phone can install it to the home screen and
-launch it without browser chrome. Nothing needs enabling.
+launch it without browser chrome. Nothing needs enabling. The manifest link sets
+`crossorigin="use-credentials"`, so the manifest fetch carries cookies and the
+install also works behind a cookie-gated tunnel or auth proxy.
 
 **HTTPS is what the service worker needs** — the install itself is looser.
 Service workers only register in a secure context, so over a plain
@@ -735,7 +742,7 @@ curl -s http://localhost:5476/api/health     # {"ok": true, ...}
 Manage it:
 
 ```bash
-tail -f /tmp/kirocrew-tunnel.log
+tail -f /tmp/kirocrew-tunnel.log /tmp/kirocrew-tunnel.err   # ssh writes connection errors to .err
 launchctl kickstart -k gui/$(id -u)/com.kirocrew.tunnel                            # restart
 launchctl bootout gui/$(id -u)/com.kirocrew.tunnel                                 # stop
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kirocrew.tunnel.plist  # start
@@ -817,6 +824,13 @@ gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend
 production build with `EMFILE`.
+
+The install also seeds `/etc/kirocrew/kirocrew.env`, which the unit reads as its
+`EnvironmentFile=`, so a port or environment change needs no reinstall (see
+[Setting the service port](install.md#setting-the-service-port)). On an
+SELinux-enforcing host whose kirocrew lives under `$HOME`, the install refuses
+before writing anything and prints a per-user unit to use instead (see
+[SELinux-enforcing hosts](install.md#selinux-enforcing-hosts-with-kirocrew-under-home)).
 
 **Why system-level rather than `systemctl --user`:** older distros (systemd 219
 era) have no working per-user manager, and `systemctl --user` there fails with
@@ -969,7 +983,7 @@ servers and tool calls fail with ENOENT.
 | Link opens to "token expired" | The presigned URL must be opened within 5 minutes. Request a fresh link |
 | Session drops sooner than you expect | You should be refreshed silently for 30 sliding days. If you are re-minting every ~20 hours instead, the refresh cookie is not reaching `/api/auth/refresh` — confirm the browser is sending an `mc_refresh_<port>` cookie whose port suffix matches the port the gateway resolved for the request, and check the browser console for `[refresh]` warnings. Raising the initial mint (`/kirocrew dashboard 20h`) only widens the access cookie; it does not repair a broken refresh |
 | Phone cannot reach the tunnel URL | Verify the tunnel process is running and connected on the gateway host |
-| Settings will not save over the tunnel | By design. Config-write and secret-reveal endpoints require a direct-local request, and forwarding headers mark a tunnelled request as remote. Change these over an SSH session on the host |
+| Settings will not save over the tunnel | By design. Config-write and secret-reveal endpoints require a direct-local request, and the forwarding headers a tunnel or reverse proxy adds mark the request as remote. Change these over an SSH session on the host, or through an `ssh -L` forward, which adds no forwarding header |
 | "Embeddings not ready" in the dashboard | The ~610MB model downloads in the background over HTTPS on gateway start. `kirocrew doctor` probes the resolved URL; set `KIROCREW_EMBED_MODEL_URL` for a mirror. Memory falls back to keyword search until it lands, and the agent keeps working |
 
 ## See also

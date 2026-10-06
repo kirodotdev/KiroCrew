@@ -1,6 +1,6 @@
 # Adding a remote-provisioner lane
 
-A **remote instance** registry record names an execution target this gateway can reach through a loopback tunnel. Usually that target runs a complete Kiro Crew gateway; the `fargate` connection method instead reaches a crew container's turn API. A human can type coordinates into **Settings → Remote Crew**, while a **provisioner** can create the target first and register it afterwards. The stock Fargate launch engine is the current exception: it creates a task but leaves registry registration manual, tracked in #12511.
+A **remote instance** registry record names an execution target this gateway can reach through a loopback tunnel. Usually that target runs a complete Kiro Crew gateway; the `fargate` connection method instead reaches a crew container's turn API. A human can type coordinates into **Settings → Remote Crew**, while a **provisioner** can create the target first and register it afterwards.
 
 The stock build always ships the EC2 provisioner and also exposes the Fargate provisioner when `cloud.json` contains a complete `fargate` block. This guide is for the case where you need another lane — a managed dev-environment service, a fleet API, a different container platform — and it answers three questions in order: how a remote instance is reached today, which parts of that are an interface you may implement, and what a new lane actually has to write.
 
@@ -60,8 +60,10 @@ flowchart TD
     reg --> mgr["SshTunnelManager"]
     mgr --> ssh["ssh -N -L"]
     mgr --> ssm["aws ssm start-session"]
+    mgr --> ecs["aws ssm start-session<br/>to an ecs: target"]
     ssh --> remote["Remote gateway<br/>on loopback"]
     ssm --> remote
+    ecs --> turn["Crew container turn API<br/>no remote gateway"]
 ```
 
 ## B. The interfaces
@@ -91,7 +93,7 @@ A descriptor says which lanes exist and how to draw each one. It never says how 
 | Method | What core does with the return | Must guarantee |
 |---|---|---|
 | `preflight(profile, region)` | Fails the launch on any raise | Raise if the launch cannot possibly succeed. Run your own authorization here; a frontend form cannot skip a check by not drawing it |
-| `provision(tag, size_key, profile, region)` | Stored as `job.instance_id`, passed to `begin_signin` and `register` | Return the identity `register` accepts. **Also tag the resource with `tag`** — that is the only handle `teardown` gets. Validate your own `size_key` here |
+| `provision(tag, size_key, profile, region)` | Stored as `job.instance_id`, passed to `begin_signin` and `register` | Return the identity `register` accepts. **Also tag the resource with `tag`** — that is the only handle `teardown` gets. Validate your own `size_key` here. The Protocol carries no subnet: `subnet_id` is forwarded only to the built-in EC2 engine, and `POST /api/cloud/launch` answers 400 `invalid_subnet` when a request names `subnet_id` for any other provisioner |
 | `begin_signin(instance_id, profile, region, login_target=None)` | Reads `already_logged_in`, `error`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()`; on a **cancelled** sign-in calls `abort()` first | Return a `SigninHandle` — **do not raise for a sign-in that merely did not complete.** Honor the requested identity or declare an unsupported non-default target so preflight fails before provisioning. Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking. `abort()` must answer whether the login on the box is confirmed stopped; see *The sign-in handle* below |
 | `register(instance_id, tag, profile, region)` | Nothing — it is the last step | **Raise loudly if the registry write fails.** `register_instance` is best-effort by contract and returns `None` on failure; swallowing that marks the launch done while the user pays for an invisible machine. Raise `launch_job.RegistrationUnavailable` instead, and only instead, when your lane can say the launch itself is sound and only the row is missing: the launcher then reports the resource as launched with the reason on the connect step. Any other exception fails the launch |
 | `teardown(tag, profile, region)` | `True` is reported to the user as removed | Return `True` only when the resource is **confirmed** gone. An accepted delete request that later fails is not a `True`. Note it receives `tag`, never `provision`'s return. If your `register` writes an Instances record, remove it here too: `register` is the last step, so a cancel observed just after it unwinds through `teardown` with the row already written, and a stopped resource that keeps its row leaves a crew entry addressing nothing |
@@ -125,7 +127,7 @@ They are named for the built-in lane but are not owned by it. For `aws_ec2` they
 | Built-in `aws_ec2` | Yes — CloudFormation deploy | `ssm` | `src/kiro_crew/cloud/launch_engine.py::RealLaunchEngine` |
 | Remote Instance on Fargate | Yes — ECS task, offered only when `cloud.json` configures it | `fargate` — the task's ECS target, registered at launch | `src/kiro_crew/cloud/fargate_engine.py::FargateLaunchEngine`, designed in [rfc-remote-instance-on-fargate.md](../request-for-change/rfc-remote-instance-on-fargate.md) |
 
-The Fargate RFC is **in progress**. Its front matter says `status: in-progress` with `implementation-prs: [9223]`, and the lane is partly shipped: `DefaultRemoteProvisionerProvider.provisioners()` appends the `aws_fargate` descriptor once `cloud.json` carries a complete `fargate` block, and `engine_for` hands out `src/kiro_crew/cloud/fargate_engine.py::FargateLaunchEngine` for it. The engine starts a task whose model credential is injected at run time, so its sign-in handle completes immediately. Its `register` reads the started task with `DescribeTasks` until the crew container reports a `runtimeId`, then registers `ecs:<cluster>_<task-id>_<runtime-id>` with `connection_method="fargate"` and the task definition's published port; the launch job also stores the task ARN, and `GET /api/cloud/launch/{id}/task` reads that task's current ECS state, which a registry record naming one task cannot report. A registration that cannot complete leaves the launch reported as launched with the reason on its connect step, because the task is running and billing either way. No `registerRemoteProvisionerRenderer` claims the Fargate `kind`, so the lane is reachable through the API and absent from the Set-up selector.
+The Fargate RFC is **partially implemented**. Its front matter says `status: partial` with `implementation-prs: [9223]`, and the lane is partly shipped: `DefaultRemoteProvisionerProvider.provisioners()` appends the `aws_fargate` descriptor once `cloud.json` carries a complete `fargate` block, and `engine_for` hands out `src/kiro_crew/cloud/fargate_engine.py::FargateLaunchEngine` for it. The engine starts a task whose model credential is injected at run time, so its sign-in handle completes immediately. Its `register` reads the started task with `DescribeTasks` until the crew container reports a `runtimeId`, then registers `ecs:<cluster>_<task-id>_<runtime-id>` with `connection_method="fargate"` and the task definition's published port; the launch job also stores the task ARN, and `GET /api/cloud/launch/{id}/task` reads that task's current ECS state, which a registry record naming one task cannot report. A registration that cannot complete leaves the launch reported as launched with the reason on its connect step, because the task is running and billing either way. No `registerRemoteProvisionerRenderer` claims the Fargate `kind`, so the lane is reachable through the API and absent from the Set-up selector.
 
 Two adjacent pieces of work are easy to mistake for a provisioner lane, so state it plainly: the **crew bundle builder** under `src/kiro_crew/apps/builtins/aws_control/crew/packaging/` (merged as #9213) and the **crew container runtime** added by PR #9223 (merged) are the bundle and image side. Neither implements `LaunchEngine` and neither writes to the instances registry — a search of the `aws_control` app for `LaunchEngine`, `register_instance` or `InstancesRegistry` returns nothing on `main`, and the same search across #9223's diff returns nothing either. They produce something a lane could one day run; they are not a lane.
 
@@ -227,15 +229,15 @@ Inject a fake engine through `state.cloud_launch_engine`, which outranks the sea
 
 ### Example 1: the current Fargate lane
 
-The shipped engine currently behaves as follows:
+The shipped engine behaves as follows:
 
 | Method | Fargate | What changes from EC2 |
 |---|---|---|
 | `preflight` | Validate the region and require a complete launch spec | No ECS call is made |
 | `provision` | Register a task definition, RunTask, return the task identity | Minutes of bootstrap become an image pull |
 | `begin_signin` | Return `already_logged_in=True`; the container receives its API key at run time | No browser or device-code flow |
-| `register` | No-op today; the launch job retains the task ARN | Registry wiring is tracked in #12511 |
-| `teardown` | StopTask | Stack deletion becomes an API call |
+| `register` | `DescribeTasks` until the crew container reports a `runtimeId`, then register `ecs:<cluster>_<task-id>_<runtime-id>` with `connection_method="fargate"`; `RegistrationUnavailable` keeps a running task's launch reported as done | The record's target is an ECS task, not an EC2 instance id |
+| `teardown` | StopTask, then `unregister_ecs_task` removes that task's Instances row | Stack deletion becomes an API call |
 
 `size_key` maps to a CPU and memory pair instead of an instance type, which is exactly the "generic wire" case from section B. Fargate accepts the interactive `light`/`balanced`/`power` keys and its own `<cpu>/<memory>[/<ephemeral-storage-gib>]` spelling; `LaunchJobStore.create` validates keys against the EC2 ladder only for the built-in EC2 id.
 

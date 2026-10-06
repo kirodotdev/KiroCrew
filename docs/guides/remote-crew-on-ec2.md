@@ -172,12 +172,16 @@ port into the CSRF allowlist — see
   `/usr/local/bin` (a location Kiro Crew searches; it's not in the AL2023 repos),
   or fetch a decoder from the dashboard Speech-to-Text card
   (Settings → Speech-to-Text, then Download now).
-- **`Vector Memory … vendored runtime failed to load`** — the in-process embedding
-  runtime couldn't load its shared library on this host; memory falls back
-  gracefully and keeps working. Safe to ignore unless you specifically rely on
-  local vector memory.
 - **`source dir: not set`** — cosmetic. It is set from a Kiro Crew source
   checkout by `kirocrew setup`; wheel installs do not need it.
+
+### A warning doctor counts as an issue
+
+- **`Vector Memory … vendored runtime failed to load`** — the in-process embedding
+  runtime couldn't load its shared library on this host. Doctor counts this as an
+  issue. Memory keeps working through the keyword-search fallback, without vector
+  recall. If doctor also names missing native libs, the install is incomplete:
+  reinstall Kiro Crew from a current release.
 
 ## Related
 
