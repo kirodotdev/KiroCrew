@@ -573,7 +573,14 @@ jobs:
             setup.cfg
       - name: Install dependencies
         run: uv pip install --system -e . --group dev
+      # Same boundary as backend-test: on a CodeBuild root runner it registers
+      # the toolcache libpython and installs jq 1.7 and lsof, which the
+      # ratchets' sanitized subprocesses need, and runs pytest as an
+      # unprivileged user. Without it the fleet-routing poll tests ran into
+      # their 60 s subprocess timeout on the fleet (run 37412794799).
+      - uses: ./.github/actions/run-as-runner
       - name: Run the source-only ratchets
+        shell: /usr/local/bin/ci-shell {0}
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
