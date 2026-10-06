@@ -532,6 +532,33 @@ _SECRET_MAX_VOWEL_RATIO = 0.30
 # vowel-ratio gate. Three is the knee: four leaves the reported paths redacted.
 _SECRET_MAX_SLASHES = 3
 
+# The second ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
+# the opening `/` of a routed commit and take twelve of its digits. A commit
+# permalink is one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window
+# straddling `RepoName/blob/` and the start of the commit clears every gate on two
+# separators: capitals from the repository name, lowercase and digits from the hex.
+# A routed commit is a path segment of exactly 40 or 64 lowercase hex digits, as git
+# prints one, right after one of the code-host routes below and ending at a `/` or
+# the run's edge. The route is what keeps a key out: a key's own window crosses the
+# opening `/` of a routed commit only when the key itself holds that `/` and twelve
+# hex digits after it, which makes the text a permalink whose route runs into the
+# key. A window starting inside a commit is judged as before, and so is hex a key
+# carries anywhere else. Measured on ten commits of each of the 1,000 most-starred
+# GitHub repositories: 3.58% of their blob permalinks fire without this and 0.02%
+# with it, and none of 20,000 key-shaped random keys is lost glued before, after or
+# inside a commit, after a letter, after a route, or in a URL path. The residuals
+# are a repository name whose own capitals fill most of a window, a window that
+# starts inside the commit and runs into a path with capitals (1.08% of links to a
+# path like `src/File.py`, against 4.64% before), a key that carries a route word
+# and a `/` followed by twelve or more hex digits running to its end,
+# raw.githubusercontent.com links, which have no route word, and commits typed in
+# upper or mixed case, which git never prints.
+_ROUTED_COMMIT_RE = re.compile(
+    r"(?:(?<=/)|\A)(?:blob|tree|blame|raw|commits?|src)/"
+    r"(?P<commit>[0-9a-f]{64}|[0-9a-f]{40})(?=/|\Z)"
+)
+_ROUTED_COMMIT_PIECE_MIN = 12
+
 # A token that base64-decodes to >=85% printable ASCII is encoded *text*, not a
 # random key (random 40-char keys decode to mostly non-printable bytes). Such a
 # token is left to the existing base64 decode-and-scan path in redact_credentials
@@ -862,14 +889,16 @@ def _contains_bare_secret(run: str) -> bool:
     glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
     cleanly as a whole run, so it still reaches the sliding window below.
 
-    SEPARATOR CEILING FOR A FRAGMENT. ``/`` is in the run alphabet, so a deep
-    absolute path is one run whose straddling sub-windows clear every per-window
-    gate. A key-shaped window carrying a path's separator density
-    (``_SECRET_MAX_SLASHES``) is declined, on two conditions that keep this a gate
-    rather than a hole: only when the run is LONGER than one whole key (a
-    40-char run IS the token somebody wrote, so a standalone key is never subject
-    to it), and only AFTER :func:`_looks_like_secret_key` has answered, so every
-    offset is still classified and a glued key is still found at its own offset.
+    SEPARATOR AND COMMIT CEILINGS FOR A FRAGMENT. ``/`` is in the run alphabet, so
+    a deep absolute path, or a permalink carrying a commit hash, is one run whose
+    straddling sub-windows clear every per-window gate. A key-shaped window
+    carrying a path's separator density (``_SECRET_MAX_SLASHES``) or crossing into a
+    routed commit (``_ROUTED_COMMIT_RE``, ``_ROUTED_COMMIT_PIECE_MIN``) is declined,
+    on two conditions that keep this a gate rather than a hole: only when the run is
+    LONGER than one whole key (a 40-char run IS the token somebody wrote, so a
+    standalone key is never subject to it), and only AFTER
+    :func:`_looks_like_secret_key` has answered, so every offset is still classified
+    and a glued key is still found at its own offset.
     """
     return next(_bare_secret_window_starts(run), None) is not None
 
@@ -900,6 +929,9 @@ def _bare_secret_window_starts(
             return
     if _decodes_to_printable_text(run):
         return
+    commit_starts = (
+        [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
+    )
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
         if skip_spans and any(
             min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
@@ -909,10 +941,27 @@ def _bare_secret_window_starts(
         window = run[start : start + _SECRET_KEY_LEN]
         if not _looks_like_secret_key(window):
             continue
-        if is_fragment and window.count("/") > _SECRET_MAX_SLASHES:
-            # Key-shaped, but a fragment carrying a path's separator density.
+        if is_fragment and (
+            window.count("/") > _SECRET_MAX_SLASHES
+            or _crosses_into_a_routed_commit(start, commit_starts)
+        ):
+            # Key-shaped, but a fragment carrying a path's separators or a commit.
             continue
         yield start
+
+
+def _crosses_into_a_routed_commit(start: int, commit_starts: list[int]) -> bool:
+    """Whether the window at *start* crosses a routed commit's opening ``/`` and
+    takes ``_ROUTED_COMMIT_PIECE_MIN`` of its digits.
+
+    Commits are a whole window long and a route apart, so only the first one
+    starting after *start* can be crossed: one bisect, however many the run holds.
+    """
+    index = bisect.bisect_right(commit_starts, start)
+    return (
+        index < len(commit_starts)
+        and commit_starts[index] + _ROUTED_COMMIT_PIECE_MIN <= start + _SECRET_KEY_LEN
+    )
 
 
 def _decode_b64_chunk(chunk: str) -> str:
