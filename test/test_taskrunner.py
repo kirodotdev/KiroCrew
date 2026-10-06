@@ -5506,6 +5506,76 @@ class TestNotifySessionKey:
         assert seen == [("[spec] Task 1 requires approval", "telegram:kirocrew:direct:U9")]
 
     @pytest.mark.asyncio
+    async def test_the_owning_app_reaches_the_sink_as_a_keyword(self, tmp_path: Path) -> None:
+        """GPT 6.1 F1: a run owned by an app carries that app to the notify sink.
+
+        Without it, a run started under an app allowed task_run but denied
+        messaging egresses its notice under the permissive host profile, because
+        the bridge vets only host/session subjects. The app rides as a keyword the
+        same way session_key does, so the bridge can bind a producer_app subject.
+        """
+        import dataclasses
+
+        seen: list[tuple[str, str]] = []
+
+        async def _sink(
+            title: str, body: str, task_id: str = "", *, session_key: str = "", app: str = ""
+        ) -> None:
+            seen.append((title, app))
+
+        runner, run = await self._start(tmp_path, _sink, "")
+        run.execution_context = dataclasses.replace(run.execution_context, app="rogue-app")
+        await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
+
+        assert seen == [("[spec] Task 1 requires approval", "rogue-app")]
+
+    @pytest.mark.asyncio
+    async def test_the_runs_agent_reaches_the_sink_and_survives_a_later_start(
+        self, tmp_path: Path
+    ) -> None:
+        """GPT 6.1 (v69 F1): every notice names the agent its run executes as.
+
+        Read off the RUN, not the runner's ``_agent`` (which the next start
+        overwrites), and persisted with the run, so a later start with another agent
+        or a reload cannot misattribute it."""
+        seen: list[tuple[str, list[str]]] = []
+
+        async def _sink(title: str, body: str, task_id: str = "", *, agent: str = "") -> None:
+            seen.append((title, agent.split("\n")))
+
+        runner = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path, on_notify=_sink)
+        with patch.object(runner, "run", new_callable=AsyncMock):
+            task_id = await runner.start_background(self._spec(tmp_path), agent="researcher")
+            background = runner._tasks.get(task_id)
+            if background is not None:
+                await background
+        run = runner._runs[task_id]
+        assert run.agent == "researcher"
+        runner._agent = "someone-else"
+        await runner._notify("Task 1 requires approval", "x", run=run)
+        assert seen[-1][0] == "[spec] Task 1 requires approval"
+        assert seen[-1][1][0] == "researcher"
+        assert "someone-else" not in seen[-1][1]
+        await runner._apersist_runs()
+        reloaded = TaskRunner(sessions=_make_mock_sessions(), work_dir=tmp_path)
+        assert reloaded._runs[task_id].agent == "researcher"
+
+    def test_run_agent_names_include_the_execution_selection(self) -> None:
+        """An unnamed run still names the agent its sessions resolve to."""
+        from types import SimpleNamespace
+
+        from kiro_crew.taskrunner import _run_agent_names
+
+        run = SimpleNamespace(
+            agent="",
+            execution_context=SimpleNamespace(selection_name="crew-a", template_id="tmpl"),
+        )
+        assert _run_agent_names(run) == "crew-a\ntmpl"  # type: ignore[arg-type]
+        run.agent = "crew-a"
+        assert _run_agent_names(run) == "crew-a\ntmpl"  # type: ignore[arg-type]
+        assert _run_agent_names(None) == ""
+
+    @pytest.mark.asyncio
     async def test_omitted_session_key_leaves_the_call_shape_untouched(
         self, tmp_path: Path
     ) -> None:
@@ -5513,8 +5583,9 @@ class TestNotifySessionKey:
 
         Asserted on the call SHAPE, not merely on an empty value: a sink is only
         obliged to accept ``session_key`` once something hands it one, so a
-        notification with no origin has to arrive as the three-argument call every
-        pre-existing sink was written against.
+        notification with no origin carries no ``session_key``. The run's ``agent``
+        is the one keyword a run note always carries (its execution selection names
+        one even when the start named none), so a sink that binds it receives it.
         """
         calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
@@ -5524,7 +5595,10 @@ class TestNotifySessionKey:
         runner, run = await self._start(tmp_path, _sink, "")
         await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
 
-        assert calls == [(("[spec] Task 1 requires approval", "run the deploy?", run.task_id), {})]
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        assert args == ("[spec] Task 1 requires approval", "run the deploy?", run.task_id)
+        assert set(kwargs) == {"agent"} and kwargs["agent"]
 
     @pytest.mark.asyncio
     async def test_legacy_three_arg_sink_is_still_notified(self, tmp_path: Path) -> None:

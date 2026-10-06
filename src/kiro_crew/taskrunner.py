@@ -199,6 +199,28 @@ class WorkflowRunPublisher(Protocol):
     def status(self, run_id: str) -> dict[str, Any] | None: ...
 
 
+def _run_agent_names(run: Project | None) -> str:
+    """Every agent name *run* executes as, newline-separated, or ``""`` for no run.
+
+    The agent the run was started with, plus the selection its execution context
+    binds (what ``resolve_session_agent_bindings`` selects for the run's sessions
+    when no agent was named). Each is a ``producer_agent`` subject on the bridge,
+    which only ever adds subjects, so naming both can tighten and never widen.
+    """
+    if run is None:
+        return ""
+    names: list[str] = []
+    execution = run.execution_context
+    candidates = [run.agent]
+    if execution is not None:
+        candidates += [execution.selection_name, execution.template_id]
+    for name in candidates:
+        cleaned = name.strip() if isinstance(name, str) else ""
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+    return "\n".join(names)
+
+
 def _auto_approve_scope(task_id: str) -> str:
     """SafetyOverride scope key holding a run's per-run auto-approve grant.
 
@@ -1162,6 +1184,7 @@ class TaskRunner:
                 workflow_slug=workflow_slug,
                 workflow_revision=workflow_revision,
                 execution_context=execution,
+                agent=agent,
             )
         except BaseException:
             if created_task_dir:
@@ -1434,6 +1457,7 @@ class TaskRunner:
             await self._apersist_runs()
 
             self._agent = agent
+            run.agent = agent
             history_key = await self._bound_history_key(run, f"taskrunner:run:{task_id}")
         except BaseException:
             self._release_start(task_id)
@@ -1592,6 +1616,7 @@ class TaskRunner:
             derived_from_workflow_id=existing.derived_from_workflow_id if existing else "",
             derived_from_revision=existing.derived_from_revision if existing else 0,
             execution_context=existing.execution_context if existing else self._capture_execution(),
+            agent=self._agent or (existing.agent if existing else ""),
         )
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
@@ -2152,6 +2177,7 @@ class TaskRunner:
                     source=source,
                     auto_approve=bool(auto_approve),
                     execution_context=execution,
+                    agent=agent,
                 )
                 await self._bind_run_execution(
                     self._runs[task_id], f"{_SESSION_PREFIX}:{task_id}:runtime"
@@ -2496,6 +2522,7 @@ class TaskRunner:
                     )
                 raise
             self._agent = agent
+            run.agent = agent
         except BaseException:
             self._release_start(task_id)
             raise
@@ -2579,7 +2606,22 @@ class TaskRunner:
         # run attached (a lesson learned, say) carries no conversation and falls
         # back to the sink's own default destination.
         session_key = self._run_session_keys.get(run.task_id, "") if run else ""
-        await notify(title, body, run=run, callback=self._on_notify, session_key=session_key)
+        # The run's owning app, resolved from the SAME run, so the sink can bind a
+        # ``producer_app`` governance subject. A run started under an app token
+        # carries ``execution_context.app``; a dashboard, cron or CLI start leaves
+        # it empty and the note is vetted host-only exactly as before. Without it a
+        # run owned by an app that is allowed ``task_run`` but denies ``messaging``
+        # egresses its notice under the permissive host profile.
+        app = run.execution_context.app if run and run.execution_context is not None else ""
+        await notify(
+            title,
+            body,
+            run=run,
+            callback=self._on_notify,
+            session_key=session_key,
+            app=app,
+            agent=_run_agent_names(run),
+        )
 
     # ── History Integration ──
 
@@ -2930,6 +2972,7 @@ class TaskRunner:
                         "workflow_revision": run.workflow_revision,
                         "derived_from_workflow_id": run.derived_from_workflow_id,
                         "derived_from_revision": run.derived_from_revision,
+                        "agent": run.agent,
                         "task_details": [
                             {
                                 "index": t.index,
@@ -3180,6 +3223,7 @@ class TaskRunner:
                     workflow_revision=int(item.get("workflow_revision") or 0),
                     derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
                     derived_from_revision=int(item.get("derived_from_revision") or 0),
+                    agent=str(item.get("agent") or ""),
                 )
                 # Compensating control: never let per-run trust silently survive a
                 # gateway restart. A run recovered from an active state had its

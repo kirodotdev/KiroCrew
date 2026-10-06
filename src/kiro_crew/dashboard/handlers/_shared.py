@@ -3096,6 +3096,72 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     return carried, ttl_ceiling
 
 
+def producer_identity_meta(state: DashboardState, key: str) -> dict[str, str]:
+    """Bridge governance identities for a note the session *key* publishes, or ``{}``.
+
+    A session's own notice (``send_notification``, or ``send_message`` falling back to
+    the bell) names its session key, which the bridge vets under that key's surface.
+    That is not the whole producer: the AGENT the session runs has its own task-bound
+    profile, and an app may own the session. Both are looked up here from trusted
+    server-side registries -- never from the request -- so the bridge asks every
+    profile the producer is governed by:
+
+    * a running subagent: ``SubagentInfo.agent`` and ``SubagentInfo.app``;
+    * a dashboard slot, by name or by the session it runs under
+      (``linked_session_key``): the slot's selected ``agent``;
+    * a cron job: every agent the stored job dispatches (``agent_id``, or its
+      sequence) and its captured execution selection;
+    * any of them: the owning app, through ``derive_caller_app``.
+
+    Added-only on the bridge side, so a miss narrows nothing and a hit can only
+    tighten.
+    """
+    from kiro_crew.dashboard import token_auth as _auth
+
+    def _text(value: object) -> str:
+        # Registry fields are strings; anything else names no identity.
+        return value.strip() if isinstance(value, str) else ""
+
+    if not key:
+        return {}
+    agent = ""
+    app = ""
+    manager = getattr(state, "subagents", None)
+    for info in getattr(manager, "running", ()) if manager is not None else ():
+        if key in (f"subagent:{info.id}", info.conversation_key):
+            agent = _text(getattr(info, "agent", ""))
+            app = _text(getattr(info, "app", ""))
+            break
+    raw_slots = getattr(state, "_slots", None)
+    slots = raw_slots if isinstance(raw_slots, dict) else None
+    raw_jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    jobs = raw_jobs if isinstance(raw_jobs, list) else None
+    if not agent and slots is not None:
+        slot = slots.get(key.split(":", 1)[-1]) if ":" in key else None
+        if slot is None:
+            slot = _auth._slot_by_linked_key(slots, key)
+        agent = _text(getattr(slot, "agent", "")) if slot is not None else ""
+    if not agent and key.startswith("cron:") and jobs is not None:
+        parts = key.split(":")
+        job_id = parts[1] if len(parts) > 1 else ""
+        for job in list(jobs):
+            if job_id and getattr(job, "id", None) == job_id:
+                from kiro_crew.cron_service.identity import cron_job_agent_names
+
+                agent = "\n".join(cron_job_agent_names(job))
+                break
+    if not app:
+        raw_agents = getattr(manager, "_agents", None) if manager is not None else None
+        subagents = raw_agents if isinstance(raw_agents, dict) else None
+        app = _text(_auth.derive_caller_app(slots, key, jobs, subagents))
+    meta: dict[str, str] = {}
+    if agent:
+        meta["producer_agent"] = agent
+    if app:
+        meta["producer_app"] = app
+    return meta
+
+
 def inherited_session_memory_mode(state: DashboardState, key: str) -> str | None:
     """Read only restrictions captured by trusted child creation in this process."""
     from kiro_crew.messaging.privacy_mode import strictest
