@@ -25,18 +25,26 @@ boxes and arrows. The constraints below make every PR read the same way at a gla
   or two columns), or one graph where the changed edge is the only thing that
   stands out. Six to ten nodes, or eight rows, is the ceiling.
 - **The diff palette is fixed.** In a Mermaid fence declare these four `classDef`s
-  and tag every node; in a table use the matching squares in each cell:
+  and tag every node; in a table write the matching word in each cell:
 
-  | class | fill / stroke | cell | meaning |
+  | class | fill / stroke | table cell | meaning |
   |---|---|---|---|
-  | `added` | `#DCFCE7` / `#16A34A` | 🟩 | new after this PR |
-  | `changed` | `#FEF3C7` / `#D97706` | 🟨 | behaviour changed |
-  | `removed` | `#FEE2E2` / `#DC2626`, dashed | 🟥 | gone after this PR |
-  | `ctx` | `#E0F2FE` / `#0284C7` | 🟦 | untouched, shown for context |
+  | `added` | `#DCFCE7` / `#16A34A` | `added` | new after this PR |
+  | `changed` | `#FEF3C7` / `#D97706` | `changed` | behaviour changed |
+  | `removed` | `#FEE2E2` / `#DC2626`, dashed | `removed` | gone after this PR |
+  | `ctx` | `#E0F2FE` / `#0284C7` | `unchanged` | untouched, shown for context |
+
+  The colour lives in the Mermaid fence, which renders the `classDef` fills; the
+  table and the legend carry words. Do not put coloured squares (or any emoji) in
+  the published body: the publish step rejects them, so an author who follows an
+  emoji legend is refused at `gh pr create`. The words already carry the
+  colour-to-meaning mapping. If you want the squares, keep them to a rendering
+  that is not the published body.
 
   Colour the edges too: `linkStyle <n> stroke:#16A34A,stroke-width:2px` on the
   new path, `stroke:#DC2626,stroke-dasharray:4 3` on the removed one. Put one
-  legend line under the picture: `🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged`.
+  legend line under the picture: `added, changed, removed, unchanged` (map each
+  word to its class above).
 - **Caption in the Age 5 register**, one sentence: what now happens that did not,
   and what the reader sees because of it.
 - **Place it inside section 3**, right after the paragraph it illustrates.
