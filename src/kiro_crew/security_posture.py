@@ -2476,9 +2476,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/spec_builder/backend/repository.py",
         "apps/builtins/spec_builder/backend/runtime.py",
         "apps/builtins/workflows/server.py",
-        # Bundled dev-skill script: prints CI/review findings to a
-        # developer terminal, not an agent-output egress path.
+        # Bundled dev-skill scripts: print CI/review findings to a developer
+        # terminal (pr_status.py also to the PR Readiness job log), not an
+        # agent-output egress path. `_review_contract.py` holds the redactor that
+        # both entry points print through.
+        "builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py",
         "builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_findings.py",
+        "builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py",
         # Same shape, one step further: a bundled dev-skill AUTHORING script that
         # an author runs from a shell to narrate a demo film. It scrubs the
         # author's own script text before handing it to the author's own cloud

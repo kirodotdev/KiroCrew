@@ -116,6 +116,8 @@ comment_key = _review_contract.comment_key
 extract_findings = _review_contract.extract_findings
 extract_design_items = _review_contract.extract_design_items
 design_lane_verdicts = _review_contract.design_lane_verdicts
+design_lane_punchlines = _review_contract.design_lane_punchlines
+redact = _review_contract.redact
 unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
 unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
@@ -2342,6 +2344,26 @@ def main(argv):
             print(
                 "  - {}: OVERRIDDEN by @{} (human judgment recorded for this head; "
                 "the model was not re-run)".format(sanitize(name), sanitize(actor))
+            )
+
+    # Each whole-design lane's punchline, read from the lane bodies rather than
+    # from the marker rows above: a pinned fleet such as `--reviewers gpt,opus`
+    # lists no whole-design lane there, and on a PASS the punchline is the lane's
+    # one ask. Printed every cycle so a green head cannot hide it. Advisory: it
+    # changes no exit code.
+    if marker_eval.get("ok") and bot_comments is not None:
+        punchlines = design_lane_punchlines(bot_comments, head_sha, marker_bindings)
+        lane_verdicts = design_lane_verdicts(bot_comments, head_sha, marker_bindings)
+        print("-- Whole-design punchlines, untrusted (head {}) --".format(sanitize(head_sha[:12])))
+        if not punchlines:
+            print("  (none to check on this head)")
+        for name in sorted(punchlines):
+            print(
+                "  - {} ({}): {}".format(
+                    sanitize(name),
+                    sanitize(lane_verdicts.get(name) or "?"),
+                    sanitize(redact(punchlines[name]))[:280],
+                )
             )
 
     # Disposition-rule gate: a repository writer's disposition

@@ -182,7 +182,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 
 **What must be answered:**
 
-- Non-PASS verdicts from the **whole-design lanes** — Design, First Principles, UX: every Watch item, Suggestion and Subtraction, each with its own `target=design` / `target=first-principles` / `target=ux` comment naming its `span=`. Their **BLOCK** verdict blocks readiness, and so does an **unanswered CONCERNS** for the current head: `pr_status.py` exits `20` on it even when the rollup is green, and it clears the moment one `target=<lane> head=<current sha>` disposition exists. PASS is advisory and must still be answered. `pr_findings.py` prints each item with its `span=` and `Clears when:` line, above the line-level findings.
+- Non-PASS verdicts from the **whole-design lanes** — Design, First Principles, UX: every Watch item, Suggestion and Subtraction, each with its own `target=design` / `target=first-principles` / `target=ux` comment naming its `span=`. Their **BLOCK** verdict blocks readiness, and so does an **unanswered CONCERNS** for the current head: `pr_status.py` exits `20` on it even when the rollup is green, and it clears the moment one `target=<lane> head=<current sha>` disposition exists. PASS is advisory and must still be answered: its punchline is the ask. `pr_findings.py` prints each item with its `span=` and `Clears when:` line, above the line-level findings.
 - Non-blocking observations in the GPT / Opus bodies.
 - One-way-door concerns from Design Review — fix or justify in writing.
 - Human review comments and inline threads.
@@ -541,7 +541,7 @@ comes after a record, never instead of one:
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
    runs discovery mode, where a lane that never posted passes silently.
 
-   - **0** → Phase 4.
+   - **0** → answer its punchlines, then Phase 4.
    - **20** → run `pr_findings.py` and **TRIAGE before re-pushing**. An `unanswered CONCERNS from <LANE>` reason is cleared by POSTING dispositions, not by pushing. `pr_status.py` already reads only the current head's rollup and drops rows a newer run of the same check displaced; never dedupe check rows by name by hand, which drops live rows. **(d) Superseded or unpublished verdict** (`superseded verdict`, `verdict not published, re-run this lane`) → re-run that lane, or override at this head. **(a) CI/build/test failure** → read `gh run view <run-id> --log-failed`. If the same check also fails on main, follow *When main is red*. Otherwise, once you decide to fix, cancel the head's in-flight runs, reproduce the **exact failing node ids** locally, and fix the **root cause**; a flake confirmed and recorded per *Before you rerun a red test* gets `gh run rerun <run-id> --failed` (or `--job <job-id>`) once, never a whole-run replay. **(b) Review finding** → whole-design verdicts first, then the three questions. For Kiro Crew Opus-family or GPT 6.1 findings that need code changes, MUST execute [Review repair routing](#review-repair-routing): delegate the minimal fix and self-review to the model-pinned subagent, then verify in the parent. Otherwise rebut with evidence (never dismiss a CodeQL alert merely to pass), override it per *Overriding a false positive*, or ask a maintainer. **(c) Conflict / behind base** → Phase 1 handles it. Then **loop back to Phase 1** → 2 → 3 carrying those fixes.
    - **10** → still running. In a chat slot, load `kirocrew-core::monitor_start`
      through `tool_search`, request a finite same-session loop, then END THE TURN.

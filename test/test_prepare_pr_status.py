@@ -3296,6 +3296,51 @@ def test_a_design_pass_verdict_is_not_a_stop() -> None:
     assert module.main(["pr_status.py", "42"]) == 0
 
 
+def test_a_pinned_fleet_still_prints_the_whole_design_punchlines(capsys) -> None:
+    """`--reviewers GPT,OPUS` lists no whole-design lane among the marker rows,
+    so the punchline block reads the lane bodies itself. It changes no exit code."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
+            _bot_comment(f"No findings.\n[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
+            _design_comment(verdict="PASS"),
+        ]
+    )
+    _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=comments)
+
+    code = module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "-- Whole-design punchlines, untrusted (head ffffffffffff) --" in out
+    assert "  - DESIGN (PASS): The win32 predicate depends on a macOS-only settings file." in out
+
+
+def test_a_pinned_fleet_redacts_a_token_in_a_whole_design_punchline(capsys) -> None:
+    module = _load_script()
+    token = "ghp_" + "a" * 30
+    design = _design_comment(verdict="PASS")
+    design["body"] = design["body"].replace(
+        "The win32 predicate depends on a macOS-only settings file.", token
+    )
+    comments = json.dumps(
+        [
+            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
+            _bot_comment(f"No findings.\n[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
+            design,
+        ]
+    )
+    _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=comments)
+
+    code = module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "  - DESIGN (PASS): [REDACTED]" in out
+    assert token not in out
+
+
 def test_every_whole_design_lane_carries_the_concerns_stop() -> None:
     module = _load_script()
     lanes = [
