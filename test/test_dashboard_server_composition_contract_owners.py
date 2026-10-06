@@ -177,6 +177,36 @@ async def test_the_local_decision_model_release_waits_for_its_import(
     assert calls == [({"wait": True}, False)]
 
 
+@pytest.mark.asyncio
+async def test_the_decision_http_release_waits_for_its_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cleanup hook closes the decision client's shared HTTP sessions only once
+    that module was imported at all -- a gateway that never made a decision does not
+    import it to close nothing."""
+    import kiro_crew.decisions as decisions
+
+    name = "kiro_crew.decisions.impl_jev"
+    app = web.Application()
+    server._register_stt_hooks(app)
+    hook = next(h for h in app.on_cleanup if h.__name__ == "_decision_http_shutdown")
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(decisions, "impl_jev", raising=False)
+    await hook(app)
+    assert name not in sys.modules
+    closed: list[bool] = []
+
+    async def _close_sessions() -> None:
+        closed.append(True)
+
+    module = types.ModuleType(name)
+    module.close_sessions = _close_sessions  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(decisions, "impl_jev", module, raising=False)
+    await hook(app)
+    assert closed == [True]
+
+
 # ── the owners' own behaviour ─────────────────────────────────────────────────
 
 
