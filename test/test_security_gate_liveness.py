@@ -181,7 +181,13 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for six stdout-only filters on the read-only bash allowlist (`tr`, `nl`,
 #: `rev`, `comm`, `od`, `column`) and their reason comment.
-_PACKAGE_LINE_BUDGET = 28_438
+#:
+#: Re-pinned for the quote-aware neutralize pass on the self-protection floors
+#: (``_neutralize_substitution_spans`` plus the per-payload re-adjudication in
+#: ``argv_floor``'s mint and kill checks): the de-quoted argv windows could not see a
+#: substitution-span decoy whose quoted ``)`` closes the window early, so the floors
+#: re-scan a copy with each span collapsed to one inert word.
+_PACKAGE_LINE_BUDGET = 28_658
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

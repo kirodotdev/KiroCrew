@@ -2428,6 +2428,26 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
             off = pos + step.offset
             if off < open_end:
                 continue
+            # A ``$( … )`` or `` ` … ` `` opened INSIDE double quotes is a nested
+            # substitution: bash does not disable substitution in ``"…"``, and
+            # its body carries its OWN quote context.  The flat quote walk would
+            # skip the opener as inactive and then miscount the FIRST interior
+            # ``)`` once the body's own quote toggles -- closing the outer span
+            # early (``$(true "$(true ")" ; true)" ; true)`` read as closing at
+            # the inner quoted ``)``).  Recurse to consume the whole nested span,
+            # then resume in the OUTER double-quote state.
+            if step.state == 2 and not step.active:
+                if text.startswith("$(", off):
+                    rel, _ = _matching_close_paren(text[off + 2 :], 0)
+                    pos, state, ansi = off + 2 + rel, 2, False
+                    jumped = True
+                    break
+                if step.char == "`" and len(step.text) != 2:
+                    closer = _backtick_closer(text, off + 1)
+                    pos = (closer + 1) if closer != -1 else len(text)
+                    state, ansi = 2, False
+                    jumped = True
+                    break
             if not step.active:
                 continue
             ch = step.char
@@ -2975,6 +2995,175 @@ def _self_tokens(text_lower: str) -> "list[str]":
         )
     except Exception:
         return []
+
+
+#: Inert word a substitution span is replaced with by
+#: :func:`_neutralize_substitution_spans`.  It must survive ``shlex`` as one
+#: ordinary word, carry no shell metacharacter, and -- even GLUED to a literal
+#: (``kiro<ph>crew``, ``to<ph>ken``) -- match no protected name, mint verb or
+#: kill-program spelling, so neutralizing a span can never SYNTHESIZE a hit.
+_SUBSTITUTION_PLACEHOLDER = "zx0q"
+
+
+def _neutralize_substitution_spans(source: str) -> str:
+    """*source* with every command/process substitution span replaced by an inert
+    placeholder word, QUOTE-AWARELY, so the self-protection core can re-scan it
+    with a window that does not truncate on a decoy.
+
+    The self-protection windows (``_is_credential_mint``, ``_is_self_kill``)
+    bound an argv with :func:`_substitution_depth_delta`, which counts parens on
+    de-quoted tokens -- so a QUOTED ``)`` inside ``$(true ')' ; true)`` reads as a
+    real closer and the window ends at the decoy ``;`` before the verb, while
+    bash expands the empty substitution to nothing and runs ``kirocrew token``.
+    A substitution's OUTPUT, not its source, reaches argv, and an empty-output
+    generator contributes NOTHING, so modelling the span as one inert word is how
+    bash reads the decoyed case.  The caller runs the SAME core over the original
+    AND this copy: the original still catches a name INSIDE a body
+    (``$(pgrep -f kirocrew)``) that neutralizing erases; the copy adds the plain
+    verb/name sitting AFTER a decoy span.  Because the core judges, every
+    resolution it has (arrays, parameter transforms, assignments, data-consumer
+    exemption, redirects) is reused, so the pass cannot deny anything the core
+    would not deny for the decoy-free command.
+
+    Boundary machinery is the shared quote/escape state machine
+    (:func:`_iter_shell_chars`) and span scanner (:func:`_matching_close_paren` /
+    :func:`_backtick_closer`) -- a sibling consumer, not a copy.  Line
+    continuations fold FIRST (so ``$`` + ``\\`` + newline + ``(`` is the ``$(``
+    bash runs); a span opens only OUTSIDE quotes; an UNPROVEN span swallows the
+    remainder (bash cannot run past an unterminated substitution either); a ``#``
+    is a comment only at a word boundary (``open_word`` -- a consumed span keeps
+    the word open, so ``$(true)#x`` is one word).  All else is copied verbatim.
+    """
+    source = _fold_line_continuations(source)
+    if "$(" not in source and "`" not in source and "<(" not in source and ">(" not in source:
+        return source
+    out: list[str] = []
+    i = 0
+    n = len(source)
+    state = 0
+    ansi = False
+    open_word = False
+    while i < n:
+        jumped = False
+        for step in _iter_shell_chars(source[i:], state, ansi):
+            off = i + step.offset
+            ch = step.char
+            escaped = len(step.text) == 2
+            in_single = step.state == 1 and not (ch == "'" and step.active)
+            # A ``#`` COMMENT runs to end of line, but ONLY at a word boundary:
+            # bash reads ``$(true)#x`` as one word, so a ``#`` glued to a word
+            # (a consumed span included -- ``open_word`` stays set across it) is
+            # DATA, not a comment.  At a genuine boundary the comment is copied
+            # verbatim and scanning resumes AT the newline so its boundary holds.
+            if step.active and not escaped and ch == "#" and not open_word:
+                newline = source.find("\n", off)
+                if newline == -1:
+                    out.append(source[off:])
+                    i = n
+                else:
+                    out.append(source[off:newline])
+                    i, state, ansi = newline, 0, False
+                jumped = True
+                break
+            # ``$( … )`` command substitution -- part of the current word.
+            if not escaped and not in_single and ch == "$" and source.startswith("$(", off):
+                rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                end = (off + 2 + rel) if proven else n
+                body = source[off + 2 : off + 1 + rel] if proven else source[off + 2 :]
+                glued = open_word or _word_char_follows_span(source, end, n)
+                out.append(_neutralized_span(body, proven, glued))
+                i, state, ansi, open_word = end, step.state, step.ansi, True
+                jumped = True
+                break
+            # `` ` … ` `` backtick substitution.
+            if not escaped and not in_single and ch == "`":
+                closer = _backtick_closer(source, off + 1)
+                end = (closer + 1) if closer != -1 else n
+                body = source[off + 1 : closer] if closer != -1 else source[off + 1 :]
+                glued = open_word or _word_char_follows_span(source, end, n)
+                out.append(_neutralized_span(body, closer != -1, glued))
+                i, state, ansi, open_word = end, step.state, step.ansi, True
+                jumped = True
+                break
+            # ``<( … )`` / ``>( … )`` process substitution -- only as a real
+            # operator (outside quotes/escape), never a quoted ``<(``.  Its output
+            # is a ``/dev/fd`` PATH, never empty; standalone it is the placeholder,
+            # but glued to a word it collapses to nothing like any other span.
+            if step.active and not escaped and ch in "<>" and source.startswith("(", off + 1):
+                rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                end = (off + 2 + rel) if proven else n
+                glued = open_word or _word_char_follows_span(source, end, n)
+                out.append("" if glued else _SUBSTITUTION_PLACEHOLDER)
+                i, state, ansi, open_word = end, step.state, step.ansi, True
+                jumped = True
+                break
+            # Everything else is copied verbatim.  Track the word boundary so the
+            # ``#`` rule above matches bash: an unquoted operator or whitespace
+            # ENDS the word.  A QUOTE DELIMITER is TRANSPARENT -- it neither opens
+            # nor closes a word for this purpose -- so a standalone quoted span
+            # ``"$(x)"`` is not read as glued to its own quotes (which would
+            # collapse it to nothing and hide the verb after it), while a span
+            # fused to real word characters through quotes (``kiro"$(x)"crew``)
+            # still sees ``open_word`` set by those characters.
+            out.append(step.text)
+            if not escaped and ch in "'\"" and (step.active or step.state == 0):
+                pass
+            elif step.active and (ch.isspace() or ch in "|&;()<>"):
+                open_word = False
+            else:
+                open_word = True
+        if not jumped:
+            break
+    return "".join(out)
+
+
+def _word_char_follows_span(source: str, end: int, n: int) -> bool:
+    """True if a real WORD character sits right after a substitution span ending
+    at *end*, SKIPPING any quote delimiters.
+
+    ``$(x)token`` and ``$(x)"token"`` are both fused to the following word, so the
+    span is glued; ``$(x) token`` and ``"$(x)" token`` are not (whitespace, or
+    only a closing quote then whitespace, follows).  Quote delimiters are skipped
+    because they carry no output of their own -- the question is whether a literal
+    the span's output joins sits beyond them.
+    """
+    j = end
+    while j < n and source[j] in "'\"":
+        j += 1
+    return j < n and source[j] not in _SPAN_WORD_BOUNDARY
+
+
+def _neutralized_span(body: str, proven: bool, glued: bool) -> str:
+    """What a substitution span collapses to for :func:`_neutralize_substitution_spans`.
+
+    An EMPTY substitution (``$()``, ``\\`\\``\\`, a whitespace-only body) expands to
+    NOTHING and the surrounding literal rejoins, so it must collapse to the empty
+    string -- ``kiro$()crew`` is the name ``kirocrew``.
+
+    A span GLUED to adjacent word characters (``$(true)token``, ``kiro$(x)crew``)
+    also collapses to the empty string: when its generator outputs nothing -- the
+    bypass case -- bash FUSES the neighbours into one word (``)token`` -> ``token``,
+    ``kiro$(x)crew`` -> ``kirocrew``), so the placeholder would wrongly split the
+    word and hide the verb/name.  Output is undecidable statically, so this fails
+    toward DETECTION (the floor's standing direction for a runtime-empty
+    generator, as with ``kill$(:)``); a non-empty output merely over-matches a
+    weird command, never under-denies a real one.
+
+    A STANDALONE span (space/operator on both sides) keeps the one inert
+    placeholder word, so a decoyed ``kirocrew $(x) restart`` still reads ``$(x)``
+    as the leading operand -- NOT ``restart`` -- and the subcommand floor's
+    hidden-lead allowance is preserved.
+    """
+    if (proven and body.strip() == "") or glued:
+        return ""
+    return _SUBSTITUTION_PLACEHOLDER
+
+
+#: Characters that END a shell word on the RIGHT of a substitution span: unquoted
+#: whitespace, the control/redirect operators, and a comment ``#``.  Any OTHER
+#: following character (a letter, a quote delimiter, a ``$``) continues the word,
+#: so the span is GLUED to it.
+_SPAN_WORD_BOUNDARY = frozenset(" \t\n|&;()<>#")
 
 
 def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
