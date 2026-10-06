@@ -95,7 +95,7 @@ jobs:
       # Linux consumers retain a fallback when this job never reports:
       # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`.
       # if this job fails or is cancelled the output is empty, and a job that
-      # runs anyway (`coverage-gate` fails closed with `if: always()`) must still
+      # runs anyway (`coverage-gate` fails closed with `if: !cancelled()`) must still
       # get a runner rather than error out before its own checks execute.
       linux_runner: ${{ steps.runner.outputs.linux_runner }}
       linux_runner_large: ${{ steps.runner.outputs.linux_runner_large }}
@@ -2110,15 +2110,19 @@ jobs:
       # three baseline rules live in scripts/check_per_file_coverage.py's
       # docstring -- deliberately not restated here, where it would go stale.
       PER_FILE_MIN: 80
-    # Always run so the required check emits a real verdict. Without
-    # `if: always()`, a failing OR skipped dependency would SKIP this job, and
-    # GitHub treats a skipped required check as SATISFIED -- silently defeating
-    # the fail-closed guarantee (including the `if-no-files-found: error` upload
-    # guard this workflow relies on). The first step below converts any
-    # non-success upstream result into an explicit failure.
+    # Run whatever the upstream jobs concluded so the required check emits a
+    # real verdict. With the default `success()`, a failing OR skipped dependency
+    # would SKIP this job, and GitHub treats a skipped required check as
+    # SATISFIED -- silently defeating the fail-closed guarantee (including the
+    # `if-no-files-found: error` upload guard this workflow relies on). The first
+    # step below converts any non-success upstream result into an explicit
+    # failure. `!cancelled()` rather than `always()`: a run the workflow itself
+    # cancelled (a superseded revision, an evicted merge group) has no verdict to
+    # give, while a job that hit its own timeout cancels only that job, so this
+    # gate still runs and fails closed on it.
     # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true', where
     # the matrix it judges does not run.
-    if: ${{ always() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
     steps:
       - name: Require upstream coverage jobs to have succeeded
         env:

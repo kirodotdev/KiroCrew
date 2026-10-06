@@ -546,3 +546,45 @@ jobs:
         # under its consumer.
         # Stdlib-only checks still use the project's pinned Python runtime.
         run: ./scripts/docs-lint.sh
+
+  static-ratchets:
+    # Exact-set / exact-count ratchets that read only source text and ASTs.
+    # In 2026-09 they failed 1,206 times across PR and main runs, and
+    # each red arrived only after a 20-40 min backend shard (Linux shards 4/7,
+    # Windows shards 4/7/8). Here they answer in about a minute on the PR head
+    # and, through merge_group, on the integrated tree. They stay in the
+    # backend shards too; this job only moves the verdict earlier.
+    name: Static Ratchet Gate
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+      - name: Install dependencies
+        run: uv pip install --system -e . --group dev
+      - name: Run the source-only ratchets
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          # setup-python's matcher reads any traceback as an error annotation;
+          # remove it before pytest, as every other pytest job does.
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q -n 4 --no-cov \
+            test/test_error_code_contract.py \
+            test/test_crew_log_exc_info_sites.py \
+            test/test_pid_reader_ratchet.py \
+            test/test_ci_fleet_routing_expression_parity.py \
+            test/test_security_posture.py \
+            test/test_backend_cards.py \
+            test/test_fold_catalogue.py
