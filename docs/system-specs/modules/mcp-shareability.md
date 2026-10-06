@@ -1,6 +1,6 @@
 # MCP shareability (predicting which servers can share a backend)
 
-Deciding whether an MCP server may share one backend across sessions is a correctness question the operator was previously asked to answer with no information. This module answers it from evidence gathered on the host, provokes the failure before a session can be hurt by it, and remembers the answer so the cost is paid once.
+Deciding whether an MCP server may share one backend across sessions is a correctness question an operator cannot answer with no information. This module answers it from evidence gathered on the host, provokes the failure before a session can be hurt by it, and remembers the answer so the cost is paid once.
 
 Nothing about which servers a machine runs ships with Kiro Crew and nothing leaves the host: shipped defaults are empty and every verdict is derived locally. That is why there is no curated list of server names in this repository — a list would both be wrong for most installs and be an inventory of the operator's tooling.
 
@@ -21,17 +21,15 @@ Evidence is ranked, and the ranking is the load-bearing property. Strongest firs
 
 **`measured` does NOT recommend sharing.** The pre-flight compares the HANDSHAKE — capability shapes, `protocolVersion`, `serverInfo`, the read-only listings — and never makes a tool call. A server whose state is process-global (one browser context, one database connection, one working directory) replays that handshake identically for two callers and still cannot serve two sessions: on a shared backend one caller reads state another caller wrote. A declaration is a claim about ISOLATION, a measurement is a fact about DETERMINISM, and only the first is grounds for co-tenancy. Nor can the ledger backstop the difference: its codes describe frames the gateway could not route, not state handed to the wrong session, so a wrong `recommend_share` here would never be refuted. What `measured` does carry is `recommend_stub` plus a verdict an operator can read, which is what separates "provoked and cleared" from "nobody looked".
 
-**An OBSERVATION outranks everything; an inference outranks nothing.** That
-ordering was once "a measurement always outranks a declaration", which had a server
-advertising `kirocrew.caller-identity` come out `disqualified` because the
-pre-flight caught it answering `initialize` differently per caller. The two halves
-of that sentence contradicted each other: consuming the per-call caller block is
-precisely what the capability declares, so a per-caller `initialize` result is the
-declared feature working. More fundamentally, two spawns that both vary
-`clientInfo` cannot isolate the variable, so the finding could never say whether
-the cause was the caller or the server's own startup.
+**An OBSERVATION outranks everything; an inference outranks nothing.** "A
+measurement always outranks a declaration" would disqualify a server advertising
+`kirocrew.caller-identity` for answering `initialize` differently per caller, yet
+consuming the per-call caller block is precisely what the capability declares, so
+a per-caller `initialize` result is the declared feature working. And two spawns
+that both vary `clientInfo` cannot isolate the variable, so such a finding cannot
+say whether the cause was the caller or the server's own startup.
 
-So a divergence is now a note that gates nothing, and the only thing that still
+So a divergence is a note that gates nothing, and the only thing that still
 overrules a declaration is an entry in the hazard ledger — an event rather than an
 inference. A server may pass the pre-flight and still be `refuted` later. The
 engine (`mcp_gateway/shareability.py::assess`) is pure — no IO, no config, no clock
@@ -43,7 +41,7 @@ The bulk stub action consults whichever of the two the global sharing switch mak
 
 ## Session-bound by construction, which is not the same as "ours"
 
-The `disqualified` reason `first_party_session_scoped` names a server that resolves the calling session from its own PROCESS — an env var, a pid walk — so one backend can only ever serve one session correctly. It is decided by which servers actually consume the injected caller block, not by matching a name against Kiro Crew's managed set: keying it on authorship once disqualified `kirocrew-core` — which advertised the extension and consumed the block from the start — for a property only its unadopted siblings had. All eight managed servers now advertise and consume the block (`kirocrew-core` from the start, `kirocrew-cron` since #4622's fix, `kirocrew-computer` and `kirocrew-dashboard` since #4659, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug` and `kirocrew-panel` from the start). Advertising is necessary but not sufficient for the shareable classification, and `kirocrew-computer` is the case that shows why: a caller the gateway cannot name proceeds under `unresolved:<pid>`, each CONNECTION gets its own namespace only from the per-connection nonce, an ADOPTED pre-nonce daemon injects none, and this classification is what `seed.py` turns into a config write. It qualifies because that separation is negotiated at the handshake rather than assumed — `gatewayd` advertises `tenant_nonce`, and a stub that asked to pool this server against a daemon that does not advertise it execs a per-session backend instead (`stub.must_degrade_nonce_blind`). A server that cannot make the guarantee is named in `_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD` in `mcp_discovery.py` and stays session-bound. The classification stays per-server because the next managed server starts unadopted, exactly as these did.
+The `disqualified` reason `session_bound_by_construction` names a server that resolves the calling session from its own PROCESS — an env var, a pid walk — so one backend can only ever serve one session correctly. It is decided by which servers actually consume the injected caller block, not by matching a name against Kiro Crew's managed set, since keying it on authorship would disqualify a managed server that does consume the block. All eight managed servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-computer`, `kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`) advertise and consume the block, and all eight are in `_MANAGED_SERVERS_CALLER_AWARE`. Advertising is necessary but not sufficient for the shareable classification, and `kirocrew-computer` is the case that shows why: a caller the gateway cannot name proceeds under `unresolved:<pid>`, each CONNECTION gets its own namespace only from the per-connection nonce, an ADOPTED pre-nonce daemon injects none, and this classification is what `seed.py` turns into a config write. It qualifies because that separation is negotiated at the handshake rather than assumed — `gatewayd` advertises `tenant_nonce`, and a stub that asked to pool this server against a daemon that does not advertise it execs a per-session backend instead (`stub.must_degrade_nonce_blind`). A server that cannot make the guarantee would be named in `_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD` in `mcp_discovery.py` and stay session-bound; that set is empty. The classification stays per-server because a new managed server starts unadopted.
 
 `mcp_discovery.managed_server_is_session_bound` answers from a module-level set, `_MANAGED_SERVERS_CALLER_AWARE`, and deliberately imports nothing: the assessment must answer WITHOUT a handshake (the probe cannot spawn on every host — Windows, macOS >= 26 — and has not run at all before the first probe cycle), and it is consulted on every render, so importing a server module to read its `ADVERTISE_CALLER_IDENTITY` would execute package code from an editable checkout on a path the sandbox never confines. `test/test_mcp_managed_caller_identity.py::test_the_classification_reads_no_module_at_import_time` pins that refusal.
 
@@ -195,7 +193,7 @@ That split is also the export contract. The telemetry layer requires low-cardina
 | `no_objection_found` | no_objection | Nothing disqualifying was found. |
 | `no_tools_listed` | supporting | `tools/list` produced nothing. |
 
-### Why four of those are notes rather than disqualifiers
+### Why three of those are notes rather than disqualifiers
 
 This layer exists to turn pooling ON for an operator who was never going to
 hand-pick which servers may share a backend. That makes the cost asymmetric in a
@@ -204,7 +202,7 @@ broker observes, retreats from and records, while a wrong *no* produces nothing 
 all — the operator was not sharing anyway — and costs the layer its entire reason
 to exist. Caution here is the failure mode, not the virtue.
 
-Measured against that, four codes were disqualifying on an inference:
+Measured against that, three codes would disqualify on an inference alone, so they are notes:
 
 - `handshake_not_reproducible` — two spawns that both vary `clientInfo` cannot
   separate "computed from the caller" from "varies for the server's own reasons"
@@ -240,14 +238,13 @@ and `mcp_cron._check_cron_job_ownership` returns *allow* on a falsy session key,
 a pooled cron skips ownership entirely. That is a cross-session authorization
 failure, and it is the one case the retreat cannot backstop: both hazard codes
 describe frames that could not be routed, so serving the wrong session's data
-produces no record. The producers have narrowed as managed servers adopted the
-caller block (#4622, #4659), and no managed server produces it today:
+produces no record. No managed server produces it:
 `kirocrew-computer` qualifies because the separation its UNNAMED co-tenants rely
 on is negotiated rather than assumed -- `gatewayd` advertises `tenant_nonce`, and
 a stub that asked to pool it against a daemon that advertises none execs a
 per-session backend instead. The reason remains the conservative default for a
 managed server that consumes the block yet cannot make that guarantee, and for
-the next one, which starts unadopted exactly as the others did.
+a new one, which starts unadopted.
 
 `*.listChanged` is deliberately absent from all of the above: those notifications
 are global broadcasts (`backend._GLOBAL_BROADCAST_NOTIFICATIONS`) and are safe to
@@ -268,4 +265,4 @@ and delivers each `notifications/resources/updated` to exactly the stubs
 subscribed to its URI, so subscriptions survive pooling and there is nothing to
 warn the operator about.
 
-Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward, while the handshake negotiates `2024-11-05`. They are therefore treated as opportunistic positive evidence: present means something, absent means nothing. The negotiated version is deliberately unchanged — raising it alters real handshake semantics with third-party servers, which is a separate decision that should be made with data (the recorded `protocolVersion` is what will supply it).
+Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward. The HTTP probes (`mcp_discovery._probe_remote`, `connections/l1_smoke.py`) offer `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) and step down once to `2024-11-05` on a `-32602` answer (`downgrade_protocol_version`); the stdio probe and the gateway backend still offer `2024-11-05`. Annotations are therefore treated as opportunistic positive evidence: present means something, absent means nothing.

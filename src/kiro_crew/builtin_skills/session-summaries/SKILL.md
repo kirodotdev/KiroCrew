@@ -39,8 +39,10 @@ intent. Each intent carries:
   confirmed? Shipped-but-never-run, diagnosed-but-never-fixed, and merged-but-never-
   seen are all `completed` yet unverified. This is the panel's most useful signal;
   it is exactly the work a person forgets. It is three-valued: `true` confirmed,
-  `false` shipped-but-unconfirmed, and `null` when the transcript never says
-  either way — so an absent verification is not the same as a failed one.
+  `false` shipped-but-unconfirmed, and `null` when confirmation does not apply —
+  so an absent verification is not the same as a failed one. The panel never
+  shows the two fields separately: it shows one chip, **Done**, **Needs you**
+  (completed but `false`), **Active** or **Dropped**.
 - **progress** — a short runbook of what is true now and known to work, not a
   turn-by-turn history. Shorter is better here.
 - **next steps** — inferred open actions, each with why it matters and what to
@@ -53,8 +55,9 @@ intent. Each intent carries:
   ping-ponged between two goals reads as such.
 
 In the panel these read as **You asked for** (the goal), **Where it stands**
-(progress) and **Suggested next** (next steps) — use the panel's words when
-pointing at a section.
+(progress), **Suggested next** (next steps) and **How this project works**
+(project notes, a collapsed footer) — use the panel's words when pointing at a
+section.
 
 Enabling it summarizes new turns only: earlier turns are not backfilled, so an
 old session stays unsummarized until it gets another turn or the person presses
@@ -62,11 +65,15 @@ old session stays unsummarized until it gets another turn or the person presses
 
 ## Why a summary looks wrong or empty
 
-- **"No summary yet."** The feature is off, the session has not reached the
-  minimum user turns, or nothing has changed since the last cached pass. A brand-new
-  or one-exchange session has no intent structure worth extracting. Once the
-  session is long enough the panel offers a **Summarize** button that forces a
-  pass on demand; it is refused while a turn is running
+- **"Session summaries are off."** The feature is disabled; point at the
+  Settings toggle above.
+- **"No summary yet."** No pass has stored a summary for this session: it has
+  not reached the minimum user turns, it is an incognito or temporary session
+  (those never get one), its last turn did not end cleanly, or the pass produced
+  nothing usable. A brand-new or one-exchange session has no intent structure
+  worth extracting. Once the session is long enough the panel offers a
+  **Summarize** button that forces a pass on demand (not offered for incognito or
+  temporary sessions); it is refused while a turn is running
   (`Cannot summarize while a turn is running`) or while another summary is being
   written — both are wait-and-retry, not failures.
 - **It describes an older state.** The panel serves the last cached pass and

@@ -2,7 +2,7 @@
   "name": "auto-improvement",
   "version": "1.0.0",
   "displayName": "Auto-Improvement",
-  "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests you review and publish yourself.",
+  "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. By default, survivors are drafted as GitHub pull requests you review and publish yourself.",
   "author": "zedmor",
   "minKiroCrewVersion": "0.1.0",
   "tags": ["performance", "code-quality", "automation", "agents", "github"],

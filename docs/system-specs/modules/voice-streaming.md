@@ -18,10 +18,10 @@ stopped request.
 Windows, and `espeak-ng` on other platforms, with the legacy `espeak` binary
 accepted as a fallback under the same engine identity. Resolution goes through
 `platform_compat.trusted_system_bin`, not `PATH`, so a shim in an
-agent-writable directory cannot be handed LLM text. Linux is the one platform
-where the answer can be `None` — a stock Ubuntu Desktop ships the espeak-ng
-library and data but not the CLI — and that is reported as unavailable rather
-than papered over.
+agent-writable directory cannot be handed LLM text. The answer is `None` on any
+platform whose engine binary is missing; Linux is the common case — a stock
+Ubuntu Desktop ships the espeak-ng library and data but not the CLI — and that is
+reported as unavailable rather than papered over.
 
 Resolution is a handful of directory stats, and a stat is not bounded: a fixed
 directory on a stalled network or fuse mount blocks, and one loop serves every
@@ -184,8 +184,9 @@ behind playback, the next chunk starts at the current clock with a small
 scheduling margin. MP3 and browsers without Web Audio use a sequential media
 element queue. Polly therefore retains media-element clip-boundary gaps; the
 continuous PCM clock applies to local WAV playback. Polly also shares the
-newline/CJK sentence splitter: multiline or CJK replies can produce more smaller
-requests than the previous Latin-punctuation-only splitter. Text content and AWS
+newline/CJK sentence splitter, which splits at newlines and CJK punctuation as
+well as Latin punctuation, so multiline or CJK replies produce more, smaller
+requests. Text content and AWS
 consent remain unchanged; this is not a claim of lower Polly cost or latency.
 A playback generation prevents a decode that finishes after stop
 from scheduling obsolete audio.
@@ -380,7 +381,7 @@ running a value the file does not hold. A failed write answers non-2xx with a
 | `provider` | Resolved by `voice_reply.resolve_configured_provider()` for every reader; invalid values fall back to `voice_reply.DEFAULT_PROVIDER`, and an unnamed provider beside a configured `piper_model` keeps Piper. |
 | `enabled` | Enables global Slack voice replies. |
 | `auto_speak` | Enables dashboard auto-speak; `api_voice_config()` exposes it as `autoSpeak`. |
-| `voice_id`, `engine`, `pitch` | Polly synthesis settings, also usable as request overrides for the dashboard synthesis endpoint. |
+| `voice_id`, `engine`, `pitch` | Polly synthesis settings. The dashboard synthesis endpoint accepts per-request overrides on the Polly path only, as body fields `voice` (not `voice_id`), `engine`, `rate` and `pitch`. |
 | `rate` | Speech rate as a percentage. Shared by Polly and the built-in engine, which converts it to words per minute or to SAPI's `-10..10`. |
 | `system_voice` | The built-in engine's own voice selector; empty means the OS default voice. |
 | `aws_profile`, `region` | Passed to the AWS CLI by the Polly provider. |
@@ -472,14 +473,13 @@ surface can show:
   The `piper` provider takes neither: it has its own streaming path whose runtime
   converts the refusal into `VoiceSynthesisError("voice_sandbox_unavailable")`,
   which carries the sandbox's own prose to the HTTP caller but raises no
-  notification. Recovering the note there means reading the preserved cause, and
-  is deliberately not part of this change.
+  notification; recovering the note there would mean reading the preserved cause.
 - `synthesize_and_deliver()` has no channel for prose, so it still reports "no
   audio" and catches the refusal explicitly so it cannot escape as an unhandled
-  error on a voice reply. Both current callers then drop that signal — Slack's
+  error on a voice reply. Both callers drop that signal — Slack's
   `_safe_voice_reply` discards the returned bool and Telegram only logs it — so a
-  refusal is still silent on those surfaces. Closing that is a separate change to
-  those callers, not to this function.
+  refusal is silent on those surfaces; the gap is in those callers, not in this
+  function.
 
 ## Slack voice replies
 

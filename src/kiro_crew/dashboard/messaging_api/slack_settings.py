@@ -1,4 +1,4 @@
-"""The Slack settings API: ``GET``/``PUT /api/slack/config`` and the app manifest."""
+"""The Slack settings API: ``GET``/``PUT /api/slack/config`` and token validation."""
 
 from __future__ import annotations
 

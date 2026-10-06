@@ -160,8 +160,8 @@ class PublishConfig:
         ),
     )
     #: Extra filesystem roots (beyond the user's home dir) that an artifact may
-    #: be relocated to point at (``artifact_relocate`` / the ``artifact_move`` MCP
-    #: tool). Relocate is confined to the user home by default so an agent cannot
+    #: be relocated to point at (the dashboard's
+    #: ``PATCH /api/artifacts/{slug}/relocate`` route). Relocate is confined to the user home by default so an agent cannot
     #: aim an artifact at ``/etc/passwd`` or another user's files and exfiltrate
     #: them via a later artifact GET; each entry here widens the allowed set to an
     #: additional absolute root (e.g. a shared project dir). Paths are expanded +
@@ -236,9 +236,11 @@ class ExternalRegistryConfig:
             "so a hostile entry cannot read a private sibling repo with this machine's "
             "git identity. 'owner' means the index is under change control the build "
             "owns, so its apps may clone with this machine's credentials. Setting it "
-            "HERE has no effect: the trusted tier is honoured only for registries the "
-            "build supplies, because this file is agent-writable and a tier read from "
-            "it would not be your assertion. A value other than 'index' on a "
+            "HERE has no effect: the row's own value is ignored, because this file is "
+            "agent-writable and a tier read from it would not be your assertion. "
+            "'owner' is honoured only for registries the build supplies, or for a "
+            "row whose repository you granted in Settings > Security (stored in the "
+            "keystone registry_trust.json). A value other than 'index' on a "
             "configured registry is read as 'index'.",
         ),
     )
@@ -322,7 +324,9 @@ class McpGatewayConfig:
             "Let sessions with an identical server configuration share one MCP "
             "server process instead of each getting its own. Off, every session "
             "gets its own backend — the same process topology as running without "
-            "the broker. Either this or MCP Apps starts the broker; see "
+            "the broker. This switch does not start the broker: the broker starts "
+            "iff some server is stubbed, and this chooses whether stubbed servers "
+            "share one backend or get one per session; see "
             "docs/architecture/design-notes/mcp-stub-decoupling.md. "
             "Default False — opt-in.",
         ),
@@ -537,7 +541,7 @@ class McpGatewayConfig:
         metadata=_meta(
             "Poolable Servers (deprecated)",
             "DEPRECATED alias for stub_servers. Read only when stub_servers "
-            "is absent, so a config written before the stub became the per-server "
+            "is absent AND mcp_gateway.enabled is true, so a config written before the stub became the per-server "
             "decision keeps working: a server that was pooled already had a stub, "
             "so migrating it to the stub set preserves its behaviour. There is no "
             "per-server sharing switch any more — sharing is global over the "
@@ -616,14 +620,14 @@ class McpGatewayConfig:
         default=0,
         metadata=_meta(
             "Prewarm Count",
-            "Number of hottest observed (agent x server x channel) MCP backends "
+            "Number of MCP backends, by hottest observed pool key (agent x server), "
             "to spawn at gateway startup, before the first session connects. "
             "Removes the cold-start latency on the first new-chat after a "
             "gateway restart or after all backends have idled out — the steady "
             "state already reuses warm backends within the idle timeout. The "
             "hot set is learned from prior registers and persisted beside the "
-            "socket; channel_id is a stable id, so a prewarmed backend is "
-            "reused by every later new-chat in that channel. 0 (default) "
+            "socket. A pool key has no channel dimension, so a prewarmed backend "
+            "is reused by every later matching new-chat on any channel. 0 (default) "
             "disables prewarming — no hot-key file is read or written.",
             restart=True,
         ),
@@ -643,7 +647,7 @@ class McpGatewayConfig:
         metadata=_meta(
             "Response Spill Threshold",
             "Tool-call responses larger than this (bytes) have their text content "
-            "written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + "
+            "written to $KIROCREW_HOME/mcp_spill/ and truncated inline to 16 KiB + "
             "a file path marker. Default 256 KiB. Set 0 to disable spilling. "
             "Env override: KIROCREW_MCP_SPILL_THRESHOLD. Read by the MCP broker "
             "when it starts, like every other field of this section.",
@@ -787,7 +791,9 @@ class InstancesConfig:
             "ProxyCommand or jump host routinely need longer (the proxy handshake "
             "runs before ssh begins the forward). Raise this if connecting a "
             "remote instance times out while the same ssh forward succeeds by hand. "
-            "An explicit value applies to both transports. Clamped to [1, 120].",
+            "An explicit value applies to both transports. A value below 1 is "
+            "discarded (the transport default is used, with a warning); a value "
+            "above 120 is clamped to 120.",
         ),
     )
     mint_timeout_secs: float | None = field(

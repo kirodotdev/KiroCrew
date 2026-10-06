@@ -4118,15 +4118,11 @@ def _memory_verb(args: argparse.Namespace) -> None:
 
             elif action == "export":
                 if getattr(args, "include_markdown", False) and named_store_or_empty(store_name):
-                    # REFUSED rather than shipped empty. A named store's markdown tree sits
-                    # under `memory_stores/`, a keystone leaf in
-                    # `security._CREW_SECRET_LEAVES`, and `markdown_snapshot` reaches a
-                    # NON-private store through the fenced reader
-                    # (`hooks.safe_read_file_bytes_nolink`), which refuses that subtree and
-                    # answers None. `_guarded_entry` then shapes the refusal exactly like a
-                    # missing file, so this combination would report `content: ""` for a
-                    # store whose preferences.md is on disk and non-empty -- and an operator
-                    # moving a store would read that as "there was no markdown to carry".
+                    # REFUSED, a conservative contract: a named store's markdown tree is
+                    # not part of this verb's payload. Named V1 stores read their markdown
+                    # through the descriptor-pinned reader (`MemoryFiles._read_entry_bytes`),
+                    # so this is not a fence that would answer empty; the refusal keeps an
+                    # operator moving a store from reading a partial payload as complete.
                     # The rows are unaffected and still export on their own.
                     print(
                         f"Error: the markdown layer of memory store {store_name!r} cannot be "

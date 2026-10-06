@@ -27,8 +27,8 @@ STEER_PENDING = "pending"
 STEER_CONSUMED = "consumed"
 STEER_REQUEUED = "requeued"
 
-#: Ledger ceiling. Terminal entries are pruned when a new turn starts, so this
-#: only bounds a pathological single turn.
+#: Ledger ceiling. Terminal entries are not pruned at turn start; ``steer_register``
+#: evicts the oldest terminal entry only once the ledger holds this many.
 MAX_STEER_LEDGER = 100
 
 

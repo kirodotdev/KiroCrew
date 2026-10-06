@@ -17,7 +17,7 @@ to pay for, so the whole subsystem is inert until `session_summary.enabled`.
 
 | Concern | Module |
 |---|---|
-| Config section and its clamps | `config/loader.py` (`SessionSummaryConfig`) |
+| Config section and its clamps | `config/memory_sections.py` (`SessionSummaryConfig`; built by `config/section_builders.py`) |
 | Transcript extraction, payload shaping | `session_summary.py` |
 | Turn-end generation, the prompt | `dashboard/chat_summary.py` |
 | Sidecar cache | `history.py` (`ConversationLog`) |
@@ -189,8 +189,8 @@ to 50; a long list stops being read. Durable cross-session preferences belong in
   602 KB and `meta` was the other 14.65 MB. Ignoring it rather than excerpting it
   is the single largest saving available.
 - **Tool and error rows are dropped.** The assistant has already distilled them.
-- **User messages whole, assistant messages excerpted** head-and-tail at
-  `assistant_excerpt_chars` (default 400). Intent lives in the user's messages,
+- **User messages capped at 4 000 characters (head kept), assistant messages
+  excerpted** head-and-tail at `assistant_excerpt_chars` (default 400). Intent lives in the user's messages,
   which are small; progress lives in the assistant's, which are not.
 
 Measured against three real sessions, this reads roughly 1% of a transcript's
@@ -318,15 +318,15 @@ retry, and a user correction is the highest-value signal per character in the fi
 
 ## Endpoint
 
-The Sessions three-dot menu also opens `/session-dashboards`: a read-only
+With the dashboard preview flag on, the Sessions three-dot menu also opens `/session-dashboards`: a read-only
 summary gallery alongside each session's model-authored Dynamic Dashboards.
 A centralized Needs you inbox precedes the gallery, including on phones. Each
 native question or approval has one control there, labeled with its human
 session name and current task context when available; session cards do not
 duplicate those controls. Search filters both sections, but the summary page
 limit never hides pending decisions. The view shares `['session-summary', slot]` with the chat
-panel and its websocket invalidation. Only visible cards read summaries (12
-initially, with explicit Show more); opening, filtering, or refreshing this
+panel and its websocket invalidation. Only visible cards read summaries (a window of 12,
+moved with explicit Previous sessions / Next sessions buttons); opening, filtering, or refreshing this
 page never calls the generation POST. Disabled, missing, stale, and failed
 summary reads remain distinct. Filtering hides inbox items rather than unmounting
 their unsent answer drafts. Hidden model-authored iframe documents are unloaded;
@@ -351,9 +351,9 @@ behavior the feature exists to remove.
 | `404` `{"code": "slot_not_found"}` | Unknown slot, or a slot the calling app does not own |
 
 While `enabled` is false the panel's `+`-menu row is **hidden** as well
-(`newMenuSections` in `SidePanel.tsx`). The settings toggle ships separately, so
-offering the row would send every reader to a panel that says the feature is off
-and gives them no way to change it. `SidePanel` reads the flag from this same
+(`newMenuSections` in `SidePanel.tsx`), because the feature is turned on from
+Settings → Chat (`session_summary.enabled`), not from the panel, so offering the
+row would only lead to a panel saying the feature is off. `SidePanel` reads the flag from this same
 endpoint under the same react-query key the tab uses, so it is one cheap
 read-only request per slot that doubles as the tab's prefetch, and it fails OPEN
 so a slow response can never hide a feature that is enabled.
@@ -455,7 +455,7 @@ Out-of-range values are clamped with a warning rather than raising, and a
 malformed section degrades to defaults, so a hand-edited `config.json` cannot
 prevent the gateway from starting.
 
-## Scope in this release
+## Scope
 
 **The boundary is the turn loop, not the surface.** `_should_summarize` contains
 no check on where a message came from — it gates on `enabled`, an in-flight pass,
@@ -523,3 +523,4 @@ addition later; if one is ever added it must be registered inline in
 | `test_session_summary_storage.py` | Sidecar round-trip, invalidation, transcript-untouched, delete reaping |
 | `test_session_summary_generate.py` | Gating, caching, failure containment, prompt trap coverage |
 | `test_session_summary_api.py` | Status codes, error `code`, stale flag, never-generates |
+| `test_mcp_dashboard_session_summary.py` | The `session_summary` MCP reader |

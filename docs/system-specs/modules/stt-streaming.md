@@ -23,6 +23,15 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
+The batch endpoint's response contract: a decode that heard nothing
+(`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
+(`transcribe_audio` returns `None`) or an unexpected error is `500` with
+`code: "stt_transcription_failed"` (`handlers/core.py:_CODE_STT_FAILED`). The
+meetings audio import folds both into one failure: any falsy transcript, including
+`""` and a segmented over-cap import where a segment failed or was silent, is a
+`502` with `code: "transcription_failed"`
+(`apps/builtins/meetings/backend/routes/audio_import.py`).
+
 Compressed files are decoded by the FFmpeg executable in the pinned
 `imageio-ffmpeg` wheel. It is part of the desktop voice runtime, not a desktop
 system prerequisite. The release gate resolves that exact packaged resource and
@@ -142,7 +151,7 @@ transcript delivery; explicit cancel and unmount remain discard-only and do not 
 | Config fields | `src/kiro_crew/config/sections.py` | `SttConfig`, and the degradation rules for a stored provider or model |
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
-| Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
+| Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
 | Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ChatPage.tsx` and `ChatPane.tsx` mount the root and supply only host options |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
@@ -160,8 +169,8 @@ Client to server:
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
 - `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds.
-- `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
-  where `stage` is `downloading`, `preparing` or `ready`. A first-ever local session has to
+- `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...,"prepare_timeout_ms":N}`
+  where `stage` is `downloading`, `preparing` or `ready`, and `prepare_timeout_ms` is the preparation budget the readiness wait switches to. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
   indistinguishable from a hang, so the transport emits the notice itself *before*
   starting the fetch and `LocalSession.prepare()`'s own copy of it is dropped on
@@ -171,7 +180,11 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
   but not yet resident, so `prepare()` must load them (and re-hash them against the
   pin) before the first `ready`: that load emits no `downloading` status and is
   otherwise silent to the client, so the transport announces it with a single
-  `preparing` frame (zero byte counts, empty `code`) before starting the load. A
+  `preparing` frame (zero byte counts, empty `code`) before starting the load. The
+  pre-check (`pending_load()`) is advisory: a model resident when it ran can be
+  evicted before the load, so while `prepare()` runs without a transfer the
+  transport asks again and, when a load is now pending, sends that single
+  `preparing` frame late rather than leaving the wait on the short budget. A
   session with nothing to report -- neither a download nor a load, because the model
   is already resident -- emits no status frame at all and goes straight to `ready`.
 - `{"type":"partial","text":"..."}`: an in-progress hypothesis that replaces the
@@ -926,7 +939,13 @@ transcription surfaces are deliberately open to an app token):
 
 - `GET /api/stt/status`: the availability code and prose, the resolved model with
   `model_present` and its size, whether a model is resident right now, and the live
-  transfer state. Separate from `GET /api/config/stt`, which serves settings. It also
+  transfer state. Separate from `GET /api/config/stt`, which serves settings and
+  also carries `available` and `code`, both from the same `availability_detail`
+  probe, so the chat microphone modal (`VoiceDisabledModal`) names the per-code
+  reason without a second request. The modal shows a code's sentence only when it
+  points at no Settings-only control (`modalUnavailableMessage` in
+  `lib/sttProviders.ts`), and shows the `pip install` entry of `prereqs`, never an
+  ffmpeg command, as the fix. `GET /api/stt/status` also
   carries `backend: {name, accelerated, encoder_only, detail, cpu_features, sections,
   system_info, threads, os, arch, python}` -- read from the build, with
   `accelerated: false` whenever it cannot be interrogated. `sections` is the ordered

@@ -272,7 +272,15 @@ Windows. Write `$KIROCREW_HOOK_EVENT` on one and `%KIROCREW_HOOK_EVENT%` on the
 other; single quotes group nothing under `cmd.exe`.
 
 Both platforms get `KIROCREW_HOOK_EVENT` and `KIROCREW_HOOK_CONTEXT` in the
-environment, and the hook-event JSON on stdin.
+environment, and the hook-event JSON on stdin. `KIROCREW_HOOK_CONTEXT` is capped
+at 500 characters on every event. Read the full text from stdin instead: `prompt`
+on `UserPromptSubmit`, `assistant_text` on `Stop`.
+
+The stdin JSON names who fired the event, each key only when known, so read
+them with a default: `session_key` is the firing session's own key (a dashboard
+chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
+an event a spawned subagent fired. To tell a person's turn from a subagent's,
+check for `subagent_id`, not `parent_session_key`.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead

@@ -3,8 +3,8 @@ title: Tailnet-native dashboard access
 status: partial
 author: zezhexu
 created: 2026-08-06
-last-audited: 2026-08-06
-audited-at: 429cbad8
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 1748
 implementation-prs: [1761]
 tracking-issues: [1762]
@@ -15,8 +15,11 @@ superseded-by: []
 
 > **Current behaviour: see `docs/system-specs/modules/dashboard-token-auth.md`,**
 > which owns the shipped `ts:node:` / `ts:login:` peer pin,
-> `dashboard.tailscale.trust_identity` and the enforced claim. Phases 2–4 below
-> are the open plan.
+> `dashboard.tailscale.trust_identity` and the enforced claim. Phase 1, Phase 3
+> and Phase 2's explicit half landed; the open plan is Phase 2's inferred signal
+> (§4 signal 2) and Phase 4. The function signatures in §2 and §3 are superseded
+> by `dashboard/tailnet.py` and that spec, and the operator flows are in
+> `docs/guides/remote-and-mobile.md`.
 
 - Status: partial — **Phase 1 landed** as PR #1761 (merged commit `f8afcff7`):
   `is_proxied_request()`, the per-binding `proxied` flag, the tri-state Security
@@ -48,13 +51,13 @@ documentation advertises as mitigations do not hold behind it.
 
 The larger of the two is not Tailscale-specific. **Token IP pinning is inert
 behind every tunnel the guide recommends.** The pin is taken from
-`request.remote` (`dashboard/token_auth.py:1506`), and every recommended tunnel
+`request.remote` (`dashboard/token_auth.py`), and every recommended tunnel
 — cloudflared, ngrok, Tailscale — runs on the gateway host and connects from
 loopback. So the token binds to the proxy, not to the user, and the guide's
 security note offers that pin as a mitigation for the public exposure it just
-warned about (`docs/guides/remote-and-mobile.md:283`). The same substitution
+warned about (`docs/guides/remote-and-mobile.md`). The same substitution
 makes the SEL audit trail record `127.0.0.1` as the caller for every remote
-request (ten sites, `token_auth.py:1266`–`:1416`).
+request (ten sites in `token_auth.py`).
 
 Tailscale is the one provider that can *repair* this rather than just document
 it, because `tailscale whois` resolves the real peer from the local daemon. This
@@ -69,10 +72,10 @@ setting, and any change to which endpoints refuse forwarded requests.
 
 ### Current state
 
-Remote access has exactly one shape. `is_local_only()` (`dashboard/urls.py:166`)
+Remote access has exactly one shape. `is_local_only()` (`dashboard/urls.py`)
 always returns `True` in the OSS build — its only widening branch depends on
-`devspaces_proxy_url()` (`:150`), which always returns `None` — so the dashboard
-binds loopback unconditionally. `KIROCREW_BIND` (`:186`) overrides the bind
+`devspaces_proxy_url()`, which always returns `None` — so the dashboard
+binds loopback unconditionally. `KIROCREW_BIND` overrides the bind
 address only, and is documented as existing for containers.
 
 Everything else is layered on top of that loopback socket:
@@ -80,22 +83,22 @@ Everything else is layered on top of that loopback socket:
 | Layer | Where | Behind a same-host proxy |
 |---|---|---|
 | Token auth (always mounted) | `token_auth.py` | works |
-| CSRF origin allowlist | `urls.py:382` `build_allowed_origins` | needs `dashboard.url` |
-| DNS-rebinding `Host` barrier | `origin.py:198` `check_host` | needs `dashboard.url` |
-| Token IP pin | `token_auth.py:1506`–`:1508` | **inert** |
-| Audit caller identity | `token_auth.py:1266`–`:1416` | **always `127.0.0.1`** |
-| Config-write / secret-reveal refusal | `origin.py:86` | works (fails closed) |
+| CSRF origin allowlist | `urls.py` `build_allowed_origins` | needs `dashboard.url` |
+| DNS-rebinding `Host` barrier | `origin.py` `check_host` | needs `dashboard.url` |
+| Token IP pin | `token_auth.py` (session creation) | **inert** |
+| Audit caller identity | `token_auth.py` | **always `127.0.0.1`** |
+| Config-write / secret-reveal refusal | `origin.py` | works (fails closed) |
 
 The last row works well and is not changed by this RFC.
 `is_direct_local_request()` requires a loopback peer **and** the absence of every
-header in `_PROXY_FORWARD_HEADERS` (`origin.py:77`), so a proxied request is
+header in `_PROXY_FORWARD_HEADERS` (`origin.py`), so a proxied request is
 correctly treated as remote and the config-write surfaces return `read_only`
 (`api_slack_config_get`, `api_discord_config_get`, `api_telegram_config_get`).
 
 ### Problem 1 — the IP pin is inert behind every recommended tunnel
 
-`check_token_ip()` (`token_auth.py:928`) compares against the value captured at
-`:1506`, which is `request.remote`. For cloudflared, ngrok, and
+`check_token_ip()` (`token_auth.py`) compares against the value captured at
+session creation, which is `request.remote`. For cloudflared, ngrok, and
 `tailscale serve` alike the immediate peer is `127.0.0.1`, so:
 
 - the token binds to the proxy on first use and then matches every subsequent
@@ -111,7 +114,7 @@ addressing it makes the gap more reachable.
 
 ### Problem 2 — the tailnet mode that fits is the one not documented
 
-`docs/guides/remote-and-mobile.md:263` lists **Tailscale Funnel** alongside
+`docs/guides/remote-and-mobile.md` lists **Tailscale Funnel** alongside
 cloudflared and ngrok, under a heading whose warning reads "A tunnel puts your
 dashboard on the public internet." That warning is correct for Funnel: Funnel is
 the public-ingress mode.
@@ -125,7 +128,7 @@ to solve:
 - a stable MagicDNS hostname, satisfying the guide's own "use a named tunnel"
   requirement without an account with a tunnel provider;
 - attaches `X-Forwarded-For` and `X-Forwarded-Proto`, so `is_https_request()`
-  (`origin.py:114`) sets a `Secure` cookie and `is_direct_local_request()` keeps
+  (`origin.py`) sets a `Secure` cookie and `is_direct_local_request()` keeps
   the config-write surfaces closed;
 - carries `Tailscale-User-Login`, the only per-request identity signal any
   supported path provides.
@@ -148,7 +151,7 @@ Tailscale version should be recorded when Phase 3 lands.
 With Serve running, opening the MagicDNS URL without first setting
 `dashboard.url` returns `403` from `check_host()`. The response does not say
 which allowlist rejected it or how to extend it. `build_allowed_origins()`
-(`urls.py:382`) already has the right shape for a fix — the
+(`urls.py`) already has the right shape for a fix — the
 `devspaces_proxy_url()` hook is precisely an "origin supplied by the
 environment" slot — but no environment supplies one in OSS.
 
@@ -334,20 +337,22 @@ Signal 2 covers auto-origin only. `trust_identity` is always explicit.
 
 ### §5 What stays closed
 
-No change to `origin.py:86`. A verified tailnet peer still sends
+No change to `origin.py`. A verified tailnet peer still sends
 `X-Forwarded-For`, so `is_direct_local_request()` still returns `False` and the
 secret-reveal and channel-config surfaces stay read-only. This is intentional
 and gets a regression test: *a whois-verified tailnet peer receives
-`read_only: true`* on the `handlers/messaging.py` surfaces.
+`read_only: true`* on the channel config GET handlers (`api_slack_config_get`,
+`api_discord_config_get`, `api_telegram_config_get` in
+`dashboard/messaging_api/{slack,discord,telegram}_settings.py`).
 
 From a phone over the tailnet you can chat, read sessions, approve tools, and
 manage cron. You cannot reveal a stored credential or rewrite channel config.
 
 ### §6 Link unfurl (deferred, and may be refused)
 
-`link_unfurl.py:193` rejects non-`is_global` addresses, which covers
+`link_unfurl.py` rejects non-`is_global` addresses, which covers
 `100.64.0.0/10`, so tailnet URLs pasted into chat do not unfurl.
-`test/test_link_unfurl.py:168` pins that rejection against a table of IANA
+`test/test_link_unfurl.py` pins that rejection against a table of IANA
 special-purpose prefixes.
 
 Allowing it is a **deliberate widening of the agent's egress surface** — a chat
@@ -387,7 +392,7 @@ Exit criteria:
   same-host-proxied path — cloudflared, ngrok and Tailscale alike — and says
   plainly what the pin does and does not bind to behind a local proxy.
 - Security Posture reports what the session pin is bound to, via a
-  `_token_auth_items()` entry (`security_posture.py:891`), distinguishing
+  `_token_auth_items()` entry (`security_posture.py`), distinguishing
   "pinned to peer address" from "pinned to a local proxy".
 - A test asserts that entry reports the proxy-pinned state when the request
   carries `X-Forwarded-For` from a loopback peer.
@@ -449,7 +454,7 @@ Exit criteria:
 - Audit records name the resolved login as `caller` when a peer resolved, and
   `request.remote` otherwise.
 - A whois-verified tailnet peer still receives `read_only: true` from the
-  `handlers/messaging.py` config surfaces — `is_direct_local_request()` is
+  channel config GET handlers in `dashboard/messaging_api/*_settings.py` — `is_direct_local_request()` is
   unchanged (§5).
 - Resolution is cached per address with a bounded entry count, and the WebSocket
   path resolves once at upgrade rather than per frame.
@@ -466,7 +471,7 @@ Blocked on OQ3 and may be refused outright without affecting Phases 1–3.
 
 Exit criteria, if pursued:
 
-- The `test/test_link_unfurl.py:168` special-purpose-prefix table still passes
+- The `test/test_link_unfurl.py` special-purpose-prefix table still passes
   unchanged: the default remains denial.
 - A `100.64.0.0/10` address unfurls **only** when tailnet trust is enabled and
   the daemon confirms the address belongs to this tailnet.
@@ -591,7 +596,7 @@ not land without adversarial review.
 One review round has since run on the document PR. The GPT and Opus code lanes
 returned no findings; the advisory Design Review verified the two central claims
 against the tree independently (that `check_token_ip` compares against the value
-captured at `token_auth.py:1506`, and that the guide presents Funnel as the
+captured at `token_auth.py`, and that the guide presents Funnel as the
 tailnet-private option while offering the IP pin as a mitigation it cannot
 deliver behind a same-host proxy) and returned PASS with two suggestions. Both
 were accepted and are recorded under "Resolved during review" above. That round

@@ -6,7 +6,7 @@ created: 2026-09-20
 last-audited: 2026-09-20
 audited-at: f31f25a8a2
 doc-pr:
-implementation-prs: []
+implementation-prs: [12196]
 tracking-issues: [11468]
 supersedes: []
 superseded-by: []
@@ -159,6 +159,11 @@ them.
    failure — lands the session unfiled. It must never fail an import that works
    today: the session and its transcript are the payload, and the grouping is
    convenience.
+
+The shipped mechanics behind these constraints — rollback of folders a failed
+import created, the `arrival_adopted` marker, and the deferred unhide of an adopted
+hidden folder — are owned by
+[instances.md §14.5a](../system-specs/modules/instances.md#145a-arrival-one-route-one-set-of-rules).
 
 ## 6. Alternatives measured against
 

@@ -3,8 +3,8 @@ title: Projects — portable, syncable context bundles
 status: draft
 author: kseam
 created: 2026-08-21
-last-audited: 2026-09-18
-audited-at: 04f8f9139c
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 4941
 implementation-prs: [7181, 11678]
 tracking-issues: [3551]
@@ -426,9 +426,10 @@ Verified at `5cd92ff99`:
   produces local derived state with no export, no import, and no way to
   reproduce the same library on a second install short of re-adding every
   source by hand.
-* There is no Jira, Confluence, or ServiceNow reader anywhere in
-  `src/kiro_crew` (grep for either term returns zero hits), and no manifest
-  format that names external context sources.
+* A Jira source provider exists for chip sources
+  (`src/kiro_crew/dashboard/source_providers/jira.py`), but no Jira,
+  Confluence, or ServiceNow reader is wired into a Project, and there is no
+  manifest format that names external context sources.
 * **Sessions have no grouping concept.** `slot.project` ties one session to
   one directory, but nothing groups the many sessions working the same body of
   work, no view lists them together, and artifacts, knowledge, and memory have

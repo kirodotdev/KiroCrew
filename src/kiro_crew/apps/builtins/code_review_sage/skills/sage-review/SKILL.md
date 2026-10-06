@@ -433,11 +433,13 @@ reason, no hedging or preamble; the author reads this first. Examples:
 
 ## Draft-only safety (hard rule)
 
-Every comment is posted as a **draft** (`publish=false`). A human publishes. Never
-auto-publish. For shipped/merged changes with no open thread, record findings in
-the result record only (no comment).
+**You record; you never post.** A review session writes the result record and
+calls no comment tool. The app builds every comment body in Python (redacted),
+and only when the user asks (or `review.auto_post` is on) does a separate poster
+session publish them as ONE pending (unsubmitted) GitHub review. A human submits
+it. Never auto-publish.
 
-## Comment mechanics
+## Comment mechanics (what the app renders from your finding fields)
 
 - **Line numbers are LLM-emitted** (no deterministic locator in V1). Minor drift
   is accepted — **every inline comment MUST quote the offending code snippet** in
@@ -452,8 +454,8 @@ the result record only (no comment).
 
   **Suggestion:** {concrete fix}
   ```
-- Attribute drafts as `[code-review-sage]` and dedupe against existing drafts so
-  there is no double-posting when composed with a team's own reviewer.
+- The app attributes drafts with the `[code-review-sage]` marker and replaces
+  only its own stale pending draft, so you do not write the marker or dedupe.
 
 ---
 
@@ -562,7 +564,7 @@ Some repos maintain a team-specific rulebook. At review time, *if*
 skill directory name), resolve and read that `SKILL.md` and apply it as
 **additional rules** layered on top of the generic dimensions — **read-only
 reuse, no fork**. If no mapping exists (the default), the review uses only the
-generic dimensions below. If a pack says "do not use subagents", honor it: read
+generic dimensions above. If a pack says "do not use subagents", honor it: read
 the file and apply its checks inside this single clean session — do not nest
 orchestration.
 
@@ -576,7 +578,7 @@ orchestration.
 - [ ] ONE thorough pass: design dimension (verdict + design_risk + criticality + design_headline) AND the 9 code dimensions together → chain-of-consequences findings
 - [ ] Coverage self-check: every changed hunk reviewed against all dimensions; emit files_covered + coverage_complete (driver runs ONE targeted follow-up if incomplete)
 - [ ] Self-critique (Filter / De-dup against green gates / Merge / Sharpen / Stabilize)
-- [ ] Post surviving findings as DRAFT comments (publish=false), each quoting the snippet
+- [ ] Record surviving findings (each with a quoted `snippet`) — do NOT post; the app posts on request
 - [ ] If the change is a fix, run INLINE miss-analysis (learn-from-sage) → STAGE the learning into the candidate file
 - [ ] Write the result record JSON
 ```

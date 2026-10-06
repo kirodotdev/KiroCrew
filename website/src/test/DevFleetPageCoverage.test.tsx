@@ -444,7 +444,7 @@ describe('DevFleetPage rebase', () => {
 
   async function confirmRebase() {
     const menu = await openRowMenu()
-    fireEvent.click(menu.getByText('Rebase onto main'))
+    fireEvent.click(menu.getByText('Rebase onto base branch'))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Rebase' }))
   }
@@ -515,7 +515,7 @@ describe('DevFleetPage rebase', () => {
     renderPage()
     await waitForRow('wt-a')
     const menu = await openRowMenu()
-    fireEvent.click(menu.getByText('Rebase onto main'))
+    fireEvent.click(menu.getByText('Rebase onto base branch'))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())

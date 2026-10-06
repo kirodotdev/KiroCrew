@@ -157,6 +157,14 @@ can make the agent reply, whether by @-mention, by replying to it, or through
 whatever `dm_policy` is set to. Add a number to the allowlist to let that person
 use the agent in the group.
 
+A turn from anyone other than you runs with no tools at all, and only the default
+`kiro-cli` backend and `kas` can run such a turn. On any other
+`agent.acp_backend`, every message from someone else is refused with "This
+account cannot answer you on its current setup. Ask its owner." The gateway warns
+about this at startup when your settings admit other people. It also warns when
+a group is configured but `whatsapp.allowed_wa_ids` is empty, since then only
+you can make the agent reply there.
+
 Groups are configured from **Settings → Messaging Channels → WhatsApp → Groups** rather
 than by hand. The picker lists the groups the linked account has joined, which the
 gateway can only report while the channel is connected, and each row carries that
@@ -188,7 +196,7 @@ personal-scale rate limiting as replies.
 | `/compact` | Compact the current session's context now, and report the result. |
 | `/status` | Runtime summary (sessions, uptime, counters). |
 | `/stop` (or `/cancel`) | Interrupt the running turn, or clear the queue if nothing is running. |
-| `/help` | List the commands. |
+| `/help` (or `/commands`) | List the commands. |
 
 `/help` is answerable by anyone the access policy admits, because it discloses
 only the command list. Everything that acts on the session is **operator only**:
@@ -271,7 +279,9 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
   reconnect floods above); report with gateway logs if you see it.
 - **Group replies missing** — check the group is in `whatsapp.groups`, its
   `mode` is not `off`, and (for unprompted replies) `rules` is non-empty and
-  the cooldown has elapsed.
+  the cooldown has elapsed. If only other members get no reply, check that their
+  numbers are in `whatsapp.allowed_wa_ids` and that your agent backend can run
+  their tool-less turns (see the group allowlist note above).
 - **Not sure whether the channel can run at all** - run `kirocrew doctor`. Its
   **WhatsApp Integration** section reports whether the `whatsapp` extra is
   installed (a missing extra is a hard failure) and whether the linked-device

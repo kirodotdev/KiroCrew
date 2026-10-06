@@ -309,7 +309,7 @@ SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
 # Timeout (secs) for one federated session-search request over an already-open
 # tunnel (GET the peer's /api/sessions/search — no SSH spawn). Sized between the
-# token probe (2s, a bare status ping) and the transfer (30s, a ~20 MB bundle):
+# token probe (2s, a bare status ping) and the transfer (30s per connect/read):
 # a search reply is a small JSON page but the peer does real scanning work
 # (bounded by its own _SEARCH_SCAN_WINDOW), so the probe budget would produce
 # false "unreachable" verdicts on a loaded peer, while anything transfer-sized

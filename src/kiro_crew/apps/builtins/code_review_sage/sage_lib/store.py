@@ -460,7 +460,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
     walk is the only check that sees a Windows JUNCTION at all, which
     ``os.path.islink`` reports as False.
     Callers own creating the parent, and every one of the nine does -- either
-    `mkdir(parents=True)` directly (`learning`, `report`, `followup`) or
+    :func:`mkdir_refusing_links` directly (`learning`, `report`, `followup`) or
     `ensure_layout` / `ensure_run_layout` (`discovery`, `results`). This function
     deliberately does NOT create it: an `exist_ok` mkdir here RESURRECTS a
     directory tree that a concurrent namespace deletion is removing, so the

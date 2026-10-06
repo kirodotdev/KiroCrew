@@ -307,7 +307,7 @@ async def api_file_delivery_consent_approve(request: web.Request) -> web.Respons
                 "the agent sandbox that hides this approval's nonce is not in "
                 "effect (agent.sandbox is 'off', or no sandbox backend is "
                 "available), so a host step-up can no longer prove a human is "
-                "present; set agent.sandbox to 'standard' or 'strict' on a host "
+                "present; set agent.sandbox to 'auto' or 'strict' on a host "
                 "with a working backend, then arm and approve delivery again"
             ),
             code=_CODE_APPROVE_UNSANDBOXED,

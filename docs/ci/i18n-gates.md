@@ -178,9 +178,12 @@ disabled for the whole PR. An unavailable base ref is a CI problem to fix, not a
 reason to stop checking. The render scanner and the diff-scoped vitest gates exit
 non-zero on an unresolvable configured ref for the same reason.
 
-A local run normally has no `I18N_BASE_REF`, and the table says so
+A bare local run normally has no `I18N_BASE_REF`, and the table says so
 (`NOT RUN: no base commit supplied`) rather than accusing the diff-scoped checks
-of having stopped measuring.
+of having stopped measuring. `scripts/local-gate.py` sets it to the merge-base with
+its `--base` when the caller has not, because the `[changed-values]` style tests
+skip themselves green without it and a local gate run would otherwise pass a
+catalog value CI then fails.
 
 ## Why a separate ESLint invocation
 

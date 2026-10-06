@@ -156,7 +156,11 @@ Example:
 **All log reads and writes go through this script — never hand-write or
 hand-fold JSONL.** It owns the deterministic mechanics (append + schema
 validation, id allocation, referential integrity, and folding to projections),
-so the LLM only supplies judgment. Run it with `python3` from the skill dir:
+so the LLM only supplies judgment. Run it by ABSOLUTE path from the project
+directory, not from the skill dir, and always pass `<log>` as an absolute path:
+a relative `<log>` resolves against the shell's cwd, and a log written inside
+the installed skill dir is moved aside the next time the builtin skill syncs.
+Below, `scripts/five_whys.py` stands for `<skill-dir>/scripts/five_whys.py`:
 
 ```
 python3 scripts/five_whys.py ask     <log> --parent ID|root --stage S --stdin-json < f.json   # f.json={"q":"..."}; prints new id
@@ -167,7 +171,9 @@ python3 scripts/five_whys.py discuss  <log> --anchor ID --stdin-json < f.json   
 python3 scripts/five_whys.py prune    <log> --id ID --stdin-json < f.json                     # {"reason":"..."}
 python3 scripts/five_whys.py event    <log> --stdin-json < f.json                             # f.json = the plugin event object
 python3 scripts/five_whys.py view     <log>      # current path root->focus + open-branch count (show this each turn)
-python3 scripts/five_whys.py tree     <log> | frontier <log> | report <log> --stdin-json < f.json   # {"title":"..."}
+python3 scripts/five_whys.py tree     <log>
+python3 scripts/five_whys.py frontier <log>
+python3 scripts/five_whys.py report   <log> --stdin-json < f.json                             # {"title":"..."}
 python3 scripts/five_whys.py validate <log>      # schema + integrity gate, exit 0/1
 ```
 

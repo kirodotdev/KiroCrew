@@ -91,13 +91,18 @@ class ClaudeCodeMirror(AgentConfigMirror):
             ),
             Concern.MODEL: Ruling(
                 _D.DELIVERED,
-                "settings.local.json `model` when the session pinned one, plus the "
+                "settings.local.json `model` when the session pinned one and the "
+                "provider-advertised model cache is warm (omitted, with "
+                "availableModels, on a cold cache), plus the "
                 "session/set_config_option verb. DEFAULT_MODEL ('auto') is omitted "
                 "so the adapter picks the allowlist head",
             ),
             Concern.MODEL_ALLOWLIST: Ruling(
                 _D.DELIVERED,
-                "settings.local.json `availableModels` from model_registry. Not "
+                "settings.local.json `availableModels` from "
+                "model_registry.seed_available_models: the provider-advertised ids, "
+                "never the static registry, so the key is written only when that "
+                "cache is warm and omitted on a cold cache. Not "
                 "cosmetic: the adapter merges availableModels across every settings "
                 "source, so a user ~/.claude carrying a short list collapses a "
                 "versioned [1m] id back to the 200K window",

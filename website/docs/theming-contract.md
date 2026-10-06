@@ -131,7 +131,7 @@ Both sides are checked from Python: in `test/test_theme_css_security.py`,
 `TestAllowlistParity` parses `ALLOWED_CSS_VARS` out of `themeCss.ts` and
 asserts set equality with the backend `_THEME_CSS_VARS_SET`;
 `TestCssVarsSetSync` asserts the required roles and the shadow roles are in the
-backend set and that an unknown name is not, and `TestThemeVarsFilter` asserts the
+backend set and that an unknown name is not, and `TestStripToAllowedVars` asserts the
 filter keeps known keys, drops unknown ones, and drops unsafe values. The CSS
 parsers on the two sides are pinned against each other by a shared fixture,
 `test/fixtures/theme_css_corpus.json`: `test/test_theme_install.py`
@@ -181,14 +181,10 @@ that mode actually renders. Where a mode NAME travels beside the palette, keep
 both in one memoized value so they cannot be read independently
 (`McpAppFrame`'s `themeSnapshot`).
 
-Seven sites still key on the three-dep spelling and are **not** fixed here — find
-them with `grep -rn '\[theme, colorTheme, themeVersion\]' src/`, which lists
-`components/WidgetFrame.tsx`, `components/ArtifactBody.tsx`,
-`components/library/ArtifactThumbs.tsx`, `pages/ArtifactDetailPage.tsx`,
-`pages/RemoteArtifactDetailPage.tsx`, and `pages/members/CrewWebview.tsx`, plus
-`hooks/useSessionPalette.ts` (a `useLayoutEffect` on
-`[themeMode, colorTheme, themeVersion]`, same ordering). A
-grep rather than line numbers on purpose: a cited line goes stale silently, and
+Some sites still key on the three-dep spelling and are **not** fixed here — find
+them with `grep -rn '\[theme, colorTheme, themeVersion\]' src/`, plus
+`hooks/useSessionPalette.ts`, which spells it `[themeMode, colorTheme, themeVersion]`
+(a `useLayoutEffect`, same ordering). A grep rather than a list on purpose: a cited line goes stale silently, and
 the dep array IS the defect, so the pattern is the honest locator. Each takes an
 extra early read that the `themeVersion` re-read then corrects, and none pairs a
 mode name into a wire payload, so the residue is a transient frame rather than a
@@ -283,11 +279,13 @@ Settings → Display → **Font Family** reads through them:
 | Sans | the pack's `sans` face, else Kiro Crew's own proportional stack |
 | Mono | the pack's `mono` face, else Kiro Crew's own monospace stack |
 | System | the OS face — no token, so a pack cannot reach the body font here |
+| OpenDyslexic | the bundled OpenDyslexic stack — no token, so a pack cannot take this accessibility choice away; it supplies its own monospace face too |
+| Custom | the family the user types (`resolveCustomFontFamily`), bypassing the pack's sans token |
 
 `--mono` reads the mono token too, so code blocks, inline code and diffs follow a
 pack's monospace face without the user having to switch the whole UI to
-monospace. That applies under every option, System included — System governs the
-body font, not the code font. The terminal is separate: it reads its family from a
+monospace. That applies under every option except OpenDyslexic, System included —
+System governs the body font, not the code font. The terminal is separate: it reads its family from a
 Settings field, not from CSS, so a pack never changes it.
 
 **`overrides.css` must not declare a font.** Declaring `--font-body`, `--mono`,
@@ -309,8 +307,8 @@ what to change.
 
 An L1 pack's `overrides.css` may only target the surfaces below. This is the list
 that the source comments citing this file point at, and it is the runtime
-boundary, not a style suggestion: `_scopeOverridesCss` in
-`src/hooks/useTheme.tsx` DROPS every rule whose selector group does not pass, so a
+boundary, not a style suggestion: `scopeOverridesCss` in
+`src/hooks/themeCss.ts` DROPS every rule whose selector group does not pass, so a
 rule aimed at anything else never reaches the document.
 
 **Six class hooks** (`_ALLOWED_CLASSES`):
@@ -319,10 +317,10 @@ rule aimed at anything else never reaches the document.
 |---|---|
 | `topbar` | the header shell (`App.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPage.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
-| `chat-container` | the chat scroll region (`ChatPane.tsx`, `ChatPage.tsx`) |
+| `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
 | `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |
-| `code-block` | a rendered fenced block (`CodeBlock.tsx`, `MonacoCodeBlock.tsx`) |
+| `code-block` | a rendered fenced block (`CodeBlock.tsx`) |
 
 Do not rename or drop one of these classes when refactoring the component that
 carries it. There is no compiler reference to break, so the only signal is a
@@ -431,9 +429,11 @@ from your pool (never repeating the set it replaces or the other layer). Supply 
 least 4; more gives more variety. You inherit the cross-fade, the cascade timing
 and the reduced-motion handling for free.
 
-**`loader`** replaces the whole indicator with your component: a mascot
-animation, a progress bar, a canvas, anything. It renders with no wrapper beyond
-the footer's padding, so it owns its size, layout and motion. Keep it small (the
+**`loader`** fills the indicator's artwork slot with your component: a mascot
+animation, a progress bar, a canvas, anything. `ChatFooter` renders it inside its
+`role="status"` wrapper, followed by the localized "Thinking" label, which is
+screen-reader-only while the art paints and becomes visible when the art fails or the
+loader throws. Your component owns its size, layout and motion. Keep it small (the
 band is ~32px tall), mark it `aria-hidden` (it is decorative), and honour
 `prefers-reduced-motion` yourself.
 

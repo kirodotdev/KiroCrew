@@ -44,13 +44,13 @@ questions.
 ## Styles and templates
 
 A **style** is the visual mood (colour, type, layout feel); a **template** is a
-.pptx slide layouts supplying the structure. They compose — the same content under
-a different style is a different-looking deck.
+.pptx whose slide layouts supply the structure. They compose — the same content
+under a different style is a different-looking deck.
 
-The studio's library panel displays a reference token such as `[Style: my-style]`;
-the user can paste it into chat. Treat that token as an explicit
-instruction to apply that style. If a style is pinned and the user has not asked
-for one, prefer the pinned style.
+The studio's library panel displays a reference token such as `[Style: my-style]`
+or `[Template: my-template]`; the user can paste it into chat. Treat that token as
+an explicit instruction to apply that style or use that template. If a style is
+pinned and the user has not asked for one, prefer the pinned style.
 
 ## Deliverables
 

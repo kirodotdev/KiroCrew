@@ -179,7 +179,8 @@ function createTokenSources({
       return "";
     }
     // Re-resolve the home at call time so a KIROCREW_HOME change after Electron
-    // starts is honored. Mint only against the literal loopback endpoint.
+    // starts is honored. The mint dials the configured loopback origin exactly
+    // as written; `mintTokenFromHome` never rewrites it to a literal address.
     return mintTokenFromHome({
       backendUrl: targetBackendUrl,
       resolveHome,

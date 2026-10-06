@@ -18,7 +18,7 @@ and inside `«…»` guillemets.
 
 | character | spacing | example |
 |---|---|---|
-| `;` `:` `?` `!` | U+202F before | `Êtes-vous sûr\u202f?` |
+| `;` `:` `?` `!` | U+202F before | `Tu es sûr\u202f?` |
 | `«` | U+202F after | `«\u202fOui\u202f»` |
 | `»` | U+202F before | |
 | `.` `,` | no space before | `Enregistré.` |

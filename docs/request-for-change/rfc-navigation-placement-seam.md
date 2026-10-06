@@ -3,8 +3,8 @@ title: Navigation Placement Seam — honor the manifest contract the rail alread
 status: draft
 author: zezhexu
 created: 2026-08-16
-last-audited: 2026-08-16
-audited-at: 2a665e735
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -17,8 +17,8 @@ superseded-by: []
 - Author: zezhexu
 - Created: 2026-08-16
 - Related: `rfc-federated-app-platform.md` (the app UI loading path this rides),
-  `website/docs/extension-seams.md` (the nine existing edition seams this adds a
-  tenth to), `docs/system-specs/modules/app-kit-platform.md` (manifest contract),
+  `website/docs/extension-seams.md` (the existing registry seams this adds one
+  to), `docs/system-specs/modules/app-kit-platform.md` (manifest contract),
   `website/docs/i18n-catalog.md` (the authoring rule §3.3 closes a hole in)
 
 ## 1. Problem statement
@@ -49,7 +49,7 @@ commits behind had moved:
   `APPS_NAV_LIMIT = 6` (`website/src/App.tsx`), so an app's declared `order: 10` has
   nowhere to land even if it crossed the boundary.
 - **`registerBuiltinSurface` is not a seam.** `website/docs/extension-seams.md`
-  documents nine edition seams composed through `virtual:kirocrew-edition`;
+  documents the existing registry seams composed through `virtual:kirocrew-edition`;
   `registerBuiltinSurface` is not among them (grep confirms no mention). It is
   core-internal wiring called only from `surfaces/builtins.tsx`. An edition
   therefore cannot contribute a `Main`- or `Bottom`-group entry, and an app cannot
@@ -123,10 +123,11 @@ disabled app still contributes nothing.
 Backend change: none. `UISidebar` already serializes and `GET /api/apps` already
 returns the manifest.
 
-### 3.2 Phase N2 — promote `registerBuiltinSurface` to the tenth seam
+### 3.2 Phase N2 — promote `registerBuiltinSurface` to a registry seam
 
 Add `order?: number` to `Surface` and expose `registerBuiltinSurface` through
-`virtual:kirocrew-edition` alongside the existing nine, gated by the same
+`virtual:kirocrew-edition` alongside the existing registry seams (see
+`website/docs/extension-seams.md`), gated by the same
 `KIROCREW_EDITION_DIR` + `KIROCREW_ALLOW_EDITION=1` pair, with collisions routed
 through `reportSeamCollision`. Ordering within a group becomes `(order ?? index)`, so
 today's registration-order behaviour is preserved when no `order` is given.
@@ -202,8 +203,8 @@ decide whether an app exists at all before any of this runs.
 
 1. **Does anything actually need `Main`?** N2 exists to let an edition place a
    surface in a pinned region. If no edition or first-party surface wants that today,
-   N2 should stay unbuilt — building a seam with no requester is how the nine
-   existing seams ended up inert in the stock build.
+   N2 should stay unbuilt — building a seam with no requester is how the existing
+   seams ended up inert in the stock build.
 2. **Should `Platform` be user-hideable?** It is currently unrendered, so its
    interaction model is undefined.
 3. **Tie-break on equal `order`.** Sorting by `label` would make the tie-break

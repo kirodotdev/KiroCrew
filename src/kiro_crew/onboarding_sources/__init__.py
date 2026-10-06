@@ -387,8 +387,8 @@ def _normalize_source(candidate: Any, *, taken: set[str], core: bool) -> _Source
     builtins cannot drift onto a laxer path than the rule they model.
 
     *core* is the trust distinction, and it governs exactly one thing: where the
-    reader comes from. A builtin brings its own (it IS engine code); a
-    contribution names a ``layout`` and the engine looks the reader up, so no
+    reader comes from. A builtin brings its own (it IS engine code); for a
+    contribution the engine supplies the lineage reader itself, so no
     out-of-tree code ever writes into the scan accumulator and the content gates
     inside the engine's readers cannot be bypassed.
     """

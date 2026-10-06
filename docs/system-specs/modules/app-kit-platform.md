@@ -177,6 +177,12 @@ zero-count categories remain selectable. The live result count describes the
 intersection of all active filters and announces changes to screen readers.
 Featured placements are hidden during a source filter, so unrelated apps do not
 appear above its results. Source selection never changes trust or review tier.
+
+The rail's INSTALL STATE facet (All / Installed) narrows the registry shelf only:
+an installed app the catalog does not list is never added (Library lists it). It
+composes with search, category and source, is not persisted across visits, and
+leaves the category counts unchanged. The Installed count is the number of rows
+selecting it shows.
 Truncated rail names expose the complete name on hover; review explanations stay
 on the surrounding row.
 
@@ -1042,8 +1048,12 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    because the stop's own boolean answers `False` both for "there was nothing to
    stop" and for "something is running that I did not stop", and `True` only for
    "the process I was tracking is gone", which is silent about a worker the app
-   spawned for itself. The report reaches both `warnings` and the uninstall log,
-   whose consumers are disjoint. Unlike steps 1 and 2 this one does not abort: the
+   spawned for itself. When the gateway held no recorded port and the installed
+   manifest declares a backend, the stop is reported as "could not verify ...
+   stopped" instead: the probe had only the declared port to go on, and an
+   untracked listener cannot be ruled out. The report reaches both `warnings` and
+   the uninstall log, whose consumers are disjoint. Unlike steps 1 and 2 this one
+   does not abort: the
    non-idempotent `onUninstall` has already run by here, so refusing would strand
    a half-removed app, and an app that cannot be uninstalled is a worse outcome
    than one whose port is named as still in use. Deregistration still honors
@@ -1052,6 +1062,9 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
 4. Dependency cleanup (see §11).
 5. File removal, preserving `data/` unless the caller asked to purge.
 6. Resume pointers dropped for every conversation the app owned, on success only.
+7. For a registry-sourced app, its clone under `app-sources/<registry-name>` is
+   removed, on success only. The removal runs off-loop and inside the lifecycle
+   lock, so a queued install cannot have the tree it just re-cloned deleted.
 
 The owner-only migration cleanup route delegates to uninstall for a retired builtin
 listed in `_MIGRATED_BUILTINS` or orphaned in this build. Eligibility is rechecked
@@ -1478,6 +1491,15 @@ out of the window, and the grant record is emitted from the `ws_event_allowed`
 wrapper rather than from each `return True`, so a branch added later is covered
 without having to remember to report itself.
 
+The record covers every socket kind and every send path. A dashboard user's own
+socket is gated at the same chokepoint, and its grants are recorded under the
+reserved auditee `<dashboard-user>` (`ws_event_scope.DASHBOARD_USER_AUDITEE`), not
+under its empty app claim. Three sends bypass the chokepoint — the initial slots
+push's `yolo` field, the periodic `dashboard` status frame and the
+`subscribe_logs` ring replay — so each records its grant at the send site
+(`ws._audit_grant_quietly`), for both socket kinds, through the same
+deduplicated path.
+
 Four paths read the set and all four narrow: the gate, the `slots` payload
 filter, the subagent-batch payload filter, and the LOG fan-out. The log path is
 the odd one — `subscribe_logs` grants once and the ring handler then writes
@@ -1769,7 +1791,8 @@ setup, app resumes recheck the destination with `_app_slot_acquisition_recheck`,
 reserving its publish name through the off-loop ownership read. The final source
 metadata snapshot follows that await, so both ownership decisions precede
 materialisation without another yield on the successful path. A late refusal
-puts back the `closed` marker the eager clear dropped. Non-app resumes do not
+has nothing durable to undo: the reopen write (clearing `closed`) runs only after
+the slot is built, retracted under its construction mark. Non-app resumes do not
 perform the destination recheck. A key with no transcript is the 404
 with no SEL row, as on every per-slot route. So a closed user session cannot be reopened as an
 app-owned slot. `/api/chat/mode` answers an app the same 404 for an unknown slot
@@ -1808,6 +1831,15 @@ returns owner hash, host specs, cron and usage stats, and the live safety-overri
 state, and an app that wants it declares it in `permissions.api`.
 
 **A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry).
+
+**Install, update and registry writes are owner-only for every caller.**
+`POST /api/apps/install`, `POST /api/apps/registry/install`,
+`POST /api/apps/registry/install-stream`, `POST /api/apps/<name>/update` and
+`PUT /api/apps/registries` each call `require_owner_dashboard_request` first. A
+dashboard subject that is not the owner, and any app token, gets 403 `owner_only`
+— including an app token on its own `/api/apps/<self>/update`, which its implicit
+self-ownership would otherwise reach. `test_apps_install_owner_gate.py` pins the
+app-token refusals.
 
 **Implicit self-ownership stops at the shared literal routes.** Beyond the
 declared `permissions.api` allowlist, `_app_owns_path` grants an app token
@@ -1898,6 +1930,11 @@ collision; the catalog path reserves every catalog name (snapshotted before the
 ADD a name no catalog or seed row claims and can never shadow a name install
 resolves by. External rows keep their `provenance: "external"`/`verified: false`
 stamp.
+
+`builtin` rows are filtered the same way as `git` rows that are not yet
+installable: after the reservation snapshot, they are intersected with
+`manager.shipped_builtin_names()`, so a catalog ahead of this gateway does not
+render an Install for a builtin this build does not ship.
 
 The catalog is trusted only as far as TLS, so its power is bounded by
 pin-or-refuse rather than by withholding coordinates.
@@ -2119,9 +2156,9 @@ them reads the tier off a cached row:
   also caps how many rows one batch
   CONSIDERS at `_PREWARM_MAX_ROWS` (200), checked at the TOP of the per-row loop
   BEFORE any per-row I/O (the provenance/manifest-cache/backoff reads), so an
-  oversized index bounds not just task creation but preprocessing: once the batch
-  holds the cap's worth of candidates every remaining row is counted as overflow
-  and skipped without a read. It drives the candidates through a FIXED pool of
+  oversized index bounds not just task creation but preprocessing: the cap counts
+  rows EXAMINED, whether a row turns out warm, skipped or kept, so every row past
+  the 200th is counted as overflow and skipped without a read. It drives the candidates through a FIXED pool of
   `_PREWARM_CONCURRENCY` workers pulling from a queue — never a task per row — so
   an owner-tier index with thousands of rows cannot exhaust memory by retaining a
   row and a coroutine for each; the cap sits at or above what the budget can
@@ -2216,8 +2253,10 @@ acts outside the pinned root, tolerates per-entry `OSError`, examines at most
 dispatched on type, so one oversized directory is never fully listed — and
 descends at most `_BLOB_CACHE_GC_MAX_DEPTH` (16) directories deep, leaving a
 deeper chain for a later sweep (logged once) so an agent-writable tree cannot
-drive it into unbounded recursion. The remainder drains on the next
-manifest-cache write, the only way the tree grows.
+drive it into unbounded recursion. The remainder is left to later
+manifest-cache writes, the only way the tree grows, with no drain guarantee: a
+stable live prefix that fills the entry budget on every call can keep an expired
+tail from ever being reached.
 
 **The post-budget cleanup is bounded, and an over-budget cleanup is detached.**
 `_PREWARM_BATCH_BUDGET` (20 s) is the clone-cancellation deadline, not a ceiling
@@ -2287,10 +2326,13 @@ predates the build pin.
 for a build-pinned row, and from the operator's keystone grant
 (`registry_trust.json`, `config.registry_trust_path`) for a hand-configured row;
 a row in `config.json` reads as `index` no matter what it declares. The reason
-is that `config.json` is agent-writable — `security.py` says so directly, with
-the check inline (`is_sensitive_bash_command("echo x > …/config.json")` is
-`None`) — so a tier read from there would not be an operator's assertion at all.
-A prompt-injected shell could mint `owner`, and the *same* write also adds its
+is that `config.json` is an ordinary settings file: the sandbox seals it
+read-only against an in-sandbox shell (`sandbox._CREW_READONLY_LEAVES`), but it is
+not owner-gated — the config PATCH, `kirocrew config set`, an unsandboxed spawn
+and, on Linux, the rename-detach window after a gateway save all still reach it
+(see [security](security.md), runtime-config seal). So a tier read from there
+would not be an operator's assertion at all. A write through any of those
+paths could mint `owner`, and the *same* write also adds its
 chosen host to `_configured_registry_hosts()` and lets it control the index that
 `_owner_tier_confirmed` re-fetches: every layer downstream of that decision would
 already be satisfied by the one write that started it. `default_registries()`
@@ -2364,7 +2406,8 @@ writer cannot live there without a cycle). Properties that carry the design:
   reads as corrupt: the Security-page snapshot carries `corrupt`/`corrupt_detail`
   and the writers refuse to mutate the aliased inode.
 - **Two config rows under one identity key are both served, each on its own
-  grant.** `config.json` is agent-writable, so two rows sharing one identity key
+  grant.** `config.json` is an ordinary settings file, not owner-gated, so two
+  rows sharing one identity key
   (`_registry_identity_key`, casefolded) can coexist; both stay listed as on a
   build without grants. Every credential path reads the tier off the row object
   whose index it fetches (`_owner_tier_confirmed`, the store-art prewarm, the
@@ -3151,13 +3194,15 @@ change lands in its owner.
 | `registry_pipeline/sources.py` | Which registries are in force: the bundled seed and edition rows, pinned and effective registries, identity keys, trust tiers, clone-host trust and sandbox mode, and the owner-designated same-repo carve-out with its SEL records |
 | `registry_pipeline/recovery.py` | The checkout slot (`app_source_dir`), move-aside with a refreshed retention clock, restore, the restorable subset, and the sweep of `.stale-*` / `.partial-*` siblings |
 | `registry_pipeline/checkout.py` | The git processes that fill a checkout: fetch by branch or pinned commit, clone-or-pull with origin and branch re-convergence, the origin read, bounded git-metadata reads, the timeouts, and the process-group kill |
+| `registry_pipeline/store_art.py` | Store art for a not-installed app: the manifest paths that name it, and the owner-tier prewarm that writes its manifest and image bytes into the caches the blob proxy serves from, right after a fresh index fetch |
 | `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`) |
 | `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
 | `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, clone, identity and admission before the build, the rejected-checkout rollback (`_unpoison_rejected_checkout`), `onInstall`, registration, provenance, and the single restore-and-report `finally` |
 
 Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
-`sources`, `recovery`, `checkout`, `indexes`, `manifests`, `catalog`, `install`, then
+`sources`, `recovery`, `checkout`, `store_art`, `indexes`, `manifests`, `catalog`,
+`install`, then
 `registry.py`. There is no cycle, and no owner imports the facade. The facade imports
 every owner at its own import, so an owner's `from ... import` bindings are taken
 once, as the one-module registry took them. `registry.py` re-exports every name an
@@ -3182,8 +3227,9 @@ three owners that call them (`caches._read_external_registry_cache`,
 resolve the facade at call time through `registry_pipeline._facade()`, and nothing
 else in the pipeline refers to it. `_redact_url_userinfo` and
 `_redacted_git_failure_class` are the two names `test_security_posture.py` classifies
-as redactors, and only the four owners listed in `NON_EGRESS_REDACTION_MODULES`
-(`sources.py`, `git_targets.py`, `indexes.py`, `checkout.py`) call them, so a new
+as redactors, and only the five owners listed in `NON_EGRESS_REDACTION_MODULES`
+(`sources.py`, `git_targets.py`, `indexes.py`, `checkout.py`, `store_art.py`) call
+them, so a new
 call to either belongs in one of those or needs its own row there.
 `test_apps_registry_composition_contract.py` pins the surface, the
 one-namespace writes, the import order, the three facade call sites, the reload and

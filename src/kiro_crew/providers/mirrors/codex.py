@@ -467,7 +467,7 @@ class CodexMirror(AgentConfigMirror):
                 "reads of a user-writable file cannot leave a narrowed server "
                 "mounted un-narrowed. Unlike claude this array is NOT conditional on Crew "
                 "owning a permission file: codex's routing is `Routing.SESSION_CONFIG`, "
-                "the one mechanism in tool_gate.ENFORCED_ROUTINGS, so a session "
+                "a mechanism in tool_gate.ENFORCED_ROUTINGS, so a session "
                 "that cannot arm mode=read-only is refused before its first prompt "
                 "rather than running unasked",
             ),
@@ -489,10 +489,9 @@ class CodexMirror(AgentConfigMirror):
                 "client-provided server, so the ACP element has no slot it can ride "
                 "in -- and claude's answer, re-applying it as permissions.deny, needs "
                 "a settings file codex does not have. Forwarding the server without "
-                "its narrowing was the earlier reading of that, recorded as an "
-                "addressed no-channel gap; it is not addressed, it is a restriction "
-                "dropped, and the dashboard writes disabledTools on an ordinary "
-                "tool-off action. So acp.session_mcp.session_mcp_restricted_servers "
+                "its narrowing would drop the restriction, and the dashboard writes "
+                "disabledTools on an ordinary tool-off action. So "
+                "acp.session_mcp.session_mcp_restricted_servers "
                 "names those servers and the array omits them. An availability cost "
                 "is the honest price of a deny channel this transport does not have; "
                 "reachability of a tool the user switched off is not. Crew's own "
@@ -600,7 +599,7 @@ class CodexMirror(AgentConfigMirror):
         file Crew may not own, so a pre-approved tool there never sends
         ``session/request_permission`` and Crew's gate never fires. Codex has no
         such file in play: its routing is asserted per session over
-        ``session/set_config_option`` and is the one mechanism in
+        ``session/set_config_option`` and is a mechanism in
         ``tool_gate.ENFORCED_ROUTINGS``, so a session that cannot arm
         ``mode=read-only`` is REFUSED rather than run. Failing closed on the flag
         here would withhold every Crew tool from every codex session on the

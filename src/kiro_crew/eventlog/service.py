@@ -352,19 +352,12 @@ def _remove_legacy_activity(slug: str) -> bool:
 LEGACY_PROVENANCE_KEY = "legacy_unverified"
 """Marks an activity record imported from the pre-fold legacy file.
 
-The event log is fenced, ordered and append-only, and a reader is entitled to
-treat what is in it as having been written through those guarantees. Rows folded
-in from the legacy activity file were NOT: that file is agent-writable and is read
-on the first ``ensure`` for a member, so anything able to write it before the fold
-chooses what the fold imports. Without a marker those rows become
-indistinguishable from records this service itself appended, which presents
-unauthenticated content with the ledger's own authority.
-
-The marker does not drop them -- they are that member's real history as far as
-anyone can tell, and discarding them would lose activity the dashboard has always
-shown. It records that their provenance is the file, not this log, so a consumer
-that needs the stronger claim can tell the two apart. :func:`_activity_key`
-strips it, so adding it changes no row's migration identity.
+The legacy activity file is agent-writable and is read on every ``ensure`` for a
+member until the fenced completion marker exists, so rows folded in from it carry
+this key: their provenance is the file, not this log. They are kept, not dropped.
+:func:`_activity_key` strips the key, so adding it changes no row's migration
+identity. The full rationale is ``docs/system-specs/modules/member-event-log.md``
+section 8.
 """
 
 

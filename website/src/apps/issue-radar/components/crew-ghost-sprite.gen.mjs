@@ -6,16 +6,17 @@
  * grants a mascot a BRAND-MARK EXCEPTION only when the art is "asset, not code",
  * so the drawing program cannot live in the component. It lives here instead, is
  * run by hand, and its output is committed beside the component. Regenerate with
- * (Node 18+ / the repo's Playwright image, from `website/`):
+ * (the repo's Node floor from `website/package.json` engines, with the pinned
+ * `playwright` devDependency installed, from `website/`):
  *
  *   node src/apps/issue-radar/components/crew-ghost-sprite.gen.mjs
  *
- * Fidelity: the rects below are a VERBATIM transcription of the `drawCrewGhost`
- * program this file replaced (itself a port of `drawGhost` in
+ * Fidelity: the rects below are a VERBATIM transcription of the component's
+ * canvas drawing program (itself a port of `drawGhost` in
  * `pages/scenes/GhostScene.tsx`), and the body bitmap is PARSED out of
  * `src/hooks/sceneText.ts` rather than re-typed, so the shared 24×28 art cannot
  * drift from the scene's. Rasterisation is done by real Chromium — the same
- * engine that painted the canvas before — so the accessories' fractional rects
+ * engine the component's canvas used — so the accessories' fractional rects
  * get the browser's own antialiasing rather than a reimplementation of it.
  *
  * Sheet layout: 8 outfit columns × 2 rows (blush off, blush on), each cell one
@@ -77,7 +78,7 @@ function readGhostPixels() {
 }
 
 /**
- * VERBATIM transcription of the component's former `drawCrewGhost`. Body
+ * VERBATIM transcription of the component's canvas drawing program. Body
  * top-left at (gx, gy) in sprite pixels; the caller has already scaled the
  * context, so every number matches GhostScene's one-for-one.
  */

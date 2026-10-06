@@ -32,15 +32,18 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 ├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
-├── PiGateExtensionTampered — the shipped Pi gate extension failed its digest check
+├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
 ├── AcpModelUnavailable    — requested model not entitled; non-retryable
 └── AcpPromptBusy          — a prompt is already in flight on this session
 
 AcpRuntimeError (base, acp/session_handle.py)
 ├── AcpRuntimeDead            — the underlying process has died
 ├── AcpRequestTimeout         — a request's response missed its budget
-│   └── AcpSessionStartTimeout — `session/new` timed out while a collector owns
-│                                the possible late result (acp/runtime.py)
+│   ├── AcpSessionStartTimeout — `session/new` timed out while a collector owns
+│   │                            the possible late result (acp/runtime.py)
+│   └── AcpRuntimeOverloaded  — `initialize` went unanswered while the agents
+│                                slice was throttled; transient=False, because
+│                                the remedy is freeing agent memory, not a retry
 └── AcpWorkspaceBindingError  — descriptor-bound runtime cannot serve another cwd
     └── AcpToolSurfaceBindingError — a shared runtime cannot safely serve the
                                      requested tool surface (acp/runtime.py)
@@ -137,6 +140,12 @@ never drift. Notable terminal (non-retryable) classes:
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
   prompt-busy branch, which for the same reason now names no command at all.
+- **Lost backend session**: when `acp_error_is_session_not_found` matches, the
+  turn resets the session binding and queues ONE `SYNTHETIC_RECOVERY_KIND` retry
+  with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that
+  already resolved suppresses it; the drain and consume seams veto it on a later
+  Stop, a queued follow-up or steer, or a rebind (with a cancel notice), refunding
+  the one-shot. A second loss on the same turn ends with the give-up text.
 - **Unsupported image history**: Kiro's `IMAGE_FORMAT_UNSUPPORTED` /
   `ImageValidationError` is terminal and structural. The exception also carries
   the narrower `image_format_unsupported` tag. A current attachment is left in

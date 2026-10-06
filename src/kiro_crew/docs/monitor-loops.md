@@ -41,15 +41,46 @@ unbounded loop.
 
 A separate wall-clock budget can bound elapsed time instead of cycles, which
 suits a loop whose turns are slow or whose interval is long. When the budget is
-spent the loop deactivates and tells you.
+spent the loop deactivates and tells you. No budget can exceed the operator
+ceiling `monitoring.max_runtime_secs` (default 7 days, maximum 30 days); raising
+it never extends a deadline already set.
+
+## The wake judge
+
+A loop can carry a **wake judge**: two plain sentences saying what is worth
+waking for and what is not. Before each cycle, what the watched targets produced
+since the last one — a watched session's new assistant lines, a watched pull
+request's state — is read and answered against those sentences. A cycle the
+judge calls quiet costs no turn; the session gets one short notice row instead.
+
+The agent sets it with `judge` on `monitor_start` or `monitor_update`
+(`wake_when`, `quiet_when`, and optional `targets`). `judge: false` turns the
+judge off for that loop. A loop armed with `gate=false` is never screened,
+because its job is to act while its subject is quiet.
+
+The judge never ends a loop and never silences one for good: after a run of
+quiet cycles one fires anyway, so a wrong answer costs a late turn, not a missed
+one. The goal popover shows the criteria (**Judge: wake when …**) and the last
+verdict.
+
+A gated loop that names no criteria of its own is screened under a built-in
+brief only once you grant the `nudge_evidence` scope on the Decisions card in
+Settings. That scope sends a watched session's transcript tail and a pull
+request's typed facts to the decision service, so it is off until you turn it
+on. With the scope off, such a loop runs as a plain timer.
 
 ## One at a time
 
 A session holds one automation. Arming a new loop is refused while an active one
 exists, so a second request does not silently replace the first. A loop the
 system already stopped — an approval stall, a spent cap or budget, a finished
-subject — is replaced by the new one; a loop you paused or stopped yourself is
-preserved.
+subject, or a stand-down after repeated cycles that never got a model session
+(`session_start_failures`) — is replaced by the new one; a loop you paused or
+stopped yourself is preserved.
+
+Each stop is logged once at WARNING in `gateway.log` as an
+`AutoNudge: … stopped — reason=…` line naming the reason, the cycles run and the
+time it ran.
 
 Loops survive a gateway restart.
 

@@ -4,7 +4,7 @@
 ``_STRICT_DIRS`` masks ``~/.aws`` (and ``~/.ssh`` bar ``known_hosts``) where the
 default ``standard`` tier deliberately leaves them visible, ``_mode_to_level``
 maps the spelling to itself, and the product's own remedies name it
-(``tool_gate``: "set agent.sandbox to 'standard' or 'strict'"; ``kirocrew
+(``tool_gate``: "set agent.sandbox to 'auto' or 'strict'"; ``kirocrew
 doctor`` on macOS: ``agent.sandbox="strict"``). The config layer did not admit
 it: the ``agent.sandbox`` enum listed ``auto`` and ``off`` only, so
 ``kirocrew config set agent.sandbox strict`` was refused and a hand-written

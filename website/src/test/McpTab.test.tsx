@@ -647,7 +647,7 @@ describe('McpTab disabled-in-config rows', () => {
     // (a separate decision), so the line says editing the file is the way and
     // that a switch is planned -- and hands over the one thing it can, the path,
     // as a chip that copies it.
-    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off.`)
     expect(where).not.toHaveTextContent('To turn it back on')
     const chip = within(where).getByTestId('mcp-disabled-in-config-path')
     expect(chip).toHaveTextContent(SHARED_FILE)
@@ -664,7 +664,7 @@ describe('McpTab disabled-in-config rows', () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
     const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
-    expect(where).toHaveTextContent('Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off. A switch is planned.')
+    expect(where).toHaveTextContent('Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off.')
     expect(where).not.toHaveTextContent('~/')
     // No path to copy, so no chip.
     expect(within(where).queryByTestId('mcp-disabled-in-config-path')).not.toBeInTheDocument()
@@ -766,7 +766,7 @@ describe('McpTab disabled-in-config rows', () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
     const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
-    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off.`)
     expect(where).not.toHaveTextContent('invalid')
     expect(where).not.toHaveAttribute('data-disabled-reason')
     expect(within(row('figma')).getByText('Disabled')).toBeInTheDocument()

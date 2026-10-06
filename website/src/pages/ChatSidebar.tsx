@@ -1531,7 +1531,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
       // `recent` status chip (`SESSION_FILTERS`) and the connection-status dot (InstancesPanel's
       // `bg-ok`) already use, not the brand/interactive color. A theme where
       // the two hues differ can then keep the status cue distinct from
-      // ordinary accent chrome (#10479).
+      // ordinary accent chrome.
       ? <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--ok)' }}
         role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
         title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
@@ -3724,12 +3724,10 @@ function ChatSidebar({
         {...(draggable ? dragHandleProps : {})}
         // `pl-[3px]` (3px), with no inline left-pad override. Deliberately LESS than
         // the session rows' pad, so the glyph outdents into the row gutter while the
-        // folder name lands on its sessions' text. Historically this equalled the
-        // row pad so a nested folder read as a peer of the sessions filed beside it
-        // rather than sitting a couple of px to their
-        // left. The pad is therefore NOT free: #3903 raised it to 18px to open a
-        // gutter for an absolutely-positioned unread dot, which broke guide 3. That
-        // dot is back inline on the right, where it does not compete for the pad.
+        // folder name lands on its sessions' text. The pad is NOT free: the guides
+        // below fix it, so nothing else may claim it. That is why the unread dot
+        // sits inline on the right, not in an absolutely-positioned left gutter
+        // (a gutter wide enough for it would break guide 3).
         //
         // With H = this header's box left, D = `FOLDER_BODY_INSET_PX` 2 — the
         // nested body's own left inset, applied by `FolderBody` so its collapse
@@ -3763,10 +3761,8 @@ function ChatSidebar({
         // content 255; depth 1 glyph 258, name and all three text lines 264;
         // depth 2 name/content 274; depth 3 content 284.
         //
-        // Four revisions have broken these guides by computing from class names
-        // without D: #1211 (changed 9/17/7 at once), #3766 (status gutter in flow,
-        // +18px to the content column), #3903 (name 1px past content, nested glyph
-        // 2px short), and a `px-2` attempt during this fix. Re-measure with
+        // Computing these guides from class names without D breaks them (moving
+        // the name past the content, or leaving a nested glyph short). Re-measure with
         // `website/scripts/capture-folder-glyph.mjs` under MEASURE=1 — never
         // re-derive on paper.
         // A row with no body does not light up on hover. The highlight is this
@@ -3867,23 +3863,20 @@ function ChatSidebar({
               )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
               {/* Unread dot on the RIGHT, inline before the count — a state marker
-               *  reading after the text, not a gutter marker. #3903 moved it into an
-               *  absolute LEFT gutter, which forced the header's pad to 18px; that
-               *  pad is load-bearing for the alignment guides (it must equal the
-               *  session row's), so the dot goes back where it does not compete with
-               *  it. Only when collapsed: an expanded folder's child rows carry
-               *  their own markers. */}
+               *  reading after the text, not a gutter marker. The header's left pad
+               *  is load-bearing for the alignment guides, so the dot stays where it
+               *  does not compete with it. Only when collapsed: an expanded folder's
+               *  child rows carry their own markers. */}
               {hasUnread && collapsed && (
                 // Carries the same accessible name as a session row's unread
                 // marker, and the SAME i18n key: a colour-only dot is invisible to
                 // a screen reader and indistinguishable from decoration, and this
-                // one sits beside a count where that reads as styling. The session
-                // row's gutter marker has had `role="img"` + a label since #3766;
-                // this one had neither.
+                // one sits beside a count where that reads as styling. Like the
+                // session row's marker, it is `role="img"` with that label.
                 // `--ok` for the same reason as the session row's dot: it is the
                 // SAME unread state rolled up, so it reads the same semantic
                 // status token rather than the brand accent, matching the
-                // `recent` filter and the connection-status dot (#10479).
+                // `recent` filter and the connection-status dot.
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--ok)' }}
                   role="img"
                   aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}

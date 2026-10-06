@@ -14,21 +14,36 @@ coalescing, and the verdict. The controller's verdict ownership keeps probes
 from each encoding different retry and delivery policies. See `irq.Probe`,
 `irq.Tick`, and `irq.run`.
 
-Two drivers, one kernel, and the difference is only how the verdict is
+One kernel, two entry points, and the difference is only how the verdict is
 delivered:
 
-* `irq.run` RAISES `Skip` / `Report` / `Done`, which is what the cron runner
-  consumes. Unchanged.
-* `irq.poll` RETURNS a `Verdict(outcome, body)` with outcome `QUIET`, `WAKE`,
-  `TERMINAL`, or `FALLBACK`, for an in-process driver that owns its own wake
-  mechanism and only needs the decision -- the AutoNudge scheduler's probe gate.
-  Anything unexpected resolves to `FALLBACK`, telling the driver to keep the
+* `irq.run` RAISES `Skip` / `Report` / `Done`.
+* `irq.poll` calls `irq.run` and RETURNS a `Verdict(outcome, body, keys)` with
+  outcome `QUIET`, `WAKE`, `TERMINAL`, or `FALLBACK`, for an in-process driver
+  that owns its own wake mechanism and only needs the decision. `keys` is set for
+  `TERMINAL` only: the probe's own end keys, empty when the kernel could not
+  attribute the end to an observation (read it as "ended, not necessarily
+  well"). A blind `Skip` (the subject was not observed) maps to `FALLBACK`; an
+  ordinary `Skip` maps to `QUIET`. Anything else unexpected also resolves to
+  `FALLBACK`, telling the driver to keep the
   schedule it already had, because the alternative default would convert a bug
   into silence. A redundant cycle costs tokens; a lost wake costs the task. The
   kernel's bounds are deliberately not forwarded through `poll`: a probe already
   declares what it needs through `Probe.tuning`.
 
-The in-tree consumer is `PrWatchProbe`. It FETCHES a pull request through `gh` and
+The only in-tree driver is `irq.poll`, called from `autonudge_service/gate.py`
+(the AutoNudge scheduler's probe gate). Its driver context marks itself
+`in_process`. `probes.build` registers two probe kinds, both polled by that same
+driver: `gh-pr` (`PrWatchProbe`) and `work-ledger`
+(`probes.work_ledger.WorkLedgerProbe`).
+
+The gh-pr script/cron driver is retired. `PrWatchProbe.identity` refuses a
+context that is not `in_process` with a `RuntimeError` rather than a
+`ValueError`, so the cron job is auto-paused and stays listed instead of being
+turned into `Done` and deleted; this is the one deliberate departure from
+"`ValueError` becomes `Done`". See [babysit-pr-watch.md](babysit-pr-watch.md).
+
+`PrWatchProbe` FETCHES a pull request through `gh` and
 classifies nothing: it publishes the reading on itself and returns a tick carrying
 only what the kernel needs of its own -- an epoch, a pending count, and whether the
 subject was reachable. The driver (`irq.poll`, from `autonudge_service/gate.py`) reads the

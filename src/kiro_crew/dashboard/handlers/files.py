@@ -1396,8 +1396,9 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     session map entry — a request cannot name an arbitrary conversation, which is
     what keeps this endpoint from being a broadcast primitive. The oracle also
     resolves the delivery verb, since which channels have one is part of "can
-    this file land here": Telegram and Discord today, each via its own
-    purpose-built name-preserving ``send_document``; every other channel is a
+    this file land here": the channels in ``upload_destination.DOCUMENT_CHANNELS``
+    (Telegram, Discord, WeCom), each via its own purpose-built name-preserving
+    ``send_document``; every other channel is a
     skip until its transport grows that verb. The Slack counterpart above
     resolves through the same module, one rung table away.
 

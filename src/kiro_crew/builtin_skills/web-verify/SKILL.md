@@ -63,16 +63,20 @@ a panel session that did not exist.
 command -v playwright-cli    # or: command -v agent-browser
 ```
 
-`playwright-cli` is a global npm install (`npm install -g @playwright/cli@latest`,
-Node.js 20 or newer) and `agent-browser` is a separate CLI, so either may be
-absent.
+`playwright-cli` (Node.js 20 or newer) is installed by Kiro Crew into its own
+managed prefix, `<data-home>/playwright-cli`, which agent shells get on `PATH`;
+the gateway also accepts a copy in a fixed system directory (`/usr/local/bin`,
+`/usr/bin`, Homebrew), never one found only through `PATH`. `agent-browser` is a
+separate CLI. Either may be absent.
 
 If **none** of the three backends is available, do NOT fake it and do NOT claim
 visual verification you did not do. Say plainly that you verified the code but not
 the rendering, and name the fix. Give the USER the one-click route rather than only
 a command they have to paste: **Settings → Browser** has an Install button that
-performs the global npm install and fetches a browser. The command-line remedy is
-`npm install -g @playwright/cli@latest` (or `agent-browser`), and scripted
+installs the CLI into that managed prefix and fetches a browser. That button is
+the remedy for `playwright-cli`: an `npm install -g @playwright/cli@latest` into a
+user or version-manager prefix is not seen by the gateway, so the Browser panel
+stays unavailable. `agent-browser` installs with its own commands, and scripted
 Playwright via `pod-e2e` needs no browser CLI at all. Presence of the binary is
 what makes browsing available, so installing it is the whole remedy; there is no
 Browser Mode setting to switch on.
@@ -84,9 +88,11 @@ to the other two backends unchanged; only the navigate and screenshot calls diff
 
 1. **Get a loopback URL serving your change.** Never the live gateway. For the
    Kiro Crew repo that means an isolated instance from the worktree you edited
-   (`./dev-backend.sh`, or `kirocrew pod up <worktree> --json` for a
-   `{base_url, token}` handle: see the `kirocrew-worktree-dev` and `pod-e2e`
-   skills). For a user's own project it is their dev server (`npm run dev`, and so
+   (`./dev-backend.sh`, or a pod: from an agent session call the `pod_up` MCP tool
+   for a `{base_url, token}` handle, since `kirocrew pod up <worktree> --json`
+   fails with `Permission denied` behind a sandbox that denies the systemd user
+   bus; see the `kirocrew-worktree-dev` and `pod-e2e` skills). For a user's own
+   project it is their dev server (`npm run dev`, and so
    on). Rebuild the frontend first if the server serves a built bundle, otherwise
    you will screenshot the old UI and pass it off as the new one.
 2. **Confirm it is actually up** (HTTP 200/401/403) before navigating, and emit the

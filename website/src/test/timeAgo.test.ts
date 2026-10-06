@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { timeAgo } from '../utils/timeAgo'
 
 describe('timeAgo', () => {
@@ -11,7 +11,16 @@ describe('timeAgo', () => {
     },
   )
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('formats a valid recent timestamp', () => {
+    // Pin the clock. `fmtRelative` reads `now` only under one second, and the
+    // seconds this test floors away plus the time to the helper's own
+    // `Date.now()` crossed that second on a loaded runner ('1s ago').
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-06T20:52:26.999Z'))
     const now = Math.floor(Date.now() / 1000)
     // `now` is what CLDR words for a sub-threshold gap, in every language. The
     // other three match the CLDR output from `i18n/format.ts`.

@@ -103,7 +103,8 @@ Auto-approved core verbs are reads (`resource_status`, `list_sessions`,
 ledger (`session_ledger_read`, `session_ledger_record`), and reporting to the
 owner (`send_message`, `send_notification`, `ask_question`). Auto-approved
 dashboard verbs are create-or-read only: `chat_folder_tree`,
-`chat_folder_create`, `session_create`, `session_read_message`.
+`chat_folder_create`, `session_create`, `session_read_message`, and
+`session_status` (a read of the caller's own children).
 
 `session_send`, `session_stop` and `spawn_run` are mounted and **never**
 auto-approved, even though the intervention ladder uses all three. They start
@@ -176,6 +177,13 @@ rules are load-bearing. `UNKNOWN` is never permission. And `REVIEW` is a closure
 request read out of the item's prose, which the conductor confirms itself,
 because prose never closes an item.
 
+Check 6, `forge_claim`, enforces the cross-operator lock live: it reads the
+item's `claimed` / `in-progress` label and its assignees. Either one is a claim,
+and the claim is foreign unless every assignee is the authenticated login; a
+label with nobody assigned, and every claim when the login is unknown, reads as
+foreign. A foreign claim answers `SKIP forge-claim`; the operator's own claim is
+exempt.
+
 **`coverage_filter.py`** answers the same coverage question as
 `claim_preflight.py` check 2, for MANY candidates in one forge call, so the queue
 build can drop covered items instead of rediscovering them one dispatch at a
@@ -221,6 +229,24 @@ properties matter beyond the classification:
 
 A malformed regex in the config is reported as malformed config with the
 offending pattern, never a crash mid-cycle.
+
+The banned-process scan's contract:
+
+- **Built-in rules.** The pytest rule reports a run whose explicit worker count
+  (`-n` / `--numprocesses`) is 2 or more; `0`, `1`, `auto` and `logical` are not
+  reported. The vitest rule reports a bare `vitest run`. An operator's
+  `banned_process_res` replaces the built-in regex list.
+- **`rule=` vocabulary.** The field prints the matching regex verbatim, or an
+  `argv:<shape>` label when the argv-side detector fired instead of a joined-line
+  regex. The one built-in argv shape is `argv:pytest-runner-uncapped`, which
+  catches runner spellings the joined-line rule cannot express (`py.test`,
+  `pytest.exe`, versioned aliases such as `pytest-3`).
+- **`argv_runner_detection`** is a boolean config key, default `true`; `false`
+  switches the argv-side shape off. Any other value is malformed config.
+- **Redacted fields.** `scope=` is one derived word (`suite`, `paths` or
+  `unknown`), never an argument. `cmd=` carries only program names and flags,
+  with the rest withheld, because a command line can carry a credential or a
+  presigned URL.
 
 **`credit_spend.py`** sums the credits an item's sessions burned from the
 gateway's usage shards and answers `within`, `exhausted`, `truncated` or
@@ -342,6 +368,9 @@ invisible unless it keeps its own list.
   a distinct verdict.
 - **Forge labels and assignees are the cross-operator lock.** The ledger is a
   cache and never the authority on anything another operator can also touch.
+  `claim_preflight.py` check 6 (`forge_claim`) enforces the lock before every
+  claim: a foreign claim answers `SKIP forge-claim`, the operator's own claim is
+  exempt, and an unknown login treats every claim as foreign.
 - **An agent without a dedicated write tool still needs a read boundary.** The
   approval-gated shell can maintain conductor state, so every probe path is derived
   rather than configurable precisely because the config is agent-authored.
@@ -369,8 +398,7 @@ is not granted them; its durable state is the session work ledger
 `conductor-status/v1`. The work-ledger tool family generalized from the Issue
 Radar one, proposed in
 [`../../request-for-change/rfc-conductor-work-ledger.md`](../../request-for-change/rfc-conductor-work-ledger.md),
-is now built and is what `kirocrew-conductor` runs — but this conductor does
-**not** mount it. It was mounted here briefly and the mount was retracted: the
+exists and `kirocrew-conductor` mounts it; this conductor does **not**. The
 ledger flow binds before it seeds and reads a record instead of a transcript, so
 it is a different procedure rather than two extra tools, and this conductor's
 children report through the `pipeline-conductor` skill's own scripts.
@@ -391,5 +419,6 @@ derive `permissions` from the filtered list; only the conductor mounts
 | `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
 | `test/test_pipeline_conductor_probe_banned_age.py` | That every banned-process line carries a process age or explicit unknown, and PID recycling cannot splice a new process onto stale ownership/age evidence |
-| `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, closure requests outranking claims, and absent-symbol risk handling |
+| `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, the `forge_claim` ownership check (foreign label or assignee skips, own claim exempt), closure requests outranking claims, and absent-symbol risk handling |
+| `test/test_pipeline_conductor_fleet_probe.py` | The fleet probe's own failure directions: reports recognised only in protocol form, sticky reports outliving heartbeats, tool rows never classifying, the index counting only session-produced rows, ownership failing toward `unknown`, and derived paths a config cannot widen |
 | `test/test_pipeline_conductor_coverage_filter.py` | The batch coverage exclusion: that a closing keyword aimed at the item in a pull request's own title or body is coverage while a bare reference is `MENTIONED` and leaves the item in the queue, that fork and draft PRs count while a neighbouring number does not, that an unreadable forge exits 3 with no `uncovered` list, that the filter writes nothing, and that its reference vocabulary agrees with `claim_preflight.py`'s |

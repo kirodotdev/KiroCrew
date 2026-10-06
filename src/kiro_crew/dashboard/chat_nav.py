@@ -25,9 +25,9 @@ _LINK_SUMMARY_PROMPT = (
     "- Output one label per line, in the same order as the input\n"
     "- Each line should be ONLY the label text, nothing else\n"
     "- Be concise: 'Memory V2 Design Doc' not 'A document about the Memory V2 design'\n"
-    "- For CRs: include the feature name, e.g. 'Nav panel link labels CR'\n"
-    "- For tickets: include the topic, e.g. 'OmniScan Cognex deployment'\n"
-    "- If context is insufficient, use the URL type + ID as label, e.g. 'Doc dVbcAXW3'\n\n"
+    "- For pull requests: include the feature name, e.g. 'Nav panel link labels PR'\n"
+    "- For issues: include the topic, e.g. 'Login timeout on mobile'\n"
+    "- If context is insufficient, use the URL type + ID as label, e.g. 'Issue 1234'\n\n"
     "{items}"
 )
 
@@ -106,8 +106,9 @@ _PREAMBLE_RE = re.compile(
 async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:
     """Generate summaries for a batch of links using the background session."""
     prompt = _build_link_summary_prompt(links)
-    # Link labeling is a trivial classification task — run on the cheapest model
-    # via the shared background one-liner helper (denials are SEL-logged).
+    # Link labeling is a trivial classification task — run on the session's
+    # governed default model (``_LINK_SUMMARY_MODEL`` is "auto") via the shared
+    # background one-liner helper (denials are SEL-logged).
     text = await run_bg_oneliner(
         state.sessions, prompt, model=_LINK_SUMMARY_MODEL, sel_source="chat_nav"
     )

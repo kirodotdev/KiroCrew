@@ -330,7 +330,8 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
 
     With ``account``+``role`` this is an iam-identity-style profile whose
     ``credential_process`` mints short-lived creds from the ambient IAM
-    session (``aws sts get-session-token``) — the profile block itself contains no
+    session (``aws sts assume-role --role-arn arn:aws:iam::<account>:role/<role>``,
+    session name ``kirocrew-deploy``) — the profile block itself contains no
     secret material. Without them, only ``region`` is written (the profile's
     credentials come from however the user otherwise configures it).
     Returns an error string, or None on success.

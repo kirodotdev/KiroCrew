@@ -89,12 +89,11 @@ def schemas() -> list[dict[str, Any]]:
                 "clause. Clause endings are the field end, a newline, punctuation, or "
                 "the documented closed connector class. A following plain noun makes "
                 "the ID a durable tooling qualifier. "
-                "The check covers only the registry families pinned by the trusted review "
-                "workflow; other backend IDs are not lesson-refused. A model version "
-                "mentioned by itself is allowed. Free-form wording remains a best-effort "
-                "check. Future phrasing misses are handled by this instruction, not new "
-                "regex branches, so do not disguise either refused class. Include "
-                "both the rule (what to do) and negative (what not to do)."
+                "The check covers only a fixed set of model-ID families; other "
+                "backend IDs are not lesson-refused. A model version mentioned by "
+                "itself is allowed. Free-form wording remains a best-effort check, "
+                "so do not disguise either refused class. Give the rule (what to "
+                "do); negative (what not to do) is optional."
             ),
             "inputSchema": {
                 "type": "object",

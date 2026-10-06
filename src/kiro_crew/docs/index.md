@@ -30,7 +30,7 @@ index, first-time setup, and connecting messaging channels.
 | [Cron Jobs](cron-and-scheduling.md) | Schedule recurring tasks, e.g. "every weekday at 9am give me a pipeline briefing" |
 | [Monitoring](monitoring.md) | Watch pull requests across supported source providers with zero-turn unchanged probes and bounded action wakes |
 | [Subagents](subagents.md) | Spawn parallel background workers for fan-out research and multi-package work |
-| [Dynamic Sub-Agent Sizing](dynamic-subagent-sizing.md) | Auto-size the concurrent sub-agent cap from host memory/CPU and a learned per-agent cost |
+| [Dynamic Sub-Agent Sizing](dynamic-subagent-sizing.md) | A free-memory floor, priced by a learned per-agent cost, bounds concurrent sub-agents under a fixed count ceiling |
 | [Memory](memory-and-learning.md) | Persistent preferences, project context, and learned corrections across sessions, plus per-session persistent / incognito / temporary memory modes |
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
@@ -39,7 +39,7 @@ index, first-time setup, and connecting messaging channels.
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 29-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
-| Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md), [iMessage](imessage-integration.md), [WhatsApp](whatsapp-integration.md), [Feishu](feishu-integration.md); per-channel capabilities in each guide |
+| [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
 | [Crew Members](crew-members.md) | Keep named crewmates — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
 | [Remote Crew](remote-crew.md) | Reach other machines running their own Kiro Crew gateway from one hub — switch panes, run a session on one, and search every connected machine's history |
@@ -80,7 +80,8 @@ documented by their own in-panel help.
 | Tab | Covers | Guide |
 |---|---|---|
 | Overview | Gateway status and the settings you change most | — |
-| Imports | Bringing configuration in from another install | [Snapshot and restore](snapshot-and-restore.md) |
+| Import / Export | Bringing data in from another AI agent, and backing up or restoring Kiro Crew configuration | [Snapshot and restore](snapshot-and-restore.md) |
+| Agent Harness | Which agent new sessions start | — |
 | Chat | Composer behaviour, queued messages, feature tips | [Feature Tips](feature-tips.md) |
 | Display | Theme, language, and layout | — |
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
@@ -94,11 +95,11 @@ documented by their own in-panel help.
 | Remote Crew | Additional gateways this dashboard can reach | [Remote crew](remote-crew.md) |
 | Privacy | What leaves the host | [Snapshot and restore](snapshot-and-restore.md) |
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
-| Connections | OAuth clients and the MCP servers this install can reach | — |
+| OAuth Apps | OAuth apps for providers that need a registered client; MCP servers live on Customize → Connections | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
-| Developer | The Developer Mode consent switch, plus an optional local-gateway toggle; turning it on adds a separate Developer page that holds logs, metrics, storage and the rest | [Dashboard](dashboard.md) |
-| Releases | Update channel and version | [Getting Started](getting-started.md) |
-| About | Version and links | — |
+| Developer | The Developer Mode consent switch, Feature Previews, plus an optional local-gateway toggle; turning Developer Mode on adds a separate Developer page that holds logs, metrics, storage and the rest | [Dashboard](dashboard.md) |
+| Releases | Release notes for each version | — |
+| About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
 
 ## Chat Channels
 

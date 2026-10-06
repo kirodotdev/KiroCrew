@@ -53,8 +53,11 @@ A candidate qualifies only if **all three** hold:
    candidates that hand off to each other are one sequence inside a single item.
 2. **Assertable** — you can name its completion condition *now*, before
    dispatching, as one of the evaluator's kinds: `pr_checks` (a PR's checks all
-   green via `gh`), `file` (a path existing), or `human_approval` (the user
-   accepts it — legitimate for design reviews and go/no-go gates, but never
+   green via `gh`; always set `repo` to `owner/name` — without it `gh` resolves
+   the PR number against whatever checkout the evaluator runs in, which can be
+   another repository's PR, and outside a checkout it cannot be evaluated),
+   `file` (a path existing), or `human_approval` (the user accepts it —
+   legitimate for design reviews and go/no-go gates, but never
    machine-evaluated). **There is deliberately no "run this command" kind**, so
    "the test suite passes" is expressed as `pr_checks` on the PR that carries the
    work — CI runs the suite, and its verdict is the one that counts. If an item's
@@ -325,14 +328,15 @@ Each cycle:
 
    ```bash
    python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
-   <the accept_batch document, with every non-done and every placeholder entry removed>
+   <the accept_batch document, with every non-done entry removed>
    ACCEPT_BATCH
    ```
 
    **The filter is yours to apply, and it is not optional.** `accept_batch` is
-   composed from every open item whose `acceptance` is not empty — whatever its
-   status, and whether or not the condition's own values are filled in yet. It is
-   the two-phase promotion seam, not a verdict gate. The evaluator
+   composed from every open item whose `acceptance` is concrete, whatever its
+   status. An item whose bar still carries a placeholder (a `TBD` or blank `pr`,
+   an unknown kind) is already left out, and its `acceptance_concrete` flag says
+   so. It is the two-phase promotion seam, not a verdict gate. The evaluator
    answers a world-state question ("does this file exist", "are this PR's checks
    green"), and a worker that is still `progress` can have made that true early:
    a stub written before the real content, a PR that is green before the last
@@ -368,13 +372,14 @@ Each cycle:
    kind); never try to route around a refusal. `error` is a broken spec or
    environment — fix the spec or ask.
 
-   **Two-phase acceptance is a manual omission, not a server filter.** A condition may
-   name a value that only exists after the item starts — a PR number for
+   **Two-phase acceptance: the server omits the item, you promote the value.** A
+   condition may name a value that only exists after the item starts — a PR number for
    `pr_checks` is the common case. Store the condition with the value marked TBD
    at `create`, tell the child in its seed to report the number through
-   `work_report`'s `pr`, and **drop that item from the batch yourself until you have
-   promoted the real value** — the server does not omit it, and a `pr` that is still
-   `TBD` is an `error` verdict, not `pending`. **The worker's claimed `pr` is
+   `work_report`'s `pr`. Until you promote the real value the item is absent from
+   `accept_batch` (`acceptance_concrete: false`); a `TBD` `pr` handed to the
+   evaluator by hand would be an `error` verdict, not `pending`, which is why it
+   is left out. **The worker's claimed `pr` is
    never read as the bar.** Promote it yourself with `work_ledger_record`
    `action=accept` once you have looked at it, and verify on the next cycle. A
    worker that could fill in its own acceptance could point it at anybody's
@@ -473,7 +478,7 @@ So the worker contract applies to you on top of everything in this skill:
   every item in your own ledger is accepted — put the evidence in `artifacts`
   and the pull request, if the acceptance names one, in `pr`.
 - **`work_brief` never prompts; `work_report` does, on purpose.** The read only
-  touches your own bound item, so it is granted like the two ledger verbs — your
+  touches your own bound item, so it is granted like the ledger verbs — your
   first call as a nested conductor runs unattended. The report writes into your
   parent's record across a dispatch relationship, so it prompts. Reporting at
   round boundaries keeps that to a handful of approvals per goal.
@@ -534,11 +539,15 @@ work.
 
 Two records, and confusing them is the mistake this section exists to prevent.
 
-**The work ledger** (`work_ledger_read` / `work_ledger_record`) holds the items:
+**The work ledger** (`work_ledger_read` / `work_ledger_record`, with
+`work_ledger_rebuild` for recovery) holds the items:
 each one's `title`, `acceptance`, `round`, your `decision`, the worker's reported
 `status` and `summary`, its claimed `artifacts` and `pr`, your recorded `verdict`
 and `fails`, and its `state`. It is keyed to your session, it survives
 compaction, and it is the only place an item's acceptance condition lives.
+The ledger files are a cache of the crew log: when a ledger call is refused with
+`cache_dirty`, or the ledger reads as damaged or missing, run
+`work_ledger_rebuild` (no arguments) to rebuild it from that record.
 
 **Your own session ledger** (`session_ledger_read` / `session_ledger_record`)
 holds YOUR state, and nothing about individual items:
@@ -591,8 +600,9 @@ what the composer renders:
   `tool_search(tool_id="kirocrew-dashboard::session_create")` — `tool_search` is
   auto-approved for exactly this, so the load never prompts — then repeat the
   call. `chat_folder_create` is on the same server; `monitor_start` is served by
-  `kirocrew-core` (`kirocrew-core::monitor_start`); the two ledger verbs are
-  `kirocrew-work::work_ledger_read` and `kirocrew-work::work_ledger_record`.
+  `kirocrew-core` (`kirocrew-core::monitor_start`); the three ledger verbs are
+  `kirocrew-work::work_ledger_read`, `kirocrew-work::work_ledger_record` and
+  `kirocrew-work::work_ledger_rebuild`.
 - **`work_brief` and `work_report` answer `not_bound` to a ROOT conductor.**
   They are the worker half of the same server, and with no parent there is
   nothing for them to read. A second-level ledger conductor IS bound as a worker
@@ -619,8 +629,9 @@ what the composer renders:
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_file_self` (it writes only your own placement),
-  `session_create`, `session_read_message`, `work_ledger_read`,
-  `work_ledger_record` — so a patrol cycle that wakes on a nudge with nobody at
+  `session_create`, `session_read_message`, `session_status`,
+  `work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`, `work_brief`
+  — so a patrol cycle that wakes on a nudge with nobody at
   the keyboard never blocks, and filing rides the create itself (the `folder`
   argument), so it costs no extra approval. The `@kirocrew-core` verbs are
   granted by name too, and only these: `monitor_start`, `monitor_update`,

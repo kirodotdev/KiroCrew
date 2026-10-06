@@ -1,15 +1,15 @@
 """A person ticking a row of the agent's checklist pill.
 
 The pill above the composer mirrors the list the agent keeps with kiro-cli's
-``todo_list`` tool. Until now the tool was the only writer: the pill could not
-be edited from the dashboard, and when the native conversation restarted
-(agent switch, failed ``session/load``, poisoned-conversation discard,
-``/clear``) the agent's own list came back empty while the pill kept the old
-one -- so neither the agent nor the person could tick the remaining rows.
+``todo_list`` tool. When the native conversation restarts (agent switch, failed
+``session/load``, poisoned-conversation discard, ``/clear``) the agent's own
+list comes back empty while the pill keeps the slot's copy, so this route is
+how the person ticks a remaining row.
 
-This route lets the person flip one row. It writes the slot's copy only; the
-agent learns of it the way it learns of the whole list after a restart, through
-``Slot.todo_recovery_prompt`` on the next fresh native session.
+This route lets the person flip one row. It writes the slot's copy only. The
+agent learns of it on its next turn: a warm turn carries
+``Slot.todo_sync_prompt`` prepended to the message, and a fresh native session
+carries ``Slot.todo_recovery_prompt`` instead.
 """
 
 from __future__ import annotations

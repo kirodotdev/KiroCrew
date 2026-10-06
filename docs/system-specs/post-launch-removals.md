@@ -11,11 +11,9 @@ data to migrate). Track each item here; delete the code and its row together.
 
 ## Legacy `~/.kirocrew` security-path spelling
 
-The one-time `~/.kirocrew` → `~/.kiro/crew` data-home migration has been removed
-(its module, the resolver's migrate branch, its tests, and its row here are
-gone). One piece was **deliberately kept**, conservatively diverging from the
-"delete the code and its row together" rule above: the `.kirocrew`
-**security-path spelling** still gates credentials in any leftover legacy home.
+Nothing migrates `~/.kirocrew` to `~/.kiro/crew`. What remains is the `.kirocrew`
+**security-path spelling**, which still gates credentials in any leftover legacy
+home; it is the one item here.
 
 **Remove after:** confirming no supported machine can still have a `~/.kirocrew`
 on disk — i.e. every legacy home has already been removed by its owner. Because
@@ -40,5 +38,6 @@ the spelling while any legacy home could persist would un-gate real credentials
   `RECOVERY_BREADCRUMB_NAME`) — it points at the **current** home and lives
   outside `~/.kiro/` specifically to survive a Kiro-family uninstaller wiping
   `~/.kiro/`, so it is a permanent diagnostic, not a signpost for the legacy
-  move. (Its message string still names `~/.kirocrew` only as the file's own
-  location; that is cosmetic.)
+  move. The breadcrumb FILE is named `~/.kirocrew.breadcrumb`
+  (`RECOVERY_BREADCRUMB_NAME`); its message text names only the current data
+  home and `~/.kiro/`.

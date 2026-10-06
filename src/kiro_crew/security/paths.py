@@ -3290,7 +3290,7 @@ def _path_in_home_dirs(
     implementation means the symlink/casefold hardening below cannot drift
     between the two gates.
 
-    ── Symlink robustness (pentest AWS-345 / AWS-62) ──
+    ── Symlink robustness ──
     A workspace symlink pointing at ``~/.aws/credentials`` (absolute OR relative
     ``../../.aws/credentials`` traversal) must NOT be readable through the link.
     We therefore check MULTIPLE candidate forms of the input and return True if

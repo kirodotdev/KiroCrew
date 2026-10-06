@@ -78,10 +78,9 @@ def _get_managed_by(entry: str | dict, default: str) -> str:
 _CAPABILITY_UNAVAILABLE = "no capability manager available in this edition"
 
 #: Dependency types the ``CapabilityManager`` seam can install/uninstall.
-#: ``agents`` is declarable (it is in ``CAPABILITY_DEP_TYPES``) but has no seam op
-#: — the Protocol exposes ``list_agents`` only, with no package/agent install
-#: routes — so it is never gateway-installed and is recorded as unresolved
-#: rather than silently dropped. Derived from the canonical tuple so adding a type
+#: ``agents`` is declarable (it is in ``CAPABILITY_DEP_TYPES``) but this module
+#: does not call ``CapabilityManager.install_agent``, so it is never
+#: gateway-installed and is recorded as unresolved rather than silently dropped. Derived from the canonical tuple so adding a type
 #: there cannot silently skip this list.
 _INSTALLABLE_TYPES = tuple(
     t for t in CAPABILITY_DEP_TYPES if t not in CAPABILITY_UNCLEANABLE_TYPES

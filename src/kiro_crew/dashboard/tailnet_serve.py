@@ -642,11 +642,11 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
 
     Registered as a post-install hook on the central-distribution refresher, because the
     ``capabilities.tailnet_origin`` gate fires when :func:`publish` is CALLED — it is a
-    chokepoint on the action, not a condition re-checked while serving. That was sound
-    while the ceiling could only change at boot. With a live refresh it is not: a fleet
-    that pins the capability off mid-flight would otherwise leave every already-published
-    host serving its dashboard on the tailnet until someone restarted it, with the policy
-    reporting the capability as denied the whole time.
+    chokepoint on the action, not a condition re-checked while serving. The ceiling
+    refreshes live, so without this hook a fleet that pins the capability off mid-flight
+    would leave every already-published host serving its dashboard on the tailnet until
+    someone restarted it, with the policy reporting the capability as denied the whole
+    time.
 
     Narrow on purpose. It does nothing unless governance denies the scope AND
     :func:`serve_state` confirms the handler is OURS, so a mapping an operator added by
@@ -700,8 +700,8 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
 
     **Ownership is decided for that mount, not for the port.** ``serve_state`` must
     confirm the handler at ``SERVE_MOUNT`` on ``SERVE_HTTPS_PORT`` is this
-    dashboard; "ours is somewhere under 443" was true while a stranger's handler sat
-    at the mount actually being removed.
+    dashboard; "ours is somewhere under 443" can be true while a stranger's handler
+    sits at the mount actually being removed.
 
     An **undetermined** state refuses too, and that is the deliberate half. This
     code has seen almost none of the real ``tailscale serve status --json``
@@ -711,9 +711,8 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     memory, while wrongly refusing costs one copy-pasted command, which the
     refusal prints.
 
-    Still **not gated on governance**, unchanged and for the unchanged reason:
-    ``is_governance_pinned_off`` returns true both for a real deny and for a
-    ceiling it could not evaluate, so gating withdrawal would let a transient
+    **Not gated on governance**, because ``is_governance_pinned_off`` returns
+    true both for a real deny and for a ceiling it could not evaluate, so gating withdrawal would let a transient
     policy-read failure leave a dashboard published with no supported way to take
     it down — a fail-closed control failing open in effect.
     """

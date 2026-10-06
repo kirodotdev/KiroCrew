@@ -90,9 +90,14 @@ command in its own message to run it.
 Per-item ceilings follow WeCom's own: 10 MB per image, 20 MB per file (including an
 audio file you attach, which is transcribed locally), 10 items per message. A voice
 note has no size ceiling here because its bytes are never fetched — WeCom sends the
-transcript. Anything refused is reported rather than silently dropped. Sending a
-file *to* you is not wired up yet, so if the agent produces an image you'll get its
-path rather than the picture.
+transcript. Anything refused is reported rather than silently dropped.
+
+Files the agent sends you go out as native WeCom media. An explicit `file_send`
+(or a dashboard upload to a WeCom user) arrives as an image, voice note, video
+or file, with any caption sent as a separate text message right after it.
+WeCom's outbound ceilings apply: 2 MB per image or voice note, 20 MB per file or
+video. An image the agent only mentions inline in a reply is not uploaded, so
+for that you still get its path rather than the picture.
 
 ## Commands
 

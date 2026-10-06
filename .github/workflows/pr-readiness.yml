@@ -19,7 +19,7 @@ on:
   workflow_run:
     workflows:
       - CI
-      # The eleven cheap blocking gates, split out of CI so the fork reviewers can
+      # The cheap blocking gates in fast-gate.yml, split out of CI so the fork reviewers can
       # key on them. It is a lane in its own right -- a red gate must red the PR --
       # and its completion is also what releases CI's heavy jobs.
       - Fast Gate
@@ -203,8 +203,8 @@ jobs:
     # (see the allowlist note above). Admitting it only reached the resolve
     # step's empty lookup. The allowlist is the primary fence -- no monitored
     # workflow is `workflow_run`-triggered any more -- and this is the second:
-    # re-adding such a lane has to clear both, which `test_ci_surface_tests.py`
-    # refuses.
+    # re-adding such a lane has to clear both, which
+    # `test/test_ai_review_workflows.py` refuses.
     if: >-
       github.event_name != 'workflow_run'
       || github.event.workflow_run.event == 'pull_request'
@@ -227,14 +227,15 @@ jobs:
         {"Opus 5 Review": "Opus 5.5 Review", "GPT 5.6 Review": "GPT 6.1 Review"}
     steps:
       # Transient network/TLS errors between the runner and api.github.com can
-      # abort a single-shot `gh` call, and under `set -e` that ended the whole
-      # evaluation before the publish step could run -- leaving a permanently
-      # red check unrelated to actual readiness (issue #2753: the same commit
-      # evaluated green then red 39 seconds apart with nothing pushed). Every
-      # READ-ONLY gh call below now goes through this bounded helper: 3
+      # abort a single-shot `gh` call, and under `set -e` that would end the
+      # whole evaluation before the publish step could run, leaving a red
+      # check unrelated to actual readiness. Every read-only gh call whose
+      # failure would end the evaluation goes through this bounded helper: 3
       # attempts with short backoff, mirroring the bounded-attempts convention
-      # in publish-installer.yml. Stdout is buffered per attempt so a failed
-      # attempt's partial output (e.g. an aborted --paginate stream) never
+      # in publish-installer.yml. Two reads deliberately do not: the existing
+      # PR Readiness status read uses `bounded` alone and falls back to
+      # `__unreadable__`, and the rate-limit log line is best-effort. Stdout
+      # is buffered per attempt so a failed attempt's partial output (e.g. an aborted --paginate stream) never
       # leaks into a pipe. WRITE calls are deliberately NOT retried here; the
       # label writes have their own narrow race tolerance (see drop_label /
       # ensure_label), and a lost-response retry of a DELETE outside that
@@ -2155,7 +2156,8 @@ jobs:
             fi
           done
           if ! grep -Fxq "$TARGET_LABEL" <<<"$current"; then
-            jq -n --arg label "$TARGET_LABEL" '{labels: [$label]}' \
+            # Not `--arg label`: `label` is a jq keyword that jq 1.6 rejects.
+            jq -n --arg name "$TARGET_LABEL" '{labels: [$name]}' \
               | gh api --method POST "repos/$REPO/issues/$PR/labels" \
                   --input - >/dev/null
           fi

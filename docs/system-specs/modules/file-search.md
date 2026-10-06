@@ -339,6 +339,16 @@ The recorded tokens are persisted per slot beside the staged files
 keeps them and behaves like one picked in the current page.
 Uploaded/dropped files have no token and keep a state-only remove.
 
+A file chip is kept in step with its mention text in both directions
+(`website/src/pages/chat/page/composerFileMentions.ts`). The file tree's "Add to
+chat" (context menu or drop) inserts the `@rel` mention at the caret, never
+inside another token. Deleting a mention by hand unstages its file chip, and
+restoring that exact text re-stages it. Only the EXACT aliases a pick recorded
+count as the file's mention: a shortened or re-derived spelling, or a path
+suffix shared with another file, is ordinary text, so it unstages the chip.
+Folder tokens, file mentions and the chip removes all use the one
+mention-boundary grammar in `website/src/utils/fileTokens.ts`.
+
 **Wire.** On send, each `@rel/` token is rewritten in the
 LLM-facing text to `[attached_dir N] /abs/path` — absolute via the slot's
 project root (`dirFullPath`; a rel that is already absolute passes through,

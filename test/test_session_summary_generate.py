@@ -164,9 +164,9 @@ class TestGating:
         assert called == []
 
     async def test_temporary_is_refused_before_any_model_call(self, env, monkeypatch):
-        """A temporary session's transcript is discarded; persisting a summary
-        of it would leave conversation content on disk after the conversation
-        itself is gone (mirrors history.INCOGNITO_MEMORY_MODES)."""
+        """A temporary session's transcript is kept for History, but the summary
+        is a derived artifact the mode does not produce, so it is refused before
+        any model call (mirrors history.INCOGNITO_MEMORY_MODES)."""
         state, slot = env
         slot.memory_mode = "temporary"
         called = []
@@ -1046,9 +1046,9 @@ class TestForcedGeneration:
         assert called == []
 
     async def test_force_does_not_override_incognito(self, env, monkeypatch):
-        """An incognito transcript is discarded, so a forced summary would leave
-        conversation content on disk after the conversation is gone -- consent to
-        spend tokens is not consent to persist."""
+        """An incognito transcript is kept for History, but the summary is a
+        derived artifact the mode does not produce -- consent to spend tokens is
+        not consent to derive."""
         state, slot = env
         called = []
         _stub_llm(monkeypatch, _GOOD_REPLY, called)

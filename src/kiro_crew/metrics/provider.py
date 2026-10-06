@@ -438,8 +438,8 @@ _provider: Optional["_MeterProviderT"] = None
 # counter and histogram, so the recheck is rate-limited: at most one re-resolve
 # per _CONSENT_RECHECK_SECS. That bounds how long an out-of-band change goes
 # unnoticed without charging the hot path, which sees only a monotonic compare.
-# A caller that must not wait (the dashboard's own PATCH route) calls shutdown()
-# instead and gets the rebuild on the very next metric.
+# A config write inside the gateway does not wait: the config-watcher applier
+# (``watch_config``) calls shutdown() and the next metric rebuilds.
 _CONSENT_RECHECK_SECS = 30.0
 # Consent the live recorder was built with, and when it was last verified.
 # ``None`` means "no live recorder", so the next call builds rather than compares.
@@ -1108,12 +1108,13 @@ def get_recorder() -> MetricsRecorder:
 
     The recheck is eventual by design — up to ``_CONSENT_RECHECK_SECS`` — so the
     extra thread hop changes nothing an observer can distinguish. A caller that
-    changed the setting itself calls ``shutdown()`` to skip the wait.
+    changed the setting in-process reaches ``shutdown()`` through the config
+    watcher (``watch_config``) and skips the wait.
     """
     global _recorder, _initialized, _built_consent
     # Snapshot into a local: the guard below spans a Python call, so re-reading the
     # global to return it would race a concurrent shutdown() — which the config
-    # route runs on an asyncio.to_thread worker — and hand back None from a
+    # watcher runs on an asyncio.to_thread worker — and hand back None from a
     # non-Optional signature.
     rec = _recorder
     if _initialized and rec is not None and not _consent_recheck_due():
@@ -1215,7 +1216,7 @@ def shutdown() -> None:
     without waiting out the recheck window.
 
     The flush runs on the CALLER's thread (so process teardown and the config
-    route — which calls this via ``asyncio.to_thread`` — both get a completed
+    watcher — which calls this via ``asyncio.to_thread`` — both get a completed
     flush) but NOT under ``_lock``: holding it across the flush would stall any
     concurrent ``get_recorder()`` on the event loop for the whole 30s deadline.
     """

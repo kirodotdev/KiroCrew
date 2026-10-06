@@ -1711,8 +1711,9 @@ async function settleInFlight(): Promise<void> {
 /**
  * Upload what changed, then stop this page uploading preferences.
  *
- * For an operation that rewrites the HOST copy -- the settings import, whose
- * Merge applies an archive's `ui-prefs.json` over this host's. A flush that
+ * For an operation that can rewrite the HOST copy -- the settings import:
+ * Replace overwrites this host's `ui-prefs.json` with the archive's, and Merge
+ * installs the archive's only where this host has none. A flush that
  * lands after it would put this page's values straight back over the ones just
  * restored, and the import has no way to tell. Paused before the import request
  * is sent, so no PUT can start after it either. Every flush path checks the

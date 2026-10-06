@@ -118,7 +118,7 @@ cannot reach the hardcoded shadow value.
 3. **Validate** — `_validate_theme_dir(stage, installing=True)` runs on the immutable staging
    snapshot and returns `(record | None, error)`: tier-gated category
    allowlist, filename allowlist, per-file/total size caps, symlink rejection,
-   path-traversal rejection (`_safe_slug`), CSS/HTML denylists, audio
+   path-traversal rejection (`_safe_theme_slug`), CSS/HTML denylists, audio
    magic-byte sniff, and persona bounds. Validating the snapshot (not the
    source) closes the validate/copy TOCTOU class.
 4. **Promote** — the validated snapshot is atomically renamed into
@@ -129,7 +129,7 @@ cannot reach the hardcoded shadow value.
 
 ## HTTP Routes
 
-Registered in `dashboard/server.py`. The validation/parsing core lives in
+Registered by `dashboard/routes/themes.py` (`register`), except `GET /api/theme/boot`, which `dashboard/routes/realtime.py` registers. The validation/parsing core lives in
 `dashboard/theme_validate.py` (constants, CSS tokenizer, `_validate_*`,
 `_theme_asset_descriptor`, path/slug helpers); the HTTP handlers below live in
 `dashboard/handlers/themes.py`:
@@ -196,7 +196,7 @@ dashboard load into header-only round trips.
 - **CSS containment** — install-time denylist (no `@import`, external `url()`,
   dangerous functions/bindings, forbidden selectors, `z-index` >
   `_THEME_OVERLAY_MAX_ZINDEX`) via a string-aware top-level rule tokenizer, plus
-  a **runtime positive-selector scoper** (`_scopeOverridesCss`) that keeps only
+  a **runtime positive-selector scoper** (`scopeOverridesCss`, `website/src/hooks/themeCss.ts`) that keeps only
   allowlisted selector forms and drops every non-`@media` at-rule.
   The scoper is the **load-bearing runtime boundary** for attacker-authored
   `overrides.css` injected into the main document; both hand-rolled parsers are
@@ -208,7 +208,7 @@ dashboard load into header-only round trips.
   asserted against **both** parsers (pytest + vitest); new evasion classes MUST
   land as corpus cases.
   Same-pack-relative `url()`s are rewritten to absolute asset-route URLs
-  (`_rewriteOverridesUrls`); fonts are declared via `theme.json` `fonts` (served
+  (`rewriteOverridesUrls`); fonts are declared via `theme.json` `fonts` (served
   as `font/ttf`) and injected by `injectThemeFonts`, since an `@font-face` in
   `overrides.css` would be scoped away.
 - **HTML containment** — overlay/topbar HTML is rejected at install if it
@@ -268,17 +268,17 @@ dashboard load into header-only round trips.
 
 | Surface | File | Role |
 |---|---|---|
-| Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `_scopeOverridesCss` + `_rewriteOverridesUrls`; `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
+| Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator; the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint
 
-A cold load used to paint an installed theme seconds late: the client fetched
-`/api/themes`, then each pack's detail, then `overrides.css`, then the fonts,
-each round trip behind the last. The boot path now has two parts.
+Fetching `/api/themes`, then each pack's detail, then `overrides.css`, then the
+fonts, each round trip behind the last, would paint an installed theme seconds
+late. The boot path therefore has two parts.
 
 1. **Render cache (zero requests).** `localStorage["mc-theme-data"]` holds ONE
    entry: the active pack's `CustomThemeData` JSON (the `GET /api/themes/{slug}`
@@ -294,13 +294,37 @@ each round trip behind the last. The boot path now has two parts.
    deleted, or when the catalog no longer lists the slug (the pack was removed
    elsewhere). It is never written when the serialized detail exceeds roughly
    200 KB (`MAX_ENTRY_CHARS`), so the cache cannot grow past one small pack.
-2. **Parallel active fetch.** `loadCustomThemes` requests the active pack's
-   detail alongside `/api/themes` instead of after it, applies it on arrival
+2. **Parallel active fetch.** `fetchCatalog`, run by the `["custom-themes-catalog"]`
+   React Query (`staleTime: Infinity`), requests the active pack's detail
+   alongside `/api/themes` instead of after it, applies it on arrival
    (refreshing the cache entry), and skips that slug in the catalog pass.
+   `loadCustomThemes` is the one-shot refresh for post-mutation callers (the theme
+   editor and the Display panel): it cancels the in-flight catalog fetch,
+   refetches, is serialized so back-to-back mutations cannot race, and resolves
+   `true` or `false` without ever rejecting.
 
 The asset routes' validators (above) cover the third leg: once the detail is
 applied, the fonts and `overrides.css` it references revalidate as `304`s
 rather than re-downloading.
+
+### Catalog failure
+
+- **Auth denial.** A `/api/themes` 403 with a lapsed access cookie waits for the
+  silent refresh `checkSessionExpired` starts and replays exactly once; an auth
+  denial is never retried by the query, and the re-auth banner owns that recovery.
+- **Anything else.** While no catalog has loaded, the query retries indefinitely
+  (the gateway may still be booting, or a tunnel answered 502/503); once one has
+  loaded, a failed refetch follows the app-wide retry policy. Delays use the
+  shared curve, 1 s doubling to a 30 s cap.
+- **Notices.** `customThemesLoadError` reports a catalog that will not load (a
+  gateway auth denial excluded; a proxy challenge included), and
+  `installedThemeLoadFailed` reports a selected pack that is listed but whose
+  detail failed. The Display panel renders both, with a Retry for the catalog.
+- **Listed but unstyled.** While `installedThemeLoadFailed` holds, the default
+  built-in theme's attribute is painted and the user's selection is kept, so the
+  picker still shows it and the notice explains the state.
+- **Self-repair keys on the listing.** A pack the catalog lists is not reset to
+  the default because its detail failed; only a slug the catalog no longer lists is.
 
 ### One theme, one picker row (registered vs installed)
 
@@ -337,10 +361,8 @@ regression is exercised entirely from fixtures built in a temp directory (see
 `test/test_theme_install.py::TestFullL2Fixture`), so nothing shippable carries
 a persona or third-party-derived branding.
 
-This covers **art assets too**, not just personas and manifests. The
-built-in-theme removal deleted the persona markdown but left nine unreferenced
-image/font/video files behind in `src/kiro_crew/static/`, which
-`MANIFEST.in`'s `recursive-include src/kiro_crew/static *` kept shipping in the
-sdist, wheel and DMG. They are gone. When retiring a theme, delete its art in
-the same change: every file under `src/kiro_crew/static/` ships, so an orphan
-there is a shipped orphan, not dead weight in a dev tree.
+This covers **art assets too**, not just personas and manifests. When retiring
+a theme, delete its art in the same change: `MANIFEST.in`'s
+`recursive-include src/kiro_crew/static *` ships every file under
+`src/kiro_crew/static/` in the sdist, wheel and DMG, so an orphan there is a
+shipped orphan, not dead weight in a dev tree.

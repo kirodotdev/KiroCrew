@@ -662,8 +662,9 @@ def _drive_install_error(monkeypatch, handler_name: str, body: dict | None = Non
 class TestARecoveredStepIsNotReportedAsAnError:
     """A step can fail and be RECOVERED, so "any step failed" is not the verdict.
 
-    The installer does not retry a refused package step, but a result that
-    carries a failed attempt followed by a successful one must still read as a
+    On an apt host the installer retries a refused ``--with-deps`` browser step
+    without ``--with-deps`` (``install-browser-no-deps``), so a result can carry
+    a failed attempt followed by a successful one, and it must still read as a
     success: the LAST step decides. Scanning every step for ``ok=False`` would
     raise a permanent error banner on a host where browsing works. The panel
     renders ``last_error`` with no gate of its own, so the verdict is made here.

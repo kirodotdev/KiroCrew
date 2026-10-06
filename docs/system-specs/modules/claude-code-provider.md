@@ -6,11 +6,12 @@
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`. The public baseline currently
 selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
-OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek was
-the one exception until Crew's gate plugin routed its tool calls through the host
-permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`);
+OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
+selectable because Crew's gate plugin routes its tool calls through the host
+permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
-`ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, and that allowlist is empty again.
+`ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, where `NOT_SHIPPED_SELECTABLE` is a
+test-side set of known-but-unshipped ids, not a product allowlist; it is empty.
 
 `DefaultProviderRegistry` registers no extra backend. The protocol hook remains
 for editions, but `register_selectable_backend` accepts only a core-known harness
@@ -29,7 +30,7 @@ hand-edited value from becoming a startup failure.
 `TestConfigRoundTrip.test_unselectable_values_degrade_to_the_default` exercises
 that path, and `test_harness_parity.test_unselectable_backend_degrades_to_kiro`
 asserts the outcome against the live registry rather than a hardcoded verdict —
-which is why `claude` now *survives* that gate instead of degrading.
+which is why `claude` *survives* that gate instead of degrading.
 
 Selectable is not the same as usable, and it is not the same as permitted.
 Whether a *deployment* may pick a registered harness is answered by the
@@ -80,7 +81,7 @@ Both operator-facing surfaces read that one verdict:
   kept visible. A rendered-but-disabled row therefore always names something the
   user can act on: install a binary, or restart the gateway. Covered by
   `hides a backend the deployment may not select, rather than dimming it`,
-  `keeps the selected backend visible even if it reads as unselectable` and
+  `keeps the current backend listed even if it reads as unselectable` and
   `saves the Claude Code selection the shipped build offers`.
 
 ### What Crew gates on this harness, and what a pre-approval skips
@@ -114,15 +115,16 @@ settings file" below). What Crew does write is a session-scoped
 bytes it wrote; that seed carries deny rules translated from the spec's
 `disabledTools` and never merges into a foreign project settings file.
 
-A session can now OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
+A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
 `permissions.defaultMode`, which puts Claude's own classifier in charge of approving
 tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call` and
 writes no SEL record, exactly as a project allow rule does. Only the literal value
 `auto` resolves, a backend that seeds no settings file resolves to nothing, and with
-no opt-in no `defaultMode` is written at all. An explicitly requested
-`bypassPermissions` mode pre-approves by design. The audit half of that trade is
-tracked in #12744.
+no opt-in no `defaultMode` is written at all. Crew never seeds `bypassPermissions`:
+`resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
+can only arrive from a foreign project settings file, which is the disclosed
+inherited-settings gap below. The audit half of the `auto` trade is tracked in #12744.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any
@@ -354,8 +356,9 @@ during an upgrade is the pre-existing digest-only exposure, not a regression
 this mechanism can close. On a host that cannot prove a process start id, the
 sidecar persists the
 digest with empty holder groups: cross-process live-holder distinction degrades
-to digest-only adoption, while `_LIVE` and `_SHARERS` continue to arbitrate
-same-process siblings. While any sharer is registered, the file's future is pinned for
+to digest-only adoption. `share()` then declines every new reader lease, so
+same-process siblings do not share either and take the declined-share path; only
+`_LIVE` still arbitrates owners. While any sharer is registered, the file's future is pinned for
 it: the owner's teardown leaves the file and the durable record in place (the
 recorded-orphan shape a `kill -9` already produces, which the next session adopts
 and repairs once the sharers are gone), `seed_provenance.claim` refuses new
@@ -422,9 +425,9 @@ the session can do:
 
 - A project that already has its own `settings.local.json` gets no seed file.
   The file is left exactly as it is.
-- An inherited `bypassPermissions` in such a file is **not** stripped. Crew used to
-  strip it; stripping required rewriting the user's file, which is exactly the
-  machinery this rule removes. Such a file is left out of the session instead (see
+- An inherited `bypassPermissions` in such a file is **not** stripped: stripping
+  would require rewriting the user's file, which is exactly the machinery this rule
+  removes. Such a file is left out of the session instead (see
   below): whatever starting mode the adapter picks from it is read back and pinned.
 
 #### A project-owned settings file
@@ -508,8 +511,8 @@ never widened. A pin that fails stops the harness,
 so a session never runs with Crew's tools under a mode that approves on its own.
 
 The pin runs only on this path. A session whose file Crew authored is not pinned: a
-user `~/.claude` mode reaching it is the inherited-config gap below (W2-1), which this
-path does not widen. The exclusion is never taken below
+user `~/.claude` mode reaching it is the inherited-config gap below ("Known gap: the
+user's global `~/.claude` is inherited"), which this path does not widen. The exclusion is never taken below
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
 neither case reaches the pin.
 
@@ -571,8 +574,8 @@ user's real `~/.claude`. Project-scope `settings.local.json` outranks it for
 overridden — so a user whose global settings pre-approve a tool family gets those
 calls auto-approved by Claude's own engine, which never calls `canUseTool` and so
 never reaches Crew's gate. A project's own `settings.local.json` is not part of
-this gap: a session that carries Crew's tools either authored that file or left it
-out of its setting sources. Its checked-in `.claude/settings.json` is part of the
+this gap: a session that carries Crew's tools either governs a Crew seed (authored or
+shared) or excludes the project tier from its setting sources. Its checked-in `.claude/settings.json` is part of the
 gap only for a session whose file Crew authored. Both are the same hazard the "no gate on pre-approved calls"
 section above describes, arriving through inherited config. Closing it means an
 isolated config root, which is a separate change: it has to carry credentials

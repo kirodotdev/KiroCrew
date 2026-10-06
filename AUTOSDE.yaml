@@ -15,9 +15,13 @@ custom-rules:
       - "docs/feature-map/README.md"
       - "website/src/pages/**"
       - "src/kiro_crew/dashboard/handlers/**"
+      - "src/kiro_crew/dashboard/chat_api/**"
       - "src/kiro_crew/dashboard/messaging_api/**"
       - "src/kiro_crew/dashboard/file_api/**"
       - "src/kiro_crew/dashboard/agent_admin/**"
+      - "src/kiro_crew/dashboard/routes/**"
+      - "src/kiro_crew/dashboard/server.py"
+      - "src/kiro_crew/dashboard/server_runtime/**/*.py"
       - "website/src/App.tsx"
     rule: |
       Keep the feature map semantically aligned with every structural dashboard
@@ -47,11 +51,14 @@ custom-rules:
       Enforce KiroCrew backend security controls, based on real vulnerabilities
       found and fixed in this codebase.
 
-      - Never read sensitive credential paths (~/.aws, ~/.ssh, ~/.gnupg,
-        ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc, ~/.git-credentials,
-        ~/.kiro/crew/.env and the pre-move ~/.kirocrew/.env). File reads of
+      - Never read sensitive credential paths (for example ~/.aws, ~/.ssh,
+        ~/.gnupg, ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc,
+        ~/.git-credentials, ~/.kiro/crew/.env and the pre-move ~/.kirocrew/.env;
+        the canonical list is `_SENSITIVE_HOME_DIRS` in security/paths.py, and
+        this list is illustrative, not the enforcement scope). File reads of
         user- or LLM-influenced paths MUST go
-        through hooks.py, which enforces is_sensitive_path(); trusted
+        through hooks.py, which enforces is_sensitive_path()
+        (security/paths.py); trusted
         fixed-path internal config/package reads are exempt. Never weaken that
         keystone.
       - Never trust LLM output. Scan with redact_exfiltration_urls() AND
@@ -67,8 +74,9 @@ custom-rules:
         provider spawn helpers), which apply an OS-level sandbox via wrap_argv().
       - The dashboard binds to 127.0.0.1 by default (local-only). Binding to
         0.0.0.0 is permitted ONLY when token-auth middleware is active. Never
-        bind to 0.0.0.0 without token auth — see origin.py:is_local_only() and
-        token_auth.py:token_auth_middleware().
+        bind to 0.0.0.0 without token auth — see dashboard/urls.py:is_local_only()
+        (re-exported by dashboard/origin.py) and
+        dashboard/token_auth.py:token_auth_middleware().
       - All tool invocations and permission decisions MUST emit a SEL audit
         event via sel.py.
       - Never hardcode secrets. Store them in ~/.kiro/crew/.env with chmod 600,
@@ -141,6 +149,9 @@ custom-rules:
       - "src/kiro_crew/dashboard/file_api/**/*.py"
       - "src/kiro_crew/dashboard/agent_admin/**/*.py"
       - "src/kiro_crew/cli.py"
+      - "src/kiro_crew/cli_server.py"
+      - "src/kiro_crew/dashboard/routes/**/*.py"
+      - "src/kiro_crew/deploy/handlers.py"
     rule: |
       Do NOT add work to the gateway boot path. Everything between process
       start and the moment the dashboard socket accepts requests runs once, in
@@ -152,16 +163,22 @@ custom-rules:
 
       The boot path means, specifically:
       - `GatewayOrchestrator.run()` up to the `KIROCREW_READY` print
-      - `start_dashboard()` up to `await _start_site(site, port)`
-      - any `_init_*()` or `setup_*_routes()` reached from those
-      - `cli.py`'s gateway command before `asyncio.run()`
+      - `start_dashboard()` (the gateway's default dashboard) up to
+        `await site.start()` on the reserved `SockSite`
+      - `start_api_server()` (the `--no-dashboard` API-only path) up to
+        `await _start_site(site, port)`
+      - any `_init_*()`, `setup_*_routes()`, `register()` / `register_all()` /
+        `register_routes()` route registrar reached from those
+      - `cli.py`'s gateway command before `asyncio.run()`, and
+        `cli_server._gateway()` up to `run_gateway()`
 
       Reject a diff that puts any of these on that path:
 
       1. A new awaited or synchronous step before the socket binds. Adding one
          is a product decision about startup latency, not a detail.
       2. Subsystem construction as a side effect of route registration. A
-         `setup_*_routes()` function must only register routes
+         `setup_*_routes()` / `register(app)` / `register_routes()` registrar
+         must only register routes
          (`app.router.add_*`). Building a pipeline, opening a store, or
          constructing a client there drags that subsystem's whole init onto the
          boot path, where nobody looking at the route file will find it.
@@ -280,9 +297,10 @@ custom-rules:
         bindings via `_isolate_shared_kiro_paths`, scrubs the inherited
         shell-preload and exported-function variables `name_grant` refuses on
         (`BASH_ENV`/`ENV`/..., `BASH_FUNC_*`), pins the SEL default dir
-        session-wide, redirects `tempfile`'s base with residue reported, and
-        fails the run on residue at the repository root.
-      - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
+        session-wide, redirects `tempfile`'s base with residue reported,
+        restores the session CWD in a `tryfirst` teardown hook before fixture
+        finalizers run, and fails the run on residue at the repository root.
+      - `test/conftest.py` adds ~40 MORE autouse fixtures, and it applies ONLY to
         `test/`. Tests under `src/kiro_crew/apps/builtins/**/tests/` see the
         rootdir conftest plus that app's own
         `tests/conftest.py` where one exists (`auto_improvement`,
@@ -466,6 +484,9 @@ custom-rules:
       - TYPE_CHECKING blocks: `if TYPE_CHECKING: from ...` (zero runtime cost).
       - Genuine circular-import avoidance — add a `# circular import` comment
         explaining why.
+      - A deliberately deferred import that `no-new-work-on-gateway-boot-path`
+        requires, or an import-weight deferral a test pins, with a comment naming
+        the reason. The blocking boot-path rule outranks this advisory one.
       - Optional dependencies: `try: import foo except ImportError: foo = None`
 
   - id: harness-parity
@@ -482,9 +503,12 @@ custom-rules:
       - "src/kiro_crew/sandbox_launcher.py"
       - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
+      - "src/kiro_crew/acp_backends.py"
+      - "src/kiro_crew/mcp_hot_reload.py"
+      - "src/kiro_crew/agent_sdk/backends.py"
     rule: |
       Kiro Crew drives ONE first-class agent harness — kiro-cli
-      (ACP_BACKEND_KIRO, spelled "") — and ADAPTS the others (the dormant
+      (ACP_BACKEND_KIRO, spelled "") — and ADAPTS the others (the
       ACP_BACKEND_CLAUDE seam, KAS, and any bring-your-own harness). An added
       harness may only adapt itself to the seams the Kiro harness already runs
       through. It may not move, widen, generalize, or add a branch to them. The
@@ -529,7 +553,7 @@ custom-rules:
         security finding.
 
       Allowed (do NOT flag):
-      - The dormant ACP_BACKEND_CLAUDE / _is_claude seam and its existing
+      - The ACP_BACKEND_CLAUDE / _is_claude seam and its existing
         negative call sites. They predate this rule, the whole-tree backlog is a
         non-failing report by design, and converting them is a separate change.
       - A pre-existing negative test on a line the PR merely moved or reindented.
@@ -557,6 +581,13 @@ custom-rules:
       - "src/kiro_crew/slack/**/*.py"
       - "src/kiro_crew/telegram/**/*.py"
       - "src/kiro_crew/discord/**/*.py"
+      - "src/kiro_crew/feishu/**/*.py"
+      - "src/kiro_crew/imessage/**/*.py"
+      - "src/kiro_crew/teams/**/*.py"
+      - "src/kiro_crew/webex/**/*.py"
+      - "src/kiro_crew/wecom/**/*.py"
+      - "src/kiro_crew/weixin/**/*.py"
+      - "src/kiro_crew/dashboard/chat_api/**/*.py"
       - "src/kiro_crew/dashboard/chat_runner.py"
       - "src/kiro_crew/dashboard/chat_turn/**/*.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
@@ -704,7 +735,9 @@ custom-rules:
 
       Allowed (do NOT flag):
       - A release PR that prepends one new `## [X.Y.Z] - YYYY-MM-DD` section
-        and, in the same commit, bumps src/kiro_crew/__init__.py.
+        and, in the same commit, bumps the version files docs/build/release.md
+        lists (src/kiro_crew/__init__.py, pyproject.toml,
+        website/electron/package.json).
       - Correcting a genuine factual error inside an already-shipped section,
         when the PR body says that is what it is doing. Say it out loud; an
         unexplained edit to shipped history is the defect this rule exists for.
@@ -849,7 +882,8 @@ custom-rules:
 
       A durable store owns a single connection behind a single lock and a
       dedicated writer thread. Route the DATABASE phase through that writer
-      (`await store.run(...)`, or the surface's existing `*_async` seam) and keep
+      (for `TaskStore`, `await store.run(...)`; other stores expose an existing
+      `*_async` seam or an `OnLoopDBGuard`) and keep
       Futures, Events, slot counts, wake callbacks and in-memory run state ON the
       loop. Do not hand a whole coordinator that touches asyncio primitives to a
       thread: split the site explicitly into a DB phase and a loop-apply phase.
@@ -862,7 +896,7 @@ custom-rules:
       `try/except Exception` SWALLOWS the on-loop guard's exception, so the site
       is invisible to an armed run and the suite goes green over it. When a
       caller swallows, pin the site on the store's on-loop COUNTER
-      (`loop_thread_calls` before/after) instead, or narrow the `except` to the
+      (for `TaskStore`, `loop_thread_calls` before/after) instead, or narrow the `except` to the
       exceptions it actually means.
 
       FLAG a new store call reachable from a coroutine. FLAG an `except
@@ -879,6 +913,29 @@ custom-rules:
       - a site provably unreachable with a live store (constructed and called in
         one statement block with no await between), stated as such;
       - CLI / one-shot paths that run with no loop, and test code.
+
+  - id: an-async-test-respects-the-on-loop-lock
+    blocking: false
+    file-patterns:
+      - "test/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+    rule: |
+      `no-sync-store-call-from-a-coroutine` exempts test code, and for most
+      stores that is right. It is wrong for a store behind
+      `platform_lock_compat.file_lock`, whose acquire on the event-loop thread is a
+      single non-blocking attempt by design: an `async def` test that seeds or
+      reads such a store directly (a crew-log-backed ledger, the issue-radar
+      crew store) is refused whenever an eager folder or writer thread holds
+      the unit lock for a moment, which a Windows runner does often. FLAG an
+      added direct call to a file_lock-backed store inside an `async def`
+      test; ask for `await asyncio.to_thread(...)`, the store's `*_async`
+      seam, or a seed done before the loop starts, and for the test to settle
+      prior crew-log work before a negative control.
+      Measured: `test_issue_radar_crew_runtime.py` failed on main
+      (37016758395/1/110870301307) and in a merge group
+      (37053522199/1/110993309643) with `could not acquire exclusive file lock:
+      still held after waiting 0.00s (one attempt)` until #16102 and #16465.
+      Allowed (do NOT flag): a test that asserts the on-loop refusal itself.
 
   - id: persist-before-you-publish
     blocking: true
@@ -919,9 +976,22 @@ custom-rules:
     blocking: true
     file-patterns:
       - "test/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/container_tests/**/*.py"
       - "website/src/test/**"
       - "website/src/**/*.test.ts"
       - "website/src/**/*.test.tsx"
+      - "website/electron/**/*.test.*"
+      - ".github/black-baseline.txt"
+      - ".github/subprocess-encoding-baseline.txt"
+      - ".github/sync-io-in-async-baseline.txt"
+      - ".github/agent-sdk-boundary-baseline.txt"
+      - ".github/docs-lint-baseline.txt"
+      - "website/src/i18n/untranslated-baseline.json"
+      - "website/src/i18n/untranslated-strict-baseline.json"
+      - "website/src/i18n/render-baseline.json"
+      - "website/src/i18n/dynamic-keys-baseline.json"
+      - "website/scripts/restyle-baseline.json"
     rule: |
       A test that pins a COUNT, an exact set, or a universal property over every
       site is a ratchet: it exists so that adding an unreviewed instance of some
@@ -940,7 +1010,12 @@ custom-rules:
         that the production path actually resolves, and bound it only as a
         lost-run ceiling;
       - a newly added `skip` / `xfail`, a broadened `except`, or a deleted
-        assertion in a file the diff otherwise only extends.
+        assertion in a file the diff otherwise only extends;
+      - an entry ADDED to one of the shrink-only baseline files listed above, or
+        a count in one RAISED: each lists debt a gate tolerates, so growing it
+        loosens the gate. A gate that reads such a file accepts a hand-added
+        entry, so review is where it is caught. Removing a stale entry tightens
+        and is not a finding.
 
       Allowed (do NOT flag): the count MOVES to the new true value and the
       comment naming the roles moves with it; a slice/region marker is widened so
@@ -949,6 +1024,33 @@ custom-rules:
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
+
+  - id: a-stopwatch-is-not-a-barrier
+    blocking: false
+    file-patterns:
+      - "test/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+    rule: |
+      A test must not use real elapsed time as the PROOF that something
+      happened. FLAG an added line that asserts a LOWER bound on a measured
+      duration (`assert elapsed >= hold_secs`, `assert waited > 0.1`), or that
+      compares a float budget to its cap exactly, and ask for the signal the
+      production path resolves instead: the event, the store row, the future,
+      a fake clock that only the code's own sleep advances.
+      Windows' `time.monotonic()` ticks every ~15.6 ms and a loaded shard
+      stretches every sleep, so the same correct code measures differently on
+      a different runner. In 2026-09 `test_history_index_worker`'s
+      `assert elapsed >= hold_secs, "the write did not actually contend"`
+      failed on 18 PR runs (e.g. 35958461916/2/107768444738) until #15709,
+      and `test_session_keepalive`'s call-count fake clock failed on main
+      (36308851008/1/108591002408) until #14935.
+      A pre-filter that finds the candidates on added lines:
+      `^\+\s*assert\s+\(?\s*\w*(?:elapsed|duration|took|waited)\w*\s*>=?(?!=)`.
+      UPPER bounds are `tests-are-deterministic` item 5 (D7), not this rule.
+      Allowed (do NOT flag): a lower bound that proves a deadline or backoff
+      was honoured ("did not fire early") with a margin of at least one clock
+      tick, or one relative to a span the test measured itself, both of which
+      D7 keeps; a duration read from a fake clock the test drives.
 
   - id: a-sandbox-widening-is-not-incidental-scope
     blocking: true
@@ -959,9 +1061,10 @@ custom-rules:
       - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
       - "src/kiro_crew/sandbox_mount_sweep.py"
-      - "src/kiro_crew/security.py"
+      - "src/kiro_crew/security/**"
       - "src/kiro_crew/hooks.py"
       - "src/kiro_crew/hook_runtime/**"
+      - "src/kiro_crew/agent_sdk/tool_gate.py"
     rule: |
       What the OS sandbox seals, masks, no-follow pins or refuses is an
       OPERATOR-FACING contract: it decides which of their own files their agent can
@@ -1089,7 +1192,8 @@ custom-rules:
       membership test — is load-bearing exactly to the extent that deleting it
       reds a test. Most of them here red nothing.
 
-      Measured on this PR: deleting `generation=record.generation` from the task
+      Measured on the PR that introduced this rule: deleting
+      `generation=record.generation` from the task
       panel's `answer_input` call reds ZERO of 225 tests, and so does deleting it
       from the `cancel_wait` call beside it. Both are the only thing standing
       between an operator's answer and a DIFFERENT question the row asked after a
@@ -1152,9 +1256,8 @@ custom-rules:
   - id: an-operator-facing-string-states-what-was-measured
     blocking: false
     file-patterns:
-      - "src/kiro_crew/config/sections.py"
       - "config-baseline.json"
-      - "docs/system-specs/**/*.md"
+      - "docs/**/*.md"
       - "src/kiro_crew/**/*.py"
     rule: |
       `recurring-defect-patterns` already flags a docstring that contradicts the

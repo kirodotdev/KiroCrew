@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,9 @@ EXACT_IDENTITY_REVIEW_LANES = (
     "fork-design-review.yml",
     "fork-ux-review.yml",
 )
+# The lane whose resolver tells an obsolete head (the fork branch moved on)
+# apart from a lagging open-PR listing.
+OBSOLETE_HEAD_LANE = "fork-gpt-review.yml"
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = (
     ROOT
@@ -468,6 +472,7 @@ class TestForkStage2ExactHeadIdentity:
         repo: str | None = None,
         ref: str | None = None,
         list_rc: int = 0,
+        branch_tip: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         bash = _bash()
         if bash is None:
@@ -489,6 +494,9 @@ class TestForkStage2ExactHeadIdentity:
             '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
             '    cat "$PAGES"; exit 0 ;;\n'
             "  */pulls/*) printf '%s\\n' \"$BASE_SHA\"; exit 0 ;;\n"
+            "  */branches/*)\n"
+            '    if [ -z "$BRANCH_TIP" ]; then echo "gh: HTTP 404" >&2; exit 1; fi\n'
+            "    printf '%s\\n' \"$BRANCH_TIP\"; exit 0 ;;\n"
             "esac\n"
             'echo "unexpected gh call: $*" >&2\n'
             "exit 9\n",
@@ -528,6 +536,7 @@ class TestForkStage2ExactHeadIdentity:
                     "CALLS": str(calls),
                     "LIST_RC": str(list_rc),
                     "BASE_SHA": self._BASE,
+                    "BRANCH_TIP": branch_tip or "",
                     "GITHUB_OUTPUT": str(output),
                 }
             ),
@@ -586,6 +595,51 @@ class TestForkStage2ExactHeadIdentity:
         assert result.returncode != 0, _proc_log(result)
         assert "query itself failed" in result.stdout + result.stderr
         assert "superseded or closed" not in result.stdout + result.stderr
+
+    def test_zero_match_on_a_moved_branch_is_obsolete_not_red(self, tmp_path: Path) -> None:
+        # The branch reads and points at a newer commit, so nobody can merge
+        # this head: the lane records it and stops without a verdict.
+        result = self._run_review_resolver(tmp_path, OBSOLETE_HEAD_LANE, [[]], branch_tip="c" * 40)
+
+        assert result.returncode == 0, _proc_log(result)
+        output = (tmp_path / "github-output").read_text(encoding="utf-8")
+        assert output == "obsolete=true\n"
+        assert "no longer the tip" in result.stdout
+
+    def test_zero_match_while_the_branch_still_points_here_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        # A lagging listing with the head still at the branch tip proves
+        # nothing, so the lane keeps failing closed.
+        result = self._run_review_resolver(tmp_path, OBSOLETE_HEAD_LANE, [[]], branch_tip=self._SHA)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "superseded or closed" in result.stdout + result.stderr
+        assert "obsolete" not in (tmp_path / "github-output").read_text(encoding="utf-8")
+
+    def test_zero_match_with_an_unreadable_branch_fails_closed(self, tmp_path: Path) -> None:
+        result = self._run_review_resolver(tmp_path, OBSOLETE_HEAD_LANE, [[]])
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "superseded or closed" in result.stdout + result.stderr
+        assert "obsolete" not in (tmp_path / "github-output").read_text(encoding="utf-8")
+
+    def test_every_step_after_the_resolver_skips_an_obsolete_head(self) -> None:
+        # The resolver exits 0 on an obsolete head, so a later step that does
+        # not check the output would run against an empty PR number -- and a
+        # check-run POST would publish a verdict for nothing.
+        workflow = yaml.safe_load(_workflow(OBSOLETE_HEAD_LANE))
+        steps = workflow["jobs"]["fork-gpt-review"]["steps"]
+        resolver = next(i for i, step in enumerate(steps) if step.get("id") == "pr")
+        later = steps[resolver + 1 :]
+        assert later
+        for step in later:
+            label = step.get("name") or step.get("uses")
+            cond = " ".join(str(step.get("if", "")).split())
+            assert "steps.pr.outputs.obsolete != 'true'" in cond, label
+            # A top-level `||` would run the step whenever its other side
+            # holds, obsolete or not.
+            assert "||" not in re.sub(r"\([^()]*(?:\([^()]*\)[^()]*)*\)", "", cond), label
 
     @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
     @pytest.mark.parametrize(("repo", "ref"), [("", _REF), (_REPO, "")])
@@ -6733,6 +6787,15 @@ class TestDeploymentNeutralFramingParity:
                 "across every prompt that carries it (issues #3451, #3484)"
             )
 
+    def test_framing_states_the_keystone_read_write_split(self):
+        # AGENTS.md "Keystone": the agent cannot write its ceiling and can read
+        # it on purpose. A framing that says it can read neither licenses a
+        # reviewer to demand a text-matched read block AGENTS.md forbids.
+        flat = _flat(self._framing_block(self.LANES[0]))
+        assert "it can never WRITE security_policy.json" in flat
+        assert "a read through a spawned shell is permitted by design" in flat
+        assert "can neither read nor write" not in flat
+
     def test_no_lane_reintroduces_the_single_user_premise(self):
         # codex-review.yml does not inline the framing (it splices
         # gpt-repo-context.md) but its remaining inline text must not
@@ -6767,6 +6830,11 @@ OVERRIDE_READ_LANES = (
 )
 
 
+# Lanes whose override read stops at the PRIMARY installation rate limit
+# instead of retrying it.
+PRIMARY_LIMIT_LANES = ("codex-review.yml",)
+
+
 class TestOverrideReadFailureFailsClosed:
     """Execute the ACTUAL override-record read from each lane with ``gh`` stubbed.
 
@@ -6787,7 +6855,14 @@ class TestOverrideReadFailureFailsClosed:
         end = script.index('actor="')
         return script[start:end]
 
-    def _run_read(self, tmp_path: Path, lane: str, gh_status: int = 0, fail_first: int = 0):
+    def _run_read(
+        self,
+        tmp_path: Path,
+        lane: str,
+        gh_status: int = 0,
+        fail_first: int = 0,
+        gh_error: str = "gh: could not reach the API",
+    ):
         bash = _bash()
         if bash is None:
             pytest.skip("the read block is Bash; skip where Bash is absent")
@@ -6805,7 +6880,7 @@ class TestOverrideReadFailureFailsClosed:
         stub = f'#!/bin/sh\nprintf x >> "{attempts}"\n'
         if gh_status:
             # Stand in for an API failure on every attempt (5xx, rate limit).
-            stub += f'echo "gh: could not reach the API" >&2\nexit {gh_status}\n'
+            stub += f'echo "{gh_error}" >&2\nexit {gh_status}\n'
         elif fail_first:
             stub += (
                 f'if [ "$(wc -c < "{attempts}")" -le {fail_first} ]; then\n'
@@ -6874,6 +6949,22 @@ class TestOverrideReadFailureFailsClosed:
         assert "::error::" in result.stdout
         assert "re-run this job" in result.stdout
         assert attempts.read_text(encoding="utf-8") == "xxx"
+        assert not out_file.exists(), "a record was emitted from a failed read"
+
+    @pytest.mark.parametrize("lane", PRIMARY_LIMIT_LANES)
+    def test_primary_rate_limit_is_not_retried(self, lane: str, tmp_path: Path):
+        # The primary installation limit resets hourly: a retry cannot
+        # succeed and spends shared quota, so one attempt is the whole budget.
+        result, attempts, out_file, _ = self._run_read(
+            tmp_path,
+            lane,
+            gh_status=1,
+            gh_error="gh: API rate limit exceeded for installation ID 1. (HTTP 403)",
+        )
+        assert result.returncode != 0, "a read that never succeeded passed the step"
+        assert "PRIMARY rate limit" in result.stdout
+        assert "after the hourly reset" in result.stdout
+        assert attempts.read_text(encoding="utf-8") == "x"
         assert not out_file.exists(), "a record was emitted from a failed read"
 
     @pytest.mark.parametrize("lane", OVERRIDE_READ_LANES)
@@ -11158,6 +11249,7 @@ class TestDesignTakeAwayCheck:
         named = (
             "website/src/",
             "src/kiro_crew/dashboard/chat_runner.py",
+            "src/kiro_crew/dashboard/chat_turn/",
             "src/kiro_crew/session_agent_selection.py",
             "src/kiro_crew/subagent_manager/",
             "src/kiro_crew/subagent_persistence.py",
@@ -18494,3 +18586,310 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
         assert read("rerun.txt") == ""
         assert "head repository or branch is gone" in result.stdout, _proc_log(result)
         assert "pr-readiness.yml/dispatches" in read("dispatch.txt")
+
+
+def _grep_has_pcre(bash: str, path: str) -> bool:
+    """The Code Review greps use `grep -P`, which BSD grep and Git for Windows lack."""
+    probe = subprocess.run(
+        [bash, "-c", "printf 'a\\n' | grep -qP 'a(?!b)'"],
+        env=_child_env({"PATH": path}),
+        check=False,
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+# A `grep` that hands `-P` patterns to perl (PCRE's own dialect) and every other
+# call to the real grep. The Code Review steps only ever read `-P` from stdin with
+# `-n`, `-q` or `-v`, which is all this implements.
+_PCRE_GREP_SHIM = r"""#!/usr/bin/env bash
+real=%s
+case "$1" in -*P*) ;; *) exec "$real" "$@" ;; esac
+flags=$1; shift
+pat=$1
+[ "$pat" = -- ] && { shift; pat=$1; }
+N=0; V=0; Q=0
+case "$flags" in *n*) N=1 ;; esac
+case "$flags" in *v*) V=1 ;; esac
+case "$flags" in *q*) Q=1 ;; esac
+PAT=$pat N=$N V=$V Q=$Q exec perl -ne '
+  my $hit = /$ENV{PAT}/ ? 1 : 0;
+  $hit = !$hit if $ENV{V};
+  if ($hit) { $m = 1; next if $ENV{Q}; print $ENV{N} ? "$.:$_" : $_ }
+  END { exit($m ? 0 : 1) }'
+"""
+
+
+def _pcre_grep_path(bash: str, tmp_path: Path) -> str:
+    """PATH under which `grep -P` works: the host's own, else the perl shim."""
+    path = os.environ.get("PATH", "")
+    if _grep_has_pcre(bash, path):
+        return path
+    real = subprocess.run(
+        [bash, "-c", "command -v grep"],
+        env=_child_env({"PATH": path}),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    shim_dir = tmp_path / "pcre-grep"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "grep"
+    shim.write_bytes((_PCRE_GREP_SHIM % shlex.quote(real)).encode())
+    shim.chmod(0o755)
+    return os.pathsep.join([str(shim_dir), path])
+
+
+class TestCodeReviewGreps:
+    """Run the Code Review grep steps against a real two-commit repository.
+
+    Each case adds one line to one file and asserts what the step does with it,
+    so a pathspec that skips a file or a regex that misses a shape fails here
+    instead of passing silently in CI.
+    """
+
+    def _run(
+        self, tmp_path: Path, step: str, rel: str, line: str, workdir: str
+    ) -> "subprocess.CompletedProcess[str]":
+        # The Code Review job runs these steps under bash with GNU `grep -P`.
+        # A host whose grep lacks -P runs them through the perl shim; a host
+        # without bash, git or a working -P fails, never skips.
+        bash = _bash()
+        assert bash is not None, "these cases need bash (Git Bash on Windows)"
+        assert shutil.which("git") is not None, "these cases need git"
+        path = _pcre_grep_path(bash, tmp_path)
+        assert _grep_has_pcre(bash, path), "these cases need grep -P or perl"
+        repo = tmp_path / "repo"
+        repo.mkdir(exist_ok=True)
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"// seed\n")
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-qm", "base"], check=True)
+        base = subprocess.run(
+            [*git, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        target.write_bytes(f"// seed\n{line}\n".encode())
+        subprocess.run([*git, "commit", "-qam", "head"], check=True)
+        head = subprocess.run(
+            [*git, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        script = _step_script(_workflow("code-review.yml"), step)
+        env = _child_env({"PATH": path, "BASE": base, "HEAD": head})
+        return subprocess.run(
+            [bash, "-c", script],
+            cwd=repo / workdir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+
+    @pytest.mark.parametrize(
+        ("rel", "line", "blocks"),
+        (
+            # A file directly under src/ is reached (':(glob)' pathspec).
+            ("src/App.tsx", "el.innerHTML = html", True),
+            ("src/rum.ts", "el.outerHTML += html", True),
+            ("src/a/b.ts", "el['innerHTML'] = html", True),
+            ("src/a/b.ts", "el.insertAdjacentHTML('beforeend', html)", True),
+            ("src/a/b.ts", "if (el.innerHTML === prev) {}", False),
+            ("src/a/b.ts", "mermaid.initialize({ 'securityLevel' : \"antiscript\" })", True),
+            ("src/a/b.ts", "mermaid.initialize({ securityLevel: 'strict' })", False),
+            ("src/main.tsx", "<span onClick={go}>x</span>", True),
+            ("src/a/b.tsx", '<div data-role="x" onClick={go}>x</div>', True),
+            ("src/a/b.tsx", '<span onClick={() => go()} role="button">x</span>', False),
+            ("src/a/b.tsx", "// a <div onClick> in a comment", False),
+            # Brand components are not exempt; only the legacy KiroGhost.tsx is excluded.
+            ("src/components/FooLogo.tsx", '<svg viewBox="0 0 1 1"></svg>', True),
+            ("src/components/KiroGhost.tsx", '<svg viewBox="0 0 1 1"></svg>', False),
+        ),
+    )
+    def test_frontend_blocking_greps(self, tmp_path: Path, rel: str, line: str, blocks: bool):
+        result = self._run(
+            tmp_path, "Check frontend blocking rules", f"website/{rel}", line, "website"
+        )
+        assert (result.returncode != 0) is blocks, _proc_log(result)
+
+    @pytest.mark.parametrize(
+        ("rel", "line", "warns"),
+        (
+            ("src/index.css", "@keyframes spin { }", True),
+            ("src/a/b.css", "/* no @keyframes here */", False),
+            ("src/App.tsx", '<p className="text-[8px]" />', True),
+            ("src/a/b.tsx", "// bg-gray-100 is a token we avoid", False),
+        ),
+    )
+    def test_frontend_advisory_greps(self, tmp_path: Path, rel: str, line: str, warns: bool):
+        result = self._run(
+            tmp_path, "Check frontend blocking rules", f"website/{rel}", line, "website"
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert ("::warning::" in result.stdout) is warns, _proc_log(result)
+
+    @pytest.mark.parametrize(
+        "line",
+        (
+            "open(Path.home() / '.kiro/crew/.env')",
+            "open(os.path.expanduser('~/.kiro/crew/security_policy.json'))",
+            "open('.kirocrew/.env')",
+        ),
+    )
+    def test_backend_sensitive_path_grep_knows_the_data_home(self, tmp_path: Path, line: str):
+        result = self._run_backend(tmp_path, "src/kiro_crew/thing.py", line)
+        assert result.returncode != 0, _proc_log(result)
+        assert "Sensitive credential/keystone paths" in result.stdout, _proc_log(result)
+
+    def _run_backend(
+        self, tmp_path: Path, rel: str, line: str
+    ) -> "subprocess.CompletedProcess[str]":
+        # The step also asserts the keystone leaf and tuple in the tree; seed the
+        # two files it greps so only the check under test decides the outcome.
+        repo = tmp_path / "repo"
+        for seed, text in (
+            ("src/kiro_crew/security/paths.py", '"denied_commands.json"\n'),
+            ("src/kiro_crew/platform/governance.py", '".kiro/crew/denied_commands.json"\n'),
+        ):
+            (repo / seed).parent.mkdir(parents=True, exist_ok=True)
+            (repo / seed).write_text(text, encoding="utf-8")
+        return self._run(tmp_path, "Check backend security rules", rel, line, ".")
+
+    def test_bool_tripwire_covers_the_security_handler(self, tmp_path: Path):
+        result = self._run_backend(
+            tmp_path,
+            "src/kiro_crew/dashboard/handlers/security.py",
+            "x = bool(denied.get('disable_all'))",
+        )
+        assert result.returncode != 0, _proc_log(result)
+        assert "_coerce_bool()" in result.stdout, _proc_log(result)
+
+
+class TestGptDowngradeFenceTable:
+    """The codex-review.yml comment calls its fence table complete. Hold it to
+    that: every AUTOSDE rule id is either matched by the Anchor fence and named
+    as fenced, or not matched and named as NOT fenced."""
+
+    def test_every_rule_id_is_classified_as_the_fence_classifies_it(self) -> None:
+        workflow = _workflow("codex-review.yml")
+        match = re.search(r"SECURITY_RE: '(.*)'\n", workflow)
+        assert match, "SECURITY_RE moved"
+        anchor_re = re.compile(
+            match.group(1) + r"|\bsecurity\b|residual/|harness-parity|no-test-side-effects",
+            re.IGNORECASE,
+        )
+        start = workflow.index("#   - NOT fenced (downgrade adjudication is the intended path):")
+        end = workflow.index("#   - a NEW AUTOSDE rule id defaults to NOT fenced", start)
+        table = workflow[start:end]
+        split = table.index("#   - fenced by the vocabulary above, not by name:")
+
+        # Re-join ids the comment hyphen-wrapped across lines.
+        def ids_in(text: str) -> str:
+            text = re.sub(r"-\n\s*#\s*", "-", text)
+            return " ".join(text.replace("#", " ").split())
+
+        not_fenced, by_vocab = ids_in(table[:split]), ids_in(table[split:])
+        root = yaml.safe_load((ROOT / "AUTOSDE.yaml").read_text(encoding="utf-8"))
+        for rule in root["custom-rules"]:
+            rid = rule["id"]
+            fenced = anchor_re.search(f"Anchor: {rid}") is not None
+            if rid in ("harness-parity", "no-test-side-effects"):
+                assert fenced, rid  # fenced by name, documented above the table
+            elif fenced:
+                assert rid in by_vocab, f"{rid} is fenced but not listed as fenced"
+            else:
+                assert re.search(
+                    rf"(?<![\w-]){re.escape(rid)}(?![\w-])", not_fenced
+                ), f"{rid} is not fenced but missing from the NOT fenced list"
+        website = yaml.safe_load((ROOT / "website" / "AUTOSDE.yaml").read_text(encoding="utf-8"))
+        for rule in website["custom-rules"]:
+            if anchor_re.search(f"Anchor: {rule['id']}"):
+                assert rule["id"] in by_vocab, rule["id"]
+
+
+def _fork_parity_flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _fork_parity_steps(workflow: str) -> list[dict]:
+    doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))
+    return [step for job in doc["jobs"].values() for step in job.get("steps", [])]
+
+
+def _fork_parity_paragraphs(text: str) -> list[str]:
+    return [_fork_parity_flat(p) for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
+class TestForkGptRepoContextParity:
+    """fork-gpt-review.yml inlines the REPO CONTEXT that codex-review.yml
+    splices from gpt-repo-context.md. Every shared paragraph must match; the
+    paragraphs below are the declared lane-specific deviations."""
+
+    # gpt-repo-context.md paragraphs the fork lane deliberately words differently
+    # (keyed by their opening words).
+    SAME_REPO_ONLY = (
+        "Follow the conventions in CLAUDE.md",  # fork adds the router sentence
+        "Start from the changes this branch introduces",  # fork reads a patch file
+        "══════",  # DIVISION OF LABOUR: no CodeQL on forks
+        "NEVER report anything those tools own",  # fork: "the tools that DO run"
+        "PRECEDENCE",  # fork lane has no adjudication ledger (no step 0)
+    )
+    FORK_ONLY = (
+        "Follow the conventions in CLAUDE.md",
+        "The changes under review are the GitHub-authentic",
+        "══════",
+        "NOTE — FORK LANE: CodeQL does NOT run",
+        "NEVER report anything the tools that DO run own",
+        "PRECEDENCE",
+    )
+
+    def _fork_block(self) -> str:
+        run = next(
+            step["run"]
+            for step in _fork_parity_steps("fork-gpt-review.yml")
+            if "REPO CONTEXT:" in (step.get("run") or "")
+        )
+        start = run.index("REPO CONTEXT:")
+        return textwrap.dedent(run[start : run.index("\nEOF", start)])
+
+    def _shared_block(self) -> str:
+        text = (REVIEW_PROMPTS / "gpt-repo-context.md").read_text(encoding="utf-8")
+        return text[text.index("REPO CONTEXT:") :]
+
+    def test_every_shared_paragraph_is_carried_verbatim(self) -> None:
+        fork = _fork_parity_paragraphs(self._fork_block())
+        shared = _fork_parity_paragraphs(self._shared_block())
+        missing = [
+            p[:80] for p in shared if p not in fork and not p.startswith(self.SAME_REPO_ONLY)
+        ]
+        assert missing == [], f"fork-gpt-review.yml REPO CONTEXT drifted: {missing}"
+
+    def test_fork_adds_only_declared_fork_parity_paragraphs(self) -> None:
+        fork = _fork_parity_paragraphs(self._fork_block())
+        shared = _fork_parity_paragraphs(self._shared_block())
+        extra = [p[:80] for p in fork if p not in shared and not p.startswith(self.FORK_ONLY)]
+        assert extra == [], f"undeclared fork-only REPO CONTEXT paragraphs: {extra}"
+
+    def test_sandbox_scope_rule_reaches_the_fork_lane(self) -> None:
+        block = _fork_parity_flat(self._fork_block())
+        assert "THE SHELL COMMAND GATE IS NOT THE ONLY CONTROL" in block
+        assert "the sandbox's SCOPE is not yours to widen either" in block
+
+    def test_test_matrix_is_named_not_counted(self) -> None:
+        block = _fork_parity_flat(self._fork_block())
+        assert "12 pytest shards" not in block
+        assert "3.10" not in block
+        assert "(`backend-test` and `backend-test-windows` in ci.yml)" in block
+        ci = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+        assert {"backend-test", "backend-test-windows"} <= set(ci["jobs"])

@@ -139,8 +139,9 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
 }
 
 /** The agent chip. Chrome type: an agent name is a label, not code. `font-mono`
- *  would pin `var(--mono)`, which Settings → Display → Font Family never
- *  writes, so it would make the shelf ignore the user's typeface. */
+ *  would pin `var(--mono)`, which Settings → Display → Font Family writes only
+ *  for OpenDyslexic, so for every other family it would make the shelf ignore
+ *  the user's typeface. */
 export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agentSource, isRunning, shelfCompact, onAgentClick }: {
   agentName: string
   agentLabel?: string
@@ -157,7 +158,7 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
       disabled={isRunning}
       // Inherited default: explain what the ` . default` marker means, on
       // hover (title) AND keyboard focus / screen readers (aria-label),
-      // because the marker alone reads as opaque (#8770 UX). No glyph, no
+      // because the marker alone reads as opaque. No glyph, no
       // layout change -- text on demand. A pinned chip keeps the plain
       // switch hint; it has nothing to explain.
       title={isRunning

@@ -13,7 +13,9 @@ are checked by different machines, which is why they drift.
 > is `agent-spec.md` beside this file: the charter (what it is for and what it may never
 > do) plus the narrowed toolset that makes the charter true against a tool list rather
 > than only against prose. A human or another agent following this file gets the same
-> procedure; the crewmate just starts with it already loaded.
+> procedure. The spec is NOT yet registered as an installed agent (no installer or
+> owned-spec entry ships it; see `docs/system-specs/modules/dashboard-templates.md`), so
+> today nobody starts with this loaded: load this skill yourself.
 
 The page is inert html. The host sanitizes it, renders it, and binds text into it by
 `data-dashboard-field`. No type checker is anywhere near that binding, because one half
@@ -41,7 +43,7 @@ supplies three sentences and nothing else.
 | 4 | `test_dashboard_template_<slug>.py` | the parity gate, both directions, plus the planted failures |
 | 5 | one line in `registry.py` | `slug -> (contract, provider, source fold, version)` |
 
-Files 1-4 live beside the package's other templates; file 4 goes in the repository's
+Files 1-3 live beside the package's other templates; file 4 goes in the repository's
 test directory. The scaffold writes all four and prints line 5 for you to paste.
 
 ## Do it in this order
@@ -49,15 +51,17 @@ test directory. The scaffold writes all four and prints line 5 for you to paste.
 1. **Name the question the page answers, in one sentence a person would ask.** "How much
    of this goal is settled, and what is waiting on me." Not "a board of metrics". If you
    cannot write the sentence, you do not yet know which fold to read.
-2. **Pick the fold.** Take one from the ten below. A new fold is the exception and needs
+2. **Pick the fold.** Take one of the ten advertised folds in `FOLDS.md` (not the
+   *(internal)* `class` fold, which `--fold` still accepts). A new fold is the exception and needs
    its own justification section in the pull request body, because a fold is a durable
    projection of the append-only log and every reader pays for it.
 3. **Write the field list.** One token per value: `name:str|unsaid` for text, or
-   `name:fraction:<total>` for a count, naming the fold key that holds its total. Both halves are checked against the fold, and the numerator is read under the field's own name -- add a fourth token, `shown:fraction:calls:open`, when the card field is deliberately named something else. There is no plain `str` kind: every declared field is
+   `name:fraction:<total>` for a count, naming the fold key that holds its total. Both halves are checked against the fold, and the numerator is read under the field's own name -- add a fourth token, `shown:fraction:calls:open`, when the card field is deliberately named something else. A text field takes the same escape as one optional third token, `shown:str|unsaid:<fold_key>`. There is no plain `str` kind: every declared field is
    read out of the fold, and a fold value can always be absent, so a text field is
    `str | Unsaid` or it is a contract the provider cannot satisfy. (`contract_version`
    and `captured_at` are plain `str` because the provider writes them; the scaffold adds
-   them itself.) Keep it under 24 fields; the host refuses an over-cap card WHOLE, so a
+   them itself.) Keep the whole card at 24 fields or fewer, the five the scaffold adds
+   (`contract_version`, `captured_at`, `lede`, `you`, `notes`) included, so at most 19 of yours; the host refuses an over-cap card WHOLE, so a
    page one field too large stops appearing rather than degrading.
 4. **Run the scaffold.** It emits the four files from that one list, so the four cannot
    disagree about what the fields are.

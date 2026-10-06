@@ -283,12 +283,49 @@ def test_main_passes_the_capped_env_to_every_command(gate, monkeypatch) -> None:
     seen: list[dict] = []
 
     def fake_run(cmd, cwd, env=None, **_kwargs):
-        seen.append(env or {})
+        if cmd[:2] != ["git", "merge-base"]:
+            seen.append(env or {})
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     assert gate.main([]) == 0
     assert seen and 2 <= int(seen[0]["PYTEST_XDIST_AUTO_NUM_WORKERS"]) <= 12
+
+
+def test_gate_env_supplies_the_i18n_base_ref(gate, monkeypatch) -> None:
+    """Without I18N_BASE_REF the [changed-values] style tests skip green, so a
+    local run passed catalog values CI failed. The gate supplies the merge-base."""
+    monkeypatch.delenv("I18N_BASE_REF", raising=False)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    env = gate.gate_env("origin/main")
+    assert env["I18N_BASE_REF"] == "abc123"
+    assert calls == [["git", "merge-base", "HEAD", "origin/main"]]
+    assert 2 <= int(env["PYTEST_XDIST_AUTO_NUM_WORKERS"]) <= 12
+
+
+def test_gate_env_keeps_an_explicit_i18n_base_ref(gate, monkeypatch) -> None:
+    monkeypatch.setenv("I18N_BASE_REF", "deadbeef")
+
+    def fail_run(*_a, **_k):
+        raise AssertionError("must not resolve a base the caller already set")
+
+    monkeypatch.setattr(gate.subprocess, "run", fail_run)
+    assert gate.gate_env("origin/main")["I18N_BASE_REF"] == "deadbeef"
+
+
+def test_gate_env_leaves_the_ref_unset_when_the_base_cannot_resolve(gate, monkeypatch) -> None:
+    monkeypatch.delenv("I18N_BASE_REF", raising=False)
+    monkeypatch.setattr(
+        gate.subprocess, "run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 128, stdout="", stderr="bad"),
+    )
+    assert "I18N_BASE_REF" not in gate.gate_env("origin/nope")
 
 
 def test_unreadable_diff_fails_closed(gate, monkeypatch) -> None:

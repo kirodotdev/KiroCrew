@@ -618,8 +618,8 @@ SESSION_NOT_FOUND_GIVE_UP_TEXT = (
 
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
-# classify them identically to the turn logic here). Re-exported under their
-# historical names so existing imports keep working.
+# classify them identically to the turn logic here). Re-exported here so
+# callers importing them from chat_runner resolve them.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _BUSY_RECOVER_MSG,
@@ -6260,8 +6260,8 @@ def _arm_queued_delivery_settlement(
     """Open the retention window on a drained completion once its turn has RUN.
 
     The gateway records the owed agent ids on the slot when it has to QUEUE a
-    sub-agent completion (``KiroCrewGateway._defer_queued_delivery``), keyed on the
-    announce content, which is what keeps each ``result.txt`` alive for as long as
+    sub-agent completion (``GatewayOrchestrator._defer_queued_delivery`` in
+    ``slack/gateway.py``), keyed on the announce content, which is what keeps each ``result.txt`` alive for as long as
     the row waits. This is the other half — but it deliberately does not fire at
     dispatch.
 
@@ -18581,7 +18581,7 @@ async def _run_chat(
             # The member's private agent file differs from what was last
             # reviewed. A retry re-runs the same check, so the row names the
             # fix (review it in Capabilities) and the card links there instead
-            # of offering Resume. The tamper check itself is unchanged.
+            # of offering Resume.
             _err_text = (
                 "materialization_changed: This crew member's agent file changed "
                 "outside the Capabilities page. Open Capabilities, review the "

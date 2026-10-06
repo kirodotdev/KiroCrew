@@ -27,9 +27,9 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 ### Per-Thread (Slack)
 
 ```
-!ta set code-reviewer    # this thread uses code-reviewer
+!ta code-reviewer        # this thread uses code-reviewer
 !ta off                  # remove thread override
-!ta status               # show current thread agent
+!ta                      # show current thread agent
 ```
 
 ### Per-Tab (Dashboard)
@@ -79,7 +79,7 @@ You review code changes. Keep every answer short.
 
 Rules that decide whether a `.md` file is an agent:
 
-- It must open with `---` on the first line and close the frontmatter with a line that is exactly `---`. A markdown file without that fence (a `README.md`, notes) is not an agent and is never listed.
+- It must open with `---` on the first line and close the frontmatter with a line that is exactly `---`. A markdown file without that fence (a `README.md`, notes) is not an agent and is never listed. A file that HAS the fence but fails to parse is not skipped: it announced itself as a spec, so it stays an unreadable spec and is reported as one.
 - The frontmatter must be a YAML mapping. Nested fields (`mcpServers`, `permissions`) work as in JSON.
 - The body is the prompt. A frontmatter `prompt` field is used only when the body is empty.
 - `<name>.json` and `<name>.md` side by side is the same agent twice. In Kiro Crew the JSON file wins and the markdown file is not read; the gateway log warns which file is shadowed. kiro-cli v3's own on-disk loader resolves the pair the other way round (checked against the loader bundled with kiro-cli 2.21.4: it reads files in name order and the later `.md` overwrites), so keep one file per name to get the same agent everywhere. If you kept a JSON copy as a workaround, delete one of the two.
@@ -126,6 +126,12 @@ Resolution rules:
 
 `file://` resources (steering globs) are never touched by the editor, and hand-authored `skill://` entries the editor cannot express — wildcards like `skill://~/.kiro/skills/*/SKILL.md`, or paths outside the known skill roots — are listed read-only and preserved across edits.
 
+What the Skills section shows:
+
+- When two installed package skills share a name, each chip and picker row adds a **Located in …** line naming that copy's directory, so you can tell which copy is mapped.
+- A mapped non-package skill with no installed copy shows as a warning chip, with a count under the list telling you to remove it and pick a replacement.
+- If the skill catalog cannot be read, the section shows **Could not load the skill catalog.** and **Add skill** is disabled.
+
 ## Agent Config Files
 
 | File | Purpose |
@@ -133,7 +139,7 @@ Resolution rules:
 | `src/kiro_crew/config/defaults.json` | Shipped base configuration. A development project can override it with `agents/defaults.json`. |
 | `src/kiro_crew/config/prompt.md` | Shipped system prompt. A development project can override it with `agents/prompt.md`. |
 | `~/.kiro/crew/agent.json` | Optional user overrides merged on top of defaults. |
-| `~/.kiro/crew/prompt.md` | Optional user prompt override, which takes priority over the shipped prompt. |
+| `~/.kiro/crew/prompt.md` | Optional user prompt override, which takes priority over the shipped prompt. It must be UTF-8: a file that is unreadable, misencoded (for example UTF-16 from PowerShell redirection) or refused falls back to the shipped prompt with a gateway WARNING. |
 | `~/.kiro/agents/kirocrew.json` | Installed generated agent configuration. |
 
 ## Reinstalling Agent Config

@@ -2,14 +2,6 @@
 
 ## Overview
 
-Foreign-agent onboarding is gated independently by `dashboard.import_onboarded`,
-migrated from the older `dashboard.onboarded`, and the settings it projects are
-merged strictly (merge-only, never a wholesale replace). The loader preserves legacy
-numeric strings and integral floats already present in a config file, while rejecting
-booleans and non-integral, malformed, or non-finite values. Imported settings are
-type-validated before they are written, and the CLI converts typed values before
-writing.
-
 The config package loads runtime configuration from `~/.kiro/crew/config.json`
 using stdlib dataclasses with sensible defaults. `config/sections.py` and
 `config/loader.py` are the two facades callers import. Each composes the owner
@@ -41,7 +33,7 @@ representative seams of each kind.
 
 | Owner | Owns |
 |---|---|
-| `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). A leaf: it imports nothing from `kiro_crew`. |
+| `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. It also holds `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
@@ -175,8 +167,9 @@ Kiro-family apps share a single directory a user can secure. `config_dir()`
 (in `kiro_crew/config/paths.py`, re-exported from `kiro_crew/config/loader.py`)
 is the single accessor and resolves to:
 
-1. `$KIROCREW_HOME` when set (used as-is; refuses system directories like `/`,
-   `/usr`, `/System`, `/etc`), else
+1. `$KIROCREW_HOME` when set (expanded and resolved; refuses any filesystem or
+   drive root and system directories such as `/usr`, `/System`, `/etc` and the
+   macOS-resolved `/private/etc`), else
 2. `~/.kiro/crew` (the default).
 
 **No migration — net-new users only.** All supported installs start directly in
@@ -232,16 +225,15 @@ eliminate, the one-way-door risk above; the release gate still stands.
 
 > **Release gate (UNINSTALLER-EXCLUDE-CREW).** This is a pre-release,
 > human-sign-off dependency, NOT a code change in this repo: the code cannot
-> constrain another product's uninstaller. Before the first release that ships
-> data under `~/.kiro/`, the Kiro Crew product owner MUST confirm the
+> constrain another product's uninstaller. For every release that ships data
+> under `~/.kiro/`, the Kiro Crew product owner MUST confirm the
 > Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because
 > there is no `~/.kirocrew.archived` fallback for any install, so a
 > `~/.kiro/`-wide wipe would be unrecoverable total data loss. Until confirmed,
 > the placement decision is acknowledged-but-owned here under this name so it is
 > not lost. **Tracked as release-blocking in
 > [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355)**; the sign-off
-> must be recorded there and the issue closed
-> before tagging the first release containing this change.
+> must be recorded there.
 
 **Paths are resolved per call, never captured at import.** Because
 `config_dir()` re-reads `$KIROCREW_HOME` on every call and resolution/maintenance
@@ -257,8 +249,8 @@ An import-time binding captures whatever home was active when the module was
 first imported, which breaks two things at once: pod isolation (a pod exports
 its own `KIROCREW_HOME`) and test isolation — `conftest.py`'s autouse `_isolate_kirocrew_home`
 fixture runs *after* collection has already imported the module under test, so
-it cannot reach a frozen constant. That last hole let a local test run write
-2128 fixture rows into an operator's real usage store.
+it cannot reach a frozen constant, so a test run could write fixture rows into an
+operator's real usage store.
 
 The required shape keeps the module-level name as an explicit opt-in override
 (`None` = resolve live), so existing `monkeypatch.setattr(mod, "_SOME_DIR", tmp)`
@@ -277,7 +269,7 @@ still reads the constant directly becomes a **mypy error** rather than a silent
 `test/test_lazy_data_home_paths.py`, which walks the AST of `src/kiro_crew` for
 module-level assignments calling any factory declared in `config/paths.py` and
 fails on every hit. The factory list is derived from `paths.py` itself, so a
-newly added factory is covered without editing the test. Issue #874.
+newly added factory is covered without editing the test.
 
 **`config_dir()` maintains; `data_home()` only resolves.** `config_dir()` is
 *resolve + maintain*: besides resolving the home it `mkdir`s it and refreshes the
@@ -307,9 +299,8 @@ drift apart; a regression test pins both directions.
 the cached branch reads the same `_resolved_home` that `config_dir()` populates,
 so there is one source of truth for the location.
 
-Existing direct `config_dir()` callers are unchanged and keep the maintenance
-behaviour, including 25 pre-existing calls that already sit inside async
-handlers.
+Direct `config_dir()` callers keep the maintenance behaviour; a hot or async path
+should call `data_home()` instead.
 
 ## Workspace Root
 
@@ -333,16 +324,22 @@ Each session/task gets an isolated subdirectory under this root via `_session_wo
 - Background: `kirocrew-workspace/_bg`
 - Cron: `kirocrew-workspace/cron_{job_id}`
 - TaskRunner: `kirocrew-workspace/taskrunner_main`
+- One-run directories for a subagent and a stateless cron run:
+  `kirocrew-workspace/subagent_<id>` and `kirocrew-workspace/cron_<job>_<run>`
+  (`session_work_dir._DERIVED_SESSION_SHAPES`). These carry a provenance marker and
+  are reclaimed when only residue is left, at shutdown and by the predecessor sweep;
+  the contract is in [acp-client](acp-client.md).
 
-The selected root is created on first call and realpath-normalized before session
-subdirectories are derived.
+`workspace_root()` creates the selected root on first call and realpath-normalizes
+it before session subdirectories are derived; `workspace_root(create=False)`
+resolves it without creating it (the doctor's census uses that).
 
 ## Project Directory Resolution
 
 `KIROCREW_PROJECT_DIR` env var controls where agent config and skills are loaded from:
 
 1. Env var `KIROCREW_PROJECT_DIR` (if set and valid)
-2. CWD walk-up — CLI walks up from CWD looking for `skills/` + `src/kiro_crew/` (the `agents/` dir was removed in commit bbbc1f6e when agent config moved into `src/kiro_crew/config/`)
+2. CWD walk-up — CLI walks up from CWD looking for `skills/` + `src/kiro_crew/`. Agent config ships in `src/kiro_crew/config/`; when a user creates `<project>/agents/defaults.json` or `<project>/agents/prompt.md`, `agent._shipped_defaults` / `_shipped_prompt` prefer those over the bundled copies
 3. Saved path in `~/.kiro/crew/project_dir` (written by `kirocrew setup`)
 4. Bundled fallback — `config/defaults.json` and `builtin_skills/` inside the package
 
@@ -353,15 +350,22 @@ The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 A chat folder record in `folders.json` may carry an optional `steering_dirs`
 list of absolute (or `~`-prefixed) directories, alongside its existing
 `project_dir`/`default_agent`/`color`/`tags`. Every chat in the folder's subtree
-loads each directory's `**/*.md` as steering, in addition to global and project
+loads each directory's `**/*.md` files whose inclusion is `always` or absent as
+steering (`manual`, `auto` and `fileMatch` files are skipped), in addition to global and project
 steering. The key is omitted when empty (like `color`/`tags`), so "absent means
 none" is the single on-disk representation and a PATCH with `[]` clears it.
 
-- **Validation** (`_validate_steering_dirs`) reuses the `_validate_project_dir`
-  contract per entry — absolute or `~`-prefixed, `expanduser` + `realpath`,
-  `is_sensitive_path()` rejection (SEL-logged), and must be an existing
-  directory — plus a `MAX_FOLDER_STEERING_DIRS` (16) list cap and rejection of
-  duplicates within one folder (compared by resolved realpath). Failures return
+- **Validation** (`dashboard/chat_folders.py` `_validate_steering_dirs`) checks
+  each entry: at most `MAX_FOLDER_STEERING_DIR_LEN` (4096) characters before and
+  after canonicalization; a UNC path refused before resolution; refused outright
+  on a platform without a pinned tree walk (`pinned_fs.supports_pinned_tree_walk`);
+  canonicalized and screened by `hooks.validate_file_path` (a refusal is
+  SEL-logged); refused when the memory-silo fence cannot be computed or the path
+  crosses a memory silo; and proven to exist by a pinned, no-follow open rather
+  than `isdir`. On top of that come a `MAX_FOLDER_STEERING_DIRS` (16) list cap and
+  rejection of duplicates within one folder (compared by resolved path). The
+  fence, platform and inclusion rules are specified in
+  [providers](providers.md). Failures return
   `400` with code `steering_dirs_invalid`.
 - **Principal gate** (`_refuse_principal_steering_dirs`) runs at both write
   sites BEFORE validation touches any path: only the person may declare a
@@ -386,9 +390,12 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   agent switch resolves one. The dashboard turn path
   (`dashboard/chat_runner.py`) resolves it live from the slot's current
   `folder_id` against the committed folder tree, on every fresh session and
-  every post-compaction reinjection turn. So editing a folder's `steering_dirs`
-  reaches the chats already filed in it at their next fresh session, with no
-  cache to invalidate; a slot with no `folder_id` contributes nothing. A
+  every post-compaction reinjection turn; a V2 member chat resolves it on every
+  turn, because its essentials envelope is rebuilt each turn
+  (`dashboard/chat_turn/turn_context.py` `_folder_steering_turn` is the gate). So
+  editing a folder's `steering_dirs` reaches a template chat already filed in it at
+  its next fresh session and a member chat on its next turn, with no cache to
+  invalidate; a slot with no `folder_id` contributes nothing. A
   resolver error logs a warning naming the slot and the turn proceeds with no
   folder steering, and a directory that has since disappeared is skipped at read
   time rather than failing the turn. Delivery is performed once by the context
@@ -456,6 +463,10 @@ or is cancelled after allocating a store, the creation paths call
 removes the fresh directory only when no member and no store entry references it,
 then restores the in-memory binding so a retry allocates fresh. A publication that
 landed is kept; pre-existing bindings and stores are never deleted or retired.
+A create also purges the member name from the crew-teams record inside the same
+locked mutation (`crew_teams.release_for_create`); a purge that cannot be made
+(`TeamsUnavailable`) refuses the creation, 409 `teams_unavailable` on the dashboard
+and exit 1 from the CLI.
 Degraded or unreadable configuration refuses creation instead of guessing defaults.
 Non-string `member_id` or `owner_member_id` values refuse allocation with
 `UnknownMemoryStore` before forming the reserved-ID set, preserving the raw values,
@@ -804,9 +815,9 @@ these hold; every other case leaves the value exactly as stored:
 - the adoption ledger is readable and does not name the key. This keeps the rewrite
   one-shot even if the marker is later deleted; an unreadable ledger declines.
 
-**What stays unmigrated.** Nothing reports a declined `false` until the registry
-carries a report-only row for the key; the loader already skips that key in the
-same load's superseded-default line when it is the one being removed. The marker
+**What stays unmigrated.** The registry's report-only `skills.lazy_load` row
+(`meaning_moved`) reports a declined `false`; the loader skips that key in the
+superseded-default line only in the load that removes it. The marker
 predates the meaning change: 0.7.0-insider.1 to insider.5 wrote it while `false`
 still meant the full listing, so an install that ran one of those keeps its
 materialized `false`. That is the conservative side of the boundary: the proof
@@ -938,8 +949,8 @@ One entry today: `stt.provider`. Its retired values (`whisper`, `mlx`, `parakeet
 `faster`) degrade to `local`; any other unknown value degrades to `off`, so a
 value nobody can account for never selects the in-process native recogniser
 (kirodotdev/KiroCrew#13179). Because the two resolutions differ, `resolves_to` is
-a callable of the stored value (delegating to `_validated_stt_provider`, the
-loader's own rule) and the entry carries the section `default`. `--adopt` uses
+a callable of the stored value (delegating to `sections.stt_provider_resolution`,
+the loader's own pure resolver) and the entry carries the section `default`. `--adopt` uses
 both: it REWRITES a coerced key as what it resolves to, or deletes it only when
 that resolution IS the default (an absent key resolves to the default). So a
 retired name is adopted by removal and runs as `local` before and after, and an
@@ -995,11 +1006,16 @@ Resolution order:
 
 ```bash
 # Pin a setting in config.local.json (wins over config.json):
-kirocrew config set --local agent.yolo true
+kirocrew config set --local agent.log_level debug
 
 # Save to config.json (the persistent settings file):
-kirocrew config set agent.yolo true
+kirocrew config set agent.log_level debug
 ```
+
+`config set --local` does not validate the dotted key: it warns when the top-level
+section is unknown and writes any leaf into `config.local.json`, which outranks
+`config.json`. Only the plain `config set` answers `Unknown key`. The enum, beacon
+and tailnet gates run before that split, so they apply to both.
 
 A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
@@ -1056,7 +1072,7 @@ Contract:
   saved state, the cloud launch defaults). Gating the read costs nothing, since a
   non-owner can never have written a backup.
 - Keys whose name looks like a credential (`token`, `secret`, `password`,
-  `credential`, `api_key`) are refused on write and filtered on read, so the
+  `credential`, `api_key`, `apikey`) are refused on write and filtered on read, so the
   dashboard bearer token can never land here.
 - Bounds: 200 keys, 128-char keys, 64 KiB per value, 512 KiB total. A patch that
   would breach them is rejected WHOLE; nothing partial is written. The client
@@ -1150,7 +1166,7 @@ Contract:
   marker applies as on the cold path, so a default written by a settings-less
   render between the failure and the retry loses to the host.
 - The composite (`mc-chat-config`) rides that SAME reconcile and failed-restore
-  machinery at per-FIELD granularity, with three wrinkles worth knowing before
+  machinery at per-FIELD granularity, with four wrinkles worth knowing before
   touching `uiPrefs.ts`:
   - MIGRATION from a host backup written by a pre-split build (one whole-blob
     `mc-chat-config` key): the whole blob is expanded into child wire keys once,
@@ -1178,6 +1194,12 @@ Contract:
     the parent only on a legacy marker that carries no child entries at all;
     when child entries are present the exact child key is required, so a default
     a settings-less render wrote AFTER the failure cannot masquerade as owned.
+  - DIRTY marker: `saveChatConfig` records the fields the user edited in
+    `mc-chat-config-dirty` (`markCompositeFieldsDirty`). A dirty child is never
+    withheld and always uploads, even at its default value; it counts as owned
+    during restore and reconcile; its marker clears only for a child the host
+    acknowledged and only once the synced fingerprints persisted; and host adoption
+    (`adoptHostUiPrefsOnNextLoad`) removes the key.
 - Also excluded: any value that GATES A SAFETY CONFIRMATION. `mc-yolo-ack` is the
   instance — its presence makes the approval-mode picker skip the confirmation
   and enable full auto-approval — and the reason is that this file sits in the
@@ -1185,6 +1207,15 @@ Contract:
   the user's next fresh origin. Convenience does not outrank a human gate.
 
 ## Settings import (dashboard Merge)
+
+**HTTP refusals** of `/api/portability/*` (`dashboard/handlers/portability.py`)
+each carry a machine-readable `code`: `file_field_required` (400),
+`invalid_import_mode` (400), `import_archive_invalid` (400, with the validator's
+detail), `import_archive_too_large` (413), `auth_required` (401), a 409 with the
+refusal's own code, and `export_failed` / `import_failed` / `preview_failed`
+(500, opaque prose). A 4xx carries an actionable detail; a coded 5xx does not, so
+the dashboard's `PortabilityTab` `refusalText` shows its own localized fallback for
+a coded 5xx and the server's text otherwise.
 
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
@@ -1221,8 +1252,10 @@ other merge in the product, and it is honest about it
   none: the overlay outranks `config.json` at load, so an installed copy would
   set every key it names over this install's own config. `kirocrew restore
   --mode merge` follows the same rule.
-- Every document the archive carried that the Merge did not apply is named in
-  `settings_kept` -- the plain file names, so the list is bounded by construction
+- Every document the archive carried that the Merge kept the destination's copy
+  of is named in `settings_kept`; a document the Merge refused is named in
+  `refused_merges` instead, and an empty ui-prefs patch is reported as
+  `ui-prefs (nothing to restore)` and named in neither -- the plain file names, so the list is bounded by construction
   (at most four) -- and the dashboard shows them in one notice that points at
   Replace. `ui_prefs_restored: true` is set only when `ui-prefs.json` was
   installed; it tells the dashboard to reload and re-read the browser
@@ -1237,7 +1270,8 @@ own writer writes. The swap runs inside `ui_prefs.replacing_file()` and
 `ChannelSettings.replacing_file()`, which hold each store's writer lock across the
 swap (the notification store also re-reads its file before letting go), so a write
 from another tab or channel cannot publish its pre-import copy over the restored
-file. It then sets `ui_prefs_restored`.
+file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
+`ui-prefs.json`.
 
 ## Unknown keys are preserved on round-trip
 
@@ -1375,8 +1409,12 @@ the provenance of the data it holds: a hit answers for the bytes it was parsed f
 a miss for the bytes just read. A change to this cache that drops or re-derives the
 digest therefore breaks exactly the case it exists for.
 
-`None` means no digest can be bound — the files could not be read whole, or the document
-was unusable and defaults were substituted. A caller must treat that as unknown and
+The digest is taken over the decoded document text — BOM stripped, newlines translated,
+re-encoded as UTF-8 — not the raw file bytes, so a BOM or CRLF change alone does not
+move it. `None` means only that no digest can be bound because a file could not be
+read whole. A document that read whole but failed to parse still carries a digest;
+whether its content is faithful is what `degraded_sections` reports. A caller must
+treat `None` as unknown and
 never as a match; two unknown provenances in particular are not equal. The member event
 log is the current consumer: see `member-event-log.md` for how a roster read and the
 startup sweep each refuse to correct the log from a config they cannot name.
@@ -1826,6 +1864,21 @@ finishing second cannot resurrect a deleted agent). A lookup with no snapshot ye
 builds one lazily **only** in a synchronous context; on a running loop it falls
 back for that turn rather than block.
 
+#### Default-agent healer
+
+`reset_dangling_default_agent` points `default_agent` back at the shipped
+`default` crew when the template the current default binds has been REMOVED — an
+earlier landed snapshot in this process let it dispatch and the current one does
+not. It runs only through `refresh_materialized_agents(heal_default=True)`, which
+only the owner's agent-catalog fetch passes (`dashboard/handlers/agent_catalog.py`),
+and only after a complete scan; the removal evidence is bounded
+(`_MATERIALIZED_SEEN_MAX`, 4096 names). It declines on any uncertainty: an unreadable
+or degraded config, a missing `default` alias, a default already `default`, a
+template the edition still supplies, or a template the row's workspace
+`.kiro/agents` still declares. The write is the default-agent PUT's own locked
+read-modify-write, and every condition is re-derived inside the lock, so a PUT that
+repointed the default in the window wins. The alias row itself is left alone.
+
 ### Effective-agent report (`resolve_effective_agent`)
 `resolve_agent_bindings` stores the REQUESTED agent verbatim and only logs when
 nothing dispatches it, because rewriting the stored name was destructive: the
@@ -2148,11 +2201,11 @@ name:
 - `agent_state.lift_and_strip_bookkeeping()` is the single shared
   implementation of the lift/strip/no-clobber rule above (with a type guard —
   a non-`bool` `model_managed` or non-`str` `cc_model` is stripped but never
-  lifted, since coercing it could silently flip its meaning). All four spec
-  writers call it — the dashboard's whole-config `PUT /api/agent/config`
-  handler, the per-agent `PATCH /api/agent/<name>` handler,
-  `migrate_agent_specs()`, and `_refresh_dynamic_fields()` — so none of them
-  can drift from the other three.
+  lifted, since coercing it could silently flip its meaning). Every spec writer
+  calls it — among them the dashboard's whole-config `PUT /api/agent/config`
+  handler, the per-agent `PATCH /api/agents/detail/{name}` handler,
+  `migrate_agent_specs()` and `_refresh_dynamic_fields()`; the function's callers
+  are the authoritative list — so none of them can drift from the others.
 
 Note: Kiro Crew uses KiroACP (kiro-cli) only — the deleted `claude_code` provider
 was the sole reader of spec `cc_model`, so `cc_model` is now dead config. The
@@ -2356,7 +2409,8 @@ file whole but the load carries `*`, the fingerprint is re-read, and a read the
 file moved under is treated as torn (previous snapshot kept, next tick reloads).
 So on a dispatched change `*` is only the loader's memory of a repaired tear,
 and the section flags — which the loader assigns only to the fail-closed
-sections `dashboard`, `memory` and `publish` (validation removes a malformed
+sections `dashboard` (including `dashboard.tailscale`), `memory`, `publish` and
+`workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
 non-object anywhere else before the loader could flag it) — are the ones a tear
 never produces and a save destroys the evidence of, hence the ones that stay
 sticky and keep their appliers deferred until the restart main documents for a
@@ -2394,7 +2448,11 @@ raises an actionable dashboard notification and remains stale in the watcher,
 which retries the rebuild on later ticks until the generated spec catches up.
 The first successful retry emits both the refresh frame and a recovery
 notification, so the operator is not left with a stale failure message after
-the saved model becomes active.
+the saved model becomes active. A rebuild refused because this instance must not
+own the shared agent home (`wrote=False`) takes the same failure path, notify and
+defer, rather than reading as applied; a successful rebuild also re-runs
+`SessionManager.refresh_defaults` so warm-pool providers minted from the old spec
+are reconciled (`dashboard/server_runtime/config_watch.py` `_apply_default_model`).
 The provider applier only schedules the switch: `reload_provider_factory` clears
 the session registry and then shuts the retired providers down one at a time,
 which can outlast the applier bound, and a timed-out applier is retried on the
@@ -2461,20 +2519,25 @@ Consequences, and they are the point:
   set; the audit closes the gap between "widened at a restart" and "widened in
   two seconds, mid-session, with no trace".
 
-Currently marked: `agent.jail`, `agent.dangerously_skip_permissions`,
-`agent.approval_mode`, `dashboard.url`, `dashboard.tailscale.*`,
-`dashboard.restore_sessions`, `dashboard.restore_window_minutes`,
+The schema is the source of truth: a key needs a restart exactly when
+`requires_restart()` over `SCHEMA_REGISTRY` says so. Regenerated from that call:
+`agent.approval_mode`, `agent.jail`, `agent.dangerously_skip_permissions`,
+`agent.task_dispatch_window`, `agent.task_store_journal_mode`,
+`agent.admit_wait_secs`, `agent.start_collect_timeout_secs`,
+`agent.recovery_backoff_base_secs`, `agent.recovery_backoff_max_secs`,
+`agent.session_start_concurrency`, `messaging.dm_scope` (it names the session-key
+namespace whose per-conversation generation counters are seeded at boot, so a live
+flip could resume a stale session persisted under the other namespace),
+`memory.embedding_dim`, `memory.embed_model_path`, `memory.embed_model_id`,
+`knowledge.extraction_effort`, most of `mcp_gateway.*` (every field except
+`enabled`, `apps_enabled` and `resolve_once_refresh_hours`),
+`mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `instances.enabled`,
+`instances.tunnel_base_port`, `slack.command`, `whatsapp.db_path`, `dashboard.url`,
+`dashboard.tailscale.*` except `keep_awake`, `dashboard.restore_sessions`,
+`dashboard.restore_window_minutes`, `dashboard.surface_channel_sessions`,
 `dashboard.loop_stall_exit_after_secs` (read once at boot to build the loop-stall
-watchdog),
-`dashboard.surface_channel_sessions`, `dashboard.cautious_boot`,
-`dashboard.auto_open_browser`, `tunnel.*`, `instances.*`, `mcp_gateway.*`
-(every field of the section), `memory.embed_model_id`, `memory.embed_model_path`,
-`memory.embedding_dim`, `slack.command`, `whatsapp.db_path`, and
-`messaging.dm_scope` — the last because it names the session-key namespace whose
-per-conversation generation counters are seeded at boot, so a live flip could
-resume a stale session persisted under the other namespace. The schema is the
-source of truth for this list: `requires_restart()` over `SCHEMA_REGISTRY`
-answers it, and this prose is a reader's convenience.
+watchdog), `dashboard.cautious_boot`, `dashboard.auto_open_browser` and `tunnel.*`.
+When the two disagree, the schema wins.
 
 The broker's admission keys are in that `mcp_gateway.*` set and ride the
 daemon's argv from `GatewayManager._spawn_once`: `spawn_concurrency_initial`
@@ -2514,7 +2577,7 @@ happens to notice — which is the bug class this closes.
 
 | Write path | Where |
 |---|---|
-| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write) |
+| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write); an optional `after_write` callback runs inside the lock only after the rename committed, and its exceptions propagate |
 | `KiroCrewConfig.save()` | `config/loader.py` |
 | `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
 | `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
@@ -2557,6 +2620,10 @@ per-channel claims that are not shared).
 
 ## Schema
 
+Selected fields only, not the full schema. The authoritative per-field catalogue is
+the owner modules (`config/sections.py`, `service_sections.py`, `memory_sections.py`,
+`integration_sections.py`) and `GET /api/config/schema`.
+
 ```python
 @dataclass
 class AgentConfig:
@@ -2564,7 +2631,7 @@ class AgentConfig:
     streaming: bool = True
     model: str = "auto"            # resolved from agent config
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
-    sandbox: str = "auto"          # "auto" (default: standard tier -- namespace on Linux, seatbelt on macOS; leaves ~/.aws, ~/.ssh, ~/.kube visible for credential tooling; delegates to kiro-cli's internal sandbox on macOS when enabled) | "strict" (opt-in: also hides ~/.aws incl. sso/cache, ~/.ssh bar known_hosts, ~/.kube, ~/.config/gh and the _CC_FILES credential files; applies to sessions started after the change) | "off" (skips Kiro Crew's sandbox). Enum widened to admit "strict" (the tier sandbox.py always implemented, and the one its remedies name) -- default and the other two values unchanged
+    sandbox: str = "auto"          # "auto" (default: standard tier -- namespace on Linux, seatbelt on macOS; leaves ~/.aws, ~/.ssh, ~/.kube visible for credential tooling; delegates to kiro-cli's internal sandbox on macOS when enabled) | "strict" (opt-in: also hides ~/.aws incl. sso/cache, ~/.ssh bar known_hosts, ~/.kube, ~/.config/gh and the _CC_FILES credential files; applies to sessions started after the change) | "off" (skips Kiro Crew's sandbox). Any other value falls back to "auto"
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
@@ -2577,11 +2644,11 @@ class AgentConfig:
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
     apps_ui_stream_timeout_secs: int = 30  # total transfer deadline for one response body on the unauthenticated /apps/<app>/ui/ route. Load-time clamped to [5, 600]; read per request (live), and no off switch — the route has eight descriptor permits and this deadline is what stops a client that quits reading from holding one indefinitely
-    task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
+    task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing, and with false (or no store) a floor miss also queues, in memory. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True
     task_store_journal_mode: str = "auto"  # tasks.db SQLite journal: "auto" = WAL locally, DELETE when $KIROCREW_HOME is on a network filesystem; "wal" | "delete" force one (RFC overload-resilience §13 Q6 reversal). Unknown -> "auto"; restart=True
     admit_wait_secs: int = 30         # admitted -> queued after this, and how long a memory-deferred spawn waits before re-check. Load-time clamped to [1, 3600]; restart=True
-    subagent_queue_max_wait_secs: int = 1800  # DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS; longest a spawn deferred by spawn_min_memory_gb or the posture gate stays parked (time spent eligible, queued for a slot, is not counted) before it ends as 'never started: waiting for memory' (delivered, depth 0). Also the per-start and per-episode bound of the macOS kernel memory-pressure hold. 0 = no bound. Load-time clamped to [0, 86400]. Live (SubagentManager.LIVE_CONFIG_PATHS). See modules/subagent.md § Durable task queue and § macOS: the kernel memory-pressure hold
+    subagent_queue_max_wait_secs: int = 1800  # DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS; longest a spawn deferred by spawn_min_memory_gb stays parked (spawns are not gated on the memory posture tier) (time spent eligible, queued for a slot, is not counted) before it ends as 'never started: waiting for memory' (delivered, depth 0). Also the per-start and per-episode bound of the macOS kernel memory-pressure hold. 0 = no bound. Load-time clamped to [0, 86400]. Live (SubagentManager.LIVE_CONFIG_PATHS). See modules/subagent.md § Durable task queue and § macOS: the kernel memory-pressure hold
     start_collect_timeout_secs: int = 300  # how long the session-start gate's StartCollector keeps a timed-out session/new (row `recovering`) to adopt a late answer before the attempt is abandoned. Load-time clamped to [10, 3600]; restart=True
     session_start_concurrency: int | str = "auto"  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. "auto" is sized once per process by session_start_sizing: clamp(min(cpus // 4, available_GB // 3), 2, 16), cpus = affinity capped by cgroup v2 cpu.max; an integer is load-time clamped to [1, 64]; junk falls back to "auto"; restart=True
     child_env_defaults: dict[str, str] = {}  # env vars set on every spawned kiro-cli child (AcpRuntime via KiroHarness/KasHarness.apply_spawn_env, auxiliary AcpClient via _resolve_spawn_env(kiro_api_key=True)) ONLY when the key is absent from the inherited env (ambient or per-session overlay; an explicit empty value wins). Applied before the agent-env scrub. Opt-in tuning, e.g. {"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"} to cap kiro-cli's core-count-sized pools. Allowlist only (CHILD_ENV_DEFAULT_NAMES): TOKIO_WORKER_THREADS and RAYON_NUM_THREADS, each a decimal integer string (ASCII digits, nothing stripped) in [1, 1024], stored as str(int) ("04" -> "4"); any other name or value is dropped with a warning (key named, never value). Live (next spawn). See acp/child_env_defaults.py
@@ -2651,7 +2718,7 @@ class ChannelConfig:
 @dataclass
 class SttConfig:
     enabled: bool = True           # on by default: the default provider needs no account
-    provider: str = "local"        # "local" | "apple" | "transcribe"; a retired value degrades to "local"
+    provider: str = "local"        # "local" | "apple" | "transcribe" | "off"; a retired value degrades to "local", any other unknown value to "off" (see stt-streaming.md)
     model: str = "base"            # a kiro_crew.stt.models CATALOG name; a superseded name resolves via its alias table
     language_code: str = "auto"    # stored preference; effective_language_code resolves auto to en-US for Apple/Transcribe
     streaming: bool = True         # live partials; every provider produces them
@@ -2706,6 +2773,7 @@ class DashboardConfig:
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
+    terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
     crewmates_onboarded: bool = False  # whether the first-run Meet CrewMates flow was finished or dismissed
     tips_enabled: bool = True      # feature-discovery tips (GET /api/tips/next); live-read
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
@@ -2737,8 +2805,8 @@ class KiroCrewConfig:
     knowledge: KnowledgeConfig
     stt: SttConfig
     computer_use: ComputerUseConfig
-    hooks_data: dict               # raw hooks from config.json
-    dashboard_url: str = ""        # e.g. "http://my-host.example.com:8080"
+    hooks: dict                    # raw hooks from config.json
+    dashboard: DashboardConfig     # dashboard.url, e.g. "http://my-host.example.com:8080"
     auto_update: bool = True
     snapshot_dir: str = ""         # snapshot output dir (default ~/.kiro/crew/snapshots)
     slack_channels: dict[str, ChannelConfig]  # per-channel config keyed by channel ID
@@ -2750,7 +2818,8 @@ class KiroCrewConfig:
 `KiroCrewAgentConfig.avatar` is a sparse override, exactly like the per-crew
 `model` and `session_color` fields: absent or `{}` means the face is derived from
 the crew's name (zero migration). `_safe_avatar` (`config/sections.py`) is the
-total coercer applied on load, in the create/update endpoints, and nowhere else,
+total coercer applied on load, in the create/update endpoints and by the roster's
+`_roster_avatar`,
 and it is deliberately NOT re-exported from `loader.py` — the loader's
 `from kiro_crew.config.sections import (...)` list is a frozen pre-split snapshot
 (`test_config_module_boundaries`), so post-split internals are reached through the
@@ -2773,10 +2842,9 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   wears an uploaded picture served from `GET /api/agents/{name}/avatar`; the
   file itself lives under `<data home>/run/avatars/` and the record only marks
   the choice. A picture has no face to move, so it carries no `motions`; it does
-  still carry `sounds`, because the shipped renderer plays a crew-record cue
-  whatever face it draws (`CrewStateAvatar.tsx` reads `soundsFrom(avatar)`
-  kind-agnostically). Retiring the key here ahead of that renderer would silence a
-  crew on an unrelated save with no way to restore the sound. `v` (a positive real int; `True` is rejected) is the cache-busting
+  still store and round-trip `sounds`, though the frontend plays a crew-record cue
+  only on a ghost (`crewAvatarState.ts` `soundsFrom` is ghost-gated, and
+  `retiredCueFrom` reports a picture or pack cue that has gone silent). `v` (a positive real int; `True` is rejected) is the cache-busting
   mtime stamp the frontend appends as `?v=`; `file` pins the exact committed,
   content-addressed variant and must match `^[0-9a-f]{16}\.(png|jpg|webp)$`.
   Wire-only keys (`promote`, `token`) never reach the record.
@@ -2794,9 +2862,8 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   name-derived ghost on the client. A pack carries its own per-state art
   (`GET /api/appearances/{id}/slot/{slot}`) and its own per-state audio
   (`GET /api/appearances/{id}/sound/{state}`), so it needs no `motions` on the
-  record. It keeps accepting `sounds` for the same reason the picture tier does --
-  that key is audible today on every tier -- and retires it in the change that
-  makes the pack's own audio what plays.
+  record. It keeps accepting `sounds` as the picture tier does, so a stored value
+  survives a save, though only a ghost plays it.
 - `{"kind": "icon", "pose": "pose-N", "bg": "#rrggbb"}` — the crew wears a
   shipped ghost POSE over a solid background. This is the PRIMARY tier new crews
   are built with (the ghost "捏脸" builder and the pack library stay for crews
@@ -2851,8 +2918,9 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
 follows from which tier can play it, and the two keys differ. `motions` is the
 GHOST's alone: it names a built-in animation of a trait-composed face, so a
 picture has nothing to move and a pack animates from its own files. `sounds` is
-legal on EVERY tier, because the shipped renderer reads a crew-record cue
-kind-agnostically — so this is the one reaction key that is not the ghost's. Both
+stored and round-tripped on EVERY tier, but only a ghost plays it: the frontend's
+`soundsFrom` is ghost-gated, so a picture or pack cue is silent and `retiredCueFrom`
+says so. Both
 are keyed on the agent lifecycle state (`working`, `done`, `error` exactly; any other
 key is dropped, so a version-skewed caller cannot grow the key set):
 
@@ -2886,10 +2954,11 @@ last of it: the picker is gone and no renderer draws it, so the key is carried
 only so a record written by the previous release survives the gap until the
 validator change that drops it. `sounds` on a picture or a pack is vestigial in
 the same way, for the same window. `sounds` stays for the same reason on every tier, and only
-`motions` is tier-gated. The roster leaves all three keys intact rather than masking them
-(`_roster_avatar`), for the same reason it leaves `file` intact — a value pinned
-to a closed vocabulary is not user-authored text, and masking it would break the
-reaction while destroying nothing an attacker could have put there.
+`motions` is tier-gated. The roster (`_roster_avatar`) masks the string values of `traits` and
+`expressions` through `_roster_mask`, and leaves `motions`, `sounds` and `file`
+intact — a value pinned to a closed vocabulary is not user-authored text, and
+masking it would break the reaction while destroying nothing an attacker could have
+put there.
 
 Anything else — a non-dict, an unknown `kind`, a ghost override carrying no
 trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable,
@@ -2916,28 +2985,24 @@ leaf on `security._CREW_SECRET_LEAVES`):
 }
 ```
 
-The absence is deliberate and the precedent is `denied_commands.json`:
-`is_sensitive_write_path("~/.kiro/crew/config.json")` is `True` (the *tool* path is
-protected), but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is
-`None` — `config.json` is not among `_WRITE_PROTECTED_BASH_LEAVES` (which fences
-only a few specific control files elsewhere under the home). A config
-toggle would therefore be flippable by a prompt-injected agent through any shell
-redirect.
+The absence is deliberate. `config.json` is a `READONLY` sandbox leaf, so an
+in-sandbox shell cannot write it, but it is an ordinary settings file that every
+config writer (the config PATCH, `kirocrew config set`) reaches without an owner
+gate. A security ceiling there would be one settings edit away from being
+lifted.
 
 - **`enabled`** — the primary enable for full desktop observation plus input
-  synthesis. A security ceiling, so it goes where the agent can neither read nor
-  write it. Read with a strict `is True` identity test, so a truthy string such as
+  synthesis. A security ceiling, so it goes on the keystone: the agent's file tools
+  cannot read or write it, and its shells can read it but not write it. Read with a strict `is True` identity test, so a truthy string such as
   `"enabled": "false"` does **not** enable desktop control, and the read fails soft
   to `{}` → **off**.
 - **`allowed_apps` / `extra_denied_apps`** — the operator's own narrowing. These
   are the ONLY other keys `PolicyConfig.from_state` reads.
 
-**There is no `allow_pointer_move` key, and writing one has no effect.** An earlier
-revision documented it here as a second consent switch for `click_method: "global"`
-(the one path that warps the real mouse pointer), gated together with a
-`capabilities.computer_use_pointer` governance row. Both were removed by product
-decision: there are no `computer_use.*` governance scopes at all, and
-`from_state` reads only the three keys above, so a hand-written
+**There is no `allow_pointer_move` key, and writing one has no effect.** There is no
+second consent switch for `click_method: "global"` (the one path that warps the real
+mouse pointer) and no `capabilities.computer_use_pointer` governance row: there are no `computer_use.*` governance scopes at all, and
+`from_state` reads only `allowed_apps` and `extra_denied_apps` besides `enabled`, so a hand-written
 `{"enabled": true, "allow_pointer_move": false}` silently grants the pointer path —
 the operator would believe they had withheld consent. What actually contains that
 path is that the model must NAME the method (`auto` never resolves onto it) and every
@@ -2947,7 +3012,8 @@ and [computer-use.md](computer-use.md).
 
 ### Decisions: no `enabled` field here either
 
-`DecisionsConfig` carries the sampling share (`bucket`) and the provider block only.
+`DecisionsConfig` has no `enabled` field; its fields are listed in
+[decisions.md](decisions.md).
 Consent to send message text and skill descriptions to Jev lives **outside
 `config.json`**, on the keystone `~/.kiro/crew/decisions_consent.json` (path via
 `config.loader.decisions_consent_path()`, module `decisions.consent`, leaf on
@@ -3010,14 +3076,18 @@ in `sections.py` and re-exported by `loader.py`; the load-time clamp remains in
 |----------|-------|-------|
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 1000 | `agent.subagent_max_turns` |
-| `SUBAGENT_TIMEOUT_MIN` / `SUBAGENT_TIMEOUT_MAX` | 60 / 86400 | `agent.subagent_timeout_secs` |
+| `SUBAGENT_TIMEOUT_MAX` (`constants.py`, beside `SUBAGENT_TIMEOUT_MIN`) | 86400 | `agent.subagent_timeout_secs` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
 | `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
 | `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
 
-`_SECURITY_BOUNDED_FIELDS` lists each `(section, key, min, max)`; the mins match
-the existing runtime floors (0/1) so a legitimate in-range value is never
-altered. `_clamp_security_bounds(data)` runs **once on the disk-read (cache-miss)
+The table names the ceilings; `_SECURITY_BOUNDED_FIELDS` is the authoritative list
+of every clamped `(section, key, min, max)` and also covers
+`agent.session_start_timeout_secs`, `dashboard.loop_stall_exit_after_secs`,
+`dashboard.chat_entry_cache_max_entries`, `dashboard.chat_entry_cache_max_bytes` and
+`session.reconcile_max_kills`. Each min matches that field's runtime floor, so they
+are not uniform (`agent.subagent_auto_max` floors at 3), and a legitimate in-range
+value is never altered. `_clamp_security_bounds(data)` runs **once on the disk-read (cache-miss)
 path, before the validated dict is cached** — so subsequent cache hits already
 serve clamped values. It clamps out-of-range real integers in place (a JSON
 `true`/`false` bool or any non-int is skipped and left to dataclass
@@ -3071,6 +3141,14 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `max_total_processes` | — | slice `TasksMax` | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
 
+On Windows a fourth mechanism applies: a Job object attached to each agent spawn
+(`sandbox.apply_windows_resource_ceiling`) enforces only `max_processes`
+(`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
+(`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
+`max_total_memory_mb`, `max_total_processes`) are accepted but not enforced there,
+and one warning names the ones that are set
+(`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+
 `0` cannot be normalised away in either direction. On the rlimit path it is a
 documented request ("leave the inherited limit unchanged") with existing configs
 behind it; on the cgroup path systemd **rejects** a zero property and the scope
@@ -3084,9 +3162,8 @@ Defaults deliberately do NOT live in the dataclass. Each mechanism keeps its own
 that could drift from both.
 
 **Single parse site.** `ResourceLimitsConfig.from_raw()` is the only code that
-coerces these keys; `_limit_int` is its rule. Before #3474 six readers each had
-their own, which is how the two meanings of `0` drifted apart with nothing
-recording it. The rule: bools are not numbers (`True` would become a 1-task
+coerces these keys; `_limit_int` is its rule. One parse site is what keeps the
+two meanings of `0` from drifting apart. The rule: bools are not numbers (`True` would become a 1-task
 ceiling); a non-integral float truncates toward zero (`512.5` -> `512`, so a
 stricter parse can never loosen a ceiling); a value in `(0, 1)` is REFUSED
 because `int()` would turn it into the `0` that already means something else;
@@ -3095,8 +3172,8 @@ can raise on them; and an out-of-range value is refused rather than clamped, so
 a confinement ceiling is never silently moved away from the number in the
 operator's file. Every refusal is logged once per key per process.
 
-`test_resource_limits_schema.py::TestSingleParseSite` fails if a seventh reader
-appears.
+`test_resource_limits_schema.py::TestSingleParseSite` fails if any other code
+reads one of these keys.
 
 ### Dashboard theme persistence
 
@@ -3253,10 +3330,8 @@ membership: `context.ui_language_tag()` checks the tag against
 `SUPPORTED_LANGUAGES` entries) and treats a non-catalog tag exactly like
 `""`/Auto — no `[UI LANGUAGE]` steer is emitted, so the agent is never steered
 to a language the chrome cannot render (#1130). Adding a language is therefore
-the three frontend edits — add `locales/<tag>.json`, register the picker entry
-in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
-entry in `i18n/catalogs.ts` — **plus one mechanical backend entry** in
-`_UI_LANGUAGE_CATALOGS`, which the drift gate in
+the frontend edits [website/docs/i18n-catalog.md](../../../website/docs/i18n-catalog.md)
+owns **plus one mechanical backend entry** in `_UI_LANGUAGE_CATALOGS`, which the drift gate in
 `test/test_context_ui_language.py` names explicitly on failure.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
@@ -3267,23 +3342,12 @@ fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
 render correct text in a visibly wrong shell. RTL requires `dir="rtl"` plus a
 logical-property conversion first.
 
-All catalogs are **statically bundled**, so `t()` stays synchronous (see the
-rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
-every language: at 8592 keys the catalogs share one chunk that is **~173 KB gzip
-per catalog, ~2.0 MB gzip for the twelve combined** (`npm run analyze`, then gzip
-the `assets/t-*.js` chunk). This is tolerable only because the dashboard is served
-from a loopback gateway — over a network it is already past the point of
-justification, and each further catalog adds another ~173 KB to every user's first
-load regardless of the language they read.
-
-The documented next step is therefore to keep `en` static and lazily fetch the
-active non-English catalog. That seam is already isolated to
-`website/src/i18n/catalogs.ts` — the module that owns every catalog import — plus
-a `<Suspense>` boundary in `main.tsx`; no call site changes, and
-`registerCatalogs()` is where a fetching backend hands its catalog over.
-**Catalog #13 belongs behind that seam**: Korean is #12 and the last one this
-chunk absorbs in front of it. Re-measure when the seam lands — the figure above
-is what says whether it worked.
+English ships with the boot bundle and every other catalog loads lazily, one chunk
+per language: `website/src/i18n/lazy.ts` holds one dynamic import per authored
+catalog (`AUTHORED_LOADERS`), and `main.tsx` awaits `ensureCatalog` for the active
+language before the first render (bounded, so a stalled chunk renders English), so
+`t()` stays synchronous. `scripts/check-bundle-size.mjs` budgets each language's
+chunk separately (`CATALOG_CHUNK_BUDGETS`).
 
 #### The tag reaches the agent, too
 
@@ -3350,8 +3414,7 @@ argument as the tool-call purpose above: the date group headers, filter labels a
 rename menu around it are all in the UI language, and the name is *persisted*, so
 one written in the conversation's language leaves two languages on the row for
 good. With no directive the model simply mirrors the language of the prompt it was
-given — measured on `claude-haiku-4.5`, a fully Chinese conversation is named
-"Chat Title Language Mismatch".
+given, so a fully Chinese conversation gets an English-language title.
 
 The tag reaches the titler through the **prompt**, not the `[UI LANGUAGE]` block:
 titling runs on the shared `_bg` session, and that block scopes itself explicitly
@@ -3449,8 +3512,7 @@ back, not the pre-compaction copy. The messaging pipeline
 dashboard chat runner does, so a channel session's compaction re-injects the
 skills index and this block.
 
-The earlier delivery — a `{{VERBOSITY_BLOCK}}` token expanded wherever an agent
-prompt carried it — is retired. No shipped prompt (`config/prompt.md`, the
+There is no `{{VERBOSITY_BLOCK}}` prompt token. No shipped prompt (`config/prompt.md`, the
 conductor/worker prompt constants in `agent.py`) carries the token, and `test/test_verbosity_config.py` pins that;
 `_resolve_prompt_templates` still strips a stale token from a spec copied before
 the move so the literal never reaches the model. `context_blocks._MARKERS` knows
@@ -3523,9 +3585,8 @@ announces `mc-crewmates-page-entered`, and the gate opens unless
 `crewmates_onboarded` is already true on the server). The tour-end path keeps
 its `mc-crewmates-pending` timing so a workspace that finished first run before
 the chapter shipped is not interrupted on its next load; that workspace gets
-the flow on its first Crewmates page visit instead. This supersedes the
-earlier custom-agent exclusion (`docs/request-for-change/rfc-crewmates-launch.md`,
-"Existing installs") per that RFC's screen 08 amendment of 2026-09-28. The crewmate name is free-form: `POST /api/agents` keeps it as the crew's
+the flow on its first Crewmates page visit instead, custom agents included (the
+amended "Existing installs" rule of `docs/request-for-change/rfc-crewmates-launch.md`). The crewmate name is free-form: `POST /api/agents` keeps it as the crew's
 label and derives an id-shaped key from it (`members.key_new_crew`), so spaces
 and CJK are accepted. The flow disables Next only on a blank name; the server's
 `validate_member_name` is the gate, and a 400 `invalid_member_name` or
@@ -3545,7 +3606,7 @@ through the runtime's own leg (the flow's Slack row therefore only states that
 fact; it is not a switch), and "Its own chat" maps to `hide_in_chat`, the one
 delivery choice the runtime actually offers. The crewmate's identity is held
 only from a clean create response -- the immutable `member_id` the server
-allocates with its member memory, which `POST /api/agents` now returns beside
+allocates with its member memory, which `POST /api/agents` returns beside
 `memory_store` -- and it is the one thing the flow binds to or reconciles
 against later; nothing is ever claimed by display NAME, because two
 openings prefill the same example name and a same-named crewmate the flow
@@ -3617,6 +3678,7 @@ Returns the effective config for a channel:
 | `KIROCREW_HOME` | Override config/data directory | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Operator-selected dashboard port; also persisted by service install | `5476` |
 | `KIROCREW_BOUND_PORT` | Gateway-observed bound port exported to child processes after listen | Unset before bind |
+| `KIROCREW_BOUND_HOST` | Gateway-exported bound host family, inherited by children: absent for a `127.0.0.1`/`0.0.0.0` bind, `::1` for a `::`/`::1` bind, the address itself for a specific-interface bind (`dashboard/server_runtime/listener.py`); app backends read it to pick their origin host, and pods drop it | Unset before bind |
 | `KIROCREW_BIND` | Explicit IP bind-address override for containers/orchestrators | `127.0.0.1` in the public build |
 | `KIROCREW_CORS_ORIGINS` | Comma-separated additional browser origins accepted by CSRF/WebSocket checks | Empty |
 | `KIROCREW_WORKSPACE` | Override workspace root directory | Platform-dependent |
@@ -3696,22 +3758,34 @@ one precedence step below the operator override.
 
 ## Model Resolution Chain
 
-When `agent.model` is `"auto"` (default):
-
-1. `~/.kiro/agents/kirocrew.json` → `model` field (installed agent config)
-2. `config_package_dir()/defaults.json` → `model` field (bundled `src/kiro_crew/config/defaults.json`)
-3. Falls back to `DEFAULT_MODEL` (passed through to provider)
+Default-model precedence is owned by [model-selection](../common/model-selection.md),
+and `loader.resolve_effective_model` is its single implementation: crew agent
+model, then the bound kiro agent's pin, then `agent.model`, then
+`KiroCrewConfig._resolve_agent_model()` (the installed `kirocrew.json`, then the
+bundled `config/defaults.json`, then `DEFAULT_MODEL`, the `auto` sentinel that the
+ACP client leaves off the wire).
 
 ## Load-time Error Handling
+
+Every in-tree reader of `config.json` and `config.local.json` reads the live file
+through `loader.read_config_text`, which drops a leading UTF-8 BOM an editor may
+add; readers of copies (the pod seed and export bundles) and `agent._load_json` use
+`user_json.strip_utf8_bom` directly. Writers emit plain UTF-8, so a locked write
+removes the mark. `test/test_config_json_bom.py` walks the source by AST and
+allows a direct read of the live files only inside `read_config_text`.
 
 These rules apply to `KiroCrewConfig.load()`; mutation helpers fail closed on a
 corrupt existing document as described above.
 
 - Missing file → defaults
-- Invalid JSON → defaults (warning logged)
+- Invalid JSON, or a document that is not a JSON object → defaults (warning
+  logged), with the base file marked unreadable and its sections degraded (see the
+  degraded-sections rules above)
 - Missing fields → individual defaults: each is the default declared on its DTO
   field, apart from the departures listed under "Defaults come from the DTO fields"
   above
+- An enum value outside its set → that field's default, with a logged line
+- An out-of-range number → clamped (see "Security-Bounded Config Clamp")
 
 ### Default context discovery
 

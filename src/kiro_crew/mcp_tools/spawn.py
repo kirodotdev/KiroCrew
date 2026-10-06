@@ -379,8 +379,11 @@ def schemas() -> list[dict[str, Any]]:
                         "description": (
                             "Optional model override for the subagent (e.g. 'deepseek-3.2', "
                             "'claude-haiku-4.5'). When set, the subagent runs on this model "
-                            "instead of the gateway default. To discover available models, "
-                            "run: kiro-cli chat --list-models --format json"
+                            "instead of the gateway default. Model ids are per backend: on "
+                            "the kiro backend list them with "
+                            "`kiro-cli chat --list-models --format json`; another backend "
+                            "(e.g. codex) accepts only ids from its own model list and "
+                            "refuses ids from kiro's catalog."
                         ),
                     },
                     "reasoning_effort": {
@@ -434,7 +437,10 @@ def schemas() -> list[dict[str, Any]]:
                 "properties": {
                     "conversation": {
                         "type": "string",
-                        "description": "Conversation id — the id of the original keep=true spawn_run",
+                        "description": (
+                            "Conversation id — the run id of any completed subagent "
+                            "run (keep=true only extends retention)"
+                        ),
                     },
                     "task": {
                         "type": "string",
@@ -458,8 +464,8 @@ def schemas() -> list[dict[str, Any]]:
                 "session. A steer arriving while a just-started run's session "
                 "is still registering waits briefly for it (typed "
                 "session_starting error if it still isn't up — retry then); "
-                "runs still WAITING in the spawn queue return not_found until "
-                "they start. Only works while the run is executing; for a "
+                "runs still WAITING in the spawn queue return queued_not_started "
+                "(409, 'queued — not started') until they start. Only works while the run is executing; for a "
                 "finished continuable run use spawn_continue instead. "
                 "mode='follow_up' queues the message instead of interrupting: "
                 "it is delivered as a continuation on the run's conversation "
@@ -507,7 +513,10 @@ def schemas() -> list[dict[str, Any]]:
                 "properties": {
                     "conversation": {
                         "type": "string",
-                        "description": "Conversation id — the id of the original keep=true spawn_run",
+                        "description": (
+                            "Conversation id — the run id of any completed subagent "
+                            "run (keep=true only extends retention)"
+                        ),
                     },
                 },
                 "required": ["conversation"],

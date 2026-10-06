@@ -8,7 +8,9 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Dashboard-owned prefixes are defined once in `src/kiro_crew/dashboard/state.py`.
+Most dashboard-owned prefixes are defined once in `src/kiro_crew/dashboard/state.py`;
+a few (the MCP app message envelope among them) live in
+`src/kiro_crew/dashboard/chat_utils.py`.
 The two core-safe sub-agent completion markers live in `src/kiro_crew/constants.py`
 so `subagent.py` can import them without importing the dashboard layer; `state.py`
 imports and aggregates them. Classification is by `str.startswith` on the resolved
@@ -220,6 +222,7 @@ boundary:
 | `recovery` | A runner-authored continuation | Its own recovery card, or a generic note if the marker is unrecognised |
 | `cron` | A scheduled job's output — the user's own | Labelled bubble (also carries `cronLabel`) |
 | `user_replay` | The user's original message, replayed because the turn emitted nothing | Ordinary bubble; it is speech |
+| `mcp_app` | A message an MCP app authored into the chat | App-labelled row (also carries `appLabel`); see [mcp-apps.md](../modules/mcp-apps.md) |
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
@@ -712,6 +715,10 @@ speech rather than as the user.
 |---|---|---|
 | `[work ledger — …]` | `session_ledger.py` snapshot builder, composed into a nudge by `dashboard/handlers/autonudge.py` | Durable per-session state that outranks the model's recollection of earlier cycles. |
 | `[Hook context:]` … `[End of hook context]` | `context.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
+| `[MCP app message from "server/tool"]` … `[End of MCP app message]` | `dashboard/chat_utils.py` (`APP_MESSAGE_PREFIX`, `APP_MESSAGE_END`; queue kind `mcp_app_message`) | A message an MCP app sent into the chat; the app's words, not the user's. See [mcp-apps.md](../modules/mcp-apps.md). |
+| `[Workflow completion event]` | `dashboard/workflow_inject.py` | A background workflow run finished; the next line names the workflow, run id and status. |
+| `[Content filter — continuing on the fallback model]` | `REFUSAL_FALLBACK_RECOVERY_PREFIX` in `dashboard/state.py`, built in `dashboard/chat_utils.py` | The primary model refused on a content filter and the turn continues on the fallback model. |
+| `[Task checklist — automatic recovery]` | `todo_recovery_prompt` in `dashboard/state.py` | The conversation restarted, so the todo tool holds an empty list; rebuild it from the dashboard checklist shown. |
 | `[Previous run result — do NOT repeat the same content]` | `cron_service/identity.py` (`build_cron_session_context`) | A recurring cron's own last output, so the turn reports only what changed. |
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, **or** the macOS kernel reports memory pressure of WARN or worse (`ResourceStatus.memory_pressure_held`) while the figure reads ample or cannot be read; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skill_runtime/delivery.py` pointer renderer (`trigger_hint`) | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |

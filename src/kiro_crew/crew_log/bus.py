@@ -29,10 +29,13 @@ and no backlog. A baseline is a fresh READ of the fold, not a replay from the bu
 is not the record, the log is -- so a lost event leaves a consumer behind the file and the
 next read carries it forward.
 
-WHO SUBSCRIBES. One subscriber object today, registered where the dashboard state
-exists (``install_crew_log_publisher``): the WS exporter turns a :class:`FoldAdvanced`
-into a ``slot_projection`` or ``session_projection`` frame, and a :class:`TreeAdvanced`
-into one coalesced ``slot_patch`` of the rows whose ``parent`` moved. Three more are
+WHO SUBSCRIBES. Two subscribers. The dashboard's WS exporter, registered where the
+dashboard state exists (``install_crew_log_publisher``), is unfiltered: it turns a
+:class:`FoldAdvanced` into a ``slot_projection`` or ``session_projection`` frame, and a
+:class:`TreeAdvanced` into one coalesced ``slot_patch`` of the rows whose ``parent``
+moved. ``conductor_wake`` subscribes to :data:`FOLD_ADVANCED` filtered to one board
+(``scope=SCOPE_SLOT``, ``key=<board>``, ``fold=<work fold>``), one subscription per
+watched board, to wake that board's conductor. Three more are
 named and NOT built: a summary fold over a session's events, the automatic-card
 sentence trigger, and channel
 notifications. They are named here because the shape of this module is the answer to
@@ -193,7 +196,7 @@ def subscribe(
     the INDEX, not a predicate: :func:`publish` looks up only the buckets an event can
     match, so a subscriber keyed to one board costs a publish about another board
     nothing. A subscription with no filter receives every event of *kind*, which is what
-    the dashboard's WS exporter uses. Events without those attributes (any kind other
+    the dashboard's WS exporter uses; ``conductor_wake`` filters by board. Events without those attributes (any kind other
     than :data:`FOLD_ADVANCED`) reach only unfiltered subscribers.
 
     THE DISPOSER removes the subscription. Calling it twice is a no-op, and calling it

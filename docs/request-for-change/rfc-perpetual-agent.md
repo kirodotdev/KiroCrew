@@ -4,8 +4,8 @@ status: accepted
 revision: 4
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-09-28
-audited-at: 631f8e6dc
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 2328
 implementation-prs: [11582]
 tracking-issues: []
@@ -16,7 +16,9 @@ superseded-by: []
 
 - Status: accepted — the product decision is the owner-controlled Perpetual
   mode in §Accepted decision. Its implementation is tracked in
-  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582).
+  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582). Line numbers
+  and file sizes in the research sections below are as read at the commits this
+  document names for them, not live pointers.
 - **Revision 4 (2026-09-28): accepted one narrow product shape.** An owner may
   keep one crewmate's auto-nudge loop active without cycle or elapsed-time caps
   until the owner turns it off. The larger self-scheduled cron design below is
@@ -327,17 +329,17 @@ Touch points, all of which already switch on `schedule.kind`:
 
 | Site | Change |
 |---|---|
-| `cron.py:510 compute_next_run_ts` | `self` → return `at_ts` (unlike `at`, a past `at_ts` returns `now`, so a missed wake is due immediately) |
-| `cron.py:2332 _is_due` | `self` → `now >= at_ts` |
-| `cron.py:2058 _next_wake_secs` | `self` → same delay math as `at` (`:2070`) |
-| `cron.py:2407 _execute` tail | `self` → do **not** disable; apply the fallback if no wake was set (§4) |
-| `cron.py:321 build_cron_session_context` | `self` → assemble the perpetual-agent prompt (§7) |
-| `cron.py:418 format_schedule` | `self` → "self-scheduled · next <ts>" |
+| `compute_next_run_ts` in `cron_service/schedule.py` | `self` → return `at_ts` (unlike `at`, a past `at_ts` returns `now`, so a missed wake is due immediately) |
+| `is_due` in `cron_service/schedule.py` | `self` → `now >= at_ts` |
+| `next_wake_secs` in `cron_service/schedule.py` | `self` → same delay math as `at` |
+| `CronService._execute` tail in `cron.py` | `self` → do **not** disable; apply the fallback if no wake was set (§4) |
+| `build_cron_session_context` in `cron_service/identity.py` | `self` → assemble the perpetual-agent prompt (§7) |
+| `format_schedule` in `cron_service/schedule.py` | `self` → "self-scheduled · next <ts>" |
 | `handlers/cron.py`, `cron_add` MCP tool | accept and validate the new kind |
 
 `persistent_session` is forced `True` for `self` jobs: the stable
 `cron:{job.id}` session key and the `last_result` prepend
-(`cron.py:321`–`:357`) are exactly the continuity requirement, and a perpetual
+(`build_cron_session_context`) are exactly the continuity requirement, and a perpetual
 agent with a fresh session each wake has no life at all.
 
 New `CronJob` fields, all defaulted so existing stores load unchanged:
@@ -375,7 +377,7 @@ This is the opposite of `wait` in every dimension that matters:
 | | `wait` (`mcp_core.py:758`, dispatch `:4517`) | `agent_sleep` |
 |---|---|---|
 | Turn | stays open — the tool call blocks | ends |
-| Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every 60s (`:4530`) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |
+| Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every `WAIT_PING_SECS` (5s) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |
 | Resident cost | full session + agent subprocess held for the whole duration | zero |
 | Ceiling | 1800s, clamped (`:4521`) | days (operator ceiling) |
 | Host restart | wait dies with the process; the turn is lost | deadline is on disk; fires on recovery |
@@ -688,6 +690,12 @@ What the probe found that this document did not predict, compressed:
 
 ### Phase 1 — a perpetual agent that lives
 
+Current state: #3148 made `timeout_secs` reachable through `update_job` and the
+`cron_add` / `cron_update` tools, and added a pre-dispatch transient retry on the
+cron path. So item 2 is met for cron jobs (`kind="self"` does not exist), and
+item 3 has its knob half only (no `agent_sleep` checkpoint). Items 1, 4 and 5 are
+not built. The Phase 0 text above stays as the record of what the probe found.
+
 **Rescoped by Phase 0's findings, in evidence order.** The floor is now:
 
 1. **The ranking step in the §7 contract preamble** — code-owned, not `LIFE.md`
@@ -856,7 +864,7 @@ Two smaller pieces of this idea are worth keeping:
 
 - **Unify delivery, not timers.** Cron and autonudge both end in "deliver a
   prompt into a session and keep continuity", by two independent code paths
-  (`cron_inject.inject_cron_result_to_dashboard` vs autonudge's slot
+  (`inject_cron_result_to_dashboard` in `dashboard/cron_inject.py` vs autonudge's slot
   injection). One shared delivery primitive with three wake sources — clock,
   idle, self — is a real simplification and is the shape this RFC leaves room
   for. It is not a prerequisite.
@@ -917,7 +925,8 @@ believed everything was stopped.
   already-armed wake.
 - **Escalation content is untrusted.** A supervisor answer is replayed into the
   next prompt, so it passes the same redaction the cron result path already
-  applies (`cron_inject.py`, `redact_credentials` / `redact_exfiltration_urls`)
+  applies (`dashboard/cron_inject.py`, using `redact_credentials` from
+  `security/redaction.py` and `redact_exfiltration_urls` from `security/exfil.py`)
   and is rendered as data, not instruction.
 - **Audit.** Wake decisions, budget refusals, liveness refusals, escalations
   and dormancy transitions are SEL-logged, the same way cron auto-pause already

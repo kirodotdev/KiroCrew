@@ -1,13 +1,12 @@
 # Known Windows test gaps -- burn-down backlog for full Windows parity.
 #
-# Applied by test/conftest.py::pytest_collection_modifyitems on Windows
+# Applied by conftest.py::pytest_collection_modifyitems (rootdir) on Windows
 # ONLY: each listed test is marked a STRICT xfail there and runs normally
 # on the POSIX matrix. Entries are pytest node ids without the xdist
 # `@group` suffix; params are OPTIONAL -- a line with no `[params]` covers
 # every parametrization, and a line WITH `[params]` covers only that one,
-# which is what a test whose params do not all fail needs (see the
-# test_seed.py pair). Captured from the first Windows CI runs (PR #413,
-# 2026-07-25); dominant causes: POSIX mode-bit asserts (0o600/0o644),
+# which is what a test whose params do not all fail needs. Dominant
+# causes: POSIX mode-bit asserts (0o600/0o644),
 # POSIX process APIs monkeypatched directly (killpg/getuid/getpgid), /tmp
 # and bin/kirocrew path-shape assumptions, and Windows file-locking
 # semantics. Fix the test (or the product gap) and DELETE the line --
@@ -15,9 +14,8 @@
 #
 # STRICT XFAIL, not skip, and that is the whole point: a listed test RUNS, a
 # still-failing one is green, and one that starts PASSING fails the job with
-# XPASS. That is the "delete the line" signal this file has always asked for and
-# a skip could never give -- the first run under xfail found 23 entries whose
-# gaps had already closed, on a list nobody could have audited otherwise.
+# XPASS. That is the "delete the line" signal this file asks for and a skip
+# could never give.
 #
 # A test that HANGS must NOT be listed here. It would be executed, and on Windows
 # pytest-timeout has no SIGALRM to interrupt with, so it kills the process and
@@ -164,9 +162,8 @@ test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path
 # auto-improvement builtin (PR #1013): the remaining entries exercise real `git`
 # behaviour over a throwaway repo and assume POSIX. On Windows they fail on line-ending
 # handling (`git apply` rejects an LF diff against a CRLF-checked-out tree: "patch failed:
-# app.py:1") and `\`-vs-`/` in git output. `setup.cfg` already documents this
-# file-set as POSIX-assuming and excludes it from the Linux `testpaths`; the
-# Windows shard collects it directly, so it is burned down here. Porting these to
+# app.py:1") and `\`-vs-`/` in git output. The Windows shard collects these
+# files, so they are burned down here. Porting these to
 # Windows (a synthetic-diff line-ending shim + separator-agnostic git parsing) is
 # its own change, not smuggled into the feature PR.
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_a_failed_push_leaves_no_commit_behind
@@ -177,7 +174,6 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestClon
 # Added when the CI deselect of this file was removed, so Windows collects it for the
 # first time. `PermissionError [Errno 13]` from `pathlib` writing the linked worktree's
 # `.git` pointer file: Windows refuses the write where POSIX allows it. The security
-# property it guards (a repointed gitdir must be refused) is POSIX-shaped; the other
-# 12,782 tests on that shard pass.
+# property it guards (a repointed gitdir must be refused) is POSIX-shaped.
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_a_repointed_worktree_gitdir_is_refused
 test/test_open_slots_persistence.py::test_persist_open_slots_handles_write_failure_gracefully

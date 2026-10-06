@@ -232,7 +232,7 @@ describe('CommandBarOverlay rows', () => {
   })
 
   it('marks a settings row matched by its description in its subtitle', () => {
-    // In the description only: "Enterprise Grid org IDs to allow (starts with E or T). ..."
+    // In the description only: "Enterprise Grid org or workspace IDs to allow (starts with E or T). ..."
     mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'starts with E or T' } })
     const option = screen.getAllByRole('option').find(o => o.textContent?.includes('Allowed enterprise orgs'))!

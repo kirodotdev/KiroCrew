@@ -5991,7 +5991,7 @@ class TestIsSensitivePath:
     def test_unrelated_dotfile(self) -> None:
         assert is_sensitive_path("~/.bashrc") is False
 
-    # ── Symlink bypass (pentest AWS-345 / AWS-62) ──
+    # ── Symlink bypass ──
 
     def test_absolute_symlink_to_aws_credentials(self, tmp_path, monkeypatch) -> None:
         """A symlink whose target resolves into ~/.aws must be caught."""

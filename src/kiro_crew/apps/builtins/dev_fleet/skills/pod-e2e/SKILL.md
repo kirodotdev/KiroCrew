@@ -25,7 +25,9 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <worktree-name> --video
 result:       2 passed, 0 failed
 ARTIFACT_DIR=~/.kirocrew-pods/.e2e-artifacts/<worktree-name>
 ```
-Exit code = number of failed phases (0 = all green). Then **look at the
+Exit code = number of failed phases (0 = all green) once phases run. Setup
+errors exit before any phase with their own codes (see the flag table below);
+a production-port SAFETY refusal exits 1. Then **look at the
 evidence**: `Read` the screenshots in that `ARTIFACT_DIR`
 (`fe-smoke.png`, plus any spec screenshots) to confirm the real UI rendered —
 not a 403/blank page.
@@ -50,7 +52,7 @@ systemd part -- so they are the portable choice, and the only one on a host that
 denies you the bus.
 
 ```
-pod_up     {"worktree": "<wt>"}   -> {name, base_url, token, port, ttl}
+pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, token (+ttl)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
@@ -124,7 +126,18 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <worktree-name>
 
 Runs the bundled orchestrator end-to-end. Prints a `POD-E2E SUMMARY` ending in
 `ARTIFACT_DIR=<path>` and exits with the **number of failed phases** (0 = all
-green). Flags:
+green). Before any phase runs it exits with a setup code instead:
+
+| exit | meaning |
+|---|---|
+| `64` | bad arguments, bad worktree name, or unusable `--handle-json` |
+| `65` | no `kirocrew` CLI with `pod` on PATH, or the artifact dir escapes `.e2e-artifacts` |
+| `66` | the worktree checkout could not be resolved |
+| `67` | no usable CLI in the worktree venv (`kirocrew pod provision <wt> --venv-only`) |
+| `70` | the live-plane port could not be resolved (python3 missing) |
+| `1` | SAFETY refusal: the pod resolved to the production port (also a 1-failure run; read the summary) |
+
+Flags:
 
 | flag | effect |
 |---|---|
@@ -133,6 +146,7 @@ green). Flags:
 | `--api-only` | skip the Playwright phase (leaves a boot + auth check) |
 | `--fe-only` | accepted no-op — no test-suite phase exists to skip |
 | `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
+| `--no-suppress-first-run` | let first-run modals appear (onboarding tests only) |
 
 ### Running the suite when you cannot reach the bus
 
@@ -152,8 +166,9 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.j
 # ... and when you are done, pod_down {"worktree": "<wt>"}
 ```
 
-The file is the object `pod_up` returns, including its own `name`, with the
-`health` code `pod_status` reports added:
+The file is a JSON object you build: `name` is the `<wt>` you passed to `pod_up`
+(its reply names it but carries no `name` field), `base_url`, `token` and `port`
+are the values its reply prints, and `health` is the code `pod_status` reports:
 
 ```json
 {"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "health": 200}
@@ -161,8 +176,8 @@ The file is the object `pod_up` returns, including its own `name`, with the
 
 `name` must be a non-empty string exactly equal to the `<wt>` argument. The
 harness refuses a missing, non-string, empty, or different name before any phase
-runs; it never normalizes this field. Keep the value from `pod_up`'s own payload
-rather than rebuilding it. `base_url` must be an HTTP loopback address carrying
+runs; it never normalizes this field. Use exactly the worktree string you passed to
+`pod_up`. `base_url` must be an HTTP loopback address carrying
 an explicit port that is none of: the configured live-plane port
 (`KIROCREW_POD_LIVE_PORT`), its default `5476`, and the reserved `7777`. The
 default stays refused even when the variable names another port, because that
@@ -256,8 +271,10 @@ full suite.
      degrades to unbounded and says so in the log (the harness is POSIX-only
      anyway); the phase-level `timeout` still applies.
 5. **collect** — all logs + screenshots land in
-   `~/.kirocrew-pods/.e2e-artifacts/<wt>/`. Per-phase results are appended to
-   `verdict.jsonl` **as they are decided** (and `playwright.log` is unbuffered),
+   `~/.kirocrew-pods/.e2e-artifacts/<wt>/`. The Playwright driver appends its
+   rows (`smoke`, `spec`, spec `record(...)` rows, `teardown`) to
+   `verdict.jsonl` **as they are decided**; the up/health/auth verdicts appear
+   only in the printed summary (and `playwright.log` is unbuffered),
    so a stalled or killed run still leaves a readable verdict. The file is
    truncated at the start of **every** run — including runs that skip the FE
    phase — so it can never show a previous run's rows. The rest of the artifact
@@ -280,6 +297,11 @@ extracted textually) — it is **never sourced or eval'd** on the host.
 # .pod-test.sh
 PLAYWRIGHT_SPEC=".pod-e2e/feature.spec.py" # frontend spec, relative to the manifest's dir
 ```
+
+The resolved spec must live under `<worktree>/.pod-e2e/`: the driver refuses
+any other path ("outside allowed directories") and fails the run. A manifest
+under `src/kiro_crew/` therefore needs `PLAYWRIGHT_SPEC="../../.pod-e2e/<spec>.py"`
+or an absolute path. The spec runs only when the smoke phase passed.
 
 ### Trust model
 
@@ -344,9 +366,13 @@ Rules:
   is written. Every one of those fields is required and `name` must equal `<wt>`,
   so a file missing one is refused with exit 64 before any phase runs.
 - After it finishes, READ the artifacts in the printed ARTIFACT_DIR:
-  verdict.jsonl (per-phase results, written as decided — trust this even if the
-  run was killed), playwright.log, fe-*.png screenshots (use the
-  Read tool on the .png to actually look at the UI), and boot-fail.log if present.
+  verdict.jsonl (Playwright rows, written as decided — trust this even if the
+  run was killed; up/health/auth are only in the printed summary),
+  playwright.log, fe-*.png screenshots (use the Read tool on the .png to
+  actually look at the UI), and boot-fail.log if present.
+- Before you run, record what you are testing: `git -C <worktree> rev-parse HEAD`
+  and `git -C <worktree> status --porcelain`. The dev keeps coding in the same
+  worktree and the pod pins a path, not a commit.
 
 Then return a QA VERDICT, not a raw dump:
   1. Overall: PASS / FAIL / BLOCKED (couldn't even boot the pod).
@@ -355,8 +381,11 @@ Then return a QA VERDICT, not a raw dump:
      (b) a flaky/timing issue, or (c) an environment problem (missing venv,
      missing dist, port clash)? Cite the log line or screenshot that proves it.
   4. The ARTIFACT_DIR path so the dev can open screenshots/video.
+  5. The HEAD SHA and dirty state you recorded before the run.
 """)
 ```
+
+Cite a PASS only for the SHA the verdict names. A later commit needs a new run.
 
 One sub-agent is right here: Playwright output, videos and pod logs would
 flood your context, and only the verdict is needed back.
@@ -407,7 +436,8 @@ no dist → build-or-`--provision`.
 
 ## Hands off the live plane
 
-This skill only ever talks to pod ports (78xx). It must never restart or touch
+This skill only ever talks to pod ports (default `KIROCREW_POD_BASE_PORT`
+7810 + 1..199, or a pinned `PORT=`). It must never restart or touch
 the live gateway. If the derived port ever resolves to the production port the
 orchestrator refuses and exits.
 

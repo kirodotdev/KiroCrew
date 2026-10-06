@@ -1,20 +1,22 @@
 # Jev decisions
 
-Jev can answer four questions about a sampled conversation, and each one has to be switched on separately. It can also put a note on a risky tool call, which decides nothing at all -- see [Flagging risky tool calls](#flagging-risky-tool-calls) below.
+Jev can answer five questions about a sampled conversation, and each one has to be switched on separately. It can also put a note on a risky tool call, which decides nothing at all -- see [Flagging risky tool calls](#flagging-risky-tool-calls) below.
 
 **Which skill to load.** Jev receives a short message excerpt and a menu of eligible skill names and descriptions. Its valid answer changes the selected skill; a timeout or failed request keeps the normal trigger-matching result.
 
-**Which model answers a chat message.** Jev judges how hard the message is -- simple, medium or complex -- and the chat runs on the model you mapped that level to. This happens only while the session's model is set to **Auto (Jev)** in the chat model picker. A timeout, a failed request, or a model your account cannot run leaves the chat on the model it was already using. See [Letting Jev pick the model](#letting-jev-pick-the-model) below.
+**Which model answers a chat message.** Jev judges how hard the message is -- simple, medium or complex -- and the chat runs on the model you mapped that level to. This happens only while the session is not pinned to a model: its model is **Auto (Jev)**, which a session left on the plain `auto` model also is while the Decisions switch is on. A timeout, a failed request, or a model your account cannot run leaves the chat on the model it was already using. See [Letting Jev pick the model](#letting-jev-pick-the-model) below.
 
 **What a mid-turn message does.** Jev judges whether a message you send while the assistant is still working should steer that turn or wait for the next one. This happens only for a message you send with **Auto (Jev)** on the send button. A timeout or a failed request steers, which is what the send button has always done. See [Letting Jev choose steer or queue](#letting-jev-choose-steer-or-queue) below.
 
 **Which recalled memories reach the prompt.** When the assistant asks its own memory a question, Jev says which of the closest matches are worth putting in the prompt. This happens only while the recalled-memory switch under the Decisions switch is on. A timeout or a failed request keeps every match the search found. See [Choosing which recalled memories come back](#choosing-which-recalled-memories-come-back) below.
 
-All four are off by default. Turning on the Decisions switch does not start any of them: skill selection also needs `skills.max_triggered` above zero, model routing also needs you to pick **Auto (Jev)** in the chat model picker, mid-turn handling also needs you to pick **Auto (Jev)** on the send button, and memory narrowing also needs its own switch under the Decisions switch.
+**Whether a watching loop should wake its session.** An auto-nudge loop wakes its session on every cycle. A judge reads what the loop's watched targets produced since the last cycle and says whether this cycle is worth a turn. A timeout or a failed request wakes the session, as the loop always did. See [Letting a judge skip a quiet loop cycle](#letting-a-judge-skip-a-quiet-loop-cycle) below.
+
+All five are off by default. Turning on the Decisions switch does not start any of them: skill selection also needs `skills.max_triggered` above zero, model routing also needs a session that is not pinned to a model, mid-turn handling also needs you to pick **Auto (Jev)** on the send button, and memory narrowing also needs its own switch under the Decisions switch. The wake judge runs only on a loop that names its own wake brief, or on every screened loop once its own switch under the Decisions switch is on.
 
 ## What changes
 
-Three things use Jev: automatic skill selection, which model answers a chat message, and -- only if you pick it on the send button -- what happens to a message you send while the assistant is still working (see "Letting Jev choose steer or queue" below). Skill deduplication and scheduled notifications do not change. Mandatory skills, custom-agent exclusions, project access rules and the automatic skill limit still apply. Scheduled jobs, sub-agents, sessions running on a connected crew, and anything an app sends are never routed -- each already has its own model setting, and nobody is watching what those cost at the moment they run.
+Three things use Jev: automatic skill selection, which model answers a chat message, and -- only if you pick it on the send button -- what happens to a message you send while the assistant is still working (see "Letting Jev choose steer or queue" below). Skill deduplication and scheduled notifications do not change. Mandatory skills, custom-agent exclusions, project access rules and the automatic skill limit still apply. Scheduled jobs, sub-agents, sessions running on a connected crew, anything an app sends, and a queued turn restored after a restart are never routed -- each already has its own model setting, and nobody is watching what those cost at the moment they run. A turn a conductor session delivers into a routed chat is routed like one you typed.
 
 | State | Skill selection |
 |---|---|
@@ -27,7 +29,7 @@ A valid answer can choose one skill or explicitly choose none. Choosing none is 
 
 ## Configure before enabling
 
-Use Settings > Developer > Feature Previews for the Decisions switch. Three of the things Jev can do need a switch of their own, underneath it, and each starts off even for someone who already had the main one on: **Also send tool-call arguments so Jev can flag risky calls**, **Also send the conversation and tool-call inputs so Jev can score compaction**, and **Also send snippets of recalled memories so Jev can drop the ones that do not help**. Turning the main switch on alone gives you automatic skill choice and the mid-turn send mode; the other three do nothing until you turn their own switch on, because each sends a category of your content the main switch never described. It records your consent in `decisions_consent.json` in the gateway's data directory, so it applies across devices. That file is deliberately separate from `config.json`: an agent can edit `config.json`, and an agent must not be able to switch on the sending of your own messages. Only the dashboard owner can flip the switch. The card shows the address messages would be sent to, and your consent is recorded for that address: if `provider.endpoint` is changed later, nothing is sent until you turn the switch off and on again. An older backend without this switch keeps it disabled.
+Use Settings > Developer > Feature Previews for the Decisions switch. Four of the things Jev can do need a switch of their own, underneath it, and each starts off even for someone who already had the main one on: **Also send tool-call arguments so Jev can flag risky calls**, **Also send the conversation and tool-call inputs so Jev can score compaction**, **Also send snippets of recalled memories so Jev can drop the ones that do not help**, and **Also send what a watching loop has found so Jev can skip a turn**. Turning the main switch on alone gives you automatic skill choice and the mid-turn send mode; the other four do nothing until you turn their own switch on, because each sends a category of your content the main switch never described. It records your consent in `decisions_consent.json` in the gateway's data directory, so it applies across devices. That file is deliberately separate from `config.json`: an agent can edit `config.json`, and an agent must not be able to switch on the sending of your own messages. Only the dashboard owner can flip the switch. The card shows the address messages would be sent to, and your consent is recorded for that address: if `provider.endpoint` is changed later, nothing is sent until you turn the switch off and on again. An older backend without this switch keeps it disabled.
 
 The remaining settings live in `config.json`:
 
@@ -70,7 +72,7 @@ An empty level does not turn the feature off. Jev is still asked, the answer is 
 
 The three keys above are the only ones read; anything else is ignored. `auto` means the same as empty. If you name a model your account cannot run, that message also stays put, and the log below says which of the two happened, so nothing is dropped silently.
 
-This setting alone changes nothing: a chat is only routed while its model is set to **Auto (Jev)**.
+This setting alone changes nothing: a chat is only routed while it is not pinned to a model (see [Letting Jev pick the model](#letting-jev-pick-the-model)).
 
 `skills.max_triggered` must be greater than zero to allow automatic selection. Its default is zero, which disables automatic selection even when the Decisions switch is on. Jev selects at most one skill and does not raise that limit.
 
@@ -94,7 +96,7 @@ A local model is slower than Jev, and each decision point waits only a few secon
 
 You do not install or start anything yourself. When you press **Use this model**, Kiro Crew does it and the card shows each step:
 
-1. **Download.** The model files come from Kiro Crew's own model CDN: about 8.4 GB for Plumb-4B, about 0.85 GB for Laya, which keeps only its English checkpoint. Each file is checked against a SHA-256 fixed in Kiro Crew before it is used, so a changed file is refused rather than run. An interrupted download resumes where it stopped.
+1. **Download.** The model files come from Kiro Crew's own model CDN: about 8.4 GB for Plumb-4B, about 4.6 GB for Strands Decider 2B, about 0.85 GB for Laya, which keeps only its English checkpoint. Each file is checked against a SHA-256 fixed in Kiro Crew before it is used, so a changed file is refused rather than run. An interrupted download resumes where it stopped.
 2. **Install.** A Python 3.12 environment of about 1 GB is built for the model with `uv`, from a lock that pins every package to the version the card's figures were measured with. On Linux, PyTorch comes from its CPU-only index. This happens once per model and takes a few minutes.
 3. **Start.** The model's server starts in the background, sandboxed, and listens on `127.0.0.1` only. The card says **Running on this machine** once it answers.
 
@@ -110,7 +112,7 @@ Your other settings, including the recorded scopes, are unchanged.
 
 ## Letting Jev pick the model
 
-Open the model picker under the chat box and choose **Auto (Jev)**. The entry appears only when the Decisions switch is on and your organisation allows the feature, so if you do not see it, turn the switch on first.
+Open the model picker under the chat box and choose **Auto (Jev)**. The entry appears only when the Decisions switch is on and your organisation allows the feature, so if you do not see it, turn the switch on first. A chat left on the plain `auto` model needs no pick: while the Decisions switch is on, the composer shows it as **Auto (Jev)** and it is routed too.
 
 That alone gets you the reading: each message is judged and the reply says which level it landed in, while every level is still unpinned so nothing moves. Fill in `model_route` above when you want messages actually routed — each level you pin starts taking effect on the next message.
 
@@ -118,7 +120,7 @@ From then on, each message you type is judged once, and a message whose level yo
 
 **This can cost more.** Routing a message to a stronger model spends more than staying on your usual one. You chose that when you picked **Auto (Jev)**, and you can undo it in one click: pick any model in the same picker and the routing stops immediately. Picking a model by hand is never overridden -- it is your answer to the same question Jev was being asked.
 
-A few things worth knowing. The choice belongs to one chat, not to the whole app, and it lasts until you change it or the gateway restarts — a restart leaves the chat on its usual model, and you pick **Auto (Jev)** again. It is not written to disk on purpose: the file it would live in can be edited by an agent working on your machine, and this choice can cost you money, so nothing but your own click in the picker turns it on. A message sent by a scheduled job, a sub-agent or an app is never routed. The chat does not switch back after each message: if Jev is unavailable for the next one, that message runs on whatever the last one used. And the reply carries a small line saying which level Jev picked, which model answered, and which model would have answered otherwise -- with a thumbs pair, so you can say it got it wrong.
+A few things worth knowing. The choice belongs to one chat, not to the whole app. Picking **Auto (Jev)** puts the chat on `auto`, so after a gateway restart it keeps routing for as long as the Decisions switch is on; pinning any model in the picker is the way to opt a chat out. Only the dashboard owner can pick **Auto (Jev)**. A message sent by a scheduled job, a sub-agent or an app is never routed, and neither is a queued turn restored after a restart; a turn a conductor session delivers into the chat is. The chat does not switch back after each message: if Jev is unavailable for the next one, that message runs on whatever the last one used. And the reply carries a small line saying which level Jev picked and which model answered, with a thumbs pair, so you can say it got it wrong. Expand the line to see the model that would have answered otherwise.
 
 ## Data and waiting time
 
@@ -254,6 +256,26 @@ Waiting for Jev cannot hold up a recall for long. The request gets the same budg
 If the request fails, the receipt says so and credits the fallback rather than Jev: the line reads "kept after fallback" and the list is titled "Kept (fallback)", because every close match went in and Jev chose none of it.
 
 The reply carries a one-line receipt: how many entries the recall found, how many Jev kept, how sure it was on average, how long it took, and the prompt characters the smaller set saved -- `memory · recalled: 6 · Jev kept: 3 (confidence 0.81, 210 ms) · saved 2.1K prompt chars`. Open it to see which entries were on the shortlist and which survived, with a thumbs pair for each side, so you can say the plain closest-match list was the better one.
+
+## Letting a judge skip a quiet loop cycle
+
+An auto-nudge loop wakes its session on every cycle, even when nothing changed. The wake judge reads what the loop's watched targets produced since the last cycle -- a watched session's new assistant lines, a watched pull request's state and check counts -- and answers one question: does the session need to act now? Only a yes spends the turn.
+
+It never ends a loop, and it cannot keep one quiet for good: after a run of quiet cycles one fires anyway. A timeout, a failed request or an unsure answer wakes the session, as the loop always did. A loop started with `gate=false` is never screened, and a loop whose `judge` is `false` skips the judge.
+
+Two lanes can answer, set by `decisions.nudge_wake.provider` in `config.json` or on the Decisions card:
+
+| `provider` | Who answers | What it needs |
+|---|---|---|
+| `auto` (default) | Jev when its switch below is on, the small model otherwise | see the two rows below |
+| `jev` | Jev | the Decisions switch and **Also send what a watching loop has found so Jev can skip a turn** |
+| `llm` | a small text-only model on the provider your sessions already use | a loop that names its own `judge` brief; no extra key and no consent switch, because it adds no new destination |
+
+`decisions.nudge_wake.llm_model` names the small model; empty keeps the background agent's own model. `decisions.nudge_wake.quiet_streak_floor` can only shorten the quiet run before a cycle fires anyway; `0` keeps the shipped floor, and a larger value is clamped back to it.
+
+A loop that names no brief of its own is screened only after you turn on **Also send what a watching loop has found so Jev can skip a turn**; it is then judged against a default brief that asks whether the subject needs its owner. Pinning `jev` without that switch sends nothing, and every cycle wakes as before. A managed install that turns decisions off for the fleet stops both lanes.
+
+That switch records the `nudge_evidence` scope in `decisions_consent.json`. Turn it on in the **Quiet check-ins: wake or skip** panel on the Decisions card. It sends text from conversations you were not in: the tail of each watched session's transcript, and a watched pull request's typed facts (such as its state, draft flag, head and unresolved review threads) plus a fixed-width fingerprint of its comment bodies, never their text. Passwords and keys are replaced before anything is sent. Granting any other scope does not grant this one.
 
 ## Basic logs
 

@@ -3,8 +3,8 @@ title: Tool-Derived Diff Cards — structured diffs as the primary file-change d
 status: in-progress
 author: zezhexu
 created: 2026-08-21
-last-audited: 2026-08-21
-audited-at: 8c61bc1f0
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: ["#5012"]
 tracking-issues: []
@@ -30,7 +30,7 @@ through two channels of very different reliability:
 1. **A structured channel that already exists.** kiro-cli's edit tools emit a
    `type: "diff"` content block (`{path, oldText, newText}`) on the ACP
    `tool_call` event. `acp/_dispatch.py` converts it to a unified diff string
-   (`make_unified_diff`, `_dispatch.py:304`) and attaches it to the tool-call
+   (`make_unified_diff` in `_dispatch.py`) and attaches it to the tool-call
    event as `tool_input`. The frontend renders it — but only inside the
    tool-call row's expanded details panel, which is collapsed by default
    (`ToolCallLine.tsx:174`), and turns with more than two working steps fold
@@ -73,7 +73,7 @@ structured data; it only fails to give it first-class display.
 Slack, Discord, and Telegram renderers never see `tool_input`. The unified
 transport copies only `{tool_call_id, title, tool_kind, tool_purpose}` onto
 `OutputEvent` (`messaging/driver.py:373-386`); the Slack native path reads the
-same four fields (`slack/handler.py:3235-3327`); Discord/Telegram show only a
+same four fields (`_AnswerStream.on_tool_call` in `slack/handler_runtime/stream.py`); Discord/Telegram show only a
 transient "🔧 tool…" footer on the live bubble. **On those surfaces the
 model-authored diff block is the ONLY way a user sees what changed.**
 
@@ -182,8 +182,9 @@ exact-string pin.
 
 ## 4. What does NOT change
 
-- `make_unified_diff` and the ACP diff-content-block parsing
-  (`_dispatch.py:669-692`) — already correct.
+- `make_unified_diff` and the ACP diff-content-block parsing (the
+  `type == "diff"` content-block checks in `_dispatch.py`, including
+  `_build_tool_call_event`) — already correct.
 - The `/api/file-diff` Activity Files tab — an independent channel, untouched.
 - `DiffBlock`, `diffUtils`, `useBlockAssembler` — the model can still emit
   diff blocks (fallback cases) and they render exactly as today.

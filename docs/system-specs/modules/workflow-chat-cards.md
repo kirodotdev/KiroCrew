@@ -2,13 +2,13 @@
 
 ## Behavior
 
-Workflow launches and completions render as durable inline cards in chat. `ChatPage.tsx` renders them for the primary chat surface, and `transcriptRenderers.tsx::createTranscriptRenderers` registers the same cards for SDK transcript hosts. `TurnBlock.tsx` keeps those items outside collapsed tool and reasoning groups so a launch or completion remains available in either collapse mode.
+Workflow launches and completions render as durable inline cards in chat. `transcriptRenderers.tsx::createTranscriptRenderers` is the single owner of card selection (rules `workflow_run_tool` and `workflow_completion`) for both the primary chat surface and SDK transcript hosts; `ChatPage.tsx` only calls it. `TurnBlock.tsx` keeps those items outside collapsed tool and reasoning groups so a launch or completion remains available in either collapse mode.
 
 ### Launch card
 
 `website/src/pages/chat/WorkflowRunCard.tsx` renders a launch card only for a `tool` message whose persisted `meta.output` yields a run ID through `extractWorkflowRunId`; `isWorkflowRunTool` enforces the role check. The detector matches the `Started workflow run ...` contract returned by `src/kiro_crew/mcp_tools/workflows.py::workflow_run` for source and intent launches. Exact saved-definition launches currently return `Started saved workflow ... as ...`, so they fall through to the generic tool row rather than rendering this card.
 
-The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice, and `website/src/hooks/websocket/workflowRuns.ts` reconciles it with the workflow-runs API (on every socket open, and on a slow heal tick while a row shows running); `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
+The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice, and `website/src/hooks/websocket/workflowRuns.ts` reconciles it with the workflow-runs API: on every socket open, on a slow 15-second heal tick while a row shows running, and — because a hidden tab skips that tick — immediately on `visibilitychange` when the tab becomes visible again; `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
 
 The card sanitizes display text, switches to its own slot before opening the Workflows panel when rendered from a background pane, and dispatches `openActivityToTab('workflows')`. A finished run exposes the save-workflow flow; `WorkflowRunCard` requires a snapshot source before the library-promotion action is enabled.
 
@@ -20,9 +20,9 @@ The card sanitizes display text, switches to its own slot before opening the Wor
 
 ### Rendering invariants
 
-**Parse-gated completion detection prevents data loss.** `isWorkflowCompletionMessage` accepts only an assistant message that `parseWorkflowCompletion` successfully parses. `ChatPage.tsx` and `transcriptRenderers.tsx` use that predicate before selecting `WorkflowCompletionCard`; an unparseable header therefore falls through to ordinary markdown instead of selecting a card that returns no content. `WorkflowCompletionCard.test.tsx` pins this fallback.
+**Parse-gated completion detection prevents data loss.** `isWorkflowCompletionMessage` accepts only an assistant message that `parseWorkflowCompletion` successfully parses. `transcriptRenderers.tsx`'s `workflow_completion` rule uses that predicate before selecting `WorkflowCompletionCard`; an unparseable header therefore falls through to ordinary markdown instead of selecting a card that returns no content. `WorkflowCompletionCard.test.tsx` pins this fallback.
 
-**Launch detection has the same fallback.** `WorkflowRunCard.tsx::extractWorkflowRunId` returns no ID when persisted tool output does not match the launch contract. `ChatPage.tsx` then renders the generic `ToolCallLine`, and `transcriptRenderers.tsx` does the same inside its launch renderer. This preserves the normal tool row while output is absent, malformed, or from another tool.
+**Launch detection has the same fallback.** `WorkflowRunCard.tsx::extractWorkflowRunId` returns no ID when persisted tool output does not match the launch contract. `transcriptRenderers.tsx` then renders the generic `ToolCallLine`: the `workflow_run_tool` rule does not match, and its renderer draws the tool line for a null ID too. This preserves the normal tool row while output is absent, malformed, or from another tool.
 
 **Cards remain visible independently of turn folding.** `TurnBlock.tsx::isWorkflowRunItem` removes launch cards from the collapsed tool set, and `isWorkflowCompletionItem` includes completion cards in `isVisibleInline`. Without those classifications, the only chat anchor for a workflow lifecycle event can be hidden behind a turn disclosure.
 

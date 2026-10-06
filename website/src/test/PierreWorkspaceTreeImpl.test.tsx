@@ -406,7 +406,7 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     renderTree()
 
     const state = await screen.findByTestId('workspace-tree-root-hidden-only')
-    expect(state).toHaveTextContent('This workspace contains only hidden items (dotfiles, caches)')
+    expect(state).toHaveTextContent('This workspace contains only hidden items (skipped tool and cache folders, protected entries)')
     expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
     expect(screen.queryByTestId('workspace-tree-root-unreadable')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
@@ -499,7 +499,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     ])
   })
 
-  it('says "Contains only hidden items (dotfiles, caches)" when the folder holds only folders the listing skips or hides', async () => {
+  it('says "Contains only hidden items (skipped tool and cache folders, protected entries)" when the folder holds only folders the listing skips or hides', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({
       paths: ['HEARTBEAT.md'],
       directories: ['_bg'],
@@ -510,7 +510,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     await waitForTree()
 
     expect(treeMock.last().calls.resetPaths).toEqual([
-      ['HEARTBEAT.md', '_bg/', `_bg/Contains only hidden items (dotfiles, caches)${M}`],
+      ['HEARTBEAT.md', '_bg/', `_bg/Contains only hidden items (skipped tool and cache folders, protected entries)${M}`],
     ])
   })
 

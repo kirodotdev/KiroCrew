@@ -580,7 +580,10 @@ def read_knowledge_documents() -> Optional[int]:
 
 
 def read_lessons() -> Optional[int]:
-    """Count of saved lessons.
+    """Count of lessons in the global (V1) lesson store.
+
+    Private Memory V2 crew-member lessons live only in each member's own
+    database and are not counted here.
 
     Uncached here on purpose: the store already caches by file mtime, so a
     repeated read on an unchanged file is one ``stat``. A second cache would only
@@ -784,7 +787,7 @@ def register_inventory_gauges(meter: "Meter") -> None:
             GAUGE_LESSONS,
             callbacks=[_observations(PROBE_LESSONS, read_lessons)],
             unit="1",
-            description="Lessons this install has saved",
+            description="Lessons saved in the global (V1) lesson store",
         )
         meter.create_observable_gauge(
             GAUGE_MCP_SERVERS,

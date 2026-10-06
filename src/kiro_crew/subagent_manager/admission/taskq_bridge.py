@@ -507,10 +507,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         # references rather than grants and which no start path reads.
         #
         # ``_parent_spawn_policy`` is a read of the parent agent spec at THIS
-        # request's moment, kept in the in-memory queue so its synchronous drain
-        # scans nothing on the loop; the durable pump re-resolves it off-loop
-        # before every re-check, so the row never carries a snapshot that an
-        # edited spec would leave stale across a restart.
+        # request's moment. No queue keeps it: every drain re-reads it -- the
+        # durable pump off-loop before every re-check, the in-memory synchronous
+        # drain through the gate's memo-pinned inline read -- so the row never
+        # carries a snapshot that an edited spec would leave stale across a
+        # restart.
         #
         # ``WINDOW_ENTRY_RECOVERING`` is window bookkeeping read off the row's
         # state at hydration (``_window_entry``), never a fact a row carries.

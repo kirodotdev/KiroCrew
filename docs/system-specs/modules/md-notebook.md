@@ -131,13 +131,13 @@ secret-write chokepoint, recorded here so it stays a decision:
   `staging_dir=` would have to either bypass that fence or duplicate it for a second
   directory, on a primitive with many callers and a large contract (ACL preservation,
   retry, fsync, restrict-on-error policy).
-* The one guard the fork must not shed is the #4381 planted-link refusal that
+* The one guard the fork must not shed is the planted-link refusal that
   `restrict_to_owner=True` implied. It is not reimplemented: `atomic_write.refuse_linked_parent`
   is the same private helper made public for exactly this caller class, and tests fail if
   either call site drops it.
 * The cost is real and accepted: a future guard added inside `atomic_write` does not reach
-  this writer. #8797 would remove the reason for the fork entirely by moving state into one
-  masked directory, so `staging_dir=` is the right follow-up only if #8797 is declined.
+  this writer. Moving the state into one masked directory would remove the reason for the
+  fork entirely; `staging_dir=` is the right change only if that move is not made.
 
 ## Routes
 
@@ -213,26 +213,21 @@ written and deleted the same day — and git can only restore what it already ha
   Nothing touches `.git/info/exclude` or the vault's `.gitignore`; `status()` filters `.trash`
   paths and staging names only what `status()` reported, so the folder cannot enter a commit.
   Two consequences to keep in mind: `git status` in the user's own terminal **does** list
-  `.trash/` as untracked, and a hand-run `git add -A` there **would** stage it. Writing a
-  per-clone exclude rule is deferred to a follow-up PR (its full hardening — `O_NOFOLLOW`, the
-  hardlink refusal, the symlinked-parent refusal, the Windows fallback and the bytes-not-text
-  read — is preserved on the `wip/notes-trash-exclude` branch); it is defence in depth for
-  third-party git use, not part of this app's guarantee, and it was the single largest source
-  of review findings on this PR.
-  An earlier revision instead passed `:(exclude,literal).trash` to `git add`, which **broke
-  sync**: naming the folder in a pathspec makes git treat it as an EXPLICITLY named ignored
-  path and fail the whole add (`use -f if you really want to add them`, exit 1) in any vault
-  that already ignores it — which is Obsidian's own convention, so the guard broke the common
-  case while passing a fixture repo that has no ignore file. Do not reintroduce a pathspec
-  exclusion.
+  `.trash/` as untracked, and a hand-run `git add -A` there **would** stage it. A per-clone
+  exclude rule would be defence in depth for third-party git use, not part of this app's
+  guarantee, and none is written.
+  There is deliberately **no pathspec exclusion** (`:(exclude,literal).trash` on `git add`):
+  naming the folder in a pathspec makes git treat it as an EXPLICITLY named ignored path and
+  fail the whole add (`use -f if you really want to add them`, exit 1) in any vault that
+  already ignores it — which is Obsidian's own convention, so it would break sync in the common
+  case.
 * The cache is rebuilt rather than having one index entry dropped: the deleted note's own
   `[[wikilinks]]` go with it, so its targets would otherwise keep a backlink to a note that no
   longer exists.
 * **Nothing empties it.** There is no retention policy, no purge on start, no age limit — a
   trashed note stays until the user removes it (Obsidian behaves the same). Time-based
   retention is deliberately NOT in this module: it is the only behaviour that would delete
-  user data unattended, so it is being landed separately, where a reviewer can look at it in
-  isolation. That is also why the delete dialog's copy promises only recoverability, never a
+  user data unattended. That is also why the delete dialog's copy promises only recoverability, never a
   deadline — copy that states a window a backend does not enforce is worse than no copy.
 * **`POST /api/trash/open` reveals it in the OS file manager**, surfaced as an underlined link
   in the delete dialog (whose copy promises the note is restorable from there) and per vault in
@@ -394,7 +389,11 @@ CLI login (cached 300s, never written to disk).
   into `.git` (or another tracked folder) cannot land between the check and the write, and the
   write can never aim at a link target resolved before the lock. All three `git_ops.sync`
   callers hold the same lock for their whole run, so a sync's tree-rewriting merge and a note
-  write never overlap.
+  write never overlap. Delete and the source of a move take the same walk over the note's own
+  folder components (`mutation_path_checked`) under that lock. The lock's guarantee also
+  depends on `git_ops.run_git`: a cancelled git call kills and reaps its detached git process
+  tree (`platform_compat.kill_and_reap`, run shielded) before the cancellation propagates, so no
+  git child outlives the lock it ran under.
 * **Containment is not sufficient, so every caller-supplied path also passes
   `require_note_path()`** (`require_folder_path()` for the new-note `folder`): each component
   must be undotted and the file must end in `.md`. A vault holds far more than notes, and
@@ -462,8 +461,8 @@ Delete is the one destructive row action, and it is staged rather than immediate
    design language, and unthemeable by construction. The dialog scrims the Notes pane (the app
    root is `position: relative`, so the dashboard chrome stays visible), focuses the destructive
    button so Enter confirms, and closes on Escape or a scrim click. The scrim carries
-   `role="presentation"` *before* its `onClick` — the `accessible-interactive-elements` AUTOSDE
-   rule matches `<div … onClick` only when no `role=` precedes it.
+   `role="presentation"` — the `accessible-interactive-elements` AUTOSDE rule matches
+   `<div … onClick` only when the tag carries no `role=` (before or after the handler).
 2. **The row goes 50% opacity while the request is in flight**, with the sync-badge slot showing
    `deleting` instead of `pending` — the badge slot already means "state of this file", so a
    second indicator would be noise. The row stops responding to clicks and drags, and its action

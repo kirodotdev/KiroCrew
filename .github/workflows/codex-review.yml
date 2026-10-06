@@ -123,16 +123,31 @@ jobs:
           # resolves to inactive, as before.
           comments=""
           read_ok=""
+          read_err="$(mktemp)"
+          primary_limited=""
           for attempt in 1 2 3; do
-            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>"$read_err")"; then
               read_ok=1
               break
             fi
+            cat "$read_err" >&2
             echo "Reading the PR comments failed on attempt $attempt."
+            # The PRIMARY installation limit resets hourly, so a retry seconds
+            # later spends more of the shared quota and cannot succeed;
+            # pr-readiness refuses to retry it for the same reason. Stop and
+            # name the cause instead.
+            if grep -q 'API rate limit exceeded for installation' "$read_err"; then
+              primary_limited=1
+              break
+            fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$attempt"
             fi
           done
+          if [ -z "$read_ok" ] && [ -n "$primary_limited" ]; then
+            echo "::error::Could not read this PR's comments: the shared installation token hit GitHub's PRIMARY rate limit (not a lane defect). Failing closed for $HEAD -- re-run this job after the hourly reset, not before."
+            exit 1
+          fi
           if [ -z "$read_ok" ]; then
             echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
@@ -937,8 +952,24 @@ jobs:
             #     no-blocking-call-on-event-loop, no-new-work-on-gateway-boot-
             #     path, top-level-imports, changelog-is-written-at-version-
             #     bump-only, feature-map-correctness, no-new-builtin-apps,
-            #     recurring-defect-patterns, and the website UI rules --
+            #     recurring-defect-patterns, memory-store-seam,
+            #     no-sync-store-call-from-a-coroutine,
+            #     persist-before-you-publish, a-ratchet-may-only-tighten,
+            #     prefer-subtracting-a-duplicate-mechanism,
+            #     a-refusal-is-not-a-commit,
+            #     an-invariant-line-needs-a-mutation-pin, tests-are-deterministic,
+            #     an-async-test-respects-the-on-loop-lock, a-stopwatch-is-not-a-
+            #     barrier,
+            #     a-bound-bounds-every-field-it-retains,
+            #     an-operator-facing-string-states-what-was-measured, and the
+            #     website UI rules other than frontend-security --
             #     availability/hygiene classes with bounded harm.
+            #   - fenced by the vocabulary above, not by name:
+            #     backend-security-controls and frontend-security (bare
+            #     `security`), a-sandbox-widening-is-not-incidental-scope
+            #     (`sandbox`), and recorded-decisions-are-not-regressions
+            #     (`egress` inside "regressions" -- an accidental match that
+            #     errs fail-closed, see below).
             #   - a NEW AUTOSDE rule id defaults to NOT fenced unless it
             #     carries a *security* token, is a residual class, or is
             #     added here with a rationale.
@@ -1089,6 +1120,14 @@ jobs:
           # threads are attacker-controllable on a public repo and must never
           # enter an agentic reviewer's context, and this stage in particular
           # must not be able to post its own verdict anywhere.
+          # Changing --model or --fallback-model here, or in any review lane,
+          # needs evidence that THIS lane's OIDC role can invoke the new id: a
+          # one-token InvokeModelWithResponseStream run under that role, linked
+          # in the pull request. A Bedrock listing that says ACTIVE is not that
+          # evidence -- a model can be ACTIVE and still refuse this role, and
+          # then every adjudication fails at zero tokens (is_error, one turn).
+          # The workflow_run fork lanes run the default branch's copy of their
+          # file, so their own pull request cannot exercise a model change.
           claude_args: |
             --model us.anthropic.claude-opus-5-5
             --fallback-model us.anthropic.claude-sonnet-5-5

@@ -1,12 +1,12 @@
-# Crew Members
+# Crewmates
 
 A **crewmate** is a named assistant you keep. It binds a workspace folder, a
 memory store, an agent template and a default model. Creating one gives it a
 memory store of its own, which is what keeps one crewmate learning your incident
 runbook out of another one's notes. The other three are named bindings it points
 at, so two crewmates can share a workspace or a template — and an older crewmate
-can share a store too, which the crew manager says on the field. The **Crew
-Members** page is where you see all of them and talk to each one in a standing
+can share a store too, which the crew manager says on the field. The
+**Crewmates** page is where you see all of them and talk to each one in a standing
 thread.
 
 Crewmates are the same objects the rest of Kiro Crew calls *crews* or *agents*:
@@ -16,8 +16,8 @@ markdown specs a crewmate boots from.
 
 ## Turning the page on
 
-Crew Members is a feature preview. Enable **Settings → Developer → Feature
-Previews → Crew Members** and the **Crew Members** row appears in the left rail
+Crewmates is a feature preview. Enable **Settings → Developer → Feature
+Previews → Crewmates** and the **Crewmates** row appears in the left rail
 at `/members`. The same card has a "See what it looks like" button that shows the
 page before you switch it on.
 
@@ -66,13 +66,16 @@ every time: closing it, restarting the gateway, or coming back a week later
 reopens the same conversation with its history. That is the point of a crewmate
 over an ordinary session — the context you built up with it is where you left it.
 
-Member threads are deliberately kept out of the Sessions list; the Crew Members
-page is their only home. The right-hand panel is the same one the chat page
-docks, so Files, Artifacts, Terminal and Browser all work against the thread,
-and it opens on three crewmate tabs: **Notes** (what it learned — its own
-standing notes, read-only here), **Work log** (what it did) and **Dashboard**
-(the page it publishes itself). Setup — template, wake sources, memory, cloud —
-lives on the crewmate's detail page, not in the panel.
+Member threads are deliberately kept out of the Sessions list; the Crewmates
+page is their only home. The right-hand side panel is the chat page's panel with
+two standing tabs: **Dashboard** (the page the crewmate publishes itself) and
+**Files** (its workspace). Artifacts is not offered here; Terminal, Browser and
+the other views open from the panel's **+** menu.
+
+The identity pill in the thread header opens the crewmate's **Profile** card,
+with four tabs: **Profile**, **Schedules**, **Sessions** (the ones it is driving)
+and **Goals**. **Notes** — what it learned, its own standing notes — opens from
+the Profile tab as a read-only page pushed over the card.
 
 A few situations make Kiro Crew refuse to open a thread rather than guess:
 
@@ -82,26 +85,11 @@ A few situations make Kiro Crew refuse to open a thread rather than guess:
 | this thread's history exists but its binding is gone | The transcript is on disk with nothing claiming it. Handing it to whoever holds the name now would show one crewmate another's conversation. |
 | shares its short name with … | Two crewmates fold to the same short name and therefore the same thread. A crewmate cannot be renamed, so delete one and create it again under a name that folds differently. |
 
-## Detail drawer
-
-The drawer beside a crewmate shows only what was actually recorded:
-
-- **Today** and **Past 7 days** counts, per day, split into *Chat* (you opened a
-  session with it) and *auto-picked* (the orchestrator routed a task to it).
-- The projects it worked in that day.
-- **Wake sources** — the schedules, inbound webhooks and auto-patrol loops that
-  can start a turn without you. "Nothing wakes this member automatically" is a
-  real answer, not a loading state.
-- **Sessions it's driving** right now.
-
-Only the most recent events are loaded, so once the window is full the counts
-render as floors (`12+ chats`) instead of asserting a total.
-
 ## Creating and editing
 
 **New crewmate** — the hero button on an empty roster, or the **+** menu in the
 roster header once one exists (its rows are **New crewmate** and **New team**)
-— opens an in-page dialog on the Crew Members page. It asks for a **Name** and what the crewmate is **Built from** (the
+— opens an in-page dialog on the Crewmates page. It asks for a **Name** and what the crewmate is **Built from** (the
 starting setup it copies), plus an optional line on **what it looks after**;
 **Advanced** unfolds the workspace, model, triggers and session color. Creating
 opens the new crewmate's chat with a first greeting seeded for you. The name is
@@ -111,15 +99,28 @@ roster before the request leaves the browser; the server owns every other rule
 (a credential-shaped name, hidden characters, the length cap) and its answer is
 shown in the dialog. The stable member id, path-safe slug and slot key are
 derived by the server and stay bounded identifiers, as does the **Built from**
-template id. Two crewmates whose names share a slug (`on_call` and `on-call`,
-say) are allowed: the server gives the second its own identity, so each keeps
-its own chat and memory.
+template id. A free-form name is kept as the crewmate's `display_name`, the label
+the dashboard shows, on a config key the server derives from it; an id-shaped
+name is used as the key itself. Creating is refused when that key is taken, or
+when another crewmate already shows the same name. Two crewmates whose names
+share a slug (`on_call` and `on-call`, say) are allowed: the server gives the
+second its own identity, so each keeps its own chat and memory.
 
-Beyond that, the only crewmate *configuration* the page writes is the star on a
-row, a roster preference stored on the crewmate. (Opening a member writes too,
-but only its own thread binding.) Both **Edit** affordances still navigate to
-the crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
-which remains the editor for an existing crewmate's name, template, model,
+### Teams
+
+Teams group the roster: **New team** in the **+** menu creates one, and its
+crewmates are listed under it. Opening a team shows the team view. When a
+crewmate there asks a question, an answer option drafts a reply in that
+crewmate's chat; nothing is sent until you send it. Deleting a team keeps its
+crewmates' chats.
+
+### Editing
+
+Beyond creating, the page edits crewmates in place. The Profile card's pencil,
+**Permissions** and **Model** controls open the shared crew editor dialog on the
+Crewmates page itself, and every configuration write goes through that dialog.
+The crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
+remains an alternative editor for an existing crewmate's name, template, model,
 reasoning effort, workspace, triggers, avatar and session color.
 
 From the CLI:
@@ -127,6 +128,7 @@ From the CLI:
 ```bash
 kirocrew agent list
 kirocrew agent create --name oncall --kiro-agent kirocrew --workspace default
+kirocrew agent create --name oncall-2 --display-name "On-call 2" --kiro-agent kirocrew
 kirocrew agent update oncall --workspace incidents
 kirocrew agent delete oncall
 ```
@@ -151,7 +153,7 @@ restore treat it.
 | | What it is |
 |---|---|
 | Crewmate | A named assistant of yours: template + workspace + memory + model. Picking one runs work as that crewmate, on its memory. |
-| Agent template | A shared spec in `~/.kiro/agents/`. Picking a template runs the shared template on the shared default memory and creates no crewmate. The chat agent picker groups the two separately for exactly this reason. |
+| Agent template | A shared spec in `~/.kiro/agents/`. Picking a template runs it on your default crewmate's workspace and memory and creates nothing new. The chat agent picker lists templates separately, under **Custom agents**, for exactly this reason. |
 | Remote crew | Another Kiro Crew gateway this dashboard can reach, under **Settings → Remote Crew**. A different machine, not a different assistant. |
 
 ## Where you can pick a crewmate
@@ -174,7 +176,9 @@ same roster and answer different questions.
 
 `select_crew` with no argument returns the roster: every crewmate with non-empty
 triggers except the configured `default_agent`, each with its triggers, plus that
-`default_agent` name as a top-level field. The omission is of that one configured
+`default_agent` name as a top-level field. A roster entry, a `route_crew` match
+and an `unavailable` row also carry `display_name` when the crewmate's dashboard
+label differs from its key. Pass the key, not the label, to `crew=`. The omission is of that one configured
 name, not of whoever is calling — a crewmate with triggers can see itself in
 the list, so check the name you picked against your own. You judge the fit.
 

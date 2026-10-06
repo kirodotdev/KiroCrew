@@ -1,6 +1,6 @@
 ---
 cron: ops-mission-control/ledger-hygiene
-schedule: "0 3 * * *"
+schedule: "17 3 * * *"
 tier: primary
 silent: true
 ---

@@ -7,7 +7,6 @@ import importlib
 import json
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,20 +26,9 @@ class _AuditLog:
         self.events.append(event)
 
 
-@pytest.fixture(autouse=True)
-def _isolate_mcp_host_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep ``apply_import``'s MCP sidecar lock off the real ``~/.kiro/settings``.
-
-    ``_write_mcp`` takes the dashboard handler's lock, whose paths the handler
-    binds from ``Path.home()`` when it is imported. The host floor rebinds them
-    only when that module is already loaded, so without this the first MCP write
-    in a worker reaches the operator's real files. A test that patches these names
-    itself still wins, because its own patch runs after this one.
-    """
-    mcp_handlers = importlib.import_module("kiro_crew.dashboard.handlers.mcp")
-    global_mcp = tmp_path / "host-kiro-settings" / "mcp.json"
-    monkeypatch.setattr(mcp_handlers, "_GLOBAL_MCP_JSON", global_mcp)
-    monkeypatch.setattr(mcp_handlers, "_MCP_LOCK_PATH", global_mcp.with_suffix(".lock"))
+# Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
+# shared fixture in test/conftest.py).
+pytestmark = pytest.mark.usefixtures("isolate_mcp_host_paths")
 
 
 def _handler_module():

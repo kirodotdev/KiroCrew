@@ -369,8 +369,8 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
 def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
-    The five writers of an ``allowedTools`` list already consult the ceiling when
-    they WRITE, so on a freshly rebuilt spec this changes nothing. It is here
+    Every writer of an ``allowedTools`` list already consults the ceiling when
+    it WRITES, so on a freshly rebuilt spec this changes nothing. It is here
     because projection READS a file, and the file can predate the ceiling that now
     governs it: a spec written on an ungoverned host, restored from a backup, or
     edited by hand carries grants nobody ever cleared. Re-asking at the moment of
@@ -405,7 +405,7 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
 
 
 #: Per outcome, the security-event operation it is recorded under. A withhold keeps
-#: the name its three sibling writers already use, so the trail reads as one class of
+#: the name every other writer already uses, so the trail reads as one class of
 #: event however the decision was reached; a relay is its own operation, because it is
 #: the opposite decision and must never be counted as a withhold.
 _PERMISSION_DECISION_OPERATIONS = {
@@ -417,10 +417,9 @@ _PERMISSION_DECISION_OPERATIONS = {
 def _audit_permission_decision(refs: str, outcome: str, reason: str, agent_id: str) -> None:
     """Record one projection-time auto-approve decision in the security event log.
 
-    A withhold is a permission DECISION, and the other writers that reach this
-    state — app-agent materialization, the host shared-MCP sync, doctor's auto-fix
-    — all record it. Projection is the fourth, and the only one whose input is a
-    file it did not write, so a stale grant is likelier to be withheld HERE than
+    A withhold is a permission DECISION, and every writer that reaches this state
+    records it; ``agent_materialization/auto_approve.py`` owns the shared decision.
+    Projection is the only writer whose input is a file it did not write, so a stale grant is likelier to be withheld HERE than
     anywhere else; leaving it at a log line would make the most likely case the one
     with no audit trail.
 

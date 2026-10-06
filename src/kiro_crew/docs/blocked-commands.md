@@ -9,14 +9,14 @@ own credential setup when something looks unavailable.
 
 Reading credential files is blocked. **Running AWS CLI commands is not.**
 
-Those two facts are easy to conflate, and the agent used to conflate them: it
-would try to read `~/.aws/config` to discover your profile names, get refused,
-and report that the host had no AWS access at all — while `aws sts
-get-caller-identity` would have worked the whole time.
+Those two facts are easy to conflate. An agent that tries to read
+`~/.aws/config` to discover your profile names gets refused, and could wrongly
+report that the host has no AWS access at all — while `aws sts
+get-caller-identity` works the whole time.
 
-The refusal now carries the sanctioned path with it, so the agent is told to run
+The refusal carries the sanctioned path with it, so the agent is told to run
 `aws configure list-profiles` and `aws sts get-caller-identity` instead of
-reading the file. If you still see the old conclusion, run `kirocrew doctor` —
+reading the file. If you still see that conclusion, run `kirocrew doctor` —
 its **Credentials** section reports whether anything is actually configured.
 
 ## What is refused, and why
@@ -25,10 +25,11 @@ its **Credentials** section reports whether anything is actually configured.
 |---|---|---|
 | Credential files | `~/.aws`, `~/.ssh`, `~/.gnupg`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`, `~/.config/gcloud`, `~/.azure`, `~/.docker/config.json`, `~/.kube/config` | The bytes are a bearer credential. An agent that can read them can act as you anywhere they are accepted. |
 | Enterprise SSO session | the SSO cookie store on a corporate host | A live session token. Fenced for reading as well as writing, so it cannot be copied into a cookie jar either. |
-| The governance trust root | `security_policy.json`, `profiles/`, `admission_policy.json`, `denied_commands.json` | This is the ceiling the agent is governed by. Its unreachability from a tool call is what makes the ceiling un-disableable. |
+| The governance trust root | `security_policy.json`, `profiles/`, `admission_policy.json`, `denied_commands.json` | This is the ceiling the agent is governed by. File tools and the tool gate refuse these files, and the OS sandbox makes them read-only to agent code, so the agent cannot write (and so cannot disable) its own ceiling. Reading them is allowed by design. |
 | Exfiltration shapes | `curl -d @file`, `--upload-file`, `wget --post-file`, `/dev/tcp/` redirects | Reading a local file into an outbound request body is indistinguishable from exfiltration, whatever the destination. |
 | Destructive operations | `rm -rf /`, `terraform destroy`, `TRUNCATE TABLE`, `aws … delete-*` | Irreversible. These are disable-able if you want them (see below); the credential ones are not. |
 | Self-protection | minting a dashboard token, killing the gateway, an inline interpreter that imports Kiro Crew | Prevents the agent from escalating its own access or shutting down its supervisor. |
+| ssh to this machine | `ssh` to `localhost`, `scp`/`sftp`/`rsync` to a loopback address or one of this host's own names | sshd runs outside the agent sandbox, so a connection back to this host is an unsandboxed login shell. A target not yet classified as remote is refused too. |
 
 The full built-in rule list, with a human-readable description per rule, is in
 the dashboard under **Settings → Security**.
@@ -63,6 +64,12 @@ A refusal reaches the agent as two things: the rule that fired, and — for the
 classes above where the next step is not obvious — the sanctioned path to what
 it was trying to do. That second half is why the agent should not stall, retry
 the same command under a different reader, or tell you that *you* cancelled it.
+
+One refusal is the exception that IS retried: an ssh-family command refused as
+**PENDING** because its target is still being classified (a background DNS check
+for a new dotted hostname, this machine's address list still loading, a large
+hosts file still being read). The agent is told to wait a few seconds and retry
+the exact command; it runs once the target is classified as remote.
 
 If the agent ever claims you denied something, that is a bug worth reporting:
 the block came from the host, not from you.

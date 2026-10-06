@@ -78,7 +78,7 @@ const GENERIC_BEFORE = 'could not be turned on, and nothing was changed'
  *  both sentences open with the one clause tying trust and "turned on" together. */
 const GRANTED = 'It is now trusted, but it could not be turned on'
 const ONE_SWITCH = `Trusting \u201c${DISPLAY}\u201d is what turns it on.`
-const REMOVE_TRUST = 'Trusted third-party apps to remove the trust'
+const REMOVE_TRUST = 'Third-party apps to remove the trust'
 const ENABLE_FAILED_REASON = 'backend failed to start: ModuleNotFoundError: fastapi'
 /** The instruction the generic copy carries and a permanent refusal must not. */
 /** The retry button, named for both things it does (it re-writes the trust grant

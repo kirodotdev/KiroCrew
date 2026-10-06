@@ -29,9 +29,9 @@ deliberate exception to the rule the rest of the file keeps, taken for the one f
 the rule cannot reach: "nobody has driven this yet" is a statement about Crew's own
 EVIDENCE rather than about the harness, it exists today only as prose in a set's
 comment, and no bit anywhere carries it. So the alternative to declaring it is not
-deriving it: it is a two-level card, where ``ACP_BACKENDS_COMPACT`` excludes pi and
-goose for want of a driven capture ("both are unclassified", in the set's own words)
-and that exclusion wears the same mark as a harness with no compaction surface at
+deriving it: it is a two-level card, where ``ACP_BACKENDS_COMPACT`` excludes pi for
+want of a driven capture ("pi is unclassified", in the set's own words) and that
+exclusion wears the same mark as a harness with no compaction surface at
 all. Those two answers are not one answer, and a reader of two levels cannot see
 which cell a measurement would pay for.
 

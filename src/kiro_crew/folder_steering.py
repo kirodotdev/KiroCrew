@@ -647,7 +647,8 @@ def collect_folder_steering(
         # warning names the repair.
         logger.warning(
             "folder steering skipped: %s, so the memory-store fence is incomplete; "
-            "%d declared steering root(s) were not read (repair config.json to restore)",
+            "%d declared steering root(s) were not read (repair config.json, and restart "
+            "the gateway if the whole file was unreadable, to restore)",
             fence.degraded,
             len(steering_dirs),
         )
@@ -804,7 +805,8 @@ def render_omission_notice(omission: SteeringOmission) -> str:
             f"[FOLDER STEERING OMISSION: {omission.count} declared steering root(s) were "
             f"not read -- the configuration's workspace table could not be read, so the "
             f"memory-store fence is incomplete and no folder steering is loaded until "
-            f"config.json is repaired.]"
+            f"config.json is repaired (an unreadable config.json also needs a gateway "
+            f"restart).]"
         )
     root = _notice_path(omission.root)
     if omission.kind == "files":

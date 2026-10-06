@@ -10,10 +10,10 @@ Adjust the current plan without starting from scratch. Faster and cheaper than @
 
 ## Context to Read
 
-1. `get_plan()` — current queue (pending tasks only, done tasks filtered out)
+1. `get_plan()` — the whole current queue, including tasks already done (`done: true`) in the last 2 hours; skip those when deciding what is still scheduled
 2. `get_watchlist()` — active watch items (check for overdue items that need scheduling)
 3. `read_mochi_file({ which: "activity" })` — recent activity (last 5-10 entries)
-4. The `planner_notes` from the queue — contains memory from the last full plan
+4. The `planner_notes` from the queue — contains memory from the last full plan (and `silent_until` when the user asked for quiet)
 
 Do NOT re-read the calendar. That is only for `mochi-plan`.
 
@@ -36,6 +36,10 @@ Detect what changed and adjust:
   → If a watch result notification came in (activity log), update planner_notes.watching_last_status
   → Note: watch checks are driven by WatchlistService, not the queue. Do NOT schedule check_watching tasks.
 
+- **Quiet requested** (`planner_notes.silent_until` is set and in the future):
+  → Remove upcoming notify tasks before that time, keep only moves
+  → When `silent_until` is null or past, nothing to remove
+
 - **General drift** (time passed, some tasks executed):
   → Rebalance remaining tasks if timing feels off
 
@@ -43,7 +47,7 @@ Detect what changed and adjust:
 
 The chat agent will provide context about what the user wants. Common requests:
 
-- **"Remind me at 5pm"** → Chat agent handles this directly via `update_watchlist` + `update_plan` (see prompt.md Watch List section). Replan is only needed if the chat agent sets `needs_replan: true`.
+- **"Remind me at 5pm"** → Chat agent handles this directly via `update_watchlist` (see prompt.md Watch List section); no queue task is needed. Replan is only needed if the chat agent sets `needs_replan: true`.
 - **"Watch this page"** → Chat agent handles this directly via `update_watchlist`. WatchlistService timer will handle periodic checks automatically based on `nextCheckAfter`.
 - **"Be quiet for a while"** → Remove upcoming notify tasks, keep only moves
 - **"Come here"** → This should use `perform_pet_action` instead (instant), but if it comes through replan, add an immediate move
@@ -67,5 +71,5 @@ update_plan({
 - ALWAYS set `needs_replan: false` when done — otherwise the next poll cycle will replan again
 - Do NOT call perform_pet_action() or any execution tools — all actions go through update_plan queue changes
 - Keep changes minimal — only adjust what needs adjusting
-- Preserve planner_notes structure when updating
+- `planner_notes` is REPLACED, not merged: an `update_plan` carrying `planner_notes` overwrites the whole object. Send the full object from `get_plan()` with your change applied, or omit `planner_notes` entirely. Sending only `{ watching_last_status: ... }` erases every other key.
 - **No duplicate notifications**: Before adding a notify task with `pushToChat: true`, check the activity log and existing done tasks. If the same message (or substantially similar content) was already pushed to chat, do NOT add it again. The user sees chat history — repeating the same notification is annoying.

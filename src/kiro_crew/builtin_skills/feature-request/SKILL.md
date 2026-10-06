@@ -9,8 +9,11 @@ triggers: request a feature, request feature, feature request, report a bug, bug
 Conversational workflow for gathering user feedback and creating GitHub Issues
 on the Kiro Crew repository.
 
-**Trigger:** User clicks "Request a Feature" button, or says "report a bug",
-"feature request", "I have an idea", "something's broken".
+**Trigger:** User says "report a bug", "feature request", "I have an idea",
+"something's broken", or names `$feature-request`. The dashboard's "Request a
+Feature" button does NOT load this skill: it seeds the self-contained prompt
+`FEATURE_REQUEST_PROMPT_FALLBACK` in `website/src/prompts/featureRequest.ts`,
+which must be kept in step with the workflow below.
 
 ## Repository
 
@@ -114,10 +117,11 @@ Choose from what that command returns:
 
 - **Exactly one type label** — the defect label for bug reports, the feature
   label for requests. These are mutually exclusive; never apply both.
-- **At most one label per prefixed grouping dimension** (e.g. a component
-  dimension, an OS dimension) when one clearly matches. Apply an OS label only
-  when the issue is genuinely specific to that OS — cross-platform issues get
-  none.
+- **At most one `area: ` label and at most one `platform: ` label** when one
+  clearly matches — the same two prefixed dimensions the triage classifier may
+  choose from. No other prefixed dimension is yours to set. Apply an OS label
+  only when the issue is genuinely specific to that OS — cross-platform issues
+  get none.
 - If no value in a dimension fits, **leave that dimension off**. An unlabeled
   dimension is better than a wrong one, and some issues legitimately belong to
   no component.
@@ -128,9 +132,12 @@ Rules:
   gap to the user and submit without it — extending the taxonomy is a maintainer
   decision, not a side effect of filing an issue.
 - **Do not apply automation-owned or triage-owned labels** — review/readiness
-  process markers, severity or release-blocking markers, and follow-up or
-  blocked markers. A freshly filed request has no way to know those apply, and
-  the workflows that own them will set them.
+  process markers, severity or release-blocking markers, follow-up or
+  blocked markers, the release-channel labels (`channel: *`, derived by
+  triage from the bug form), and the sizing labels (`tier:*`, `pending-triage`,
+  `triaged`) that the issue gate reads to let a PR merge. A freshly filed
+  request has no way to know those apply, and the workflows that own them will
+  set them.
 
 Collect the chosen names for the submit step below.
 

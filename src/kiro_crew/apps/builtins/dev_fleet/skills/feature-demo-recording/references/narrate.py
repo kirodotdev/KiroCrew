@@ -16,7 +16,6 @@ what produces drift you then cannot fix without a re-record.
 Script file format (JSON):
 
 {
-  "voice": "en-US-AndrewMultilingualNeural",
   "gap": 0.4,
   "lines": [
     {"role":"intro","eyebrow":"THE FEATURE","title":"Command Bar",
@@ -165,7 +164,8 @@ def tool(name: str) -> str:
                 return exe
         except Exception:
             pass
-    raise SystemExit(f"{name} not found -- run scripts/deps.py --install")
+    deps = pathlib.Path(__file__).resolve().with_name("deps.py")
+    raise SystemExit(f"{name} not found -- run {deps} --install")
 
 
 def measure(path: pathlib.Path) -> float:

@@ -1,8 +1,8 @@
 """Port baseline: watch-kernel edge cases that nothing else pins.
 
 :mod:`kiro_crew.irq` and its ``gh-pr`` probe carry a long tail of edge cases, and
-most of them already have a named test in ``test/test_irq.py`` or
-``test/test_babysit_pr_watch.py``. This module holds the remainder: behaviours
+most of them already have a named test in ``test/test_irq.py`` or, for the
+gh-pr fetcher, ``test/test_gh_pr_fetch.py``. This module holds the remainder: behaviours
 that are load-bearing in the kernel and would survive a re-implementation
 elsewhere with nothing turning red.
 

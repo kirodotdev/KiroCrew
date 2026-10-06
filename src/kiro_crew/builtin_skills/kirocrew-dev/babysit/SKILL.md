@@ -39,7 +39,8 @@ recording `last_status: ok`; heartbeat's allowlist has no shell or push.
 Use one session-owned driver, not two watchers.
 
 A gated `monitor_start` hands its whole pull-request reading, comment and review
-bodies included, to the wake judge, so `wake_when` may name prose.
+bodies included, to the wake judge, so `wake_when` may name prose. No
+judge lane: only an unchanged subject is free.
 
 An installation can set how firmly this table's facts-decided row points at the
 structured path. With `monitoring.prefer_structured_arming` on, `monitor_watch` is
@@ -158,8 +159,8 @@ security. Fix, commit and push only within the user's authorization.
   `target`, `objective`, `max_agent_turns`, `max_tokens`, `max_provider_errors`
   or `wake_instructions`. On Webex, stop and create a new finite loop instead.
 - One automation occupies a session. `monitor_start` is create-only; update an
-  active loop rather than replacing it. A budget-paused legacy loop resumes only
-  by raising the bound it reached with user authorization. Manual pauses and user
+  active loop rather than replacing it. A new arm replaces a cap/budget-stopped
+  legacy loop, only with user authorization. Manual pauses and user
   stops stay preserved; retained evidence needs the owner action above. Do not
   rearm merged/closed work as if it still needed repairs.
 

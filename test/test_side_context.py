@@ -120,3 +120,23 @@ def test_side_prompt_states_no_tools_on_a_harness_without_the_read_only_allowanc
     assert "Never claim that a tool is unconfigured" in prompt
     assert "lookups work here, but changes don't" not in prompt
     assert "run without asking" not in prompt
+
+
+def test_first_turn_states_the_boundary_again_right_before_the_question():
+    """The first-turn envelope carries the boundary twice: in the system
+    envelope and again as the last block before ``User:``."""
+    from kiro_crew.dashboard.side_prompts import (
+        SIDE_BOUNDARY_PROMPT,
+        SIDE_BOUNDARY_PROMPT_NO_TOOLS,
+    )
+
+    messages = [_msg("user", "deploy the alpha stack"), _msg("assistant", "Deployed.")]
+    for tools_available, boundary in (
+        (True, SIDE_BOUNDARY_PROMPT),
+        (False, SIDE_BOUNDARY_PROMPT_NO_TOOLS),
+    ):
+        out = sc.build_side_message(
+            _slot(messages), "and beta?", is_first_turn=True, tools_available=tools_available
+        )
+        assert out.count(boundary) == 2
+        assert out.endswith(f"{boundary}\n\nUser: and beta?")

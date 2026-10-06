@@ -1,6 +1,6 @@
 {
   "name": "mochi-bg",
-  "description": "Mochi background agent — executes watch checks, reminders, and planning tasks. Results are injected into the main agent's context.",
+  "description": "Mochi background agent — executes watch checks, reminders, and planning tasks. Results reach the user only through perform_pet_action notifications.",
   "model": "auto",
   "tools": [
     "fs_read",

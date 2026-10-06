@@ -1579,10 +1579,10 @@ class GatewayManager:
         Not used by the one-shot assessment gates (start-up election, the
         post-respawn incumbent check) or by the public status probe. For the
         status probe that is deliberate: a UI poll is waiting on it. For the
-        assessment gates it is only a scope boundary — their miss path can
-        unlink a LIVE daemon's socket, because ``transport.probe_live`` reads a
-        saturated accept backlog as not-live. See the daemon-lifecycle spec;
-        that defect belongs to the endpoint lifecycle, not to this verdict.
+        assessment gates it is only a scope boundary: their miss path goes
+        through ``transport.remove_stale``, which leaves an endpoint that
+        ``transport.probe_live`` reports live in place. See the daemon-lifecycle
+        spec.
 
         Observability (``observe=True`` only): the escalation itself is the
         precursor state to every kill/reconnect cycle — the fast bound missed,

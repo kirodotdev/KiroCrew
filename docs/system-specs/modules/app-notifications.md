@@ -6,7 +6,7 @@ Installed apps declare notification channels in `app.json` and publish through `
 
 ### Reaching the endpoint from an entryPoint backend
 
-A `backend.entryPoint` app runs as a separate loopback process, so it must learn the gateway's own address before it can push. The gateway injects that at spawn time as two generic environment variables (see `docs/app-kit/api-reference.md` -> Backend Environment Variables): `KIROCREW_GATEWAY_ORIGIN`, the gateway's `http://127.0.0.1:<bound port>`, and `KIROCREW_GATEWAY_ORIGIN_PROOF` (`HMAC-SHA256(app_secret, origin)`, injected only when the app has a `.app_secret` and the origin is set). The origin is set ONLY from the port the gateway ACTUALLY bound (its exported `KIROCREW_BOUND_PORT`, numeric and in `1..65535`), never the app's own `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value. Without that bound-port evidence both variables are omitted, so a backend that needs a callback base fails closed (stays dormant) rather than pushing to a guessed address. When the origin is present the backend recomputes the proof with its owner-only `0600` `.app_secret` to confirm the origin is one this gateway minted, then pushes to `POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret. In-gateway route apps (`backend.routes`) have no separate process and push in-process (see `ops-mission-control` `notify_out`), so they need neither variable.
+A `backend.entryPoint` app runs as a separate loopback process, so it must learn the gateway's own address before it can push. The gateway injects that at spawn time as two generic environment variables (see `docs/app-kit/api-reference.md` -> Backend Environment Variables): `KIROCREW_GATEWAY_ORIGIN`, the gateway's `http://127.0.0.1:<bound port>` (`http://[::1]:<bound port>` for a `::1` bind; omitted for a bind to one specific interface — `docs/app-kit/api-reference.md` owns the rule), and `KIROCREW_GATEWAY_ORIGIN_PROOF` (`HMAC-SHA256(app_secret, origin)`, injected only when the app has a `.app_secret` and the origin is set). The origin is set ONLY from the port the gateway ACTUALLY bound (its exported `KIROCREW_BOUND_PORT`, numeric and in `1..65535`), never the app's own `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value. Without that bound-port evidence both variables are omitted, so a backend that needs a callback base fails closed (stays dormant) rather than pushing to a guessed address. When the origin is present the backend recomputes the proof with its owner-only `0600` `.app_secret` to confirm the origin is one this gateway minted, then pushes to `POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret. In-gateway route apps (`backend.routes`) have no separate process and push in-process (see `ops-mission-control` `notify_out`), so they need neither variable.
 
 ## API
 
@@ -93,6 +93,8 @@ System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `sys
 - A priority override replaces the effective producer or channel priority.
 - `system.approval` is protected. `ChannelSettings.update` rejects muting or lowering it, and `ChannelSettings.apply` enforces the same floor for hand-edited settings; `test_protected_channel_cannot_be_muted_or_lowered` and `test_apply_ignores_noncritical_override_on_protected_channel` cover both boundaries.
 
+Settings import writes the file through two more paths. `parse_imported_settings` validates an archive's `notification_settings.json` and re-applies the field and protected-channel rules `update` enforces, dropping and counting what fails them. The dashboard Merge installs the result with `ChannelSettings.install_imported`, only where no settings file exists; a Replace swaps the file inside `ChannelSettings.replacing_file`. See [config](config.md) under "Settings import (dashboard Merge)".
+
 `system.monitor` is a system channel for the gateway's monitoring-loop stop and finish notices. `GatewayOrchestrator._notify_nudge_expired` emits them through `DashboardState.notify(..., channel=MONITOR_CHANNEL)`, and the note keeps the legacy `kind` `agent`. The channel shares the `system.agent` default priority and is not protected. `ChannelSettings._seed_monitor_from_agent` runs at construction: a settings mapping with no `system.monitor` key receives an in-memory copy of its `system.agent` entry, so a boot never writes the file and a fresh install with no stored `system.agent` entry seeds nothing. The next `update()` persists the copy. Every `update()` write keeps a `system.monitor` key, `{}` when the channel has no settings, as the record that the seed ran; a build without this key handling rewrites every dict-valued `channel_settings` entry as-is, so the record survives a downgrade, and removing it re-runs the seed and can re-mute a channel the user unmuted. `all_settings()` omits empty entries, so the channels listing never shows `{}`. `test_notification_settings.py::TestSeedMonitorFromAgent` pins the seed, with `test_unmuted_monitor_survives_downgrade_rewrite` and `test_fresh_install_agent_mute_does_not_seed_monitor` covering the downgrade and fresh-install boundaries; `test_monitor_notice_channel.py` pins channel registration, the legacy `kind` override, notice routing and the settings listing.
 
 Dashboard-user settings routes (in `dashboard/messaging_api/notifications.py`, beside the feed routes) expose the union of registered channels and stored settings through `api_notification_channels`; `api_notification_channel_settings` accepts mute and priority updates, clears an override for `priority: null`, and broadcasts `notification_channel_settings`.
@@ -108,6 +110,18 @@ Dashboard-user settings routes (in `dashboard/messaging_api/notifications.py`, b
 `NotificationPayload.validate` accepts action entries with non-empty `id` and `label`, and validates each optional action URL at the persistence trust root. `test_notification_bus.py::test_action_count_capped` and `::test_action_field_lengths_capped` pin action bounds. URL-less actions persist but do not render; `test_action_without_url_accepted` pins that contract.
 
 `website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval feed rows render inline Approve and Reject that resolve through the approvals endpoint (the one-click path `rfc-local-notification-bus.md` Phase 4 shipped). Every approval row -- read or unread, because reading a pending request must not shrink it -- renders the notification body in full through the same markdown renderer and per-item error boundary as the detail panel: no slice, clamp or hidden overflow, because a control that authorizes a command must sit next to the whole command, and a truncated excerpt turns two lines into one harmless-looking line. The producer tags the command fence `approval-command` (`lib/approvalNotificationBody.ts`), a dashboard-own tag `CodeBlock` soft-wraps like `error-report`, so a line wider than the feed column wraps instead of scrolling off the edge. Both surfaces render the body with `readOnlyCode`, so the command carries a copy control but no edit affordance: `EditableCodeBlock`'s scratch editor changes only a local copy, and a pencil beside Approve would let a reader authorize the original command while looking at their edit. Every other row keeps the flattened one-line excerpt. This contract applies to the full page and bell popover, including the mac feed variant. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+
+### Feed keyboard stepping
+
+In the bell sheet and the inbox feed, Up and Down on a row's open control press the neighbouring row's open control, in rendered order, and move focus to it. A step does exactly what a click on that row does, so a collapsed stack is one stop and in the bell sheet it expands rather than opening its newest note. Keys from an inner control (dismiss, Approve, a code block), modified arrows and the two ends are left to the browser. The shortcuts reference lists this as "Previous notification" and "Next notification"; those entries are reference-only and bind no global key.
+
+### Detail-panel hand-offs
+
+The detail panel's hand-off buttons ("Continue in Chat", and "View last result" on a cron note) show an inline `ErrorNotice` when the hand-off fails. The sentence names the button by its own label and is scoped to the note it failed on, so it does not follow the reader to another row. The notice appears only where the hand-off did NOT succeed: `/to-chat` is not idempotent — a repeat mints another slot and spawns a second agent on the same `work_dir` — so a succeeded call is never offered or run again automatically.
+
+## Unread badge (client)
+
+Settings › Notifications › "Mark sessions unread only when they need you" (`localStorage` key `mc-unread-on-attention`, default off, `hooks/unreadOnAttention.ts`) limits which `chat_message` rows mark a background session unread: with it on, only a `permission` row does, while a finished turn and a question card badge on their own paths. A slot's `last_ts` is its newest durable row (`slot_projection.py` skips transient roles). The unread watermark is never taken from a transient-role row, because a restarted gateway never again reports a `last_ts` that high and the badge could never clear. The client's role set (`UNSAVED_ROLES`) mirrors `dashboard/state.py` `_TRANSIENT_ROLES`; `test_to_dict_board_fields.py` pins the mirror.
 
 ## Plain-text previews
 
@@ -257,8 +271,19 @@ is debounced to one tone per 300 ms.
 
 ## OS toast (client)
 
-`website/src/hooks/useNativeNotification.ts` is the **single constructor** of a
-page-context `Notification` for a feed note. It watches the count of unacked,
+`website/src/hooks/useNativeNotification.ts` is the **single poster** of an OS
+toast for a feed note. It posts through `lib/nativeNotify.ts`
+`postNativeNotification`, which constructs a page-context `Notification` in a
+top-level window. In an embedded instance pane (the full dashboard inside the
+Instances hub's cross-origin iframe, where the frame's own permission is
+`denied` by design) it relays the note instead: it posts an `mc-native-notify`
+envelope to `window.parent` at the exact loopback origin `document.referrer`
+names — never `'*'`, and never from an `/embed/*` document. The hub
+(`InstancesViewport`) accepts it only from a warm tunnel port, prefixes the title
+with the instance's name, namespaces the tag per instance id, brings that
+instance forward when the banner is clicked, posts only when its own permission
+is `granted`, and never prompts. The pane keeps its own mute, away and `silent`
+rules, so only a note it would have shown is relayed. It watches the count of unacked,
 unsilenced notes in the Redux store and, when the count grows, posts one toast
 carrying the newest note's title and flattened body, tagged with its
 `approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
@@ -286,6 +311,10 @@ constructed by the socket's turn-completion owner
 `website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
 surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
+
+## Bell sheet dismissal (client)
+
+A press on the bell sheet's own background dismisses it, like a press outside. It dismisses at click, and only when the pointerdown, the pointerup and the click all land on background and the text selection is collapsed, so a drag or a text selection never closes it. A press on the sheet's own scrollbar, a card (`notif-material`), a row (`data-notif-row`), the detail panel (`data-nc-material`) or any control keeps it open (`isSheetBackgroundPress` in `shell/notifications/notificationSheet.tsx`). Every child composed into the sheet must be material or background by decision; the structural test in `App.notificationSheetBackgroundDismiss.test.tsx` enforces it.
 
 ## In-app banner (client)
 
@@ -420,7 +449,10 @@ a mounted banner honours it immediately.
 
 `hooks/useNotificationPermission.ts` exposes `Notification.permission` as state
 (`unsupported | default | granted | denied`), re-read on window focus and after
-its own `request()` settles. Two user-gesture surfaces call `request()`:
+its own `request()` settles. In an embedded instance pane that relays its toasts
+to the hub it reports `unsupported`: the pane's own verdict is not the user's
+switch (the hub's is), so both surfaces below unmount there. Two user-gesture
+surfaces call `request()`:
 
 - **Settings › Notifications › Desktop alerts › System notifications**
   (`SystemNotificationsRow`): `granted` shows "Allowed" with a check and no

@@ -935,25 +935,25 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "slack_thread_metadata_only": (
-        "3f1df5b63f5c84ddd58e901c8d07975836253f8ccf31b3efcc9a98a0dafb622e",
+        "b46068a888959b719d7ca022d8e0d54e20938664bd663ca16d58f55ecefa98e3",
         [
-            ("channel_context", 266),
+            ("channel_context", 276),
             ("reply_format_rules", 495),
             ("request_header", 44),
         ],
     ),
     "slack_thread_parent": (
-        "261c97e3733c75d5bbd8e5c091bdc33f7e28d9c652daa432e99fdc8aeb24c951",
+        "bfb9acc17934e77dc98342b6c0d47e3c5b0354369508a81ff22945acdb45a210",
         [
-            ("channel_context", 680),
+            ("channel_context", 690),
             ("reply_format_rules", 495),
             ("request_header", 51),
         ],
     ),
     "slack_thread_parent_injection": (
-        "2f2561dab9c5367c81bd1796b01c6ce112bd18173eb135ff88c9c22511b93071",
+        "6d176be4bda29c294a4b6d12c4fd8a81ea56e7ddc4f338ff9cbc50f37f5fa59b",
         [
-            ("channel_context", 436),
+            ("channel_context", 446),
             ("reply_format_rules", 495),
             ("request_header", 51),
         ],

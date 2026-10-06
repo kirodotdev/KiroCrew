@@ -447,9 +447,12 @@ schedule configuration visible in the app UI and README.
 | Poll only where no push path exists, and then at the coarsest cadence the feature tolerates | A stale panel is a smaller cost than an app the service owner has to block |
 
 **A 5-minute schedule gets no jitter from the platform, so add your own.**
-`_compute_jitter` (`src/kiro_crew/cron.py`) returns `0.0` for `every` under
-3600s and for any `cron_expr` whose minute field contains `/`, `,` or `*`;
-only hourly schedules get spread (0 to 5 minutes) and daily ones (0 to 59).
+`compute_jitter` (`src/kiro_crew/cron_service/schedule.py`; `cron.py` only
+aliases it as `_compute_jitter`) returns `0.0` for a `strict_schedule` job, a
+one-shot `at` job, `every` under 3600s, and any `cron_expr` whose minute field
+expands (via croniter) to `*` or to more than one value, so ranges, lists and
+steps all count; only hourly schedules get spread (0 to 5 minutes) and daily
+ones (0 to 59).
 Nothing spreads a 5-minute job, so anything that makes it overdue on many
 machines at once (a released app update, a gateway restart, a fleet coming back
 after an outage) fires it immediately on all of them and lands as one
@@ -521,18 +524,16 @@ users actually decide.
 
 ### Disable and uninstall must stop everything
 
-Disable removes an app's cron jobs, but only when the manifest declares the
-`cron` permission: the disable path in
-`src/kiro_crew/apps/hooks_integration.py` gates cleanup on `permissions.cron`
-being truthy. That gate is a platform gap, tracked in
-[issue #10997](https://github.com/kirodotdev/KiroCrew/issues/10997) and recorded
-here at symptom level because the fix belongs in the gateway, not in a skill.
-Until it lands, an app
-that schedules work without declaring that permission keeps firing after the
-user disables it, which is the worst outcome in this whole section: load with no
-owner and no off switch.
+Disable removes every cron job the app owns (`created_by="app:<name>"`),
+whether or not the manifest declares `permissions.cron`: `_cleanup_app_crons`
+in `src/kiro_crew/apps/hooks_integration.py` is keyed off the running cron
+service, not the grant (#13788, which closed
+[issue #10997](https://github.com/kirodotdev/KiroCrew/issues/10997)). When the
+cron store is busy or unreadable, disable reports `cron_cleanup: failed ...`
+in its result instead of raising, so read the result rather than assuming.
 
-- Declare `permissions.cron` if you ship any cron at all.
+- Declare `permissions.cron` if you ship any cron at all, so the manifest
+  states the capability truthfully.
 - Keep `permissions` truthful both ways. Declare what you use, drop what you no
   longer use. Grants are read at the gateway boundary, never inferred from your
   code, so an over-broad block is a real grant and a missing one is a real
@@ -673,7 +674,7 @@ copy.
 | Install artifacts in git | `data/`, `.app_secret`, etc tracked | Add to `.gitignore`, `git rm --cached` |
 | Buttons navigate away from app | Using `navigate('/chat')` for automated work | Use permission-scoped `useAppApi().post('/api/chat?ws=1', ...)` |
 | Package update bypasses App Store safeguards | Asking an agent slot to rewrite the installed app | Use the authenticated App Store Update/Sync action |
-| Cron keeps firing after the user disables the app | App schedules work but never declares `permissions.cron` — the disable path gates cron cleanup on that grant | Declare `permissions.cron`, then verify disable leaves no job on the Schedule page |
+| Cron keeps firing after the user disables the app | Disable reported `cron_cleanup: failed` (cron store busy/unreadable) | Re-run disable, then verify no job remains on the Schedule page |
 | Every install hits the same service in the same minute | Sub-hourly schedules get zero jitter, so a rollout or restart syncs them | Add a stable per-install offset in your own state file, or go hourly or coarser and let the platform spread it |
 | Downstream service starts throttling the app | Unattributable polling load from every install | A 5-minute floor with no per-minute polling, push/webhook instead of polling, app-specific `User-Agent` |
 | One cron tick spawns dozens of agent sessions | Fan-out per work item, with no per-app quota to stop it | Bounded batch per tick plus a cursor in the state file |

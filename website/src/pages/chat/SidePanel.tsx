@@ -353,14 +353,14 @@ interface SidePanelProps {
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). ABSENT means the panel is
    *  permanent: no close control renders in the strip and Escape inside a view
-   *  does nothing. A host that docks the panel as a fixed column (the Crew
-   *  Members page) omits it; a host whose panel the user opens and dismisses
-   *  (ChatPage, and the same page's narrow-window overlay) passes it. */
+   *  does nothing. A host whose panel the user opens and dismisses passes it:
+   *  ChatPage, and the Crew Members page in both placements (docked, it hides
+   *  the column; as a narrow-window overlay, it dismisses the drawer). */
   onClose?: () => void
   /** HOST-OWNED tabs pinned AHEAD of the pinned views, in strip order:
    *  non-closable, not draggable, never in the + menu, and not stored in the
-   *  tab bucket — the host renders each body. The Crewmates page uses three
-   *  (Notes / Work log / Dashboard). Their ids must not collide with a
+   *  tab bucket — the host renders each body. The Crew Members page uses one
+   *  (Dashboard). Their ids must not collide with a
    *  `TabKind`, and the same ids must be handed to `usePanelTabs` as
    *  `leadingIds` so a fresh strip opens on the first one and focus can fall
    *  back to it. Always labelled: several icon-only chips would be unlabelled

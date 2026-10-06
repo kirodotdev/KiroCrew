@@ -3,10 +3,10 @@ title: One observation layer, one controller
 status: draft
 author: chenmingwei23
 created: 2026-09-08
-last-audited: 2026-09-08
-audited-at: ef38f4cbe
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
-implementation-prs: []
+implementation-prs: [5185, 5186, 5305, 8919]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -21,6 +21,13 @@ provider/turn/token accounting, but `monitor_start` still runs the separate
 observation stack, out-of-session batching, and unified dashboard surface
 described below are not complete.
 
+Premise note: the PR watch runs in the gateway. There is
+no `babysit/scripts/pr_watch.py` cron script
+([#13759](https://github.com/kirodotdev/KiroCrew/pull/13759)) and no script-cron driver; see
+[babysit-pr-watch.md](../system-specs/modules/babysit-pr-watch.md). `probes/gh_pr.py`
+classifies rate limits through `classify_provider_error_text` and honours
+`retry-after`. The gap analysis below is otherwise the draft's own reading.
+
 Related: [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) specifies the structured-monitor half of what this document consolidates.
 
 ## Why
@@ -29,13 +36,13 @@ Three streams currently work on the same problem, which is keeping an agent turn
 
 | Stream | Where it lives | Pull requests |
 |---|---|---|
-| structured monitors | `src/kiro_crew/monitoring/` | merged: [#5180](https://github.com/kirodotdev/KiroCrew/pull/5180), [#5181](https://github.com/kirodotdev/KiroCrew/pull/5181), [#5182](https://github.com/kirodotdev/KiroCrew/pull/5182), [#5183](https://github.com/kirodotdev/KiroCrew/pull/5183), [#5184](https://github.com/kirodotdev/KiroCrew/pull/5184). open: [#5185](https://github.com/kirodotdev/KiroCrew/pull/5185), [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186), [#5305](https://github.com/kirodotdev/KiroCrew/pull/5305) |
-| irq kernel and pr_watch cron | `irq.py`, `probes/gh_pr.py`, `babysit/scripts/pr_watch.py` | merged: [#5273](https://github.com/kirodotdev/KiroCrew/pull/5273), [#5886](https://github.com/kirodotdev/KiroCrew/pull/5886), [#6071](https://github.com/kirodotdev/KiroCrew/pull/6071), [#6279](https://github.com/kirodotdev/KiroCrew/pull/6279), [#7431](https://github.com/kirodotdev/KiroCrew/pull/7431), [#7634](https://github.com/kirodotdev/KiroCrew/pull/7634), [#8122](https://github.com/kirodotdev/KiroCrew/pull/8122), [#8326](https://github.com/kirodotdev/KiroCrew/pull/8326) |
-| self-armed loops for member slots | `autonudge_selfarm.py` (new), `autonudge.py`, `autonudge_authz.py`, `mcp_tools/control.py` | open: [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) |
+| structured monitors | `src/kiro_crew/monitoring/` | merged: [#5180](https://github.com/kirodotdev/KiroCrew/pull/5180), [#5181](https://github.com/kirodotdev/KiroCrew/pull/5181), [#5182](https://github.com/kirodotdev/KiroCrew/pull/5182), [#5183](https://github.com/kirodotdev/KiroCrew/pull/5183), [#5184](https://github.com/kirodotdev/KiroCrew/pull/5184). [#5185](https://github.com/kirodotdev/KiroCrew/pull/5185), [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186), [#5305](https://github.com/kirodotdev/KiroCrew/pull/5305) |
+| irq kernel | `irq.py`, `probes/gh_pr.py` | merged: [#5273](https://github.com/kirodotdev/KiroCrew/pull/5273), [#5886](https://github.com/kirodotdev/KiroCrew/pull/5886), [#6071](https://github.com/kirodotdev/KiroCrew/pull/6071), [#6279](https://github.com/kirodotdev/KiroCrew/pull/6279), [#7431](https://github.com/kirodotdev/KiroCrew/pull/7431), [#7634](https://github.com/kirodotdev/KiroCrew/pull/7634), [#8122](https://github.com/kirodotdev/KiroCrew/pull/8122), [#8326](https://github.com/kirodotdev/KiroCrew/pull/8326) |
+| self-armed loops for member slots | `autonudge_selfarm.py` (new), `autonudge.py`, `autonudge_authz.py`, `mcp_tools/control.py` | merged: [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) |
 
 This document states the target shape, what gets deleted, and the order.
 
-Two facts set the ceiling on what consolidation is worth. Skill bodies are the largest single block of assembled context, and this is measured rather than asserted: aggregating the `ctx_blocks` field that `_build_token_record` in `dashboard/handlers/usage.py` writes into every turn record gives, over 50 days and 22,877 turns, `loaded_skill` at 27.58 percent of all assembled context and `skill_index` at a further 6.74 percent, against 9.35 percent for the user's own message. The comment on the triggered-skills branch of `context.build_message` says the same thing in the code. The unit is characters, not tokens, deliberately: `context_blocks.py` does not tokenize because only an OpenAI BPE is available and applying it against a Claude backend would add systematic error.
+Two facts set the ceiling on what consolidation is worth. Skill bodies are the largest single block of assembled context, and this was measured rather than asserted: a dated measurement, taken while `_build_token_record` in `dashboard/handlers/usage.py` still wrote a `ctx_blocks` field into every turn record, gave over 50 days and 22,877 turns `loaded_skill` at 27.58 percent of all assembled context and `skill_index` at a further 6.74 percent, against 9.35 percent for the user's own message. The turn record carries no `ctx_blocks` field, so the figures are not reproducible from `usage.py`; the crew-log usage fold is the current source for context composition. The comment on the triggered-skills branch of `context.build_message` says the same thing in the code. The unit is characters, not tokens, deliberately: `context_blocks.py` does not tokenize because only an OpenAI BPE is available and applying it against a Claude backend would add systematic error.
 
 The second fact is that a body is not re-sent per turn so much as permanent. ACP replays native history, so a body that enters the window once is replayed for the rest of the session. The saving therefore comes from never admitting the body, not from suppressing a repeat. A `minimal_context` turn skips skill injection entirely (the `minimal_context` guard on the triggered-skills branch of `context.build_message`), which is what a zero-token cron wake already does.
 
@@ -89,9 +96,8 @@ Duplication here means the same decision or the same state implemented twice, no
 | the single-fingerprint computation in `monitoring/github_pull_request.py` | replaced by a derivation from the named entries, so there is one source of truth rather than two hashes that can drift |
 | irq's own delivered-cycle counting and quiet-streak floor | the structured budgets subsume them, and they were only ever a stand-in for accounting irq does not have |
 | the `gate` parameter's separate path on `monitor_start` ([#7634](https://github.com/kirodotdev/KiroCrew/pull/7634)) | once the observation layer is shared, a second gate on one of the two tools has nothing left to do |
-| `builtin_skills/kirocrew-dev/babysit/scripts/gh_merge_watch.py` (local, unversioned) | `pr_watch.py` already raises `Done` on merge and adds a state file, per-head dedupe and an error backstop that `gh_merge_watch` lacks |
 
-[#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) is not duplicate. It extends the same stack rather than reimplementing it: it adds a `self_armed` bit and a keystone-gated trust record so a member slot can arm its own loop, reusing `NudgeLoop`, `add_monitor()` and the `authorize_and_add_nudge` chokepoint. It is integrated, not deleted. Separately, [#3127](https://github.com/kirodotdev/KiroCrew/pull/3127) was a pure structural move of the monitor tool descriptors from `mcp_core.py` into `mcp_tools/control.py`; it changes where this work edits, not what it merges.
+[#8919](https://github.com/kirodotdev/KiroCrew/pull/8919), merged, is not duplicate. It extends the same stack rather than reimplementing it: it adds a `self_armed` bit and a keystone-gated trust record so a member slot can arm its own loop, reusing `NudgeLoop`, `add_monitor()` and the `authorize_and_add_nudge` chokepoint. It is integrated, not deleted. Separately, [#3127](https://github.com/kirodotdev/KiroCrew/pull/3127) was a pure structural move of the monitor tool descriptors from `mcp_core.py` into `mcp_tools/control.py`; it changes where this work edits, not what it merges.
 
 ## Order
 
@@ -100,15 +106,15 @@ Duplication here means the same decision or the same state implemented twice, no
 | 1 | the provider emits named observations; the existing fingerprint is derived from them | none, proven by a golden test over every existing fixture | nothing |
 | 2 | the coalescing window becomes a pre-stage ahead of the decision, default off, on for babysit | none while off | 1 |
 | 3 | structured budgets and completed-turn accounting replace irq's delivered-cycle count | irq gains budgets it does not have | 1 |
-| 4 | both drivers run the same probe: the in-process scheduler and the cron subprocess | none, [#7634](https://github.com/kirodotdev/KiroCrew/pull/7634) already ran one probe from two drivers | 1, 2 |
+| 4 | one in-gateway poller runs the probe for every subject; there is no cron subprocess driver | none for a single subject | 1, 2 |
 | 5 | the probe contract is exposed as an SDK: implement `identity()` and `observe()`, inherit scheduling, dedupe, coalescing, epoch reset and failure handling | new capability | 1 to 4 |
-| 6 | integrate [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919)'s self-arm so a member slot can arm a merged monitor | new capability | 1, and [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919) landing |
+| 6 | integrate [#8919](https://github.com/kirodotdev/KiroCrew/pull/8919)'s self-arm so a member slot can arm a merged monitor | new capability | 1 |
 | 7 | one poller batches many subjects in a single GraphQL query, and the dashboard surface moves in the SAME step | new capability, and watches stop being slot-scoped | 4 |
 | 8 | rate-limit classification and an error budget adopted from the structured side; orphaned watches reclaimed through the terminal-outcome path | closes two gaps that exist today | 3 |
 
 Step 1 lands first because it changes no behaviour, which makes it the cheapest thing to review, and every later step shrinks once it is in.
 
-Step 0, independent of all of the above and the only item with an external deadline: teach the goal popover to see a structured monitor, before [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) lands. The API half is done -- both legacy read routes now report that a monitor is armed, its cadence and its state, while the owner-gated route keeps sole custody of what is being watched. They do NOT report how far in it is -- see below -- so what is left of step 0 is that gap plus the popover rendering the shape it does receive.
+Step 0, independent of all of the above and the only item with an external deadline: teach the goal popover to see a structured monitor, which [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) made necessary by routing babysit through `monitor_watch`. The API half is done -- both legacy read routes now report that a monitor is armed, its cadence and its state, while the owner-gated route keeps sole custody of what is being watched. They do NOT report how far in it is -- see below -- so what is left of step 0 is that gap plus the popover rendering the shape it does receive.
 
 Two remainders of step 0 are DEFERRED rather than closed, and both are named here so neither reads as an oversight:
 
@@ -143,7 +149,7 @@ loop = svc.get_by_slot(slot_key)
 legacy = loop if loop is not None and not is_structured_monitor_loop(loop) else None
 ```
 
-The structured read lives on a different endpoint, `/api/session-monitor`, which requires an authenticated session binding and is the agent-facing path behind `monitor_inspect`. So the moment [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) routed babysit through `monitor_watch`, the popover would have reported no loop while a monitor was running. Step 0 closed that, and closed it by ENTITLEMENT rather than by returning the record: the legacy reads have no owner gate, so they now publish existence, cadence and state -- the loop's own entitled fields -- and withhold everything that describes what is being watched. `message` is withheld too, because on a structured monitor it IS the wake instructions. `/api/monitors`, behind `_require_monitor_owner`, stays the only place the full record appears. Two things remain open. The payload does NOT answer "how far in", because the cycle accounting it would have used is withheld as false and the `monitor_presence` object prepared for it was held back to ship with its reader rather than ahead of it. And the popover still has to render what does arrive.
+The structured read lives on a different endpoint, `/api/autonudge/session-monitor`, which requires an authenticated session binding and is the agent-facing path behind `monitor_inspect`. So the moment [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) routed babysit through `monitor_watch`, the popover would have reported no loop while a monitor was running. Step 0 closed that, and closed it by ENTITLEMENT rather than by returning the record: the legacy reads have no owner gate, so they now publish existence, cadence and state -- the loop's own entitled fields -- and withhold everything that describes what is being watched. `message` is withheld too, because on a structured monitor it IS the wake instructions. `/api/monitors`, behind `_require_monitor_owner`, stays the only place the full record appears. Two things remain open. The payload does NOT answer "how far in", because the cycle accounting it would have used is withheld as false and the `monitor_presence` object prepared for it was held back to ship with its reader rather than ahead of it. And the popover still has to render what does arrive.
 
 **Its armed-watch list is slot-scoped.** Watches are filtered with `runBelongsToSlot(session_key, slotKey)` against the `dashboard:<slotKey>` convention, and only script crons count. A watch that moves out of session has no slot in its identity, so batching many subjects into one poller makes every one of them invisible here.
 
@@ -163,13 +169,13 @@ Sequencing constraint: the surface ships in the same step as batching, never lat
 
 ## Three gaps neither side closes today
 
-**Rate limiting is unclassified on the irq side.** Searching `github_runner.py`, `probes/gh_pr.py` and `irq.py` for a rate-limit, 403, 429 or `Retry-After` path returns nothing: a throttled call is indistinguishable from a missing repo, both landing in `fetch_ok=False` and eventually the blind backstop. The structured provider does classify it, as `ProviderErrorKind.RATE_LIMITED`, treats it as retryable, and bounds it with `max_provider_errors`. Since every watch spends the same shared credential, one unclassified runaway degrades every other session's GitHub calls. The classification and the error budget come from the structured side.
+**Rate limiting on the irq side.** The premise note above applies: `probes/gh_pr.py` classifies a rate limit and honours `retry-after`, so this gap is closed for the gh-pr probe. At draft time, searching `github_runner.py`, `probes/gh_pr.py` and `irq.py` for a rate-limit, 403, 429 or `Retry-After` path returned nothing: a throttled call was indistinguishable from a missing repo, both landing in `fetch_ok=False` and eventually the blind backstop. The structured provider does classify it, as `ProviderErrorKind.RATE_LIMITED`, treats it as retryable, and bounds it with `max_provider_errors`. Since every watch spends the same shared credential, one unclassified runaway degrades every other session's GitHub calls. The classification and the error budget come from the structured side.
 
 **Nothing reclaims an orphaned watch.** There is no orphan or stale-job path in the irq code. A cron watch outlives the session that armed it by design, which is the point, but it also outlives any reason to exist: absent a merge that raises `Done`, it runs until it is removed by hand. Reclamation needs somewhere to live, and the natural place is the terminal-outcome machinery the structured side already has.
 
-**Batching is only reachable from a single out-of-session poller.** `gh pr view` takes one pull request per call, but `gh api graphql` takes many in one query, and the repository already does this in `issue_radar/backend/github_queries.py`, `prepare-pr/scripts/pr_status.py`, `pr_findings.py` and every read the structured GitHub provider makes. Fifty pull requests are six GraphQL queries for one poller — one per evidence kind per chunk of at most 25 subjects, since a document that also selects the check rollup hands its lifecycle facts to a missing Checks permission — against roughly one hundred and fifty `gh` calls for fifty session-bound monitors. The provider side of that is now built: `GitHubPullRequestProvider.probe` spends one document per kind per chunk, and checks that a chunk names one host rather than sorting subjects into per-host queries — a query carries one credential, so a query spanning two hosts would read the second host's subjects with the first host's token, and the check refuses it. What is not built is a caller that hands it more than one subject, because no tick holds more than one monitor. `pr_watch` does not use GraphQL today.
+**Batching is only reachable from a single gateway-wide poller.** `gh pr view` takes one pull request per call, but `gh api graphql` takes many in one query, and the repository already does this in `issue_radar/backend/github_queries.py`, `kirocrew-prepare-pr/scripts/pr_status.py`, `pr_findings.py` and every read the structured GitHub provider makes. Fifty pull requests are six GraphQL queries for one poller — one per evidence kind per chunk of at most 25 subjects, since a document that also selects the check rollup hands its lifecycle facts to a missing Checks permission — against roughly one hundred and fifty `gh` calls for fifty session-bound monitors. The provider side of that is now built: `GitHubPullRequestProvider.probe` spends one document per kind per chunk, and checks that a chunk names one host rather than sorting subjects into per-host queries — a query carries one credential, so a query spanning two hosts would read the second host's subjects with the first host's token, and the check refuses it. What is not built is a caller that hands it more than one subject, because no tick holds more than one monitor.
 
-That last point is the strongest argument for keeping an out-of-session driver, and it is stronger than lifecycle independence: a session-bound monitor structurally cannot batch, because each loop knows only its own subject. It also mitigates the first point by reducing call volume by more than an order of magnitude.
+That last point is the strongest argument for one in-gateway poller that holds many subjects: a session-bound monitor structurally cannot batch, because each loop knows only its own subject. It also mitigates the first point by reducing call volume by more than an order of magnitude.
 
 ## Prior art
 
@@ -199,10 +205,10 @@ Retiring the remaining marker consumers is [#9073](https://github.com/kirodotdev
 
 ## Open decisions
 
-Whether the out-of-session cron driver stays a supported channel or retires with the legacy babysit recipe. It is the only path that survives the session it was armed from, and everything the session-bound path can watch it can also watch.
+Closed: whether the out-of-session cron driver stays a supported channel. No script-cron driver exists; the PR watch is driven in the gateway, as [babysit-pr-watch.md](../system-specs/modules/babysit-pr-watch.md) states.
 
-Whether [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) scopes legacy to the targets it does not support rather than demoting `monitor_start` wholesale. `goal-conductor` and `pipeline-conductor` patrol their own session with it as their primary use, neither sets `max_cycles` or `max_runtime_secs`, and under the legacy defaults of 24 cycles and 4 hours a long-horizon patrol stops silently.
+Resolved by [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) merging: the question was whether it scoped legacy to the targets it does not support rather than demoting `monitor_start` wholesale. The legacy defaults are 24 cycles and 4 hours (`mcp_tools/_limits.py`), so a long-horizon patrol that names neither `max_cycles` nor `max_runtime_secs` stops at that cap.
 
 Which session gate the merged arming path takes: `monitor_watch`'s strict refusal or `monitor_start`'s resolve-half fall-through.
 
-`docs/system-specs/modules/babysit-pr-watch.md` states there are two current monitoring modes. [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) does not touch it, so it becomes false when [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) lands.
+Resolved: [babysit-pr-watch.md](../system-specs/modules/babysit-pr-watch.md) describes one in-gateway PR watch and no script-cron driver.

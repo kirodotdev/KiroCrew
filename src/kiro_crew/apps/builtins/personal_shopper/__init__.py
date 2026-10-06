@@ -2,8 +2,8 @@
 
 Diagnoses the user's actual need through conversation and recommends products
 only when a purchase genuinely solves the problem. Preferences live in an
-app-owned sqlite store with vector search, so the advisor recalls sizes,
-brands, budget and restrictions across sessions. It never purchases: the
+app-owned sqlite store with vector search that the user manages in the
+Preferences tab; the advisor cannot read that store. It never purchases: the
 output is always advice plus a link the user acts on themselves.
 """
 

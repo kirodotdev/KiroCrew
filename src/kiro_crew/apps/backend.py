@@ -148,11 +148,8 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
         return None
     nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
     nvm_sh = os.path.join(nvm_dir, "nvm.sh")
-    # This resolver sources a POSIX shell script (nvm.sh). On Windows the branch
-    # normally never runs — nvm.sh is absent, so it exits at the guard below —
-    # and nothing in the log said whether it was reached or which arm it took.
-    # Each outcome now names itself so a Windows log shows the branch was skipped
-    # rather than leaving its absence to inference.
+    # Only POSIX reaches this point: Windows returned above. Each outcome below
+    # logs which arm it took, so a debug log shows whether nvm was found and used.
     if not os.path.isfile(nvm_sh):
         logger.debug("nvm resolver: no nvm.sh at %r; skipping nvm branch", nvm_sh)
         return None

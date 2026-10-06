@@ -1480,7 +1480,7 @@ class TaskStore:
     def defer(self, task_id: str, *, wait: float, reason: str) -> bool:
         """Keep a waiting row waiting, but not eligible for *wait* more seconds.
 
-        The memory-posture gate uses this instead of refusing: the row stays
+        The spawn gate's memory floor uses this instead of refusing: the row stays
         accepted, holds nothing, and the dispatcher skips it until the clock
         passes ``next_run_at``.
 

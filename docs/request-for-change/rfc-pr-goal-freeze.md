@@ -1,10 +1,10 @@
 ---
 title: Frozen PR goal — a fixed goal every review round is judged against
-status: in-progress
+status: partial
 author: zejiangg
 created: 2026-09-26
-last-audited: 2026-09-26
-audited-at: 7b2da39c53
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 14265
 implementation-prs: [14181, 14161]
 tracking-issues: []
@@ -14,15 +14,14 @@ superseded-by: []
 
 # RFC: Frozen PR Goal
 
-> **Status:** `in-progress`. Nothing is on main yet. Verified at `7b2da39c53`:
-> `.github/PULL_REQUEST_TEMPLATE.md` has no `**Goal:**` line or `## Not a goal`
-> section, `fork-pr-description.yml` still reads "Fork-only by design", and
-> prepare-pr's `SKILL.md` still posts the `<!-- prepare-pr-intent -->` comment.
-> The design is implemented by
-> [#14181](https://github.com/kirodotdev/KiroCrew/pull/14181) (frozen sections,
-> gate, prepare-pr),
-> [#14161](https://github.com/kirodotdev/KiroCrew/pull/14161) (First Principles
-> lens) and a follow-up Intent Lock PR not yet opened. This document records
+> **Status:** `partial`. [#14181](https://github.com/kirodotdev/KiroCrew/pull/14181)
+> shipped the frozen sections, gate and prepare-pr half: the PR template carries
+> `**Goal:**` and `## Not a goal`, `.github/scripts/pr-description-check.sh` is the
+> shared check, PR Hygiene runs it for same-repo PRs (`fork-pr-description.yml`
+> defers to it), and prepare-pr freezes the goal and posts no
+> `<!-- prepare-pr-intent -->` comment.
+> [#14161](https://github.com/kirodotdev/KiroCrew/pull/14161) shipped the First
+> Principles lens. The Intent Lock follow-up is not built. This document records
 > the maintainer's decisions so the First Principles lane can trace them.
 
 ## Summary

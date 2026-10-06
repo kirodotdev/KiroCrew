@@ -262,9 +262,11 @@ Residuals, on the record:
   paths are refused and named again: the failure is a refusal, never a pass.
 - A grandchild that left the guard's group and ignores SIGTERM can outlive a
   stopped child. On Windows the tree kill reaches it.
-- `preflight.py` refuses a git resolved inside the worktree, and a batch
-  launcher fed metacharacters. push_guard's runner does not yet; moving those
-  guards into push_guard (preflight already imports it) is a follow-up.
+- push_guard's runner resolves git from PATH's absolute entries only and
+  refuses a batch launcher fed cmd.exe metacharacters (`_which_git`,
+  `run_child`). An absolute PATH entry that points INSIDE the worktree is
+  still not refused there, unlike `preflight.py`'s worktree fence; moving that
+  fence into push_guard is a follow-up.
 - The replay scan runs one `diff-tree` and one `patch-id` per commit, each with
   its own bound. Batching them, and one overall deadline, are follow-ups, as
   are `diff_signals.py` and `green_age.py` still resolving short base names.
@@ -284,7 +286,9 @@ consecutive main runs read `cancelled` — so there is no per-commit verdict on
 Two obvious server-side fixes were rejected by the constraint that matters here:
 merge velocity. The median merge gap is about 1.4 minutes and CI takes about 19,
 so a merge queue or strict up-to-date protection would serialise the repository
-behind its own CI. `green_age.py` is the soft version of the same idea. It runs
+behind its own CI. That held until the repository adopted a merge queue (#15200):
+CI, Fast Gate and Build now run on `merge_group`, described in
+`docs/ci/ci-and-reviews.md`. `green_age.py` is the soft version of the same idea. It runs
 client-side during the review wait, and it costs a rebase only on a PR whose
 files actually collide with what the base gained — not on every PR, and not at
 merge time.
@@ -363,7 +367,7 @@ back to the checkout, because the fall-back case is exactly the attack.
 
 A gate an LLM has to notice in a paragraph is followed exactly as unreliably as the
 gates this loop kept missing. `test/test_prepare_pr_profiles.py` pins the floor to
-`ci.yml`: every script, npm script and tool `ci.yml` runs must appear in `gates[]` or
+`ci.yml` and `fast-gate.yml`: every script, npm script and tool they run must appear in `gates[]` or
 be named exempt with a reason, and every gate must name a target that exists. CI
 gaining a blocking scan therefore fails that test instead of surfacing as a review
 round on a later PR.
@@ -583,8 +587,9 @@ runs over 25 hours with 23 approval blocks, zero pushes, and a healthy-looking
 registry. Heartbeat runs under a strict name allowlist (`HEARTBEAT_SAFE_TOOLS`) with
 no shell and no `git push`, so it cannot amend a commit at all.
 
-`monitor_watch` is exempted only for a pure-watch stretch because it reads no comment
-bodies. A round is complete when every check finished **and** every bot posted, and
+`monitor_watch` is exempted only for a pure-watch stretch because it never interprets
+comment bodies: it digests them only to notice a change, so it cannot tell whether a
+bot posted its verdict. A round is complete when every check finished **and** every bot posted, and
 a provider-typed watch cannot see the second half of that condition. There is no
 script-cron watcher to exempt: a cron holding a copy of the retired driver is
 refused on every tick and auto-paused.

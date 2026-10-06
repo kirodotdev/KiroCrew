@@ -432,11 +432,9 @@ def build_bundle(
             # closed rather than merely narrower: what the source says afterwards does
             # not matter, because what is checked is the artifact that ships.
             #
-            # A MISSING pin is deliberately not re-refused here. ``verify()`` already
-            # owns that refusal, and spelling it twice is the duplicate-check mistake
-            # this branch has already paid for elsewhere -- it also changed the
-            # outcome of the deny-by-default mutation test, which probes exactly this
-            # path with pins absent.
+            # A MISSING pin is deliberately not re-refused here. ``verify()`` owns
+            # that refusal, and the deny-by-default mutation test probes exactly this
+            # path with pins absent, so a second refusal would change its outcome.
             reviewed = plan.pins.get("skills", {}).get(cid, "") if plan else ""
             if reviewed:
                 staged = _hashing._staged_tree_hash(skills_dst / cid, skill_dir, written)
@@ -467,23 +465,20 @@ def build_bundle(
             rel="manifest.json",
         )
         # The previous bundle is MOVED ASIDE, not deleted. `rmtree(out_dir)` followed by
-        # `staging.rename(out_dir)` is two operations, and a failure between them left
-        # NOTHING: the old bundle was already gone, and the `except BaseException` below
-        # then deleted staging too, taking the new bundle and the carried plan with it.
-        # The comment above this claimed the swap was "the last thing that happens" --
-        # true of the ordering, false of the atomicity, which is the kind of comment that
-        # stops anyone from looking.
+        # `staging.rename(out_dir)` would be two operations, and a failure between them
+        # would leave NOTHING: the old bundle already gone, and the `except BaseException`
+        # below deleting staging too, taking the new bundle and the carried plan with it.
+        # The swap is the last thing that happens in ORDER; the aside is what makes it
+        # safe to fail.
         #
         if carried_plan is not None:
-            # AFTER the digest, deliberately, and the review that asked for the opposite is
-            # answered here rather than in a comment thread.
+            # AFTER the digest, deliberately.
             #
             # The plan is the OPERATOR's file. ``_cmd_plan`` writes it into --out, the
             # operator edits and signs it, and the next build carries it forward -- so it is
             # expected to differ between builds, which is what
             # ``test_the_plan_flow_still_works`` pins by editing it and rebuilding. Putting it
-            # inside the digest makes every such edit break the rebuild preflight: measured,
-            # that change reddened that test and one more.
+            # inside the digest would make every such edit break the rebuild preflight.
             #
             # And it protects nothing, because nothing reads it. The container consumes four
             # entries -- manifest.json, agent.json, mcp.json, skills/ (``BUNDLE_ENTRIES``) --
@@ -551,8 +546,8 @@ def build_bundle(
                 # Before ``exists()``, which follows the link. This path is derived from
                 # --out, so a redirect here aims the ownership check and the rmtree below it
                 # at somewhere else entirely -- and the check would pass, because it would be
-                # examining whatever the link points at. The same fix landed at ``staging``
-                # and ``out_dir`` last round and this third derived path did not get it.
+                # examining whatever the link points at. ``staging`` and ``out_dir`` carry
+                # the same check; this is the third path derived from --out.
                 raise ExportRefused(
                     f"the aside path {previous} is a link or junction. The previous bundle is "
                     f"moved there and then deleted, so following a redirect would delete "

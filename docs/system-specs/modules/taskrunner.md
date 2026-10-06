@@ -209,7 +209,8 @@ The domain model was renamed `Step` → `Task`, `StepStatus` → `TaskStatus`, a
 `TaskRun` → `Project`. `taskrunner.py` re-exports the real symbols from
 `task_models` and also defines back-compat aliases so existing imports keep working:
 ```python
-from kiro_crew.task_models import Task, TaskStatus, WorkingMemory, Project, NotifyCallback  # noqa: F401
+from kiro_crew.task_models import Task, TaskStatus, WorkingMemory, Project  # noqa: F401
+from kiro_crew.task_reporter import NotifyCallback  # noqa: F401
 
 # ── Backward-compat re-exports ──
 Step = Task
@@ -217,14 +218,10 @@ StepStatus = TaskStatus
 TaskRun = Project
 ```
 
-These files import from `kiro_crew.taskrunner` and require no changes:
-- `dashboard/handlers/taskrunner.py` → `StepStatus`, `TaskRun`
-- `dashboard/server.py` → `TaskRunner`
-- `dashboard/state.py` → `TaskRunner`
-- `git_coord.py` → `Step`, `TaskRun`
-- `slack/gateway.py` → `TaskRunner`
-- `slack/handler.py` → `TaskRunner`
-- `cli.py` → `TaskRunner`
+`taskrunner.py` therefore re-exports `Task`, `TaskStatus`, `WorkingMemory`,
+`Project` and `NotifyCallback` (which `task_reporter` owns) and keeps the
+`Step` / `StepStatus` / `TaskRun` aliases, so an import from `kiro_crew.taskrunner`
+needs no change.
 
 ## Public API
 
@@ -284,18 +281,18 @@ class TaskRunner:
 ### Task Source & Visibility
 
 `TaskRun.source` tracks where a task was started from. The dashboard Tasks page
-filters runs by source to avoid showing cron-triggered background tasks:
+filters runs by source (`dashboard/handlers/taskrunner.py`, `visible_sources`) to avoid showing cron-triggered background tasks:
 
 ```python
-dashboard_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
+visible_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
 ```
 
 | Entry Point | Source Value | Visible on Tasks Page |
 |-------------|-------------|----------------------|
 | Dashboard UI | `"dashboard"` | ✅ |
-| Slack `run <path>` | `"chat"` | ✅ |
+| Chat `task run <spec>` / `/task run <spec>` | `"chat"` | ✅ |
 | MCP `task_run` tool | `"mcp"` | ✅ |
-| CLI `kirocrew run` | `"file"` (default) | ✅ |
+| CLI `kirocrew run` | `""` (`runner.run` without `source`, in a process-local runner) | ❌ (not the gateway's runner) |
 | `plan()` API | `"text"`, `"spec"`, `"file"` | ✅ |
 | Cron job | must pass `source="cron"` | ❌ (filtered out) |
 
@@ -318,7 +315,7 @@ source truthiness preserves the existing attended paths. The SEL `decompose_yaml
 
 "Not workflow-shaped" includes a document YAML cannot parse at all. `decompose_yaml`
 raises `ValueError` for every rejected spec, its own shape checks and a `yaml.YAMLError`
-out of `safe_load` alike, and this gate selects on that one class — so a syntax error,
+out of `safe_load` alike, and this gate catches `(ValueError, KeyError)` — so a syntax error,
 the most ordinary way a hand-written spec is wrong, takes the same branch as a semantic
 one instead of failing an attended run that would otherwise have been given the LLM
 fallback.
@@ -389,7 +386,7 @@ class Project:
 - `_tasks: dict[str, asyncio.Task]` — background asyncio tasks
 - `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
 - `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
-- All `get_or_create()` calls pass `agent=self._agent` so the task runs with the specified agent
+- Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the specified agent; `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
@@ -532,9 +529,8 @@ Inside a step (`task_executor.execute_task(..., taskq=handle)`):
   wakes it with the operator's answer; a step re-dispatched after a crash
   replays a persisted, not-yet-consumed answer
   (`admission.recorded_answer_async`) under `## Operator input` and marks it
-  consumed (`consume_answer_async`) only once the step has durably completed. The controlled terminal whose per-handle question would
-  drive a TaskRunner step into this wait ships in a follow-up PR; until then
-  the executor never enters `waiting_input` on its own. Never auto-answered.
+  consumed (`consume_answer_async`) only once the step has durably completed. No TaskRunner caller enters `waiting_input`: the executor never parks a step
+  in this wait on its own. Never auto-answered.
 
 ### Adoption after a restart
 
@@ -573,7 +569,16 @@ Tasks can be paused and resumed without losing progress:
 
 ### Crash Recovery
 
-On gateway restart, any task with `status == "running"` is automatically transitioned to `"paused"`:
+On gateway restart (`_load_runs`), a run left in an active state is settled so no run appears active without a backing asyncio task:
+
+| Persisted status | Becomes |
+|---|---|
+| `running` / `pausing` with tasks | `paused`; an `IN_PROGRESS` task returns to `PENDING` with its attempt refunded |
+| `running` / `pausing` with no tasks | `failed` (crashed before decomposition completed) |
+| `planning` | `failed` (re-plan to continue) |
+| `cancelling` | `cancelled`; open tasks (`IN_PROGRESS`, `PENDING`, `REVIEWING`) become `CANCELLED` |
+
+A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume.
 
 - Prevents zombie tasks that appear running but have no backing asyncio task
 - User can resume manually from dashboard
@@ -684,14 +689,14 @@ workspace is never removed.
 | Path | Entry Point | Behavior |
 |------|-------------|----------|
 | CLI | `kirocrew run TASK.md` | Blocking, stdout progress, `--no-test` flag |
-| Slack | `run <path>`, `run status`, `run cancel` | Keyword interception in handler |
+| Slack | `task run <spec>`, `task run status`, `task run cancel` (alias `project run`), and the `/task run …` slash form | Keyword interception (`messaging/commands.py:task_command_reply`); a bare `run <path>` is not matched |
 | Dashboard | REST API + Tasks UI panel | See API Endpoints below |
 
 ## API Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/taskrunner` | Status with all runs, step_details |
+| GET | `/api/taskrunner` | Status with all runs, each with its `task_details` |
 | POST | `/api/taskrunner` | Start from file path or inline (`__inline__:` prefix) |
 | POST | `/api/taskrunner/cancel` | Cancel specific (`{task_id}` in body) or all |
 | POST | `/api/taskrunner/plan` | Decompose input into a planned project |
@@ -713,7 +718,22 @@ workspace is never removed.
 | POST | `/api/taskrunner/refine/answer` | Legacy answer hook; current refine never enters a question wait, so ordinary calls return 409 |
 | POST | `/api/reveal` | Reveal a path in the host file manager for a direct-local caller; remote or launcher-less cases return a clipboard-copy fallback |
 
+The mutating task-runner routes pass `_require_taskrunner_owner`: a dashboard-user
+request (`app == ""`) must be the dashboard owner (`require_owner_dashboard_request`,
+403 `owner_only`); an internal-secret loopback caller (the `task_run` MCP tool) and an
+app token keep the controls that already govern them (the app is confined to its
+manifest's declared paths). `POST /api/taskrunner` with a non-inline spec path
+screens it through `_validate_spec_path` (`hooks.validate_file_path`, off the event
+loop): a traversal, a missing file or a UNC/laundered link answers
+`400 invalid_spec_path`, and a sensitive credential path answers `403 access_denied`.
+
 ### Status Response
+
+A partial example; each run also carries `name`, `auto_approve`,
+`auto_approve_remaining_secs`, `original_input`, `source`, `spec_content`,
+`lessons_learned`, `commits` and `groups`, and each task detail carries
+`depends_on`, `requires_approval`, `force_approval` and its timestamps
+(`task_reporter.build_status`).
 
 ```json
 {
@@ -726,7 +746,7 @@ workspace is never removed.
     "spec_name": "my-task",
     "started_at": 1771822344.0,
     "finished_at": 0,
-    "steps": 3,
+    "tasks": 3,
     "current_task": 2,
     "completed": 1,
     "failed": 0,
@@ -734,7 +754,7 @@ workspace is never removed.
     "error": "",
     "tokens_used": 5000,
     "replan_count": 0,
-    "step_details": [{
+    "task_details": [{
       "index": 1, "title": "Create handler", "description": "...",
       "status": "passed", "error": "", "result": "...(bounded)...", "attempts": 1
     }],
@@ -750,14 +770,14 @@ workspace is never removed.
 
 ## Notifications
 
-Notifications with a run are prefixed with `[run.name]`, falling back to the spec path stem, via `_notify(title, body, run=run)`.
+Notifications with a run are prefixed with `[run.name]`, falling back to the spec path stem, via `_notify(title, body, run=run)`. The table lists the main events; it is not exhaustive (approval, denial and context-compression notices also exist).
 
 | Event | Title | Body |
 |-------|-------|------|
 | Task started | 🚀 Task started | Spec name |
 | Plan ready | 📋 Plan ready | Step list |
-| Step passed | ✅ Step N/M | Title + bounded result preview |
-| Step failed | ❌ Step N/M failed | Title + error |
+| Task passed | ✅ Task N/M | Title + bounded result preview |
+| Task failed | ❌ Task N/M failed | Title + error |
 | Task completed | ✅ Task completed | Steps passed/failed, elapsed, tokens, work dir, full step list |
 | Task error | ❌ Task error | Exception message |
 | Stall warning | ⚠️ Task may be stalled | Minutes since last activity |
@@ -784,21 +804,21 @@ The sink is what decides where a notice goes, and the one notice a run cannot
 proceed without is an approval request. The gateway's `_task_notify` therefore
 tries the governed cross-surface channel ladder first (`_deliver_channel_reply`,
 see [slack-gateway](slack-gateway.md)) and keeps the owner Slack DM as the
-fallback — before this, that DM was the only escalation, so a Telegram-only
-operator's task stalled on an approval they were never told about.
+fallback, so a Telegram-only operator is told about an approval their task is
+waiting on.
 
-`task_reporter.NotifyCallback` is a **union of two shapes** during the
-transition, not one widened signature:
+`task_reporter.NotifyCallback` is `Union[SessionAwareNotify, LegacyNotify]`, not
+one widened signature:
 
 - `SessionAwareNotify` — `(title, body, task_id="", *, session_key="")`;
-- `LegacyNotify` — `Callable[[str, str, str], Awaitable[None]]`, which the CLI's
-  printer and a dozen test doubles still are.
+- `LegacyNotify` — `Callable[[str, str, str], Awaitable[None]]`, the shape of the
+  CLI's printer and of three-argument test doubles.
 
 No single signature is satisfied by both, so the union is what keeps mypy
 checking the arity of each. `notify()` widens the CALL only when there is a
 conversation to carry AND `_accepts_session_key(callback)` confirms the sink
-takes the keyword; otherwise it makes the exact three-argument call every
-pre-existing sink was written against. The probe is not paranoia:
+takes the keyword; otherwise it makes the exact three-argument call a
+legacy sink is written against. The probe is not paranoia:
 `notify()` swallows sink failures at debug level, so an unconditional keyword
 handed to a legacy sink would silently stop that sink's notifications with
 nothing logged above debug, and a `TypeError` retry cannot tell an arity
@@ -814,7 +834,7 @@ A task rooted in an existing git repository runs on an isolated branch via
 - **Per-step commits (git runs)**: `git add -A && git commit` after each passed step.
 - **Revert on failure (git runs)**: `git reset --hard HEAD~1` when review fails, before retry.
 - **State summary**: `git log --oneline` + `git diff --stat` is injected when git coordination is active.
-- **Review diff**: `git diff HEAD~1` feeds the independent review session; non-git runs use the generic review prompt.
+- **Review diff**: the step's diff (`git_coord.get_step_diff`, capped at 8000 characters) feeds the independent review session; only a non-git run or a step whose commit failed uses the generic review prompt.
 - **Finalize**: an owned worktree is cleaned up when the run exits.
 - **Resume recovery**: a retry — and a restart of a run that already had a
   worktree — validates the saved worktree's path, repository,
@@ -898,13 +918,17 @@ Fingerprints are comparison-only; `task.error` always keeps the raw text.
 `task_executor.build_task_prompt()` assembles context for each step (async):
 
 1. **Role prompt** — autonomous execution agent identity + git branch awareness
-2. **Git context** (if available) — `git_coord.get_state_summary()` (log + diff stat)
-3. **Working memory fallback** (if no git) — text-based file/decision tracking
-4. **Completed steps** — titles of passed steps
-5. **Current step** — title, description, spec content
-6. **Retry context** (if attempt > 1) — previous error message
-7. **Resume (do not restart)** (whenever `resume_hint` is set, at any attempt) —
+2. **Git context** (git runs) — `git_coord.get_state_summary()` (log + diff stat)
+3. **Working memory** (whenever non-empty, git or not) — `run.memory.summary()`
+4. **Full Execution Plan (follow strictly)** — every task by group, passed ones
+   marked done and the current one marked, with dependencies and a short description
+5. **Original Context** (`run.original_input`) or else **Original Spec**
+   (`run.spec_content`), first 2000 characters
+6. **Current Task (N/M)** — title and description
+7. **Previous Attempt Failed** (attempt > 1 with an error) — the previous error
+8. **Resume (do not restart)** (whenever `resume_hint` is set, at any attempt) —
    the instruction to inspect current repository and session state first
+9. **Instructions** — the closing rules, git or non-git variant
 
 `resume_hint` is set when a step's `AcpProcessDied` may have left its prompt
 run: the death carries `ambiguous_delivery` (a stdin stall the live child may
@@ -924,11 +948,11 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 
 - Step set to `REVIEWING` status before review starts (visible in UI as 🔍)
 - Only set to `PASSED` after review succeeds
-- Reads actual `git diff HEAD~1` (not LLM's self-report)
+- Reads the step's actual diff (`git_coord.get_step_diff`, first 8000 characters), not the LLM's self-report
 - Separate session = no bias from having written the code
-- Falls back to generic review prompt when no git diff available
-- Review failure → revert commit → retry step → re-commit on success
-- Review exceptions are non-fatal (returns True to avoid blocking)
+- The generic review prompt is used only for a non-git run, or a git run whose commit failed
+- **Fails closed.** A review that raises, or a git run whose step left no diff (unless its commit failed), sets `task.error` to start with `_REVIEW_UNVERIFIED` and FAILS the step: no revert and no re-run, because a re-run would repeat any push or CR the step made and pass without a review
+- Only a real `{"ok": false}` verdict → revert commit → re-run the step once → re-commit on success
 
 ## Tool Approval
 
@@ -936,10 +960,12 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 `tool_permission.settle` with the step's ladder (`_step_permission_policy`, rebuilt
 when a mode switch changes whose spec hooks gate the turn). In order:
 
-1. The agent spec's PreToolUse hooks, on a backend that never receives them, may block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
+1. The agent spec's PreToolUse hooks (with the Hooks page's), on a backend that never receives them, run first and fail closed: a deny, a hook that errors, or hooks that cannot be read block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
 2. The run's own trust grant (below).
 3. The mid-stream context check, which runs even for a request a hook or the run's trust already granted: past `_MID_STREAM_COMPACT_PCT` the request is rejected bare and the turn re-run after compaction.
 4. When nothing grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
+
+A mid-step agent switch (`EVENT_AGENT_SWITCHED`) rebuilds the ladder for the new agent's spec hooks and calls `spec_hooks.refuse_stale_switch`: when the switched-to agent auto-approves a capability a PreToolUse hook covers, those calls would never reach the permission request, so the turn is cancelled (`StaleProjectionError`) and the next claim resets the stale session.
 
 The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
@@ -988,7 +1014,7 @@ IS held by `SafetyOverride` — as a **task-scoped grant** — so per-run trust 
 audited and expires through the same primitive the `backend-security-controls`
 rule mandates, with no independent approval state living on the run:
 
-- **SafetyOverride scoped grant (audited, TTL-bounded, slide-renewed)** — enabling `auto_approve` calls `safety_override().activate_scoped("taskrunner:{task_id}:autoapprove", source="dashboard")`, which fail-closed audits the activation to the SEL before committing and stamps the dashboard-window TTL. `is_scope_active(scope)` authorizes every approval; when the grant lapses or is absent after restart, the run intent is revoked and the tool falls through to interactive approval or denial. Each auto-approved tool call slides the grant within its hard ceiling, so an idle run lapses. `scope_remaining_secs()` feeds `build_status`; `Project.auto_approve` is only persisted UI intent, while `TaskRunner._grant_run_trust(run, enabled)` owns both intent and grant so they cannot diverge, and `_release_run_runtime()` revokes the grant at teardown.
+- **SafetyOverride scoped grant (audited, TTL-bounded, slide-renewed)** — enabling `auto_approve` calls `safety_override().activate_scoped("taskrunner:{task_id}:autoapprove", source="dashboard")`, which fail-closed audits the activation to the SEL before committing and stamps the dashboard-window TTL. `is_scope_active(scope)` authorizes every approval; when the grant lapses or is absent after restart, the run intent is revoked and the tool falls through to interactive approval or denial. Each auto-approved tool call slides the grant within its hard ceiling, so an idle run lapses. `scope_remaining_secs()` feeds `build_status`; `Project.auto_approve` is only persisted UI intent, while `TaskRunner._grant_run_trust(run, enabled)` owns both intent and grant so they cannot diverge, and `_release_run_runtime()` revokes the grant at teardown. `activate_scoped` can refuse — an `approval_modes` deny of `yolo`, or an SEL audit write that fails — and `run.auto_approve` is set from the activation result, so a requested trust grant can end with the flag off.
 - **Deny-by-default parsing** — the API reads `auto_approve` as `body.get(...)
   is True`, so only a literal JSON `true` enables trust; truthy non-booleans
   (`"false"`, `"0"`, `[]`, `{}`) do NOT.
@@ -1040,8 +1066,7 @@ Only fires when there is truly ZERO activity for the stall period.
 
 - Each step: `taskrunner:{task_id}:task{N}` — fresh session per step, reset after completion (owned by `task_executor.py`)
 - Decomposition: `taskrunner:{task_id}:decompose` (throwaway, reset in finally) (owned by `task_planner.py`)
-  - Returns `{"steps": [...], "acceptance_criteria": [...]}` — criteria shown in final acceptance step
-  - Backward compatible with plain JSON arrays (no criteria → step-title fallback)
+  - Returns `{"steps": [...]}` (or `{"tasks": [...]}`) or a bare JSON array of steps
 - Self-review: `taskrunner:{task_id}:review` (separate session, reset in finally) (owned by `task_executor.py`)
 - Context compaction between steps routes through `SessionManager.compact_if_needed(key)`, preserving the gateway's deduplication, cooldown, turn-semaphore exclusion, and skills reinjection. A `"busy"` decline is retried later with no direct `provider.compact()` fallback. Its shared post-check uses the attempt's immediate effect verdict (`_POST_COMPACT_RESET_PCT`) and awaits a reset before the next step cold-starts; deferred readings only damp later growth, while the mid-stream overflow guard covers the interim.
 
@@ -1049,13 +1074,13 @@ Every step gets `is_new=True` on its first message, which triggers full `Context
 
 ## Dynamic Refine
 
-The "✨ Compose" tab uses a single-shot LLM call to rewrite the user's rough
+The Compose mode's **Refine into Spec** action uses a single-shot LLM call to rewrite the user's rough
 natural language input into a structured task specification. No tools, no file
 reading, no clarifying questions — just a fast spec rewrite.
 
 1. User describes task in natural language
 2. LLM rewrites it into a structured spec (Goal / Requirements / Acceptance Criteria)
-3. Spec appears in editable textarea — user can edit before clicking "▶ Run This Spec"
+3. Spec appears in the editable textarea — the user can edit it, then start it with the ordinary Run control
 
 **No tools allowed during refine** — all tool calls are rejected. The refiner's
 only job is to produce a better-written spec from the user's input.

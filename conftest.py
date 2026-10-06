@@ -3373,8 +3373,7 @@ def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
     Safe for the entries whose failure is intended platform behaviour rather than a
     gap: those still FAIL on the platform they are listed for, so they xfail green
     exactly as before. They only never burn down, which is an honesty problem with
-    the list's framing (see the frame-recorder group in
-    ``macos-expected-failures.txt``) and not a mis-fire of this mechanism.
+    such an entry's framing and not a mis-fire of this mechanism.
 
     **A listed test that HANGS must not be in this list, and the platform is why.**
     Executing rather than skipping costs CI minutes, which is fine; what is not
@@ -4102,8 +4101,8 @@ def _reset_path_resolver_degradation(monkeypatch) -> None:
     Resetting on both sides makes that cascade impossible to inherit and impossible
     to export, so a test that provokes a stall on purpose still sees only its own.
 
-    ``_path_resolve_degraded`` and ``_path_resolve_wedged`` are re-exported by the
-    ``kiro_crew.security`` facade, so they are set THROUGH it: the facade mirrors a
+    ``_path_resolve_degraded`` is re-exported by the
+    ``kiro_crew.security`` facade, so it is set THROUGH it: the facade mirrors a
     write onto the owning submodule, while patching the owner alone would leave the
     facade holding the original object and break the export-identity contract
     ``test_security_facade`` pins. ``_path_resolve_load_probes`` and
@@ -4115,7 +4114,6 @@ def _reset_path_resolver_degradation(monkeypatch) -> None:
     paths = sys.modules.get("kiro_crew.security.paths")
     if security is not None:
         monkeypatch.setattr(security, "_path_resolve_degraded", {}, raising=False)
-        monkeypatch.setattr(security, "_path_resolve_wedged", [], raising=False)
     if paths is not None:
         monkeypatch.setattr(paths, "_path_resolve_load_probes", {}, raising=False)
         monkeypatch.setattr(paths, "_path_resolve_thread_waits", {}, raising=False)

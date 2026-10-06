@@ -1,7 +1,7 @@
 """The hook subsystem keeps its surface and its contracts while its owners move.
 
-``kiro_crew.hooks`` is the hook subsystem's import path and its patch surface: 127
-production modules import it and the tests rebind its names. Most of what it defined
+``kiro_crew.hooks`` is the hook subsystem's import path and its patch surface: over a
+hundred production modules import it and the tests rebind its names. Most of what it defined
 now lives in the modules of ``kiro_crew.hook_runtime``, one responsibility each, and
 ``hook_runtime.compose`` runs every function they define on the facade's globals.
 
@@ -55,8 +55,8 @@ _SRC = _FACADE_PATH.parent.parent
 _ROOT = repo_root()
 
 #: Every module-level name ``hooks.py`` bound at the base this split was cut from:
-#: what it defined and what it imported, private names included, because 127
-#: production modules and the tests read private names off it too. A name bound only
+#: what it defined and what it imported, private names included, because over a
+#: hundred production modules and the tests read private names off it too. A name bound only
 #: by ``import <module>`` of a stdlib or third-party module is left out (SD39): nothing
 #: reads ``json`` or ``re`` off the facade, and pinning one would fail on the removal
 #: of an unused import. The project module objects it imports ARE pinned, because the
@@ -305,7 +305,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 
 
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
-    """127 production modules and the tests read private names off this module as
+    """Over a hundred production modules and the tests read private names off this module as
     well as public ones, so every module-level binding survives the split."""
     assert len(_BASE_NAMES) == 197
     assert sorted(name for name in _BASE_NAMES if not hasattr(hooks_mod, name)) == []

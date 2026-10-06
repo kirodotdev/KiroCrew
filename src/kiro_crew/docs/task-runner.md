@@ -6,23 +6,28 @@ The task runner executes multi-step autonomous tasks from spec files. It's usefu
 
 ### Via Chat
 
-```
-run docs/task-specs/2026/03/my-task/spec.md
-```
-
-Or ask naturally: "run the task in my-task/spec.md"
+In a dashboard chat, ask naturally: "run the task in my-task/spec.md". The agent
+starts it with the `task_run` tool.
 
 ### Via Dashboard
 
-Tasks page → enter the spec file path → click ▶ Start.
+Open the **Task Runner** page and use **New Task**. Describe the task in plain
+words (**Compose**), paste or upload a spec (**From Spec**), or paste or upload a
+YAML plan (**From YAML**). Then press **Run**, or **Plan** to review the steps
+before they run. The page has no spec-path field; a spec path is accepted by
+`kirocrew run`, the `task_run` tool, the `task run` keyword below and
+`POST /api/taskrunner`.
 
 ### Via Slack
 
 ```
-run <path-to-spec>
-run status
-run cancel
+task run <path-to-spec>
+task run status
+task run cancel
 ```
+
+`project run` is an alias for `task run`. A bare `run <path>`, `run status` or
+`run cancel` is not a command: it reaches the agent as an ordinary message.
 
 ### Via CLI
 
@@ -63,7 +68,7 @@ A nonempty text or Markdown file is accepted. The runner sends its content to th
 
 Approval depends on how the run was launched:
 
-- **Dashboard / chat `run` / Slack `run`** (inside the gateway): tool calls that aren't allow/deny-listed **prompt** interactively.
+- **Dashboard / chat / Slack `task run`** (inside the gateway): tool calls that aren't allow/deny-listed **prompt** interactively.
 - **`kirocrew run TASK.md`** (standalone CLI): no interactive channel, so it's **deny-by-default** — a tool runs only if it matches `hooks.auto_approve_tools`; otherwise it's rejected and logged with `reason: headless_no_authorization`. (`TOOL_DENY` / `auto_deny_tools` always wins; the allowlist works with or without a handler.)
 
 During **step execution**, an allowlisted **shell** tool is additionally
@@ -96,28 +101,28 @@ Patterns match the tool title with or without the `Running: `/`Reading ` prefix 
 
 ## Progress Tracking
 
-The dashboard shows live step progress with status icons:
-- ✅ Completed
-- 🔄 In progress
-- ❌ Failed
-- ⏳ Pending
+The Task Runner page lists each run with its state — running, completed,
+failed, cancelled or planned — and its step progress.
 
 A run moves through planning and running states, then finishes as completed, failed, cancelled, or paused. Paused, cancelled, and failed runs can be restarted from the saved plan.
 
-## Multi-Turn Refinement
+## Refining a Request
 
-After a task completes, you can refine the results interactively:
-- The agent can ask clarifying questions
-- You can provide additional instructions
-- The refinement loop has full tool access
+Before a run, **Refine into Spec** (on the Compose tab) turns a plain request into
+a structured spec. It makes no tool calls and asks no questions: every tool
+request it raises is refused and audited.
 
-## Per-Agent Tasks
+After a run completes, press **Chat** to continue from its results in an
+ordinary chat.
 
-Tasks can specify which agent to use, allowing specialized agents for different types of work.
+## Choosing the Agent
+
+The agent is chosen per run, not by the spec: use the **Agent** selector on the
+Task Runner page, or the `agent` field of `POST /api/taskrunner`.
 
 ## Cancellation
 
 Cancel a running task via:
-- Dashboard: ■ Cancel button
-- Slack: `run cancel`
+- Dashboard: the **Cancel** button on the run
+- Slack: `task run cancel`
 - API: `POST /api/taskrunner/cancel`

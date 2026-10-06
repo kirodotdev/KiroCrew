@@ -140,7 +140,7 @@ def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
             return None
         # Read through hooks.safe_read_file — the symlink-safe chokepoint
         # (re-checks the RESOLVED target + O_NOFOLLOW open, closing the
-        # validate→read TOCTOU window; AWS-33/AWS-62). Raw content, no
+        # validate→read TOCTOU window). Raw content, no
         # truncation: the cap must apply AFTER the reverse substitution or
         # the needle could be cut mid-file. PermissionError (sensitive
         # target / symlink race) and ordinary read errors both decline via

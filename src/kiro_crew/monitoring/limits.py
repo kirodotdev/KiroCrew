@@ -66,7 +66,9 @@ def runtime_ceiling_secs() -> int:
 
 
 def validate_runtime_secs(value: object, *, allow_unbounded: bool = False) -> int:
-    """Validate tool, API and persisted budgets with the same integer bounds.
+    """Validate a budget as a tool or API call writes it, with one set of integer bounds.
+
+    Budgets already persisted are not re-checked on load.
 
     Zero retains its legacy meaning only on general AutoNudge surfaces. Monitor
     tools and structured monitors always require a positive finite budget.

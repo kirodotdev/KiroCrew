@@ -240,18 +240,29 @@ reads as "the feature isn't installed" rather than "you typed it wrong".
 A resumed session is **two-way**: what you type in the dashboard is also
 delivered to Discord, and Discord messages arrive in that session. Because that
 is otherwise invisible from the dashboard side, the resumed session shows a chip
-in its chat header — `Driven from Discord DM` — with a **Release** action, and its
-session menu lists `Connected: Discord DM` with a **Two-way** badge.
+in its chat header — `Driven from Discord DM`. The chip opens a menu with the
+session's linked surfaces for Discord, the same rows the session menu lists. Each
+row carries a **Two-way** or **One-way** tag and offers:
 
-Release is the dashboard-side equivalent of `!unlink`, which used to be the only
-way out of a resumed session. It confirms first, and re-attaching is done with
-`!sessions` from the channel. A one-way `!link` mirror is labelled **Mirror** and
-offers **Stop mirroring** instead, so the two are not confused.
+- **Pause replies to Discord DM** — replies stop going to Discord, but the
+  connection stays; **Resume replies to Discord DM** turns them back on.
+- **Unlink from Discord DM** — removes the connection, the dashboard-side
+  equivalent of `!unlink`. Re-attach with `!sessions` from the channel.
 
 The binding is stored per session and survives a gateway restart. A session can
 only be active in one place at a time — if it is already attached to Slack or
 another channel, Kiro Crew refuses and tells you where it lives, rather than
 moving it silently.
+
+A dashboard reply mirrored to a Discord DM keeps arriving across gateway
+restarts. If the gateway's token-signing key is rotated, that delivery stops
+until you link the session again from the dashboard.
+
+If you message a resumed session while it is busy with a turn started on the
+dashboard, your message is steered into that turn or queued in that dashboard
+session, by the same `!steer` / `!queue` / default-mode rules. The DM confirms
+which one happened. A message with attachments, one that meets a full queue, and
+one for a session that was closed or moved are refused, and the DM says so.
 
 `!sessions` is **owner-only and requires exactly one entry in
 `discord.allowed_user_ids`**. Session listing and resume can reach any dashboard
@@ -263,7 +274,11 @@ credentials and suspicious URLs before they reach Discord.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as
-buttons, and interactive tool approvals render as Approve/Deny buttons.
+buttons, and interactive tool approvals render as Approve/Deny buttons. A
+sub-agent spawn started from Discord asks for approval the same way, with
+Approve/Deny buttons in the DM or thread it came from; there is no Trust button,
+because standing trust is granted only on the dashboard. With `messaging.dm_scope` set to `unified`, a DM session cannot be traced back to
+one conversation, so its spawn approvals go to Slack or the dashboard instead.
 
 ## Related docs
 

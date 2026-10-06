@@ -23,12 +23,16 @@ The app will:
    old gateway before reopening the app. It does not restart or force-stop the
    gateway automatically. Remote tunnels, separate CLI installs, unknown owners,
    same or newer versions, Windows, and moved AppImages retain existing behavior
-2. Launch `kirocrew gateway` when needed
-3. Show a loading screen while the backend boots. A live bundled backend gets an
+2. When nothing answers the first health check but the port is held by this
+   app's own data-folder gateway (`gateway.lock` names its pid and that pid holds
+   the lock) and it keeps failing for 15 seconds, offer Stop and restart or Quit
+   (see [the desktop app guide](../../docs/build/desktop-app.md#how-the-app-finds-and-launches-the-backend))
+3. Launch `kirocrew gateway` when needed
+4. Show a loading screen while the backend boots. A live bundled backend gets an
    extended Windows cold-start window; a child that actually exits still fails
    immediately with its launch-log cause.
-4. Load the dashboard
-5. Point the user at Kiro CLI installation and sign-in on the gateway host when
+5. Load the dashboard
+6. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing
 
 The Electron shell uses the same gateway-hosted setup screen as every browser;
@@ -196,14 +200,15 @@ kirocrew service uninstall
 
 If the gateway runs on a remote dev desktop (the recommended setup per
 `../../docs/guides/remote-and-mobile.md`), the app can fetch tokens automatically
-via SSH instead of reading the local `.local_secret`.
+via SSH instead of minting one from the local listener secret (see Token flow
+below).
 
 ### Prerequisites
 
 1. An SSH tunnel forwarding the remote gateway port to localhost. Either tick
    **Keep an SSH tunnel to this crew open** for the app's launch port (in the
    Add/Edit Remote Crew form the "no gateway is answering" dialog opens, or in
-   Set Remote Host… on that tab, below), and the app opens and maintains it;
+   Set Remote Host… on that window, below), and the app opens and maintains it;
    saving either form applies the choice at once. Or run your own:
    ```bash
    ssh -L 5476:localhost:5476 YOUR_HOST.example.com
@@ -215,9 +220,9 @@ via SSH instead of reading the local `.local_secret`.
 
 ### Configure
 
-Remote host settings are **per-port** — each tab can have its own remote host
-(or none, for local gateways). Focus the tab you want to configure, then use
-**Tab menu → Set Remote Host…** or right-click the tab bar:
+Remote host settings are **per-port** — each window can have its own remote host
+(or none, for local gateways). Focus the window you want to configure, then use
+**Connection → Set Remote Host…** (on macOS, also the title-bar right-click menu):
 
 1. The modal shows which port it's configuring (e.g. "Remote host for :5476")
 2. Enter your remote host's hostname or SSH config alias (e.g. `myhost.example.com` or `clouddesk`)
@@ -227,36 +232,43 @@ Remote host settings are **per-port** — each tab can have its own remote host
    - `~/.local/bin/kirocrew` (install.sh / source install)
    - `~/.kirocrew-app/.venv/bin/kirocrew` (one-liner installer venv)
 4. Optionally set a **Remote port** if the gateway port on the remote host differs
-   from the local tab port (default: same as tab port)
+   from the window's local port (default: same as the window's port)
 5. Optionally set a **Remote PATH** if kirocrew needs additional directories
    (default: `~/.toolbox/bin:/usr/bin:/bin`)
 6. Optionally tick **Keep an SSH tunnel to this crew open** (macOS and Linux).
+   The checkbox appears only for the port the app launched on, and never on
+   Windows; another window's form carries its stored choice over unchanged.
    The app then runs `kirocrew desktop tunnel`, which holds the forward from the
-   tab's port to the crew's with the same supervisor and backoff Remote Crew uses
+   window's port to the crew's with the same supervisor and backoff Remote Crew uses
    inside a gateway. A dropped forward is rebuilt on its own, and waking the
    machine from sleep rebuilds it at once. Leave it unticked if something else
    (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
    app never takes a port over without this opt-in. Routing and identity come
    from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
    authenticate without a prompt.
-7. Click Save. Leave hostname empty to clear (use local token for that port).
+7. Click Save. Leave hostname empty to clear (use local token for that port). On a
+   scheme-default port (`:80` / `:443`) that still resolves to a remote host, the
+   Clear is refused so the record cannot be dropped from under a live tunnel: reopen
+   the crew on a selectable port and clear it there.
 
 **Multi-instance example:**
-- Tab 1 on `:5476` — local gateway, no remote host needed
-- Tab 2 on `:7778` — SSH tunnel to another host, remote host configured
+- Window 1 on `:5476` — local gateway, no remote host needed
+- Window 2 on `:7778` — SSH tunnel to another host, remote host configured
 
 The app will SSH into the configured remote host and run `kirocrew token` on
 each launch to get a fresh JWT — no manual paste required.
 
-### Token flow (per tab)
+### Token flow (per window)
 
 ```
-1. Read `<data home>/run/gateway-<port>-<bind address>.secret` for the tab's port,
-   trying the bind addresses whose listener answers the dialed v4 loopback
-   (`127.0.0.1`, then `0.0.0.0`), then call `/api/token/local` on that port.
-   The credential is keyed by the listener, so an entry belonging to a gateway on
-   another address or another port is never read. No entry means refuse, not
-   fall back: the home-wide `.local_secret` is not consulted here.
+1. Read `<data home>/run/gateway-<port>-<bind address>.secret` (`:` written as `_`)
+   for every loopback family the window's host can reach: v4 (`127.0.0.1`,
+   `0.0.0.0`) and v6 (`::1`, `::`). A literal host (`127.0.0.1` / `[::1]`) needs
+   its own family; `localhost` / `kirocrew.localhost` (the default backend URL is
+   `http://localhost:<port>`) need BOTH, carrying the same secret (one gateway
+   generation). Then call `/api/token/local` on that port. A missing family, or
+   families covered by different secrets, means refuse, not fall back: the
+   home-wide `.local_secret` is not consulted here.
 2. If remote host configured for this port:
    SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
 3. Fallback: show manual token prompt
@@ -267,15 +279,17 @@ each launch to get a fresh JWT — no manual paste required.
 | Location | Item | Action |
 |----------|------|--------|
 | Connection menu (macOS) | New Window (⌘⇧N) | Open another dashboard window with a new blank session on the existing local gateway |
-| Tab menu / tab bar right-click | Set Remote Host… | Configure hostname for the **focused tab's** port |
-| Tab menu / tab bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused tab** |
-| Tab menu / tray | Open Config File | Open `config.json` in default editor |
+| Connection menu / macOS title-bar right-click | New Connection Window… | Open a dashboard window for another gateway port |
+| Connection menu / macOS title-bar right-click | Rename Window… | Name the **focused window** |
+| Connection menu / macOS title-bar right-click | Set Remote Host… | Configure hostname for the **focused window's** port |
+| Connection menu / macOS title-bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused window** |
+| Connection menu / tray | Open Config File | Open `config.json` in default editor |
 
-### Tab naming
+### Window naming
 
-Tabs default to `[:port]`. You can set a **default name** per port via
-**Rename Tab → ☑ Set as default name**. New tabs on that port will use it
-automatically. Names are stored in `remoteHosts[port].defaultName`.
+Windows default to `[:port]`. You can set a **default name** per port via
+**Rename Window… → ☑ Set as default name for :port windows**. New windows on that
+port will use it automatically. Names are stored in `remoteHosts[port].defaultName`.
 
 ### Config file
 
@@ -298,18 +312,20 @@ Settings are persisted via `electron-store`. On macOS the file is
 }
 ```
 
-Open via **Tab menu → Open Config File** or tray menu.
+Open via **Connection → Open Config File** or the tray menu.
 
 ### Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| "SSH token fetch failed" | Check `ssh YOUR_HOST` works from Terminal |
+| "SSH token fetch failed" | Check `ssh -o BatchMode=yes YOUR_HOST true` works from Terminal: the fetch runs ssh non-interactively (`-n`, `BatchMode=yes`), so the host must authenticate without a prompt |
+| "ssh client not found: …" | Install the OpenSSH client. The app takes ssh only from the system directories (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/run/current-system/sw/bin`; on Windows the in-box `System32\OpenSSH\ssh.exe`), never from `PATH` |
+| "ssh YOUR_HOST timed out after N s" | Raise `sshTimeoutMs` in the config file; ssh's `ConnectTimeout` is sized from it |
 | "kirocrew binary not found in any of …" | Install Kiro Crew through a [supported install path](../../docs/guides/install.md#install-paths), or set a custom path |
 | "command not found: kiro-cli" | Set Remote PATH to include `~/.toolbox/bin` (default does this) |
 | "command not found: dirname" | Remote PATH missing `/usr/bin` — reset to default or add it |
 | Token fetched but 403 | Restart the remote gateway — `ssh host kirocrew restart` |
-| Wrong tab refreshed | Focus the target tab first (use Tab menu, not tray) |
+| Wrong window refreshed | Focus the target window first (use the Connection menu, not the tray) |
 
 ## Notes
 

@@ -480,9 +480,12 @@ _BLOCKED_SLASH_COMMANDS = (
     | _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
 )
 
-# Single source of truth for slash-command descriptions surfaced by the
-# dashboard API (GET /api/slash-commands) and mirrored by the frontend
-# autocomplete fallback. Keys are slash-prefixed command names. Covers every
+# Slash-command descriptions surfaced by the dashboard API
+# (GET /api/slash-commands): the English text for API clients and the fallback
+# the frontend shows for a command it has no catalog key for. A command with a
+# ``slashCommandMenu.desc_*`` key in the frontend's i18n catalog renders that
+# catalog text instead (SlashCommandMenu.tsx ``commandDescription``), so the two
+# can differ. Keys are slash-prefixed command names. Covers every
 # command in _SLASH_COMMANDS plus the claude_code-only /init, /review, and
 # /security-review so no command renders a blank description in either path.
 SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {

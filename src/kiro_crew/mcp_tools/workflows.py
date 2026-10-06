@@ -85,7 +85,11 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "input": {
                         "type": "string",
-                        "description": "Free-form input exposed as ctx.args['input']",
+                        "description": (
+                            "Free-form input exposed as ctx.args['input']. Used only "
+                            "with workflow; with source or intent it is dropped, so "
+                            "pass values in args instead"
+                        ),
                     },
                     "intent": {
                         "type": "string",

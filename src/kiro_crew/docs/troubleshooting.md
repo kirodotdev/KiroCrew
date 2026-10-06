@@ -15,6 +15,25 @@ git, the project directory, the agent config and its managed MCP entries,
 credentials, gateway status, and the embedding runtime and model file. Where a
 check fails it prints a specific fix command.
 
+## Diagnostics bundle
+
+To report a problem, collect a bundle instead of pasting logs by hand:
+
+```bash
+kirocrew doctor --bundle
+```
+
+This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs and
+crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
+through the credential redaction first, and the command prints how many secrets it
+removed. It then prints a GitHub new-issue link on the bug-report form; drag the
+zip into that issue. The link fills in the version and the release channel from
+the build's own release record. When the build cannot prove its channel, the
+channel field reads `Not sure` and no `channel:` label is attached, so a human
+sets it. The link printed in the terminal leaves out the free-text fields; the
+dashboard's **Report problem** button uses the same collector and fills those in
+too.
+
 ## Common Issues
 
 ### The default kiro-cli backend is not on PATH
@@ -120,7 +139,17 @@ from a host shell, or have an administrator run
 lookup answers `Failed to look up user <user>: No such process`. A Cloud Dev
 Desktop reaches the stale case by exporting `DBUS_SESSION_BUS_ADDRESS` from a
 login session whose manager has since stopped. To preview a worktree with no
-systemd at all, use `./dev-backend.sh`.
+systemd at all, use `./dev-backend.sh` from the root of a Kiro Crew source
+checkout; it is a repository script and is not installed with the package.
+
+If doctor reports `session bus: not applicable (no systemd per-user manager on
+this host)`, the host's systemd ships without `user@.service` — Enterprise Linux
+7 derivatives such as RHEL 7, CentOS 7 and Amazon Linux 2 do. There is no
+per-user manager for linger to start, so `loginctl enable-linger` cannot help.
+Run a worktree gateway with `./dev-backend.sh` from a source checkout, or have an
+administrator hand-install a `user@$(id -u).service` unit as described under
+"Hosts without a working `systemd --user`" in the
+[remote and mobile guide](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-and-mobile.md#hosts-without-a-working-systemd---user).
 
 Probe and unit operations resolve
 `systemctl` only from trusted system directories and ignore same-named PATH entries. A
@@ -147,6 +176,16 @@ command path is install-specific. If tools still fail:
 The doctor also runs a live handshake probe against each managed server and
 prints the child's stderr tail on failure, which is usually where the real cause
 (an import error, a bad path) shows up.
+
+If a session is refused with `kirocrew-core is withheld by <source>:
+<restriction>; <remedy> ...`, a declaration of `kirocrew-core` carries a setting
+that a per-session copy of the server cannot keep — `disabled: true`, a
+`disabledTools` list, a `type` other than stdio, or another key only kiro-cli
+reads. `<source>` names where it lives:
+the agent spec, the global MCP settings (`~/.kiro/settings/mcp.json`), or the
+project's MCP settings. Session-scoped tools such as skill search need that
+per-session copy, so the session is refused instead of silently losing them.
+Remove the restriction the way the message names, then start a new session.
 
 ### MCP tools missing on an enterprise (work) account
 
@@ -228,11 +267,14 @@ compaction fires often:
 
 ### Build failures
 
-Backend:
-
-```bash
-pip install -e . && python -m pytest 2>&1 | tail -20
-```
+Building and testing apply to a Kiro Crew source checkout, not to an installed
+package. The backend's test tools live in the `dev` extra, so a plain
+`pip install -e .` has no `pytest`. Install with `pip install -e ".[dev]"` and run
+the change-scoped gate with `python3 scripts/local-gate.py`; the
+[install guide](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/install.md#b-from-source-development)
+and
+[CONTRIBUTING.md](https://github.com/kirodotdev/KiroCrew/blob/main/CONTRIBUTING.md#tests)
+have the full recipe.
 
 Frontend:
 
@@ -349,10 +391,13 @@ screenshots). A directory is reclaimed automatically once every process
 recorded in its `.owner` file has exited and nothing in it has been touched for
 an hour, so short-lived sessions clean up on their own.
 
-One directory does not: the background runtime's tree (`runtime-*`) is shared by
-every dashboard session and is handed on from one runtime to its replacement, so
-it lives as long as the gateway does and is never pruned while a session might
-still need it. If it grows large, the fix is a gateway restart (a fresh tree is
+One directory does not: the background runtime's tree is shared by every
+dashboard session and is handed on from one runtime to its replacement, so it
+lives as long as the gateway does and is never pruned while a session might
+still need it. It is one of the `runtime-*` directories — usually the oldest
+and largest. Other `runtime-*` directories belong to ordinary agent processes
+and are reclaimed by the normal rule above. If the shared tree grows large, the
+fix is a gateway restart (a fresh tree is
 started and the old one is reclaimed by the hourly sweep once its processes are
 gone), or deleting large work products inside it that you know are finished.
 Do not delete a directory whose `.owner` names a live process.
@@ -390,6 +435,54 @@ kirocrew config set agent.subagent_result_ttl_secs 21600   # 6 hours
 
 See [Subagents](subagents.md#completion-event-truncation) for the full
 reference.
+
+### "This conversation hit its turn limit and is paused"
+
+A chat-channel conversation that drives too many turns inside one window is
+latched, and every later message in it is refused with this text. It stops a
+channel that has started answering its own replies. The default is 90 turns per
+hour per conversation; dashboard, cron and subagent turns are not counted.
+
+To continue, reset that conversation from the dashboard. Every reset verb
+releases the latch, and so does a gateway restart. To change the limit, set
+`KIROCREW_CHANNEL_TURN_CEILING` (turns; `0` turns the limit off) or
+`KIROCREW_CHANNEL_TURN_WINDOW_SECS` (seconds) in `~/.kiro/crew/.env` and restart
+the gateway.
+
+### `kirocrew restart`: "Replacement gateway ... did not become ready within"
+
+The replacement gateway is still running but did not pass its readiness check in
+time, so nothing serves the dashboard yet. A slow host
+can need longer than the default 60 seconds; set `KIROCREW_RESTART_READY_TIMEOUT`
+to a number of seconds (clamped to 15–180) for the shell running
+`kirocrew restart`. A replacement that dies early is reported at once and is not
+helped by a longer wait: run `kirocrew logs -f` to see its startup.
+
+### "Refusing to start: the Python standard library is shadowed."
+
+Kiro Crew exits with status 2 when a file or directory on the import path has
+the name of a standard-library module (an `asyncio/` folder or a `queue.py` in
+the directory you launched from, for example). The message names the module,
+where it resolved and which `sys.path` entry provided it. Move or rename that
+module, or launch from another directory. The `import path:` row of
+`kirocrew doctor` reports the same check.
+
+### Voice input stays off after a crash
+
+If the gateway died while loading the speech-to-text model, the next start does
+not try again with the same speech runtime: voice input stays refused and the
+reason names a marker file, `.load-in-progress.json` in the models directory
+(`~/.kiro/crew/models/whisper/`). It clears when the speech runtime changes (a
+reinstall). To try once more with the same runtime, remove that file. To stop
+the attempts, turn `stt.enabled` off.
+
+### Doctor warns about run directories without a marker
+
+`run dirs: ... carry no .kirocrew-run-dir marker` counts run directories under
+the workspace root that an older build left without a marker. The gateway only
+reclaims marked directories, so these stay; above 1000 the row becomes a warning
+and prints the manual move to do with the gateway stopped. Doctor itself deletes
+nothing.
 
 ## Log Levels
 

@@ -294,7 +294,7 @@ commit and green on the fix (testing-conventions § Proving a determinism fix).
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
 `--max-worker-restart=0` the run aborts with every uncollected result missing. If a full run
-reports a few thousand tests instead of ~60k, look for `worker ... crashed while running` in the
+reports a few thousand tests instead of 100k+, look for `worker ... crashed while running` in the
 log: the named test is one that can wait forever. Wait on the observable state, not a guessed
 `sleep`, and bound the await whose refusal is under test with `asyncio.wait_for` so a missed
 refusal fails by name at that line.
@@ -399,8 +399,8 @@ spawned without `cwd=`.
 
 ## Rule 5 — Keep the parallel suite fast
 
-At ~56.5k tests, **per-test setup cost dominates any single slow test** — an autouse
-fixture is paid ~56,500 times. Profile, never guess; compare candidates back to back on
+At 100k+ tests, **per-test setup cost dominates any single slow test** — an autouse
+fixture is paid once per test, over 100,000 times. Profile, never guess; compare candidates back to back on
 the same host (run the change, then the base in `git worktree add --detach <dir> <base>`;
 never `git stash`: every worktree shares one stash list), because a loaded host makes an
 absolute number meaningless.
@@ -457,8 +457,8 @@ The consequence for how you write a test:
   for a 17 MB PNG; one `frombytes` over a bytes buffer was 10x smaller and
   byte-equivalent.
 - **Derive a size from the production constant** rather than restating it. A literal
-  `40_000_001` beside a `_MAX_LAYER_B_CHARS` of `40_000_000` hides both the coupling
-  and the cost, and goes stale silently.
+  one past a production size ceiling, restated beside that constant, hides both the
+  coupling and the cost, and goes stale silently.
 - Suspect a **module-scope literal** whenever a file's collection RSS is large; measure
   it with `pytest <file> --collect-only` and `/proc/self/status`'s `VmHWM`.
 
@@ -670,12 +670,14 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] "Let it finish" is never a fixed `sleep`: wait on the state you are about to assert
       (poll it off-loop under a bounded deadline, or await its event) — two 200 ms sleeps
       that were enough at `-n0` read `starting` for every row on a loaded Windows worker
-- [ ] A store that hands each THREAD its own connection (`KnowledgeStore`) is torn down with
-      `_close_all_for_tests()`, never `close()` — `close()` releases the calling thread's handle and
-      leaves the ones `asyncio.to_thread` workers opened; and every inline `VectorMemoryStore`
-      / `SkillsLoader` / `SubagentManager` goes through the module's `opened` register-and-close
-      fixture, because an unclosed `sqlite3.Connection` is a self-cycle on 3.11+ and refcounting
-      never frees its `db`/`-wal`/`-shm`
+- [ ] An unclosed `sqlite3.Connection` is a self-cycle on 3.11+ and refcounting never frees
+      its `db`/`-wal`/`-shm`. Close every inline `VectorMemoryStore` / `KnowledgeStore` /
+      `SkillsLoader` / `SubagentManager` as the SQLite teardown item below says, e.g. through
+      `test/conftest.py`'s `opened` fixture. A `KnowledgeStore`'s `close()` is fine on the
+      owning thread; use `_close_all_for_tests()` when another thread held a connection
+- [ ] An exact bound on monotonic float arithmetic (`(now + cap) - now <= cap`) can miss by
+      one ulp on some platforms; compare with a named slack (`_FLOAT_SLACK = 1e-6`, as in
+      `test/test_knowledge.py`) or `pytest.approx`, never a bare `<=`
 - [ ] A fixture that plants a path under `tmp_path` and asserts a production "not under
       `$HOME`" refusal does NOT fire pins `Path.home` (the seam the product reads) to a
       sibling that is not an ancestor of the fixture — a developer's `TMPDIR` may sit inside

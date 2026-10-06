@@ -8,8 +8,12 @@ The host renders a card as `{html, data}`. The `html` is inert layout it sanitiz
 each matching element's text. The host is two files, and both are worth reading before
 authoring a page: `src/kiro_crew/dashboard/dynamic_cards.py` (`normalize_card`, which
 accepts or refuses the card) and `website/src/pages/chat/command-center/dashboardDocument.ts`
-(which queries `[data-dashboard-field]` and does the binding). Nothing checks that binding,
-because one half is markup. So
+(which queries `[data-dashboard-field]` and does the binding). No type checker sees that
+binding, because one half is markup. Two tests stand in for one: `parity.py` checks the
+page against its contract, and `website/src/test/binderParity.test.ts` pins how far the
+real `dashboardDocument` binder reaches (a `style` element is skipped, only body
+descendants are filled, the attribute value is trimmed, `FORBID_TAGS` elements are
+removed). So
 a page reading `settled` whose provider fills `settled_count` renders an empty cell — on a
 status board, indefinitely, with nothing red anywhere.
 
@@ -31,12 +35,15 @@ rules). The authoring procedure is the `dashboard-template` skill, and its
 `scaffold.py` emits all four artifacts from one field list so they cannot disagree about
 what the fields are.
 
-## Everything here is dev time
+## Authoring is dev time
 
 A template lands through a pull request. `mypy` over the source tree is blocking and is
 what makes the provider's return type mean something; the parity test covers the half
 mypy cannot see. The gateway never runs agent-authored fold code and never evaluates an
-agent-authored expression.
+agent-authored expression. One `parity.py` reader runs at run time:
+`filled_fields`, which never raises, and which `card_lifecycle._layout_hides_a_fact`
+calls on model-authored html at publish. A binding the host's binder steps over is left
+out of its answer by design, so a required field on such an element reads as missing.
 
 At run time a publisher supplies exactly three sentences — `lede`, `you`, `notes` — and
 no numbers. Numbers are absent from the publisher's surface deliberately: a publisher
@@ -88,8 +95,8 @@ the other quote character, and a tag name in upper case — and each of those ma
 quietly incomplete, which is worse than a gate that fails: a field the reader missed looks
 like a field the page does not use, so the equality assertion passes over a real mismatch.
 
-Every reader there **refuses** rather than returning a partial answer, for the same
-reason. A short set is indistinguishable from a template that genuinely uses fewer
+Every dev-time reader there (`html_fields` and the structural rules) **refuses** rather
+than returning a partial answer, for the same reason. A short set is indistinguishable from a template that genuinely uses fewer
 fields. A page that binds nothing, a binding with no field name, and a contract that nests
 are all errors, not smaller answers.
 
@@ -100,7 +107,8 @@ each rule is also asserted against a deliberately broken input in the same run.
 ## How to add one
 
 1. Write the question the page answers, as one sentence a person would ask.
-2. Pick the fold whose answer that sentence needs, from the ten below.
+2. Pick the fold whose answer that sentence needs, from the generated catalogue below
+   (`FOLDS.md` beside the skill).
 3. Write the field list: `name:str|unsaid` for text, `name:fraction:<total>` for a count, naming the fold key holding its total. Both halves are checked against the chosen fold; a fourth token names the numerator's key when the card field is renamed. There
    is no plain `str` kind — every declared field is read out of the fold, and a fold
    value can always be absent, so a text field is `str | Unsaid` or the provider cannot
@@ -116,8 +124,8 @@ each rule is also asserted against a deliberately broken input in the same run.
 ## The fold catalogue
 
 A template's numbers come from a fold — a durable projection of the append-only crew log,
-described in [crew-log-projection.md](crew-log-projection.md). Picking from the existing
-ten is the rule; a new fold is the exception and argues for itself in the pull request
+described in [crew-log-projection.md](crew-log-projection.md). Picking an existing fold
+from the generated catalogue is the rule; a new fold is the exception and argues for itself in the pull request
 that adds it, because it moves the stored-state version and retires every saved checkpoint
 to a cold refold.
 
@@ -149,10 +157,8 @@ answer and the honest one are the same answer.
 
 The fold names are restated in exactly one place, the generated catalogue, and a test
 asserts it against the kernel that owns them — so a fold added or renamed there fails
-rather than drifting. `registry.py` carried a second copy as a plain tuple, on the ground
-that a template's import graph should not pull in the projection kernel; nothing but that
-copy's own test ever read it, and the catalogue already carries the same guarantee for the
-reader that needs it, the scaffold.
+rather than drifting. `registry.py` keeps no copy of the names; it exports only
+`REGISTRY`, `html_path` and `spec_for`.
 
 ## The crewmate
 
@@ -173,9 +179,8 @@ web tools (every input is on disk or behind `gh`), and no cron, artifact, deploy
 `allowedTools` has no argument matching and this agent's whole safety story is that a human
 reads its diff before it lands.
 
-Registering that spec — adding its filename to the owned-spec list and an installer beside
-its siblings — is a separate change, because it moves recorded digests in the
-agent-materialization characterization while that refactor is still in flight.
+The spec is not registered in `OWNED_KIRO_AGENT_FILES`, so the runtime does not install
+or rebuild it.
 
 ## What a page may not contain
 

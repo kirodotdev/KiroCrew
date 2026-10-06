@@ -1,10 +1,10 @@
 ---
 title: Solo-Spawn Gate — a one-task sub-agent has to say why
-status: in-progress
+status: superseded
 author: iamwhatever
 created: 2026-09-18
-last-audited: 2026-09-24
-audited-at: 2fbd88d07a
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 11848
 implementation-prs: [11710, 13458]
 tracking-issues: []
@@ -13,14 +13,12 @@ superseded-by: [../system-specs/modules/subagent.md]
 ---
 # RFC: Solo-Spawn Gate — a one-task sub-agent has to say why
 
-- Status: in-progress. Decision of 2026-09-24: the gate is removed and
+- Status: superseded. Decision of 2026-09-24: the gate is removed and
   delegation policy becomes prompt guidance only, owned by
   [`../system-specs/modules/subagent.md`](../system-specs/modules/subagent.md).
-  The removal is live in the open
-  [#13458](https://github.com/kirodotdev/KiroCrew/pull/13458); this document
-  records the decision on the base branch so that PR is judged against it.
-  Once #13458 merges the status moves to `superseded`, with
-  `superseded-by` naming the spec above. Grounds: local `spawn.solo` audit from 2026-09-22 to
+  [#13458](https://github.com/kirodotdev/KiroCrew/pull/13458) removed the gate,
+  deleting `solo_spawn.py` and `test/test_spawn_solo_gate.py`. The Summary,
+  Design and Rollout sections below are the historical design. Grounds: local `spawn.solo` audit from 2026-09-22 to
   2026-09-24 showed 33 of 34 one-task calls allowed — 16 on `specialist`, 14 on
   a named model/agent/crew, 2 on other reasons, 1 refused. The gate checks the
   shape of a reason, not its truth, so the model always holds a passing token,

@@ -189,36 +189,10 @@ an Incognito or Temporary session with a 403 no matter which session triggers it
 and the background paths skip those sessions — including a Slack or Telegram
 thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
 own transcript header so it holds across restarts — so the mode table above holds
-for every route. The Memory tab's tally reports those refusals as skipped, not
-failed, names the mode when every skipped session shares one ("1 skipped:
-incognito session") and otherwise the category with each mode counted ("2
-private sessions skipped (1 temporary, 1 incognito)"), with a "?" beside the
-skip that says in one line what each mode promises, in the words the Default
-Memory Mode setting uses ("Temporary starts blank and saves no new memory.
-Incognito uses what it knows but saves no new memory."); when nothing failed it disappears after four
-seconds like every other tally, and a clean press says "Summarized N sessions"
--- the button's own verb, which every message on the tab uses. A failed count means a request genuinely
-failed: it is shown as an error notice carrying the count, a plain-words line
-of two sentences -- the server rejected a summarize request and its reply,
-which calls this operation "consolidation", is shown below, the other
-sessions were not affected; press Summarize now to retry (the reply carries any
-timing the server asks for, such as a
-backoff) -- the failed session named the way the sidebar names it -- its
-title, or its key when it has none (the first of them, with the count, when
-several failed) -- as a link that opens that chat, and that request's own reply
-as detail, labelled
-"Server's reply:" -- the server's words, not the tab's (the plain-words line
-says the server calls this operation "consolidation", so the two names are one
-thing); the skip tally,
-when there was one, stands beside the notice in its own success tone, not
-inside it. Both stay until you dismiss the notice -- there is no retry button;
-the button itself is the retry. If the server would not give the list of
-sessions at all (down, or answering with an error), that is reported through
-the same notice -- "Could not list the sessions to summarize", with the
-server's reply -- not as "no sessions to summarize", which is only said when
-the list came back empty. The
-line under the button says what it does: it writes summaries into memory and
-leaves your conversations untouched.
+for every route. Summarize now reports those sessions as skipped, not failed.
+A real failure shows as an error notice with the server's reply and a link to
+the affected session; press Summarize now again to retry. The button writes
+summaries into memory and leaves your conversations untouched.
 
 ## Reading Memory Programmatically
 

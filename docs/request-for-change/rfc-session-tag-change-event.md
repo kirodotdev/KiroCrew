@@ -3,11 +3,11 @@ title: Session Tag-Change Event as a server-side signal on lane transitions
 status: in-review
 author: (issue #7663 author)
 created: 2026-09-02
-last-audited: 2026-09-02
-audited-at: 6581a04ee
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 10930
 implementation-prs: [7669]
-implementation-scope: partial — 7669 ships the delta-only payload and the dispatcher, and defers every emit site and re-entrancy
+implementation-scope: partial — 7669 (not merged) carries the delta-only payload and the dispatcher, and defers every emit site and re-entrancy
 tracking-issues: [13865]
 supersedes: []
 superseded-by: []
@@ -25,7 +25,7 @@ flagged as expensive to reverse once anything subscribes. It is a design of
 record only: nothing here is on main.
 
 > **Event name.** This document proposes the event as `SessionTagsChanged`; the
-> implementation ships it as **`SessionLaneChanged`**, because the event fires on a
+> implementation PR #7669, which is not merged, names it **`SessionLaneChanged`**, because the event fires on a
 > change to a session's **status** tags — a board-lane transition — and not on a
 > change to its tags generally. The name below is the proposal as written; read
 > every `SessionTagsChanged` in this document as `SessionLaneChanged`.
@@ -62,17 +62,17 @@ adding a subsystem. The positions this RFC takes, one line each:
 
 ### Current state
 
-- `HOOK_EVENTS` (`src/kiro_crew/hooks.py:93-99`, with the constants at
-  `:86-90`) and `ALLOWED_HOOK_EVENTS`
-  (`src/kiro_crew/validation.py:92-94`) carry **exactly five** events -
-  `AgentSpawn`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`. All
-  five are agent-turn lifecycle events; none fires when a tag moves outside a
-  turn. A tag change has no agent and no turn.
+- `HOOK_EVENTS` (`src/kiro_crew/hooks.py`) carries the five agent-turn
+  lifecycle events - `AgentSpawn`, `UserPromptSubmit`, `PreToolUse`,
+  `PostToolUse`, `Stop`. `ALLOWED_HOOK_EVENTS` (`src/kiro_crew/validation.py`)
+  carries eleven: those five plus the six Kiro Agent triggers in
+  `HOOK_EVENTS_KAS_ONLY` (`PreTaskExecution`, `PostTaskExecution`, `FileCreated`,
+  `FileEdited`, `FileDeleted`, `UserTriggered`). None fires when a tag moves
+  outside a turn. A tag change has no agent and no turn.
 - The tag writers mutate `slot.tags`, persist, and call `push_slots_update()` to
   the browser. That push is a client render signal; nothing server-side consumes
-  it. Verified: `api_chat_slot_tags` (`src/kiro_crew/dashboard/chat_tags.py:507`,
-  writes `slot.tags` at `:562`) and `api_chat_slot_drop` (`:902`, writes at
-  `:983`) both end in a `push_slots_update()` with no server-side consumer of the
+  it. Verified: `api_chat_slot_tags` (`src/kiro_crew/dashboard/chat_tags.py`)
+  and `api_chat_slot_drop` (same file) both write `slot.tags` and end in a `push_slots_update()` with no server-side consumer of the
   transition.
 
 ### Problems
@@ -107,10 +107,9 @@ Three neighbouring issues sit around this one; none asks for it:
   completed), an agent auto-tags its own session from context, shipped as
   `src/kiro_crew/dashboard/chat_auto_tag.py`. Relevant because that path
   **deliberately never applies status/workflow tags**: the `NEVER apply
-  status/workflow tags` guard sits at `chat_auto_tag.py:101-108` (comment at
-  `:102`, the `if existing.get("status"): return` guard immediately below, and
-  `create_tag_definition(..., status=False)` for new tags), and its own
-  `slot.tags` write is at `:135`. This RFC does not disturb that rule: it only
+  status/workflow tags` guard sits in `chat_auto_tag.py` (the `if existing.get("status"): return`
+  guard, and `create_tag_definition(..., status=False)` for new tags), beside its
+  own `slot.tags` write. This RFC does not disturb that rule: it only
   *observes* status tags; it does not write them.
 
 ### Why this is cheap and needs no new trust or consent decision
@@ -120,13 +119,13 @@ Three neighbouring issues sit around this one; none asks for it:
   `hooks.json` store (`_HOOKS_FILE` in `hooks.py`) is not.
 - **No new capability surface.** Script hooks are already governance-gated by
   `capabilities.script_hooks`, default OFF, via
-  `_script_hooks_capability_denied` (`src/kiro_crew/hook_runtime/governance_gate.py:163-198`, checked
+  `_script_hooks_capability_denied` (`src/kiro_crew/hook_runtime/governance_gate.py`, checked
   inside `run_script_hook` (`src/kiro_crew/hooks.py`, offloaded through its
   `asyncio.to_thread` call)). A tag-change hook rides that same gate;
   the capability surface does not widen.
 - **Dispatch from an HTTP handler with no agent turn is already supported.**
-  `api_hook_test` (`src/kiro_crew/dashboard/handlers/hooks.py:307`) calls
-  `run_script_hook` (`:337`) with a synthesized payload, and `run_script_hook`
+  `api_hook_test` (`src/kiro_crew/dashboard/handlers/hooks.py`) calls
+  `run_script_hook` with a synthesized payload, and `run_script_hook`
   (`src/kiro_crew/hooks.py`) builds a default `hook_event` itself when passed
   `None`, requiring no session and no agent config. A tag-write
   handler firing a hook is the same shape.
@@ -145,7 +144,7 @@ Three neighbouring issues sit around this one; none asks for it:
 - **Not a write/tagging capability.** Letting an agent set its own tag is
   [#3456](https://github.com/kirodotdev/KiroCrew/issues/3456).
 - **Not a change to `chat_auto_tag`'s never-status rule**
-  (`chat_auto_tag.py:101-108`). This RFC observes status tags; it does not make
+  (`chat_auto_tag.py`). This RFC observes status tags; it does not make
   the auto-tagger write them.
 - **Not project-checkout hook trust.** New trigger sources arriving with a
   checkout are [#1487](https://github.com/kirodotdev/KiroCrew/issues/1487); this
@@ -170,7 +169,7 @@ own prior-state file. Carrying only the resulting list would push the diff back
 onto every consumer, relocating the polling problem rather than solving it. The delta is
 computed at the emit point from the pre-write and post-write status-tag sets
 (the write sites already hold both: e.g. `prior_tags` / `new_tags` at
-`chat_tags.py:561-562`).
+`chat_tags.py`).
 
 ### Question 2: Scope is status tags only
 
@@ -178,8 +177,7 @@ The event fires only when the **status** subset of `slot.tags` changes. A tag is
 a status tag when its definition carries `status: true`, the same predicate the
 drop handler already uses to separate lanes from labels
 (`kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]`,
-`chat_tags.py:980`), and the same flag `chat_auto_tag.py` checks at
-`:101-108`. Firing on every tag would make the event chatty for the case most
+`chat_tags.py`), and the same flag `chat_auto_tag.py` checks. Firing on every tag would make the event chatty for the case most
 people want, because `maybe_auto_tag` writes **non-status** tags routinely
 (`chat_auto_tag.py`, which never writes status tags by construction). So the emit
 point diffs the *status* subset only: if `added` and `removed` are both empty
@@ -235,8 +233,8 @@ event). This reuses the existing script-hook engine, its HTTP-handler dispatch
 path (`api_hook_test` → `run_script_hook`), its capability gate
 (`capabilities.script_hooks`, default OFF), and its global user-authored store
 (`hooks.json`). It is additive: `SessionTagsChanged` joins the `HOOK_EVENTS`
-tuple (`hooks.py:93-99`) and the `ALLOWED_HOOK_EVENTS` frozenset
-(`validation.py:92-94`); existing hooks are unaffected.
+tuple (`hooks.py`) and the `ALLOWED_HOOK_EVENTS` frozenset
+(`validation.py`); existing hooks are unaffected.
 
 **Option B: a session-domain kind in a global lifecycle-event package.** The package
 this option named is deleted, so the option needs a base before it can be taken at
@@ -282,17 +280,17 @@ write `slot.tags` at HEAD `6581a04ee`:
 
 | Site | Location | Writes | Emits? |
 |---|---|---|---|
-| `api_chat_slot_tags` | `chat_tags.py:507` → `slot.tags` at `:562` | user set-tags API | **yes** |
-| `api_chat_slot_drop` | `chat_tags.py:902` → `slot.tags` at `:983` | user drag-to-lane API | **yes** |
-| folder inheritance | `_read_folder_tags` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags.py:60`) | a new slot inherits a folder's tags | **yes** |
+| `api_chat_slot_tags` | `chat_tags.py` | user set-tags API | **yes** |
+| `api_chat_slot_drop` | `chat_tags.py` | user drag-to-lane API | **yes** |
+| folder inheritance | `_read_folder_tags` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags.py`) | a new slot inherits a folder's tags | **yes** |
 | channel first-file / restore | both `slot.tags.append` sites in `surface_channel_session` | channel slot filing | **yes** |
-| slot restore (bulk) | `chat_handlers.py:6394` / `:6402` (`slot.tags = ...`) | reconstruct from stored value | **no** (load-time) |
-| fork | `chat_fork.py:699` (`new_slot.tags = list(slot.tags)`) | fork inherits parent tags | see below |
-| persistence load/prune | `chat_persistence.py:990` / `:1002` and `:1470` / `:1482` | load-time reconstruction | **no** (load-time) |
-| auto-tag | `chat_auto_tag.py:135` | never writes status tags (`:101-108`) | **n/a**, no status delta ever |
+| slot restore (bulk) | `chat_handlers.py` (`slot.tags = ...`) | reconstruct from stored value | **no** (load-time) |
+| fork | `chat_fork.py` (`new_slot.tags = list(slot.tags)`) | fork inherits parent tags | see below |
+| persistence load/prune | `chat_persistence.py` (load and prune) | load-time reconstruction | **no** (load-time) |
+| auto-tag | `chat_auto_tag.py` | never writes status tags | **n/a**, no status delta ever |
 
 The folder-inherited path is the one the issue's two-handler framing misses:
-`validate_folder_tag_ids` (`chat_tags.py:60`) screens a folder tag id's **shape**
+`validate_folder_tag_ids` (`chat_tags.py`) screens a folder tag id's **shape**
 (must be a list of strings) and **vocabulary** (intersected with the live
 `state._tags` when authoritative) but **not** `status: true`. So an inherited
 folder status tag can put a session into a lane through
@@ -301,7 +299,7 @@ that emits only from the two handlers would miss lane entries. This site must
 emit.
 
 **Load-time reconstruction must not emit.** The persistence and bulk-restore
-sites (`chat_persistence.py:990/1002/1470/1482`, `chat_handlers.py:6394/6402`)
+sites (`chat_persistence.py`, `chat_handlers.py`)
 rebuild `slot.tags` from the stored value on boot/reload; emitting there would
 replay the entire tag history on every restart and treat every existing Done as
 "just entered Done." These sites are silent. This is the same reasoning the
@@ -313,7 +311,7 @@ only care about human transitions can filter it. Left as an open question below.
 
 **Recommendation: a single choke-point emitter, not per-handler emits.** Because
 the write surface is this wide and shares one invariant (`slot.tags` mutated under
-`tags_write_lock`, per the comment at `chat_handlers.py:2250-2256`), the emit
+`tags_write_lock`, per the comment at `chat_handlers.py`), the emit
 belongs at a single helper that every write site funnels through, it takes the
 pre-write and post-write status-tag sets, computes the delta, and dispatches the
 hook only if the status subset changed. A single choke point is the only way to
@@ -325,7 +323,7 @@ mcp-lifecycle RFC records) and would re-open that finding here.
 
 **Amendment — what the implementation PR carries, and how it differs from the above.** The
 recommendation stands as the target shape, but the implementation PR (#7669) does
-**not** implement it. #7669 ships the dispatcher, `dispatch_session_lane_changed_bulk`, with
+**not** implement it. #7669 carries the dispatcher, `dispatch_session_lane_changed_bulk`, with
 no emit site: it touches neither `chat_tags.py` nor `chat_handlers.py`, so no writer calls
 the dispatcher and the event cannot fire. Per-writer emits — the two `chat_tags.py`
 writers, and closing-order step 1, the folder inheritance in `_read_folder_tags` reached
@@ -367,8 +365,8 @@ Design of record; nothing on main. Phases are independently shippable.
 
 ### Phase 1: the event constant and its emit choke-point (backend only)
 
-Add `SessionTagsChanged` to `HOOK_EVENTS` (`hooks.py:93-99`) and
-`ALLOWED_HOOK_EVENTS` (`validation.py:92-94`), and add one status-tag-delta emit
+Add `SessionTagsChanged` to `HOOK_EVENTS` (`hooks.py`) and
+`ALLOWED_HOOK_EVENTS` (`validation.py`), and add one status-tag-delta emit
 helper that the two `chat_tags.py` handlers, the folder-inheritance path
 (`_read_folder_tags`), and the channel filing path
 (`surface_channel_session`) call. Fire-and-forget through
@@ -393,7 +391,7 @@ enforced suppression).
 ### Phase 3: documentation and the hook-test surface
 
 Extend the events documentation and let `api_hook_test`
-(`dashboard/handlers/hooks.py:307`) synthesize a `SessionTagsChanged` payload so
+(`dashboard/handlers/hooks.py`) synthesize a `SessionTagsChanged` payload so
 the event is testable through the existing test endpoint, mirroring how it
 already synthesizes the `Stop` payload.
 
@@ -402,7 +400,7 @@ tag-change payload; the events doc lists the new event and its payload keys.
 
 *Blocked-on-open-question:* the exact payload key names (Open question 1) gate
 Phase 1's public shape; fork emission (Open question 3) gates whether Phase 1 wires
-`chat_fork.py:699`.
+`chat_fork.py`.
 
 ## Backward compatibility
 
@@ -417,7 +415,7 @@ and the emit helper.
 
 - **No new capability surface.** The event rides the existing
   `capabilities.script_hooks` gate (default OFF,
-  `hook_runtime/governance_gate.py:163-198`); a deployment that has not enabled script hooks sees no
+  `hook_runtime/governance_gate.py`); a deployment that has not enabled script hooks sees no
   new behavior.
 - **No new trust decision.** Hook definitions remain in the global user-authored
   `hooks.json` (`_HOOKS_FILE` in `hooks.py`); nothing executes definitions that arrive with a
@@ -427,7 +425,7 @@ and the emit helper.
   only: no transcript, no tool arguments, no environment.
 - **Fail-open cannot brick the board.** Because a hook failure never gates the
   write, a broken or hostile hook degrades an automation, not the board.
-- **The never-status auto-tag rule is untouched** (`chat_auto_tag.py:101-108`):
+- **The never-status auto-tag rule is untouched** (`chat_auto_tag.py`):
   this event observes status tags; it does not cause them to be written.
 
 ## Alternatives considered
@@ -462,7 +460,7 @@ and the emit helper.
    short window coalesce into no event (net-zero delta), or deliver both
    transitions? Proposed: deliver both (no debounce), matching the no-suppression
    stance in Question 4; revisit only if a real chatty case appears.
-3. **Fork emission.** Should `chat_fork.py:699` emit for the child slot's inherited
+3. **Fork emission.** Should `chat_fork.py` emit for the child slot's inherited
    lane, or is a fork a load-like reconstruction that stays silent? Proposed: emit
    with `origin = "fork"` so consumers can opt in or out, but this is the least
    certain of the write-surface calls.

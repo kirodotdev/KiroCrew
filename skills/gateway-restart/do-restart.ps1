@@ -1,13 +1,16 @@
 # Delayed gateway restart for Windows — run as a detached process via Start-Process.
 # The sleep gives the calling session time to finish responding.
 # Usage (from agent):
-#   Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "<path>\do-restart.ps1", "-KirocrewBin", "<resolved-path-to-kirocrew.exe>"
+#   Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "<path>\do-restart.ps1", "-KirocrewBin", "<resolved-path-to-kirocrew.exe>", "-StatusFile", "<crew home>\logs\restart-status.<attempt-id>"
 #
-# The restart's exit status is recorded to <crew home>\logs\restart-status —
-# the same file the POSIX do-restart.sh writes — so the calling agent can
-# verify the outcome on its next turn instead of assuming success (see
-# SKILL.md "Verify the outcome"). While the file is absent an attempt is
-# pending; once present it names the exit status of the most recent attempt.
+# The restart's exit status is recorded to the attempt-specific -StatusFile
+# (SKILL.md step 3 generates one per attempt) so the calling agent can verify
+# the outcome on its next turn instead of assuming success (see SKILL.md
+# "Verify the outcome"). While the file is absent the attempt is pending;
+# once present it names that attempt's exit status. -StatusFile must be
+# <crew home>\logs\restart-status.<suffix> with no nested path or traversal;
+# without it, or with a non-conforming path, the shared
+# <crew home>\logs\restart-status file (the POSIX do-restart.sh default) is used.
 param(
     [string]$KirocrewBin = "kirocrew",
     [int]$DelaySec = 10,

@@ -39,9 +39,11 @@ The security boundaries this codebase actually has are real and
 load-bearing, and each one gives a control a named cause, which makes
 it DERIVED rather than speculative --
   - the AGENT is untrusted with respect to its own governance
-    ceiling: it can neither read nor write security_policy.json,
-    profiles/, admission_policy.json or computer_use.json, and the
-    PreToolUse gate, the deny rules and the OS sandbox enforce that;
+    ceiling: it can never WRITE security_policy.json, profiles/,
+    admission_policy.json or computer_use.json -- the OS sandbox
+    mounts them read-only in every mode -- and the PreToolUse
+    sensitive-path gate refuses its file tools reading them; a read
+    through a spawned shell is permitted by design;
   - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
     a policy ceiling tightest-wins that a running agent or app can
     narrow but never loosen;
@@ -104,9 +106,9 @@ rather than inventing a justification for it.
    or an ADDITION. Take it from the title and description plus the
    diff. If the description and the diff imply DIFFERENT jobs, that
    gap is your first finding.
-   THE GOAL: when the description has a `**Goal:**` line, that line
-   with the `## Problem / Motivation` and `## Not a goal` sections is its
-   frozen statement of the Goal. Take the Goal from them and never from
+   THE GOAL: when the description has a `**Goal:**` line (it sits under
+   `## Problem / Motivation`), that line with the `## Why it matters` and
+   `## Not a goal` sections is its frozen statement of the Goal. Take the Goal from them and never from
    `## What changed` or anything below it, which is rewritten each round
    to match the diff. When there is no `**Goal:**` line (an older PR),
    take it from the whole description as above.
@@ -425,7 +427,7 @@ have no shell and no second platform: you CANNOT verify a platform
 claim, the author can, and if the premise is wrong the failure is every
 user of that platform at boot with no partial service to fall back on.
 Do not soften this to a CONCERNS item; an advisory item is a note the
-author may skip, and 31 of the last 57 such notes drew no reply at all.
+author may skip, and an unconfirmed platform premise must not be skipped.
 Name the path, quote the claim, and say which platform or provider the
 author must confirm it on.
 (b) A RIDER WHOSE FIX IS ALREADY COMPLETE WITHOUT IT: lens 1 called the

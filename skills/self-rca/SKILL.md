@@ -16,6 +16,11 @@ correction, not a performance.
 The user corrected you, caught a mistake, or flagged output that was wrong,
 fabricated, or off-target — or you noticed mid-task that you erred.
 
+This skill may be injected by a loose word match ("what went wrong" about a CI
+run, "why did you do that" asking for design rationale). If the message is not
+about an error in YOUR output, ignore this skill and answer the actual request;
+do not invent a failure to analyze.
+
 ## Do this, briefly
 
 ### 1. Name the failure concretely
@@ -49,6 +54,13 @@ tone — this bucket is where the durable insight lives.
 One reusable rule, phrased to apply beyond this exact case, plus the concrete
 guardrail you will run at the equivalent decision point next time: the check,
 the tool call, or the "I don't know" you'll say instead of guessing.
+
+"Durable" means it is saved, not only said. When the lesson is a genuinely
+reusable behavior rule (it would change what you do in an unrelated future
+session), save it with `learn_add`, under that tool's own contract: one rule, no
+task facts, and only where `capabilities.memory_writes` allows it. If it is
+specific to this task, or `learn_add` refuses it, state the lesson in this reply
+and do not claim it was saved.
 
 ## Rules
 

@@ -1600,6 +1600,85 @@ def test_a_truncated_live_listing_fails_the_tick_instead_of_only_warning() -> No
     assert not (wd.FAILED_OUTCOMES & set(control_outcomes.values()))
 
 
+def _ceilinged_listing(queued: list[dict[str, Any]]) -> tuple[FakeApi, list[str]]:
+    """A runs index that serves ``queued`` the way GitHub does past its ceiling.
+
+    Newest first, filtered by ``created=<=…`` when given, ``total_count`` for the
+    filtered set, and an EMPTY page past result ``REPO_LISTING_RESULT_CEILING``.
+    """
+    api = FakeApi({}, {})
+    queries: list[str] = []
+
+    def serve(path: str) -> Any:
+        queries.append(path)
+        params = dict(urllib.parse.parse_qsl(path.partition("?")[2]))
+        if params.get("status") != "queued":
+            return {"total_count": 0, "workflow_runs": []}
+        rows = sorted(queued, key=lambda run: run["created_at"], reverse=True)
+        created = params.get("created")
+        if created is not None:
+            assert created.startswith("<="), created
+            rows = [run for run in rows if run["created_at"] <= created[2:]]
+        page, size = int(params["page"]), int(params["per_page"])
+        start = (page - 1) * size
+        if start >= wd.REPO_LISTING_RESULT_CEILING:
+            return {"total_count": 0, "workflow_runs": []}
+        return {"total_count": len(rows), "workflow_runs": rows[start : start + size]}
+
+    api.get = serve  # type: ignore[method-assign]
+    return api, queries
+
+
+def _queued_runs(count: int, *, same_second: bool = False) -> list[dict[str, Any]]:
+    return [
+        _run(10_000 + i, status="queued", minutes_ago=30 if same_second else 30 + i / 60)
+        for i in range(count)
+    ]
+
+
+def test_a_queued_listing_past_the_ceiling_is_narrowed_by_created_window() -> None:
+    """1,500 queued runs: one listing reads 1,000, so the oldest -- where an orphan
+    sits -- were never classified and every tick went red (36640617372: "queued run
+    listing reached 910 of 921"). The second window reads past the ceiling."""
+    queued = _queued_runs(1500)
+    api, queries = _ceilinged_listing(queued)
+    logged: list[str] = []
+    runs, aborted, truncated = wd.gather_all_candidate_runs(api, REPO, log=logged.append)
+    assert aborted is None
+    assert truncated == []
+    assert {int(run["id"]) for run in runs} == {int(run["id"]) for run in queued}
+    oldest = min(queued, key=lambda run: run["created_at"])
+    assert runs[0]["id"] == oldest["id"]
+    assert any("created=%3C%3D" in query for query in queries)
+
+
+def test_a_queued_listing_under_the_ceiling_reads_one_window() -> None:
+    api, queries = _ceilinged_listing(_queued_runs(300))
+    runs, _aborted, truncated = wd.gather_all_candidate_runs(api, REPO, log=lambda _l: None)
+    assert len(runs) == 300 and truncated == []
+    assert not any("created=" in query for query in queries)
+
+
+def test_a_window_that_cannot_narrow_still_fails_the_tick() -> None:
+    # 1,200 runs in one second: the second window starts at that same second and
+    # reads the same 1,000 again, so narrowing cannot reach the rest.
+    api, _queries = _ceilinged_listing(_queued_runs(1200, same_second=True))
+    _runs, _aborted, truncated = wd.gather_all_candidate_runs(api, REPO, log=lambda _l: None)
+    assert len(truncated) == 1
+    assert truncated[0].startswith("queued run listing")
+    assert truncated[0].endswith("after 2 created window(s)")
+
+
+def test_the_window_cap_bounds_the_quota_and_reports_what_it_could_not_read() -> None:
+    windows = wd.REPO_LISTING_MAX_WINDOWS
+    api, queries = _ceilinged_listing(_queued_runs(wd.REPO_LISTING_RESULT_CEILING * windows + 500))
+    _runs, _aborted, truncated = wd.gather_all_candidate_runs(api, REPO, log=lambda _l: None)
+    assert len(truncated) == 1
+    assert truncated[0].endswith(f"after {windows} created window(s)")
+    queued_reads = [query for query in queries if "status=queued" in query]
+    assert len(queued_reads) <= windows * (wd.REPO_LISTING_MAX_PAGES + 1)
+
+
 def test_the_repo_wide_paging_respects_its_page_cap() -> None:
     """A listing that always returns a full page would page forever; the cap stops it.
     Negative control: reverted code has no `_iter_repo_runs` and no repo-wide page cap,
@@ -3151,6 +3230,24 @@ def test_a_publish_or_deploy_orphan_is_observed_but_requires_a_human() -> None:
     assert api.posts == []
     summary = wd.render_summary(verdicts, outcomes, _policy())
     assert wd.OUTCOME_HUMAN_REQUIRED in summary
+
+
+def test_a_heal_exempt_orphan_names_itself_in_an_error_line() -> None:
+    # FAILED_OUTCOMES: a red tick's log names the run and the command to type.
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="pages.yml")]},
+        {1: [_job(11)]},
+    )
+    lines: list[str] = []
+    clock = _Clock()
+    _verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lines.append
+    )
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    errors = [line for line in lines if line.startswith("::error::run 1 ")]
+    assert len(errors) == 1
+    assert "gh run cancel 1" in errors[0]
+    assert api.posts == []
 
 
 def test_recovery_uses_the_cancelled_runs_own_revision() -> None:

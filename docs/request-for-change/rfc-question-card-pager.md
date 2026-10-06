@@ -3,8 +3,8 @@ title: Question Card Pager — one question on screen, and answers that carry th
 status: accepted
 author: tilakputta
 created: 2026-09-24
-last-audited: 2026-09-30
-audited-at: f4df23e53
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [13196, 15250]
 tracking-issues: []
@@ -182,6 +182,13 @@ named test.
 
 ### 3.6 `ask_question` blocks, and the answers are its tool result
 
+> **Accepted, not on main.** This section is implemented by
+> [#15250](https://github.com/kirodotdev/KiroCrew/pull/15250), which has not merged.
+> On main `ask_question` is still non-blocking and tells the agent to end its turn,
+> and no `/api/agent-ask/*` route exists. Of the tests named below, only
+> `test_non_dashboard_session_is_refused_with_options_hint` exists on main; the rest
+> are planned with #15250.
+
 This closes §1.2. The tool no longer returns at once. It opens the card on the calling
 session's own attested dashboard tab and waits, and the call's result is how the card ended.
 Nothing it produces is ever sent as a user message.
@@ -238,6 +245,7 @@ The three retired catalog keys are removed from all 12 catalogs in the same chan
 locale renders a key that no longer exists and none renders the new controls in English.
 
 §3.6 does change a contract: the one between `ask_question` and every agent that calls it.
+It is accepted but not on main (#15250), so the steps below are planned:
 
 - The tool description, `prompt.md` and the per-turn nudge drop "END YOUR TURN after
   calling" and say the call returns the answers. An agent following the old text still

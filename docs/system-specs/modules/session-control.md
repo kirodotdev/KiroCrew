@@ -34,6 +34,17 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 
+`session_adopt` and `session_release` reshape the session tree, so both go
+through `authorize_target` like every other verb and add tree checks of their
+own. Adopt refuses 409 `would_cycle` when the target is an ancestor of the
+caller, and 409 `tree_unavailable` / `tree_not_ready` when the tree cannot be
+read. Release waives the self-target refusal (`allow_self=True`), since a
+session releasing itself reaches no peer, and refuses 409 `already_root` or 403
+`not_parent`. Both wait until the tree append is durable before answering, so a
+takeover that never reached the disk is refused rather than reported. Neither
+verb is in the conductor or member grant sets (`_CONDUCTOR_DASHBOARD_GRANTS`,
+`_MEMBER_DASHBOARD_GRANTS`), and both are in `CHANNEL_AGENT_BLOCKED_TOOLS`.
+
 Each row above is one row of `mcp_dashboard.TABLE` (a `mcp_tools.table.ToolTable`):
 the row declares its route, its identity (`"strict"`), its descriptor and its
 `_run_session_*` body. The table runs `_session_control_gate` before every strict
@@ -198,11 +209,13 @@ because `meta` is one of the keys a queued prompt is persisted with while a
 callback-carrying entry is excluded from that write, so a callback would trade
 the relay's survival across a restart for a notice that cannot survive one
 either. A requeued steer keeps the stamp because the requeue copies the
-admission dict onto the new entry's meta. Four cases deliberately produce no
+admission dict onto the new entry's meta. Five cases deliberately produce no
 notice: a human-typed entry carries no sender; a session that queued onto itself
 already reads the target's own notice; a sender closed while the message waited
 has no transcript left, and the SEL row is what keeps that outcome recoverable;
-and a structurally exempt entry is never dropped at all. The report is
+a reused slot key now holding a DIFFERENT occupant (`origin_tab` does not match
+the slot's `_tab_id`) is treated as the sender being gone; and a structurally
+exempt entry is never dropped at all. The report is
 best-effort and does not gate the drop — withholding the message is the
 authorization decision, and it must not depend on the notice landing.
 
@@ -382,9 +395,9 @@ window and replaces it with a narrower one: the steer RPC suspends on
 
   It reaches one level further down. `directive_user_origin` exempts a queue entry
   from the drain's LINKED drop because "the author typed into the session's own
-  surface", and the requeue used to derive that from the slot — sound while the
-  composer was the only caller of `steer_into_running_turn`, wrong as soon as
-  `session_send` became the second. Provenance is now REPORTED by the caller
+  surface", and deriving that from the slot would be wrong because
+  `steer_into_running_turn` has more than one caller (`session_send` is one).
+  Provenance is REPORTED by the caller
   (`user_origin`) and recorded per in-flight steer, defaulting to false so a future
   caller cannot acquire the human's exemption by saying nothing. The composer keeps
   it; a peer's steer does not.
@@ -410,9 +423,9 @@ part of creation (#6118). The caller's OWN slot is filed the same way with
 `chat_folder_file_self` (folder tools, same server): it takes no `session`
 argument, resolves the target from the verified caller key, and so can be
 granted where `chat_folder_move_session` is withheld — a conductor files itself
-in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing used to be a second call
-(`chat_folder_move_session`), and the window between the two was a real defect
-path: a folder deleted in between left the session unfiled with the create
+in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing is
+part of creation rather than a second call (`chat_folder_move_session`), because a
+folder deleted between two calls would leave the session unfiled with the create
 already done. The handler assigns `folder_id` inside the same synchronous window
 that configures the slot, holds `suspend_slots_push` across the whole
 allocation-to-persist span (so the slot's first broadcast frame already shows it
@@ -424,6 +437,12 @@ loses nothing — existence is confirmed read-only under the folder-store lock
 (`read_folders`) before the allocation, and the move path's Model-B un-hide runs
 only after the filing has landed, so a refused create leaves no folder-tree
 mutation behind.
+
+Filing into a folder also gives the child that folder's nearest inherited project
+directory as its project, as dashboard-native creation does; the workspace and
+memory boundary stay the caller's. An invalid folder project refuses the create
+with 400 `folder_project_invalid`, and a folder whose project changes while the
+creation is in flight refuses with 409 `folder_target_changed`.
 
 The path walk itself never leaves an empty or duplicate folder behind. When the
 `folder` path still has segments to create, `session_create` first posts the
@@ -578,9 +597,8 @@ records (see `crew-log-emitter.md`).
 **Approval posture** — the caller's `_trust` and `_trust_reads` transfer, so a
 trusted operator's dispatched worker does not stall on a prompt nobody is
 watching. This is the posture `parent_trusted` already gives a `spawn_run`
-subagent, which reads the parent's stored `"auto"` policy; a `session_create`
-child previously started from `_ChatSlot.__init__`'s empty defaults, so the same
-delegation behaved differently depending only on whether it got a sidebar tab.
+subagent, which reads the parent's stored `"auto"` policy, so the same delegation
+behaves the same whether or not it gets a sidebar tab.
 No session-store write happens at creation: the child has no ACP session yet
 (`set_approval_policy` no-ops on a missing session), and `chat_runner` already
 derives the persistable policy from `_trust` on every session create/resume, so
@@ -654,7 +672,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
-| Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller is not ownership-fenced. Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
+| Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`: an owner-rooted chain is admitted; a cron-, channel- or member-rooted chain, or a broken one, is fenced). Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
 | Target is the caller | 403 | A session controlling itself has no exit |
 | Target is unattended (`cron-*`, `workflow-*`) | 403 | A `workflow-<run_id>` slot is display-only and a cron's turns are driven by a schedule. Not exempted for a cron CALLER: a cron may create and drive its own children, never another job's tab |
@@ -724,7 +742,7 @@ The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
 a wait early") binds every caller class, owner sessions included, and
 `session_reload`, whose creator fence binds every caller class the same way.
 
-#### The strict-internal surface admits a member DM slot, not every scoped caller
+#### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 
 The five routes sit behind `_require_internal`, which first refuses anything
 without a valid `X-Internal-Secret`. On the authenticated branch,
@@ -733,8 +751,9 @@ off-loop through `internal_memory_scope`, without opening learned memory:
 
 - an **owner / Global-V1 caller** (no store scope) falls through to the handler,
   exactly as the surface behaved before member dispatch existed;
-- a **crew-member DM slot** (a `member-*` session key) is ADMITTED while the
-  surface is reachable for it — `agent.member_dispatch` OR the global
+- a **crew member** is ADMITTED in either spelling — a `member-*` DM slot, or an
+  ordinary chat slot bound to that member's private V2 store
+  (`member_admitted_to_scoped_surface`) — while the surface is reachable for it — `agent.member_dispatch` OR the global
   `agent.session_control` switch — so its request reaches `session_control.py`
   where the creator-ownership fence above does the real gating;
 - **every other scoped caller**, including a member while BOTH switches are
@@ -814,9 +833,11 @@ A private member store is reachable on two authorities and no others:
   record and against a stale vouched entry alike. `slot.agent` and
   `slot.memory_store` remain inadmissible, and not only because a later write can
   change them: both are rehydrated from that same record on restore;
-- the caller is not ownership-fenced, which is the owner's own dashboard session.
-  This keeps the shipped capability: an owner reopening member conversations and
-  dispatching member workers.
+- the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`, the
+  live `_created_by` walk below): the owner's own dashboard session, or an agent
+  chain rooted in it. This keeps the shipped capability: an owner reopening member
+  conversations and dispatching member workers, directly or through a conductor
+  started in their own tab.
 
 The vouched half is held in this process, and the gateway also writes a copy of each
 vouch to `vouched-executions/` at the data-home root. Every sandbox masks that leaf and
@@ -829,11 +850,13 @@ agrees with, or any other key whose disk copy, durable record, privacy mode and 
 member's configured store all agree. A session that rewrites its record to name a peer's
 store matches neither source and stays refused.
 
-For an operator, the recovery is one owner action and nothing at restart time: a member
-session whose worker dispatch answers `memory_delegation_denied` after a gateway restart
-regains it as soon as its owner re-selects that member's agent on the slot, which binds
-afresh through the durable path and vouches again. The same action clears a refusal
-caused by cap eviction, since both reach the admission as an absent entry.
+For an operator, recovery after a gateway restart or a cap eviction is normally
+automatic: own-store dispatch self-heals at the next gate-verified admission, when a
+member DM key agrees with its record and the config, or the durable
+`vouched-executions/` copy agrees (`revouch_at_verified_admission`). Only when neither
+source agrees does a member session's worker dispatch keep answering
+`memory_delegation_denied`; the fallback is the owner re-selecting that member's agent
+on the slot, which binds afresh through the durable path and vouches again.
 Re-selecting the agent the slot already names is enough: the owner-facing switch
 records the selection with `replace`, so it re-binds rather than short-circuiting on an
 unchanged choice. Closing a tab is NOT such a trigger — a non-destructive close and an
@@ -855,9 +878,9 @@ releases its own entry at teardown where it has one, and the cap is the backstop
 the producers that do not. Passing the cap evicts the LEAST RECENTLY USED entry — a
 successful own-store admission refreshes its entry, so recency follows USE rather than
 birth and churn from the teardown-less producers falls on idle keys instead of on the
-member session still dispatching through its own. Eviction refuses that session's
-own-store admission until it binds again: the same deferral a restart
-carries, in the same fail-closed direction, and it never touches a durable record.
+member session still dispatching through its own. Eviction drops only the in-process entry: the next gate-verified admission re-vouches
+from the durable copy as after a restart, the same fail-closed direction when the
+sources disagree, and it never touches a durable record.
 Overflow is counted and reported, so an evicted entry is distinguishable from one
 never vouched — both read as absent. A refusal also records its CAUSE server-side —
 authority this process does not hold, against a record that disagrees with what it
@@ -872,10 +895,11 @@ truncated — a truncated identity would compare equal to the session that owns 
 shortened form. The retained key needs no bound of its own: the vouch runs strictly
 after the durable write, so the map cannot hold a key the record cannot carry.
 
-Everything `_caller_is_ownership_fenced` already treats as untrusted is refused
-with `memory_delegation_denied` (403): a cron slot, a member DM slot naming a PEER
-member's agent, and anything either of them created — the fenced caller's unfenced
-deputy. An app-token caller never reaches the route (`internal_secret_required`)
+A member caller (fenced through the carried member verdict) and every caller whose
+delegation lineage `_delegation_lineage_fenced` fences are refused with
+`memory_delegation_denied` (403): a cron slot, a member DM slot naming a PEER
+member's agent, a channel-linked creator, anything any of them created — the
+fenced caller's unfenced deputy — and a chain whose lineage cannot be walked. An app-token caller never reaches the route (`internal_secret_required`)
 and an app-scoped one cannot create at all. The refusal names neither the store nor
 the member, so it cannot confirm a guessed agent name.
 
@@ -1021,15 +1045,17 @@ injection would strip a member thread of its tools mid-conversation. On the
 KAS backend the wire agent projection additionally grants the server in
 `tools` plus the member's approval-free dashboard verbs in `allowedTools`
 (ceiling-filtered like every other grant): `_MEMBER_DASHBOARD_GRANTS`, the
-conductor's read/create set plus `session_send` and `session_stop` — the
-write verbs are safe to auto-approve for a member *specifically* because the
+conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `chat_folder_tree`,
+`chat_folder_create`, `chat_folder_file_self`, `session_create`,
+`session_read_message`, `session_status`) plus `session_send`,
+`session_broadcast` and `session_stop` — the write verbs are safe to auto-approve for a member *specifically* because the
 `created_by` ownership fence above bounds them to worker sessions the member
 itself opened. Member sessions also bypass the provider warm pool
 (`bypass_member`): a pooled child was spawned with no session key on the
 default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
-claude seam, KAS, codex and opencode); kiro-cli v2 reads its template from disk and
+claude seam, KAS, codex, opencode and goose); kiro-cli v2 reads its template from disk and
 exposes no per-session channel, so a member session on it runs as plain chat —
 the tools are simply not mounted, never mounted-and-refused. Codex qualifies
 because `providers/mirrors/codex.py` already gives it a per-session array and
@@ -1042,8 +1068,6 @@ BACK from the harness's own config resolution before the first prompt, so a sess
 that cannot establish the asking posture is refused there too, and
 `providers/mirrors/opencode.py` documents `permission_surface_owned` as
 accepted-and-ignored for exactly that reason.
-
-Which code appends the entry depends on who composes the array.
 
 ### The crew panel rides the same vehicle
 
@@ -1092,11 +1116,14 @@ is never both named in `tools` and pre-approved on the session that is not mount
 it.
 
 
+Which code appends the entry depends on who composes the array.
 `AcpClient._append_member_dispatch_server` serves the backends whose array the
-CLIENT builds — claude's and opencode's — and honours the permission-surface
-precondition there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`,
-declared and not enforced, so owning `settings.local.json`
-(`_claude_settings_authored`) stands in for the read-back this core does not have,
+CLIENT builds — claude's, opencode's and goose's (none is in
+`ACP_BACKENDS_ACP_RUNTIME`) — and honours the permission-surface precondition
+there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`, declared and
+not enforced, so `_permission_surface_governed` (this client authored
+`settings.local.json`, or a sibling's file passed share validation) stands in for
+the read-back this core does not have,
 while a harness whose routing is enforced must not be held to a file it never writes.
 A runtime-served harness never reaches that helper: codex's array comes from
 `AcpRuntime._mirrored_session_mcp`, and `create_session` / `load_session` append the
@@ -1797,15 +1824,21 @@ refusal discards the built slot with nothing durable to undo and a clear that
 cannot land refuses `reopen_failed` instead of publishing a tab that would not
 restore. The existence and `created_at` identity barrier that guards the
 hook-less resume is re-run after the hook's last await, again on the
-verification read after the deferred clear, and a final time synchronously after
-the last await, so a session deleted or delete-and-recreated inside the hook
+verification read after the deferred clear, and a final time OFF the loop
+(`asyncio.to_thread(log.get_metadata_status, ...)`, so its bounded retries pause
+and outlast a Windows sharing-violation hold on a just-rewritten file) before the
+second hook pass, so a session deleted or delete-and-recreated inside the hook
 window is refused `resume_session_deleted` rather than published over the
 replacement (an unreadable answer on that last read refuses `resume_conflict`
 rather than falling through); the marker rollback compares `created_at` too, so it never archives
-a replacement. Because the deferred clear and its verification read are awaits
-after the hook's store-backed probes, the hook runs a second time after them as
-the last awaiting act, so a channel binding recorded in the store during those
-awaits is still refused. The store-free answers (slot fields, caps) are re-asserted once more in a
+a replacement. Because the deferred clear, its verification read and that final
+identity read are awaits after the hook's store-backed probes, the hook runs a
+second time after them as the last awaiting act, so a channel binding recorded
+in the store during those awaits is still refused. After that last await no file
+is read: two lock-free witnesses stand in for it, the key's history-cache
+invalidation generation (snapshotted before the off-loop read; every completed
+delete bumps it) and the in-flight delete marker, and either one refuses
+`resume_conflict` (409) immediately before the publish. The store-free answers (slot fields, caps) are re-asserted once more in a
 synchronous `final_check` after the core's last await, immediately before the
 publish; a refusal there restores the marker while the construction mark still
 reserves the key, and the restore is confirmed by a re-read (one retry on a
@@ -1865,8 +1898,9 @@ that agent's `allowedTools` — naming individual tools leaves the session verbs
 `hooks.on_tool_call`, while naming the whole server auto-approves them, because
 `_mcp_pattern` maps a bare `@server` entry to a one-level glob and
 `is_tool_in_allowlist` checks `@server` before `@server/<tool>`. The shipped
-conductor is in the second class for `session_create` and `session_read_message`
-(`_CONDUCTOR_DASHBOARD_GRANTS`), which is its stated operating model: its patrol
+conductor is in the second class for the verbs in `_CONDUCTOR_DASHBOARD_GRANTS`
+(`agent.py`: the folder tools, `session_create`, `session_read_message` and
+`session_status`), which is its stated operating model: its patrol
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the
 folder tools individually.

@@ -48,8 +48,8 @@ has it on `PATH`; a bare shell may not), build the venv with it instead: same
 deps, but site-packages are copy-on-write clones out of one global cache, so on a
 reflink filesystem (XFS with reflink, btrfs, APFS) each extra venv costs ~10 MB
 of unique disk and ~10 s instead of ~400 MB and ~1 min; without reflink uv copies,
-so you keep the speed and lose the disk saving. This is the
-recipe `kirocrew pod provision` runs when `KIROCREW_PROVISION_USE_UV=1` is set
+so you keep the speed and lose the disk saving. `kirocrew pod provision` runs
+the same two steps (without the `[voice]` extra) when `KIROCREW_PROVISION_USE_UV=1` is set
 (opt-in for now; design record: the "Shared Dependency Cache for Worktrees" RFC
 under docs/request-for-change):
 ```bash
@@ -71,7 +71,7 @@ Making a worktree live swaps code behind the same URL and REAL data home,
 including DB and sessions. Only one can be live at a time. This is not preview
 isolation: get explicit authorization for a live cutover or migration, and return
 to the clean baseline afterwards. The default home is `~/.kiro/crew`;
-`KIROCREW_HOME` overrides it and legacy `~/.kirocrew` installs auto-migrate.
+`KIROCREW_HOME` overrides it. A legacy `~/.kirocrew` does not auto-migrate.
 
 ## Verification
 
@@ -95,8 +95,8 @@ Minimum manual checks, not a replacement for that floor:
 
 ```bash
 python3 scripts/local-gate.py
-isort --check-only src/kiro_crew test
-flake8 src/kiro_crew test
+isort --check-only src/kiro_crew test conftest.py xdist_budget.py
+flake8 src/kiro_crew test conftest.py xdist_budget.py
 mypy src/kiro_crew/
 cd website
 npx tsc -p tsconfig.app.json
@@ -111,13 +111,12 @@ cd ..
   free memory and concurrent runs; explicit `-n <N>` bypasses it. Check host
   headroom before a full suite. The gate scripts pass their own bounded `-n`.
   A scoped subagent may use serial targeted tests; the parent owns aggregate gates.
-- To omit coverage during iteration without dropping the parallel safeguards:
-
-  ```bash
-  python -m pytest -q --override-ini="addopts=--ignore=build/private -n auto --dist loadgroup --max-worker-restart=2"
-  ```
-
-  Never a bare `--override-ini=addopts=` for the multi-test gate.
+- Coverage is off by default (`setup.cfg` addopts carries no `--cov`), so no
+  `--override-ini` is needed to skip it. An override REPLACES the whole addopts
+  list; if you must use one for a multi-test run, keep `--ignore=build/private
+  -p no:platformdirs -n auto --dist loadgroup --max-worker-restart=2
+  --timeout=120`. Never a bare
+  `--override-ini=addopts=` for the multi-test gate.
 - Capture logs under `$KIROCREW_SCRATCH`; check the command's exit code, not a
   pipe's last command. A green `tail` does not mean a green test.
 - Reproduce a failure on a clean `origin/main` worktree before calling it
@@ -176,8 +175,9 @@ Flags belong in the RUNNING instance's `$KIROCREW_HOME/config.json`, not in code
 The live gateway uses the shared home; `dev-backend.sh` uses `.kirocrew-dev/`;
 each pod has its own home. Editing production config cannot enable a preview
 flag. Check the right instance's flag before blaming the bundle. Config's live
-fingerprint cache picks up edits without a restart; live flags persist across
-live-worktree switches.
+fingerprint cache picks up edits without a restart, except fields marked
+`restart=True` (the schema's `requiresRestart`), which need that instance
+restarted; live flags persist across live-worktree switches.
 
 Green gates are the floor. Preview is optional where unit coverage suffices;
 when verifying changed UI, load `web-verify` and inspect the rendered change.
@@ -250,9 +250,10 @@ A fix-and-push monitoring scope must be explicit; absent it, confirm each push.
 Never push to a protected base branch. For authorized publication, follow
 kirocrew-prepare-pr's SHA-pinned force-with-lease protocol and `single_commit` handling,
 and AGENTS.md's at-most-two-commit limit; never use an implicit lease or interactive
-git. No direct merge: hand back
-review-ready work, or let kirocrew-prepare-pr's Phase 4 arm auto-merge, which still
-waits for the required approval and every check.
+git. No direct merge: hand back review-ready work, or let kirocrew-prepare-pr's
+Phase 4 arm auto-merge as its Mode table decides. Any hold turns that off,
+including "don't merge", "review only", or a conductor's or work brief's hold.
+Auto-merge still waits for the required approval and every check.
 
 ## Cleanup and comments
 

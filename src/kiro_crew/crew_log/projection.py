@@ -45,7 +45,7 @@ reader has to know which kind of fold it is holding. The ``ledger`` fold is keye
 by SLOT, and a slot owns one ACP session id at a time rather than for its whole
 life, so the record it answers for is spread over a unit per id the slot ran
 under. It therefore joins those units (:func:`fold_slot`), which is a wider read
-than the five panel folds make and is why it is not one of them: the growth push
+than the six panel folds make and is why it is not one of them: the growth push
 and the side panel address a session, and a slot-wide value pushed under one
 session's id would report a partial answer as the whole one. The units it joins
 are still exactly one slot's own, so nothing here reads across slots.

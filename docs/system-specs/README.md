@@ -23,8 +23,9 @@ Two root-level specs sit outside the tiers:
 - [oss-fork-boundaries.md](oss-fork-boundaries.md) — what this public fork must never
   re-introduce, the modules that are deliberately inert, and the fork's intentional UX
   divergences.
-- [post-launch-removals.md](post-launch-removals.md) — a cross-module ledger of what
-  was deliberately removed and why it must not come back.
+- [post-launch-removals.md](post-launch-removals.md) — the migration scaffolding to
+  delete once no legacy data can exist (today only the legacy `~/.kirocrew`
+  security-path spelling).
 
 ## Related, outside this tree
 

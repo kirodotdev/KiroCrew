@@ -70,11 +70,15 @@ register it in `registry.py`.
   point to kiro-cli's construction path (harness-parity H13). Warm a cache on the
   spawn path.
 - **`session_projection()`** — the structured face the CLIENT actually calls:
-  the wire params plus any obligation the same spec parse hands the client
-  (`SessionProjection.denied_tools`, the `(server, tool)` pairs the client must
-  refuse when the backend asks permission for them). The default returns the
-  wire params with nothing off-wire, so a mirror that has no such obligation
-  implements only `session_params()`. A mirror that does (codex) overrides this
+  the wire params plus every obligation the same spec parse hands the client:
+  `SessionProjection.denied_tools` (the `(server, tool)` pairs the client must
+  refuse when the backend asks permission for them), `disabled_servers` (servers
+  switched off whole) and `restricted_servers` (servers withheld because the spec
+  narrows them per tool). The client's member dispatch and panel appends read the
+  last two so they never re-add a server the projection withheld. The default
+  returns the wire params with nothing off-wire, so a mirror relying on it reports
+  neither set and that append fails open for it; a mirror that has no such
+  obligation implements only `session_params()`. A mirror that does (codex) overrides this
   and defines `session_params()` as its `.params`, so the two faces cannot drift.
   Also the seam the gateway's pooled stubs come through (`stub_elements`): the
   client's shared append is inert for every mirrored backend, so a mirror that

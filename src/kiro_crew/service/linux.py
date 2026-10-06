@@ -1051,9 +1051,11 @@ def install() -> apparmor.ProfileOutcome:
     of letting a CalledProcessError surface.
 
     Returns the AppArmor profile outcome for the caller to report. The profile is
-    installed BEFORE systemd starts the unit: the directive only takes effect at
-    service start, so loading it afterwards would leave the first gateway process
-    unprofiled and every agent spawn failing closed until the next restart.
+    installed BEFORE systemd starts the unit: the unit carries no
+    ``AppArmorProfile=`` line, and the path-attached profile is applied by the
+    kernel at ``execve()`` of the launcher, so loading it afterwards would leave
+    the first gateway process unprofiled and every agent spawn failing closed
+    until the next restart.
     """
     # Fail early and cleanly if we cannot escalate: without this the first
     # `sudo` call raises FileNotFoundError, which controller.install_service

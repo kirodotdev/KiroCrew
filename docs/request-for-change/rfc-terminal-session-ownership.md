@@ -3,8 +3,8 @@ title: Terminal session ownership - one browser owner per PTY
 status: draft
 author: Pearce Kieser, with Codex
 created: 2026-09-01
-last-audited: 2026-09-09
-audited-at: 2188f029d
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 7649
 implementation-prs: [8863]
 tracking-issues: [7638, 5656]
@@ -13,6 +13,12 @@ superseded-by: []
 ---
 
 # RFC: Terminal session ownership - one browser owner per PTY
+
+Status: draft (no maintainer acceptance recorded). Phase 1 is on main
+([#8863](https://github.com/kirodotdev/KiroCrew/pull/8863)): every terminal route
+in `src/kiro_crew/dashboard/handlers/terminal.py` requires the dashboard owner
+(`require_owner_dashboard_request`), and displaced handlers are fenced. Phases 2
+and 3 are not built.
 
 Everything measured below was rechecked at `2188f029d`. Paths are repo-relative.
 
@@ -525,7 +531,7 @@ browser elections, or multi-view terminal fanout.
 
 Every phase is independently shippable and independently abandonable.
 
-### Phase 1 - authorize terminal access and fence displaced handlers
+### Phase 1 - authorize terminal access and fence displaced handlers (on main, #8863)
 
 Call the shared `is_owner_dashboard_request` gate (through
 `require_owner_dashboard_request`) on every terminal route and WebSocket upgrade

@@ -32,6 +32,17 @@ workflows and the base-ref profile's read-only local reviewer semantics stay
 unchanged. Worktree-dev and babysit point to this contract; general monitoring
 does not depend on the Kiro Crew repository or on kirocrew-prepare-pr being installed.
 
+### Runner and service failures are not code failures
+
+A job that fails in `Set up job` with `Failed to resolve action download info.`
+and `The HTTP request timed out after ...` never ran a step of this repository:
+GitHub could not hand the runner its actions. Treat it as a service outage, not
+as a verdict on the change: rerun the failed jobs once, after the GitHub status
+page shows Actions healthy, and change no code. A second identical failure at
+the same SHA is still the outage, so wait instead of rerunning in a loop. Any
+other `Set up job` failure is read from its annotations before anything is
+rerun.
+
 ## Shape
 
 CI is a **fan-out of independent workflows that one aggregator folds into a single
@@ -145,9 +156,10 @@ Three structural facts explain most of the rest:
   gateway on macos-15 alone; `build.yml` skips the wheel and the Windows
   installer and, after its seconds-long matrix resolver, builds and
   smoke-installs the macOS desktop package alone, per commit and never evicted,
-  because the merge group proved everything else on that exact tree. Two small
-  workflows still run on that push unchanged -- `main-ratchet-audit.yml`'s
-  gates and `internal-content-scan-gate.yml` -- as they did before. Unsetting
+  because the merge group proved everything else on that exact tree. Three small
+  workflows run on that push whatever the variable says --
+  `main-ratchet-audit.yml`'s gates, `internal-content-scan-gate.yml` and
+  `merged-readiness-audit.yml`. Unsetting
   the variable together with unticking the queue restores the full push
   matrix. `fast-gate.yml` and the per-commit concurrency group follow the same
   variable: with it set, `fast-gate.yml`'s push run exists but every job skips
@@ -165,6 +177,18 @@ Three structural facts explain most of the rest:
   plus a slow hosted pickup). The poll never reruns a lane, for the reason
   given above: a rerun holds every group queued behind the failing one, and a
   build depth beyond ~40 does not shorten the queue.
+- **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
+  bypass actors can, and a `pending` readiness is not a judgement about a red
+  lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
+  last push and #15150 39 min into a run whose Windows shard 2 then failed;
+  both turned main red (#12091 reverted the first, #15633 repaired the
+  second), and #11594 merged over a failing readiness and left main's Coverage
+  Gate red for every open PR. A revert or fix-forward of a red main is the one
+  exception, and its title should say so. `merged-readiness-audit.yml` runs
+  `scripts/audit_bypass_merge.py --commit <sha> --annotate` on every push to
+  main: it reads the merged PR head's readiness as of the merge and puts a
+  warning naming the PR on that run, never a red. `--pr <n>` answers the same
+  question for any merged PR, exiting 1 on a bypass.
 - **A fork PR is aggregated like any other and can reach a passing readiness
   state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
 
@@ -336,6 +360,26 @@ issue" step, the hand-copied ancestor of this watcher) and `gui-user-test.yml`
 when a listed name matches no workflow -- a `workflow_run` trigger on a misspelt
 name never fires and never says so.
 
+### A red that is not your diff: external, or self-inflicted?
+
+Before re-running, read the failing step's `##[error]` line and match it here.
+A signature counts as external only if it names a host or service outside this
+repository. When the refusal comes from our own configuration, it is a defect,
+even if it looks like an outage.
+
+| Signature in the failing step | What it is | Bound |
+|---|---|---|
+| `The runner has received a shutdown signal` / `lost communication with the server` | Runner loss (hosted or CodeBuild). If it keeps hitting the same heavy shard, suspect memory pressure before blaming the host. | Re-run the failed jobs once. A second loss on the same job is a resource question, not luck. |
+| `Unexpected HTTP response: 429` in `setup-python` | Tool download throttled. CodeBuild has no tool cache, so every job downloads Python at the same moment (Node is pre-seeded by `seed-node-tool-cache`, Python is not). | Re-run once. A repeat means the Python download needs the same seeding. |
+| `E: Failed to fetch ... Mirror sync in progress?` before `could not install lsof` | An apt index, often a third-party list, caught mid-sync. `run-as-runner` retries the install itself. | That composite carries the bound. A failure after its retries is a real mirror outage. |
+| `API rate limit exceeded for installation` (or the fail-closed wrappers that quote it: `Could not read this PR`, `could not query open PRs`, `could not publish it`) | The shared installation token is drained. This is the **primary** hourly limit, so a retry within seconds cannot succeed. | Wait for the reset. Do not mass re-run, because each re-run spends the same quota. A step that lists PR files through the API instead of local git is a defect: `test/test_paths_filter_local_git.py`. |
+| `curl: (7) Failed to connect to <host> port 443 after 1 ms` behind `egress-policy: block` | **Self-inflicted**: our own harden-runner allowlist refused the host. A 1 ms connect failure is a local refusal, not an outage. | Never re-run. Add the host the bootstrap actually fetches; `TestForkLaneBubblewrapBootstrapEgress` covers the claude-code-action install. |
+| `result is_error:true` with `num_turns: 1` and `total_cost_usd: 0` | **Self-inflicted** until shown otherwise: the model id is not invokable by this role, or the role lacks `bedrock:InvokeModelWithResponseStream`. A real provider outage spends tokens. | Never re-run. Revert the model change, or fix the role. Before re-landing a model bump, run a real invocation with the lane's role (the revert in `a8f13b7324` records this requirement). |
+| `produced no [<LANE>] marker` after an SDK `result` with `is_error: false` | The model finished without emitting its contract marker. The lane failing closed is correct. | Re-run once. If it repeats on the same head, the prompt or extraction needs work. |
+
+The rule: re-run at most **once** for an external signature. Never re-run a self-inflicted one.
+A second identical failure counts as evidence, not bad luck.
+
 ### Code ownership
 
 `.github/CODEOWNERS` assigns every repository path to
@@ -458,6 +502,17 @@ the recorded identity omits the line number and a reflow keeps it.
 Every job here is blocking. Every job that costs real runner time also `needs:`
 `await-fast-gate`, so on a red gate it does not run at all.
 
+The test jobs install with `uv pip install -e ... --group dev` and no lock
+file, so a transitive dev dependency can change between two runs of the same
+commit. One that starts publishing a `pytest11` entry point is imported by
+pytest before collection, and an import error there ends every shard with zero
+tests and an annotation that reads only `exit code 1`: platformdirs 4.12.0 did
+this to all ten Windows pytest jobs of main run 36258468278 (2026-09-26) until
+#14268 pinned `platformdirs<4.12` and added `-p no:platformdirs`. DRAFT, not
+yet decided: install from a committed constraints file, or set
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` with the plugins this suite uses named in
+`addopts`, so the next publisher cannot repeat it.
+
 | Job | What it enforces |
 |---|---|
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
@@ -475,11 +530,12 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `frontend-lint` | `tsc -p tsconfig.app.json`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
-| `electron-test-windows` | Runs the native Windows port-owner identity tests against real NTFS junction and `Win32_Process` behavior; no npm install is needed because the tested modules use Node's standard library only |
+| `electron-test-windows` | Runs the native Windows port-owner identity tests against real NTFS junction and `Win32_Process` behavior, and `find-bin-real-ssh.test.js`, which resolves the in-box OpenSSH client through the kernel's real `\SystemRoot` link; no npm install is needed because the tested modules use Node's standard library only |
 | `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks |
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
+| `wheel-closure` | "Install Requires Wheel Closure (x86_64 / aarch64)". Resolves `setup.cfg`'s `install_requires` as wheels only at the manylinux2014 / `manylinux_2_17` floor for CPython 3.12 (`scripts/ci/install_requires_closure.py` evaluates each environment marker for the target arch, since pip evaluates markers against the runner, then `pip download --only-binary=:all:`), so a sdist-only dependency that the wheel-only installers (`cli.sh`, `install.sh`, the self-update venv) would refuse on old glibc fails here instead of only on users' hosts. Path-filtered on `setup.cfg`, `pyproject.toml` and that script; hosted `ubuntu-latest`. Advisory: not a required check |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `e2e` | Runs `python scripts/ci_e2e_parallel.py`, which awaits `python setup.py test_e2e`, the dedicated Memory UI pytest command, and `npm --prefix website run i18n:render` in parallel. **CodeBuild-hosted large runner where eligible**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix`. Details: [e2e-gate.md](e2e-gate.md) |
@@ -806,7 +862,7 @@ Where the coverage went:
 | Lane | Where | Blocking? |
 |---|---|---|
 | `backend-test-macos` (full suite, 4 shards) | `platform-tests.yml`: called by `nightly.yml` at 06:00 UTC, plus `workflow_dispatch` against any branch | Holds the nightly **publish** jobs, never the builds — the artifacts are the evidence a fixer works from. Maintains one tracking issue (`platform-tests-macos` label) carrying the failing node ids and the pull requests merged in the last 24h |
-| The same suite, on demand | `macos-on-demand.yml`, `pull_request`, calls `platform-tests.yml` against the PR head; a Linux `decide` job runs it when the diff touches a darwin-sensitive path, **or** the PR carries the `ci:macos` label, **or** the head SHA falls in a 1-in-20 sample (`16#${HEAD_SHA:0:8} % 20`, deterministic per commit) (acts immediately -- the workflow listens for `labeled`). Over those three sits a CEILING: the path and sample switches are refused while this lane already holds `LANE_MAX_LIVE_RUNS` (4) live runs of the hosted macOS pool (a run holds one job per shard, so the ceiling is expressed in runs but felt in jobs, and it moves with the shard count), because an uncapped lane can hold nearly every in-progress hosted macOS job, leaving its own shards waiting many hours for a runner while `build.yml` and `release.yml` queue behind it. A capped run is skipped, not queued, so the ceiling bounds demand and settles the lane at about six verdicts an hour -- a timely verdict for a few pull requests instead of a many-hour one for all of them, with the nightly still covering every merge. The `ci:macos` label is never refused, and neither is a re-run, so a retry cannot turn a red lane into a skip | Advisory. It is a separate workflow ON PURPOSE: a macOS job inside `ci.yml` holds that workflow's completion even with `continue-on-error`, so it would still hold readiness. Readiness evaluates neither this workflow nor its check |
+| The same suite, on demand | `macos-on-demand.yml`, `pull_request`, calls `platform-tests.yml` against the PR head; a Linux `decide` job runs it when the diff touches a darwin-sensitive path, **or** the PR carries the `ci:macos` label, **or** the head SHA falls in a 1-in-20 sample (`16#${HEAD_SHA:0:8} % 20`, deterministic per commit) (acts immediately -- the workflow listens for `labeled`), **or** an added line in a `*.py`/`*.sh` file uses a Linux-only primitive (`LINUX_ONLY_PRIMITIVES` on the verdict step: `/proc/`, GNU `stat -c`, `O_PATH`, `RLIMIT_AS`, `surrogateescape`), wherever the file lives; an unreadable diff leaves that switch off with a warning. Over those four sits a CEILING: the path, sample and content switches are refused while this lane already holds `LANE_MAX_LIVE_RUNS` (4) live runs of the hosted macOS pool (a run holds one job per shard, so the ceiling is expressed in runs but felt in jobs, and it moves with the shard count), because an uncapped lane can hold nearly every in-progress hosted macOS job, leaving its own shards waiting many hours for a runner while `build.yml` and `release.yml` queue behind it. A capped run is skipped, not queued, so the ceiling bounds demand and settles the lane at about six verdicts an hour -- a timely verdict for a few pull requests instead of a many-hour one for all of them, with the nightly still covering every merge. The `ci:macos` label is never refused, and neither is a re-run, so a retry cannot turn a red lane into a skip | Advisory. It is a separate workflow ON PURPOSE: a macOS job inside `ci.yml` holds that workflow's completion even with `continue-on-error`, so it would still hold readiness. Readiness evaluates neither this workflow nor its check |
 | Real gateway boot on macOS | `ci.yml`'s `e2e-boot-matrix`, the only job on the push-to-main path; `nightly.yml`'s `pod-scenarios` | Blocking on main / holds nothing in the nightly |
 
 `test/test_macos_platform_tests_gate.py` pins all of it, including the property that

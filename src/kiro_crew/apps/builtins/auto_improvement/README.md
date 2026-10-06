@@ -18,8 +18,15 @@ engineering overview; the manual is the operator's guide.
 
 ## How a run works
 
-**Phase 1 — build and prove the ruler.** Calibrate a noise band from ~30
-baseline repetitions (`band = max(2σ, floor)`), then run a **canary**: a known
+A run takes one of two tracks. The default is the **bug track**
+(`config.json` `track` absent or `"bug"`): it skips Phase 1, because its
+RED→GREEN regression gate (D′ below) is the verdict and there is no noise band to
+calibrate. The **perf track** runs only when `config.json` sets `track` to
+`"perf"` by hand; `track` is not writable through `PUT /config` or the UI.
+
+**Phase 1 (perf track) — build and prove the ruler.** Calibrate a noise band from
+baseline repetitions (default 5, set by `calibrationReps` and clamped to 2–10;
+`band = max(2σ, floor)`), then run a **canary**: a known
 win that must clear the band. If the canary fails, the harness cannot measure and
 the run **halts** rather than optimizing noise. A host-pollution check also runs:
 state is hashed before and after booting the measurement runtime, and any drift
@@ -76,7 +83,8 @@ not fill the chat surface with agent cards.
 
 ```
 app.json            manifest (opt-in; defaultEnabled false)
-backend/
+backend/            notable modules (the directory holds more, e.g. runner,
+                    crew, pr_watchers, mcp_server):
   routes.py         in-process aiohttp routes under /api/apps/auto-improvement
   store.py          artifact + session-record layout under the app data dir
   pr_checks.py      PR status, CI checks, and the watcher verdict
@@ -84,7 +92,7 @@ spine/              the target-agnostic engine (driver, gate, measurer, keeper�
 profiles/
   github_repo/      the GitHub target profile (PR recipe lives here)
 skills/             ai-discover, metric-design
-agents/             discovery, pr-author
+agents/             discovery, pr-author, scout, engineer
 docs/MANUAL.md      user manual — how to run it, read findings, and configure it
 docs/PORT_PLAN.md   why the port is shaped the way it is
 ```
@@ -101,4 +109,5 @@ python -m pytest src/kiro_crew/apps/builtins/auto_improvement/tests/ \
   --override-ini="addopts="
 ```
 
-These are not in the default `testpaths`, so they need an explicit path.
+They are in the default collection (`setup.cfg` `testpaths` includes
+`src/kiro_crew/apps/builtins`); the explicit path scopes the run to this app.

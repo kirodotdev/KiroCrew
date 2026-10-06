@@ -115,6 +115,11 @@ def build_side_message(
 
     ``tools_available`` picks the boundary prompt for the harness the turn runs
     on: the read-only allowance (kiro-cli) or no tools at all (other backends).
+
+    The first-turn envelope states that boundary TWICE on purpose: once inside
+    the system envelope and again right before ``User:``, so the boundary is
+    also the last instruction the model reads before the question, after the
+    parent snapshot and side history.
     """
     question = question.strip()
     if not is_first_turn:

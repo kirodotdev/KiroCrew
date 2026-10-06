@@ -93,21 +93,13 @@ on the way in. Windows has no Kiro Crew OS wrapper, so positively identified
 official Kiro CLI spawns delegate to the CLI's built-in sandbox; their environment
 is scrubbed by the parent before spawn. The parent gateway process is unaffected.
 
-**`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
-(namespace on Linux, sandbox-exec on macOS) at the `standard` tier.** The other
-values are `"strict"` and `"off"` (`config/sections.py`, `AgentConfig.sandbox`,
-`enum=["auto", "strict", "off"]`; the same three-value enum gates the dashboard
-config editor in `dashboard/handlers/core.py`, pinned equal by
-`test_sandbox_strict_selectable.py`). `"strict"` is the operator's opt-in to the
-tier that also masks `~/.aws`, `~/.ssh`, `~/.kube`, `~/.config/gh` and the
-credential files in `_CC_FILES`. `"off"` skips Kiro Crew's own sandbox but still
-delegates to `kiro-cli`'s internal agent sandbox on macOS when it is enabled,
-which cannot nest inside Kiro Crew's
-Seatbelt wrap (the macOS kernel returns EPERM even under an allow-all outer
-profile), so exactly one layer can own isolation per spawn. Setting `"auto"`
-re-enables Kiro Crew's own sandbox. A change to the key applies to sessions
-started after it; a running session keeps the tier it was spawned with (the
-lifecycle gap for a tightening flip is #5031).
+**`agent.sandbox` defaults to `"auto"`** (OS-level isolation at the `standard`
+tier); `"strict"` is the opt-in that also masks the workflow credential stores,
+and `"off"` defers isolation. The enum, its lifecycle and the per-tier masks are
+specified once in
+[security](../system-specs/modules/security.md#sandbox-modes). The rationale for
+the split: standard keeps git-over-SSH and `credential_process` working, strict
+trades that for hiding the stores from every subprocess.
 
 `wrap_argv`'s internal tier vocabulary is wider than the config enum: `standard`
 (what `auto` resolves to), `cc`, `strict` and `off`. `cc` and the `standard`
@@ -262,7 +254,9 @@ in place.
 The governance trust root (`security_policy.json`, `profiles/`,
 `admission_policy.json`), the denied-command opt-out state
 (`denied_commands.json`), the SEL HMAC key and event log, the dashboard token
-signing key, and the channel credential `.env` all sit on the read+write block.
+signing key, the App Kit registry trust grants (`registry_trust.json`, see
+[app-kit-platform](../system-specs/modules/app-kit-platform.md)), and the channel
+credential `.env` all sit on the read+write block.
 This is a single mechanism with an outsized consequence: it is what makes the
 enterprise ceiling **un-disableable from inside the agent**. An agent that could
 read these could forge tokens or impersonate internal callers; one that could

@@ -2,8 +2,10 @@
 """preflight.py - deterministic Phase-0 gate for the kirocrew-prepare-pr skill.
 
 Reports repo / current-branch / base-branch / gh-auth / dirty / divergence /
-existing-PR and gates on blockers so the agent never commits on the base
-branch or acts unauthenticated.
+existing-PR / write permission, and gates on blockers so the agent never
+commits on the base branch, acts unauthenticated, or works a PR it cannot
+publish to. Write permission is the gh ``viewerPermission`` answer plus a
+dry-run transport probe of the remote; either can exit 30.
 
 Portable: stdlib only; shells out to git/gh via argument lists (no shell
 pipelines), so it runs on macOS, Linux, and Windows wherever Kiro Crew's

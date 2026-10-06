@@ -193,11 +193,16 @@ The reason has two possible forms:
   a pattern your text does not literally match still fired.
 - `Blocked: <sentence>` — the always-on floor (sensitive paths, the trust root,
   exfiltration shapes). These name the class directly.
+- `Blocked: the path could not be verified against the sensitive-path list…` —
+  NOT a match. The resolver ran out of time before judging the path, so it was
+  refused unjudged. This is the one refusal where the rule above inverts: do not
+  switch reader or spelling (they meet the same budget); wait about thirty
+  seconds and retry the identical call, and if it keeps happening tell the user
+  the path resolver is timing out and name the path.
 
 Where the `kirocrew-debug` tools are granted, `debug_refusals` reads the gateway's
-own record and gives each refusal its real class, which the refusal text alone does
-not carry — in particular `unverifiable_path`, a path the resolver never finished
-judging, which is retried rather than worked around.
+own record and gives each refusal its class, including refusals your session never
+saw — `unverifiable_path` there is the stall described above.
 
 ## Useful checks
 

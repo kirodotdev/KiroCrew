@@ -1396,8 +1396,8 @@ export default function CommandBarOverlay({
   } = useQuery({
     // Nested UNDER the corpus key, like the artifacts view above, because these rows
     // are DERIVED from `['chat-folders']` and every folder write ends in
-    // `invalidateQueries({ queryKey: ['chat-folders'] })` (`ChatSidebar` create,
-    // delete and update). React-Query matches that by key PREFIX, so a key outside
+    // `invalidateQueries({ queryKey: ['chat-folders'] })` (the create, delete and
+    // update mutations in `pages/chat-sidebar/folders.ts`). React-Query matches that by key PREFIX, so a key outside
     // the corpus namespace is a cache no folder write can reach — and this view is
     // unmounted whenever the bar is closed, so its one chance to re-derive is the
     // remount, which refetches nothing that is still fresh. A folder deleted in that
@@ -1437,7 +1437,7 @@ export default function CommandBarOverlay({
    * them is working leaves the count identical, and that is precisely the change that
    * has to reach the screen. Frames that change nothing about the roster's running
    * set — a token tick, another surface's slot — produce the same string and cost
-   * nothing. The catalog fetch stays cached under its own 60s key, so a re-derivation
+   * nothing. The catalog fetch stays cached under its own key (MATES_STALE_MS), so a re-derivation
    * is a local re-map, not a request.
    */
   const mateQuery = scope === 'mates' ? debounced.trim() : ''

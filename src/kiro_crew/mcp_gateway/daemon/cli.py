@@ -98,7 +98,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         dest="prewarm_count",
         type=int,
         default=0,
-        help="Number of hottest observed (agent x server x channel) backends to "
+        help="Number of hottest observed pool keys (agent x server) to "
         "spawn at startup, before the first stub connects, to remove the "
         "cold-after-restart new-chat latency. 0 (default) disables prewarming.",
     )

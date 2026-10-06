@@ -1755,9 +1755,10 @@ def test_ssm_module_is_untouched_by_these_tests():
 class TestKillPatternMatchesWhatTheBoxLaunches:
     """The `pkill` pattern is only ever exercised on the remote box.
 
-    The design lane's objection is exact: a pattern that matches nothing exits 1
-    from `pkill` just as a successful kill does, so an assertion about our own
-    command text proves nothing about whether the box's login would be found.
+    The design lane's objection is exact: `pkill` exits 1 when the pattern
+    matches nothing, the same status as a login that already exited, so an
+    assertion about our own command text proves nothing about whether the box's
+    login would be found.
 
     Two guards stand in for a live run. This class is the static one -- it ties
     our killer to main's launcher, so a rename on EITHER side fails here instead

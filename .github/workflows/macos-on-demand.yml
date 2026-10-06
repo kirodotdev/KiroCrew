@@ -44,7 +44,7 @@ on:
     # pull request that does not touch a darwin-sensitive file -- and a PR that
     # touches a shared helper the path list cannot foresee is precisely the one
     # someone reaches for the label on. The path test lives in `decide` instead,
-    # where it is one of three switches rather than a gate in front of them.
+    # where it is one of four switches rather than a gate in front of them.
     types: [opened, synchronize, reopened, labeled]
 
 permissions:
@@ -55,7 +55,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Three switches, any one of which runs the suite. All on Linux, ~1 minute,
+  # Four switches, any one of which runs the suite. All on Linux, ~1 minute,
   # so the macOS runner is requested only when a switch is on.
   #
   #   paths   -- the diff touches a darwin-sensitive file (list below). The
@@ -78,14 +78,18 @@ jobs:
   #              rebase re-rolls. `github.event.pull_request.head.sha` rather
   #              than `github.sha` because the latter is the synthetic merge
   #              commit, which changes whenever main moves.
+  #   content -- an ADDED line in a *.py or *.sh file uses a Linux-only
+  #              primitive (`LINUX_ONLY_PRIMITIVES` on the verdict step), in any
+  #              file. It covers what the path list cannot foresee: a new test
+  #              that lists /proc or reads a mode with GNU `stat -c`.
   #
   # Whatever the reason, the lane stays advisory: it is absent from both of
   # pr-readiness.yml's lists, and test_macos_platform_tests_gate.py pins that
   # absence, so none of these switches can put a macOS queue in front of a merge.
   #
-  # Over the three switches sits a CEILING, not a fourth switch: `paths` and
-  # `sample` are refused while this lane already holds `LANE_MAX_LIVE_RUNS` live
-  # runs of the hosted macOS pool. `label` is never refused, and neither is a
+  # Over the four switches sits a CEILING, not a fifth switch: `paths`,
+  # `sample` and `content` are refused while this lane already holds
+  # `LANE_MAX_LIVE_RUNS` live runs of the hosted macOS pool. `label` is never refused, and neither is a
   # re-run. See the env block on the verdict step for the measurement behind it.
   decide:
     name: Decide whether the macOS suite runs
@@ -169,13 +173,21 @@ jobs:
               - ".github/workflows/macos-on-demand.yml"
               - ".github/workflows/platform-tests.yml"
 
-      - name: Combine the three switches
+      - name: Combine the four switches
         id: verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATHS_HIT: ${{ steps.filter.outputs.darwin }}
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:macos') }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The content switch: an ADDED line that uses a Linux-only primitive,
+          # wherever the file lives. The path list cannot foresee a new test that
+          # lists /proc, reads a mode with GNU `stat -c`, opens O_PATH, leans on
+          # RLIMIT_AS, or builds a non-UTF-8 filename (surrogateescape). Each of
+          # those passes on Linux and fails on macOS, and without this switch the
+          # first macOS run to see it is the nightly, after the merge.
+          LINUX_ONLY_PRIMITIVES: '/proc/|\bstat -c\b|\bO_PATH\b|RLIMIT_AS|surrogateescape'
           SAMPLE_ONE_IN: "20"
           # The lane's ceiling on the hosted macOS pool, in LIVE runs of this
           # workflow. What the pool actually feels is JOBS, and a run holds one
@@ -217,9 +229,23 @@ jobs:
           if [ "$PATHS_HIT" = "true" ]; then reason="paths"; fi
           if [ "$LABELLED" = "true" ]; then reason="${reason:+$reason,}label"; fi
           if [ "$bucket" -eq 0 ]; then reason="${reason:+$reason,}sample"; fi
+          # Added lines only (`-U0`, `^+` minus the `+++` header). No `grep -q`
+          # at the end of the pipe: under pipefail its early exit can SIGPIPE
+          # the grep before it and turn a match into a miss. A diff that cannot
+          # be read leaves the switch off with a warning rather than failing
+          # `decide` -- this lane is advisory, and the other switches still apply.
+          if [ -n "${BASE_SHA:-}" ] \
+              && added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}" -- '*.py' '*.sh')"; then
+            hits="$(printf '%s\n' "$added" | grep -P '^\+(?!\+\+)' | grep -cP "$LINUX_ONLY_PRIMITIVES" || true)"
+            if [ "${hits:-0}" -gt 0 ]; then
+              reason="${reason:+$reason,}content"
+            fi
+          else
+            echo "::warning::could not read ${BASE_SHA:-<no base>}...${HEAD_SHA}; the content switch is off for this run"
+          fi
 
-          # The ceiling, applied only to the two switches nobody asked for by
-          # hand. `label` is the on-demand path a fixer reaches for while
+          # The ceiling, applied to every switch nobody asked for by hand
+          # (paths, sample, content). `label` is the on-demand path a fixer reaches for while
           # repairing a red nightly, so a busy pool must not silence it -- that
           # is the one request where waiting out the queue is the point.
           capped=""

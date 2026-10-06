@@ -625,9 +625,9 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "anything.\n\n"
             "Absent from a log whose class never changed, which is the ordinary case. "
             "That absence is only readable as 'nothing changed' on a log whose opening "
-            "entry HAS a class: the two landed in one change, so a class on the opener "
-            "is what dates the log to a build that also records transitions. An opener "
-            "with no class says nothing about either, and refuses."
+            "entry HAS a class: a class on the opener means the writer also records "
+            "transitions. An opener with no class says nothing about either, and "
+            "refuses."
         ),
     ),
     EntryType(
@@ -638,11 +638,13 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 "reason",
                 JSON_STRING,
                 required=True,
-                enum=("reset",),
+                enum=("reset", "destroyed", "destroyed_sid_retained"),
                 note=(
-                    "The gateway's own end_reason, verbatim. Open: the teardown "
-                    "vocabulary belongs to metrics.sessions, which holds more "
-                    "reasons than any site passes here today."
+                    "The gateway's own teardown reason, verbatim. Open: reset comes "
+                    "from the reset route, destroyed or destroyed_sid_retained from "
+                    "destroy (the latter defined in session_lifecycle when another "
+                    "key may still map to the session id), and a new teardown path "
+                    "may pass its own word."
                 ),
             ),
         ),
@@ -1031,10 +1033,12 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 "status",
                 JSON_STRING,
                 required=True,
-                enum=("completed", "refused", "unknown"),
+                enum=("completed", "failed", "cancelled", "canceled", "refused", "unknown"),
                 note=(
-                    "Outcome. Open: the frame's own status is passed through. "
-                    "unknown is written by the turn-end sweep and by crash-repair."
+                    "Outcome. Open: the frame's own status is passed through, so a "
+                    "value outside this list is possible. The listed terminal words "
+                    "are acp.types.TERMINAL_TOOL_STATUSES; unknown is written by the "
+                    "turn-end sweep and by crash-repair."
                 ),
             ),
             Field("call_index", JSON_INT, note="Present when known."),
@@ -1160,8 +1164,9 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "having been read -- but it is declared all the same. An undeclared type is "
             "SKIPPED by a folding reader rather than refused, and a skip is a seq "
             "discontinuity: the class fold treats any gap in what it receives as damage "
-            "and recorded_class then refuses, so leaving this undeclared made the class "
-            "record unreadable for every session whose agent touched its task list."
+            "and recorded_class then refuses, so an undeclared plan/updated would make "
+            "the class record unreadable for every session whose agent touched its "
+            "task list."
         ),
     ),
     # -- subagent, background ----------------------------------------------- #
@@ -2018,8 +2023,10 @@ _CREW_TYPES: tuple[EntryType, ...] = (
             "The one type that constrains the ENVELOPE as well as ``data``: ``ref`` "
             "is required, citing the span of the reporting session's log that holds "
             "the work, and ``thread`` is the answered dispatch's seq. Neither is a "
-            "``data`` key, so neither is declarable here -- the writer carries both, "
-            "and a report built without a ``ref`` is refused where it is built. A "
+            "``data`` key, so neither is declarable here. ``ref`` is always carried: "
+            "a report built without one is refused where it is built. ``thread`` is "
+            "carried when the dispatch anchor resolves and absent on an UNTHREADED "
+            "report. See docs/reference/crew-log/crew-types.md. A "
             "``progress`` status may appear several times for one dispatch; a "
             "terminal status appears once."
         ),

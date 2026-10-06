@@ -244,7 +244,7 @@ def embeddings_disabled(env_data: dict[str, str]) -> bool:
 
 def _parse_env_text(text: str) -> dict[str, str]:
     """Parse ``KEY='value'`` lines. Split out so a caller that must open the file
-    itself -- see :func:`_peer_claimed_port`, which needs no-follow semantics -- can
+    itself -- see ``runtime_ports._read_peer_env``, which needs no-follow semantics -- can
     reuse this exact grammar instead of carrying a second copy that would drift."""
     out: dict[str, str] = {}
     for ln in text.splitlines():
@@ -274,8 +274,8 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     Takes the pod NAME, so the path read is one an operator named. A caller that
     instead reads whatever files happen to be in the pods directory is choosing its
     paths from directory contents rather than from an operator, which is a different
-    trust posture -- :func:`_peer_claimed_port` is that caller and does not come
-    through here.
+    trust posture -- ``runtime_ports._read_peer_env`` is that caller and does not
+    come through here.
     """
     try:
         text = cfg.env_file(name).read_text()
@@ -537,9 +537,8 @@ class UserBusProbe:
 # The list is deliberately the COMPLETE table rather than the directories that
 # seem plausible for this unit. A short search path is a false "absent": the
 # probe reports no per-user manager on a host that HAS one, and the caller then
-# names a platform limit instead of telling the reader to start the manager. Two
-# review rounds on this PR each named a different missing entry, so the fix is to
-# make completeness checkable against one document instead of guessing again.
+# names a platform limit instead of telling the reader to start the manager.
+# Transcribing the whole table makes completeness checkable against one document.
 # `/lib/systemd/system` is not in Table 1; it is the pre-usr-merge location of
 # `/usr/lib/systemd/system` and is kept for split-usr hosts.
 #
@@ -573,13 +572,10 @@ _SYSTEMD_SYSTEM_UNIT_DIRS = (
     "/run/systemd/generator.late",
 )
 
-# Both shapes of per-user manager unit are searched in the SAME directories,
-# derived from the one list above rather than kept in a second tuple. A separate
-# list is what produced three review rounds on this file: each round named a
-# directory one tuple knew and the other did not, and the narrower tuple made
-# `user_manager_unit` report "absent" for a hand-installed unit in a directory the
-# template search already covered. Deriving both filenames from one list makes
-# that divergence unrepresentable instead of merely fixed.
+# Both shapes of per-user manager unit (the `user@.service` template and a
+# hand-installed `user@<uid>.service`) are looked up through `_unit_paths` over
+# the single `_SYSTEMD_SYSTEM_UNIT_DIRS` list above, never a second tuple, so the
+# two searches cannot cover different directories.
 _USER_MANAGER_TEMPLATE_NAME = "user@.service"
 
 

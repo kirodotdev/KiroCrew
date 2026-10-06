@@ -8,7 +8,7 @@ Each owner holds functions moved verbatim from the one-module file, plus the
 definitions added since (the gate's tiers and ``GateFacts`` in ``gate_tiers``,
 ``ToolCall`` in ``tool_identity``). :func:`compose`
 makes every function an owner defines run on the facade module's globals rather than
-its own. 127 production modules import ``kiro_crew.hooks``, and the tests patch its
+its own. Over a hundred production modules import ``kiro_crew.hooks``, and the tests patch its
 names -- ``hooks.MAX_FILE_BYTES``, ``.validate_file_path``, ``._fd_real_path``,
 ``.is_sensitive_path``, ``.os``, ``.run_script_hook``, ``.load_denied_commands_state``,
 ``.persisted_hook_store`` and dozens more. A function that read its owner's globals

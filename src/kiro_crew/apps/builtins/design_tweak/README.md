@@ -78,9 +78,10 @@ second from the right".
    previous is still running. Reply on a pin to file a linked follow-up.
 
 Static HTML/CSS/JS folders work out of the box. A project whose entry point isn't
-a top-level `index.html` is handled too — `public/`, `dist/`, `build/`, `out/`,
-`app/`, `src/`, `site/`, `www/` and `docs/` are tried automatically, and if there
-is no entry at all the preview explains what it found instead of failing blank.
+a top-level `index.html` is handled too — common locations such as `public/`,
+`dist/`, `build/` and `docs/` are tried automatically
+(`backend/preview_files.py`, `ENTRY_CANDIDATES`, is the authoritative list), and if
+there is no entry at all the preview explains what it found instead of failing blank.
 
 **Framework projects (Vite, React Router, Next, …) are detected, not fumbled.**
 Their entry script is TypeScript/JSX, so serving the files from disk renders an
@@ -113,16 +114,21 @@ rewriting except the one injected script tag.
 | Agent delivery target | One chat slot per app folder, keyed by a hash of its path — created idempotently, so a request can never open a second session |
 | Source mapping | `projectRoot` per request + `sourceFile` per comment, stamped from the serving path; where an element carries `data-kiro-source="file:line:col"` the agent gets a high-confidence target, otherwise it falls back to React Fiber `_debugSource` (medium) or HTML-snippet matching (low) and verifies before editing |
 | Delivery into agent | The batch is queued as JSON in the app's data dir and handed to that app's chat session; the bundled `visual-edit` skill teaches the agent to work a batch and report per comment via the `design_tweak_update_thread` MCP tool (the credentialed path to `POST /thread`; an agent session cannot post to it directly) |
-| Node toolchain | The gateway spawns the backend with a minimal PATH, so `npm` is resolved by absolute path from a list of known install dirs (homebrew, MacPorts, volta, bun, asdf, fnm, nvm, `/usr/local/bin`, `/usr/bin`) and that dir is put on the child's PATH |
+| Node toolchain | The gateway spawns the backend with a minimal PATH, so `npm` is resolved by absolute path from known install dirs — common ones such as homebrew, MacPorts, volta, bun, asdf, fnm and nvm (`backend/dev_preview.py`, `NODE_BIN_DIRS` and `NVM_GLOB`, is the authoritative list) — and that dir is put on the child's PATH |
 
 ## Structure
 
 ```
 design_tweak/
 ├── app.json                       ← manifest (UI page + backend + skill + perms)
-├── backend/server.py              ← project registry, multi-root static serving,
-│                                    dev-server detect/start/proxy, request queue,
-│                                    folder picker, per-comment threads
+├── backend/
+│   ├── server.py                  ← composition root: process creation and
+│   │                                security-policy calls
+│   ├── dev_preview.py             ← dev-server discovery, lifecycle, injecting proxy
+│   ├── http_api.py                ← HTTP API adapter
+│   ├── preview_files.py           ← file-backed (static) preview serving
+│   └── request_state.py           ← durable request and project state
+├── tests/test_windows_support.py  ← manifest platform claim + Windows code paths
 ├── inject/select-to-edit.js       ← selection overlay (auto-injected into previews)
 ├── skills/visual-edit/SKILL.md    ← teaches the agent to work a batch + report per comment
 └── README.md
@@ -162,13 +168,11 @@ platform.
 ### Windows
 
 `app.json` declares `platform.os` including `windows`. The app's own Python is
-already cross-platform (`platform_compat` branches, no POSIX-only calls), but
-the spawned dev server's OS-level process tree management (`kill_process_tree`,
-port listener enumeration via `find_port_listeners`) has not been exercised on
-native Windows in this change — that verification is follow-up work, not shipped
-here. `lsof`-based discovery for a user-started server is simply unavailable on
-Windows today (no fallback exists yet), which the "Dev-server discovery" row
-above already covers.
+cross-platform (`platform_compat` branches, no POSIX-only calls), but the spawned
+dev server's OS-level process tree management (`kill_process_tree`, port listener
+enumeration via `find_port_listeners`) is not verified on native Windows. Adopting
+a user-started dev server needs `lsof` and has no Windows path, as the
+"Dev-server discovery" row above states.
 
 ## Coming from the external `poke-and-prose` app
 

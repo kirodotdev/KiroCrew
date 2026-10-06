@@ -140,6 +140,14 @@ rules yourself.
    30 means it broke a golden path or left its declared scope, exit 20 means the
    question was not settled, and none of the three is acceptance.
 
+   **The fixer holds the merge.** Its seed names the `kirocrew-prepare-pr` HOLD
+   mode explicitly ("don't merge — leave the merge to the conductor"), because
+   that skill's default full loop arms auto-merge and lands the PR on checks
+   green — before `verify_fix.py` has run. Both halves of acceptance are read for
+   ONE head SHA: run `verify_fix.py` on a worktree whose `git rev-parse HEAD` is the
+   PR's current head, and read the checks for that same SHA. A push after either
+   reading voids both.
+
 ### Declare the fix contract before you dispatch a fixer
 
 Write `fix-contract.json` into the fixer's worktree root as part of the dispatch,
@@ -240,7 +248,7 @@ item; keep every clause.
 > You audit exactly ONE surface: {surface} on {target}. Work autonomously; never
 > ping the human directly — the conductor reports.
 > FIRST, GOVERNANCE: run the ARCC `security-assistance` skill if it is installed,
-> and record its guidance in every finding you file. If it is NOT installed,
+> and record its guidance in your report, for every finding you file. If it is NOT installed,
 > record `arcc: unavailable` in each finding and continue — do not substitute
 > your own governance judgment for it, and do not treat its absence as
 > permission.
@@ -262,9 +270,11 @@ item; keep every clause.
 > scratch worktree, with no network egress and no writes outside that worktree.
 > Anything beyond that needs a human yes you do not have — report
 > `NEEDS-APPROVAL: <the step and why it is needed>` and stop.
-> FILE each candidate with `scripts/finding_entry.py`, one record per real
-> defect, carrying every `report_schema` field including the proof-of-concept
-> command or test and your own severity per `severity_scale`. A candidate you
+> FILE each candidate with `scripts/finding_entry.py --json-file F`, one record
+> per real defect. The file carries `surface`, `severity` (per `severity_scale`),
+> `title`, `paths`, `poc` (`pytest::<nodeid>` or `cmd::<argv>`) and optionally
+> `round_id`, and NOTHING else: `id`, `verifier_verdict` and `status` are written
+> by the ledger, and any other key is refused. A candidate you
 > cannot express as a proof shape is not a finding — say so instead of filing it.
 > HALLUCINATION IS THE DEFAULT FAILURE HERE. A finding you cannot demonstrate is
 > worse than no finding, because a verifier and then a human spend real time
@@ -293,8 +303,13 @@ auditor's reasoning, and never asked to improve the finding.
 > VERDICT, exactly one: `confirmed` (the proof reproduces and shows what the
 > finding claims), `rejected` (it does not reproduce, or it reproduces but shows
 > something else), `needs-human` (it cannot be settled inside the rules of
-> engagement). Record it with `scripts/verify_finding.py` and give the reason in
-> one or two sentences.
+> engagement). Run `scripts/verify_finding.py --finding-id N --worktree DIR`: it
+> re-runs the proof, records the `verifier` verdict and its own reason, and takes
+> no verdict or reason from you. When it reports `confirmed` but the proof shows
+> something other than the claim, record your `rejected` with
+> `scripts/ledger.py record-verdict --finding N --role verifier --verdict rejected
+> --reason "<one or two sentences>"` — both rows stay, and the later verifier
+> row is the one the fold reads.
 > A POLICY REFUSAL IS THE BOUNDARY here too. A blocked step is `needs-human`,
 > recorded as an event of kind `policy_block` with the command shape and the rule
 > as reported and no secrets in it. Never rephrase, re-spell, or split a call to
@@ -408,9 +423,11 @@ step removes.
 
 Each cycle, in this order:
 
-1. **Read the ledger** — one `session_ledger_read`. The injected block is a
-   truncated teaser, and every disposition below is a comparison against
-   recorded state.
+1. **Read the ledger** — one `session_ledger_read` for your own obligations,
+   and `scripts/ledger.py list findings` for the findings and their folded
+   verdicts. The injected block is a truncated teaser, and every disposition
+   below is a comparison against recorded state; a finding with no verifier is
+   visible only in the findings ledger.
 2. **Dispatch what is owed.** A filed finding with no verifier gets one. A round
    whose findings all carry verdicts gets the retrospective. A surface in scope
    with no auditor gets one, within the concurrency the seed set.
@@ -467,7 +484,10 @@ discards that work.
   `allowedTools` cannot match arguments, so trusting the bundled scripts would
   mean trusting arbitrary shell. Unattended operation needs the operator to arm
   this session in trust mode — without it the patrol stalls on its first scope
-  check, not on its first intervention.
+  check, not on its first intervention. Pre-approving shell alone is not enough:
+  `session_send` (the only way to seed a child, since `session_create` carries no
+  message), `session_stop` and `session_close` are not auto-approved either, so
+  the first dispatch stalls too.
 - The verifier's independence is procedural, not enforced. It comes from a fresh
   session and a brief that withholds the auditor's reasoning; a shared model can
   still share a blind spot.

@@ -6,7 +6,7 @@ Clips are hosted, not shipped inside the package. Kiro Crew downloads them in th
 
 ## How It Works
 
-- The catalog is data, not generated: a signed manifest published for your release, with a small built-in list as the fallback for an install that has never fetched one. There is no model call.
+- The catalog is data, not generated: a signed manifest published for your release, with a small built-in list as the fallback for an install that has never fetched one. There is no model call. The built-in list currently ships no media, so an install that has never fetched a manifest offers no clips.
 - A clip is eligible when the feature is on, its media is on your machine, it is not yet recorded as seen or dismissed, the running version satisfies its floor, and no "you already use this" signal fires.
 - Which eligible clip you get is random. Eligibility is not: a clip you retired, or one for a feature you already use, can never come back.
 - Only clips already on your disk are offered, so playback starts immediately and costs no bandwidth. A hosted clip that has not finished downloading waits for the next launch.
@@ -138,7 +138,7 @@ Rules the catalog enforces, each of which drops the entry with a logged warning 
 - `src` and `poster` must pass `validate_asset_path`.
 - `min_version` is optional and must parse as a version when present.
 
-Place the clip and its poster in `website/public/app-assets/feature-videos/`.
+Place the clip and its poster in `website/public/app-assets/feature-videos/`. That folder does not exist yet, because no built-in entry ships media today; create it. An entry whose files are missing is withheld, not shown.
 
 ## Publishing a Release of Videos
 

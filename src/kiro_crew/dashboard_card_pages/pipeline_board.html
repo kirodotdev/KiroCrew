@@ -13,10 +13,11 @@
   ``pipeline_board_contract.panel_card_data`` writes a value for every field below and
   writes words rather than a blank for a gap.
 
-  THE FIELD SET IS THE CONTRACT. ``test_pipeline_board_contract_parity`` asserts this
-  file's ``data-dashboard-field`` set equals ``panel_card_data``'s output keys in BOTH
-  directions, and separately that every leaf of ``PipelineBoardPanel`` reaches one of
-  them -- so a field bound here with no writer, a key written with no binding, and a
+  THE FIELD SET IS THE CONTRACT. ``test/test_dashboard_template_pipeline_board.py``
+  asserts this file's ``data-dashboard-field`` set equals ``panel_card_data``'s output
+  keys in BOTH directions (``test_the_card_binds_exactly_what_the_flattener_writes``),
+  and separately that every leaf of ``PipelineBoardPanel`` reaches one of them
+  (``test_every_contract_leaf_reaches_a_card_field``) -- so a field bound here with no writer, a key written with no binding, and a
   contract leaf that reaches no field are each a failure rather than a blank cell.
 
   NO DOTS IN A FIELD NAME. ``normalize_card``'s ``_FIELD_NAME`` admits
@@ -27,7 +28,7 @@
 
   TWENTY-FOUR FIELDS, 4096 DATA BYTES, 8192 HTML BYTES. A card over any cap is dropped
   WHOLE by the host, so a board with sixty items cannot be allowed to grow a field per
-  item: a column's rows arrive as ONE pre-line text field, and the flattener states its
+  item: a column's rows arrive as ONE pre-wrap text field, and the flattener states its
   own trimming in that text rather than silently showing a prefix.
 
   NO ``content``, ``list-style`` or ``text-overflow`` DECLARATIONS. In card mode

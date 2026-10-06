@@ -177,7 +177,7 @@ def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | 
 
 
 async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
-    """Ask the cheapest model for ONE emoji representing a folder ``name``.
+    """Ask the background session for ONE emoji representing a folder ``name``.
 
     Shared by chat folders and artifact-library folders. Serialized via a
     module-level lock so concurrent folder creations don't interleave streams
@@ -190,8 +190,9 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
         "No text, no explanation, just the single emoji character."
     )
 
-    # Folder icon is a trivial single-emoji task — run on the cheapest model via
-    # the shared background one-liner helper (best-effort, 30s bound, denials
+    # Folder icon is a trivial single-emoji task — run on the session's governed
+    # default model (``_FOLDER_ICON_MODEL`` is "auto") via the shared background
+    # one-liner helper (best-effort, 30s bound, denials
     # SEL-logged). The lock serializes icon generation across folders.
     async with _folder_icon_lock:
         try:

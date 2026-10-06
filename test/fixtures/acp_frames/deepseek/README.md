@@ -38,8 +38,10 @@ and the tool is REACHABLE — not merely that an element was accepted.
 Two things ride along. The tool title is the harness's own MCP grammar,
 `mcp__<serverName>__<toolName>`, so the server name is in the title and the separator
 is a double underscore rather than the `/` kiro-cli splits on. And no
-`session/request_permission` fired for this call either, consistent with the routing
-verdict below.
+`session/request_permission` fired for this call either: this capture, like
+`turn-live.jsonl`, was taken with no gate plugin composed, so it records the
+harness's own default composition. It is not the current routing, which the
+permission capture below establishes with the plugin composed.
 
 `mcp-stdio-rollback-live.jsonl` is the other half, and it is a hazard rather than a
 capability. The same element with a command that cannot start fails `session/new`

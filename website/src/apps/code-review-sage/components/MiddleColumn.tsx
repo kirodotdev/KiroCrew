@@ -35,8 +35,8 @@ function Tab({
       onClick={onClick}
       role="tab"
       aria-selected={active}
-      // Same ring as every other control; without it the browser draws its own
-      // blue outline, which is what made a focused tab look mis-styled.
+      // Same focus ring as every other control; without it the browser draws
+      // its own blue outline instead.
       className={`flex-auto min-w-0 whitespace-nowrap inline-flex items-center justify-center gap-1.5 px-2 py-1.5 text-[12px] font-medium rounded-md transition-colors cursor-pointer focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 ${
         active
           ? 'bg-bg-elevated text-text border border-border'

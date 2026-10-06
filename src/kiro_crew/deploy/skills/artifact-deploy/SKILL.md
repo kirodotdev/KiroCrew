@@ -38,9 +38,10 @@ control card show which identity owns the deployment.
 
 This replaces the old "pick the AWS profile" step: profiles are managed once in
 the console, then every deploy (static publish or fullstack webapp) reuses them.
-Optionally confirm reachability via the core verify endpoint
-(`POST /api/deploy/verify` with `{"profile": "<name>"}` -- an STS
-read, no credential access).
+Reachability is confirmed by the human with **Verify access** on `/deploy`
+(`POST /api/deploy/verify`, an STS read). That route refuses MCP/internal
+callers, so an agent cannot call it; the `deploy_artifact` preview reports the
+resolved profile and region instead.
 
 Deploy a **pre-built** static site (and later, an app with a backend) into the
 **user's own AWS account**, served globally over HTTPS via CloudFront.
@@ -95,13 +96,15 @@ long (CloudFront cold-create), fail in ways that need iterative fixing (IAM,
 boto3 `Decimal`, framework quirks), and are context-heavy. There are two entry
 points; the isolation source differs:
 
-- **The "Deploy" button (preferred — solves discoverability).** Most users won't
-  know this skill exists. After a user has an app, a **Deploy** button (on the
-  app / app-artifact card / dashboard) **opens a fresh session pre-loaded with
-  this skill** and a seed prompt. That new session **IS** the isolated context —
-  run the whole adapt→deploy→debug flow **inline** in it. **Do NOT spawn a
-  subagent here** (you are already in a dedicated session; debug errors directly
-  in-session).
+- **The "Deploy" button (Feature Preview).** On a webapp card the button runs
+  the dashboard's own two-call deploy (preview, public-link acknowledgment,
+  confirm) on the artifact's built `app_dir/public/` root — no agent involved.
+  Only when the backend reports `webapp_root_unavailable` (no built static
+  root) does the card offer a labelled fallback that **opens a fresh session
+  pre-loaded with this skill** and a seed prompt. That new session **IS** the
+  isolated context — run the whole adapt→deploy→debug flow **inline** in it.
+  **Do NOT spawn a subagent here** (you are already in a dedicated session;
+  debug errors directly in-session).
 - **In-conversation ("deploy my app" mid-session).** The user asks inside an
   existing, busy session. Here you **MUST run the deploy via a `spawn_run`
   subagent** — the subagent is the isolation boundary, so the long/noisy deploy
@@ -180,6 +183,13 @@ not *rewrites business logic*.
 - AWS access configured **once in the Artifact Deploy console** (profiles registered
   in `~/.kiro/crew/deploy/profiles.json`, verified at `/deploy`).
   Prefer a **least-privilege deploy profile**, not admin (see Security).
+- **Finite TTL needs auto-cleanup in the account.** A confirmed deploy with
+  `ttl_hours > 0` (the default is 72) is refused with `reaper_required` unless
+  the `kirocrew-deploy-base` and `kirocrew-deploy-reaper` stacks exist; the
+  preview does not check this. The operator installs them with
+  `scripts/install-reaper.sh` (which needs the base stack and the
+  `kirocrew-deploy-app-boundary` policy from `/deploy`). Otherwise preview with
+  `ttl_hours=0` (persistent) and say so.
 - The app is conformed to the **deploy contract** (above) — producing that
   layout is the skill's job (Greenfield: generate in-contract; Brownfield: run
   the Adapter playbook). The deploy *scripts* consume a built `public/` (+
@@ -190,15 +200,19 @@ not *rewrites business logic*.
 
 These are run from this skill's directory by **human operators in a terminal**,
 not by agents. They implement the separate shared-stack app path; the core
-`POST /api/deploy/deploy` endpoint does not wrap them. All accept `--profile`
-and `--region` (default `us-west-2`).
+`POST /api/deploy/deploy` endpoint does not wrap them. The shell scripts accept
+`--profile` and `--region` (default `us-west-2`). `attach_backend.py` /
+`detach_backend.py` refuse to run unless `kiro_crew` is importable, and
+`deploy-backend.sh`, `teardown.sh` and `reaper.sh` call them with the first
+`python3` on `PATH`, so run these scripts with the Kiro Crew environment's
+Python first on `PATH`.
 
 - **Deploy (static)**: `scripts/deploy.sh <app_dir> [--slug NAME] [--ttl HOURS] [--profile P] [--region R]`
 - **Deploy (fullstack)**: `scripts/deploy-app.sh <app_dir> --slug NAME [--table] [--runtime R] [--handler H] [--wait] [--profile P] [--region R]`
 - **Deploy (backend only)**: `scripts/deploy-backend.sh <handler_dir> --slug NAME [--table] [--runtime R] [--handler H] [--wait] [--profile P] [--region R]`
 - **Install reaper**: `scripts/install-reaper.sh [--rate 'rate(1 hour)'] [--alarm-email EMAIL] [--profile P] [--region R]`
 - **Teardown**: `scripts/teardown.sh <slug> [--profile P] [--region R]`
-- **Lifecycle**: `scripts/list.sh`, `scripts/cost.sh [slug]`, `scripts/persist.sh <slug>`, `scripts/detach_backend.py --slug NAME`
+- **Lifecycle**: `scripts/list.sh`, `scripts/cost.sh [slug]`, `scripts/persist.sh <slug>`, `scripts/detach_backend.py --region R --dist-id ID --slug NAME [--profile P]`
 
 ## Backend handler contract
 
@@ -229,16 +243,19 @@ When the user asks to deploy / ship / share a demo:
 2. Resolve the AWS profile from the **core registry** (see "AWS config" above):
    user-picked > registry default > legacy config; if unconfigured, send the
    user to the Artifact Deploy page (`/deploy`) for the one-time setup. Then
-   **confirm which account** (verify endpoint returns the account id) -- this
+   **confirm which account** (ask the user to check the account that
+   **Verify access** on `/deploy` shows; the preview reports profile/region) -- this
    provisions REAL resources that cost money. Never guess a prod account; if
    unsure, ask.
 3. **Scan the app for internal tokens** first (see Security) — this content is
    going to the public internet. Credential findings are a hard stop.
 4. Choose one coherent deployment path:
    - **Static artifact or static-only app:** call the MCP `deploy_artifact` tool
-     once. Use `artifact_slug` only for `widget`, `html`, or `markdown`; a
-     `webapp` artifact is a summary, so use `local_dir` pointing at its built
-     `public/` directory.
+     once. Use `artifact_slug` for `widget`, `html`, or `markdown`, and for a
+     `webapp` artifact whose `webapp_metadata.app_dir` holds the built `public/`
+     root (the server resolves `app_dir/public` and writes the deployment back
+     into the artifact on confirm). Use `local_dir` only for a directory that
+     is not an artifact's `app_dir`.
    - **App with `api/`:** prepare the complete layout, then give the human
      operator the exact `scripts/deploy-app.sh <app_dir> --slug <slug> ...`
      command. That script deploys the static and backend pieces behind the same
@@ -252,9 +269,12 @@ When the user asks to deploy / ship / share a demo:
    the tool provides: schema validation, fail-closed scan gate, confirm gate,
    SEL audit trail, and `_deny_restricted` session guard. **Do NOT bypass it by
    calling deploy scripts directly.**
-6. Return the public URL + the TTL.
-   **Important ordering**: after the human confirms and the deploy succeeds,
-   **immediately back-fill the artifact's `webapp_metadata`** (`public_url`,
+6. Stop after the preview: tell the user to confirm under **Pending
+   confirmations** on `/deploy`. This session is not notified when they do, so
+   never report a public URL you have not seen. For an `artifact_slug` deploy
+   the server writes `public_url`, `lifecycle` and `deploy_target` into the
+   artifact on confirm. For a `local_dir` deploy, once the user reports the
+   URL, **immediately back-fill the artifact's `webapp_metadata`** (`public_url`,
    `lifecycle.status`, `deploy_target`) before performing endpoint verification
    (HTTP GET on the deployed URL). The endpoint check can timeout (~30s+) or be
    killed by a session budget wall — if the metadata write happens after it, a
@@ -274,8 +294,9 @@ This design prevents an LLM caller from self-confirming a public deployment.
 Parameters:
 
 - `site_id` (required): deploy slot name
-- `artifact_slug`: slug of a static `widget`, `html`, or `markdown` artifact;
-  `kind="webapp"` is rejected because its content is only an app summary
+- `artifact_slug`: slug of a `widget`, `html`, or `markdown` artifact, or of a
+  `kind="webapp"` artifact whose `webapp_metadata.app_dir/public` exists (a
+  webapp without that built root is refused with `webapp_root_unavailable`)
 - `local_dir`: validated path to a static directory (fullstack `public/` root)
 - `profile`: AWS profile override (default: registry default)
 - `ttl_hours`: hours until auto-cleanup (default: 72)
@@ -316,8 +337,10 @@ audit, preview, or human-confirmation boundary.
   refuse on a hit. This is public.
 - **Private by default** — the bucket stays **private** (CloudFront OAC only);
   CloudFront adds security headers (nosniff / HSTS / `frame-ancestors 'self'` +
-  loopback so the dashboard can live-preview the site) and enforces
-  TLS 1.2+ via `redirect-to-https`.
+  loopback so the dashboard can live-preview the site) and redirects HTTP to
+  HTTPS (`redirect-to-https`). The default `*.cloudfront.net` certificate
+  keeps CloudFront's TLSv1 viewer policy; only the CloudFront→API Gateway
+  origin leg is pinned to TLS 1.2.
 - **No auth** — MVP serves static content publicly with no auth. If the app
   expects a protected backend, warn the user.
 
@@ -339,13 +362,18 @@ audit, preview, or human-confirmation boundary.
   **in-account scheduled reaper** (`install-reaper.sh` → EventBridge-timed Lambda;
   `templates/reaper.yaml` + `scripts/reaper_lambda/`) that deletes expired
   non-persistent deploys (S3 prefix + CloudFront behavior + backend stack) via a
-  role scoped to `kirocrew-deploy-app-*`. Runs in-account with no local creds —
+  role scoped to `kirocrew-deploy-app-*` stacks plus the engine's per-site
+  resources: per-site CloudFront distributions (only those tagged
+  `kirocrew:site`, never the shared one), their origin access controls, and the
+  `kirocrew-web-*` buckets and objects. Runs in-account with no local creds —
   the reliable mechanism. Local `reaper.sh` is a dev-only fallback.
 - **M4 cost** — DONE: `cost.sh` live usage estimate (per-slug S3 exact + shared
   CloudFront account-wide; honest "estimate not bill" labeling).
 - **Core/card integration** — DONE: the deploy engine lives in
   `src/kiro_crew/deploy/`; the `deploy-web-aws` provider is emitted by core; and
   the app card has a not-deployed state, profile picker, and Deploy button that
-  launches a skill-loaded session. After a confirmed agent-driven deploy, the
-  agent still back-fills the artifact's URL, profile, lifecycle, TTL, and teardown
-  metadata before endpoint verification.
+  deploys the built root directly (Feature Preview), falling back to a
+  skill-loaded session when there is no built root. An `artifact_slug` deploy has
+  its metadata written back by the server on confirm; after a `local_dir` deploy
+  the agent still back-fills the artifact's URL, profile, lifecycle, TTL, and
+  teardown metadata before endpoint verification.

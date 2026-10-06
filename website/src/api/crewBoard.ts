@@ -92,7 +92,8 @@ export interface WorkBoardResponse {
   items: WorkBoardItem[]
   /**
    * Whether this gateway can take an orphaned item over. False on main: no
-   * server-side primitive exists to delegate to, so the button renders disabled.
+   * server-side primitive exists to delegate to, so the page renders no
+   * take-over button.
    *
    * The only capability field here, because it is the only one the page reads.
    * `stop_available`, `channels_available` and a reason code were sent too, so

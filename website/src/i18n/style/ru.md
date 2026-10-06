@@ -14,7 +14,7 @@ it is named alongside the test that enforces it; the rest are for translation re
 
 | rule | example |
 |---|---|
-| Quotation marks: `«…»` outer, `„…“` inner | `«Нажмите „Сохранить“»` |
+| Quotation marks: `«…»` outer, `„…“` inner | `«Нажми „Сохранить“»` |
 | Em dash `—` with spaces for parenthetical | `Файл — не найден` |
 | Ellipsis: three dots `...` | Not the Unicode `…` character (per Russian typographic tradition) |
 | No trailing period on buttons/labels | `Сохранить`, not `Сохранить.` |

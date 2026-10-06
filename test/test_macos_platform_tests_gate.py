@@ -29,8 +29,13 @@ and each one is quiet when it breaks:
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 from macos_lane_helpers import verdict_script as _verdict_script
 
@@ -50,6 +55,17 @@ def _triggers(document: dict) -> dict:
 def _needs(job: dict) -> list[str]:
     needs = job.get("needs", [])
     return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _grep_has_pcre() -> bool:
+    """True when this host's grep accepts -P, as the Linux runner's GNU grep does."""
+    grep = shutil.which("grep")
+    if grep is None:
+        return False
+    probe = subprocess.run(
+        [grep, "-qP", "a"], input="a\n", capture_output=True, text=True, encoding="utf-8"
+    )
+    return probe.returncode == 0
 
 
 class TestThePullRequestPathInstantiatesNoMacRunner:
@@ -282,6 +298,11 @@ class TestARedMacSuiteHoldsPublicationAndNeverABuild:
         )
 
 
+def _verdict_step() -> dict:
+    steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+    return next(step for step in steps if step.get("id") == "verdict")
+
+
 class TestTheOnDemandLaneCannotBecomeAGate:
     """Advisory has to mean advisory, and that is a property of readiness' lists."""
 
@@ -299,7 +320,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # A `paths:` filter applies to EVERY event type, so one on the trigger
         # would discard the `labeled` event on any PR that touches no darwin file
         # -- which is exactly the PR someone reaches for the label on. The path
-        # test therefore lives in `decide`, as one of three switches.
+        # test therefore lives in `decide`, as one of four switches.
         triggers = _triggers(_load("macos-on-demand.yml"))
         assert set(triggers) == {"pull_request"}
         pull_request = triggers["pull_request"]
@@ -331,6 +352,103 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         mac = canary["jobs"]["platform-tests"]
         assert mac["needs"] == ["decide"]
         assert mac["if"] == "needs.decide.outputs.run == 'true'"
+
+    def test_a_linux_only_primitive_on_an_added_line_selects_the_macos_lane(self) -> None:
+        # The content switch: a primitive macOS lacks, wherever the file lives.
+        # Each needle is the shape of a line that passed on Linux and failed on
+        # macOS; the misses are their portable spellings.
+        needle = re.compile(_verdict_step()["env"]["LINUX_ONLY_PRIMITIVES"])
+        linux_only = (
+            'before = len(os.listdir("/proc/self/fd"))',
+            '[ "$(stat -c %a "$kc_dir" 2>/dev/null)" != "700" ]',
+            "fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)",
+            "resource.setrlimit(resource.RLIMIT_AS, (limit, limit))",
+            "name = os.fsdecode(raw)  # surrogateescape round trip",
+        )
+        assert all(needle.search(line) for line in linux_only)
+        assert not needle.search('kc_mode=$(stat -f %Lp "$kc_dir")')
+        assert not needle.search("count = platform_compat.count_open_fds()")
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+    @pytest.mark.skipif(
+        not _grep_has_pcre(), reason="the step runs on a Linux runner; this grep has no -P"
+    )
+    @pytest.mark.parametrize(
+        ("added", "selected"),
+        [
+            ('fds = os.listdir("/proc/self/fd")\n', True),
+            ("fds = platform_compat.count_open_fds()\n", False),
+        ],
+    )
+    def test_the_content_switch_reads_added_lines_of_the_real_diff(
+        self, tmp_path: Path, added: str, selected: bool
+    ) -> None:
+        # Run the step's own content block against a real two-commit repo, so
+        # the three-dot range, the `^+` filter and the pipe are what is tested.
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("the verdict step is Bash")
+        run = _verdict_step()["run"]
+        start = run.index('if [ -n "${BASE_SHA:-}" ]')
+        end = run.index("\nfi\n", run.index("content switch is off")) + len("\nfi\n")
+        block = run[start:end]
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+
+        git("init", "-q")
+        # A removed Linux-only line must not count: only ADDED lines select.
+        (repo / "probe.py").write_text('old = "/proc/self/status"\n', encoding="utf-8")
+        git("add", "probe.py")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        (repo / "probe.py").write_text(added, encoding="utf-8")
+        git("commit", "-qam", "head")
+        head = git("rev-parse", "HEAD")
+        script = "set -euo pipefail\n" 'reason=""\n' + block + 'printf "%s" "$reason"\n'
+        result = subprocess.run(
+            [bash, "-c", script],
+            cwd=repo,
+            env={
+                **env,
+                "BASE_SHA": base,
+                "HEAD_SHA": head,
+                "LINUX_ONLY_PRIMITIVES": _verdict_step()["env"]["LINUX_ONLY_PRIMITIVES"],
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (result.stdout == "content") is selected, result.stdout + result.stderr
+
+    def test_an_unreadable_diff_leaves_the_content_switch_off(self) -> None:
+        # The lane is advisory, so a diff it cannot read must not fail
+        # `decide` -- but it must say so rather than fall silent.
+        run = _verdict_step()["run"]
+        assert 'added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}"' in run
+        assert "content switch is off for this run" in run
+        assert "grep -qP" not in run
 
     def test_native_reap_contract_triggers_the_macos_lane(self) -> None:
         steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]

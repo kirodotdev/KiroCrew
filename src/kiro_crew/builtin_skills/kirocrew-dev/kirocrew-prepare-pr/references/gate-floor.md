@@ -38,11 +38,9 @@ scan. CI runs `check_brand_name.py --test` before the scan and `docs_lint.py
 while the scan stays clean, so a floor carrying only the scan passes locally and
 fails after push. Both self-tests sit ahead of their scans in `gates[]`.
 
-Note that "CI" here means both workflows. The eleven cheapest blocking gates —
-`vendor-manifest`, `brand-lint`, `focus-cue-lint`,
-`feature-map-lint`, `changelog-history`, `decision-ledger-history`,
-`builtin-skill-scope`, `loop-bound-locks`, `testpaths-coverage`, `harness-parity`
-and `docs-lint` — run in `.github/workflows/fast-gate.yml`, not `ci.yml`, so
+Note that "CI" here means both workflows. The cheapest blocking gates — every job
+under `jobs:` in `.github/workflows/fast-gate.yml` (read the file for the current
+list; a count copied here goes stale) — run there, not in `ci.yml`, so
 `ci.yml` gaining a blocking scan is no longer the only way the floor can fall
 behind. The commands are unchanged, so `gates[]` needs no edit for the move
 itself; what the split costs is described under "Scan by every shape a step can
@@ -147,12 +145,10 @@ PR. A check written as a bare binary (`cfn-lint`, `mypy`, `flake8`) is invisible
 a `scripts/`-and-`npm run` scan, so the parity test also enumerates the **tool
 names** `ci.yml` invokes and makes each one either a gate or a named exemption.
 
-That test reads `ci.yml` and only `ci.yml`, which the Fast Gate split turned into a
-hole rather than a failure: the gates it moved are all still in `gates[]`, so
-nothing goes red, but a NEW blocking gate added to `fast-gate.yml` would no longer
-fail this test when the floor misses it — exactly the review round the parity test
-exists to prevent. Extend the scan to both workflow files before adding a gate
-there.
+That test reads both `ci.yml` and `fast-gate.yml` (comment lines stripped), so a
+NEW blocking gate added to either workflow fails it until the floor carries the
+gate or names it exempt. A gate added to any OTHER blocking workflow is outside the
+scan: extend the scan to that file in the same change.
 
 Strip comment-only lines before any such scan. `ci.yml` names commands in prose as
 well as running them — the Type check step's comment explains why it spells out

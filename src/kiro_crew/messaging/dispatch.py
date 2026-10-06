@@ -289,19 +289,22 @@ class ChannelTurn:
     channel_type: str
     """Governance member name, e.g. ``"weixin"``. Gates every inbound message.
 
-    Invariant: this MUST equal the first ``:``-segment of ``session_key`` —
-    the surface name is the routing authority for governance and (future)
-    control-plane operations. Holds by construction today because every
-    adopter builds its key via ``build_dm_session_key(channel_type, ...)``.
+    This equals the first ``:``-segment of ``session_key`` except for the
+    ``dm_scope="unified"`` direct-DM bucket, whose key is ``unified:{agent}``.
+    The surface name is the routing authority for governance and (future)
+    control-plane operations. Every adopter builds its key via
+    ``build_dm_session_key(channel_type, ...)``.
     """
 
     session_key: str
-    """The session address. OPAQUE to this pipeline: it is passed through to
-    ``sessions.*`` verbatim and never parsed, split, or rebuilt here. Keys are
-    constructed channel-side via :func:`kiro_crew.messaging.link.build_dm_session_key`
-    (``{surface}:{agent}:{chat_type}:{scope}[:genN]``). Keeping the pipeline
-    address-agnostic is what lets the address grammar evolve (deeper scope
-    paths, new surfaces) without touching dispatch.
+    """The session address. Passed through to ``sessions.*`` verbatim and never
+    rebuilt here. The pipeline reads only its namespace
+    (``channel_namespace_of``): to tell whether this channel is the session's
+    origin when checking mute, and to skip origin/mirror binding on a
+    ``unified:`` key. Keys are constructed channel-side via
+    :func:`kiro_crew.messaging.link.build_dm_session_key`
+    (``{surface}:{agent}:{chat_type}:{scope}[:genN]``, or
+    ``unified:{agent}[:genN]`` for a unified direct DM).
     """
 
     conversation_id: str
@@ -428,7 +431,8 @@ class ChannelTurn:
     comes back here instead of leaving the chat looking dead).
 
     ``None`` means the channel opts out, and its conversations stay unmirrored.
-    Both writes are steady-state READS after the first turn, so this costs a map
+    It is also ignored for a ``unified:`` key, which has no single conversation
+    to bind. Both writes are steady-state READS after the first turn, so this costs a map
     lookup per turn rather than a rewrite; see
     :func:`kiro_crew.messaging.link.bind_origin_mirror` for why the bind must be
     re-asserted on every turn rather than only on a new session, and for the

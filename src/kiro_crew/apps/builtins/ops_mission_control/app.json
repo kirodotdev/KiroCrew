@@ -16,7 +16,7 @@
     "Claims a firing alarm within one heartbeat and investigates before anyone has to look",
     "Knowledge ledger with confidence and trust levels \u2014 a repeat failure resolves from what you already know",
     "Live board in the dashboard and as replyable Slack threads, so the channel is the dashboard",
-    "Connects AWS CloudWatch, PagerDuty, Datadog, GitHub Issues, or any system that can POST signed JSON — including Alertmanager-shaped bodies, fanned out one incident per alert",
+    "Connects AWS CloudWatch, PagerDuty, Datadog, incident.io, GitHub Issues, or any system that can POST signed JSON — including Alertmanager-shaped bodies, fanned out one incident per alert",
     "Read-only by default \u2014 write actions are opt-in per signal pattern, and every one is audited",
     "Rotation-aware: the on-shift automation tier arms and disarms itself"
   ],
@@ -87,7 +87,7 @@
       "silent": true,
       "persistent_session": false,
       "enabled": false,
-      "message": "Follow the dispatch SOP at ~/.kiro/crew/skills/ops-mission-control/sops/dispatch.md. Call POST /api/apps/ops-mission-control/dispatch to claim any unclaimed signals; it returns each claimed incident with its ledger matches, operating mode, and a ready-to-use investigation brief. For each claimed incident, create a chat slot whose key is EXACTLY ops-mission-control-<incident_id> (the dashboard incident panel polls that key, so any other key leaves the user watching an empty conversation) titled '<incident_id> - <signal title>', link it to your ops channel so the thread is replyable, and start the investigation from that brief following ~/.kiro/crew/skills/ops-mission-control/sops/investigate.md. Tell the investigator explicitly that Phase 4 is mandatory: it MUST record its diagnosis with POST /api/apps/ops-mission-control/incident/transition (an incident with no recorded diagnosis shows on the board as 'Stopped, no diagnosis', which misreports a finished analysis as a dead end). If the response reports changed=false, produce NO output at all - this job is silent by design."
+      "message": "Follow the dispatch SOP at ~/.kiro/crew/skills/ops-mission-control/sops/dispatch.md. Call POST /api/apps/ops-mission-control/dispatch to claim any unclaimed signals; it returns each claimed incident with its ledger matches, operating mode, and a ready-to-use investigation brief. For each claimed incident, create a chat slot whose key is EXACTLY ops-mission-control-<incident_id> (the dashboard incident panel polls that key, so any other key leaves the user watching an empty conversation) titled '<incident_id> - <signal title>', and start the investigation from that brief following ~/.kiro/crew/skills/ops-mission-control/sops/investigate.md. Tell the investigator explicitly that Phase 4 is mandatory: it MUST record its diagnosis with POST /api/apps/ops-mission-control/incident/transition (an incident with no recorded diagnosis shows on the board as 'Stopped, no diagnosis', which misreports a finished analysis as a dead end). If the response reports changed=false, produce NO output at all - this job is silent by design."
     },
     {
       "name": "reconcile",
@@ -95,7 +95,7 @@
       "silent": true,
       "persistent_session": false,
       "enabled": false,
-      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise GET /api/apps/ops-mission-control/signals, then resolve any open incident whose signal is no longer firing (POST /incident/transition), update its Slack thread reaction, and unpin finished work. Cap at 10 incidents per run. If nothing changed, produce NO output."
+      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise GET /api/apps/ops-mission-control/signals, then resolve any open incident whose signal is no longer firing (POST /incident/transition); recording the transition updates the incident's Slack message itself. Cap at 10 incidents per run. If nothing changed, produce NO output."
     },
     {
       "name": "rotation-check",

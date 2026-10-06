@@ -3,10 +3,10 @@ title: Redaction that explains itself
 status: partial
 author: rayrayxu
 created: 2026-09-21
-last-audited: 2026-09-25
-audited-at: 8d47ac90d
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
-implementation-prs: [13685]
+implementation-prs: [12684, 13685]
 tracking-issues: [13741]
 supersedes: []
 superseded-by: []
@@ -197,7 +197,9 @@ value in a mode-0600 file, which only the owner's account can read, and
 the owner can then open that file in the dashboard with the file-view switch
 off (#13685); because this creates another secret copy on disk, the card must
 say so. A
-false-positive report sends only the rule name and session id, and the card
+false-positive report is a prefilled GitHub issue the reader reviews before
+sending; it carries only the rule name and the card kind, with no session id,
+value or URL. The card
 clearly says when the source is gone. Each placeholder stores the rule and
 source for that specific removed value.
 
@@ -439,6 +441,13 @@ explains.
 
 ## Rollout
 
+Status: [#12684](https://github.com/kirodotdev/KiroCrew/pull/12684) shipped
+steps 1, 2 and 3, including the per-workspace allowed-hosts list and its revoke
+control in Settings → Security; #13685 shipped step 6's file-view switch. The
+percent-decode fix of step 5 and step 6's read-only rules and hosts view are not
+built. [security.md](../system-specs/modules/security.md) owns the shipped
+contract.
+
 1. Add the three display rules first, because they stop web requests that
    would otherwise happen without a click.
 2. Store each match's rule name and source with its placeholder, then add the
@@ -471,8 +480,8 @@ they have today.
 
 ### Step 1 design
 
-What step 1 ships, and the invariants review should hold it to (nothing
-here is on main yet except the widget-frame CSP):
+What step 1 ships, and the invariants review should hold it to (shipped in
+#12684; the widget-frame CSP predates it):
 
 - **Widget frame CSP** was already on main: `buildSrcdoc`
   (`website/src/lib/widgetSrcdoc.ts`, `cspFor`) sets `default-src 'none'` with

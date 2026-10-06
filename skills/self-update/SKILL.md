@@ -107,9 +107,9 @@ dispatch, drain, and restart behavior.
 ### User asks "update yourself"
 
 1. Check the current version and layout-aware update verdict first.
-2. If an update is available, use the authenticated in-app action when supported; otherwise ask the user to run the exact remediation command in their terminal. The agent shell cannot run `kirocrew update` directly.
+2. If an update is available, ask the user to click Update in Settings → About when the capability offers an in-app apply; otherwise ask them to run the exact remediation command in their terminal. No agent tool applies an update, and the agent shell cannot run any `kirocrew update` form, `kirocrew update approve` included. On a cli.sh managed-venv install the in-app Update only arms the update; the user then finishes it with `kirocrew update approve` on the host.
 3. Follow the capability response: terminal source/wheel updates require a gateway restart, while an in-app apply owns the restart itself.
-4. Report any dirty-tree, divergence, interpreter-floor, policy-provider, or externally-managed refusal without routing around it.
+4. Report any divergence, interpreter-floor, source-pin ("Update blocked by security policy"), policy-provider, Windows wheel, or externally-managed refusal without routing around it. Uncommitted tracked changes on a git checkout are not a refusal: the updater asks the user to confirm discarding them.
 
 ### User asks "keep yourself updated" or "auto-update"
 

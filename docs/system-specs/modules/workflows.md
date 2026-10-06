@@ -65,16 +65,24 @@ context      (may import: __init__, validate)
     ↑
 runner       (may import: __init__, validate, dsl, events, context, schema, registry)
     ↑
-service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library)
+service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library, events)
 ```
+
+The scan counts only relative sibling imports (`from .sib import …`, level 1).
+An absolute `kiro_crew.workflows.*` import is outside it: `agent_pool` imports
+`agent_exec` and `library` imports `store` that way, so the diagram's "leaves" are
+leaves only in the relative-import sense the test checks.
 
 The same test forbids the engine from importing `kiro_crew.dashboard.state` or
 `kiro_crew.dashboard.ws` directly, so progress leaves the engine only through the
 injected event sink. `agent_exec`, `agent_pool`, and `store` are **optional
-adapters**, not engine layers: `store.py` and `runner.py` import
-`kiro_crew.config` / `kiro_crew.sel` / `kiro_crew.security` inside `try/except
-ImportError` and degrade to a default or a no-op, so the engine stays importable
-standalone.
+adapters**, not engine layers. `runner.py` imports `kiro_crew.sel` and the
+`kiro_crew.security` redactors inside `try/except ImportError` and degrades to a
+no-op audit and unredacted (still truncated) failure text, so the engine stays
+importable standalone. `store.py` guards only `kiro_crew.config.loader.KiroCrewConfig`
+that way (falling back to `config_dir()/workflows`); its `platform_compat`,
+`config.paths`, `execution_context`, `pinned_fs` and `security` imports are hard
+dependencies.
 
 `test/test_workflows_presence.py` additionally fails the build if any
 `workflows/*.py` module is not imported by some `test/test_workflows_*.py`, so a
@@ -420,7 +428,13 @@ Static rejections:
 - **`FORBIDDEN_NAMES`:** `eval`, `exec`, `compile`, `open`, `input`, `__import__`,
   `__builtins__`, `globals`, `locals`, `vars`, `getattr`, `setattr`, `delattr`,
   `breakpoint`, `memoryview`, `classmethod`, `staticmethod`, `super`, `type`.
-- **No dunder attribute or name access** (`().__class__`, `__builtins__`).
+- **No dunder, private or introspection attribute access, and no dunder name access**
+  (`().__class__`, `__builtins__`, `x._y`, `FORBIDDEN_ATTRS` — frame, code and
+  generator internals such as `gi_frame` / `f_globals` / `tb_frame`, and `mro`),
+  nor `.format` / `.format_map`, whose template is interpreted at run time. One
+  predicate (`_attr_reason`) judges an attribute node, a format-string field and
+  a class-pattern keyword (`MatchClass.kwd_attrs`, a plain string rather than an
+  attribute node) alike.
 - **Shape:** a module-level `META` assigned a **pure literal** dict
   (`ast.literal_eval`; both `META = {...}` and `META: dict = {...}` are accepted),
   and an `async def workflow(ctx)` entrypoint whose first parameter is named `ctx`
@@ -441,8 +455,10 @@ Static rejections:
   instead of failing mid-run:
   - `await ctx.phase(...)` / `await ctx.log(...)` / `await ctx.nudge(...)`, because
     those are synchronous.
-  - `with ctx.<m>(...)` for any `m` outside `{phase, log, nudge}`, and `async with
-    ctx.<anything>(...)` at all.
+  - `with ctx.<m>(...)` for a known async `ctx` method (`agent`, `parallel`,
+    `pipeline`, `workflow`, `approve`); other attribute names are left to the ctx
+    surface check. `async with ctx.<m>(...)` is rejected for every known `ctx`
+    method, `phase` / `log` / `nudge` included.
   - inline dereference of a nullable awaited result:
     `(await ctx.agent(...)).get(...)` or `[...]` or `.attr`, for `agent`,
     `parallel`, `pipeline`, `workflow` and `approve`. Binding to a variable first
@@ -543,7 +559,7 @@ None-guard, and `validate` rejects the inline unguarded dereference.
 
 | Ceiling | Constant | Value | Behavior at the limit |
 |---------|----------|-------|----------------------|
-| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed`, `where="ceiling"`, `error="timeout"` |
+| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed` with `where="ceiling"` and `error="run exceeded <N>s"`; the `RunResult.error` is `"timeout"` |
 | Wall-clock bounds | `MIN_RUN_TIMEOUT_SECS` / `MAX_RUN_TIMEOUT_SECS` | 60s / 21600s (6h) | a caller value is clamped into the range |
 | Agent calls per run | `context.DEFAULT_MAX_AGENTS_PER_RUN` | 1000 | `BudgetExceeded` -> `run_failed`, `where="ceiling"` |
 | Tool calls per agent step | `agent_exec._MAX_TURNS_PER_STEP` | 200 | `stream_and_collect` stops the step; prevents an infinite tool loop from prompt injection |
@@ -1185,8 +1201,21 @@ Registered in `dashboard/server_runtime/mcp_routes.py`, handled in
 caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
 
 Before author, source run, intent run, saved-definition run or subtree rerun
-calls the service, ordinary transport authentication and owner/app permissions
-apply. The session's canonical execution record is captured before asynchronous
+calls the service, ordinary transport authentication applies, and then a split by
+caller class:
+
+- **Source, intent and saved-definition runs** (`POST /api/workflows/run`,
+  `/run_intent`, `/definitions/{ref}/run`): a dashboard-user request (no
+  `internal_auth`, `app == ""`) must be the dashboard owner
+  (`require_owner_dashboard_request`, 403 `owner_only`). An `X-Internal-Secret`
+  loopback caller (the chat `workflow_*` MCP tools) and a manifest-scoped app token
+  keep the controls that already govern them. `POST /api/spawn` and
+  `POST /api/crons` gate the dashboard-user class the same way.
+- **Definition create, update and run promotion** are owner-only for every caller.
+- **Run list, detail, cancel and rerun** go through `workflow_memory.authorize_run`
+  (the list keeps only the runs it admits).
+
+The session's canonical execution record is captured before asynchronous
 dispatch; missing or malformed member identity refuses instead of selecting Global.
 Run list/detail/cancel/rerun keep ordinary execution permissions. A permitted
 rerun retains the original run's member/store and strictest privacy mode, even
@@ -1337,8 +1366,7 @@ rerun stays on the run controls, where the control names what it does.
 Per-node token cost is absent by necessity, not by choice: the stream carries a
 run-level budget only (`run_started.budget_total`, `budget_update.spent`) and no
 per-agent cost attribution, so drawing one would mean inventing a number. Per-node
-TIMING needs no new data, which is why it shipped first (#11795): `agent_started`
-and `agent_finished` each already carry a `ts`.
+TIMING needs no new data: `agent_started` and `agent_finished` each carry a `ts`.
 
 ### MCP tools
 
@@ -1498,7 +1526,7 @@ by name; the two together are why a single missed AST pattern is not an escape.
 | B2 | No dunder attribute or name access (`().__class__`, `__builtins__`, and the rest), no private (`_`-prefixed) attribute access, and no `.format` / `.format_map` call — their template is interpreted at run time, so a traversal can be assembled from parts no static fold can resolve (f-strings are the replacement: their fields are real AST and are already checked). An inline adversarial-escape corpus is rejected wholesale. | `test_workflows_invariants.py::test_b2_dunder_attribute_rejected`, `::test_b2_adversarial_escapes_rejected` | `validate.py` |
 | B3 | The nondeterminism modules (`time`, `random`, `uuid`) are unreachable, statically (they cannot be imported) and at run time (no `__import__` in the sandbox namespace, and `SAFE_BUILTINS` excludes nondeterministic and I/O builtins). Determinism is what makes a run stream resume-stable. | static: `test_workflows_invariants.py::test_b3_determinism_modules_rejected`, `::test_b3_safe_builtins_exclude_nondeterminism_and_io`; runtime: `test_workflows_context.py::test_import_statement_fails_in_safe_globals`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals` | `validate.py`, `context.py` (`build_safe_globals`) |
 | B4 | Event persistence is JSON only: `serialize_events` / `deserialize_events` round-trip through `json`, reject non-JSON and non-array input, and the module imports no `pickle` / `marshal` / `shelve`. | `test_workflows_events.py::test_round_trip_through_json`, `::test_serialize_output_is_pure_json`, `::test_deserialize_rejects_non_json`, `::test_events_module_has_no_pickle_import` | `events.py` |
-| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` and `error == "timeout"`. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_timeout_never_leaks_cancellederror` | `runner.py` |
+| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` (event error `run exceeded <N>s`) and a `RunResult` whose `error == "timeout"`. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_timeout_never_leaks_cancellederror` | `runner.py` |
 | B6 | `AgentCounter` caps lifetime `ctx.agent()` calls per run (default `DEFAULT_MAX_AGENTS_PER_RUN = 1000`) and the cap is enforced through the runner: an unbounded agent loop stops at the limit and ends as `run_failed` at the ceiling. | `test_workflows_context.py::test_agent_counter_raises_past_limit`, `::test_agent_counter_default_limit`; `test_workflows_runner.py::test_agent_count_cap_enforced` | `context.py` (`AgentCounter`), `runner.py` |
 | B7 | The exec namespace exposes only `SAFE_BUILTINS` plus `ctx`, so a script has no filesystem or egress reach: `open`, `eval`, `exec`, `compile`, `__import__`, `input` and `getattr` are absent, and benign safe builtins still work. | `test_workflows_context.py::test_safe_globals_only_exposes_ctx_and_safe_builtins`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals`, `::test_safe_builtins_actually_usable` | `context.py` (`build_safe_globals`) |
 | B9 | Every hostile script in the on-disk escape corpus (`test/workflows/malicious/*.py`) is statically rejected, with a non-empty error. The corpus directory must exist and be non-empty, and a new escape idea is added by dropping a file in it: the test parametrizes over the directory. | `test_workflows_malicious.py::test_every_malicious_script_is_rejected`, `::test_corpus_dir_exists_and_is_populated` | `validate.py`, `test/workflows/malicious/` |
@@ -1555,7 +1583,7 @@ and a git-dependent gate can redden a clean trunk.
 
 | Gate | Guarantees | Pinned by | Constrains |
 |---|---|---|---|
-| F1 | The layering holds: `validate` / `dsl` / `schema` / `events` / `registry` / `__init__` and the optional adapters (`agent_exec`, `agent_pool`, `store`, `library`) are leaves with no intra-package siblings; `context` may import `validate`; `runner` may import `validate`, `dsl`, `events`, `context`, `schema`, `registry`; `service` sits above the runner. No module may import backwards, no module escapes the declared contract, and the engine must not reach into `kiro_crew.dashboard.state` or `kiro_crew.dashboard.ws` (progress goes through the event bus or a port). | `test_workflows_architecture.py::test_layering_no_backward_or_unexpected_sibling_imports`, `::test_engine_does_not_import_dashboard_internals`, `::test_every_module_is_covered_by_the_contract` | all of `src/kiro_crew/workflows/` |
+| F1 | The layering in [Module layering](#module-layering) holds. No module may import backwards, no module escapes the declared contract, and the engine must not reach into `kiro_crew.dashboard.state` or `kiro_crew.dashboard.ws` (progress goes through the event bus or a port). | `test_workflows_architecture.py::test_layering_no_backward_or_unexpected_sibling_imports`, `::test_engine_does_not_import_dashboard_internals`, `::test_every_module_is_covered_by_the_contract` | all of `src/kiro_crew/workflows/` |
 | F2 | The frozen contract in `workflows/__init__.py` cannot drift silently: `__all__`, the `WorkflowContext` data attributes, its exact method set, each method's signature and async-ness, each port's methods and `runtime_checkable`-ness, `EVENT_TYPES` (exact and ordered), and the event envelope keys plus JSON round-trip. Changing any of them is an explicit re-freeze that must update `__init__.py`, the spec above, and this test together. | `test_workflows_conformance.py::test_all_exports_exact`, `::test_ctx_method_set_exact`, `::test_ctx_method_signature`, `::test_port_method_signature`, `::test_event_types_exact_and_ordered`, `::test_event_envelope_keys_exact` | `__init__.py` |
 | F3 | Every implementation module under `workflows/` is imported by at least one `test/test_workflows_*.py`, so a module cannot be added without a test that reaches it. The gate carries its own negative control, so it cannot silently stop catching orphans. | `test_workflows_presence.py::test_every_workflows_module_has_a_referencing_test`, `::test_presence_gate_flags_an_orphan_module` | all of `src/kiro_crew/workflows/` |
 

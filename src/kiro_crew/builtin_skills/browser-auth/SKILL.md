@@ -79,7 +79,7 @@ The extension and CLI pair through a relay. An optional token in
 panel installs the CLI. Attach uses the user's real logins without cookie handling.
 
 **A token changed AFTER your process started breaks attach.** Your shell carries
-the value injected when the gateway started, so editing it in the extension alone
+the value injected when your process started, so editing it in the extension alone
 leaves the two disagreeing:
 
 ```
@@ -90,8 +90,12 @@ PLAYWRIGHT_MCP_EXTENSION_TOKEN matches its token.
 
 That names a mismatch, not a missing extension, so the extension link is the wrong
 answer. Either drop the stale variable for the attach command alone, which puts the
-approval back in the browser, or have the user restart the gateway so it reads the
-new value:
+approval back in the browser, or have the user paste the extension's current token
+into **Settings → Browser** and continue in a new session: saving re-publishes it
+to processes started afterwards, while a session already running keeps the value
+it started with. Restarting the gateway alone re-reads the OLD stored token.
+
+For the first option:
 
 ```bash
 env -u PLAYWRIGHT_MCP_EXTENSION_TOKEN playwright-cli attach --extension=chrome
@@ -129,13 +133,13 @@ prompt: those are the user's to complete, and working around them is not on the
 table. When they confirm they are in:
 
 ```bash
-playwright-cli state-save ~/.kiro/crew/browser-state/example.json
+playwright-cli state-save "${KIROCREW_HOME:-$HOME/.kiro/crew}/browser-state/example.json"
 ```
 
 **Replay it later.**
 
 ```bash
-playwright-cli state-load ~/.kiro/crew/browser-state/example.json
+playwright-cli state-load "${KIROCREW_HOME:-$HOME/.kiro/crew}/browser-state/example.json"
 playwright-cli goto https://internal.example.com/dashboard
 ```
 

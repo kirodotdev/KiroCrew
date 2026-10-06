@@ -3,11 +3,11 @@ title: CrewMates launch — one vocabulary and nine screens for AI teammates
 status: accepted
 author: CrysisDeu
 created: 2026-09-22
-last-audited: 2026-09-22
-audited-at: 87553ba866
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 revision: 2026-10-01 — §11 roster-as-floating-card amendment
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -384,7 +384,8 @@ this document:
 - The startup prune is gated by a marker file in the config directory, written
   once a pass completes; it removes only never-chatted rows with no `member_id`
   on the shared store bound to an installed spec of the person's own or of a
-  package, and touches no agent file or transcript.
+  package, or to a skill-view alias (`kirocrew-skill-view-*`), and touches no
+  agent file or transcript. Other spec-less rows are untouched.
 - Threads and teams add new storage beside the existing transcript and roster;
   nothing existing changes shape.
 
@@ -405,8 +406,9 @@ The launch is complete when, on main:
 - An install carrying crewmates an earlier sync generated loses, on its first
   start and once, exactly the rows § 03 names: never chatted with on the
   Crewmates page, no `member_id`, the shared store, bound to an installed spec
-  of the person's own or of a package. Chatted rows, created crewmates,
-  runtime-owned and spec-less rows and every agent file are untouched.
+  of the person's own or of a package, or bound to a skill-view alias
+  (`kirocrew-skill-view-*`). Chatted rows, created crewmates, runtime-owned
+  rows, other spec-less rows and every agent file are untouched.
 - A crewmate's chat contains no auto-nudge, cron or sub-agent envelope rows.
 
 ## 8. PRs implementing this
@@ -420,6 +422,8 @@ Open at the time of writing:
 - [#14897](https://github.com/kirodotdev/KiroCrew/pull/14897) — the revised
   § 03 rule: package-sourced rows and the Crewmates-page definition of
   "chatted with".
+- [#15103](https://github.com/kirodotdev/KiroCrew/pull/15103) — the prune
+  also removes never-chatted rows bound to a skill-view alias (screen 03).
 - [#12805](https://github.com/kirodotdev/KiroCrew/pull/12805) — crewmate
   panel: Notes, Work log, Dashboard (screen 06).
 - [#12806](https://github.com/kirodotdev/KiroCrew/pull/12806) — Customize
@@ -469,6 +473,10 @@ for "edit the bot I am looking at".
 Implementation: the shared editor (hook + dialog) and the Crewmates-page wiring
 ship first. Folding the crew manager (`KiroCrewAgentsPage`) onto the same shared
 component, so "one editor" is literally true in code, is the committed follow-up.
+
+Status: the follow-up is open. `KiroCrewAgentsPage` shares only the section
+list (`useCrewEditorSections`) and keeps its own edit-sheet state, so a change to
+the editor must be mirrored there until the fold-in lands.
 
 Provenance: accepted by the product owner on 2026-09-30 (CREW-18688), recorded
 here ahead of the implementation PR (#15275) so the decision lands on main
@@ -617,3 +625,24 @@ Amended:
 
 § 7's acceptance criterion is superseded by this paragraph: the crewmate panel
 opens on Dashboard and offers exactly Dashboard, Work log, Notes.
+
+## 13. Amendment — the panel becomes a Profile card plus Dashboard (#16317)
+
+Status: shipped in [#16317](https://github.com/kirodotdev/KiroCrew/pull/16317)
+by this RFC's author. This section supersedes screen 06's tab set, § 11's
+roster column and § 12's order; § 06, § 7, § 11 and § 12 stay as the record of
+the earlier decisions.
+
+- The side panel leads with **Dashboard** only (`CREW_PANEL_TAB_IDS`), plus the
+  standing Files entry. Dashboard is the crewmate's report.
+- The thread-header identity pill opens a **Profile card** with four tabs:
+  Profile, Schedules, Sessions, Goals.
+- **Notes** is a pushed page inside Profile, not a panel tab.
+- The **Work log** UI is removed.
+- While a crewmate conversation is open on desktop, the standing roster is
+  hidden and a switcher in the thread header replaces it.
+
+The owning spec for this layout is
+[crew-mode.md](../system-specs/modules/crew-mode.md). § 7's panel criterion is
+superseded by this section: the panel opens on Dashboard, and Notes, Schedules
+and the rest live in the Profile card.

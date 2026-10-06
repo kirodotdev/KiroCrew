@@ -93,12 +93,16 @@ Permission denials, invalid parameters, context-length errors, deny-rule
 refusals, turn limits and cancellations are `non_congestion` and never feed the
 controller (`classify_run_outcome`). Completions are inferred each tick by
 diffing `SubagentManager._agents` (`done` transitions), so the run loop needs no
-hook; `record_completion` exists for work the manager does not track. Both
+hook. `record_start` (from `acp/runtime_start.py`) and `record_provider_throttle`
+(from the subagent run loop and chat-turn recovery) have production callers;
+`note_gate_outcome`, `record_completion` and the `on_provider_throttle` listener
+are seams with no in-tree caller, so `gate_failures` comes from the daemon
+snapshot only. Both
 spawn-gate outcome counters are the DAEMON's LIFETIME totals, so the policy
 diffs them: `failure` against the value one window old, `success` against the
 value at the last cap change. A counter that went DOWN is a daemon respawn under
 a live policy and both diffs rebase onto the fresh value -- otherwise two
-lifetime failures read as permanent pressure (the experiment's D1) and a restart
+lifetime failures read as permanent pressure and a restart
 makes the gate cap re-earn the vanished daemon's whole success total on top of
 `DEFAULT_INCREASE_SUCCESSES` before its next `+1`. Silence is not a restart: a
 failed `stats()` read arrives as the all-zero `SpawnGateStats` default, a shape a
@@ -134,7 +138,7 @@ one-increase-per-window clock.
 | **Resume** (gate) | the probe completed (completions advanced) with no signal; or the host is idle and clear for `DEFAULT_IDLE_RECOVERY_SECS` with no probe result | gate to `floor + 1` (idle: left at its floor, to earn on inits); normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
 | **Fresh start** | process start | exec cap AT its ceiling (`user_max`); gate at `mcp_gateway.spawn_concurrency_initial`; the first clean window is measured from the first sample |
 | **Ceiling raised** | `user_max` rises (a hot reload of `agent.max_subagents`) while the exec cap sat at the old ceiling | the exec cap follows to the new ceiling at once; a cap below the old ceiling (a cut) keeps earning its room |
-| **Fixed** | `adaptive_concurrency_mode = "fixed"` | both caps pinned at their initial values on every tick -- the exec cap at its ceiling (Q2 reversal) |
+| **Fixed** | `adaptive_concurrency_mode = "fixed"` | both caps pinned at their initial values on every tick -- the exec cap at its ceiling |
 
 `healthy_in_flight` (running minus stalled) bounds a decrease from below because
 natural shrink cannot free what is currently working; that is what turns "10
@@ -212,13 +216,9 @@ starts, fd and process exhaustion -- are what withhold the next increase or cut
 the cap. Work that cannot be admitted yet queues on the manager and the spawn
 gate; it is never refused for a guessed number.
 
-An earlier reading clamped the climb to `min(user_max, Sample.host_cap)`, a
-figure predicted from each agent's p90 peak memory AND peak CPU (the auto-sizing
-arithmetic without its `subagent_auto_max` clamp). It was removed because it
-inverted the loop: one build-heavy agent's one-minute burst (20 cores, 9 GB)
-priced every slot at that burst, so a 32-core host with 96 GB free computed a
-CPU term of 4 and held the cap at its fresh-start value for the life of the
-process, while the controller it sat under saw nothing but clean samples. Memory
+The climb is bounded by `user_max` alone, not by a figure predicted from each
+agent's peak memory and CPU: one build-heavy agent's burst would price every slot
+at that burst and hold the cap down while the controller saw only clean samples. Memory
 over-commit is the one unrecoverable failure and it is guarded live, once, where
 the start is decided: the spawn gate defers every
 start that would not leave `spawn_min_memory_gb` free after its own price and
@@ -241,8 +241,9 @@ off);
 `agent.subagent_cpu_cost_cores` is deprecated and inert, preserved on load and
 save so an existing config is not rewritten.
 
-`probe_host` reads memory, RSS and fds only -- live signals -- and no longer
-loads config or the learned-cost store on the worker thread.
+`probe_host` reads live signals only: free memory, process RSS, process CPU
+seconds (for metrics only, never classified), fd count and the fd soft limit. It
+loads no config and no learned-cost store on the worker thread.
 `test_adaptive_policy.py::TestSlowStart::
 test_no_static_host_prediction_sits_under_the_user_ceiling`,
 `test_adaptive_controller.py::TestTick::
@@ -424,6 +425,10 @@ ceiling, the idle clock ("idle; restoring toward 32 in 25s"), demand at the cap,
 or the completions still owed; when only host-only evidence (loop lag, memory)
 fired, the gate's hold is named instead. Cap decreases, pauses and resumes are logged at
 WARNING (growth at INFO) so `gateway.log` keeps them.
+Session health publishes the same state (`slack/gateway_runtime/admission.py`):
+the exec cap (`subagents`) and the spawn gate cap (`spawn_gate`) as cap sources,
+and a degrade reason of `adaptive_pause`, `adaptive_probe` or `adaptive_decrease`
+as a pressure source, so `dashboard/session_health.py` can name why work waits.
 `resource_status.adaptive_state()` reads it from the registry and
 `adaptive_summary_lines()` renders it at the end of the `resource_status` MCP
 tool's report ("Execution cap: 64/64   MCP spawn gate: 4/32 (active)", the
@@ -475,9 +480,12 @@ test_the_prompt_figure_is_the_auto_ceiling_on_any_host` and
 
 Metrics: `kirocrew.adaptive.decisions{action}` (`metrics/events.py::ADAPTIVE_DECISIONS`)
 increments once per decision that changed a cap or the paused flag; `action` is
-the closed policy enum. Holds and fixed-mode ticks are not counted.
+the closed policy enum. Holds and fixed-mode ticks are not counted. Each tick also
+records the process RSS and CPU-utilization histograms
+(`kirocrew.process.memory.rss_sampled`, `kirocrew.process.cpu.utilization`;
+`PROCESS_RSS_SAMPLED` and `PROCESS_CPU_UTILIZATION` in `metrics/events.py`).
 
-## Dependency signals (area L seam)
+## Dependency signals
 
 Per-provider throttling stays in that provider's dependency channel: the policy
 reports `throttled_providers` and the controller calls its
@@ -486,6 +494,9 @@ The `DependencyCoordinator` of [`taskq.md`](taskq.md) is the intended subscriber
 the controller itself never lowers a host cap for a 429.
 
 ## Tests
+
+`test_adaptive_runner_lane_feed.py` pins that runner-lane load (workflow
+`ctx.agent()` and TaskRunner steps) earns an exec-cap increase, not only a cut.
 
 `test_adaptive_startup_memory.py` runs the real manager, durable pump, admission
 guard and controller with virtual time, 0.25-second starts and five-second RSS

@@ -40,7 +40,8 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Search installed skills across names, descriptions and bodies. "
                 "Search, paginated list and exact full-key read use this agent's mapped scope. Returns "
-                "global file paths or safely loaded confined project instructions; "
+                "skill keys with a read-by-key hint, or a confined project skill's "
+                "instructions inline; "
                 "$skillname explicitly loads a skill. A body too large for one read is "
                 "read in pages with offset/limit (lines). Use when the compact startup "
                 "discovery entry does not name what you need."

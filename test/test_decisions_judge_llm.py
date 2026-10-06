@@ -30,9 +30,9 @@ from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate, impl_llm
 from kiro_crew.decisions.types import Choice, Noul, Score
 
-#: The judge's own questions. Every one is a ``Choice``, which is the only type the
-#: shipped wire speaks (``impl_jev._to_wire`` refuses anything else), so the RFC's
-#: three questions are a two-option one, a six-option one and an ordered level set.
+#: The judge's own questions. Every one is a ``Choice``: the RFC's three questions
+#: are a two-option one, a six-option one and an ordered level set. (The wire maps
+#: ``Choice``, ``Noul`` and ``Score``; see ``impl_jev._question_to_wire``.)
 WAKE = Choice(id="needs_owner", prompt="Does this need the owner now?", options=["wake", "quiet"])
 OUTCOME = Choice(
     id="outcome",

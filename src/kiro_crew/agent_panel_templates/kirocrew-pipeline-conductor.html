@@ -17,9 +17,7 @@
   A BODY FRAGMENT, not a document. The drawer parses this as a fragment and wraps
   it with the strict CSP and the theme variables, so a doctype/html/head/body
   wrapper here would be mangled -- pinned by
-  ``test_every_shipped_template_is_a_body_fragment``. The standalone preview copy
-  under design/crew-panel/ keeps its wrapper for opening in a browser directly;
-  everything below this comment is byte-identical to it.
+  ``test_every_shipped_template_is_a_body_fragment``.
 
   Every field the script reads off the data island is a leaf of the TypedDict
   ``PipelineBoardPanel`` in ``kiro_crew.pipeline_board_contract``, and

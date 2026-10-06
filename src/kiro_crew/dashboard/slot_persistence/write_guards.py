@@ -75,9 +75,11 @@ def _keep_owed_after_refusal(slot: _ChatSlot) -> None:
     Marking the slot dirty here is exactly the concurrent mark that comparison
     exists for: the flag stays true and the generation advances past the one the
     flush captured, so the next pass re-decides against the state that exists.
-    Scoped to the refusals this change introduces; the pre-existing declines
-    (delete-won, routing moved) keep their own semantics, so nothing has to tell
-    a retryable refusal from a permanent one.
+    Called by the retryable refusals: a stale queued-prompt snapshot, a slot
+    replaced before the write committed, and a queue that moved during every
+    window snapshot. The permanent declines (delete-won, routing moved) do not
+    call it and keep their own semantics, so nothing has to tell a retryable
+    refusal from a permanent one.
     """
     slot._dirty = True
 
@@ -534,11 +536,9 @@ def delete_won(
     # resurrecting the conversation in Older Sessions. A missing
     # file alone is NOT that signal: a brand-new slot's first save
     # also starts with no file. The abort therefore requires
-    # evidence that this slot's session HAS been on disk before —
-    # it was resumed from history (``_resumed_count``), its window
-    # has older lines on disk (``disk_older``), or one of this
-    # slot's own saves already committed (``_disk_window_len``).
-    # A fresh slot has none of these and proceeds with a normal
+    # evidence that this slot has OBSERVED its session file on disk
+    # (``_disk_meta_created_at`` or ``_disk_meta_observed``, see
+    # below). A fresh slot has neither and proceeds with a normal
     # first create. (``path`` is resolved after the delete, so for a
     # legacy-aliased Slack key it may name the canonical file rather
     # than the legacy one the delete unlinked — both are gone, so

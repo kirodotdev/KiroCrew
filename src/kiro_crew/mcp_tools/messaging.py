@@ -122,7 +122,7 @@ def schemas() -> list[dict[str, Any]]:
                 "options: combining any of them with a channel session is REFUSED, "
                 "not silently ignored."
                 "\n\nOn a non-Slack messaging channel (Telegram, Discord, Teams, "
-                "Webex, WeCom, Weixin, WhatsApp, iMessage) set 'channel_type' to "
+                "Webex, WeCom, Weixin, WhatsApp, iMessage, Feishu) set 'channel_type' to "
                 "that channel's name to post into the conversation you are already "
                 "talking in. Use it in preference to a channel session whenever you "
                 "are talking on that channel — it reaches the conversation at hand, "
@@ -177,7 +177,7 @@ def schemas() -> list[dict[str, Any]]:
                             "Deliver into the non-Slack messaging conversation this "
                             "session belongs to, named by its transport: "
                             '"telegram", "discord", "teams", "webex", "wecom", '
-                            '"weixin", "whatsapp" or "imessage". Use it when the '
+                            '"weixin", "whatsapp", "imessage" or "feishu". Use it when the '
                             "[RUNTIME] marker says you are talking over one of "
                             "those channels and you want a proactive message "
                             "(a silent cron's report, a finished background task) "
@@ -274,8 +274,8 @@ def schemas() -> list[dict[str, Any]]:
             "name": "send_notification",
             "description": (
                 "Publish a notification to the Kiro Crew notification center "
-                "(bell feed) through the system.agent channel (RFC notification "
-                "bus Phase 5). Unlike send_message, this is a pure notification: "
+                "(bell feed) through the system.agent channel. Unlike "
+                "send_message, this is a pure notification: "
                 "it never sends chat messages or DMs. "
                 "Supports priority tiers, a dashboard-internal "
                 "deep link, and group stacking. Use for structured, glanceable "
@@ -297,7 +297,8 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": ["critical", "default", "passive"],
                         "description": (
-                            "critical = badge+sound+banner, default = badge+sound, "
+                            "critical = badge+sound+banner, default = badge, with "
+                            "sound and banner per the channel's settings, "
                             "passive = feed-only. Omit for the channel default."
                         ),
                     },
@@ -323,7 +324,7 @@ def schemas() -> list[dict[str, Any]]:
                             '{"id": str (<=64), "label": str (<=40), "url"?: '
                             "dashboard-internal path (<=500)}. Rendered on the "
                             "notification card; url-less actions are legal but "
-                            "render nothing today."
+                            "render nothing."
                         ),
                         "items": {
                             "type": "object",
@@ -425,8 +426,9 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Send a file to the user. Copies the file to the outbox and "
                 "notifies the dashboard with a download link. When this "
-                "session is linked to a Telegram conversation the file is "
-                "also delivered there natively; otherwise it uploads to "
+                "session is linked to a Telegram, Discord or WeCom "
+                "conversation the file is also delivered there natively; "
+                "otherwise it uploads to "
                 "Slack when the caller's Slack identity permits it. Use "
                 "when you've generated a report, export or artifact the "
                 "user should receive. Any text file is accepted, but a "

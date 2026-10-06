@@ -423,6 +423,14 @@ REPO_LISTING_MAX_PAGES = 10
 # with an orphan past result 1000 and report a clean sweep. `_iter_repo_runs`
 # therefore compares what it yielded against the first page's `total_count`.
 REPO_LISTING_RESULT_CEILING = 1000
+# Past that ceiling an actionable listing is NARROWED, not paged deeper: the next
+# window lists the same status with `created=<=<oldest created_at read so far>`,
+# so it starts where the previous one stopped. Measured: `status=queued` held up to
+# 1024 runs while the ceiling serves 1000, so two windows reach the whole set and
+# three leave room for growth. Each window costs up to REPO_LISTING_MAX_PAGES reads
+# against the shared installation quota, and only a window that hit the ceiling
+# opens another, so a tick under the ceiling pays nothing extra.
+REPO_LISTING_MAX_WINDOWS = 3
 # The candidate statuses a heal can ever act on. `pending` is excluded: those runs
 # are held by their concurrency group, have no jobs, and `classify_run` maps a
 # jobless run to WAITING_ON_GROUP, never ORPHANED. So a `pending` listing that
@@ -1559,9 +1567,13 @@ def _iter_repo_runs(
     truncated: list[str] | None = None,
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
+    created_at_most: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield runs of EVERY workflow with the given status, newest first, across at
     most ``max_pages`` pages of ``PAGE_SIZE``.
+
+    ``created_at_most`` narrows the listing to runs created at or before that
+    instant (``created=<=…``); see ``_iter_actionable_runs``.
 
     ``GET /repos/{repo}/actions/runs?status=…`` is repo-wide: one paginated call
     returns runs of every workflow, so a single call chain per status covers the
@@ -1595,7 +1607,10 @@ def _iter_repo_runs(
         # The page size never changes between pages: ``page`` is an offset in
         # units of ``per_page``, so a smaller page would re-read the head of the
         # listing and never reach the runs it was meant to fetch.
-        query = urllib.parse.urlencode({"status": status, "per_page": PAGE_SIZE, "page": page})
+        params: dict[str, Any] = {"status": status, "per_page": PAGE_SIZE, "page": page}
+        if created_at_most is not None:
+            params["created"] = f"<={created_at_most}"
+        query = urllib.parse.urlencode(params)
         payload = fetch(f"repos/{repo}/actions/runs?{query}")
         batch = (payload or {}).get("workflow_runs") or []
         if total is None:
@@ -1676,6 +1691,54 @@ def list_runs(api: Api, repo: str, workflow: str, *, status: str, cap: int) -> l
     return sorted(runs, key=lambda run: run["created_at"])
 
 
+def _iter_actionable_runs(
+    api: Api,
+    repo: str,
+    *,
+    status: str,
+    truncated: list[str],
+    get: Callable[[str], Any] | None = None,
+    log: Callable[[str], None] = print,
+) -> Iterator[dict[str, Any]]:
+    """Yield every run of an ACTIONABLE status, reading past the result ceiling.
+
+    One listing stops at ``REPO_LISTING_RESULT_CEILING``, and the unread tail is the
+    oldest runs -- where an orphan sits. So when a window ends at the ceiling (or
+    its page cap), the next window lists the same status created at or before the
+    oldest run already read. ``<=`` rather than ``<`` so runs that share that
+    second are not skipped; the caller drops the repeats by id.
+
+    Truncation is recorded only for the LAST window, and only when it still hit a
+    nameable cause: the window cap ran out, or a full window made no progress
+    (every run in it shares one ``created_at``), so narrowing cannot reach further.
+    """
+    upper: str | None = None
+    for window in range(1, REPO_LISTING_MAX_WINDOWS + 1):
+        sink: list[str] = []
+        oldest: str | None = None
+        for run in _iter_repo_runs(
+            api,
+            repo,
+            status=status,
+            max_pages=REPO_LISTING_MAX_PAGES,
+            truncated=sink,
+            get=get,
+            log=log,
+            created_at_most=upper,
+        ):
+            created = _safe_text(run.get("created_at"))
+            if created and (oldest is None or created < oldest):
+                oldest = created
+            yield run
+        if not sink:
+            return
+        if oldest is None or oldest == upper or window == REPO_LISTING_MAX_WINDOWS:
+            truncated.extend(f"{message} after {window} created window(s)" for message in sink)
+            return
+        log(f"{status} run listing: narrowing to runs created at or before {oldest}")
+        upper = oldest
+
+
 def gather_all_candidate_runs(
     api: Api,
     repo: str,
@@ -1698,8 +1761,9 @@ def gather_all_candidate_runs(
     the runs being hunted; the page cap bounds the listing cost, and the global
     per-tick heal cap still bounds how many runs are acted on.
 
-    The third element names each ACTIONABLE status whose listing did not reach its
-    own ``total_count``. It is a tick-level failure rather than a note, because the
+    An actionable status is read through ``_iter_actionable_runs``, which narrows
+    by created window past the result ceiling. The third element names each
+    ACTIONABLE status whose listing still did not reach its own ``total_count``. It is a tick-level failure rather than a note, because the
     unread tail is where an orphan sits: see ``OUTCOME_LISTING_TRUNCATED``. A
     ``pending`` shortfall is logged and not recorded, because nothing in that status
     is ever healed -- and `pending` is exactly what grows during the saturation this
@@ -1710,15 +1774,15 @@ def gather_all_candidate_runs(
     seen: dict[int, dict[str, Any]] = {}
     try:
         for status in CANDIDATE_STATUSES:
-            for run in _iter_repo_runs(
-                api,
-                repo,
-                status=status,
-                max_pages=REPO_LISTING_MAX_PAGES,
-                truncated=(truncated if status in ACTIONABLE_CANDIDATE_STATUSES else None),
-                get=get,
-                log=log,
-            ):
+            if status in ACTIONABLE_CANDIDATE_STATUSES:
+                runs = _iter_actionable_runs(
+                    api, repo, status=status, truncated=truncated, get=get, log=log
+                )
+            else:
+                runs = _iter_repo_runs(
+                    api, repo, status=status, max_pages=REPO_LISTING_MAX_PAGES, get=get, log=log
+                )
+            for run in runs:
                 if _is_watched(run):
                     seen.setdefault(int(run["id"]), run)
     except ApiError as exc:
@@ -3778,11 +3842,20 @@ def run_watchdog(
             return None
         return None if hold is None else (*hold, None)
 
-    outcomes = {
-        verdict.run_id: OUTCOME_HUMAN_REQUIRED
-        for verdict in verdicts
-        if verdict.verdict == HEAL_EXEMPT
-    }
+    outcomes: dict[int, str] = {}
+    for verdict in verdicts:
+        if verdict.verdict != HEAL_EXEMPT:
+            continue
+        outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
+        # A failed outcome, so the tick goes red: FAILED_OUTCOMES promises the log
+        # then names the run and the command to type. Without this line a red tick
+        # carries only the plain verdict line, and every tick stays red with no
+        # `::error::` saying which run a human has to recover.
+        log(
+            f"::error::{_label(verdict)} needs a human: {verdict.detail} Recover it by hand "
+            f"(`gh run cancel {verdict.run_id}`, then `gh run rerun {verdict.run_id}` if its "
+            f"verdict is still needed)."
+        )
     outcomes.update(
         heal_runs(
             api,
@@ -4034,8 +4107,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "::error::a live run listing did not reach its own total_count, so the oldest live "
             "runs were never classified and an orphan among them was not seen. The page cap is "
-            "already the API's reachable window, so the remedy is to NARROW the listing (by "
-            "created window, branch or event) rather than to page deeper"
+            "already the API's reachable window and the listing already narrows by created "
+            "window up to REPO_LISTING_MAX_WINDOWS, so the remedy is more windows or a narrower "
+            "split (branch or event) rather than paging deeper"
         )
     return 1 if FAILED_OUTCOMES & set(outcomes.values()) else 0
 

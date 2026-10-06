@@ -2201,6 +2201,28 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def isolate_mcp_host_paths(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``apply_import``'s MCP sidecar lock off the real ``~/.kiro/settings``.
+
+    ``_write_mcp`` takes the dashboard handler's lock, whose paths the handler
+    binds from ``Path.home()`` when it is imported. The host floor rebinds them
+    only when that module is already loaded, so without this the first MCP write
+    in a worker reaches the operator's real files. A test that patches these names
+    itself still wins, because its own patch runs after this one.
+
+    Opt in per module with
+    ``pytestmark = pytest.mark.usefixtures("isolate_mcp_host_paths")``; the
+    onboarding-import test modules do.
+    """
+    import importlib
+
+    mcp_handlers = importlib.import_module("kiro_crew.dashboard.handlers.mcp")
+    global_mcp = tmp_path / "host-kiro-settings" / "mcp.json"
+    monkeypatch.setattr(mcp_handlers, "_GLOBAL_MCP_JSON", global_mcp)
+    monkeypatch.setattr(mcp_handlers, "_MCP_LOCK_PATH", global_mcp.with_suffix(".lock"))
+
+
+@pytest.fixture
 def ample_host_resources(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin ``resource_status.probe`` to AMPLE so no turn gains a ``[RESOURCES]`` line.
 

@@ -45,10 +45,20 @@ the platform's own user-controlled session cleanup.
 - **Deterministic shell** (`sage_lib/`): data store + self-heal layout, GitHub
   source adapter, blast-radius signals, result records, scorer/export.
   Token-free, unit-tested.
-- **LLM judgment** (`skills/` + sub-agents): the per-change design gate +
-  dimension review and the final report synthesis, each in a clean session.
+- **LLM judgment** (`skills/sage-review`): one thorough review pass per change,
+  in a clean session on a `review_pool` ACP worker (no `/api/spawn`, no
+  sub-agents), plus at most one targeted follow-up when the review reports
+  incomplete file coverage. Design is one dimension of that review, not a
+  separate gate. The Focus Report is built deterministically by
+  `sage_lib/report.py` from the result records.
 - **Backend** (`backend/routes.py`): registers the `/api/apps/code-review-sage`
-  routes on the dashboard app.
+  routes on the dashboard app, including `GET .../review-queue` (open PRs that
+  request the `gh` user's review), which backs the page's **Requests** rail tab.
+- **Authorization**: every mutating route is the dashboard owner's alone — a
+  non-owner dashboard subject and any app token (Sage's own included) get the
+  shared 403 `owner_only` before a body is read. A review runs with the owner's
+  `gh` login and a post publishes as the owner. The `GET` reads (settings,
+  namespaces, repos, runs) stay open. `tests/test_owner_gate.py` pins it.
 - **UI**: the `/code-review-sage` dashboard page is a React component at
   `website/src/apps/code-review-sage/CodeReviewSagePage.tsx` (registered in
   `website/src/apps/builtinRegistry.ts`).
@@ -64,7 +74,7 @@ code_review_sage/
 │   └── routes.py            # /api/apps/code-review-sage routes
 ├── sage_lib/
 │   ├── store.py             # data layout self-heal + config
-│   ├── review_driver.py     # code-enforced 1-isolated-spawn-per-change loop
+│   ├── review_driver.py     # code-enforced one-isolated-review-per-change loop
 │   ├── review_pool.py       # reviewer worker pool (config-driven model/effort)
 │   ├── adapters.py          # GitHub PR source adapter
 │   └── ...

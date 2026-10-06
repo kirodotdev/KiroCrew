@@ -49,7 +49,12 @@ def schemas() -> list[dict[str, Any]]:
                 "This is the ONLY way to persist findings: a raw HTTP PUT to the "
                 "same endpoint has no credential and is refused with 403. Local "
                 "triage state only — nothing is written to GitHub or GitLab. "
-                "Merges into any existing record, so a partial update is fine."
+                "Pass provider, host and kind with owner, repo and number: "
+                "together they pick which record is written. Within one "
+                "investigation run a write merges into the existing record, so a "
+                "partial update is fine; the first findings written after the "
+                "item's session changed (e.g. Start over) replace the previous "
+                "run's findings."
             ),
             "inputSchema": {
                 "type": "object",
@@ -60,7 +65,7 @@ def schemas() -> list[dict[str, Any]]:
                     "provider": {
                         "type": "string",
                         "enum": ["github", "gitlab"],
-                        "description": "Forge the repo lives on (default github)",
+                        "description": "Forge the repo lives on",
                     },
                     "host": {
                         "type": "string",
@@ -95,7 +100,7 @@ def schemas() -> list[dict[str, Any]]:
                     "next_action": {"type": "string", "description": "Recommended next action"},
                     "summary": {"type": "string", "description": "One-paragraph summary"},
                 },
-                "required": ["owner", "repo", "number"],
+                "required": ["owner", "repo", "number", "provider", "host", "kind"],
             },
         },
         {
@@ -287,7 +292,8 @@ def schemas() -> list[dict[str, Any]]:
                 "health probe answers. Use it to check a pod you started is still "
                 "serving before driving it, and to tell 'my request failed' apart "
                 "from 'the pod is not running'. A `health` of 200/401/403 means "
-                "something is answering on that port; 0 means nothing is."
+                "this pod is up; 0 means nothing answers on that port; -2 means "
+                "another process answers on that port, so this pod is not up."
             ),
             "inputSchema": {
                 "type": "object",
@@ -367,11 +373,12 @@ def schemas() -> list[dict[str, Any]]:
                 "number for a cycle you did no work in. That writes one "
                 "crew-level line and no work item, so it also takes none of the "
                 "work-item fields. "
-                "WARNING — `event` and `why` BECOME PUBLIC: they are rendered into "
-                "your claim comment on the forge as well as on your crew page. "
-                "Never "
+                "WARNING — `event` BECOMES PUBLIC: it is rendered into your claim "
+                "comment on the forge as well as on your crew page. `why` is not "
+                "posted to the forge, but it shows on your crew page and, for a "
+                "skip, in the skip index every crew on this repo reads. Never "
                 "put an absolute path, a host name or anything else about the "
-                "machine you run on in them; worktree paths belong in "
+                "machine you run on in either; worktree paths belong in "
                 "`worktree`, which stays local. "
                 "This is the ONLY write path: a raw HTTP PUT to the same "
                 "endpoint has no credential and is refused with 403."

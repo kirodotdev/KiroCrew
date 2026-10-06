@@ -3,8 +3,8 @@ title: Session Address Model — an opaque conversation identity with an attribu
 status: partial
 author: nrb
 created: 2026-08-17
-last-audited: 2026-09-11
-audited-at: 707b8aef2
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 4077
 revision: 3
 implementation-prs: [1366, 1455, 1480, 1539, 1921]
@@ -96,7 +96,7 @@ None of this is a Phase 0 regression; the pre-existing prefix test had the same 
 
 **Overlapping classification is reimplemented in at least seven shape-reading ladders** — `context.py` (`_resolve_runtime_source`), `validation.py` (`infer_use_case`), `sel.py` (`_infer_source`), `mcp_gateway/claim.py` (`classify_session_type`), `mcp_gateway/stub.py` (`_build_caller_block`) (whose docstring admits it mirrors the previous one), `dashboard/handlers/sessions.py` (`api_session_tool_policy`), and `messaging/link.py` (`telemetry_channel_of`). They do not return one identical enum — runtime source, use case, audit source, caller type, agent and telemetry label differ — but each independently recovers an attribute from the key. The last is inside the module §9.4 of the channel-plugin RFC nominates as the single owner of key grammar.
 
-**One authorization reader fails open, and the audit classifier mislabels an event.** `mcp_dashboard.py` (`_validate_args`) says its delegated-caller prefix list is knowingly incomplete and that a new key form "will read as unscoped until it is added here." It now separately fail-closes missing delegated and `dashboard:` callers, but every other unlocatable key still returns unscoped. `sel.py` (`_infer_source`) returns `"slack"` as the fallback for an unrecognised non-empty key, so a conversation the audit log cannot classify is recorded as a Slack conversation rather than as unknown.
+**One authorization reader fails open, and the audit classifier mislabels an event.** `mcp_dashboard.py` (`_DELEGATED_CALLER_PREFIXES`, read by `_caller_app_scope`) says its delegated-caller prefix list is knowingly incomplete and that a new key form "will read as unscoped until it is added here." It now separately fail-closes missing delegated and `dashboard:` callers, but every other unlocatable key still returns unscoped. `sel.py` (`_infer_source`) returns `"slack"` as the fallback for an unrecognised non-empty key, so a conversation the audit log cannot classify is recorded as a Slack conversation rather than as unknown.
 
 **Both spellings already leak into stored keys.** `session_map.py` (`_resolve_alias`) carries a repair for the corrupted double prefix `dashboard:dashboard_`, which exists only because more than one place builds the name. That is the Phase 0 fence, leaking.
 
@@ -160,7 +160,7 @@ The entry gains these fields. Each replaces exactly one shape-read, and each has
 | `stateful` | `_STATELESS_PREFIXES` in `session.py` plus exact-key handling | mint site, mutable thereafter |
 | `restricted` | constructed `dashboard:` keys in dashboard persistence/handlers, read by `handlers/_shared.py:_is_restricted_session` | the restrict/unrestrict handler |
 | `approval_policy` | session policy lookups keyed by a constructed or effective session key | the approval handler |
-| `delegated` | `_DELEGATED_CALLER_PREFIXES`, read by `_validate_args` in `mcp_dashboard.py` | mint site |
+| `delegated` | `_DELEGATED_CALLER_PREFIXES`, read by `_caller_app_scope` in `mcp_dashboard.py` | mint site |
 | `nudgeable`, `nudge_mode` | `binding_key_for` + `is_channel_key` (`autonudge.py` and its channel predicates) | mint site |
 | `agent` | the ladder at `dashboard/handlers/sessions.py` (`api_session_tool_policy`) | mint site |
 | `channel.thread_id` | `slack/gateway.py` (`_fire_slack_nudge`), which recovers the delivery thread *from the key* | the surface on attach |
@@ -215,7 +215,7 @@ This does not make attachment useless — it is what says *where else this conve
 | Capability | Asked at | Gates |
 |---|---|---|
 | `can_render_rich_html` | `context.py` · `_resolve_prompt_templates` | the widget block in the system prompt |
-| `can_render_interactive_card` | `context.py` · `build_message`; `mcp_tools/control.py` · `ask_question`; `session_directive_apply.py` · `apply_session_directive` | the question/card feature at the prompt, tool and directive-consumer boundaries — three sites, one name, must not diverge |
+| `can_render_interactive_card` | `context_assembly/turn.py` · `interactive_guidance`; `mcp_tools/control.py` · `ask_question`; `session_directive_apply.py` · `apply_session_directive` | the question/card feature at the prompt, tool and directive-consumer boundaries — three sites, one name, must not diverge |
 | `has_mutable_slot` | `session_directive_apply.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
 | `can_inject_turn` | `subagent_manager/monitoring.py` · `_notify_orphan_impl` | orphan notice as a turn, or fall back to a DM digest |
 
@@ -264,7 +264,7 @@ Phase 3 adds one of its own: **a turn with no resolvable ingress must fail towar
 ## 8. Security considerations
 
 - **The audit mislabel is a present bug, not a migration risk.** `_infer_source` in `sel.py` records an unclassifiable non-empty key as `"slack"`. Fixing it to `"unknown"` is in Phase 2's scope and is worth doing whether or not Phase 4 happens.
-- **One authorization reader still fails open for unknown key forms.** `_validate_args` in `mcp_dashboard.py` documents that an unrecognised non-delegated, non-dashboard key reads as unscoped. Under §5.2 an absent `delegated` field must refuse. Any phase that adds a field must state its failure direction, and fail-closed is the only acceptable answer.
+- **One authorization reader still fails open for unknown key forms.** `_caller_app_scope` in `mcp_dashboard.py` documents that an unrecognised non-delegated, non-dashboard key reads as unscoped. Under §5.2 an absent `delegated` field must refuse. Any phase that adds a field must state its failure direction, and fail-closed is the only acceptable answer.
 - **Capability must fail closed too, and today it fails open.** The prefix short-circuit in §2.3 hands a capability to a surface that does not have it. Phase 3's version of the rule: an unresolved ingress or an unknown surface yields the minimum capability set, never the host's.
 - **Per-surface governance widens an authorization surface, which is why it is a question and not a proposal.** If approval policy becomes per-surface (§10.2), the failure mode to design against is a channel that inherits the desktop's looser policy by omission. The default must be the tightest of the applicable policies, not the conversation's.
 - **Moving authorization state off existing identities is the risk to review.** Restricted-write state still uses constructed dashboard keys, while approval policy now follows `effective_session_key` for dashboard turns and the transport's session key for messaging turns. A half-migration can silently miss either lookup, so Phase 4 needs tests that an absent record cannot widen authorization and that revocation reaches the same identity approval granted.

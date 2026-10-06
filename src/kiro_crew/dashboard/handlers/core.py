@@ -2972,10 +2972,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
 # on its own" -- the point validates it against what the provider advertises to
 # this account and keeps the session's model when it is not there -- whereas the
 # endpoint chooses WHERE collected state is sent and `api_key` is schema-sensitive,
-# so the masked GET returns a sentinel for it. Same grammar and the same
-# entitlement validation as the `agent.role_models.*` pins next to it, because the
-# vocabulary is identically unknowable up front: `""` INHERITS (the turn keeps its
-# session's model) and no concrete id is named here.
+# so the masked GET returns a sentinel for it. The same entitlement validation as
+# the `agent.role_models.*` pins next to it, because the vocabulary is identically
+# unknowable up front: `""` INHERITS (the turn keeps its session's model) and no
+# concrete id is named here. The grammar is wider: a tier also accepts
+# `provider/model` ids, while a role_models pin stays one segment.
 for _tier in DECISION_MODEL_ROUTE_TIERS:
     _EDITABLE_CONFIG[f"decisions.model_route.{_tier}"] = {
         "type": "str",

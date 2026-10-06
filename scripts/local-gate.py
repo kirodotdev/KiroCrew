@@ -251,6 +251,34 @@ def _add_batches(plan: Plan, label: str, batches: list[list[str]], cwd: Path) ->
         plan.add(f"{label} {index}/{len(batches)}", argv, cwd)
 
 
+def gate_env(base: str) -> dict[str, str]:
+    """The environment every gate command runs under.
+
+    The worker cap from :func:`pytest_worker_env`, plus ``I18N_BASE_REF`` set to
+    the merge-base with ``base`` when the caller did not set one. The website's
+    ``[changed-values]`` style tests and the other diff-scoped i18n gates skip
+    themselves green without that variable, so a local run passed a catalog
+    value CI then failed (bn আপনি, fr plain space before ``:``). An explicit
+    value is kept as given. An unresolvable merge-base leaves it unset, so a
+    gate that needs it reports that it skipped.
+    """
+    env = pytest_worker_env()
+    if env.get("I18N_BASE_REF"):
+        return env
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "HEAD", base],
+            cwd=_REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return env
+    sha = (proc.stdout or "").strip()
+    if proc.returncode == 0 and sha:
+        env["I18N_BASE_REF"] = sha
+    return env
+
+
 def build_plan(args: argparse.Namespace) -> Plan:
     """Decide what to run. Every path out of here is related-only or ``--full``."""
     if args.full:
@@ -319,12 +347,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
+    # The env carries the gate's worker cap through xdist_budget's own knob
+    # (harmless to npm/vitest) and the i18n base ref; see gate_env.
+    env = gate_env(args.base)
     for label, cmd, cwd in plan.commands:
         print(f"local-gate: running [{label}]", file=sys.stderr)
         try:
-            # The env carries the gate's worker cap through xdist_budget's own
-            # knob (harmless to npm/vitest); see run_scoped_tests.pytest_worker_env.
-            proc = subprocess.run(_resolve_command(cmd), cwd=cwd, env=pytest_worker_env())
+            proc = subprocess.run(_resolve_command(cmd), cwd=cwd, env=env)
         except OSError as exc:
             print(f"local-gate: [{label}] FAILED to start: {exc}", file=sys.stderr)
             return 127

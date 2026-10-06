@@ -3008,11 +3008,11 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
 async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/-/dismiss-all — dismiss pending candidates.
 
-    Accepts an optional JSON body ``{"slugs": ["slug1", ...]}``.  When present,
-    only those slugs are dismissed (the client passes the set it displayed to the
+    Requires a JSON body ``{"slugs": ["slug1", ...]}`` with a non-empty array.
+    Only those slugs are dismissed (the client passes the set it displayed to the
     user, so a candidate staged *after* the confirmation dialog is never silently
-    deleted).  When the body is absent or ``slugs`` is empty, ALL pending
-    candidates are dismissed (back-compat / fallback).
+    deleted). When the body is absent or ``slugs`` is missing or empty, the route
+    returns 400 ``slugs_required`` and dismisses nothing.
     """
     denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss_all")
     if denied is not None:

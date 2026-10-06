@@ -4551,9 +4551,10 @@ def on_session_closed(session_id: str, reason: str) -> None:
     """Record a session teardown and drop its cached state.
 
     ``reason`` is the caller's own word for the teardown, recorded verbatim rather
-    than remapped onto a second vocabulary. The reset route is the caller today,
-    and it passes the same ``end_reason`` it records elsewhere; another teardown
-    path passing its own reason needs no change here.
+    than remapped onto a second vocabulary. Two routes call it: reset, and
+    destroy (``destroyed`` or ``destroyed_sid_retained``), each passing the same
+    ``end_reason`` it records elsewhere; another teardown path passing its own
+    reason needs no change here.
 
     This entry records a TEARDOWN, not the end of the file. A forced reset -- the
     model-switch route called with ``skip_running`` false -- tears a session down

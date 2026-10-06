@@ -1933,9 +1933,8 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
 async def api_memory_disable_embeddings(request: web.Request) -> web.Response:
     """POST /api/memory/disable-embeddings — gone: embeddings are always-on.
 
-    Kept as a graceful 410 (not a 404) because the shipped frontend still
-    renders a Disable button until its companion change lands. Remove
-    together with the frontend button.
+    A 410 (not a 404) compatibility stub for older clients that still post
+    here. The current frontend renders no Disable button and never calls it.
     """
     return web.json_response(
         {

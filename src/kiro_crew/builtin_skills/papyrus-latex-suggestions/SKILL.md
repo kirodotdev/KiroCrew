@@ -13,7 +13,7 @@ shows in any PDF viewer including the Papyrus preview — no package to install,
 PDF annotations. See `papyrus-writing` for behaviour. Pair every suggestion with
 a `papyrus-latex-comments` `\aicomment` saying WHY.
 
-## Step 1 — Setup (idempotent, self-contained)
+## Step 1 — Setup (idempotent)
 
 `ulem` and `xcolor` ship with TeX Live — no `tlmgr install`. If the document has
 no suggestion preamble yet, inject this once at the end of the preamble, after all existing \usepackage lines (never
@@ -25,7 +25,7 @@ duplicate it if it is already there):
 \@ifpackageloaded{ulem}{}{\usepackage[normalem]{ulem}}   % \sout (strike) + \uline (underline); normalem keeps \emph italic
 \@ifpackageloaded{xcolor}{}{\usepackage{xcolor}}         % \color for the strike/insert colors
 \makeatother
-% ==== Papyrus suggestion layer — self-contained ====
+% ==== Papyrus suggestion layer ====
 % Flip to \showeditsfalse to render the FINAL text only (visually accepts every change).
 \newif\ifshowedits \showeditstrue
 \newcommand{\aisuggest}[3][]{\ifshowedits{\color{red}\sout{#2}}\,{\color{blue}#3}\else#3\fi}
@@ -36,6 +36,11 @@ duplicate it if it is already there):
 
 The optional `[...]` first argument carries metadata (`author=papyrus, id=R12,
 status=pending`): it documents the change, but it is not rendered.
+
+This preamble does NOT define `\aicomment`. Every suggestion is paired with one
+(Step 2), so also make sure the `papyrus-latex-comments` preamble is present —
+inject it the same way if it is missing — or the compile fails with
+`Undefined control sequence \aicomment`.
 
 ## Step 2 — Propose edits (argument order is always old → new)
 

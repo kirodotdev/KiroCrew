@@ -277,8 +277,9 @@ are LRU-bounded: `_SENT_SKILL_BODY_SESSIONS` (512) sessions and
 on its next match, never drops the skill.
 
 - **Reset.** The record for a session is dropped on a new session, on the first
-  turn after Kiro Crew's own compaction (`needs_reinjection`), and when the agent
-  on that key changes. The reset runs whether or not a skill matches that turn.
+  turn after a compaction that armed `needs_reinjection` (Kiro Crew's own, or a
+  backend compaction reported to the dashboard runner or the heartbeat), and when
+  the agent on that key changes. The reset runs whether or not a skill matches that turn.
 - **Commit or roll back.** The record is written at build time, and each build
   keeps an undo entry for what it wrote. A turn that lands calls
   `commit_skill_bodies`; a turn that does not land calls `rollback_skill_bodies`,
@@ -287,8 +288,9 @@ on its next match, never drops the skill.
   the driver's landed result. `test/test_skill_body_dedup.py` pins both outcomes.
 - **Confined skills are exempt.** A confined project skill takes the body path on
   every match.
-- **Known soft failure.** A backend that trims or compacts its own window out of
-  band does not arm the reset, so the next match of a recorded skill gets its
+- **Known soft failure.** A backend that trims or compacts its own window under
+  a turn loop that does not watch for its compaction report (anything but the
+  dashboard runner and the heartbeat) does not arm the reset, so the next match of a recorded skill gets its
   pointer line rather than its body. The agent still learns the skill applies and
   can read it.
 

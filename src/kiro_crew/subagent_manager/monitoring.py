@@ -768,7 +768,7 @@ class OrphanStallMonitor(ManagerComponent):
         """Sample high-water RSS/CPU for each live agent (reaper-loop piggyback).
 
         Updates per-run peaks on ``SubagentInfo`` (dynamic-subagent-sizing.md
-        §4.1). RSS is the subtree VmRSS in GB; CPU is cores used since the last
+        *Learned Per-Agent Cost*). RSS is the subtree VmRSS in GB; CPU is cores used since the last
         sample = Δ(utime+stime jiffies) / (CLK_TCK × Δt). The first sample only
         seeds the CPU baseline (no delta yet). Best-effort: a dead/unreadable
         pid is simply skipped.
@@ -799,7 +799,7 @@ class OrphanStallMonitor(ManagerComponent):
             # of them. Instead attribute the runtime's measured RSS/CPU divided
             # by the number of concurrently-live shared sessions on that PID — an
             # empirical per-session average, not a guessed constant
-            # (dynamic-subagent-sizing.md §session-sharing cost model).
+            # (dynamic-subagent-sizing.md *Session-shared sub-agents (AcpRuntime)*).
             #
             # Sole tenant of its own process: the subtree reading IS this run's,
             # which is a share of one.
@@ -807,7 +807,8 @@ class OrphanStallMonitor(ManagerComponent):
                 self._manager._live_shared_count(info._pid, agents) if info._session_sharing else 1
             )
             generation = info._rss_generation
-            # Settled-runtime reading (dynamic-subagent-sizing.md §4.1): the first
+            # Settled-runtime reading (docs/system-specs/modules/subagent.md
+            # *Memory guard*, "The learned settled size"): the first
             # quiet sample of a DEDICATED process once its own session has
             # answered (``_first_stream_started``), with no tool in flight before
             # the read, none after it, and no activity during it (``_stall_gen``
@@ -912,7 +913,8 @@ class OrphanStallMonitor(ManagerComponent):
         or ``reset()`` hanging in the finally block).
         """
         try:
-            compact_cost_log()  # startup FIFO trim (§4.2)
+            # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
+            compact_cost_log()
         except Exception:
             logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
         # Seed the dedicated start projection before the first sweep, off-loop,

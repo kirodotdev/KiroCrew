@@ -1113,19 +1113,13 @@ function ChatInput({
                  `max-two-buttons-per-row` names the two files to copy for exactly
                  this shape, and `DetailOverflowMenu.tsx` already answers the same
                  rule the same way -- a labelled MoreHorizontal trigger holding
-                 "everything past the second control", whose own comment says
-                 "rather than inventing a second overflow shape". The hand-rolled
-                 portal that stood here re-implemented top-side anchoring, viewport
-                 collision and outside-click that this wrapper does natively, and
-                 review was right that the symmetry argument for it (matching the
-                 "+" drop-up) was a preference rather than a constraint.
+                 "everything past the second control". This wrapper provides the
+                 top-side anchoring, viewport collision and outside-click natively.
 
-                 The TRIGGER is deliberately NOT disabled while an upload is in
-                 flight, though the pencil it replaces was. The pencil hosted one
-                 action, so disabling it disabled exactly that action; this hosts
-                 the collapse too, and taking the collapse away mid-upload would
-                 reintroduce the unreachability this control exists to fix. The
-                 guard belongs on the item that needs it, just below. */
+                 The TRIGGER stays enabled while an upload is in flight: it hosts
+                 the collapse as well as Sketch, and the collapse must stay
+                 reachable mid-upload. The upload guard sits on the item that
+                 needs it, just below. */
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -1140,15 +1134,12 @@ function ChatInput({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="top" align="start" className="w-[260px] p-2">
                   {onUploadFiles && (
-                    /* `disabled={uploading}` restores a guard the pencil carried and
-                       this row lost when Sketch moved in here. Sketch attaches
-                       through the same `onUploadFiles` handler, and the in-flight
-                       flag is a single shared boolean rather than a counter -- so a
-                       sketch attached while another upload is still running lets
-                       whichever request finishes first clear the in-flight state for
-                       both. Self-correcting and lossless, but the pencil guarded
-                       against it and a moved control must not quietly drop a guard.
-                       Review caught the omission. */
+                    /* `disabled={uploading}`: Sketch attaches through the same
+                       `onUploadFiles` handler, and the in-flight flag is a single
+                       shared boolean rather than a counter -- so a sketch attached
+                       while another upload is still running would let whichever
+                       request finishes first clear the in-flight state for both.
+                       Disabling the item while uploading prevents that. */
                     <DropdownMenuItem
                       disabled={uploading}
                       /* Deferred one macrotask, which is this repo's established
@@ -1159,8 +1150,8 @@ function ChatInput({
                          The dialog focuses itself, the menu's trap yanks focus back,
                          and the menu then unmounts -- stranding focus on `body`. In
                          happy-dom the same fight shows up as an unbounded
-                         blur/focus recursion, which is how the test suite surfaced
-                         it here. Past the close commit there is only one trap. */
+                         blur/focus recursion. Past the close commit there is only
+                         one trap. */
                       onSelect={() => { setTimeout(() => setSketchOpen(true), 0) }}
                       title={i18nT('components.chatInput.sketch')}
                       className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left"

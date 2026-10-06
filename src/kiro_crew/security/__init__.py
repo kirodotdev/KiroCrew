@@ -2561,12 +2561,12 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
 #    passes while testing nothing. ``_ReExportModule`` below is what closes that,
 #    so every existing patch site stays as written.
 #
-# Both halves resolve the owner with ``importlib.import_module``, which answers
-# from ``sys.modules``. That leaves one place a value lives (the owner's
-# namespace) and one place a module lives (``sys.modules``), so neither half has
-# a second copy to keep in step.
+# Both halves resolve the owner through ``_submodule``, which reads ``sys.modules`` first and
+# calls ``importlib.import_module`` only on a miss.  That leaves one place a value lives (the
+# owner's namespace) and one place a module lives (``sys.modules``), so neither half has a
+# second copy to keep in step.
 #
-# The table below is in dependency order, lowest layer first, and a name belongs
+# The table below is grouped by owning submodule, groups in alphabetical order, and a name belongs
 # to the submodule that DEFINES it. Names this module imports for its own use
 # from outside the package -- the standard library, and other ``kiro_crew``
 # modules -- are not in the table: no submodule of this package owns them, so

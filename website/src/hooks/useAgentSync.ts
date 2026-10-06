@@ -37,9 +37,9 @@ export function useAgentSync() {
   // Slots created before the default agent was stamped into metadata at
   // creation carry agent:'' — label them with the alias that actually answers,
   // falling back to the literal 'default' until the fetch lands. Deliberately
-  // NOT useAgents(0): that hook fires the owner-only, config-writing
-  // POST /api/agents/sync once per mount, which a view-only surface must not
-  // pay. The shared ['default-agent'] query (same key + shape as AgentsPage)
+  // NOT useAgents(0): that hook reads the whole execution-choice catalog
+  // (see its docstring), and this view-only surface needs only the default
+  // alias. The shared ['default-agent'] query (same key + shape as AgentsPage)
   // reads GET /api/config/default-agent — no lock, no write — and
   // useWebSocket's refresh invalidation keeps a long-lived Worlds/popout
   // surface from pinning a stale alias after the default changes.

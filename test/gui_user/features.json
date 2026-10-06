@@ -1944,7 +1944,7 @@
       "id": "members-crew-members",
       "feature": "members",
       "title": "Crew Members",
-      "user_story": "As a crew operator, I want a durable DM thread per member with a docked side panel (Crew summary, activity by day, worker sessions, auto-patrol status) and a filterable roster, so that I can supervise each crew in one place.",
+      "user_story": "As a crew operator, I want a durable DM thread per member with a docked side panel led by the crew's Dashboard tab, an auto-patrol badge on each roster row, and a filterable roster, so that I can supervise each crew in one place.",
       "start_url": "/members",
       "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members (preview on) > roster filter input + activity chips > roster row (?member=<name> selects a row) > DM thread + docked side panel",
       "preconditions": {
@@ -4211,7 +4211,7 @@
       "title": "Monitor loops",
       "user_story": "As a user, I want same-session bounded monitors and nudge loops I can arm, inspect and stop from the composer popover, so that the agent babysits something for me.",
       "start_url": "/chat",
-      "entry_path": "Chat composer → monitor popover; Crew Members → Crew summary → Auto patrol (read-only)",
+      "entry_path": "Chat composer → monitor popover; Crew Members → roster row → auto-patrol badge (read-only)",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -7581,9 +7581,9 @@
       "id": "developer-page-tabs",
       "feature": "developer",
       "title": "Navigate the Developer page internals tabs",
-      "user_story": "As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, agent backend, debug tools, and archive in one place, so that I can diagnose the gateway.",
+      "user_story": "As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway.",
       "start_url": "/developer",
-      "entry_path": "Enable dev mode → Rail bottom → Developer → tabs (logs, system, telemetry, storage, mcp-pool, memory, config, agent-backend, debug-tools, archive)",
+      "entry_path": "Enable dev mode → Rail bottom → Developer → tabs (logs, system, telemetry, storage, mcp-pool, memory, config, debug-tools, archive)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -7603,7 +7603,6 @@
         "website/src/pages/TelemetryPanel.tsx",
         "website/src/pages/LocalStorageDebug.tsx",
         "website/src/pages/settings/McpManagement.tsx",
-        "website/src/pages/developer/AgentBackendTab.tsx",
         "website/src/pages/developer/DebugToolsTab.tsx",
         "website/src/pages/SessionArchive.tsx"
       ],

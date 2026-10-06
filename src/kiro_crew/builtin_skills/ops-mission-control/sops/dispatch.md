@@ -23,18 +23,23 @@ as the tool takes them.
 
 ## Steps
 
-1. `GET /signals` — polls every configured source
-   concurrently and returns `unclaimed` already diffed against the dispatch index.
-   Per-source errors come back in `errors`; a single unreachable provider is
-   normal and is not worth a message.
+1. `POST /dispatch` — runs one whole cycle server-side: polls every configured
+   source, claims up to the per-cycle cap (3 by default; the cap exists so a
+   provider fanning out 200 alarms cannot spawn 200 sessions), attaches ledger
+   matches and evidence, rechecks pending actions and runs the stale sweep. It
+   returns `claimed` (each with `incident`, `matches`, `fast_path`), a `briefs`
+   map keyed by incident id, `released`, `errors` and `changed`. A single
+   unreachable provider in `errors` is normal and is not worth a message. Do NOT
+   claim with `POST /incident/claim` here: that is the board's manual claim (body
+   `{"signal": {...}}`, recorded as `claimed_by: operator`) and it skips the
+   stale sweep and the post-action recheck.
 
-2. For each unclaimed signal, up to **3 per run** (the cap exists so a provider
-   fanning out 200 alarms cannot spawn 200 sessions):
+2. For each entry in `claimed` (already claimed; a race another instance won
+   simply does not appear):
 
-   a. `POST /incident/claim` with the signal as the body.
-      A `409` means another instance won the race — skip it, do not retry.
+   a. Use `briefs[<incident_id>]` as the investigation kickoff's context.
 
-   b. Read the returned incident's `operating_mode` and `ledger_matches`.
+   b. Read the entry's `incident.operating_mode` and `incident.ledger_matches`.
 
    c. Create the investigation chat slot. **The slot key MUST be exactly
       `ops-mission-control-<incident_id>`** (e.g. `ops-mission-control-INV-7`) —
@@ -66,8 +71,8 @@ as the tool takes them.
       **Only continue to (d)'s `investigating` transition after the
       investigator actually launched** — a created slot with the kickoff
       posted, or a `spawn_run` that returned a spawned agent id. If BOTH
-      launch paths fail, leave the incident unclaimed and report the launch
-      failure instead: transitioning to `investigating` with no investigator
+      launch paths fail, do not transition it and report the launch failure
+      instead: transitioning to `investigating` with no investigator
       running marks the claim as handled and suppresses redispatch until the
       stale sweep, which is exactly how an alert goes quietly uninvestigated
       for the whole stale window.
@@ -82,13 +87,15 @@ as the tool takes them.
       `ops-mission-control-<incident_id>`) and `slack_thread_ts`. Do this even when you
       have nothing else to record: it is what makes the Slack thread answerable.
 
-3. Stale sweep: incidents idle beyond the stale window are released back to
-   `stale` for re-pickup. This is what stops a dead investigation from holding a
+3. Stale sweep (run by `POST /dispatch` in step 1; nothing for you to call):
+   incidents idle beyond the stale window are released back to `stale` for
+   re-pickup and listed in `released`. This is what stops a dead investigation from holding a
    signal claimed and therefore unworked forever — **including one parked at
    `needs_human`**, which gets a longer window (6× by default) because waiting on a
    person is legitimately slower than an agent dying, but must not wait forever.
 
-4. If nothing was claimed and nothing went stale: **exit silently.** No message,
+4. If the response reports `changed: false` (nothing claimed, nothing went
+   stale): **exit silently.** No message,
    no notification, no channel post.
 
 ## Rules

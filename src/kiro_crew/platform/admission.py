@@ -359,7 +359,8 @@ _DEFAULT_POLICY_BODY: Dict[str, object] = {
         "Default permissive admission policy seeded by KiroCrew at first run. "
         "Deleting this file DISABLES plugin admission (fail-closed): "
         "load_admission_policy() then returns MODE_ENFORCE with an empty allowlist "
-        "and the dashboard governance indicator shows Disabled. To restrict "
+        "and the dashboard governance indicator shows Degraded (Disabled is the "
+        "state of this seeded permissive file). To restrict "
         "admission, set mode='enforce' and populate 'approved' / 'require_signature'. "
         "'require_policy_signature' additionally demands a VERIFIED signature on "
         "security_policy.json, keyed by its identity.issuer in 'trust_keys'."
@@ -386,7 +387,8 @@ def seed_default_policy() -> bool:
     misconfig = fail closed".  Guarded by a one-shot marker so that DELETING the
     policy afterward is never silently re-seeded — a later
     ``load_admission_policy`` then returns :func:`_fail_closed_policy` and the
-    governance health indicator flips to Disabled.
+    governance health indicator flips to Degraded (policy unverified).
+    Disabled is the state of the seeded permissive file itself.
 
     Never clobbers an existing policy file (a managed fleet may ship its own) and
     is skipped entirely when the ``KIROCREW_ADMISSION_POLICY`` env override is

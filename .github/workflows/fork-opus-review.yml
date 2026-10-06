@@ -525,11 +525,11 @@ jobs:
           HEAD: ${{ steps.pr.outputs.head_sha }}
           MAX_CANDIDATE_BYTES: "200000"
         run: |
-          # Remove first: this path lives in the PR-HEAD workspace, so a tracked
-          # symlink here would redirect the truncation below. Aimed at
-          # .review-prompts/opus-validate.md it would blank the validation
-          # contract AFTER extraction ran, leaving the validator with no
-          # contract at all.
+          # Remove first, as defense in depth: this path lives in the checked-out
+          # trusted base tree, and a tracked symlink here would redirect the
+          # truncation below. Aimed at .review-prompts/opus-validate.md it would
+          # blank the validation contract AFTER extraction ran, leaving the
+          # validator with no contract at all.
           rm -f .review-candidates.md
           : > .review-candidates.md
           if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then

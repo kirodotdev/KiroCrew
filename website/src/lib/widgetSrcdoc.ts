@@ -242,15 +242,6 @@ const HEIGHT_REPORTER_BODY = `(function(){
   });
 })();`
 
-/** Same-origin path to the Tailwind v4 browser runtime. A Vite plugin
- * (tailwindRuntimePlugin in vite.config.ts) copies @tailwindcss/browser's IIFE
- * build here at build time from the tracked npm dependency — so it is served
- * from the dashboard's own origin (not the public CDN that locked-down networks block) and is
- * NOT a committed blob (supply-chain guidance). Prefixed with window.location.origin
- * below because the sandboxed iframe is null-origin and can't use a bare path.
- * Defined once in ./vendorPaths and imported above so the consumer path can't
- * drift from vite.config.ts's dev-serve + build-emit sites. */
-
 /** Tailwind v4 browser build: dark mode is driven by a `.dark` class on <body>
  * (set below) via a custom variant — NOT the v3 `tailwind.config` global, which
  * v4 removed. The @tailwindcss/browser runtime auto-injects preflight + theme +
@@ -278,16 +269,6 @@ const COMMENT_HIGHLIGHT_CSS =
   "border-radius:10px 10px 10px 2px;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer}" +
   ".mc-cmt-bubble.unread{background:var(--warn,#e0a000);color:var(--warn-fg,#1a1a1a)}"
 
-/** In-iframe comment bridge. Vanilla JS string — no LLM/user
- * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
- * Brings anchored commenting + highlights into the sandboxed HTML render that
- * the parent cannot reach directly:
- *   - mouseup with a text selection -> postMessage 'mc-comment-select'
- *     {quote, prefix, suffix, rect} so the parent opens the comment popover;
- *   - 'mc-comment-highlights' {anchors:[{id,quote,prefix,suffix}]} -> wrap each
- *     matched run in <mark.mc-cmt-hl data-cid> (click -> 'mc-comment-highlight-click');
- *   - 'mc-comment-scroll-to' {id} -> scroll the mark into view + flash it;
- *   - posts 'mc-comment-ready' once so the parent pushes the initial set. */
 /** Guards against the "unsafe centering" clip: artifacts that lay out with
  * `body { display:flex; align-items:center }` (or grid `place-items:center`)
  * clip the TOP of their content — unreachable by scrolling — whenever the
@@ -470,6 +451,17 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
   }, true);
 })();`
 
+/** In-iframe comment bridge. Vanilla JS string — no LLM/user
+ * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
+ * Brings anchored commenting + highlights into the sandboxed HTML render that
+ * the parent cannot reach directly:
+ *   - mouseup with a text selection -> postMessage 'mc-comment-select'
+ *     {quote, prefix, suffix, rect} so the parent opens the comment popover;
+ *   - 'mc-comment-highlights' {anchors:[{id,quote,prefix,suffix}]} -> wrap each
+ *     matched run in <mark.mc-cmt-hl data-cid> (click -> 'mc-comment-highlight-click');
+ *   - 'mc-comment-scroll-to' {id} -> scroll the mark into view + flash it;
+ *   - 'mc-comment-active' {id} -> mark that comment's highlights and bubble active;
+ *   - posts 'mc-comment-ready' once so the parent pushes the initial set. */
 const COMMENT_BRIDGE_BODY = `(function(){
   var PFX = 32;
   function selectionContext(){

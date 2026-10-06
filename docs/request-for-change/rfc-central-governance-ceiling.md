@@ -3,8 +3,8 @@ title: Central governance ceiling — time-boxed local override (break_glass) an
 status: draft
 author: kirocrew agent session, directed by maintainers of #7362
 created: 2026-09-08
-last-audited: 2026-09-08
-audited-at: 8a9c269b4
+last-audited: 2026-10-06
+audited-at: ea7e91c8e6
 doc-pr: 9373
 implementation-prs: [7362]
 tracking-issues: [9106]
@@ -14,12 +14,14 @@ superseded-by: []
 
 # RFC: Central governance ceiling — time-boxed local override (break_glass) and platform managed tier
 
-Status: draft. Nothing in the `break_glass` mechanism or the platform managed
-tier described below exists on main. Every "does not exist" claim here was
-measured at `8a9c269b4`: `break_glass`, `BreakGlass`, `BREAK_GLASS`,
-`_read_managed_policy`, `_managed_policy_path`, `compose_tier_ladder` and
-`compose_local_ceiling` each return zero hits under `src/` (grep for callers,
-not just definitions).
+Status: draft (no maintainer acceptance recorded). The tighten-only ladder is on main ([#7362](https://github.com/kirodotdev/KiroCrew/pull/7362)). Nothing in the `break_glass` mechanism or the platform managed
+tier described below exists on main. `break_glass`, `BreakGlass`, `BREAK_GLASS`,
+`_read_managed_policy`, `_managed_policy_path` and `compose_local_ceiling` each
+return zero hits under `src/` (grep for callers, not just definitions).
+`compose_tier_ladder` does exist: #7362 shipped it in
+`src/kiro_crew/platform/governance.py`, where `load_security_policy` calls it to
+compose the central document over the subordinate tier. This RFC names it only as
+the function the withdrawn `break_glass` replace branch modified.
 
 This document exists because [PR #7362](https://github.com/kirodotdev/KiroCrew/pull/7362)
 landed the central governance ceiling — the fleet's security document binding
@@ -42,11 +44,11 @@ scratch. It is a record of a decision, not a description of code on main.
 
 ## Summary
 
-The shipped ceiling composes tiers with the precedence
-`KIROCREW_SECURITY_POLICY` (local file) → centrally-distributed document →
+The shipped ceiling composes tiers with the precedence, highest first:
+centrally-distributed document → `KIROCREW_SECURITY_POLICY` (local file) →
 companion-bundled → `~/.kiro/crew/security_policy.json` (home) → none
-(ungoverned). Local tiers may only *tighten*; the fleet's document is the
-ceiling. See [`../system-specs/modules/governance.md`](../system-specs/modules/governance.md)
+(ungoverned). The central document is the authority; every local tier may only
+*tighten* it, and none is a rollback lever. See [`../system-specs/modules/governance.md`](../system-specs/modules/governance.md)
 and `load_security_policy` in
 [`../../src/kiro_crew/platform/governance.py`](../../src/kiro_crew/platform/governance.py)
 for the shape that is actually on main.
@@ -69,25 +71,28 @@ This RFC records two follow-ups that were designed but not shipped:
 
 ## Motivation
 
-### Current state (what is on main at `8a9c269b4`)
+### Current state (the shipped ladder)
 
-`load_security_policy` resolves the first present tier as the governing ceiling,
-in this order:
+`load_security_policy` composes the tiers in this order, highest first (the
+authoritative description is
+[governance.md — Loading + precedence](../system-specs/modules/governance.md#loading--precedence)):
 
-1. `KIROCREW_SECURITY_POLICY` — an explicit local file, the fleet's rollback
-   lever, highest.
-2. the centrally-distributed document — fetched from `KIROCREW_POLICY_URL` or the
-   `distribution.source` a lower tier declares, served from a last-known-good
-   cache when the endpoint is unreachable
+1. the centrally-distributed document — the authority, fetched from
+   `KIROCREW_POLICY_URL` or the `distribution.source` a lower tier declares,
+   served from a last-known-good cache when the endpoint is unreachable
    (`resolve_distribution` / `PolicyDistribution` in
    [`../../src/kiro_crew/platform/policy_distribution.py`](../../src/kiro_crew/platform/policy_distribution.py)).
+2. `KIROCREW_SECURITY_POLICY` — an explicit local file, the local operator
+   channel; it tightens the central document and cannot loosen it.
 3. the companion-bundled resource (`bundled_loader`), supplied only by the
    `amazon` edition.
 4. `~/.kiro/crew/security_policy.json` — standalone operator-authored home file.
 5. none → editable secure-defaults (ungoverned ceiling).
 
-Local tiers are tighten-only subordinates: the fleet's document sets the ceiling
-and a lower tier can only narrow it. A present-but-invalid policy fails closed to
+Tiers 2–4 are mutually exclusive (first present wins) and form the subordinate,
+which `compose_tier_ladder` intersects under the central document. Local tiers are
+tighten-only subordinates: the fleet's document sets the ceiling and a lower tier
+can only narrow it. A present-but-invalid policy fails closed to
 strictest (`PlatformCompositionError`). There is **no managed-tier rung** above
 the central document on main.
 
@@ -236,11 +241,11 @@ under `/Library/Managed Preferences`. Two gaps:
   there is no managed `distribution` pin, so `resolve_distribution` keeps the
   per-setting environment override, and a standard user can set
   `KIROCREW_POLICY_URL` to a document of their own — replacing the whole central
-  rung. The guide's Windows section recommends central distribution as the
-  substitute without saying this. The RFC's goal sentence ("a person using the
-  laptop cannot loosen it") is therefore **not met on Windows**. Until a Windows
-  managed tier exists, the docs must say plainly that on Windows the ceiling is
-  *advisory* against a local account.
+  rung. The RFC's goal sentence ("a person using the laptop cannot loosen it") is
+  therefore **not met on Windows**. The current-behaviour statement that the
+  Windows (and macOS) ceiling is *advisory* against a local account lives in
+  [governance.md — Scope boundaries](../system-specs/modules/governance.md#scope-boundaries-documented-not-gaps);
+  this section keeps only the intended design.
 - **Intended target: the machine-policy registry.** A docstring's stated path to
   a Windows managed tier was `SHGetKnownFolderPath(FOLDERID_ProgramData)` plus an
   ACL check plus reparse-point handling. The idiomatic machine-policy channel on

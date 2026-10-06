@@ -111,6 +111,18 @@ ledger is purged (see "Cleaning up finished ledgers"). A conductor may dispatch 
 conductor only once — depth is capped at 2, so a second-level conductor's own
 children are workers. A worker holds one open item at a time.
 
+## Other refusals
+
+With the crew log on, a write can still be refused. Each answer carries a `code`:
+
+| Code | What happened | What to do |
+|---|---|---|
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
+| `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
+| `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
+| `409 crew_log_incomplete` | `work_ledger_rebuild` refused: the crew log cannot rebuild this board completely (an unreadable unit, or a goal the log never recorded). | Follow the message: repair those units, or record the goal again, then rebuild. |
+
 ## Dispatch order: create, bind, seed
 
 The conductor mints the item, attaches the session, and only then sends the seed
@@ -242,11 +254,20 @@ An explicit model pick on the worker file is the one thing carried across.
 permission to say it is blocked will not say it, and an unattended dispatch is
 exactly the case the ledger exists for.
 
-## No dashboard page
+## Crew board
 
-Like the session ledger, the work ledger is **storage the agents read and
-write**, not a view you browse. To see where a goal stands, ask the conductor
-session — it answers from the record.
+The work ledger is storage the agents read and write, and the dashboard shows it
+read-only. A session that owns a work ledger has **Crew board** in its session
+actions menu; other sessions do not show the entry. It opens
+`/crew-board?conductor=<session key>`, which lists the goal, the round and the
+items: those needing your decision first, then open work, then finished items.
+Each row shows what the worker reported and how the conductor ruled.
+
+An item whose conductor session is gone is marked orphaned, because nothing reads
+its reports any more. For such an item the board offers **Stop current turn**,
+which cancels the worker's running turn and keeps its session, branch and
+reports. There is no take-over. To ask where a goal stands, you can still ask the
+conductor session — it answers from the record.
 
 ## Cleaning up finished ledgers
 

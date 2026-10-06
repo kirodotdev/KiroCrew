@@ -3135,8 +3135,8 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     — the dedicated ``<data home>/kiro/agents`` this instance's teardown owns.
 
     That second case is the *mechanism* by which a genuinely isolated instance will
-    own its specs; it is NOT advice to set ``KIRO_HOME`` today. Nothing in this
-    repo sets it (``build_pod_env`` deliberately does not) because it also
+    own its specs; it is NOT advice to set ``KIRO_HOME`` by hand. A pod sets it
+    (``build_pod_env`` passes ``KIRO_HOME=<pod home>/kiro``), but setting it also
     relocates kiro-cli's session storage while KiroCrew still reads the host path
     — see ``kiro_home()``'s scope caveat. The exemption is matched exactly rather
     than by ancestry: "beneath the data home" reads the machine-wide

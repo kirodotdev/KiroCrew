@@ -8,8 +8,9 @@ someone tunes a workflow prompt: local review then goes green on a bar the serve
 does not use, and the drift is invisible until the server round that finds it.
 
 So this script does not describe the contract - it EXTRACTS it, live, from the
-reviewer workflows at the worktree's own checkout, and assembles one task file
-per reviewer:
+reviewer workflows as they stand at the BASE commit (read out of git, so the
+branch under review cannot rewrite its own rules; see ``read_base_contract``),
+and assembles one task file per reviewer:
 
   * GPT lane (spliced-prompt workflow, e.g. .github/workflows/codex-review.yml):
     the reviewer prompt is assembled purely by splicing shared

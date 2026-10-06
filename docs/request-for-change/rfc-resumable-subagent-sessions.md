@@ -3,8 +3,8 @@ title: Resumable Subagent Sessions
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 806
 implementation-prs: [1023, 1246]
 tracking-issues: [1113, 1114, 1115]
@@ -165,7 +165,7 @@ Surfaced as a "Continue as chat" action on the record view and the inline `Subag
 
 ### Browsing a record
 
-Records are served read-only by their own routes (`GET /api/spawn/{id}/record` and a records list) and rendered as a record view, reachable from the inline `SubagentRunCard`, the Subagents panel, and by URL. Read access is **workspace-global**, consistent with chat history — an explicit decision, not a default inherited from `spawn_status`, which performs no ownership check today (`dashboard/handlers/messaging.py:255-300`).
+Records are served read-only by their own routes (`GET /api/spawn/{id}/record` and a records list) and rendered as a record view, reachable from the inline `SubagentRunCard`, the Subagents panel, and by URL. Read access is **workspace-global**, consistent with chat history — an explicit decision, not a default inherited from `spawn_status` (`api_spawn_status` in `dashboard/messaging_api/run_views.py`), whose only fence is `_spawn_scope_refusal`: it limits an internal caller to the runs its own session started.
 
 Records are deliberately **not** dashboard slots. `_ChatSlot.to_dict` emits `"surface": self.mode` as a forward-compat alias (`dashboard/state.py:1459`), so there is no independent surface to assign; `_persist_open_slots` + `restore_open_slots` would rehydrate a record as an ordinary writable slot across a restart; and read-only would be a client-side fiction while the chat send path (`POST /api/chat`, `dashboard/server.py:1660`, slot in the request body) stayed reachable for the id. Consequently no change is needed to the three hard-coded surface **filter predicates** (`filteredSlots` / `isChatPageSurface` in `ChatPage.tsx`, `dashboardSlice.ts:280-292`, `deleteSlot` in `chatSlice.ts`); the sidebar records section is additive in `ChatSidebar.tsx`.
 

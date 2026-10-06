@@ -243,7 +243,6 @@ const PAGE_HELPERS_SOURCE = `
   // the document (and, normally, this whole JS realm), while an SPA route
   // change only rewrites the URL -- its elements, and any ref already handed
   // out for them (an annotation, an agent's last snapshot), stay valid.
-  // Keying on the URL here used to reset the map on pushState.
   if (window.__kcRefDocObj !== document || !(window.__kcRefs instanceof Map)) {
     window.__kcRefs = new Map();
     window.__kcRefSeq = 0;

@@ -35,8 +35,8 @@
     "selector is validated as worktree-relative.",
     "",
     "So a 'shell' row is CHECKED -- classified against the fixed worktree's own tool",
-    "gate, the three checks it applies to a shell command's text in its order",
-    "(sensitive-command tier, exfiltration auditor, deny-rule catalog -- the gate's",
+    "gate, all three checks it applies to a shell command in its order (no path tier:",
+    "sensitive-command tier, exfiltration auditor, deny-rule catalog -- the gate's",
     "own hooks.SHELL_DENY_TIERS), and a refusal by any of them rejects the",
     "fix. A 'test' row is RUN -- its pytest node is collected and executed against",
     "the fixed worktree, a failure rejects the fix, and a node that does not resolve",
@@ -419,7 +419,7 @@
       "surface": "S10 cron + scripts",
       "command_or_flow": "test/test_s10_cron_env_governance_escape.py::test_the_operators_own_policy_path_still_reaches_the_child",
       "platform": "any",
-      "reason": "The operator's own KIROCREW_SECURITY_POLICY and KIROCREW_ADMISSION_POLICY must keep reaching every agent child: an absent tier resolves the standalone ungoverned ceiling, so scrubbing the pair from the spawn costs the operator the ceiling they configured. This is the exact behaviour the first round-2 fix for finding 16 regressed, and no shell row can notice an env var going missing. The node is the positive control added by PR #11724 on the finding-16 branch, so the row becomes checkable when that PR lands on main; it is proposed now because the regression it catches is the one that shipped green."
+      "reason": "The operator's own KIROCREW_SECURITY_POLICY and KIROCREW_ADMISSION_POLICY must keep reaching every agent child: an absent tier resolves the standalone ungoverned ceiling, so scrubbing the pair from the spawn costs the operator the ceiling they configured. This is the exact behaviour the first round-2 fix for finding 16 regressed, and no shell row can notice an env var going missing. The node is the positive control PR #11724 added, which has landed on main, so the row is checkable now; it is in the corpus because the regression it catches is the one that shipped green."
     },
     {
       "kind": "test",
@@ -447,7 +447,7 @@
       "surface": "S10 cron + scripts",
       "command_or_flow": "test/test_s10_cron_env_governance_escape.py::test_cron_job_env_must_not_deliver_governance_policy_paths",
       "platform": "any",
-      "reason": "An app's cron job must keep delivering its own ordinary variables: this node carries the BENIGN positive control (extra_env['BENIGN'] == '1') beside the security property, so a screen that grew from refusing two governance paths into refusing a job's whole env map fails it. Scheduled app features are a legitimate product use, and the fix for finding 16 is a filter sitting directly on that path. The node is from PR #11724 on the finding-16 branch, so the row becomes checkable when that PR lands on main."
+      "reason": "An app's cron job must keep delivering its own ordinary variables: this node carries the BENIGN positive control (extra_env['BENIGN'] == '1') beside the security property, so a screen that grew from refusing two governance paths into refusing a job's whole env map fails it. Scheduled app features are a legitimate product use, and the fix for finding 16 is a filter sitting directly on that path. The node is from PR #11724, which has landed on main, so the row is checkable now."
     },
     {
       "kind": "test",

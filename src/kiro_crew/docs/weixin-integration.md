@@ -45,7 +45,10 @@ The default is **`allowlist` with an empty list, which authorizes nobody** — a
 freshly connected bot ignores every DM until you add an id. This matches the
 other channels (Telegram/Discord are fail-closed the same way). An unrecognized
 value also denies. To collect a user ID, have the person DM the bot once and read
-the id from the gateway log.
+the id from the security event log (`~/.kiro/crew/security_events.jsonl`): the
+refused DM is recorded as a denied `weixin_transport.authorize` event whose
+`caller` is their user id. The gateway log does not show it, because it logs a
+sender only after the message is admitted.
 
 Dashboard delivery uses `target_id` values `user:<user-id>`. Destinations include allowed user IDs and users seen by the gateway, while actual proactive delivery is rechecked against the current `dm_policy`.
 
@@ -106,8 +109,8 @@ credential store) and overrides `weixin.token`.
 | `errcode -2` | iLink rate limit; the poller backs off automatically |
 | Bot ignores DMs | Check `dm_policy` — under `allowlist` the sender must be listed |
 | Group messages ignored | Expected: iLink bot identities do not receive group events |
-| An image, voice note or file isn't read | The message arrived but the file was skipped — the gateway log shows `attachment_skip` with the reason. Video is never read; send a screenshot instead |
-| Startup error about `aiohttp` | Install the messaging extra |
+| An image, voice note or file isn't read | The message arrived but the file was skipped — the security event log (`~/.kiro/crew/security_events.jsonl`) has a `weixin.attachment_skip` event with the file name and the reason. Video is never read; send a screenshot instead |
+| Startup error about `aiohttp` | `aiohttp` is a core dependency, so the environment is broken; reinstall Kiro Crew |
 
 ## Related docs
 

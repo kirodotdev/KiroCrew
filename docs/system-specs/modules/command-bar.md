@@ -45,7 +45,9 @@ request.
 
 The folders view is the cheapest of the four, and its shape follows from that. Its corpus is
 the folder tree the sidebar already holds under `['chat-folders']`, so a keystroke costs a local
-filter rather than a request: it has no minimum query length, where the two views above each
+filter rather than a request. The view's own query key nests under that prefix
+(`['chat-folders', 'command-bar', 'view', sort, q]`), so every sidebar folder write that
+invalidates `['chat-folders']` invalidates the view too: it has no minimum query length, where the two views above each
 hold their first characters back, and no row cap, because the count is the reader's own filing
 rather than a corpus that grows on its own. Entering the view pays for at most one folder read,
 on a cold cache. The folder list used to be spread through the root as its own group instead —
@@ -321,6 +323,13 @@ debounced query already matches the new ones.
 - The gesture is the host's quick-search chord; the topbar trigger's label, `aria-label` and
   `title` all follow slot ownership, so it never promises a corpus search the launcher does not
   do.
+- The bar closes when the visible pane changes (`hooks/useCommandPalette.ts`,
+  keyed on `host.activeId` in an embedded pane, else `activeId`); a host model
+  arriving or disappearing only sets a new baseline, so relay initialization never
+  dismisses it. The current-session rows the bar takes from `useRecentsProvider` are ordered
+  by `recentsProvider.prepareCurrentSlots`: the empty new session first (one at
+  most), then by recency, with no pinned-first ordering — a pin still renders on
+  its row.
 - Escape is owned by the dialog, not the input, so it works from any focusable child. In a
   scope the first Escape pops back to the root and only the second closes.
 - The input is `role="combobox"` with `aria-activedescendant`; rows are `role="option"` with
@@ -348,12 +357,20 @@ debounced query already matches the new ones.
   page's mount-time `switchSlot(activeSlot)` when the bar was used from another page); when the
   older read lands first, the caret waits for the newer claim to settle — placed once it clears
   with the slot still active, dropped when its 404 unwinds the selection. In split view (a
-  session-grid pane is mounted) the bar places no caret at all: every pane's composer is bound to
-  that pane's own slot and the grid's focus model never follows the active slot, so the only
-  composer on offer belongs to a session the gesture did not open — the pre-existing behaviour,
-  until a lookup can resolve the pane bound to the opened key.
+  session-grid pane is mounted) the caret goes to the composer of the pane whose
+  `data-pane-slot` equals the opened or resumed key (`queryComposerForSlot`); when no pane
+  renders that key, or the gesture named no key, no caret is placed, because every other
+  pane's composer belongs to a session the gesture did not open.
   Touch devices are skipped and a collapsed composer stays collapsed, exactly as the sidebar's
   autofocus leaves them; a resume the chat page cannot display focuses nothing.
+
+- ⌘C / Ctrl+C copies the selected row's address (`components/commandPalette/copyTarget.ts`
+  `resolveCopyTarget`): a row's address is derived from what it opens, or from an explicit
+  `copyUrl` validated as an http(s) URL; a dashboard route that starts with `//` yields no
+  address. The bar declines the chord, leaving the browser's own copy, while the input holds a
+  text selection or a command argument is being typed. A row with no address answers with a
+  notice instead of copying. The footer names the chord only while the selected row has an
+  address, and a failed clipboard write shows an error notice naming the address.
 
 ## Invariants pinned by tests
 
@@ -394,6 +411,8 @@ debounced query already matches the new ones.
 | the caret moves only once the opened session's `switchSlot` has fulfilled; a refused switch gets none from the bar | keystrokes typed during the gateway round trip filed under a slot the 404 unwind then evicts |
 | an older same-key read landing first defers the caret to the newer claim | a stale fulfilment focusing while the live read is still out, then its 404 stranding the typed text |
 | the `apps` query is a pure cache consumer (`enabled: false`) | a second identical fetch per open |
+| the folders view's query key nests under `['chat-folders']` (`CommandBarOverlay.folders.test.tsx`) | a sidebar folder write leaves the bar listing folders that were renamed, moved or deleted |
+| in split view the caret goes only to the pane whose `data-pane-slot` is the opened key (`paletteOpenSessionFocusesPaneComposer.test.tsx`) | keystrokes land in a pane bound to a session the gesture did not open |
 | every `['apps']` reader goes through the one api call | a divergent shape silently poisons the shared cache |
 | no builtin declares both `ui.overlays` and `ui.entry` | origin downgrade on restart refuses its own slot |
 | a rejected lazy chunk falls back to the legacy palette | the gesture dead-ends after a bad deploy |

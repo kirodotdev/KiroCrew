@@ -20,7 +20,7 @@
  *
  * ## Five things this must get right, each of which silently breaks it
  *
- * 1. **Source is `en.json` ⊕ `en.manual.json`.** The 89 hand-authored keys include the
+ * 1. **Source is `en.json` ⊕ `en.manual.json`.** The hand-authored keys include the
  *    whole left nav. Generating from `en.json` alone leaves them plain English inside
  *    the one detector promised to have no false positives.
  * 2. **Placeholders are never transformed.** Accenting `{{count}}` breaks interpolation

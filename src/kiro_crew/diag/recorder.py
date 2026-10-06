@@ -117,9 +117,8 @@ TMPFS_EVENT_PCT = 80.0
 LOAD_EVENT_FACTOR = 2.0
 
 #: Config files watched for a rewrite. METADATA ONLY — ``stat`` never opens the
-#: file, which is what keeps ``.env`` (a credential store) inside the rule that
-#: fenced files are metadata, never bytes.
-# Watched for metadata only, never opened. ``.env`` is deliberately absent: the
+#: file.
+# ``.env`` is deliberately absent: the
 # sandbox hides it in every mode, and its size and modification time sitting in an
 # agent-readable diagnostic leaf would describe a file the mask exists to keep out
 # of reach, including when its secrets were last rotated.
@@ -903,8 +902,8 @@ class Recorder:
         way to replace a config file is write-a-temp-then-rename, which can land
         inside one mtime granule: comparing mtime alone would miss exactly the
         rewrite that a careful writer performs. No file is opened, so this stays
-        inside the rule that fenced files are metadata and never bytes — which
-        matters most for ``.env``.
+        inside the rule that fenced files are metadata and never bytes.
+        ``.env`` is not in :data:`WATCHED_CONFIG_FILES` at all.
         """
         try:
             base = self._config_dir()

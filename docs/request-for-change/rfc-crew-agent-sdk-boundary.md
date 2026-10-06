@@ -4,8 +4,8 @@ status: partial
 revision: v4
 author: zejiangg, with Kiro
 created: 2026-08-28
-last-audited: 2026-09-05
-audited-at: 73d60a83d
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs:
   - "PR 1 — the boundary gate and its baseline: scripts/check_agent_sdk_boundary.py,
@@ -20,8 +20,9 @@ superseded-by: []
 - Status: partially implemented. PR 1's shrink-only boundary gate and package
   are live; PR 3a moved backend/capability tables behind `agent_sdk` and replaced
   six identity branches with `SessionCapabilities`; the import-cycle half of PR 4
-  is also complete. The current ratchet baseline is **57 files / 102 edges**
-  (64 via `kiro_crew.acp`, 38 via `kiro_crew.providers`). PR 2's SDK-owned event
+  is also complete. The current ratchet baseline is
+  `.github/agent-sdk-boundary-baseline.txt`; count it there, since the shrink-only
+  ratchet moves with every wave. PR 2's SDK-owned event
   and approval types, the remaining role protocols and supervisor ownership, the
   consumer migration waves, and the final seal remain incomplete. The migration
   stays additive: consumers move behind the boundary one wave at a time.
@@ -167,18 +168,19 @@ the shape the rest should have.
 
 **This subsection was structurally wrong in v3 and is rewritten.** It cited
 `acp/types.py` as the home of the backend constants and "seven opt-in
-frozensets in the same file". `acp/types.py` now holds **zero** of either. Every
-constant and every capability set lives in the leaf
-`src/kiro_crew/acp_backends.py` — `ACP_BACKEND_CLAUDE`,
-`ACP_BACKEND_KAS`, `ACP_BACKEND_CODEX`, `ACP_BACKEND_KIRO` — which `acp/types.py` re-exports, so existing call sites kept their
-import path while the definitions moved.
+frozensets in the same file". `acp/types.py` holds **zero** of either. Every
+backend id, every capability set and the `Routing` tables live in
+`src/kiro_crew/agent_sdk/backends.py` (PR 3a), and the tool-gate verdict lives in
+`src/kiro_crew/agent_sdk/tool_gate.py` (PR 3). `src/kiro_crew/acp_backends.py` and
+`src/kiro_crew/acp_tool_gate.py` are re-export shims, and `acp/types.py` re-exports
+the ids, so existing call sites keep their import path.
 
 That leaf has outgrown the job v3 credited it with. v3 called it a deliberate
 leaf owning the selectable-backend list, three drifted literals collapsed into
 one place, and said what it did *not* cover was the comparison behaviour. It
-covers that too now. At ~580 lines it holds:
+covers that too. It holds:
 
-- **15** `ACP_BACKENDS_*` capability frozensets, not seven. Beyond the five v3
+- Many more `ACP_BACKENDS_*` capability frozensets than seven. Beyond the five v3
   named: `_MEMBER_DISPATCH`, `_COMPACT`,
   `_MODEL_VIA_CONFIG_OPTION`, `_EFFORT_VIA_CONFIG_OPTION`,
   `_ADVERTISED_MODEL_SELECTION`, `_SEED_LOCAL_SETTINGS`,
@@ -192,11 +194,11 @@ covers that too now. At ~580 lines it holds:
   `ACP_BACKEND_PERMISSION_CONFIG` — read through `routing_for()` and `permission_config_for()`, both of which fail closed on
   an id the table does not name.
 
-A second top-level policy module has joined it: `src/kiro_crew/acp_tool_gate.py`
-(383 lines), which decides whether a harness's routing counts as *enforced*
+A second policy module sits beside it: `agent_sdk/tool_gate.py` (re-exported by
+`src/kiro_crew/acp_tool_gate.py`), which decides whether a harness's routing counts as *enforced*
 (`ENFORCED_ROUTINGS`) and derives the credential directories an adapter's
-child must not be able to read. Like the leaf, it imports nothing from `acp/`;
-like the leaf, it sits outside `agent_sdk`.
+child must not be able to read. Like the backend tables, it imports nothing from
+`acp/`.
 
 Neither module is a boundary violation, and the architecture test pins that: a
 prefix-match on `kiro_crew.acp` would flag `acp_backends`, which is why the gate
@@ -496,9 +498,9 @@ without importing an ACP exception or lifecycle helper.
 its **shim surface** is deleted at the end. Not the whole package: since v3,
 `src/kiro_crew/providers/mirrors/` has become a real and growing layer —
 `base.py`'s `AgentConfigMirror` with `Concern` / `Disposition` / `Ruling`,
-`registry.py`'s `MIRRORS` / `NO_MIRROR`, `claude_code.py`, and a `README.md` —
-with claude the only mirror and kiro, KAS and codex carrying explicit `NO_MIRROR`
-reasons. That is load-bearing code, not an alias, and deleting `kiro_crew.providers`
+`registry.py`'s `MIRRORS` (claude, codex, opencode and goose) and `PROJECTIONS`
+(one recorded MCP-surface answer for every selectable backend), the per-backend mirror
+modules, and a `README.md`. That is load-bearing code, not an alias, and deleting `kiro_crew.providers`
 wholesale would delete it. Where it lives after the boundary is drawn is an open
 question (§12.5), and PR 6's deletion is scoped accordingly.
 
@@ -796,15 +798,14 @@ layout, agent format, session store, credential store, sandbox posture, MCP
 delivery channel, billing surface, permission engine, and the extra runtimes it
 cannot find for itself.
 
-The full contract, with all four backends side by side and every "must declare"
+The full contract, with every backend side by side and every "must declare"
 line, is
 [`../system-specs/modules/agent-host-contract.md`](../system-specs/modules/agent-host-contract.md).
 This section states only its shape and the two conclusions that bind this RFC.
 
-That spec was written against three backends and Codex is absent from every one of
-its buckets (§2.7). It gains a Codex column and a parity test in the same PR as
-this revision — the test being the part that matters, since the spec's own rule is
-that silence is not an answer and nothing was enforcing it.
+That spec covers eight backends: kiro, KAS, CC, Codex, OpenCode, Pi, goose and
+DeepSeek, with per-backend rows. The four-backend census in §2.5–§2.7 is dated to
+this RFC's v4 audit.
 
 ### 6.1 Eight of the nine buckets, and who proves each one is provider-scoped
 
@@ -1835,10 +1836,9 @@ reopens it.
    **The third half is new since v3 and is not a release-window question at all.**
    `src/kiro_crew/providers/mirrors/` did not exist when this item was written. It
    is now a real agent-config projection layer — `base.py`'s `AgentConfigMirror`
-   with `Concern` / `Disposition` / `Ruling`, `registry.py`'s `MIRRORS` /
-   `NO_MIRROR`, `claude_code.py`, `README.md` — with claude the only mirror and
-   kiro, KAS and codex carrying explicit `NO_MIRROR` reasons, and KAS's own entry
-   says its projection is next in the stack. So the layer is *growing*, and
+   with `Concern` / `Disposition` / `Ruling`, `registry.py`'s `MIRRORS` (claude,
+   codex, opencode and goose) and `PROJECTIONS`, the per-backend mirror modules and
+   `README.md`. So the layer is *growing*, and
    "delete `kiro_crew.providers`" as v3 wrote it would delete live code. It needs a
    home named before PR 6 starts, and the choice is a real one: a mirror projects
    an agent spec for one host, which is driver work and argues for

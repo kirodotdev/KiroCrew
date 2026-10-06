@@ -292,3 +292,30 @@ def test_both_platform_scripts_and_the_skill_agree_on_the_status_file() -> None:
     # platform. Pin the shared contract.
     for path in (SCRIPT, PS_SCRIPT, SKILL_DOC):
         assert "restart-status" in path.read_text(encoding="utf-8"), path.name
+
+
+def _resume_monitor_bounds() -> tuple[int, int, int]:
+    """``interval_secs``, ``max_cycles`` and ``max_runtime_secs`` from the skill's monitor."""
+    import re
+
+    text = SKILL_DOC.read_text(encoding="utf-8")
+    block = text[text.index("monitor_start(") : text.index(")\n```", text.index("monitor_start("))]
+
+    def _int(name: str) -> int:
+        match = re.search(rf"\b{name}=(\d+)", block)
+        assert match, f"resume monitor lost its {name}"
+        return int(match.group(1))
+
+    return _int("interval_secs"), _int("max_cycles"), _int("max_runtime_secs")
+
+
+@pytest.mark.parametrize("turn_secs", [0, 30, 120, 150, 180, 300, 420])
+def test_the_resume_monitor_always_gets_a_cycle_in_the_decision_window(turn_secs: int) -> None:
+    # The "Absent" verdict is decided only at or after five minutes, so some cycle
+    # must START in [300 s, budget). The interval counts from the end of the
+    # previous turn and the budget gates turn starts, so cycle k starts at
+    # interval*k + turn*(k-1). With the old 420 s budget a 2-3 minute turn put
+    # every cycle before 300 s or past 420 s and the loop ended with no verdict.
+    interval, max_cycles, budget = _resume_monitor_bounds()
+    starts = [interval * k + turn_secs * (k - 1) for k in range(1, max_cycles + 1)]
+    assert any(300 <= start < budget for start in starts), (interval, max_cycles, budget, starts)

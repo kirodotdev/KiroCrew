@@ -25,10 +25,10 @@ from kiro_crew.sandbox import scrub_env
 # ``SystemRoot`` usually dies before ``main()`` (DLL and crypto init resolve
 # through it), and one without ``USERPROFILE`` cannot find a per-user config root
 # (for a TeX child, ``TEXMFHOME``). ``TMPDIR`` is the POSIX spelling only, so a
-# Windows child also had no writable temp dir. Same key set and same reason as
-# ``kiro_prerequisite._SAFE_ENV_KEYS``; kept in the allowlist shape so the
-# credential-scrubbing property is unchanged — these are location hints, not
-# secrets.
+# Windows child also had no writable temp dir. Matched through
+# ``platform_compat.env_key_allowed`` (see ``_is_safe_env_key``); kept in the
+# allowlist shape so the credential-scrubbing property is unchanged — these are
+# location hints, not secrets.
 _SAFE_ENV_KEYS = frozenset(
     {
         "HOME",

@@ -342,7 +342,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         "conductor_alive": "idle" if conductor_alive else "closed",
         "items": rows,
         # The ONE capability the page actually reads, because it changes what the
-        # page renders: the take-over button is disabled while this is false.
+        # page renders: no take-over button is rendered while this is false.
         #
         # Deliberately not accompanied by `stop_available`, `channels_available` or
         # a reason code. Those were sent so Phase 5 and a future take-over could

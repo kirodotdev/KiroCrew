@@ -263,16 +263,13 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 # still has on-loop callers left -- the watcher's marked cancel-path finalize
 # (``# on-loop-io-ok`` in ``knowledge/watcher.py``; the lexical baseline in
 # ``.github/sync-io-in-async-baseline.txt`` is now empty, and a marker is an
-# exemption, not an offload) plus the interprocedural path below.
+# exemption, not an offload).
 #
 # ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
-# take of its OWN, endpoints and background tasks alike. It is not the whole
-# story, so the claim is scoped deliberately: ``artifact_ingest.py``'s
-# ``ingest_artifact`` reads a job status through ``IngestionPipeline`` inline
-# from an async method, and ``reconcile_artifacts`` reaches it once per
-# artifact, so a caller still reaches the store on the loop ONE FRAME DOWN.
-# That path is interprocedural backlog, invisible to the lexical baseline, and
-# belongs with the offload of that read rather than with this file.
+# take of its OWN, endpoints and background tasks alike. ``artifact_ingest.py``'s
+# job-status reads run on a worker too: ``ingest_artifact`` reads inside its
+# ``_settle`` unit under ``run_to_completion``, and ``reconcile_artifacts``
+# reads through ``asyncio.to_thread``.
 #
 # Two takes stay inline, carried as ``# on-loop-io-ok`` markers, and the
 # lexical baseline is empty. The watcher's self-heal rebuild

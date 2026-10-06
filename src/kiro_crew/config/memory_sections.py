@@ -228,8 +228,7 @@ class MemoryConfig:
             "writes (lessons, consolidation extraction, task-runner lessons) "
             "and no stored memory/lessons injected into new sessions; "
             "within-conversation context is unaffected. Explicit dashboard "
-            "edits and deletions stay available. An installed app's own "
-            "ingestion sweep is out of scope and still writes app-scoped rows.",
+            "edits and deletions stay available.",
         ),
     )
     inject_memory: bool = field(
@@ -345,10 +344,9 @@ class KnowledgeConfig:
         default=10.0,
         metadata=_meta(
             "Embed Timeout (seconds)",
-            "Per-request timeout for the Knowledge-Library embedder. Raise it "
-            "when a large chunk times out on a cold Ollama model load (the embed "
-            "then never completes and the item is retried every maintenance "
-            "pass). 0 or unset keeps the built-in 10s default.",
+            "Retained for config compatibility; it bounds no call. The "
+            "Knowledge-Library embedder runs in-process (llama.cpp), so there is "
+            "no per-request timeout for this value to apply to.",
         ),
     )
     embed_content_budget: int = field(
@@ -623,8 +621,9 @@ class SkillsConfig:
             "Auto Similarity Threshold",
             "Skip creation when an existing skill's description has keyword overlap "
             "≥ this fraction with the synthesized description (0.0-1.0). Prevents "
-            "near-duplicate skills. Used as the lexical fallback when the Haiku "
-            "dedupe judge is unavailable.",
+            "near-duplicate skills. Used as the lexical fallback when the dedupe "
+            "judge is unavailable, and as a safety net after the judge returns a "
+            "NEW verdict.",
         ),
     )
     # ── Staged approval + lifecycle (v2) ──
@@ -818,9 +817,10 @@ class SessionSummaryConfig:
         metadata=_meta(
             "Assistant Excerpt Size",
             "Characters kept from each end of an assistant message when building "
-            "the summarization input (>=80). User messages are included in full "
-            "unless the whole input exceeds the fixed 40,000-character summary input "
-            "limit -- they carry intent and are small -- while assistant output is "
+            "the summarization input (>=80). Each user message is capped at its "
+            "first 4,000 characters, and kept whole up to that cap unless the whole "
+            "input exceeds the fixed 40,000-character summary input limit -- user "
+            "messages carry intent and are small -- while assistant output is "
             "excerpted because it holds the progress detail but dominates the "
             "transcript. Past that limit, middle turns are dropped and any turn is "
             "cut to about 5,000 characters per end, so larger values stop helping.",

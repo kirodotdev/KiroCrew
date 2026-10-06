@@ -377,7 +377,7 @@ class TestNoSingleRowDecidesHowMuchTextIsScanned:
         ``redaction.py``'s PEM branch anchors on the ``-----BEGIN … PRIVATE
         KEY-----`` header and runs across the newline-broken body, so a whitespace
         cut inside that body strips the only anchor and the surviving base64 lines
-        match no branch at all. :func:`ms.uncuttable` cleans such a row instead.
+        match no branch at all. :func:`ms.redacted` cleans such a row instead.
         """
         # Assembled from pieces, not written out, for the reason `_AWS_KEY` above
         # is: a contiguous key-shaped literal is refused by the repo's own secret

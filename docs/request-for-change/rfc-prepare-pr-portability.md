@@ -3,8 +3,8 @@ title: Portable `prepare-pr` via pluggable project profiles
 status: implemented
 author: Bolin Chen
 created: 2026-07-28
-last-audited: 2026-09-05
-audited-at: 424efa423
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [662]
 tracking-issues: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Portable `prepare-pr` via Pluggable Project Profiles
 
-> **Current behaviour: see the `prepare-pr` skill's own
+> **Current behaviour: see the `kirocrew-prepare-pr` skill's own
 > [`SKILL.md`](../../src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md)
 > and [`../ci/ci-and-reviews.md`](../ci/ci-and-reviews.md).** The profile resolver
 > ships as `resolve_profile.py` in that skill's `scripts/` directory and
@@ -123,7 +123,7 @@ When there is no `.prepare-pr.toml`:
 
 ### 5.4 Kiro Crew marker detection
 
-The `kirocrew` profile auto-selects when the repo root contains the distinctive markers, e.g. **all/most of**: `AUTOSDE.yaml` **and** `website/AUTOSDE.yaml`, the review workflows (`codex-review.yml` + `claude-review.yml`), and the `PR Readiness` status usage. Presence of these is a strong, low-false-positive signal that we are in Kiro Crew (or a faithful fork), so loading the tuned profile is safe.
+The `kirocrew` profile auto-selects when the repo root contains all three markers (`_KIROCREW_MARKERS` in `resolve_profile.py`, every one required): `AUTOSDE.yaml`, `.github/workflows/codex-review.yml` and `.github/workflows/claude-review.yml`. Presence of these is a strong, low-false-positive signal that we are in Kiro Crew (or a faithful fork), so loading the tuned profile is safe.
 
 ### 5.5 Profile schema (`.prepare-pr.toml`)
 
@@ -193,7 +193,7 @@ status_context = "PR Readiness"   # optional override; else pr_status.py falls b
 defer_label = ""                  # optional: a label that formally defers a gate
 ```
 
-The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuration as a machine-readable profile the resolver loads directly, so Kiro Crew needs no in-repo `.prepare-pr.toml`.
+The TOML above is illustrative, and its model ids are as of 2026-07-28. The bundled `profiles/kirocrew.json` is the Kiro Crew configuration as a machine-readable profile, and it holds the current model ids; the resolver loads it directly the resolver loads directly, so Kiro Crew needs no in-repo `.prepare-pr.toml`.
 
 > **Why mirror + multi-model by default (not dimension-split).** Contract-backed reviewers reproduce each CI gate's bar locally, so blocking findings surface pre-push instead of a CI round later; pinning each reviewer to a different vendor buys cross-model blind-spot coverage (the same principle the `llm-council` skill is built on — a same-model panel echoes one bias). Splitting one model across dimensions (correctness vs contracts, the pre-#616 A/B design) adds little as models get stronger, since one capable reviewer covers both in a pass — so the default spends the parallel budget on **model diversity**, not dimension slices.
 >
@@ -201,7 +201,7 @@ The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuratio
 
 ### 5.6 Script changes
 
-- **`resolve_profile.py`** (NEW): implements the §5.2 resolution order and emits the resolved profile as JSON (`{source, base_branch, single_commit, setup[], gates[], rule_files[], reviewers[], readiness{}}`). Stdlib only, Python 3.9+; parses an external `.prepare-pr.toml` via `tomllib` (3.11+) or `tomli`, and errors loudly (exit 2) rather than silently ignoring a config it cannot parse. The bundled Kiro Crew profile ships as `profiles/kirocrew.json` (stdlib `json`, so the marker path needs no TOML parser and works on the 3.10 CI leg). Missing `setup` is normalized to `[]` for backward compatibility.
+- **`resolve_profile.py`** (NEW): implements the §5.2 resolution order and emits the resolved profile as JSON (`{source, base_branch, single_commit, setup[], gates[], rule_files[], reviewers[], readiness{}}`). Stdlib only; parses an external `.prepare-pr.toml` via `tomllib` (3.11+) or `tomli`, and errors loudly (exit 2) rather than silently ignoring a config it cannot parse. The bundled Kiro Crew profile ships as `profiles/kirocrew.json` (stdlib `json`, so the marker path needs no TOML parser). Missing `setup` is normalized to `[]` for backward compatibility.
 - **`pr_status.py`:** accepts an optional readiness-context name (`--readiness-context` / `PREPARE_PR_READINESS_CONTEXT`) so a profile can name a non-default aggregate status; **keeps today's fallback** to the full rollup when unset or absent.
 - **`_review_contract.py`:** owns the reviewer-marker, finding, and disposition computation once. `pr_status.py` and `pr_findings.py` expose pure helpers as direct aliases; only helpers that execute `gh` retain thin entry-local adapters that pass the command runner.
 - All other scripts: unchanged.
@@ -311,7 +311,7 @@ flowchart TB
 
 The three axes (§5.1) map one-to-one onto the loop's green nodes. Anything a profile omits falls back down the resolution ladder (§5.7), so a repo with no config still runs the loop with empty setup, auto-detected gates, and the scripts' generic behavior.
 
-### 5.9 The reviewer-marker grammar (spec of record)
+### 5.10 The reviewer-marker grammar (spec of record)
 
 The `[<NAME>-REVIEWED]` / `[BLOCK-MERGE]` markers are a load-bearing contract
 between three parties: the review workflows that EMIT them
@@ -428,8 +428,11 @@ Built-in and portable are **not** in conflict:
 
 ## 7. Proposed layout after refactor
 
+The shipped skill directory is `kirocrew-prepare-pr/`, and `scripts/` holds 12
+scripts; the layout below is the proposal's core subset.
+
 ```
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
+src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/
   SKILL.md                    # generic core loop + "Project profile" section
   profiles/
     kirocrew.json             # bundled Kiro Crew profile (setup, gates, reviewers, labels, single-commit)
@@ -443,14 +446,14 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
     enable_automerge.py
 ```
 
-(This whole `prepare-pr/` skill directory is the distribution and copy unit: it ships via `package_data`, and the complete runtime tree is synced to `~/.kiro/crew/skills/…` at startup. The two entry scripts resolve `_review_contract.py` relative to their own `__file__`, so either can still be executed directly from an arbitrary current working directory on Windows or POSIX; copying one entry file without its sibling is not a supported distribution shape. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
+(This whole `kirocrew-prepare-pr/` skill directory is the distribution and copy unit: it ships via `package_data`, and the complete runtime tree is synced to `~/.kiro/crew/skills/…` at startup. The two entry scripts resolve `_review_contract.py` relative to their own `__file__`, so either can still be executed directly from an arbitrary current working directory on Windows or POSIX; copying one entry file without its sibling is not a supported distribution shape. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
 
 ## 8. Migration & backward compatibility
 
 - Kiro Crew validation behavior is **unchanged**: the `kirocrew` profile preserves the same setup/check commands, reviewers and labels, auto-selected by markers; it now distinguishes provisioning from verdict-producing gates.
 - Existing profiles remain compatible: an omitted `setup` section resolves to `setup = []`.
 - No `.prepare-pr.toml` is added to the Kiro Crew repo (the bundled profile covers it) — but one *may* be added later to make the config explicit/self-documenting.
-- Within the supported complete-skill-directory distribution, the entry CLIs remain backward-compatible: the readiness override is opt-in with the existing fallback intact, helper names and signatures remain available, and direct execution works from any current working directory. A lone copied entry file is not a supported distribution; deployments copy the complete `prepare-pr/` directory so `_review_contract.py` is present.
+- Within the supported complete-skill-directory distribution, the entry CLIs remain backward-compatible: the readiness override is opt-in with the existing fallback intact, helper names and signatures remain available, and direct execution works from any current working directory. A lone copied entry file is not a supported distribution; deployments copy the complete `kirocrew-prepare-pr/` directory so `_review_contract.py` is present.
 
 ## 9. Alternatives considered
 
@@ -463,8 +466,8 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
 
 - **Profile format:** `.prepare-pr.toml` (TOML via `tomllib`) vs a `[tool.prepare-pr]` table inside `pyproject.toml` for Python repos. Leaning TOML root file for language-neutrality.
 - **Gate command trust:** running profile-supplied shell commands is arbitrary code execution by design (it's the repo's own dev config). Confirm this is acceptable, or gate first-run on user confirmation.
-- **Marker strictness:** how many Kiro Crew markers must match to auto-load the `kirocrew` profile (all vs a quorum) to stay robust across forks.
-- **Concrete model ids (verified 2026-07-28):** pinned to the CI gates' own models — `gpt-5.6-sol` (codex-review.yml: `model = "openai.gpt-5.6-sol"`) and `claude-opus-5` primary / `claude-opus-4.8` fallback (claude-review.yml: `--model us.anthropic.claude-opus-5 --fallback-model us.anthropic.claude-opus-4-8`); all confirmed served by `kiro-cli chat --list-models`. Note the bare `gpt-5.6` is NOT served (spawns fail) — the GPT mirror must pin the `-sol` tier. Remaining item is *maintenance*: keep the profile ids in sync when the CI workflow pins are bumped (periodic check or a test asserting parity).
+- **Marker strictness (resolved):** all three markers in §5.4 must match.
+- **Concrete model ids (as verified 2026-07-28; the current ids live only in `profiles/kirocrew.json`):** pinned to the CI gates' own models — `gpt-5.6-sol` (codex-review.yml: `model = "openai.gpt-5.6-sol"`) and `claude-opus-5` primary / `claude-opus-4.8` fallback (claude-review.yml: `--model us.anthropic.claude-opus-5 --fallback-model us.anthropic.claude-opus-4-8`); all confirmed served by `kiro-cli chat --list-models`. Note the bare `gpt-5.6` is NOT served (spawns fail) — the GPT mirror must pin the `-sol` tier. Remaining item is *maintenance*: keep the profile ids in sync when the CI workflow pins are bumped (periodic check or a test asserting parity).
 - **Profile-resolution mechanism (resolved):** implemented as the deterministic `resolve_profile.py` helper emitting resolved JSON — chosen for determinism + testability over prose-driven parsing.
 - **Model-tier fallback wording:** how loudly to warn when a mirror's pinned `model` id is unavailable and it drops to the `model_tier` fallback (local-green is then weaker than server-green).
 

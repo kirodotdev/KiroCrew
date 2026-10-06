@@ -21,7 +21,7 @@ deliberately does not use one.
   brew install steipete/tap/imsg
   imsg --version
   ```
-  The binary is resolved from a fixed source-level list — `/opt/homebrew/bin/imsg`, then `/usr/local/bin/imsg` — and from nowhere else. There is deliberately no `PATH` search and no configurable path: `config.json` is agent-writable, so a settable path would let an agent choose which binary the gateway executes. Homebrew on either architecture is already covered, and the fixed list is also what makes the launch-agent case work, where the inherited `PATH` has no Homebrew prefix.
+  The binary is resolved from a fixed source-level list — `/opt/homebrew/bin/imsg`, then `/usr/local/bin/imsg` — and from nowhere else. There is deliberately no `PATH` search and no configurable path: `config.json` is an ordinary settings file, sealed read-only against an in-sandbox shell but not owner-gated, so a settable path would let any settings write choose which binary the gateway executes. Homebrew on either architecture is already covered, and the fixed list is also what makes the launch-agent case work, where the inherited `PATH` has no Homebrew prefix.
 * **Two macOS permissions**, granted once:
   * **Full Disk Access** — so the process can read the Messages database.
   * **Automation → Messages** — so it can send. The first send prompts for this.

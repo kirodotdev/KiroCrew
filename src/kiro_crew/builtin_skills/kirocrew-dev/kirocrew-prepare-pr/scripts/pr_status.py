@@ -25,8 +25,10 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
          and changes nothing else -- same exit codes, same prose. Its
          ``progress_key`` sub-object is the only part safe to compare between
          runs; a monitoring loop uses it to tell a stalled PR from a moving one;
-         --disposition-gate evaluates ONLY the disposition rule for an
-         explicitly given repo/PR/head, prints one JSON object and exits 0 --
+         --disposition-gate evaluates the disposition rule for an explicitly
+         given repo/PR/head and also reports ``unpublished`` (whole-design
+         lanes that still owe this head a verdict); it prints one JSON object
+         and exits 0 --
          this is what pr-readiness.yml calls to enforce the rule server-side,
          so the rule keeps a single definition;
          --supersession-gate reports which verdicts for that head a later
@@ -51,8 +53,9 @@ Exit codes:
                   comment violating the one-lane / one-rationale-per-finding
                   rule, an unanswered whole-design CONCERNS verdict for the
                   current head (local loop only -- --disposition-gate and the
-                  required status are unchanged), or anything that cannot be
-                  confirmed
+                  required status are unchanged), a superseded verdict (a lane
+                  blocked this head in a sample a later one replaced), or
+                  anything that cannot be confirmed
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
 

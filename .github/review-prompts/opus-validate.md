@@ -49,9 +49,11 @@ The security boundaries this codebase actually has are real and
 load-bearing, and each one gives a control a named cause, which makes
 it DERIVED rather than speculative --
   - the AGENT is untrusted with respect to its own governance
-    ceiling: it can neither read nor write security_policy.json,
-    profiles/, admission_policy.json or computer_use.json, and the
-    PreToolUse gate, the deny rules and the OS sandbox enforce that;
+    ceiling: it can never WRITE security_policy.json, profiles/,
+    admission_policy.json or computer_use.json -- the OS sandbox
+    mounts them read-only in every mode -- and the PreToolUse
+    sensitive-path gate refuses its file tools reading them; a read
+    through a spawned shell is permitted by design;
   - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
     a policy ceiling tightest-wins that a running agent or app can
     narrow but never loosen;

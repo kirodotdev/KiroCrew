@@ -47,7 +47,7 @@
       "label": "Allowed enterprise orgs (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.allowed-enterprise-orgs-slack",
-      "description": "Enterprise Grid org IDs to allow (starts with E or T). Leave empty to allow all orgs."
+      "description": "Enterprise Grid org or workspace IDs to allow (starts with E or T). On Enterprise Grid, list the org's E… ID and each workspace's T… ID: messages are checked by workspace, so a list with only the E… ID denies every message. Leave empty to allow all orgs."
     },
     {
       "id": "channels.allowed-handles-imessage",
@@ -483,7 +483,7 @@
       "label": "Completion Event Truncation",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=chat.completion-event-truncation",
-      "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."
+      "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."
     },
     {
       "id": "chat.confirm-before-closing-session",
@@ -827,7 +827,7 @@
       "label": "What Enter does while the agent is working",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.what-enter-does-while-the-agent-is-working",
-      "description": "Steer interrupts the current turn; Queue waits for it."
+      "description": "Steer adds your message to the current turn without stopping it; Queue waits for the turn to finish."
     },
     {
       "id": "chat.widget-density",

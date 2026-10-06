@@ -97,8 +97,8 @@ export function resolveLegacyHighlightId(id: string): string {
 export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
 
 /**
- * `data-setting-key` anchor of the Kiro sign-in card on Settings → Coding
- * Agent, the target of the chat error row's "Sign in to Kiro" link
+ * `data-setting-key` anchor of the Kiro sign-in card on Settings → Agent
+ * Harness, the target of the chat error row's "Sign in to Kiro" link
  * (`KIRO_SIGN_IN_PATH` in `pages/developer/kiroSignInLink.ts`). A pseudo key,
  * not a config path: nothing reads it as a setting. Declared HERE, beside the
  * other deep-link ids, because the hook has to know it: the card mounts LATE

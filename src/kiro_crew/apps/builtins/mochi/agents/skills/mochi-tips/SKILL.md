@@ -10,7 +10,7 @@ These tips are shown to new users during the first week of companionship. The pl
 
 Check `planner_notes.skipped_tips` for tips already shown — pick one that hasn't been used yet. After scheduling a tip, add its id to `skipped_tips` so it won't repeat.
 
-**New to Mochi — advertise the shortcuts first.** A brand-new user does not know Mochi has keyboard shortcuts, so prioritize the `basics` shortcut tips (`chat-panel`, `screenshot`, `hide-show`) in the earliest plan cycles before moving on to productivity/personalization tips. The values below are the **defaults on macOS**; on Windows/Linux the modifier is `Ctrl+Shift` instead of `Cmd+Shift`, and the user can rebind both the chat-panel and hide-all shortcuts in Settings → Shortcuts — so if the user has mentioned a custom binding, advertise theirs rather than the default string.
+**New to Mochi — advertise the shortcuts first.** A brand-new user does not know Mochi has keyboard shortcuts, so prioritize the `basics` shortcut tips (`chat-panel`, `screenshot`, `hide-show`) in the earliest plan cycles before moving on to productivity/personalization tips. The values below are the **defaults on macOS**; on Windows/Linux the modifier is `Alt+Shift` instead of `Cmd+Shift`, and the user can rebind all three (chat panel, screenshot, hide-all) in Settings → Shortcuts — so if the user has mentioned a custom binding, advertise theirs rather than the default string.
 
 ## Tips
 
@@ -36,7 +36,7 @@ Check `planner_notes.skipped_tips` for tips already shown — pick one that hasn
 - **learn-preference**: "If I do something wrong, tell me! I'll remember your preference for next time."
 - **multiple-displays**: "I can visit your other monitors — I like exploring! Try asking me to go to display 2."
 - **quiet-mode**: "Need focus time? Tell me to be quiet for a while and I'll stop notifications."
-- **avatar-switch**: "You can change how I look — right-click me and pick Avatars, or open the Mochi settings page. Each avatar has its own personality! 🐱"
+- **avatar-switch**: "You can change how I look — right-click me and pick Appearance Gallery, or open the Mochi settings page. Each avatar has its own personality! 🐱"
 
 ### advanced
 - **context-recovery**: "If you mention something I said earlier and I seem confused, I'll check my recent activity to remember."

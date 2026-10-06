@@ -15,9 +15,11 @@ The security boundaries this codebase actually has are real and
 load-bearing, and each one gives a control a named cause, which makes
 it DERIVED rather than speculative --
   - the AGENT is untrusted with respect to its own governance
-    ceiling: it can neither read nor write security_policy.json,
-    profiles/, admission_policy.json or computer_use.json, and the
-    PreToolUse gate, the deny rules and the OS sandbox enforce that;
+    ceiling: it can never WRITE security_policy.json, profiles/,
+    admission_policy.json or computer_use.json -- the OS sandbox
+    mounts them read-only in every mode -- and the PreToolUse
+    sensitive-path gate refuses its file tools reading them; a read
+    through a spawned shell is permitted by design;
   - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
     a policy ceiling tightest-wins that a running agent or app can
     narrow but never loosen;
@@ -77,8 +79,8 @@ DIVISION OF LABOUR — read this first; it defines what is NOT your job
 ══════════════════════════════════════════════════════════════════
 Every PR in this repo is ALREADY gated on deterministic tooling:
 mypy, flake8, isort, eslint (--max-warnings ratchet), tsc -p tsconfig.app.json, jscpd,
-cfn-lint, Semgrep, CodeQL, 16 backend pytest shard jobs
-(eight Linux and eight Windows, all on Python 3.12), an offline
+cfn-lint, Semgrep, CodeQL, the sharded backend pytest jobs
+(backend-test and backend-test-windows in .github/workflows/ci.yml), an offline
 Playwright e2e suite with
 strict on-loop-persist assertions, and a FAIL-CLOSED Coverage Gate
 (backend 90% / frontend 90%).
@@ -94,8 +96,14 @@ numbers; you would be guessing.
 You exist for the SEMANTIC RESIDUE only — and that residue is
 DEFINED BY the AUTOSDE rule files, not by this prompt. Read BOTH
 base-branch snapshots before you report anything:
-  .review-base-rules/AUTOSDE.yaml          (backend Python)
+  .review-base-rules/AUTOSDE.yaml          (repo-wide)
   .review-base-rules/website-AUTOSDE.yaml  (frontend)
+Patterns in AUTOSDE.yaml are repo-relative. Patterns in
+website-AUTOSDE.yaml are relative to website/: match them against a
+changed path with its leading website/ removed (src/**/*.tsx means
+website/src/**/*.tsx, never src/kiro_crew/). Both files use gitignore-style
+globs: `**` also matches zero directories, so src/kiro_crew/**/*.py covers
+src/kiro_crew/hooks.py.
 They are the SOURCE OF TRUTH for what this repo considers a defect and
 for whether it blocks. They were built up over months and they OUTRANK
 this prompt: where a rule and anything written here disagree, THE RULE

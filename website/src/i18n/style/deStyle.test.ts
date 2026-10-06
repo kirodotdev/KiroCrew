@@ -29,7 +29,7 @@ function report(bad: string[], limit = 6): string {
   return `${bad.length} violation(s):\n  ${bad.slice(0, limit).join('\n  ')}`
 }
 
-describe('de tone (style/de.md §5)', () => {
+describe('de tone (style/de.md §4)', () => {
   it('uses du (informal), not Sie (formal)', () => {
     // Capital "Sie" as formal address — but "Sie" is also "they" (always capitalized).
     // Only flag "Sie" when followed by a verb that indicates second-person address.
@@ -111,7 +111,7 @@ describe('de register (style/de.md §4)', () => {
   })
 })
 
-describe('de compounds (style/de.md §7)', () => {
+describe('de compounds (style/de.md §6)', () => {
   // Shared by the ceiling below and its companion, so the two can never come to
   // disagree about what a violation is.
   const COMPOUND_CHECKS: Array<[RegExp, string]> = [

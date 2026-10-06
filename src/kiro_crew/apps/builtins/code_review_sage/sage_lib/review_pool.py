@@ -185,11 +185,13 @@ def sandbox_unavailable_message(exc: BaseException | None = None) -> str:
 
     Windows gets its own wording because the cause there is structural rather
     than a misconfiguration: Kiro Crew has no native Windows sandbox backend at
-    all (macOS uses Seatbelt, Linux uses user namespaces), so the only confined
-    path is kiro-cli's own internal sandbox taking the spawn. When that
-    delegation does not apply, the spawn fail-closes — which is correct, and is
-    why this names the one config key that changes the answer instead of leaving
-    the user with a bare exception or an empty review.
+    all (macOS uses Seatbelt, Linux uses user namespaces). An undeclared
+    ``agent.sandbox_allow_unsandboxed_exec`` already resolves true on Windows
+    (``config.loader.unsandboxed_exec_platform_default``), so reaching this
+    refusal there means the key was declared false or a governance
+    ``sandbox.min_level`` floor requires a sandbox. The spawn fail-closes, which
+    is correct; the message names both causes instead of leaving the user with a
+    bare exception or an empty review.
     """
     detail = str(exc).strip() if exc is not None else ""
     if _is_windows():
@@ -199,9 +201,10 @@ def sandbox_unavailable_message(exc: BaseException | None = None) -> str:
             "(Seatbelt) and Linux (user namespaces) only, so a review is confined "
             "on Windows solely when kiro-cli's own internal sandbox takes the "
             "spawn — and it is refused rather than run unaudited when that does "
-            "not apply. To allow an unsandboxed review worker explicitly, set "
-            "agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json "
-            "and restart the gateway. Everything that does not spawn a reviewer "
+            "not apply. On Windows an unsandboxed worker is allowed by default, so "
+            "this refusal means agent.sandbox_allow_unsandboxed_exec is set to "
+            "false in config, or a governance sandbox.min_level floor requires a "
+            "sandbox. Everything that does not spawn a reviewer "
             "still works: adding repositories, listing and opening pull requests, "
             "reading past reports, and publishing an already-staged draft review."
         )

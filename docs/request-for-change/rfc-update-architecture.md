@@ -3,10 +3,10 @@ title: Update Architecture (install-shape capability contract)
 status: in-progress
 author: zezhexu
 created: 2026-07-31
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 1003
-implementation-prs: [1734]
+implementation-prs: [1734, 15838, 16202, 16245]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -16,12 +16,19 @@ superseded-by: []
 - Status: in-progress — the backend capability contract
   (`platform/update_capability.py`), managed-venv wheel engine
   (`platform/wheel_engine.py`) and host-local dashboard approval step-up
-  (`platform/update_stepup.py`) ship; the engine's unattended use is in flight
-  (see "In flight" below). The source-tree automatic apply and legacy
-  `auto_update` surfaces remain, while the Phase 3 `state` / `progress` and
-  shared drain-and-restart contract are still open. The implementation-status
+  (`platform/update_stepup.py`) ship, and the gateway's unattended apply runs
+  through the engine ([#16202](https://github.com/kirodotdev/KiroCrew/pull/16202);
+  see [slack-gateway.md](../system-specs/modules/slack-gateway.md#automatic-apply-on-a-managed-venv-install)).
+  `auto_update` defaults to on and drives that unattended apply. The Phase 3
+  `state` / `progress`, the shared drain-and-restart contract (§5 drain lease)
+  and hash-pinned dependency constraints are still open. The implementation-status
   sections below preserve earlier audit snapshots; current code is authoritative.
-- Correction to the reference below: KiroCrew ships **five** distribution shapes, not the set implied — `beacon.py:155` lists `{dmg, appimage, wheel, source, docker}`.
+- Correction to the references below: `beacon.KNOWN_DISTRIBUTIONS` has **eight**
+  distribution shapes — `{dmg, appimage, deb, rpm, nsis, wheel, source, docker}`.
+  A Windows (NSIS) install reports `nsis`, not `source`, and
+  `update_capability.derive_capability` consults `beacon.distribution()`
+  (`_ELECTRON_DISTRIBUTIONS`), so the stamp is not read only by telemetry. The
+  five-shape figures below are as of this RFC's creation.
 - Author: zezhexu
 - Created: 2026-07-31
 - Related: `docs/build/release.md` (channels, release branches, promotion),
@@ -37,8 +44,9 @@ and first-migration protocol. `kirocrew update` builds
 `crew-venv-<version>` fresh (manifest signature verified against the
 cli.sh-pinned trust root, wheel SHA-256 against the signed digest), verifies
 the tree imports the promised version, promotes the stable link via sibling
-symlink + `os.replace`, and repoints `~/.local/bin/kirocrew`. At this audit it
-did not prune old trees (the liveness proof is in flight, below).
+symlink + `os.replace`, and repoints `~/.local/bin/kirocrew`. It prunes
+superseded trees (`_prune_superseded_trees`, keeping `_KEEP_PREVIOUS_TREES`)
+under the tree liveness lock described below.
 `cli.sh` repoints the stable link at the legacy tree after its own installs,
 so the link always names the last-installed version whichever writer ran.
 Gateway restarts choose their interpreter through the stable link
@@ -59,9 +67,10 @@ validated, then runs the shadow apply itself and
 restarts. The full drain lease (§5) and hash-pinned dependency constraints
 remain open. pipx installs keep the installer re-run.
 
-**In flight — valid only at the head of the PR below; re-audit at merge.** One
-open PR, not on main: the engine hardening, and the gateway's unattended apply
-through it. What it changes, as read at its head:
+**Landed in [#16202](https://github.com/kirodotdev/KiroCrew/pull/16202)** (with
+[#15838](https://github.com/kirodotdev/KiroCrew/pull/15838) stopping an in-flight
+installer gracefully): the engine hardening, and the gateway's unattended apply
+through it.
 
 - One update lease per layout, `${VENV}.update.lock`, taken by every engine
   writer (`kirocrew update`, the approve route, the gateway's automatic apply)
@@ -145,21 +154,16 @@ so no rc-to-rc step was detectable.
   no file under `website/electron/` or `packaging/` is in that commit, and the
   desktop branch of `AboutPanel.tsx` is byte-identical to its parent.
 
-**Still open from Phase 1** — the architectural half:
+**Phase 1, the architectural half — landed since this snapshot:**
 
-- `platform/update_capability.py` does not exist; the fields shipped are the
-  tactical set (`install_kind` / `self_updatable` / `checked` / `error` /
-  `update_command`), not the contract vocabulary in §2.
-- Boot-time git auto-apply is **still armed** for a `mainline` (and, via the
-  detached-HEAD coercion, a detached) checkout. #1734 only added a guard so a
-  non-git install notifies instead of driving `git reset` in a tree with no
-  `.git`.
-- The `.git` derivation is **still done in three places** —
-  `updates.py:383`, `updates.py:871`, and `cli_server.py:1173`. They now agree
-  (all three use an `exists()` check; see the correction under *Problems*), so
-  this is a drift risk and a "not git's own answer" problem rather than the
-  semantic split the original draft described.
-- The `auto_update` retirement surfaces named under Migration are untouched.
+- `platform/update_capability.py` exists and `derive_capability` serves the §2
+  contract to `dashboard/handlers/updates.py` and `cli_server.py`; the tactical
+  `install_kind` / `self_updatable` fields are gone.
+- The `.git` derivation is collapsed into `update_capability.py`.
+- The gateway skips a detached HEAD (`is_primary_branch`) rather than coercing it
+  to `mainline`.
+- `auto_update` was kept, not retired: it defaults to on and drives the
+  unattended apply (see the status above).
 
 
 ## Summary
@@ -184,25 +188,23 @@ sequence becomes shared and explicit.
 
 ### Current state
 
-Five shapes, enumerated at `src/kiro_crew/beacon.py:136`:
-
-```python
-KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
-```
+At creation, five shapes were enumerated in `KNOWN_DISTRIBUTIONS`
+(`src/kiro_crew/beacon.py`): `dmg`, `appimage`, `wheel`, `source`, `docker`. The
+set now has eight (see the correction at the top).
 
 Each packaging path stamps that value at build time into a generated
 `kiro_crew/_build_info.py` (via `scripts/stamp-distribution.sh`), which
 `beacon.distribution()` prefers over the `KIROCREW_DISTRIBUTION` env var: a
 baked module ships with the artifact and a running install cannot change it,
 whereas the env var is inherited by child processes and settable by anyone with
-a shell. Windows (NSIS) has no value in the set and reports `source`. The
-field is read **only by telemetry**; no update code consults it.
+a shell. At creation, Windows (NSIS) had no value in the set and reported
+`source`, and the field was read only by telemetry.
 
 Three mechanisms:
 
 | Mechanism | Where | Covers |
 |---|---|---|
-| git self-update | `slack/gateway.py:4959` (`_check_for_updates`, called once from startup at `:5426`) → `_auto_apply_update` (`:5004`) | `source` only |
+| git self-update | `slack/gateway.py` (`_check_for_updates`, called from startup) → `_auto_apply_update` | `source` only |
 | Electron OTA | `website/electron/auto-update.js` (electron-updater, `autoDownload=false` at the library level with an auto-download preference above it, `autoInstallOnAppQuit=false`) | `dmg`, `appimage` |
 | — none — | | `wheel`, `docker` |
 
@@ -210,9 +212,9 @@ All three backend entry points to the git path guard on roughly the same two
 conditions — `KIROCREW_PROJECT_DIR` set, and a `.git` present — and, as of
 `8861f89e`, with the **same** semantics:
 
-- `dashboard/handlers/updates.py:383` (`_do_update_check`) — `os.path.exists`
-- `dashboard/handlers/updates.py:871` (`api_update_apply`) — `os.path.exists`
-- `cli_server.py:1173` (the CLI update command) — `(proj_path / ".git").exists()`
+- `dashboard/handlers/updates.py` (`_do_update_check`) — `os.path.exists`
+- `dashboard/handlers/updates.py` (`api_update_apply`) — `os.path.exists`
+- `cli_server.py` (the CLI update command) — `(proj_path / ".git").exists()`
 
 **Correction to the original draft.** This section previously said the third site
 used `Path.is_dir()`, and drew the conclusion that "the HTTP paths accept a linked
@@ -259,16 +261,25 @@ re-asked which shapes it still governs.
 
 ### Problems
 
+As of `9348a25a34`: Problem 1 is closed (a managed-venv install updates through
+`_update_wheel` / `_update_managed_venv` in `cli_server.py`; #1734, #16202).
+Problem 2 is closed for the changelog modal (`updateFlow.tsx` reads
+`update_can_apply` / `update_can_arm` through `updateAffordance`, and #16245
+replaced the inert toggle with `WhatsNewAutoUpdateToggle` under the
+`updateSwitchesShown` rule); `SettingsPage` still selects
+`desktopUpdateAvailable`. Problem 3's detached-HEAD coercion is gone
+(`is_primary_branch`). The list below is the problem as filed.
+
 1. **The headline install cannot update.** `cli.sh` (README's first
    instruction) produces a `wheel` install. `kirocrew update` exits 1 on it —
    `❌ KIROCREW_PROJECT_DIR not set — cannot locate source tree`
-   (`cli_server.py:1145`) or `❌ No git repo at …` (`:1151`). The documented
+   or `❌ No git repo at …` (both in `cli_server.py`). The documented
    update command does not work for the documented install method. The only
    route is re-running the installer.
 
 2. **The shared SPA renders impossible actions.** One React app is served to
-   all shapes and cannot tell them apart. `AboutPanel.tsx:491` branches on
-   `isDesktop`; `SettingsPage.tsx:92` couples differently — it selects the
+   all shapes and cannot tell them apart. `AboutPanel.tsx` branches on
+   `isDesktop`; `SettingsPage.tsx` couples differently — it selects the
    desktop-only redux field `desktopUpdateAvailable`, mirrored from the Electron
    updater, so on a wheel install its update nudge simply never lights up. The
    changelog modal (`ChangelogModal`, `website/src/shell/updates/updateFlow.tsx`)
@@ -300,10 +311,9 @@ re-asked which shapes it still governs.
    `_auto_apply_update` hard-resets the tree it runs from, reinstalls, and
    re-execs — with no user action, as a side effect of starting. Its blast
    radius is narrower than it first looks, and the narrowing is worth stating
-   precisely: `gateway.py:5039-5041` returns early unless the branch is
-   `mainline`, so a checkout on a feature branch is **not** armed. But
-   `gateway.py:5035-5036` coerces a detached HEAD to `"mainline"`, so a detached
-   checkout **is** armed — and nothing about being on a detached HEAD suggests
+   precisely: `_auto_apply_update` in `gateway.py` returned early unless the
+   branch was `mainline`, so a checkout on a feature branch was **not** armed. But
+   it coerced a detached HEAD to `"mainline"`, so a detached checkout **was** armed — and nothing about being on a detached HEAD suggests
    "treat me as the release branch". `available` additionally requires
    `remote_version > local_version` on the branch's own upstream.
 
@@ -336,7 +346,11 @@ re-asked which shapes it still governs.
 ## Non-goals
 
 - Rewriting or replacing electron-updater.
-- Background/silent auto-update for the CLI (explicitly rejected — see §4).
+- Background/silent auto-update for the CLI (rejected in this design — see §4;
+  superseded: the shipped `auto_update`, default on, applies a managed-venv or git
+  update unattended once no work is running, as
+  [slack-gateway.md](../system-specs/modules/slack-gateway.md#automatic-apply-on-a-managed-venv-install)
+  specifies).
 - Rollback. The release model is roll-forward only; this RFC does not change
   that.
 - Removing the git code path in this change. It is de-armed and reported as
@@ -365,7 +379,7 @@ first-class runtime property, and one module — `platform/update_capability.py`
 ```json
 {
   "supported": true,
-  "managed_by": "electron | kirocrew | git | container | none",
+  "managed_by": "electron | kirocrew | git | container | command | none",
   "mode": "auto | consent | notify | none",
   "can_download": true,
   "can_apply": true,
@@ -461,7 +475,7 @@ permanently indeterminate.
 `can_apply` means **appliable by the running process without the user leaving
 the app**. It is not "can this install ever be updated": `source` and `wheel`
 can both be updated from a terminal, and `kirocrew update` genuinely applies on
-`source` today (`cli_server.py:1140-1152`). `can_apply` is the field an
+`source` today (`cli_server.py`). `can_apply` is the field an
 implementer reads to decide whether to render an in-app Apply button, so it must
 answer only that question.
 
@@ -480,6 +494,11 @@ for a state it cannot act on. The existing desktop `updatesDisabled` reasons
 (`dev`, `translocated`, `volume`, `platform`) fold into these two fields rather
 than remaining a frontend-only enum.
 
+As shipped (`platform/update_capability.py`): `managed_by: "command"` is emitted
+for the policy-provider route; `managed_by: "none"` and `mode: "auto"` are
+defined but reserved, with no producer; and the frontend still reads the desktop
+`updatesDisabled` enum rather than these fields.
+
 `minimum_version_enforced` is required, not optional: the policy ceiling
 (`platform/update_governance.py`) can already force an update past a user's
 opt-out. Without it in the contract, the UI can show that an update is
@@ -487,8 +506,8 @@ mandatory but not why.
 
 The three consumers — `AboutPanel.tsx`, `SettingsPage.tsx`, and the
 changelog modal (`ChangelogModal`) — read only this contract. Each sheds a
-*different* coupling: `AboutPanel.tsx:491` loses its `isDesktop` branch,
-`SettingsPage.tsx:92` stops selecting `desktopUpdateAvailable` in favour of the
+*different* coupling: `AboutPanel.tsx` loses its `isDesktop` branch,
+`SettingsPage.tsx` stops selecting `desktopUpdateAvailable` in favour of the
 contract's `state` / `latest_version`, and the changelog modal gains the
 capability check it never had.
 
@@ -506,7 +525,7 @@ capability check it never had.
   **Managed-venv replacement mechanics (invariants, not a settled design).**
   `cli.sh` has two install branches, and only one of them is pipx. The other —
   the default when pipx is absent — is a fixed-path managed venv
-  (`${KIROCREW_HOME}-venv`, `cli.sh:331`) upgraded **in place** today. For that
+  (`${KIROCREW_HOME}-venv`, `cli.sh`) upgraded **in place** today. For that
   shape the promising direction is *versioned trees with atomic promotion*:
   build `crew-venv-<version>` completely while the old gateway keeps serving,
   then promote a stable path to point at it, then restart. (Precedent:
@@ -594,11 +613,11 @@ capability check it never had.
 
   The checksum is necessary and not sufficient. `SHA256SUMS` is served from the
   same CDN as the wheel, so an actor who can replace one can replace both —
-  `publish-cli.yml:85-87` says this in as many words ("integrity, not
+  the `publish-cli.yml` workflow says this in as many words ("integrity, not
   authenticity"). The publish lane **already** emits the missing half: a signed
   SLSA attestation binding the wheel's digest to the repo, workflow and commit
-  (`actions/attest-build-provenance`, `publish-cli.yml:84-91`). Nothing consumes
-  it yet. A self-updater is a higher-value target than a one-time installer — it
+  (the `actions/attest-build-provenance` step in `publish-cli.yml`). At creation
+  nothing consumed it. A self-updater is a higher-value target than a one-time installer — it
   runs unattended, forever — so the wheel engine must be the first consumer,
   with the verification key pinned in the client rather than fetched from the
   channel it is meant to police.
@@ -652,8 +671,8 @@ for it in one of those two places.
 
 Policy overrides all three columns: a minimum-version pin forces an update past
 a user's opt-out. **The deadline and the user-facing message are new
-requirements, not existing behavior** — today `gateway.py:4979-4986` logs a
-warning and calls `_auto_apply_update()` immediately, with no grace period and
+requirements, not existing behavior** — at creation `_check_for_updates` in
+`gateway.py` logged a warning and called `_auto_apply_update()` immediately, with no grace period and
 nothing shown to the user. Preserving the *override* while adding the *deadline
 and messaging* is Phase 3 work, sequenced with the drain orchestrator that has
 to enforce the grace period.
@@ -765,6 +784,10 @@ since the contract is what makes `source` report `can_apply: false`.
 
 ## Migration and compatibility
 
+**Superseded.** The shipped `auto_update` was not demoted: it defaults to on, the
+gateway's unattended apply reads it, and `api_update_auto` writes it (see the
+status at the top). The plan as written:
+
 `auto_update` in `config.json` stays readable and is **demoted from a mechanism
 to a legacy key**. After Phase 1 it governs nothing: the contract reports
 `mode: "notify"` for `source`, and boot-time apply is gone. Existing configs do
@@ -773,9 +796,9 @@ not need rewriting; a future release may drop the field.
 Three live surfaces currently offer or persist that key, and **all three** must
 go in the same phase, or Phase 1 ships a switch over a key that governs nothing:
 
-- the raw-config toggle in `KiroCrewCfgTab.tsx:271`;
-- the AboutPanel toggle (`AboutPanel.tsx:342,364,377,549-550`);
-- `POST /api/update/auto` (`dashboard/handlers/updates.py:218-234`), which
+- the raw-config toggle in `KiroCrewCfgTab.tsx`;
+- the AboutPanel toggle (`AboutPanel.tsx`);
+- `POST /api/update/auto` (`api_update_auto` in `dashboard/handlers/updates.py`), which
   writes it into `config.json`.
 
 The endpoint stays routed but becomes a no-op returning the contract's `mode`,
@@ -788,7 +811,7 @@ contract tells it not to.
 ## Security considerations
 
 - **Authenticity, not just integrity.** The wheel engine must verify the signed
-  build provenance already published by `publish-cli.yml:84-91` against a
+  build provenance already published by the attest step in `publish-cli.yml` against a
   client-pinned trust root, in addition to the `SHA256SUMS` digest. Checksums
   alone authenticate nothing when the sums file ships from the same origin as
   the artifact (§3).
@@ -797,7 +820,7 @@ contract tells it not to.
   **git-shaped and must stay scoped to the git engine**: `resolve_remote_url`
   runs `git ls-remote --get-url` and returns `""` for a tree with no git remote,
   and `""` under a non-empty pin is documented as *deny*
-  (`update_governance.py:43-44`, `governance.py:permits_source`). Applying them
+  (`update_governance.py`, `governance.py:permits_source`). Applying them
   to the wheel and desktop engines would therefore refuse **every** update on
   any fleet that has configured a pin. Each engine needs its own artifact-source
   predicate — the channel feed / artifact origin URL for wheel and desktop — and
@@ -830,14 +853,16 @@ contract tells it not to.
 
 ## Alternatives considered
 
-**Keep the git self-update armed for `source`, defaulted off.** Argued on the
+**Keep the git self-update armed for `source`, defaulted off.** (The shipped
+`auto_update` keeps an unattended apply, defaulted on, behind the primary-branch
+guard; this rejection is the design's reasoning as written.) Argued on the
 grounds that contributors are not a production path. Rejected, though the
-rejection rests on a narrower claim than it first appears: the branch guard at
-`gateway.py:5039-5041` means a feature-branch checkout is never touched, so this
+rejection rests on a narrower claim than it first appears: the branch guard in
+`_auto_apply_update` means a feature-branch checkout is never touched, so this
 is not "it will rewrite any developer tree". What remains is still
 disqualifying — an unattended tree rewrite, reinstall and re-exec performed as a
-side effect of daemon startup on `mainline`, and on a detached HEAD that
-`gateway.py:5035-5036` silently coerces to `mainline`. Retiring the *automatic*
+side effect of daemon startup on `mainline`, and on a detached HEAD that the
+gateway then coerced to `mainline`. Retiring the *automatic*
 apply while keeping the *explicit command* takes the defensible half of this
 position, and nothing was argued against the command.
 

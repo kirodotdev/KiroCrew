@@ -48,17 +48,19 @@ optimized GEMM/repack kernels instead.
 
 These libs are loaded by ctypes at runtime, so a single absent file makes the
 whole runtime unusable and memory silently falls back to keyword search behind
-one WARNING — nothing fails loudly. Three packaging lanes select these files by
-two different mechanisms, and each can drop them alone:
+one WARNING — nothing fails loudly. Two packaging lanes select these files, each
+by its own mechanism, and each can drop them alone:
 
 | Lane | Mechanism | Gotcha |
 |---|---|---|
 | sdist | `MANIFEST.in` | `global-exclude *.so` strips exactly `libllama.so` (other Linux libs end `.so.0`; macOS/Windows use `.dylib`/`.dll`). The re-include MUST stay after every exclude — later rules win. `python -m build` builds the wheel FROM the sdist, so a loss here reaches every pip install |
 | wheel | `setup.cfg [options.package_data]` | explicit per-platform globs, because setuptools' `**` recursion has varied across versions |
 
-The desktop bundle has no rules of its own: `packaging/build-desktop.sh` pip-installs
-the project into the bundled python-build-standalone interpreter, so that lane
-inherits the wheel's `package_data` and cannot drift from it.
+The desktop bundle has no selection rules of its own: `packaging/build-desktop.sh`
+pip-installs the project into the bundled python-build-standalone interpreter, so
+it inherits the wheel's `package_data`. It does remove files afterwards: the
+Windows bundle's prune step deletes the foreign-platform `llama_cpp_libs/`
+directories (`linux_*`, `macos_*`), keeping only `win_amd64/`.
 
 `embeddings._REQUIRED_VENDORED_LIBS` is the single declaration of what must
 ship. `test/test_vendored_llama_payload.py` asserts each lane against it, and
@@ -81,15 +83,20 @@ from the sha256-pinned PyPI sdist on macOS under Rosetta with an x86_64
 CPython (uv-managed python-build-standalone) and:
 
 ```
-CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF
   -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew -DLLAMA_BUILD_COMMON=OFF
   -DLLAMA_OPENSSL=OFF -DHTTPLIB_USE_OPENSSL_IF_AVAILABLE=OFF -DLLAMA_CURL=OFF"
 ```
 
+The Metal backend stays at its default (on): the shipped closure includes
+`libggml-metal.0.dylib`, which `embeddings._REQUIRED_VENDORED_LIBS` requires, so a
+rebuild must not pass `-DGGML_METAL=OFF`; a builder should confirm the rebuilt
+closure still contains that dylib.
+
 `GGML_NATIVE=OFF` avoids `-march=native`, but the enabled upstream x86 CPU
 kernels still require AVX, AVX2, BMI2, F16C, FMA, SSE3, and SSSE3. The loader
-checks that baseline before using the bundled Linux x86_64 runtime and degrades
-to keyword search when the host cannot execute it. An operator-set
+checks that baseline before using the bundled Linux x86_64 or macOS x86_64
+runtime and degrades to keyword search when the host cannot execute it. An operator-set
 `LLAMA_CPP_LIB_PATH` bypasses that bundled-runtime gate so a compatible custom
 build remains usable.
 `LLAMA_BUILD_COMMON=OFF` + the OpenSSL/curl switches drop llama-common (not
@@ -157,7 +164,7 @@ Everything under `_vendor/` is excluded from source-level content review
 (semgrep, the AI reviewers' diff, and the lint/format configs all skip it), so
 CI verifies the tree's CONTENT against a committed checksum manifest instead:
 `scripts/vendor_manifest.sha256` pins the SHA-256 of every file here, and the
-`vendor-manifest` job in `.github/workflows/ci.yml` fails any PR whose
+`vendor-manifest` job in `.github/workflows/fast-gate.yml` fails any PR whose
 `_vendor/` contents differ from it — modified, missing, or added files alike.
 
 After a legitimate vendored bump:

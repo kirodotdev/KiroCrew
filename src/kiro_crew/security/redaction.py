@@ -148,7 +148,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the link-token branch below guards its own ``eyJ`` anchor.
     r"|(?<![A-Za-z0-9_-])[MNO][A-Za-z0-9_-]{22,30}"
     r"\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}(?![A-Za-z0-9_-])"  # Discord bot token
-    # ── Third-party developer credentials (AWS-345 / AWS-59) ──
+    # ── Third-party developer credentials ──
     # Distinctive, fixed-case prefixes → very low false-positive risk.  Minimum
     # lengths are kept slightly below the real token lengths so shortened test /
     # rotated variants are still redacted (over-redaction on a prefix match is the
@@ -173,9 +173,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     # port (``:8080``) is never followed by ``@`` within the authority.
     r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?"
     r"|https?|ftps?)"
-    # User portion is `*` (not `+`): empty-user connection strings (e.g. MongoDB
-    # Atlas IAM `mongodb+srv://:secret@…`) still redact the password (ported
-    # from the upstream project).
+    # User portion is `*` (not `+`): an empty-user string (`mongodb+srv://:secret@…`) still redacts.
     # Password segment allows ``@`` (``[^\s/]`` not ``[^\s/@]``): an unencoded
     # ``@`` inside a password is common, and stopping the match at the FIRST
     # ``@`` would redact only the head and leak the rest (``…ss@host``) to
@@ -214,9 +212,11 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the floor over-redacts ordinary code and prose, because the pattern has no left
     # boundary and post-header segments allow an EMPTY match: `keyJson.get(raw)` then
     # redacts to `k[REDACTED…](raw)`, and a JWT quoted at the end of a sentence loses
-    # its trailing period. The 2-segment alternative therefore carries a left boundary
-    # (`(?<![A-Za-z0-9_.-])`, as `_BARE_SECRET_RUN_RE` already does, plus `.` so an
-    # attribute access `obj.eyJ…` is excluded too) and per-segment lengths taken from
+    # its trailing period. The 3-to-5-segment alternative (`credential_patterns.JWT_MULTI_SEGMENT`,
+    # `*` on post-header segments so an empty JWE segment matches) consumes such a period too, an
+    # accepted over-redaction cost. The 2-segment alternative therefore carries a left boundary
+    # (`(?<![A-Za-z0-9_.-])`: base64url's `-`/`_` plus `.` so `obj.eyJ…` is excluded too;
+    # `_BARE_SECRET_RUN_RE` uses `(?<![A-Za-z0-9+/])`) and per-segment lengths taken from
     # the generator, not from guesswork, because a length FLOOR alone is beatable by a
     # sufficiently verbose identifier: at `{40,}` the 40-char
     # `eyJsonSerializerConfigurationFactoryBuilder.deserializeFromStringValue` matched.

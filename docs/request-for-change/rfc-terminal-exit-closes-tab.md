@@ -1,10 +1,10 @@
 ---
 title: Terminal exit closes its tab — what the dashboard does when a shell ends on its own
-status: accepted
+status: partial
 author: jjaskula
 created: 2026-09-29
-last-audited: 2026-09-30
-audited-at: c1a02ce976
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 15144
 implementation-prs: [14509, 14511]
 tracking-issues: [14584, 13189]
@@ -14,14 +14,12 @@ superseded-by: []
 
 # RFC: Terminal Exit Closes Its Tab
 
-> **Status:** `accepted` on 2026-09-30 by maintainer bolichen (see Open
-> questions). Nothing is on main yet. Verified at `c1a02ce976`: `read_pty`
-> in `src/kiro_crew/dashboard/handlers/terminal.py` sends no frame when the
-> shell exits, so the browser sees only a dropped socket, redials, and the dial
-> spawns a new shell. The dead PTY is reaped by the 15-minute orphan sweep. The
-> implementation is [#14509](https://github.com/kirodotdev/KiroCrew/pull/14509),
-> with the Windows exit code in
-> [#14511](https://github.com/kirodotdev/KiroCrew/pull/14511).
+> **Status:** `partial`. Accepted on 2026-09-30 by maintainer bolichen (see Open
+> questions). [#14509](https://github.com/kirodotdev/KiroCrew/pull/14509) is on
+> main: when the shell exits, `src/kiro_crew/dashboard/handlers/terminal.py`
+> closes the socket with `_TERMINAL_WS_CLOSE_SHELL_EXITED` (4001), so the browser
+> closes the tab instead of redialling. The Windows ConPTY exit status,
+> [#14511](https://github.com/kirodotdev/KiroCrew/pull/14511), is not merged.
 
 ## Summary
 

@@ -51,6 +51,10 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
 
+`SKILL.md` must be UTF-8 text; a UTF-8 byte-order mark is accepted. A file in any
+other encoding (for example UTF-16 from PowerShell) is skipped, with one log
+warning naming the file. Re-save it as UTF-8 to load it.
+
 ## Creating Skills
 
 ### Via Dashboard
@@ -130,6 +134,6 @@ supported for the same reason.
 
 ## Skill Discovery Tools
 
-- `skill_search(query, limit?)` searches installed skills by key, name, and description, then searches bodies only if metadata has no matches. It defaults to 20 results and caps `limit` at 50.
-- `skill_discover(query, provider?, limit?)` searches the public registry (including skills.sh) and resolves a `owner/repo[@ref][:path]` query against GitHub; it does not install anything. It defaults to 10 results and caps `limit` at 50.
+- `skill_search(query?, action?, key?, limit?, offset?)` works on installed skills. The default `action=search` matches every query word against names, descriptions and bodies together and ranks the results; `action=list` browses the whole scope in pages with `offset`; `action=read` loads one exact `key` from a result. For search and list, `limit` defaults to 20 and caps at 50. A body too large for one answer (about 99,000 bytes) is read in pages: `offset` is the first line and `limit` the line count, and each page names the next offset. While the body index is still being built a search can say it is incomplete; repeat it to continue.
+- `skill_discover(query, provider?, limit?)` searches the public registry (including skills.sh) and resolves a `owner/repo[@ref][:path]` query against GitHub; it does not install anything. It defaults to 10 results and caps `limit` at 50. When every provider failed it returns an Error, not "no matches"; when only some failed it returns its results under a Warning.
 - `skill_fetch(id, provider?)` reads one discovered registry skill without installing it. It returns the main instruction file only; bundled sibling files are not available until installation.

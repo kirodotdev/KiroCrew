@@ -441,6 +441,16 @@ if ($uninstallProcess.ExitCode -ne 0) {
   throw "Silent uninstall exited with code $($uninstallProcess.ExitCode)."
 }
 
+# An NSIS uninstaller started without `_?=` copies itself to %TEMP% (Au_.exe /
+# Un_A.exe) and relaunches, so the process waited on above can exit while the
+# real uninstall is still running. Wait for that relaunched copy too (bounded at
+# 120 s), so the 30 s registration poll starts when the uninstall is done. A copy
+# that never exits still ends in the named failure below.
+$relaunchDeadline = [DateTime]::UtcNow.AddSeconds(120)
+while ([DateTime]::UtcNow -lt $relaunchDeadline -and @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^(Au_|Un_A)$' }).Count -ne 0) {
+  Start-Sleep -Milliseconds 250
+}
 $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
   $remainingRegistrations = @(Find-InstallerRegistrations $expectedDisplayName)
@@ -452,7 +462,7 @@ do {
   [DateTime]::UtcNow -lt $uninstallDeadline
 )
 if ($remainingRegistrations.Count -ne 0) {
-  throw "Silent uninstall left a $productName registration behind."
+  throw "Silent uninstall left a $productName registration behind: $(($remainingRegistrations | ForEach-Object { $_.PSPath }) -join '; ')"
 }
 if (Test-Path -LiteralPath $installLocation) {
   # NAME the residue. "The directory is still there" is not actionable: the

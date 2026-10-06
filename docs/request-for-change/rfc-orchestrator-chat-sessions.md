@@ -4,8 +4,8 @@ status: superseded
 revision: v5
 author: kirocrew agent session, directed by zezhexu
 created: 2026-08-03
-last-audited: 2026-08-22
-audited-at: c4f253891
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 1280
 implementation-prs: [1295]
 tracking-issues: []
@@ -23,15 +23,17 @@ superseded-by: [../system-specs/modules/crew-mode.md]
 > [`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md)
 > § "Retired: Crew Mode". This document is kept as the intent behind it.
 
-Status: partial — v5 was accepted as design of record in PR #1280 and Crew Mode
-shipped in PR #1295. The implementation has since received store and routing fixes,
-but it deliberately diverges from this proposal: it has no snapshot-generation CAS,
+Status: superseded — v5 was accepted as design of record in PR #1280, shipped as
+Crew Mode in PR #1295, and Crew Mode is retired (see the note above). Kept as
+history: the implementation deliberately diverged from this proposal: it had no snapshot-generation CAS,
 the decision action set omits `release`, and completed results are delivered
 individually instead of using the proposed burst-coalescing window. Phase 0's
 routing-quality probe was zero-core by design and left no repo artifact, so it
 cannot be confirmed either way.
-Disambiguation: main's existing `orchestrator` symbols (`channel.py:121 is_orchestrator`,
-`config/prompt-orchestrator.md`) are a **pre-existing channel-level feature** that predates this RFC,
+Disambiguation: main's existing `orchestrator` symbol (the `Channel.is_orchestrator`
+field in `channel.py`) is a **pre-existing channel-level feature** that predates this RFC
+(its companion prompt file `config/prompt-orchestrator.md` was removed by #15362; see
+`rfc-retire-chat-autopilot.md`),
 and "Crews" (agent templates, #1331/#1335) is not "Crew Mode". Neither counts as implementation.
 Councils: round 1 (v1 draft, 4-member cross-vendor, REVISE — every structural
 BLOCKER traced to simulating engineering in a prompt) → v4 architecture rewrite

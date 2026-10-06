@@ -66,8 +66,11 @@ whatever it says. Header clocks alone would not do: a clock stepped backward
 before a replacement unit was created sorts the replacement before its
 predecessor and applies a retired session's phases over the current ones, and a
 read has no caller inside a unit to pin the live one last. A crew whose order file
-cannot be written falls back to header order -- what every read did before the file
-existed. `crew_log_units()` lists the units; a crew whose slot has no crew log
+cannot be written folds its units in header order. On a platform without
+pinned-parent replace the write holds the parent chain and creates nothing, so an
+absent crews directory leaves the order unwritten, and the crew folds in header
+order until a crew-record write recreates the directory. The read opens the file
+non-blocking and reads it only when the descriptor is a regular file. `crew_log_units()` lists the units; a crew whose slot has no crew log
 reads as the empty record, and every failure to LIST units also reads as empty,
 because this runs on the read path of a crew's every cycle. A failure to FOLD them
 reads as empty too, for the same reason and to keep the contract the pre-projection
@@ -184,15 +187,15 @@ log on, Issue Radar's shared skip memory and open work items -- so shortening it
 for disk reasons is a choice made knowing what else it shortens.
 
 **Reads are checkpointed, not cached.** Folding is O(the log), and a crew's log
-carries its message bodies, so the fold per crew is kept in memory as a checkpoint
-and ADVANCED over the entries that arrived since, through the same seq-anchored
-machinery a cold fold uses. The checkpoint is held against every unit's MARK -- its
-log file's creation identity together with its newest seq -- and four things force a
-cold rebuild, each of which would otherwise be a wrong answer rather than a slow one:
-a changed unit list, a unit whose identity changed (its log was removed and created
-again under the same id, whether or not the new log's seq has climbed back past the
-cached one) or cannot be read, a unit whose seq went backwards, and growth in any
-unit but the newest.
+carries its message bodies, so the fold is continued rather than redone. The warm
+fold is the crew log's shared slot memo (`crew_log.projection.fold_slot_warm`, keyed
+by the crew's slot), the same one every other slot-keyed reader uses, so the rules
+live in one implementation (`crew_store._fold_checkpoint`). It continues the cached
+cell over the entries that arrived since and refolds cold for every shape that
+cannot be carried, each of which would otherwise be a wrong answer rather than a
+slow one: a different unit list, a unit whose log was removed and recreated under
+the same id or whose identity cannot be read, an earlier unit that grew, and a seq
+that went backwards.
 
 **Every field the fold retains is bounded, and eviction is counted.** Per crew: 500
 work items (past it a FINISHED item goes first, oldest finish first, then the open
@@ -241,8 +244,10 @@ what it holds: keying on emptiness would carry the files again on every such wri
 whenever they are present without their marker, re-stating retired work as live over
 a record that has moved on. The files are
 re-stated into its log as `carried` entries: each work item with its own stamps
-(so a carried claim does not look freshly made) and its newest rejected approach
-(the entry holds one, and the carry's event line says how many it left behind); and
+(so a carried claim does not look freshly made) and every readable rejected
+approach, one entry each in the file's order, up to the fold's per-item bound
+(`RADAR_TRIED_LIMIT`, 100; the carry's event line counts the approaches it left
+out as unreadable or over that ceiling); and
 -- by whichever crew of the repository writes first -- every row of the shared skip
 index, with the crew and time that decided it, recorded as a pass and NOT as a work
 item of the carrying crew. Two markers beside the files record the carry: one when
@@ -316,7 +321,7 @@ pre-projection state.
 | `name` | str | galaxy name, unique per repo including retired crews |
 | `avatar_seed` | str | separate from `name` so a rename keeps the face |
 | `avatar_variant` | int \| null | 0–7 pins one ghost outfit; null = derive from `avatar_seed` |
-| `agent` | str | `kirocrew-crew` by default |
+| `agent` | str | `kirocrew` by default |
 | `model` | str | `""` = governed default |
 | `extra_prompt` | str | appended after the brief, never replacing it |
 | `labels` | [str] | its scope. Empty = every label |
@@ -341,7 +346,7 @@ existing `write_investigation`.
 | `schema` | int | 1 |
 | `crew_id` / `owner` / `repo` / `number` | | identity |
 | `phase` | enum | see below |
-| `outcome` | enum \| null | set only in a terminal phase |
+| `outcome` | str \| null | a bounded free string (no vocabulary), set only in a terminal phase |
 | `decision` / `why` | str | what this crew decided to do and on what grounds |
 | `next` | str | **the resumable intent.** "add the Windows branch to `_safe_chmod`, the test already fails" — not "implementing" |
 | `tried` | [{`approach`, `rejected_because`}] | append-only, so a resumed turn does not re-walk a dead end; the newest 100 rows are kept per item (a repeated pair folds to one row), so a crew that keeps rejecting cannot grow the fold without bound |
@@ -379,9 +384,10 @@ Two independent classifications hang off this enum, and they do not coincide:
 - **TTL-active** — `claimed`, `investigating`, `implementing`. Only these age
   toward the claim TTL. Everything else is parked legitimately and is exempt: an
   open pull request is stronger evidence of a live claim than any heartbeat.
-- **Editing** — `implementing`, plus `addressing-review` while the worktree has
-  uncommitted changes. At most one per crew, enforced by the store: a second item
-  entering an editing phase is refused, not warned about.
+- **Editing** — `implementing` and `addressing-review` (`RADAR_EDITING_PHASES`),
+  unconditionally: the store never inspects the worktree. At most one per crew,
+  enforced by the store: a second item entering an editing phase is refused, not
+  warned about.
 
 Every non-terminal phase counts toward `max_open`. There is no exemption, because
 there is no phase in which the crew is not the actor.
@@ -416,6 +422,11 @@ edit — a human fixing a typo in a crew's comment would otherwise silently rene
 dead claim.
 
 ### Compatibility rule
+
+These rules, and the live-claim rule below, are the contract. Today the crew agent
+enforces them by following `crew_brief.md`: the backend helpers that parse markers
+(`github_normalization.parse_crew_marker`, `find_crew_claim`) have no production
+caller, and the parser does not return `v`, a code gap tracked separately.
 
 A reader that meets a marker whose `v` it does not recognise **treats the claim as
 valid and live**: it skips the issue, does not claim it, does not edit the comment,
@@ -679,17 +690,18 @@ The brief is not carried by an agent spec — it is injected into the conversati
 by the backend, so it works with whatever agent the user picked. Two parts go out
 each turn:
 
-**The volatile snapshot** (~120 tokens): crew name, repo, crew id, label scope,
+**The volatile snapshot** (~120 words): crew name, repo, crew id, label scope,
 limits and current counts, every open work item with its phase and `next`, and the
 `crew:` labels it may write. Everything here changes turn to turn, so it is cheap
 and correct to resend.
 
-**A compressed Never block** (~80 tokens): the hard prohibitions, restated
-verbatim from the brief's Never list. This exists because the injected brief is a
+**A compressed Never block** (~80 words): the hard prohibitions, a compressed
+restatement of the brief's Never list rather than a verbatim copy (its label clause
+names this repository's writable labels, its CI clause names no path, and its merge
+clause uses the provider's own noun). This exists because the injected brief is a
 **user** message, not a system prompt, and therefore carries less authority than
 the same words would in an agent spec. Keeping the prohibitions adjacent to the
-instruction costs about one credit a day and is the cheapest way to buy that
-authority back.
+instruction is the cheapest way to buy that authority back.
 
 ### Brief injection — presence check, not a heuristic
 
@@ -706,11 +718,9 @@ compaction summary that merely quotes the sentinel is shorter and does not count
 as a hit. On a miss, inject.
 
 One rule covers session start, post-compaction, gateway restart, and any future
-truncation mechanism, with no detection logic to get wrong. Measured on this
-machine's own usage shards, the marginal cost of the brief is 0.154 credits per 1k
-of context on `claude-opus-5`; at ~6.4k the brief costs about 1 credit each
-time it is injected, and a presence check fires it a handful of times a day rather
-than on all ~80 turns.
+truncation mechanism, with no detection logic to get wrong. The brief is the large
+part of the nudge, and a presence check injects it a handful of times a day rather
+than on every turn.
 
 ## Agent write path — two tools, two allowlisted routes
 
@@ -745,7 +755,7 @@ preserves what an earlier write stored.
 ```
 number                    optional int — omit ONLY with `event_kind: sweep`
 phase                     optional enum
-outcome                   optional enum
+outcome                   optional str — bounded free text, no vocabulary
 next                      optional str
 decision, why             optional str
 tried_approach,
@@ -787,6 +797,8 @@ crew log off -- there is nowhere to record, and the tool says so instead of keep
 a document of its own. **413 `ledger_entry_too_large`**: the update does not fit
 one crew log entry (64 KiB), so it can never land; record fewer or shorter fields.
 Both are named so an agent can tell them from a refusal of the update itself and
-stop retrying the same body. The response also carries `durable`: whether the
+stop retrying the same body. A third storage answer is retryable: **503
+`ledger_not_recorded`** means nothing changed and the same update may be sent again
+(see *A refusal is not a commit* and *The answer is the line the log holds* above). The response also carries `durable`: whether the
 append had reached the log when the tool answered (see *The answer is the line the
 log holds* above).

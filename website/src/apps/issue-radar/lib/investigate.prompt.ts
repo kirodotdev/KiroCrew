@@ -105,8 +105,8 @@ ${issue.url}`
  * are functional payload the agent ACTS on, so a translated copy would change
  * behaviour, while the language of the prose it writes back is what the user
  * actually asked to control. The verbatim list is not politeness — `suggested_labels`
- * values are matched against the repo's real labels downstream, so a translated
- * label name silently stops matching and the suggestion is dropped.
+ * values are label NAMES a person may apply to the issue as written, so a
+ * translated name would not be a label the repo has.
  */
 function languageDirective(aiLanguage: string): string {
   if (!aiLanguage) return ''

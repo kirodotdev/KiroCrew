@@ -338,12 +338,12 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
     enabled: open,
   })
 
-  /** The app's own agent roster — the same `/api/agents` list the chat and
-   *  schedule pickers read, so a crew can only be pointed at an agent that
-   *  actually exists. `0` = never force a refresh; `App` owns the sync. Since
-   *  the trigger is constant the fetch runs once per mount, so `reload` is the
-   *  ONLY retry this dialog has — a failure with no affordance would strand the
-   *  picker on an empty list for the life of the mount (#5990's shape). */
+  /** The app's own agent roster — the same `GET /api/agents/catalog` read the
+   *  chat and schedule pickers use (see the `useAgents` docstring), so a crew can
+   *  only be pointed at an agent that actually exists. `0` = a constant refresh
+   *  trigger, so the fetch runs once per mount and `reload` is the ONLY retry
+   *  this dialog has — a failure with no affordance would strand the picker on
+   *  an empty list for the life of the mount. */
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   /** THE model list, gated on `open`: this dialog stays mounted while closed
    *  (Radix owns the exit animation), and an ungated observer would spawn
@@ -571,8 +571,9 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
   const canSubmit = trimmedName.length > 0 && !submit.isPending
 
   /** Whether closing now would throw work away. Computed every render rather than
-   *  memoized: it is eleven primitive comparisons, and a stale answer here is a
-   *  half-filled form silently discarded. */
+   *  memoized: it is a few primitive comparisons plus one label-membership
+   *  comparison, and a stale answer here is a half-filled form silently
+   *  discarded. */
   const dirty = !sameDraft(draft, baseline.current)
 
   /**

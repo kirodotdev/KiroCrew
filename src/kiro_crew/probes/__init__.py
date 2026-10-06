@@ -7,9 +7,10 @@ lives in :mod:`kiro_crew.irq`: state persistence, per-epoch reset, time-bounded
 dedupe, the coalescing window, and the consecutive-failure backstop.
 
 Probes live here rather than beside a driver because a probe outlives its
-drivers. The gh-pr probe was written for a script cron and is now also driven
-in-process by the auto-nudge scheduler; a probe owned by one driver would have
-had to be copied for the second, and two copies of a classifier drift.
+drivers. The gh-pr probe is driven in-process by the auto-nudge scheduler, and
+it refuses the retired script-cron driver (``GhPrProbe.identity``); a probe owned
+by one driver would have to be copied for a second, and two copies of a
+classifier drift.
 """
 
 from __future__ import annotations

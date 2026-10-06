@@ -333,8 +333,13 @@ take effect on next agent invocation. Backend changes require restart.
 ├── skills/               ← skill files
 │   └── sample-skill/
 │       └── SKILL.md
-├── backend/              ← optional backend
+├── backend/              ← optional backend (--backend)
 │   └── server.py
+├── ui/                   ← optional UI frontend (--ui)
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/
+│       └── App.tsx
 └── README.md
 ```
 """

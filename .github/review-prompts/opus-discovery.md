@@ -30,9 +30,11 @@ The security boundaries this codebase actually has are real and
 load-bearing, and each one gives a control a named cause, which makes
 it DERIVED rather than speculative --
   - the AGENT is untrusted with respect to its own governance
-    ceiling: it can neither read nor write security_policy.json,
-    profiles/, admission_policy.json or computer_use.json, and the
-    PreToolUse gate, the deny rules and the OS sandbox enforce that;
+    ceiling: it can never WRITE security_policy.json, profiles/,
+    admission_policy.json or computer_use.json -- the OS sandbox
+    mounts them read-only in every mode -- and the PreToolUse
+    sensitive-path gate refuses its file tools reading them; a read
+    through a spawned shell is permitted by design;
   - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
     a policy ceiling tightest-wins that a running agent or app can
     narrow but never loosen;
@@ -62,9 +64,15 @@ most; they are not a closed list.
 **Lens 2 — repository rules.** Read both base-branch snapshots:
 
 ```
-.review-base-rules/AUTOSDE.yaml          (backend Python)
+.review-base-rules/AUTOSDE.yaml          (repo-wide)
 .review-base-rules/website-AUTOSDE.yaml  (frontend)
 ```
+
+Patterns in `AUTOSDE.yaml` are repo-relative. Patterns in `website-AUTOSDE.yaml`
+are relative to `website/`: match them against a changed path with its leading
+`website/` removed (`src/**/*.tsx` means `website/src/**/*.tsx`, never `src/kiro_crew/`).
+Both files use gitignore-style globs: `**` also matches zero directories, so
+`src/kiro_crew/**/*.py` covers `src/kiro_crew/hooks.py`.
 
 These encode defects this repo has decided it cares about, built up over months.
 Treat them as a **checklist of things to look for**, not as a limit on what
@@ -115,7 +123,8 @@ pattern rather than assuming it is fine — chase the one that looks like it mig
 be a problem, and use your turn budget to find out. A small diff is not evidence
 of a small risk; some of the worst defects are three deleted lines. Spend extra
 effort where the diff touches credential/token handling, auth,
-`src/kiro_crew/security/`, `src/kiro_crew/hooks.py` sensitive-path controls,
+`src/kiro_crew/security/`, `src/kiro_crew/hooks.py` and `src/kiro_crew/hook_runtime/`
+sensitive-path controls,
 path/command/SQL construction, or a
 `blocking: true` rule — but do not skip a hunk because the change looks routine.
 

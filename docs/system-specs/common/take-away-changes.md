@@ -34,6 +34,20 @@ stricter validator): the rule above still applies to those. The shapes name
 today's seams (`extra_hidden_dirs`, `config.agents`); a PR that renames one
 updates the detector in the same commit.
 
+Check it locally before pushing:
+
+```bash
+git diff "$(git merge-base origin/main HEAD)" HEAD > /tmp/pr.diff
+PR_BODY="$(cat pr-body.md)" python3 .github/scripts/take_away_check.py /tmp/pr.diff
+```
+
+`diff_signals.py --check-body` in the prepare-pr skill runs only
+`pr-description-check.sh`, not this check.
+
+Design Review also runs a TAKE-AWAY CHECK and blocks on a reader it finds broken
+and unlisted; a reader a `Breaking:` line names counts as listed. That lane is
+described in [ci-and-reviews.md](../../ci/ci-and-reviews.md).
+
 ## Worked examples
 
 **#13273, hide.** It masked `<config_dir>/apps` from every cron child. Its body

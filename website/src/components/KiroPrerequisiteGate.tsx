@@ -922,26 +922,26 @@ function AgentSpecsRejected({
 // ── Agent choice ─────────────────────────────────────────────────────────────
 //
 // Kiro CLI is the DEFAULT agent, not the only one: the gateway can drive any
-// selectable ACP harness (Settings → Agent). This gate used to check Kiro CLI
+// selectable ACP harness (Settings → Agent Harness). This gate used to check Kiro CLI
 // alone, so an operator who runs Claude Code (or Codex, …) and has no Kiro CLI
 // was held on "Set up Kiro" forever. The gate now asks the configured backend:
 // Kiro checks apply only while Kiro CLI is the configured agent.
 
-/** The config field Settings → Agent owns; the same key is written here. */
+/** The config field Settings → Agent Harness owns; the same key is written here. */
 const ACP_BACKEND_CONFIG_KEY = 'agent.acp_backend'
 /**
  * The core spells the Kiro CLI backend as the empty string — a real value. The
  * one definition lives in acpBackend.ts, beside `isKiroBackend`, so this gate
- * and Settings → Agent cannot drift on what "kiro" is spelled as.
+ * and Settings → Agent Harness cannot drift on what "kiro" is spelled as.
  */
 const KIRO_BACKEND = ACP_BACKEND_KIRO
-/** Shared with Settings → Agent so a switch made here is what that panel reads. */
+/** Shared with Settings → Agent Harness so a switch made here is what that panel reads. */
 const CONFIG_QUERY_KEY = ['kirocrewConfig'] as const
 const BACKENDS_QUERY_KEY = ['acpBackends'] as const
 /**
  * Poll while the picker is on screen, so an install is noticed without a click.
  * Matched to the server's probe cache (`backend_install.CACHE_TTL_SECONDS`, 30s)
- * like Settings → Agent's `PROBE_REFRESH_MS`: the endpoint serves that cache, so
+ * like Settings → Agent Harness's `PROBE_REFRESH_MS`: the endpoint serves that cache, so
  * polling faster only returns the same bytes. The per-agent Check again drops
  * the cache for a user who cannot wait.
  */
@@ -1109,7 +1109,7 @@ function KiroInstallCommands({ platform }: { platform: string }) {
 
 /**
  * "Use other coding agents": a collapsed alternative to Kiro CLI, modelled on
- * Settings → Agent (same probe, same config key, same install commands).
+ * Settings → Agent Harness (same probe, same config key, same install commands).
  *
  * Collapsed by default because Kiro CLI is the recommended path; opened by
  * default when the config already names another agent, because then this
@@ -1137,7 +1137,7 @@ function OtherCodingAgents({
   const configuredOther = configured !== KIRO_BACKEND ? configured : ''
   const [open, setOpen] = useState(() => configuredOther !== '')
   const [picked, setPicked] = useState<string | null>(null)
-  // Resolved every render, like Settings → Agent's highlight: the list arrives
+  // Resolved every render, like Settings → Agent Harness's highlight: the list arrives
   // after first paint, so seeding state would pin the choice to a guess.
   const shownId =
     picked !== null && others.some(b => b.id === picked)
@@ -1155,7 +1155,7 @@ function OtherCodingAgents({
     // gate that keeps reading the old one holds a usable agent behind setup.
     onSettled: (_data, error) => {
       if (error && !agentChoiceSaved(error)) return
-      // Same invalidations as Settings → Agent: a model list cached for the
+      // Same invalidations as Settings → Agent Harness: a model list cached for the
       // previous agent would otherwise offer models the new one cannot run.
       clearCachedModels()
       void qc.resetQueries({ queryKey: ['available-models'] })
@@ -1347,7 +1347,7 @@ function OtherCodingAgents({
                               {i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}
                             </p>
                           )}
-                          {/* Server-owned sentence, rendered verbatim like Settings → Agent
+                          {/* Server-owned sentence, rendered verbatim like Settings → Agent Harness
                               does: it names this harness's own sign-in, which Kiro Crew
                               neither performs nor can check. */}
                           {shown.auth?.signs_in_separately && shown.auth.sign_in_remedy ? (
@@ -1536,7 +1536,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     : undefined
   const otherBackendConfigured = configuredBackend !== undefined && configuredBackend !== KIRO_BACKEND
   const kiroBlocking = kiroPrerequisiteIsBlocking(statusQuery.data)
-  // The harness probe Settings → Agent reads. Needed for two things: to let a
+  // The harness probe Settings → Agent Harness reads. Needed for two things: to let a
   // configured non-Kiro agent through, and to fill the picker on the first-run
   // screen. `retry: false` because its expected failures (403 non-owner, 404 an
   // older gateway) are permanent answers; the gate then keeps the Kiro checks.

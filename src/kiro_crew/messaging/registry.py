@@ -56,7 +56,8 @@ class ChannelDescriptor:
 
     ``channel_type`` is the single identity used EVERYWHERE: the governance
     member id, ``MessagingTransport.channel_type``, the session-key surface
-    segment, the config section name, and the dashboard badge prefix. The
+    segment (except a ``dm_scope="unified"`` direct-DM key, which starts with
+    ``unified``), the config section name, and the dashboard badge prefix. The
     contract tests pin that these never diverge.
     """
 
@@ -67,6 +68,14 @@ class ChannelDescriptor:
     """Boot factory, or ``None`` for a host-managed lifecycle (Slack)."""
 
     credentials: tuple[str, ...] = ()
+    """Credential keys this channel needs ALL of before it can connect.
+
+    Data rather than a per-channel branch, so a diagnostic can report every
+    channel's readiness from one loop. Empty means the channel needs no
+    credential at all — iMessage is the real case: its transport is the
+    operator's own Messages.app, so there is nothing to store or rotate, and an
+    empty tuple must read as "nothing missing" rather than "not configured".
+    """
     #: ``credential key -> config attribute`` for the channels that accept the
     #: secret from ``config.json`` as well as the environment. Readiness has to
     #: consult BOTH, or it reports a missing credential for a channel the gateway
@@ -97,14 +106,6 @@ class ChannelDescriptor:
     #: ``live.watch_section``; the two are disjoint by construction and
     #: ``test_channel_boot_keys_contract.py`` pins that.
     boot_keys: frozenset[str] = frozenset()
-    """Credential keys this channel needs ALL of before it can connect.
-
-    Data rather than a per-channel branch, so a diagnostic can report every
-    channel's readiness from one loop. Empty means the channel needs no
-    credential at all — iMessage is the real case: its transport is the
-    operator's own Messages.app, so there is nothing to store or rotate, and an
-    empty tuple must read as "nothing missing" rather than "not configured".
-    """
 
 
 def governed_members(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[str, ...]:

@@ -1010,7 +1010,7 @@ function createWindowLifecycle(options) {
           // and `saveRemoteCrewConfig` refuses an unselectable port outright, so
           // on an http window whose port resolves to 80 no write can ever
           // succeed. The crew would then read as a gateway on this machine, with
-          // no way back, which is the exposure this whole change closes.
+          // no way back, and X-Internal-Secret would go through the tunnel.
           //
           // Only a URL whose port is its scheme's default could have produced
           // that record, so a window on any other port leaves it alone.
@@ -1029,7 +1029,7 @@ function createWindowLifecycle(options) {
             // window later reading no crew at all, so isGatewayLocalForWindow
             // classifies the loopback window as a local gateway and the
             // host-presence heartbeat sends X-Internal-Secret through the
-            // still-open ssh tunnel: the exact exposure this change closes.
+            // still-open ssh tunnel. A tunnelled crew must keep its record.
             //
             // There is no in-app probe that a scheme-default port is positively
             // local (a :80 write is refused by saveRemoteCrewConfig), so the only
@@ -1128,7 +1128,7 @@ function createWindowLifecycle(options) {
       // marking this window remote, and clearing it makes `isGatewayLocalForWindow`
       // read the still-open loopback window as a gateway on THIS machine -- after
       // which the idle heartbeat puts `X-Internal-Secret` through the tunnel,
-      // which is the exact exposure this change closes. So direct the user to
+      // which a tunnelled crew must never allow. So direct the user to
       // reopen the crew on a selectable port instead, leaving the record intact.
       detail: sshError
         ? `SSH to ${config?.host || "the remote host"} failed.\n\n${sshError}`

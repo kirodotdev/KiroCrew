@@ -3,7 +3,8 @@
 ## Overview
 
 The side conversation module adds an ephemeral Q&A thread to a parent chat
-slot. Users invoke it via the `/side` command or the "Side Chat" tab in the
+slot. Users invoke it via the `/side` command (or `/btw`, a client-side alias
+matched by the same `SIDE_RE`) or the "Side Chat" tab in the
 Activity panel — the user-facing name is Side Chat, while `side` remains the
 internal spelling for the tab id, state, routes and this module. The `/side`
 command is intercepted client-side regardless of
@@ -18,8 +19,8 @@ The side runs against the same parent slot identity but
 spawns its own isolated LLM session, reads parent context as a frozen
 snapshot, and never persists messages to JSONL or memory stores.
 
-Design strategy: Option C (sidecar storage on parent slot) with a native
-implementation lifting wire format and system prompt strings from the
+The side conversation is stored as a sidecar on the parent slot, with a native
+implementation that reuses the wire format and system prompt strings of the
 upstream OpenClaw `/btw` protocol.
 
 ## Architecture
@@ -49,16 +50,21 @@ upstream OpenClaw `/btw` protocol.
 ### Key Invariants
 
 1. **No new slot identity** — side lives as `slot._side: SideState | None`.
-2. **Main path byte-frozen** — `context.py.build_message()` and
-   `dashboard/chat.py` main-thread paths are never modified.
+2. **Separate envelope** — the side path builds its envelope in
+   `side_context.build_side_message`, never routes through
+   `ContextBuilder.build_message`, and never writes `slot.messages` (a
+   review-time rule; see Testing).
 3. **Birth-only memory mode** — side never calls memory/learn/save; the
    sidecar buffer is discarded on close with no persistence.
-4. **Isolated LLM session** — keyed on `f"side:{slot.key}"`, separate from
-   the parent's session, so turns don't pollute parent context.
+4. **Isolated LLM session** — keyed on `side:<slot>:<gen>` (the sidecar's
+   generation; a bare `side:<slot>` is a legacy spelling only), separate from the
+   parent's session, so turns don't pollute parent context.
 5. **Non-blocking** — `api_side_turn` returns immediately; streaming runs
    as a background task.
-6. **A submit is never dropped** — while a turn is in flight the message is
-   steered into it or queued behind it; there is no rejection path.
+6. **An accepted submit is never silently dropped** — while a turn is in flight
+   the message is steered into it or queued behind it. A full queue (429), a closed
+   sidecar (409) and an invalid question (400) are rejected visibly, and the
+   composer keeps the text.
 
 ## Busy-send: steer and queue
 
@@ -116,8 +122,9 @@ third.
   completion**: a question the backend injected is committed to the transcript even
   if the turn has since ended, because reporting a demotion there would leave it
   delivered and invisible;
-- terminal entries are pruned when the next turn starts — the one point at which no
-  submitter can still be mid-read.
+- terminal entries are NOT pruned at turn start: `steer_register` evicts the oldest
+  terminal entry (`_steer_evict_one`) only when the ledger already holds
+  `MAX_STEER_LEDGER` (100) entries, and `clear()` empties it.
 
 A demoted steer is reported to the panel (`demoted: true` → a notice), so the
 user who pressed "Steer" is not left to infer the mode change from a card
@@ -179,18 +186,27 @@ second time.
 | Endpoint | Method | Path | Effect |
 |----------|--------|------|--------|
 | open | POST | `/api/chat/slots/{slot}/side/open` | Initialise sidecar (idempotent) |
-| turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues |
+| turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues. A dashboard-user caller must be the owner (`chat.side_turn`); app tokens keep slot scoping |
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
 | queue edit | PATCH | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Rewrite a queued entry in place |
 | close | POST | `/api/chat/slots/{slot}/side/close` | Drop buffer + queue + destroy LLM session |
-| stop | POST | `/api/chat/slots/{slot}/side/stop` | Cancel the in-flight side turn (hung-turn escape hatch); idempotent when none is running |
+| stop | POST | `/api/chat/slots/{slot}/side/stop` | Cancel the in-flight side turn (hung-turn escape hatch); idempotent when none is running. Owner-gated like turn (`chat.side_stop`); 409 `side_not_open` when no sidecar is open |
+
+**Stop.** A stop raises `SideState.is_stopping`, which the busy gate treats as a
+turn in flight, cancels the provider turn and waits for it for at most 5 s
+(`_STOP_CLEANUP_TIMEOUT`), then appends a terminal `(side response stopped)` error
+row. The queue is held, not drained, until the next submit. The panel's Stop
+control (`SideChat`) calls this route; `website/src/test/SideChat.stop.test.tsx`
+pins it.
 
 ## Wire Protocol
 
 Event name: `chat.side_result`  
 Kind field: `"side"` (translated from upstream `"btw"`)
 
-Payload shape (broadcast per chunk and per final response):
+Payload shape (broadcast per chunk and per final response, built by
+`dashboard/ws.py`, which owns the wire). `final` and `steer` are optional, and
+`is_error` is present only when true:
 
 ```json
 {
@@ -202,7 +218,9 @@ Payload shape (broadcast per chunk and per final response):
     "content": "<text>",
     "kind": "side",
     "ts": <unix-float | null>,
-    "is_error": false
+    "is_error": true,
+    "final": true,
+    "steer": true
   }
 }
 ```
@@ -218,8 +236,9 @@ filter-based.
 
 ### `dashboard/ws.py` — `broadcast_side_queue`
 
-Emits `chat.side_queue` frames — `{slot, action, queue_id, content?, depth, ts}`
-where `action` is `push` | `edit` | `cancel` | `drain`. Held apart from
+Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
+ts, front?, steer_id?, origin_client?}` where `action` is `push` | `edit` |
+`cancel` | `drain`, to owner sockets only (`broadcast_ws_owners`). Held apart from
 `chat.side_result` so a queue mutation never enters the transcript reducer, and
 apart from the main chat's `queue_push` so a side entry can never be mistaken for
 a parent-slot turn.
@@ -227,12 +246,14 @@ a parent-slot turn.
 ### `dashboard/side_state.py`
 
 `SideState` dataclass: `open`, `messages`, `last_run_id`, `created_at`,
-`is_complete`, `queue`, `steers`, `task` (the running side turn's asyncio task
-handle, so `/side/stop` can cancel it; `None` when idle).
+`is_complete`, `queue`, `steers`, `gen` (the generation in the session key),
+`binding` (the `(derived agent, cwd, spec digest)` the live session was created
+under), `task` (the running side turn's asyncio task handle, so `/side/stop` can
+cancel it; `None` when idle) and `is_stopping` (the stop-in-progress busy flag).
 Helpers: `append_user` (with a `steer` marker), `append_assistant`, `clear`,
 `queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
-`queue_edit`, and the ledger's `steer_register` / `steer_state` /
-`steer_mark` / `steer_pending` / `steer_settle` / `steer_prune_terminal`.
+`queue_edit`, `steer_can_accept`, and the ledger's `steer_register` /
+`steer_state` / `steer_mark` / `steer_pending` / `steer_settle`.
 
 ### `dashboard/steer_settle.py`
 
@@ -243,7 +264,7 @@ one, and a falsely-settled steer is never requeued, so the question is lost.
 
 ### `dashboard/side_prompts.py`
 
-Two prompt constants lifted from the upstream protocol:
+Three prompt constants, two lifted from the upstream protocol:
 
 - `SIDE_BOUNDARY_PROMPT` — establishes ephemeral context and the read-only
   tool boundary the `READ_ONLY` policy enforces, in the footer's words:
@@ -253,8 +274,12 @@ Two prompt constants lifted from the upstream protocol:
   the policy say the same thing on purpose — a prompt that forbids every tool
   makes a compliant model redirect a read-backed question instead of reading;
   one that permits more than the gate makes it claim a tool is unconfigured.
+- `SIDE_BOUNDARY_PROMPT_NO_TOOLS` — the variant for a harness outside
+  `ACP_BACKENDS_SIDE_READONLY`, saying tools are unavailable.
 - `SIDE_DEVELOPER_INSTRUCTIONS` — marks the main-thread/side-thread boundary.
-- `build_side_system_prompt()` — concatenates both into the first-turn envelope.
+- `build_side_system_prompt(tools_available=...)` — concatenates the developer
+  instructions and the matching boundary prompt into the first-turn envelope;
+  the envelope repeats the boundary prompt before the question.
 
 ### `dashboard/side_context.py`
 
@@ -272,7 +297,9 @@ Two prompt constants lifted from the upstream protocol:
 
 ### `dashboard/handlers/side.py`
 
-Three aiohttp handlers + `_run_side_turn` background driver.
+Six aiohttp route handlers (`api_side_open`, `api_side_turn`, `api_side_stop`,
+`api_side_queue_cancel`, `api_side_queue_edit`, `api_side_close`) + the
+`_run_side_turn` background driver.
 `_run_side_turn` resolves the slot's agent, publishes the derived read-only spec
 for it (below), acquires an isolated session via `state.sessions.get_or_create`
 **bound to that derived agent**, streams with `ToolApprovalPolicy.READ_ONLY`,
@@ -291,7 +318,9 @@ with every backend-side grant emptied (`allowedTools: []`, no
 `mcpServers.*.autoApprove`, no `toolsSettings.*.allowed*`/`trusted*`/`auto*`
 — `shell.autoAllowReadonly` included — `includeMcpJson: false` with its
 `useLegacyMcpJson` alias removed,
-`autoAllowReadonly: false`, an empty KAS `permissions`) and the lifecycle
+`autoAllowReadonly: false`, an empty KAS `permissions` — written only where the
+kiro-cli release accepts the field (`agent._write_derived_permissions`'s version
+gate), and an inherited block removed on a refusing or unknown release) and the lifecycle
 `hooks` removed (`agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/
 `stop` are shell commands the backend runs unprompted, some fed model-controlled
 input; the host's SEL audit records every side-turn decision, so the shipped
@@ -319,7 +348,9 @@ every spawn roster leaves it out while the spawn gate refuses it with
 mode because it started before the spec was published gets
 `side_readonly_spec.unavailable_mode_explanation`, which names the base agent
 instead of telling the user to run `kirocrew setup --agent-only` — setup never
-writes this file. That wording is keyed on the owner marker of the file at the
+writes this file — and says that a new session starts a kiro-cli that lists it,
+and that to spawn the source agent the caller names the base or omits `agent`
+when the base is the default agent. That wording is keyed on the owner marker of the file at the
 derived path (read off the event loop), so a user's own agent that is merely
 called `<x>--readonly` keeps the ordinary hint. Every tool call on
 a side turn that kiro-cli does not trust natively therefore raises a permission
@@ -332,8 +363,8 @@ with a coded error (`ReadOnlySpecError.code`: `unsafe_name`,
 `base_spec_missing`, `base_spec_unreadable`, `derived_name_shadowed`,
 `derived_path_foreign`, `spec_write_failed`, `base_spec_malformed` — a
 `mcpServers`/`toolsSettings` value or entry that is neither an object nor
-`null`), logged and shown in the panel; it
-never runs under the base agent.
+`null`). The code is logged and SEL-audited (`chat.side_turn`, `denied`); the
+panel shows a generic message without it. The turn never runs under the base agent.
 
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
@@ -465,20 +496,22 @@ chat.
 
 ### `dashboard/ws.py` — `broadcast_side_result`
 
-Module-level helper emitting `chat.side_result` frames to all WS clients.
+Module-level helper emitting `chat.side_result` frames to owner sockets only
+(`broadcast_ws_owners`), never to app sockets, matching `_check_slot_ownership`.
 Deliberately separate from `broadcast_ws` main-channel events.
 
 ## Frontend Modules
 
 ### `ActivityViewer.tsx`
 
-5th tab: `{key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon:
+The side tab is the last entry of the conditional `TABS` list:
+`{key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon:
 MessageCircleQuestionMark}`. Renders `<SideChat slot={slot} />` when active.
 
 ### `SideChat.tsx`
 
-Reads from `state.chat.slotSide[slot]`. Calls `api.sideOpen` on mount,
-`api.sideTurn` on submit. Local optimistic buffer for pre-redux rendering — for
+Reads from `state.chat.slotSide[slot]`. Calls `api.sideOpen` at submit time,
+inside the send mutation (and from the `/side` interceptor), then `api.sideTurn`. Local optimistic buffer for pre-redux rendering — for
 a turn this submit STARTS only: a steer's bubble must land above the streaming
 answer and a queued one is a card, so both are placed by the server frame.
 While a turn is in flight the composer stays editable and swaps its send button
@@ -495,10 +528,9 @@ The backend's empty-output fallback in `_run_side_turn` and the model-facing
 helper remains visible after messages exist.
 
 The composer's DRAFT behaviour is not owned here. It comes from the chat SDK's
-`app-sdk/useComposerDraft`, which this surface was the first consumer of
-(`app-sdk/ChatEmbed.tsx` the second, with its `<textarea>` attached to the same
-`textareaRef` and `submitOnEnter`/`isComposing` behavior), and which owns four
-invariants this file must not re-derive:
+`app-sdk/useComposerDraft` (also used by `app-sdk/ChatEmbed.tsx`, with its
+`<textarea>` attached to the same `textareaRef` and `submitOnEnter`/`isComposing`
+behavior), which owns four invariants this file must not re-derive:
 
 - A follow-up pick edits the draft, and the picked set is read back OFF the draft
   rather than stored beside it. The draft is what gets submitted, so it is the
@@ -507,10 +539,9 @@ invariants this file must not re-derive:
   failed edit) is APPENDED to the draft, never substituted for it — via the
   host's single `utils/chatDrafts.mergeIntoDraft`, which the chat store's own
   release path (the `sseSideQueue` cancel in `store/chat/side.ts`) already uses.
-- An Enter that commits an IME candidate is not a submit. This surface's own
-  handler predated the shared hook and lacked the guard, so a Chinese/Japanese/
-  Korean candidate confirmed with Enter submitted the partial text with nothing
-  left to recover. Declining the submit does not release the key: the guard
+- An Enter that commits an IME candidate is not a submit; without the guard a
+  Chinese/Japanese/Korean candidate confirmed with Enter would submit the partial
+  text with nothing left to recover. Declining the submit does not release the key: the guard
   consumes it (`useImeGuard`'s `claimEnter`), because the browser's default for an
   unclaimed Enter is to put a line break in the draft. Recovery from a composition
   abandoned without a `compositionend` ships with the tracking rather than with the
@@ -521,8 +552,9 @@ invariants this file must not re-derive:
   code units. The hook only reports whether the limit is exceeded; this file
   still owns the refusal and its wording.
 
-The hook is uncontrolled here (it holds the draft), but it also accepts a
-caller-owned draft via `draft` + `onDraftChange`, and its `submitOnEnter` /
+`SideChat` runs the hook in CONTROLLED mode (`draft` + `onDraftChange`), backed by
+the per-slot `sideChatDrafts` store, so a draft survives the panel unmounting
+(another activity tab, the Members drawer, closing it). Its `submitOnEnter` /
 `isComposing` are generic over the element -- the shape the remaining consumers
 need, so migrating them does not change its signature. It is deliberately NOT
 exported from `app-sdk/index.ts`: that barrel is re-exported through the vendor
@@ -573,9 +605,9 @@ existing subagent/tool dispatch cases.
 | Concern | Mitigation |
 |---------|-----------|
 | Tool execution | System prompt prohibition + READ_ONLY approval policy: only the read-only classifier's verdict approves, and under `classifier_only` that verdict rests on host-trusted facts alone (`is_read_only_bash` on the recovered shell command, or a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the non-model-authored `_meta.kiro.toolName` with no MCP server); the agent-influenced ACP `kind` and title may narrow but never prove; operator `auto_approve_tools` globs and app-own-server grants are skipped and an unclassified auto-approve is rejected |
-| Governance identity | The gate runs under the side session's own key `side:<slot>`, which `sel._infer_source` classifies as the `dashboard` surface, so a profile bound to `surface: dashboard` binds side turns exactly as it binds the parent slot (it fell through to the `slack` fallback before) |
+| Governance identity | The gate runs under the side session's own key `side:<slot>:<gen>`, which `sel._infer_source` classifies as the `dashboard` surface, so a profile bound to `surface: dashboard` binds side turns exactly as it binds the parent slot |
 | Memory pollution | No calls to memory/learn/save; sidecar never serialised |
-| Context leak to main | `build_message` byte-frozen; side uses separate module |
+| Context leak to main | The side envelope is built by `side_context.build_side_message`, never through `ContextBuilder.build_message`, and the side path never writes `slot.messages` (a review-time rule, see Testing) |
 | Slot visibility | No new `_ChatSlot` created; sidebar doesn't show phantom entries |
 | App isolation | `_check_slot_ownership` mirrors main chat ownership checks |
 | Session cleanup | `api_side_close` destroys kiro-cli session files |
@@ -625,7 +657,7 @@ Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideSlashCommand.steer.test.tsx` (command interception wins over mid-turn
 steer routing), and the `sseSideResult` block in `chatSlice.test.ts`.
 
-Nothing enforces invariant 2 (main path byte-frozen) mechanically. It is a
+Nothing enforces invariant 2 (separate envelope) mechanically. It is a
 review-time rule, held by the backend and frontend suites above plus the
 `_side` sidecar's own isolation from `context.build_message`: a side symbol
 reaching the main path shows up as a `test/test_side.py` failure, not as a

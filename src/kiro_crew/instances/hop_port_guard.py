@@ -6,8 +6,9 @@ level, and any other local process -- including a second gateway with its own
 registry, which cannot see this lease at all -- may bind it. The holder of the
 chained credential goes on dialling that port, so whatever bound it receives a live
 bearer token. The hub-side identity check only runs on a subsequent mint, and the
-proactive re-mint is scheduled at ~80% of the token's lifetime, so on the default 20h
-TTL the exposure would last hours rather than being caught promptly.
+proactive re-mint is scheduled at ~80% of the token's lifetime, so even under the
+lent-credential cap (``LENT_HOP_TTL_CAP``, 30m) the exposure would last tens of minutes
+rather than being caught promptly.
 
 This closes it by making the parent keep the port itself while the lease stands.
 
@@ -179,10 +180,11 @@ class HopPortGuard:
                 # ERROR once per port, and again only when the reason CHANGES; every
                 # other retry is DEBUG. The retry runs on each reaper pass, so a port
                 # some other binder holds would otherwise emit ~2 ERROR records a second
-                # for the whole lease -- of the order of 10^5 identical lines on the
-                # default 20h TTL, which does not make the exposure more visible, it
-                # buries every other gateway error and evicts them from a size-capped
-                # sink. `owed_ports()` is the durable signal; the log is the alert.
+                # for the whole lease -- ~3600 identical lines over a lease capped
+                # at 30m (HOP_LEASE_DEADLINE_CAP_SECS), which does not make the
+                # exposure more visible, it buries every other gateway error and
+                # evicts them from a size-capped sink. `owed_ports()` is the
+                # durable signal; the log is the alert.
                 first = self._last_fail_code.get(port) != code
                 self._last_fail_code[port] = code
                 (logger.error if first else logger.debug)(

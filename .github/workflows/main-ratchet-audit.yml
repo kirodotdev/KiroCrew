@@ -92,7 +92,12 @@ jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    # Whole-tree black through the one-file-per-worker wrapper alone takes
+    # 18-19 minutes on the CodeBuild runner, and a green run of this job takes
+    # about 24.5 minutes end to end. A 25-minute cap therefore cancels the census
+    # step on an ordinary push, and a cancelled gate renders as drift on main.
+    # Keep at least 1.5x the measured green duration here.
+    timeout-minutes: 40
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
       # a push to main has no diff to scope to, so the diff-scoped gates would

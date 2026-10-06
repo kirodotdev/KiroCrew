@@ -750,11 +750,12 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     kiro-cli process is an ``AcpRuntime``, which is deliberately
     session-UNBOUND (one process multiplexes N sessions, so it cannot carry a
     single session's key in its environment — ``acp/runtime.py`` injects none).
-    The gateway's per-call caller injection is therefore the ONLY identity
-    channel for that backend, and it exists only for servers listed in
-    ``mcp_gateway.stub_servers``. An unrouted server on kiro has no channel at
-    all, which is a topology gap an operator can close in one line — not a bug
-    in the calling session.
+    The gateway's per-call caller injection is therefore one identity channel
+    for that backend, and it exists only for servers listed in
+    ``mcp_gateway.stub_servers``. The signed per-session token and the verified
+    host-pid sidecar are independent of the gateway. A server that is not
+    routed through the gateway and has neither is a topology gap an operator can
+    close in one line — not a bug in the calling session.
 
     Returns "" when identity IS resolvable (the caller should not be refusing),
     so a caller can append this unconditionally.

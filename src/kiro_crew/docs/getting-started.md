@@ -102,8 +102,10 @@ needs no root. It does not install Google Chrome, and it does not install OS
 libraries. If the download reports missing libraries, install them with your own
 package manager; on Debian or Ubuntu `sudo npx playwright install-deps chromium`
 does it. The Settings → Browser page runs the same download on the machine the
-gateway runs on and prints the library command for that machine when one is
-needed.
+gateway runs on. On a Debian or Ubuntu (apt) host it first tries the download
+with Playwright's `--with-deps`, which also installs the libraries, and retries
+without it if that step is refused. It prints the library command for that
+machine when one is still needed.
 
 Having `playwright-cli` on your `PATH` is what makes browsing available, so
 uninstalling it is how you take the capability away. Note that it covers
@@ -168,10 +170,12 @@ conversation.
 kirocrew doctor
 ```
 
-Reports the resolved platform edition, the `kiro-cli` binary and login state,
-the project directory, the agent config and its MCP entries, Slack credentials,
-gateway status, and the embedding runtime and model. It repairs missing MCP
-entries where it can, and prints a specific fix hint for anything it cannot.
+Reports, among other checks, the resolved platform edition, the `kiro-cli` binary
+and login state, the project directory, the agent config and its MCP entries,
+confinement and the sandbox, services, channels and access, workload, Slack
+credentials, gateway status, and the embedding runtime and model. It repairs
+missing MCP entries where it can, and prints a specific fix hint for anything it
+cannot. `kirocrew doctor --help` lists its options.
 
 ## Updating
 

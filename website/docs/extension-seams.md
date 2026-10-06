@@ -22,7 +22,7 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
-| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinComponent()` |
+| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId }`) |
 | Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` to `getBuiltinIcon()` |
 | Theme branding | `themeBranding.tsx` | `registerThemeBranding()` to `getThemeBranding()` |
 | Theme picker options | `hooks/useTheme.tsx` | `registerTheme()` to `getRegisteredThemes()` |
@@ -170,10 +170,10 @@ or the edition's hooks bind to a second instance. The symptoms are
 `Invalid hook call` (React), `No QueryClient set`, a null router context, or
 silently empty data, and they appear only at runtime, only in the edition build.
 
-`resolve.dedupe` in `vite.config.ts` covers seven packages: `react`, `react-dom`,
+`resolve.dedupe` in `vite.config.ts` reads `CONTEXT_SINGLETON_DEDUPE` from `website/vite.shared.ts`, which covers seven packages: `react`, `react-dom`,
 `react-redux`, `react-router`, `react-router-dom`, `@tanstack/react-query`,
 `framer-motion`. **When the core adds a new global-context provider, add its
-package to that list**, and the edition should declare these as peer deps. The
+package to `CONTEXT_SINGLETON_DEDUPE`**, and the edition should declare these as peer deps. The
 dedupe is harmless in the stock single-`node_modules` build.
 
 ## Authoring an edition: the build pitfalls
@@ -439,10 +439,9 @@ queries), and are each `ErrorBoundary`-isolated. The same rule as for capsule
 segments applies: a widget's size must not depend on the collapse classes or
 level.
 
-**Theme centre decoration is a backdrop, not a cell.** `branding.topBar` used to
-render as a sized flow cell between the search and the actions group
-(`flex-1 min-w-0 h-full`). Under the three-track grid it renders as a full-header
-background layer instead: `absolute inset-0`, `pointer-events-none`,
+**Theme centre decoration is a backdrop, not a cell.** Under the three-track grid
+`branding.topBar` renders as a full-header background layer, not as a sized flow
+cell between the search and the actions group: `absolute inset-0`, `pointer-events-none`,
 `aria-hidden`. A fourth in-flow child would land in an implicit column and shift
 the search off centre, and a sweep or scanline is visually a backdrop anyway. The
 narrowed contract: a registered decoration **cannot receive pointer events** and
@@ -537,8 +536,9 @@ seam whose registration is HALF a provider: the descriptor covers parsing and
 rendering (`parse`, `chipLabel`, `refLabel`, an optional `icon` glyph, and the
 `capabilities` flags gating each write affordance), while fetching and every
 mutation are served by a backend plugin the edition registers with
-`register_source_provider()` in
-`src/kiro_crew/dashboard/handlers/source_providers.py`, under the same id. The
+`register_source_provider()`, defined in
+`src/kiro_crew/dashboard/source_providers/plugins.py` (still importable from
+`dashboard/handlers/source_providers.py`), under the same id. The
 two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
 both refuse the built-in ids (`github`, `gitlab`, `jira`), so a descriptor can
 never restyle a core provider and a payload provider id round-trips through both
@@ -558,7 +558,8 @@ logo, no write affordances. The backend plugin contract — payload schema
 (`SourceChangePayload`), shared caches, redaction, byte caps, the optional
 mutation hooks, and the optional DISCOVERY hooks `path_markers()` and
 `search_ref()` — is documented on `SourceProviderPlugin` in
-`source_providers.py`. The discovery hooks exist because a built-in-only
+`dashboard/source_providers/contract.py` (also re-exported by
+`handlers/source_providers.py`). The discovery hooks exist because a built-in-only
 recogniser is blind to an edition's own id and URL shapes: `path_markers()`
 contributes the URL substrings worth parsing, so an edition's chips appear at
 all, and `search_ref()` contributes the spellings of one item, so a transcript
@@ -584,7 +585,7 @@ the core audits, so registering over one would be an override that silently
 redirects a credential mint, not a contribution.
 
 The registry is also the **single** definition of the renderable set, read by two
-consumers that used to carry it as matching literals: `canRenderMobileConnectKind()`
+consumers that would otherwise each carry it as matching literals: `canRenderMobileConnectKind()`
 gates the nav rail's row and `getMobileConnectRenderers()` supplies the dialog's
 sections. A kind neither drawn nor registered is still filtered out at the rail, so
 the row stays hidden rather than opening a dialog with an empty body — the seam adds
@@ -615,7 +616,7 @@ kind the gateway does not list draws nothing, and a listed kind nothing can draw
 is never offered. When more than one renderable row survives, the tab shows a
 selector above the form (the choice persists in `mc-cloud-provisioner`); with a
 single row, or while the query is loading, failed, or empty, the tab renders the
-built-in EC2 form exactly as it did before this seam existed. The registered form
+built-in EC2 form unchanged. The registered form
 is mounted in its own `ErrorBoundary`, and the launch-progress card and status
 notice stay core-owned below whichever form shows, so a launch already in flight
 survives a throwing renderer.
@@ -637,7 +638,8 @@ to one deployment.
 
 `getAutolinkRules()` is the reader, returning rules in **registration order**;
 where two rules match overlapping spans the earlier-registered one wins.
-`remarkAutolinkRules` is the consumer, ordered last in `REMARK_PLUGINS`.
+`remarkAutolinkRules` is the consumer, ordered after `remarkGfm` and immediately
+before `remarkVerbatimUnknownTags`, second-to-last in `REMARK_PLUGINS`.
 
 Everything is validated at **registration**, so a bad rule fails once and loudly
 instead of on one unlucky message: a sticky pattern is refused, an empty-matching
@@ -676,10 +678,10 @@ itself, there is nothing to enumerate, and a whole-catalog transform hook would
 hand an edition the power to break any string for what is a one-variable
 substitution.
 
-Scope: catalog strings only. The `apps.<id>.manifest.*` keys mirror the
-Python-side `app.json` prose byte-for-byte and keep the literal name; the
-shell logo and welcome mark are the theme-branding seam's job; the chat bot
-display name stays `dashboard.bot_name`.
+Scope: catalog strings only, and which catalog keys keep the literal name is
+[i18n-catalog](i18n-catalog.md#the-product-name-is-an-interpolation-variable)'s
+rule. The shell logo and welcome mark are the theme-branding seam's job; the chat
+bot display name stays `dashboard.bot_name`.
 
 ## API methods: exported transport, not a registry
 
@@ -721,8 +723,9 @@ The core's own methods sit on the same helpers. They are defined by domain in
 `api/client/*.ts`, one module per product area (chat, memory, security, …), each
 a `create*Endpoints` factory that `client.ts` hands the transport it owns
 (`ClientTransport`, `api/client/transport.ts`): the five helpers, the three
-parsers, the shared `X-Session-Key` header, and the session-expiry hooks a
-method that reads its own response calls. The third parser
+parsers, the shared `X-Session-Key` header, the session-expiry hooks a
+method that reads its own response calls, and `withJournaledDeadline` (a
+deadline that also records a timed-out read in the error journal). The third parser
 (`jInstancesDisabled`) is core-only and deliberately absent from `ApiTransport`
 above: it opts one specific benign denial on one core route out of the error
 journal, which is not an edition's decision to make. None of them imports a
@@ -733,6 +736,12 @@ as types only), so the transport and its recovery keep one definition.
 segments into the one `api` object, in its original key order, and re-exports
 their wire types. That split is core-internal: the seam is still
 `apiTransport`, and an edition never imports a domain module.
+
+Two tests ratchet the split. A new method goes in its domain's `create*Endpoints`
+segment and joins `API_KEY_ORDER` in `ApiClient.refactor.surface.test.ts` where
+the facade spreads it; it joins `NO_SESSION_KEY` there only when it deliberately
+bypasses the request helpers. A method defined inline on the facade instead of in
+a segment joins `INLINE` in `ApiClient.refactor.facade.test.ts`.
 
 Trust boundary: the transport carries the session key. It is for the edition
 composition root, **never** for app or plugin-contributed frontend code.

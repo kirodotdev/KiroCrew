@@ -994,7 +994,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # PYTHONPATH/CWD answer for the interpreter under test.
         "dep_sync.py::_probe_interpreter",
         # The stale-asset watchdog's relaunch probe: `<python> -X utf8 -c "import
-        # kiro_crew.cli"` from `/`, a fixed literal. The interpreter is the one
+        # kiro_crew.cli, kiro_crew.cli_server"` from `/`, a fixed literal. The interpreter is the one
         # the service manager's own loaded command names, run under that unit's
         # environment, which the supervisor's relaunch would execute anyway; it
         # is unisolated on purpose, because the relaunch is.
@@ -1630,7 +1630,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "service/apparmor.py::parser_version",
         "service/apparmor.py::validate",
         "service/linux.py::_current_group",
-        # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`, a
+        # Read-only diagnostic: `loginctl show-user <user> -p Linger`, with
+        # `Linger=` parsed from the Key=value output (no `--value`), a
         # fixed argv whose only variable is the service account name taken from
         # $USER/$LOGNAME (never agent-supplied). Same class as
         # service/linux.py::_current_group — an identity/state query the install

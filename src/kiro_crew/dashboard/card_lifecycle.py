@@ -31,6 +31,7 @@ from kiro_crew.crew_main_contract import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.dynamic_cards import (
+    MAX_HTML_BYTES,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_BYTES,
     RESTORED,
@@ -113,7 +114,7 @@ notes: one sentence of caveat, or "".
 At most {JUDGMENT_TEXT_LIMIT} characters each. The only names data-dashboard-field may use
 are the fact names and lede, you, notes.
 You design the HTML/CSS layout freely. No scripts, remote resources, forms or
-navigation. At most 8192 UTF-8 bytes of HTML. Use readable names, responsive layout
+navigation. At most {MAX_HTML_BYTES} UTF-8 bytes of HTML. Use readable names, responsive layout
 down to 320px and theme variables such as var(--bg), var(--text), var(--muted) and
 var(--accent). No fixed-width canvas.
 When previous has html that still fits, or previous lists only fields, OMIT html and
@@ -123,7 +124,7 @@ This is a bounded recent-window update, not an authoritative full-history summar
 A message with role "automation" was injected by a scheduler or another agent, not
 typed by the user; never present it as the user's request or decision.
 """
-"""The prompt for every automatic card, which is now a ROOT session's card.
+"""The prompt for every automatic card (a root session's card).
 
 The numbers reach the model as facts it can bind but not write: the layout names a fact
 by its field and the host fills the value from the fold, after the model has returned.

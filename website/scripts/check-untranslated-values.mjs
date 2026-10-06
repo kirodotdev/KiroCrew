@@ -4,7 +4,7 @@
  *
  * ## Why this cannot fail the step
  *
- * The count is inherited. Eleven catalogs carry roughly 2,700 such values, and the
+ * The count is inherited. The catalogs carry a large backlog of such values, and the
  * branch that happens to touch a catalog next did not put them there — failing on the
  * total would red-line PRs whose diff is clean, which is the exact failure mode the
  * gate runner's three-tier table exists to prevent. So this is an `info` row: it
@@ -22,7 +22,7 @@
  * a count — buying nothing the zero-tolerance check does not already guarantee.
  *
  * Set `I18N_PASSTHROUGH_REPORT=1` for the per-key worklist; the default prints
- * per-locale counts, because 2,700 lines in every CI log is not a worklist anyone reads.
+ * per-locale counts, because thousands of lines in every CI log is not a worklist anyone reads.
  *
  * Exit codes: 0 always, findings or not · 2 cannot run.
  */

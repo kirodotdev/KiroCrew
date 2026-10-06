@@ -280,10 +280,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The local-git diff below needs the PR base commit; a depth-1 fetch of
+      # that one SHA is enough (a two-dot diff reads trees, not history).
+      - name: Fetch the pull request base commit
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name == 'pull_request'
         with:
+          # Same reason as ci.yml's `changes` job: an empty token switches the
+          # action to local git change detection, so it spends none of the
+          # installation-token quota every workflow in this repository shares.
+          # With the default token this step fails with `API rate limit
+          # exceeded for installation` whenever the fleet has drained it.
+          token: ''
           filters: |
             desktop:
               - 'website/electron/**'

@@ -7,8 +7,9 @@ generated notes rather than replacing them. So the published body is always
 ``our section + whatever GitHub generates``, and a defect can appear without
 anyone writing it. Three did, on v0.3.0 and again on v0.5.0:
 
-* the CHANGELOG's required ``### Contributors`` list, copied in verbatim,
-  duplicated the contributor block GitHub renders natively from the tag range;
+* a ``### Contributors`` list, which older CHANGELOG sections still carry
+  (new sections must not add one), copied in verbatim, duplicated the
+  contributor block GitHub renders natively from the tag range;
 * the CHANGELOG's ~76-column hard wrapping became real ``<br>``s, because GitHub
   renders a release body with GFM line breaks ON, leaving a fixed-width column
   and a wide empty gutter down the page;
@@ -96,12 +97,12 @@ Older section that must not leak into the notes.
 
 
 def test_contributors_subsection_is_dropped_from_the_release_body(tmp_path: Path) -> None:
-    """The CHANGELOG must keep its list; the release body must not carry it.
+    """An older section's list stays in the CHANGELOG; the release body drops it.
 
-    AGENTS.md requires the section to end with `### Contributors` because that
-    copy ships inside the wheel and feeds the dashboard's Releases page, where no
-    native block exists. The release page renders its own from the tag range, so
-    the body carrying ours puts two lists next to each other.
+    docs/build/changelog.md forbids a `### Contributors` subsection in new
+    sections, but older sections may still carry one. The release page renders
+    its own list from the tag range, so a body carrying ours puts two lists next
+    to each other.
     """
     result, notes = _run_step(tmp_path, SECTION)
     assert result.returncode == 0, result.stderr

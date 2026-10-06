@@ -986,8 +986,10 @@ class AgentConfig:
             "name, so Kiro Crew stamps that marker on the servers it manages. "
             "Leave false on a personal account: with no registry configured the "
             "filter inverts and registry-marked entries are the ones dropped. "
-            "The administrator must also allow-list kirocrew-core, kirocrew-cron "
-            "and kirocrew-computer in the registry by those exact names.",
+            "The administrator must also allow-list, by those exact names, every "
+            "managed kirocrew-* server Kiro Crew mounts: kirocrew-core, "
+            "kirocrew-cron and kirocrew-computer by default, plus any opt-in "
+            "server (e.g. kirocrew-dashboard, kirocrew-work) an agent is granted.",
         ),
     )
     mcp_quarantine_after_failures: int = field(
@@ -1000,16 +1002,19 @@ class AgentConfig:
             "cold cache looked identical to one that has failed forty times. "
             "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
             "is working correctly and is never counted, and one success clears the "
-            "count. This is a health reading only -- the server stays mounted, and "
-            "the dashboard offers a one-click count reset. 0 turns it off.",
+            "count. The server stays mounted, but while its streak is at or over "
+            "this threshold MCP discovery stops spawning it for probes; the count "
+            "survives a gateway restart and holds until it is cleared (the "
+            "dashboard offers a one-click reset). 0 turns it off.",
         ),
     )
     acp_backend: str = field(
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
-            "KAS runs chat but has no native subagent progress reporting yet.",
+            "Which ACP agent to drive: '' = kiro-cli (default), or any other "
+            "registered selectable backend id (e.g. 'kas' = kiro-agent). The live "
+            "list of values is served by GET /api/config/schema.",
             # Deliberately NO ``enum``. A literal here was frozen at import and fed
             # two import-time structures (``JSON_SCHEMA`` and ``SCHEMA_REGISTRY``),
             # both strictly earlier than an edition registering a backend at boot.
@@ -1026,7 +1031,8 @@ class AgentConfig:
         default="kas",
         metadata=_meta(
             "Crew member ACP backend",
-            "Backend for crew-member DM sessions: 'kas' (default) or 'claude'. "
+            "Backend for crew-member DM sessions: 'kas' (default) or another "
+            "dispatch-capable backend (claude, codex, opencode, goose). "
             "Members dispatch work into worker sessions through session-control "
             "tools mounted per session over the wire, which the kiro-cli v2 "
             "backend cannot carry — a value resolving to kiro leaves member "
@@ -1135,13 +1141,10 @@ class AgentConfig:
             "install, and fail-closed everywhere else, where a missing backend is "
             "broken or one profile away from working. A declared value always wins in "
             "both directions, and a governance sandbox.min_level floor outranks the "
-            "declaration. The resolution is folded into the VALUE rather than keyed on "
-            "key presence so a full-document save() — which serializes every field — "
-            "cannot turn 'never decided' into a declared lockdown. This dataclass "
+            "declaration. save() omits the key unless the operator declared it, so "
+            "a 'never decided' host stays undeclared on disk. This dataclass "
             "default stays platform-independent so the committed config-schema "
-            "snapshot is identical on every platform; the one caller that writes a "
-            "document from a directly constructed config (the first-run default write "
-            "in cli_server) resolves the platform default explicitly before saving. "
+            "snapshot is identical on every platform. "
             "`kirocrew setup` surfaces the decision on a backend-less host, offering "
             "the opt-in where the default is fail-closed and stating the exposure plus "
             "offering the opt-out where it is allow, and writes nothing unless the "
@@ -1268,14 +1271,16 @@ class AgentConfig:
             "MCP Tool Search",
             "Load MCP tool specs on demand (search-and-call) instead of sending "
             "every tool definition each turn, keeping the context window clear "
-            "when many MCP servers are configured. kiro-cli backend only. "
+            "when many MCP servers are configured. kiro-cli applies it through the "
+            "agent overlay; KAS receives it in the ACP initialize request, enabled "
+            "only when the spawn agent's spec grants the tool_search loader. "
             "Deferral only starts once the specs cross tool_search_min_pct or "
             "tool_search_min_tokens; disabling reverts to sending full tool "
             "specs. Crew's servers defer only when the spawn runs the pinned "
             "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
             "other executable, an older or unknown version keeps them resident. To override the never-defer list, set "
             "ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the "
-            "gateway's environment. No effect on an alternate ACP backend.",
+            "gateway's environment. No effect on any other ACP backend.",
         ),
     )
     tool_search_min_pct: int = field(
@@ -1305,11 +1310,11 @@ class AgentConfig:
         metadata=_meta(
             "Session Sharing",
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
-            "kiro-cli process per subagent. Reduces startup from ~3-5s to ~200ms "
+            "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
             "and memory from ~400MB to near-zero per subagent. Default ON for the "
-            "kiro-cli backend; always off / ignored for an alternate ACP backend "
-            "(which uses AcpClient). Set false to opt kiro back onto per-subagent "
-            "processes.",
+            "eligible backends (kiro-cli and codex); every other ACP backend "
+            "ignores it and runs a dedicated process per subagent. Set false to "
+            "opt an eligible backend back onto per-subagent processes.",
         ),
     )
     max_subagents: int = field(
@@ -1384,7 +1389,8 @@ class AgentConfig:
         metadata=_meta(
             "Posture Admission Gate",
             "While available memory is at or below resource_critical_gb, defer "
-            "scheduled cron firings to the next tick until memory frees. "
+            "scheduled cron firings to the next tick, and TaskRunner steps and "
+            "workflow ctx.agent() calls by admit_wait_secs, until memory frees. "
             "Subagent spawns are not gated on this posture; they wait on "
             "spawn_min_memory_gb instead. Manually triggered cron runs and "
             "direct chat turns are never gated; an unreadable probe admits "
@@ -1433,7 +1439,7 @@ class AgentConfig:
             "Admit Wait (seconds)",
             "How long an admitted task may wait for its resources before it goes "
             "back to queued, and the longest a spawn deferred by the memory floor "
-            "waits before it is re-checked. Clamped to 1..3600.",
+            "(spawn_min_memory_gb) waits before it is re-checked. Clamped to 1..3600.",
             restart=True,
         ),
     )
@@ -1628,7 +1634,8 @@ class AgentConfig:
             "Until the gateway first meets corroborated host pressure, let a "
             "cap below its ceiling DOUBLE per clear 5-second window (on one "
             "completion and real demand) instead of climbing +1 per clear "
-            "30-second window, bounded by max_subagents. The execution cap "
+            "30-second window, bounded by max_subagents (subagent_auto_max when "
+            "it is 0). The execution cap "
             "starts at that ceiling, so this is how a cut cap climbs back. The "
             "first pressure ends slow start for the life "
             "of the process. Set false to climb +1 per clear 30-second window "
@@ -2239,10 +2246,14 @@ class SlackConfig:
         metadata=_meta(
             "DM Single Session",
             "Treat each 1:1 DM as one continuous conversation instead of starting "
-            "a new session per top-level message. Replies post at channel root "
-            "rather than in a thread. Threaded replies, group channels and group "
-            "DMs are unaffected. Off by default: turning it on routes the next DM "
-            "to a different session than the previous one.",
+            "a new session per top-level message: every message in the DM, "
+            "threaded replies included, joins one slack:<channel_id> session. A "
+            "top-level message is answered at channel root; a threaded reply is "
+            "still answered in its thread. Applies only when "
+            "messaging.use_transport is true and the channel is not in review "
+            "mode. Group channels and group DMs are unaffected. Off by default: "
+            "turning it on routes the next DM to a different session than the "
+            "previous one.",
             tags=["slack"],
         ),
     )
@@ -2332,8 +2343,9 @@ class TailscaleConfig:
             "daemon-verified tailnet peer instead of the tunnel's shared "
             "loopback address, and record that identity in the audit trail. "
             "Explicit opt-in, never inferred, and requires a non-empty "
-            "allowed_logins — enabling it with an empty allowlist is refused at "
-            "load. Every failure to verify a peer falls back to the ordinary "
+            "allowed_logins — enabling it with an empty allowlist forces it off "
+            "at load and logs an error (the rest of the config still loads). "
+            "Every failure to verify a peer falls back to the ordinary "
             "token path. Takes effect on the next gateway start (the trust "
             "settings are read once at startup).",
             restart=True,
@@ -3417,7 +3429,9 @@ class DashboardConfig:
         metadata=_meta(
             "Self-Hosted GitLab Hosts",
             "Exact hostnames (optionally host:port) of self-managed GitLab "
-            "instances whose merge-request URLs the Changes panel may load. "
+            "instances that glab-backed features may reach: the Changes panel, "
+            "session source links, the monitor's merge-request path and Issue "
+            "Radar. "
             "Empty = gitlab.com only (deny-by-default): a merge-request URL is "
             "only sent to the glab CLI if its host is an exact member of this "
             "list, so a pasted link cannot aim the credential-bearing CLI at an "
@@ -3543,7 +3557,7 @@ class KiroCrewAgentConfig:
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
-    # defaults (1h) are build-scale forbearance; an agent that never runs a long
+    # defaults are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows
     # here. 0 (the default) inherits the global value — mirrors the
     # empty-inherits convention of ``model`` above.
@@ -3552,7 +3566,7 @@ class KiroCrewAgentConfig:
         metadata=_meta(
             "Tool stall suspect override (s)",
             "Per-agent override for watchdog.tool_stall_suspect_secs on sessions "
-            "running this agent. 0 inherits the global window (default 1h, tuned "
+            "running this agent. 0 inherits watchdog.tool_stall_suspect_secs (tuned "
             "for long builds). Set low (e.g. 900) for a pure-LLM agent whose "
             "longest legitimate silent gap is minutes, not hours.",
         ),
@@ -3562,7 +3576,7 @@ class KiroCrewAgentConfig:
         metadata=_meta(
             "Tool stall hard cap override (s)",
             "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions "
-            "running this agent. 0 inherits the global cap (default 1h). Applies "
+            "running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies "
             "to UNKNOWN verdicts and to an opaque MCP tool whose only WORKING "
             "evidence is movement in the runtime's process tree; every other "
             "WORKING session is never acted on.",
@@ -3653,7 +3667,7 @@ class TelemetryConfig:
             "Retention (days)",
             "Prune local JSONL metric shards older than this many days on each "
             "export cycle. 0 disables age-based pruning. Bounds on-disk telemetry "
-            "growth (rec #14: bounded retention).",
+            "growth.",
         ),
     )
     max_total_mb: int = field(
@@ -3662,7 +3676,7 @@ class TelemetryConfig:
             "Max Total Size (MB)",
             "Opportunistic directory budget for local metric shards. Closed shards "
             "are pruned oldest-first; protected active writers can temporarily exceed "
-            "the budget. 0 disables the size cap (rec #14: bounded retention).",
+            "the budget. 0 disables the size cap.",
         ),
     )
     otlp_endpoint: str = field(
@@ -3673,8 +3687,7 @@ class TelemetryConfig:
             "http://localhost:4318/v1/metrics). EMPTY = no network egress "
             "(default). When set, aggregated metrics are ALSO pushed to this "
             "collector in addition to the local JSONL sink; requires the "
-            "OTLP exporter from the otlp package extra to be installed "
-            "(rec #1: OTLP opt-in only, no egress by default).",
+            "OTLP exporter from the otlp package extra to be installed.",
             sensitive=True,
         ),
     )
@@ -4881,9 +4894,11 @@ class DecisionsConfig:
     section carries only the knobs that grant nothing on their own: the sampling
     share, the prior-conversation budget (0 by default, so raising it is a choice),
     the tier-to-model map ``model.route`` reads, and the provider. There is no
-    per-point arm and no shadow mode: two points ship (``skills.select``,
-    ``model.route``), each reached only through its own owner-made choice --
-    a non-zero ``skills.max_triggered`` and the picker's ``Auto (Jev)`` entry.
+    per-point arm and no shadow mode. The shipped points are listed in
+    ``DECISION_POINT_NAMES`` (``decisions/gate.py``); each module under
+    ``decisions/points/`` owns how its point is reached -- for example a
+    non-zero ``skills.max_triggered`` for ``skills.select`` and the picker's
+    ``Auto (Jev)`` entry for ``model.route``.
 
     Every field is hot-applied (no ``restart=True`` anywhere): the gate reads the
     live snapshot per call, so a bucket change takes effect on the next decision
@@ -5939,8 +5954,9 @@ class TelegramConfig:
             "audit attribution) rather than a second inbound door that only the "
             "global telegram.enabled can close. The map is still parsed and "
             "written back so an existing config keeps its tokens and allow-lists, "
-            "but nothing reads it: move the token you want served to "
-            "telegram.bot_token.",
+            "but while the map is non-empty the whole Telegram channel stays OFF: "
+            "move the token you want served to telegram.bot_token AND remove the "
+            "accounts block.",
             tags=["telegram"],
             deprecated=True,
         ),
@@ -6227,7 +6243,9 @@ class DiscordConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed Channel IDs",
-            "Discord server channels where approved users may start a new agent thread.",
+            "Discord server channels where approved users may start a new agent "
+            "thread. Requires auto_thread=true: with auto_thread off, messages in "
+            "these channels are ignored.",
             tags=["discord"],
         ),
     )
@@ -6235,7 +6253,8 @@ class DiscordConfig:
         default=True,
         metadata=_meta(
             "Auto-create Threads",
-            "Create one Discord thread per approved message in an allowed channel.",
+            "Create one Discord thread per approved message in an allowed channel. "
+            "When off, messages in allowed channels get no reply.",
             tags=["discord"],
         ),
     )

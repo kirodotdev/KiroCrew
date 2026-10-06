@@ -54,7 +54,7 @@ const PRESENCE = { kirocrew: true, kiroGlobal: true, ccGlobal: false }
 const PROBED_AT = Math.floor(Date.now() / 1000) - 90
 // The backend collapses the home prefix to `~` before it names the file.
 const SHARED_FILE = '~/.kiro/settings/mcp.json'
-const WHERE_LINE = `Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`
+const WHERE_LINE = `Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off.`
 // A `disabled` that is not a boolean is read fail-closed by the backend and the
 // row says so: the fix is to repair the value, not to flip a switch.
 const INVALID_WHERE_LINE = `Disabled: invalid "disabled" value in ${SHARED_FILE}. Set it to true or false there.`

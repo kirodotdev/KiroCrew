@@ -1,6 +1,6 @@
 """Sections that configure the gateway's background services.
 
-Owns the DTOs and defaults for ``taskrunner``, ``orchestrator``, ``messaging``,
+Owns the DTOs and defaults for ``taskrunner``, ``messaging``,
 ``cron_history``, ``monitoring``, ``heartbeat`` and ``watchdog``. The monitoring
 runtime bounds come from ``monitoring.limits``, their single owner.
 ``config.sections`` re-exports every name; this module never imports it, the
@@ -13,10 +13,6 @@ from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
-
-# Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
-# stage count, so this is the only bound on total unattended runtime.
-
 
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: host memory over the per-agent cost (compute_memory_sized_parallel_cap)
@@ -137,8 +133,9 @@ class MonitoringConfig:
     """Monitor arming preference and finite wall-clock policy.
 
     The preference changes tool guidance, not eligibility. The runtime ceiling
-    is enforced across tools, API mutations and persistence; raising it never
-    extends an existing loop's stored budget or creation time.
+    is checked whenever a budget is written (monitor tools, API mutations,
+    structured-monitor writes); persisted records are not re-checked on load.
+    Raising it never extends an existing loop's stored budget or creation time.
     """
 
     max_runtime_secs: int = field(

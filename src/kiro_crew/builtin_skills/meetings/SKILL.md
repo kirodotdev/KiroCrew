@@ -14,15 +14,19 @@ chat replies, it gets no `OUTPUT_FILE` line, and none of the file rules below
 apply to it.
 
 Only a markdown agent's output is user-editable in the app (the editable
-minutes), so a markdown agent re-reads its output file before every rewrite —
-the user may have edited it since the last write. An `html` output is not
+minutes). A user edit never touches the agent's file: it is saved as a separate
+sidecar under `edits/` that the dashboard shows in place of the agent's output,
+so the agent's next rewrite cannot destroy it. That `edits/` tree is a sensitive
+path — no agent can read or write it through file tools — so the agent's own
+file is NOT what the user sees once they have edited it. An `html` output is not
 user-editable.
 
 Only one meeting may be active at a time; starting a second answers 409. The
 server enforces the lifecycle transition table, not just the UI: `active` and
 `paused` may only reach `ended` through `reviewing` (the action-item review
-gate), `ended` may be reopened to `active`, and a same-status POST is an
-idempotent no-op.
+gate) on the status route, `reviewing` may go back to `paused`, `ended` may be
+reopened to `active`, and a same-status POST is an idempotent no-op. Stop
+(`POST …/meetings/<id>/stop`) is the separate exit that ends a meeting outright.
 
 A live translation panel translates each transcript line as it lands, using one
 tool-less `kirocrew-lite` call per line in an ephemeral session — deliberately
@@ -46,6 +50,7 @@ All paths are under `~/.kiro/crew/apps/meetings/data/`:
 | `meetings/<id>/<agent-id>.html` | an HTML agent's output (e.g. `sketch-artist.html`) |
 | `meetings/<id>/transcript.jsonl` | the raw transcript, one finalized speech segment per line — read this instead of asking the user to re-summarize |
 | `meetings/<id>/translations.json` | per-line translations for the live translation panel |
+| `edits/<id>/<agent-id>.md` | the user's edit of a markdown output — not readable by agents (see above) |
 
 `<id>` is the meeting id with `:` replaced by `_`. Only `[A-Za-z0-9._-]` is
 legal in it — the backend rejects anything else, so do not construct a path from
@@ -86,9 +91,12 @@ Two things are pluggable, and which implementation is active comes from
   meetings are created by hand) or `ics`, which reads the iCalendar document at
   `calendar.source` (a local `.ics` file path, or a published `https://` URL).
 
-To sync the calendar, call `POST /api/apps/meetings/calendar/sync` — do not try
-to fetch or parse the calendar yourself. With a provider configured the app also
-syncs on its own every `calendar.poll_interval_secs` (default 300) and creates
+To sync the calendar now, ask the user to press **Sync calendar** on the
+Meetings page — do not try to fetch or parse the calendar yourself. The app's
+`/api/apps/meetings/*` routes sit behind the dashboard's token auth and no agent
+tool carries that credential, so a raw HTTP call from an agent is refused. With
+a provider configured the app also syncs on its own every
+`calendar.poll_interval_secs` (default 300) and creates
 the meeting directory for an event `calendar.precreate_lead_minutes` (default 15)
 before it starts, so an imminent meeting usually already exists as `idle`;
 `calendar.auto_sync: false` turns the background poll off, and a lead of `0`

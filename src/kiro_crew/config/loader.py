@@ -916,7 +916,7 @@ def overlay_pins(*key_path: str) -> bool:
 
 
 def config_local_path() -> Path:
-    """Return path to config.local.json — user overrides that survive upgrades."""
+    """Return path to config.local.json — an overlay whose keys win over config.json."""
     return config_dir() / "config.local.json"
 
 

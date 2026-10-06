@@ -2,7 +2,7 @@
   "name": "code-review-sage",
   "version": "0.9.3",
   "displayName": "Code Review Sage",
-  "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Every changed file is reviewed in its own isolated agent session, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are staged as a draft GitHub review that stays unpublished until you submit it, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
+  "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Each pull request is reviewed in its own isolated agent session that covers every changed file, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are read in the app and staged as a draft GitHub review only when you publish them or turn on automatic posting, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
   "author": "kirocrew",
   "tags": [
     "code-review",
@@ -12,7 +12,7 @@
   ],
   "highlights": [
     "Focus Report ranks changes by blast radius so the risky files get read first",
-    "One isolated agent session per change, so findings never bleed between files",
+    "One isolated agent session per pull request, so findings never bleed between reviews",
     "Reviews are read in the app — nothing is posted to your pull request unless you ask",
     "Learns per-repository from shipped fixes, review comments, and design discussions",
     "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host"

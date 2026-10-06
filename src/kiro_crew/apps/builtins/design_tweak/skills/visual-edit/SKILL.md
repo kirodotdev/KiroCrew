@@ -12,15 +12,19 @@ preview and attach natural-language comments. Comments accumulate into a
 therefore contains **many comments as sub-items**:
 
 ```
-~/.kiro/crew/apps/design-tweak/data/queue/<timestamp>-<id>.json
+<app data dir>/queue/<timestamp>-<id>.json
 ```
+
+The app data dir defaults to `~/.kiro/crew/apps/design-tweak/data/`, but moves
+with `KIROCREW_HOME` or `KIROCREW_APP_DATA_DIR`. The request prompt quotes the
+payload's real path — use that path, not the default.
 
 **A request is a batch. Work every comment in it, and report per comment.**
 
 ## The loop
 
 1. **Read the request file.** The prompt names the request id; if not, read the
-   newest file in the queue dir. `state` will be `"sent"` — a `"draft"` request
+   newest file in the queue dir above. `state` will be `"sent"` — a `"draft"` request
    has not been handed to you yet, so leave drafts alone.
 2. **Work `comments[]` in order.** Each entry is an independent edit with its own
    `cid`, `comment`, `sourceFile`, and `selection`. Do not merge them into one

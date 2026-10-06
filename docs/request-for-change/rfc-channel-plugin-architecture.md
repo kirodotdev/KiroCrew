@@ -3,8 +3,8 @@ title: Channel Plugin Architecture — shared runtime, channels as app extension
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-10-05
+audited-at: f97eeefbe3
 doc-pr: 689
 implementation-prs: [777, 1019, 1234]
 tracking-issues: []
@@ -15,17 +15,29 @@ superseded-by: []
 
 > **Current behaviour: see [`../system-specs/modules/messaging.md`](../system-specs/modules/messaging.md),**
 > which owns the shared turn pipeline's runtime contract. The §9 address rule
-> is split with [`rfc-session-address-model.md`](rfc-session-address-model.md);
-> that document owns the rule, and this one keeps only the reasoning that
-> produced it.
+> is not contested: §9 option B (canonical grammar) is the shipped design of
+> record, implemented by `messaging/link.py::parse_session_key`.
+> [`rfc-session-address-model.md`](rfc-session-address-model.md) owns the rule
+> going forward; its Phase 4 opaque identity is an open proposal awaiting a
+> maintainer ruling. This document keeps only the reasoning that produced §9.
 
 - Status: partial — the descriptor registry and shared lifecycle now ship in
   `src/kiro_crew/channels.py` and `src/kiro_crew/messaging/registry.py`, with ten
   built-in channels registered. The shared `messaging/dispatch.py` pipeline is
   widely adopted, but Slack, Discord, and Telegram retain channel-specific turn
   seams, and descriptor-driven config schemas plus a generic settings UI remain
-  incomplete. The sections below preserve the migration's original measurements
-  and decisions rather than describing every later landing.
+  incomplete. Section 3 items not on main: the `ChannelHooks` protocol; the
+  descriptor's `contract_version`, config schema, capabilities and
+  transport/renderer factories (`messaging/registry.py::ChannelDescriptor` carries
+  `channel_type`, `start`, `credentials`, `credential_fallbacks`,
+  `required_config` and `boot_keys`); and the generic channel config route and
+  settings form. §9 as shipped: rules 2, 3 and 5 and the parser half of rule 4 ship
+  (`messaging/link.py::parse_session_key`, `assert_colon_free`,
+  `build_dm_session_key`); rule 1 (a `/api/sessions/{key}` control plane) does not —
+  stop is `/api/chat/slots/{slot}/stop` — and the `dashboard:dashboard_` repair
+  stays in `session_map.py::_resolve_alias`. The sections below preserve the
+  migration's original measurements and decisions rather than describing every
+  later landing.
 - Author: zezhexu
 - Created: 2026-07-28
 - Related: rfc-federated-app-platform.md (frontend loading + registry this RFC rides), PR #572 + PR #627 (the parallel channel landings that produced the 9-file conflict set cited below), `kiro_crew/apps/module_loader.py` (SEC-012 trust model this RFC adopts)
@@ -146,6 +158,14 @@ Each PR lands green on the existing suites; no behavior change until ⑤.
 - **A channel-only plugin mechanism separate from apps.** Rejected: two discovery/trust/distribution systems to maintain, and the apps platform already solved loading, admission, and signing.
 
 ## 9. Amendment: session address model (decided 2026-07-29)
+
+> **As shipped.** Rules 2, 3 and 5 ship, and so does the parser half of rule 4:
+> `messaging/link.py` provides `parse_session_key`, `assert_colon_free` and
+> `build_dm_session_key`. Rule 1 does not ship: no `/api/sessions/{key}/stop` or
+> `/steer` route exists, and stop stays `/api/chat/slots/{slot}/stop`. The
+> `dashboard:dashboard_` repair stays in `session_map.py::_resolve_alias`; it is
+> not in the parser. [rfc-session-address-model.md](rfc-session-address-model.md)
+> owns the rule, and its Phase 2 deletes that repair rather than moving it.
 
 PR ③ introduces the channel registry and the host's control seams. Before it
 lands, the shape of a session address must be fixed — otherwise the control

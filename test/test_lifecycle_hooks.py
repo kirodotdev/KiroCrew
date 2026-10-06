@@ -579,7 +579,10 @@ class TestLifecycleHookTimeout:
             )
 
             assert ok is False
-            assert started.is_set()
+            # The 50 ms hook deadline can expire before the pool thread is scheduled
+            # on a loaded runner. The worker is already submitted, so wait for it to
+            # start instead of betting it started inside the deadline.
+            assert await asyncio.to_thread(started.wait, 5)
             assert not finished.is_set()
             assert "thread-app" in lifecycle_mod._DETACHED_HOOK_TASKS
             assert await dispatcher.stop_detached_startup_hooks(

@@ -1036,10 +1036,9 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 #
 # pi and deepseek are excluded for the reasons the dispatch set states and neither
 # reason is about session control specifically: pi accepts the array and never
-# forwards it, so a mounted panel server would be inert, and deepseek's routing is
-# ``Routing.UNVERIFIED``, so a session that cannot be gated is never refused --
-# projecting an approval-free grant onto a harness whose tool calls Crew does not
-# decide is the thing both exclusions protect against.
+# forwards it, so a mounted panel server would be inert, and deepseek, though its
+# routing (``Routing.VERIFIED_GATE_EXTENSION``) is enforced, has had no member
+# round trip driven on it, so H6 gives no decision for this harness.
 #
 # kiro is excluded and cannot be added by this set alone: a member session's key is
 # what every mount reads, and ``providers/acp.py`` ``_member_session_key`` gates

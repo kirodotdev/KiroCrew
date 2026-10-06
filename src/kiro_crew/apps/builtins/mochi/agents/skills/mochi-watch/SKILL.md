@@ -12,13 +12,17 @@ Check watch items from the persistent watchlist, compare with last known status,
 
 ## Steps
 
+### 0. Read the items
+
+Your spawn prompt carries only each item's label, kind, id, target, triggerCondition, lastResult, priority and checkCount. Everything else this skill relies on — `checkIntervalMins`, `baseIntervalMins`, `failCount`, `lastChecked`, `autoComplete`, `notes` and `history` — is on the item itself. Call `get_watchlist()` ONCE before checking and read those fields for every id in the prompt; never guess them.
+
 ### 1. Check Status
 
 For each item, use the appropriate tool:
 
 | Kind | How to check |
 |------|------|
-| url | Try `web_fetch({ url: "<target>" })` first. A **401**, or a **403** that points at signing in (a login form, a sign-in redirect, a `WWW-Authenticate` header), means an anonymous reader was refused and retrying the same tool will never work: look through the tools you actually have for one that reads a web page with the user's own signed-in session, and re-check with that. Names vary between servers — find the one that reads a page, do not guess at a name. If no such tool is mounted, record the failure reason as `needs-auth`. A **403** that says nothing about signing in is a bot, rate or region block: record `access-denied`, and do not claim a login would fix it. |
+| url | If `target` is a Slack thread link (`https://<workspace>.slack.com/archives/...`), read it with your Slack thread-read tool instead of `web_fetch`, and keep only replies newer than `lastChecked`; if no Slack tool is mounted, record the failure reason as `needs-auth`. Otherwise try `web_fetch({ url: "<target>" })` first. A **401**, or a **403** that points at signing in (a login form, a sign-in redirect, a `WWW-Authenticate` header), means an anonymous reader was refused and retrying the same tool will never work: look through the tools you actually have for one that reads a web page with the user's own signed-in session, and re-check with that. Names vary between servers — find the one that reads a page, do not guess at a name. If no such tool is mounted, record the failure reason as `needs-auth`. A **403** that says nothing about signing in is a bot, rate or region block: record `access-denied`, and do not claim a login would fix it. |
 | custom | Decide based on the target description — `web_fetch`, or whatever available tool fits best |
 | slack-channel | Read the channel's recent messages since `lastChecked`, then summarize key topics. Use whichever Slack tool you actually have; do not guess at a name. |
 | slack-topic | Search Slack for `<target>`, newest first, and keep results newer than `lastChecked`. Same rule about tool names. |
@@ -147,7 +151,7 @@ Use `perform_pet_action({ action: "notify", summary: "...", pushToChat: true, wa
   - `access-denied` → `perform_pet_action({ action: "notify", summary: "<label> is up but blocking this check", chatMessage: "<label> answered and then refused the check — a bot, rate or region block. A login will not help. Watch a different page if it keeps refusing.", pushToChat: true, watchItemId: "<id>", mood: "curious" })`.
   - Any other reason (timeout, 5xx, DNS, empty page) → `perform_pet_action({ action: "notify", summary: "<label> has been failing to load — the target may be down", pushToChat: true, watchItemId: "<id>", mood: "scared" })`.
 
-  After notifying, add `"nudged": true` to the item's notes via update_watchlist. Do NOT nudge again if notes already has `"nudged": true`.
+  After notifying, add `"nudged": true` to the item's notes via update_watchlist. `notes` is replaced whole, so keep what is already there: an object gets the extra key, and a string becomes `{ "text": "<the old string>", "nudged": true }`. Do NOT nudge again if notes already has `"nudged": true`.
 - 3+ checks no change → Do NOT notify. The user already knows it's being watched. Silence is fine.
 
 **⚠️ DEDUP RULE: Never push the same or substantially similar notification to chat twice. Before calling perform_pet_action with pushToChat, ask yourself: "Did I already tell the user this exact thing?" If the status hasn't changed since the last notification (check `lastResult` vs new result), do NOT notify again. Only notify on NEW information the user hasn't seen.**
@@ -159,6 +163,7 @@ After all tool calls, you're done. No further action needed.
 ## Tool Restrictions
 
 Allowed tools:
+- `get_watchlist` — read each item's interval, counters and notes (step 0)
 - `update_watchlist` — update check results
 - `perform_pet_action` — notify the user (only when something changed)
 - `read_mochi_file` — the activity log, for the dedup rule above

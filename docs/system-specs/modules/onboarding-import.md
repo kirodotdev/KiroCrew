@@ -181,7 +181,7 @@ looks like a gap — reopen the decision in this spec first.
 
 | Excluded | Why |
 |----------|-----|
-| **Sessions / conversation transcripts** | Not industry practice — no surveyed agent migrates transcripts. A transcript is a record of a conversation with a *different* model under a *different* system prompt; replayed into Kiro Crew it is misleading context, not useful memory. Reading it also requires hard-coding each source's private JSONL/SQLite schema, which fails **silently** when upstream drifts. Removing it deletes the module's largest and most fragile surface. See "Session-import removal". |
+| **Sessions / conversation transcripts** | Not industry practice — no surveyed agent migrates transcripts. A transcript is a record of a conversation with a *different* model under a *different* system prompt; replayed into Kiro Crew it is misleading context, not useful memory. Reading it also requires hard-coding each source's private JSONL/SQLite schema, which fails **silently** when upstream drifts. Removing it deletes the module's largest and most fragile surface. See [No session import](#no-session-import). |
 | **Persona / `SOUL.md` as a persona** | Kiro Crew's persona surface is theme-pack persona, governed by `capabilities.theme_persona`. Importing a foreign persona document *as a persona* would inject third-party text into the agent's identity through a path that bypasses that gate. The **directive content** of such a file is still migrated — as memory (below) — but its persona role is dropped. |
 | **Credentials of any kind** | `~/.claude/.credentials.json`, `~/.codex/auth.json`, `.env`, `auth-profiles.json`, gateway tokens, provider API keys. Never read. MCP `env`/`headers` keys matching the secret patterns are stripped and counted into `secret_count`. |
 | **Runtime state** | Subagent records, tool results, checkpoints, hook state, in-flight task state. Not user data. |
@@ -206,7 +206,7 @@ Durable tiers only:
 
 | Tier | Context cap | Durability |
 |------|-------------|------------|
-| `lessons.jsonl` (`LessonStore`) | 22.6% — highest of any tier | Append-only; pruned oldest-first at `_MAX_LESSONS_TOTAL` (200) |
+| `lessons.jsonl` (`LessonStore`) | protected startup block, window-independent: `_LESSONS_STARTUP_CAP` for standing rules plus `_LESSON_EXPERIENCE_CAP` for past findings (`context_assembly/budget.py`; see [memory-skills-hooks](memory-skills-hooks.md#lessons-learnpy--vector_memorypy)) | Append-only; pruned oldest-first at `_MAX_LESSONS_TOTAL` (200) |
 | Semantic memory (`VectorMemoryStore`) | 7.7% | Durable; key-addressed, confidence-gated |
 | Episodic memory (`VectorMemoryStore`) | 7.7% | Durable; append-only |
 | `.kiro/steering/*.md` | 10% | Durable, but **workspace-scoped** — a tier the system has, never an import destination (rule 4) |
@@ -223,7 +223,8 @@ Durable tiers only:
    never falls back to the JSONL when they exist, so a JSONL-only write would be
    recorded as imported yet stay invisible to the agent.
    The destination is the highest-priority durable
-   always-injected tier (22.6% of the context budget). Applies to the
+   always-injected tier (the protected startup lesson block, bounded by
+   `_LESSONS_STARTUP_CAP`). Applies to the
    *directive* content of a source's instruction documents — `CLAUDE.md`,
    `AGENTS.md`, `~/.claude/rules/*.md`, each workspace's own `CLAUDE.md`, and
    the directive body of a persona document (`SOUL.md`). `_instruction_paragraphs`
@@ -246,9 +247,10 @@ Durable tiers only:
    path"), and importing the former into an always-injected lesson would make
    foreign text act as the agent's persona through a path that bypasses
    `capabilities.theme_persona` — exactly what excluding the persona role is meant
-   to prevent. The guard checks **every non-heading line** of a paragraph (one
+   to prevent. The guard checks **every line** of a paragraph, headings included (one
    identity line taints the whole paragraph, because a paragraph is imported
-   whole) after stripping Markdown list/quote/emphasis markers, and covers both
+   whole) after stripping Markdown heading/list/quote/emphasis markers, so
+   `# You are Aria` taints its paragraph too, and covers both
    statements ("You are Aria") and subjectless imperatives ("Act as Aria",
    "Assume the role of…"). It does NOT reject an ordinary directive that merely
    mentions "you" or opens with the same verb ("Act on review feedback").
@@ -374,7 +376,7 @@ Applicability and rename derivation per category:
 
 | Category | Strategies | Rename form |
 |----------|-----------|-------------|
-| `skills` | skip · rename · overwrite | `<name>-imported-<source>`, then `<name>-<fingerprint[:8]>` |
+| `skills` | skip · rename · overwrite | `<name>-<source>`, then `<name>-<fingerprint[:8]>` |
 | `mcp_servers` | skip · rename · overwrite | `<name>-<source>`, then `<name>-<fingerprint[:8]>` |
 | `workspaces` | skip · rename | `base-<source>`, then `base-<fp[:8]>`. `skip` reports a collision; suffix derivation occurs only under `rename`. |
 | `instructions`, `memories` | n/a — merge-only, never collide destructively | — |
@@ -585,7 +587,8 @@ rather than defaulting to the user's home root — `base_home / ""` is the entir
 home, and scanning it would walk every file the user owns. Callers treat an absent
 root as "not installed".
 
-A scanner that raises is reported as a `scanner_failed` diagnostic and its partial
+A scanner that raises is reported as a `source_unreadable` diagnostic (an
+unsupported one) and its partial
 findings are discarded: one unreadable source must not deny the user the others,
 and half of a source we now know we cannot read correctly must not be offered as
 importable data.
@@ -664,7 +667,7 @@ The engine owns source identity. `_sources()` resolves and normalizes the regist
 |----------|-------|------|
 | `GET /api/onboarding/import/scan` | detect + dry run | — |
 | `POST /api/onboarding/import/apply` | apply | `{sources: [{id, categories: [...]}], conflict_strategy?}` — `conflict_strategy` is one of `skip`/`rename`/`overwrite`; absent = `skip`, unrecognized = 400 |
-| `PUT /api/onboarding/import/state` | onboarding bookkeeping | `{completed: bool}` |
+| `PUT /api/onboarding/import/state` | onboarding bookkeeping | `{completed: bool}`. Failures: `invalid_request` (400), `config_unreadable` (500 — `config.json` cannot be parsed, so no retry clears it), `state_failed` (500). On a completion error the first-run Import step offers a local "leave without saving" exit |
 
 Each endpoint is owner-only: the handlers call `require_owner_dashboard_request`
 after authentication. With no `owner_id` configured the gate accepts the signed
@@ -693,7 +696,7 @@ browser (the HTTP `summary` does not carry it).
 **Session and transcript import does not exist, and must not be added back.**
 `sessions` is not a member of `CATEGORY_IDS`; there is no session scanner, no
 session writer, no session provenance classifier, no per-session read inside
-`_scan_hermes_db` or `_scan_lineage_memory_db`, no transcript-hash branch in
+`_scan_hermes_projects_db` or `_scan_lineage_memory_db`, no transcript-hash branch in
 `_deduplicate_items`, and no `conversation_log` plumbing through `apply_import`
 or the handler. A reader looking for the deleted symbol names will find them in
 git history, not here.

@@ -69,8 +69,9 @@ def _scan_lineage_install(scan: _Scan) -> None:
     A predecessor, a rename, or a fork of this product writes the same files in
     the same places — ``config.json``, ``mcp.json``, ``recent_projects.json``,
     a ``workspace/`` tree, ``crons.json``, ``memory.db`` — so reading one needs
-    no format knowledge, only a root. The engine reads it, so a registered source
-    declares ``layout="lineage"`` rather than restating the layout.
+    no format knowledge, only a root. The engine reads it: every registered
+    (non-core) source is bound to this reader by the engine itself, so a source
+    descriptor carries no layout field and never restates the layout.
     """
     root = scan.root
     workspaces: set[str] = set()

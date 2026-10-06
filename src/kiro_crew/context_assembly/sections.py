@@ -345,8 +345,9 @@ def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
     ``build_message`` must mint this trusted frame only after it scrubs session
     context. Both frame markers are structural markers, so placing the genuine
     frame inside the scrubbed context would neutralize it along with forgeries.
-    The earlier ``{{VERBOSITY_BLOCK}}`` token reached 7 of the 84 agent specs on
-    one real install; the 77 others ran with the setting silently ignored.
+    It is built here rather than substituted for a ``{{VERBOSITY_BLOCK}}`` token
+    in the agent prompt, because a token reaches only the specs that carry it;
+    every other spec would run with the setting silently ignored.
 
     The wrapper is deliberately loud (a bracketed MANDATORY header, an explicit
     precedence sentence) because the block competes with a long agent prompt

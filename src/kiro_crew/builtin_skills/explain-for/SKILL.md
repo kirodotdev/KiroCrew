@@ -11,11 +11,12 @@ first, verify the facts second, and only then write.
 
 ## Step 0 — check that this is actually an audience request
 
-Trigger matching here is word-overlap against the phrases above, so it is
-probabilistic and it will sometimes fire on a request that merely contains the
-word "explain". Before entering the skill, confirm the user wants an explanation
-**pitched at somebody**. If they just want to know why CI failed, answer that
-question normally and ignore everything below.
+You reach this skill from its index entry, or — when `skills.max_triggered` is
+above its default of 0 — from word-overlap against the trigger phrases above.
+Either route is probabilistic and will sometimes land on a request that merely
+contains the word "explain". Before entering the skill, confirm the user wants
+an explanation **pitched at somebody**. If they just want to know why CI
+failed, answer that question normally and ignore everything below.
 
 ## Step 1 — resolve the audience
 

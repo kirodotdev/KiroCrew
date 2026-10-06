@@ -97,6 +97,10 @@ hotspot of every cleanup PR. The legacy markers the tree still carries are not
 tracked; a marker can re-enter only on an added line, which is what the gate
 judges. Without the env the script prints whole-tree counts and does not enforce.
 
+The rule applies to every comment. The gate enforces it only on added lines of
+`.py` files under `src/kiro_crew` and `test`; comments elsewhere (`website/`, the
+Electron shell, workflow files) are held to the rule by review.
+
 ```bash
 COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py
 ```
@@ -120,7 +124,9 @@ CI's job (`local-gate.py --full` exists for a human who wants it locally).
 any enforcement, so a repo-wide run reformats ~95,800 lines. Those files are
 recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
-ever shrinks. Format what you touched with
+ever shrinks. Prune with `python3 scripts/check_black_formatting.py
+--update-baseline`; it refuses unless the installed black equals the
+`pyproject.toml` pin (`black==26.3.1`). The read-only check does not need the pin. Format what you touched with
 `black --target-version py310 <paths>`, never the whole tree.
 
 **On macOS, run `mypy --platform linux src/kiro_crew`.** CI type-checks on Linux, and

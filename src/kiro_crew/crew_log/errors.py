@@ -11,7 +11,7 @@ repurposed -- it is part of the API surface, not a log string.
 
 from __future__ import annotations
 
-#: The requested crew log kind is neither ``crew`` nor ``session``.
+#: The requested crew log kind is not ``crew``, ``session`` or ``member``.
 CODE_BAD_KIND = "bad_kind"
 #: The unit id is empty, carries a path separator or a NUL, or resolves outside
 #: its own root.
@@ -20,12 +20,14 @@ CODE_INVALID_ID = "invalid_id"
 CODE_ALREADY_EXISTS = "already_exists"
 #: Another process owns writes to this unit's crew log, so this one appended
 #: nothing. Distinct from every code above: the entry was well formed and the
-#: file is healthy -- this process is simply not the writer. A caller reports the
-#: loss rather than retrying, because ownership is held for the life of the
-#: owning process and every later entry for that unit would queue behind the one
-#: waiting for it.
+#: file is healthy -- this process is simply not the writer. What a caller does
+#: next follows its handle's ownership contract: the session emitter, whose handle
+#: may be long-lived, reports the loss and does not retry; the member-event adapter
+#: uses short-lived handles and its own bounded wait. A generic caller does not
+#: retry without such a contract. See docs/reference/crew-log/errors.md.
 CODE_ALREADY_OWNED = "already_owned"
-#: ``open`` was asked for a crew log whose file is not there.
+#: The unit has no content-bearing segment: ``open`` found none, or an append found
+#: the file empty. A zero-byte segment counts as absent.
 CODE_NO_LEDGER = "no_ledger"
 #: Line 1 is missing, unparseable, or describes a different unit than the one
 #: asked for. A crew log without a readable header is not one.

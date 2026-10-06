@@ -117,15 +117,22 @@ a session that touched credentials / sensitive paths. Being asked does not make 
 
    **Freshening an existing live auto-skill is an UPDATE candidate, not a new
    one.** Same pending folder, but set `"kind": "update"`, `"target":
-   "<the live slug>"` and `"base_version": "<the version you merged from>"`.
+   "auto/<the live slug>"` and `"base_version": <N>` — a JSON integer, the
+   `version:` frontmatter of the live SKILL.md you merged from (1 when it has
+   none). A quoted or missing value silently disables the approval-time check
+   that refuses an update merged from a stale base.
    Approving an update snapshots the live file to
    `auto/<slug>/.versions/v<N>-SKILL.md` before overwriting it and keeps the 20
    newest snapshots, so the human can roll back.
 
-   Staging a candidate whose slug is already PENDING is safe: the loader claims a
-   distinct slug (`<slug>-2`, `<slug>-3`, …) and stages beside the existing
-   candidate rather than overwriting it. That guard covers the pending path only —
-   the live path in (b) has none.
+   You write these files yourself, so no slug guard runs for you: the
+   distinct-slug allocation (`<slug>-2`, `<slug>-3`, …) belongs to the automatic
+   pass only. Before creating the folder, check that
+   `<skills-dir>/auto/.pending/<slug>/` does not already exist (writing into it
+   overwrites a candidate awaiting review) and, for a NEW candidate, that
+   `<skills-dir>/auto/<slug>/` does not either (approval refuses a new candidate
+   whose live name is taken, and it is later pruned unreviewed). If either
+   exists, pick the next free `<slug>-2`, `<slug>-3`, … yourself.
 
    **(b) Live: ONLY when the user explicitly says "live" / "active" or confirms
    it when asked.** Write `<skills-dir>/<slug>/SKILL.md` directly, with no

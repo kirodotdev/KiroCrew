@@ -26,6 +26,8 @@ the **PPTX Maker** page in the dashboard: the studio there runs these agents
 beside a live preview of each deliverable, which is the experience the app is
 built around. Generating a deck outside it works but shows the user nothing until
 the file lands.
+PPTX Maker is off by default: the page only appears once the user enables the
+app, so if they cannot find it, tell them to enable it first.
 
 ## How a deck gets built
 
@@ -48,8 +50,9 @@ format.
   colours and fonts.
 
 Users manage both from the app's library panel, which can import their own HTML
-style or existing `.pptx`. The panel inserts a `[Style: name]` token into chat
-when they pick one — treat that as an instruction to use it.
+style or existing `.pptx`. The panel shows a `[Style: name]` or
+`[Template: name]` token for the selected entry, which the user pastes into
+chat — treat either token as an instruction to use that style or template.
 
 ## Requirements
 
@@ -59,9 +62,8 @@ downloaded over HTTPS at a sha256-pinned version (no `git` required).
 `soffice` (LibreOffice) and `pdftoppm` (poppler) are optional and only improve
 preview fidelity — `.pptx` generation works without them.
 
-The app declares `macos` and `linux` only — it does not install on Windows. The
-deck root is a setting in the app, so ask before assuming where `output.pptx`
-lands.
+The app declares `macos`, `linux` and `windows`. The deck root is a setting in
+the app, so ask before assuming where `output.pptx` lands.
 
 The agents can also import an existing `.pptx` back to editable JSON
 (`@sdpm/pptx_to_json`), pull in an attachment (`@sdpm/import_attachment`),

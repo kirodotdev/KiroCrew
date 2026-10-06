@@ -1,19 +1,19 @@
 ---
 title: Retire chat Autopilot mode — the plan / approve / stage-loop slot mode
-status: partial
+status: implemented
 author: iamwhatever
 created: 2026-09-30
-last-audited: 2026-10-02
-audited-at: 6916ba17f
+last-audited: 2026-10-06
+audited-at: ea7e91c8e6
 doc-pr: null
-implementation-prs: [15362, 15359]
+implementation-prs: [15362, 15359, 15682]
 tracking-issues: []
 supersedes: [rfc-autopilot-stage-budgets.md]
 superseded-by: []
 ---
 # RFC: Retire chat Autopilot mode
 
-- Status: partial. Backend removal [#15362](https://github.com/kirodotdev/KiroCrew/pull/15362) and frontend removal [#15359](https://github.com/kirodotdev/KiroCrew/pull/15359) have merged. The user-visible mode is gone and saved `"orchestrator"` sessions restore as plain chat. Rollout step 3 remains open: `StageBoundary` / `_in_stage_execution` references still remain under `src/`, so the retirement is not yet implemented whole. This decision supersedes [rfc-autopilot-stage-budgets.md](rfc-autopilot-stage-budgets.md), which was not accepted before the feature disappeared.
+- Status: implemented. Backend removal [#15362](https://github.com/kirodotdev/KiroCrew/pull/15362) and frontend removal [#15359](https://github.com/kirodotdev/KiroCrew/pull/15359) have merged. The user-visible mode is gone and saved `"orchestrator"` sessions restore as plain chat. Rollout step 3 merged as [#15682](https://github.com/kirodotdev/KiroCrew/pull/15682): no `StageBoundary` / `_in_stage_execution` reference remains under `src/`. This decision supersedes [rfc-autopilot-stage-budgets.md](rfc-autopilot-stage-budgets.md), which was not accepted before the feature disappeared.
 - Author: iamwhatever
 - Created: 2026-09-30
 - Related: [`docs/system-specs/modules/autopilot.md`](https://github.com/kirodotdev/KiroCrew/blob/2b91a6baddca220ce79ec95bec6d7ca3192fb6a4/docs/system-specs/modules/autopilot.md) (the shipped behaviour at `2b91a6badd`, deleted by #15362), [`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md) § "Retired: Crew Mode" (the precedent this follows), [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md), and [rfc-autopilot-stage-budgets.md](rfc-autopilot-stage-budgets.md) (superseded incident record).

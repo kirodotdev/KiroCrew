@@ -506,7 +506,7 @@ def _build_prompt(
         )
     # SKIP-LIST: loci already terminal in the ledger (filed/committed/failed_gate/duplicate
     # …). Re-proposing them wastes a full investigation read + is dropped downstream by the
-    # dedup gate anyway, so tell the agent up front NOT to report them — it spends its 6-read
+    # dedup gate anyway, so tell the agent up front NOT to report them — it spends its 8-read
     # budget on genuinely NEW surfaces (operator: discovery re-emits already-terminal
     # candidates every cycle). Capped so a long ledger can't blow the prompt budget.
     skip_block = ""

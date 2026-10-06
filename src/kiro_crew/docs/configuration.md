@@ -3,8 +3,11 @@
 Everything Kiro Crew remembers about how it should behave lives in one JSON file,
 `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway`
 run. Most keys are also editable from the dashboard's Settings pages, and this
-page is the reference for the ones that are not: what they mean, what they
-default to, and which environment variables outrank them.
+page covers the most-used keys that are not: what they mean, what they default
+to, and which environment variables outrank them. It does not list every key.
+The full set is declared in the config schema (`src/kiro_crew/config/sections.py`
+and its sibling section modules), which the gateway serves at
+`GET /api/config/schema` and which **Developer → Config** renders.
 
 ## Managing Config
 
@@ -33,7 +36,7 @@ on disk even if you never set it — and a stored value always beats the shipped
 default. Changing a default therefore reaches new installs only: yours keeps
 whatever was written the last time it saved.
 
-Kiro Crew now fixes that for itself on three keys: the two agent timeout budgets (the
+Kiro Crew fixes that for itself on three keys: the two agent timeout budgets (the
 subagent timeout and the chat-turn ceiling) and the subagent memory floor
 (`agent.spawn_min_memory_gb`, whose old `4.0` kept subagents from starting on a
 16 GB laptop). On the first start after an upgrade, a stored value that is exactly
@@ -42,7 +45,7 @@ Affirming a value with `--keep` before that first start also keeps it.
 
 One more key is fixed once, for installs upgrading straight from 0.6.x or earlier:
 those releases stored `skills.lazy_load: false`, which then meant the full skills
-listing. Today `false` selects the short entry that names only eight skills, so on
+listing. In current builds `false` selects the short entry that names only eight skills, so on
 the first start after such an upgrade the stored `false` is removed and the default
 skill index applies. An install that has already run any 0.7 build or later,
 insider builds included, keeps its value.
@@ -130,6 +133,7 @@ provider.
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. |
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
+| `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 
 The non-default harnesses are offered only when this build registers them. A
 host governance policy can narrow that list further, and the dashboard reports
@@ -243,7 +247,7 @@ Set a registered value with, for example,
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
-| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; KAS defers all of them, and only when the active agent's `tools` grants `tool_search` (otherwise the setting is sent off for that agent). Other ACP backends ignore it | `true` |
+| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; KAS defers all of them, and only when the active agent's `tools` grants `tool_search` (otherwise the setting is sent off for that agent). Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
@@ -277,7 +281,7 @@ Set a registered value with, for example,
 | `session.eager_spawn` | Create a chat session when its slot is created, switched, or retargeted instead of waiting for the first message | `true` |
 | `session.archive_retention_days` | Days to keep compacted/rotated session archives before auto-cleanup. `-1` disables cleanup | `30` |
 | `session.watchdog_rss_max_mb` | Recycle an idle session when its process tree resident memory exceeds this many MiB. 0 disables, which is the default; the internal background runtime still recycles at 1536 MiB. Size a ceiling to your own agents: one with several MCP servers can sit above 1.4 GB. A session with a turn in flight is never recycled. `kirocrew status` and `kirocrew doctor` show the ceiling next to the gateway's own resident memory | `0` |
-| `session.reconcile_max_kills` | Unowned root candidates the runtime reconciler may signal the process tree of in one pass — one candidate can signal several processes. The ceiling equals the default, so this setting can only lower the budget, never raise it. Lower it where more than one install shares this data home: the agent slice is keyed on the data home, so a runtime owned by another install has no record here and reads as unowned. `0` leaves the kill arm observing — it still publishes the `unowned_alive` / `owned_dead` leak reading and audits each candidate it would have signalled as `would_kill`, and signals nothing. Re-read every cleanup tick, so a change needs no restart | `5` |
+| `session.reconcile_max_kills` | Unowned root candidates the runtime reconciler may signal the process tree of in one pass — one candidate can signal several processes. The ceiling equals the default, so this setting can only lower the budget, never raise it. Lower it where more than one install shares this data home: the agent slice is keyed on the data home, so a runtime owned by another install has no record here and reads as unowned. `0` leaves the kill arm observing — it still publishes the `unowned_alive` / `owned_dead` leak reading and audits each candidate it would have signalled as `would_kill`, and signals nothing. The same budget caps one **Reclaim** of the dashboard's Leaked agent runtimes report, so `0` there refuses every candidate. Re-read every cleanup tick, so a change needs no restart | `5` |
 
 ### Dashboard
 
@@ -294,6 +298,8 @@ Set a registered value with, for example,
 | `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Instance-wide kill switch; see [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
+| `dashboard.crewmates_in_agent_picker` | List crewmates in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any crewmate no listed template already covers. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
+| `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
 
@@ -305,7 +311,7 @@ Set a registered value with, for example,
 | `slack.command` | Slash-command name | `"kirocrew"` |
 | `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
 | `slack.reactions_enabled` | Show phase reactions on Slack messages | `true` |
-| `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message | `false` |
+| `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |
 
 Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists
@@ -324,7 +330,7 @@ transcribed the same way.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `stt.enabled` | Turn spoken input into text you can send | `true` |
-| `stt.provider` | `"local"` (this machine, no account), `"apple"` (the on-device recognizer built into macOS 26 and later), or `"transcribe"` (AWS Transcribe, which bills your AWS account) | `"local"` |
+| `stt.provider` | `"local"` (this machine, no account), `"apple"` (the on-device recognizer built into macOS 26 and later), `"transcribe"` (AWS Transcribe, which bills your AWS account), or `"off"` (no recognizer runs, the same as turning speech input off). `kirocrew config set` refuses any other value. A stored unknown value runs as `off` with a log warning, and `kirocrew config defaults --adopt stt.provider` rewrites it to `off` rather than switching to `local`; a retired name reads as `local` (see below) | `"local"` |
 | `stt.model` | Which speech model the local provider downloads and runs: `tiny`, `base`, `small`, or `large-v3-turbo`. Bigger is more accurate and a longer first-time download — and on a CPU-only build the largest can recognise slower than you speak (an 11-second clip took 13.6 s on a 16-thread aarch64 CPU, 1.24x the audio), which Settings → Voice says beside the choice | `"base"` |
 | `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR`. `"auto"` auto-detects on the local provider | `"auto"` |
 | `stt.streaming` | Show words in the message box while you are still speaking rather than only once you stop. Every provider supports it; turning it off spends less CPU on `local` and fewer API calls on `transcribe` | `true` |
@@ -396,6 +402,16 @@ A config that still names one keeps working: it is read as `local`, and the
 gateway log says which value it replaced. The settings those providers used
 (`whisper_path`, `mlx_model`, `parakeet_model`, `device`) are ignored if they are
 still present, so there is nothing you have to remove by hand.
+
+### Voice replies
+
+Spoken replies live in the `voice_reply` block of `config.json`: `enabled`,
+`auto_speak`, `provider` (`system`, the default host speech engine, `polly`, or
+`piper`), `voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region`,
+`piper_binary`, `piper_model`, `piper_model_config`, `piper_length_scale` and
+`system_voice`. **Settings > Voice** is the writer for this block. It is not in
+the config schema, so `kirocrew config set voice_reply.<key>` answers
+`Unknown key`.
 
 ### Paid AWS services need an explicit confirmation
 
@@ -471,7 +487,8 @@ worker and its thread defaults affect both versions.
 #### Named memory stores
 
 Explicit member creation assigns a stable `member_id`, one managed `store_id`,
-and one SQLite database at `memory_stores/<store_id>/memory.db`. Display names,
+and one SQLite database at `memory_stores/<store>/memory.db`, where `<store>` is
+the store's name, which is also its `store_id`. Display names,
 templates, projects and workspaces do not change the memory owner. The database
 contains learned facts, corrections, experiences, history, full-text indexes and
 vectors. Manual member rules and project guidance remain separate documents.
@@ -528,6 +545,7 @@ member-memory sandbox is required.
 | `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
 | `knowledge.dedup_every_n_sweeps` | Run a full duplicate-collapsing pass every Nth watcher sweep (the per-write gate only catches byte-identical documents). 0 disables | `12` |
 | `knowledge.extraction_pool_size` | Concurrent LLM workers for document extraction. Applies live: the pool resizes once its in-flight extractions finish | `3` |
+| `knowledge.extraction_effort` | Reasoning effort for the document-extraction LLM pool: `""`, `low`, `medium`, `high`, `xhigh` or `max`. Empty runs the default, `high`. Only applies on reasoning-capable models. Restart required | `""` |
 | `knowledge.embed_rate_limit` | Maximum embedding generations per minute across all sources. `0` removes the bound | `120` |
 | `knowledge.sweep_chunk_budget` | Maximum chunks ingested across all sources in one watcher sweep. `0` removes the bound | `500` |
 | `knowledge.import_chunk_budget` | Maximum chunks ingested through the explicit one-shot import paths (single-file add, agent add, direct text ingest, remote sync) within a rolling ~60s window -- the cross-file cost ceiling those paths otherwise lack. When exhausted the next import is refused with a reason rather than silently truncated; a single file stays bounded by the 50-chunk per-file cap independently. `0` (the default) removes the bound; opt in by setting it (e.g. `500`). Limitation if enabled: reservation is worst-case (each in-flight import books the 50-chunk per-file maximum up front and reconciles to the real count only on completion), so concurrent imports throttle below the nominal number until that accounting is refined. | `0` |
@@ -536,7 +554,7 @@ member-memory sandbox is required.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `auto_update` | Where the install can apply updates, `true` installs them once no work is running and restarts the gateway; `false` only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. See [Updates](#updates) | `true` |
+| `auto_update` | Where the install can apply updates, `true` installs them and restarts the gateway; `false` only notifies. When work is running, a checkout waits before applying, while the `cli.sh` managed venv builds the new version alongside and waits only to restart. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
@@ -547,10 +565,11 @@ member-memory sandbox is required.
 | `KIROCREW_HOME` | Override the config/data directory | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Override the dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override the agent-config/skills project directory | Auto-detected |
-| `KIROCREW_WORKSPACE` | Override the workspace root, used as-is with no subdirectory appended | Saved `workspace_dir`, else a platform default |
+| `KIROCREW_WORKSPACE` | Override the workspace root. No subdirectory is appended; one surrounding quote pair is dropped and `~` is expanded. A value that is not absolute is logged and replaced by the platform default | Saved `workspace_dir`, else a platform default |
 | `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests, CI, airgapped hosts) | unset |
 | `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
 | `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely | unset |
+| `KIROCREW_CC_PERMISSION_MODE` | Set to `auto` to seed every Claude Code session with Claude's own classifier as its permission mode. Only the exact value `auto` takes effect; anything else logs a warning and seeds nothing. Audit caveat: a call the classifier approves asks nothing, so it reaches no Kiro Crew tool-call hook and writes no security event log record. Other backends ignore it | unset |
 
 Use a dedicated directory for `KIROCREW_HOME`. Startup applies owner-only
 permissions or an owner-only Windows ACL to the data home, including homes that
@@ -583,10 +602,26 @@ skip it (see below); everywhere else it runs whatever `auto_update` is set to.
 (the default), the gateway applies the update and restarts itself, on the
 installs that can apply. With `false`, it only notifies.
 
-The gateway applies only when no turn or background job is running. If work is
+A checkout applies only when no turn or background job is running. If work is
 in flight, it keeps serving and tries again five minutes later, so steady
-activity can postpone even a mandatory update. While the update applies, the
-gateway does not start new turns.
+activity can postpone even a mandatory update. While a checkout's update
+applies, the gateway does not start new turns.
+
+The `cli.sh` managed venv does not wait to apply. It builds the new version
+beside the live install while turns keep running, and nothing the running
+gateway loads from is changed. Only the restart into the new version waits for
+running work to finish, retried on the same five-minute cadence. On a Linux host
+where the `kirocrew-userns` AppArmor profile is attached to the launcher, the
+gateway does not apply by itself: it posts a notice to run `kirocrew update` and
+then `kirocrew service install`, which re-attaches the profile.
+
+If an update removes the dashboard bundle while the gateway cannot be relaunched
+(the service manager could not start it, or the update moved the install but
+could not sync its dependencies), the gateway stays up on its loaded code. The
+dashboard then serves its fallback page, and the log carries a CRITICAL line
+naming the reason. See the
+[stale-asset watchdog](../../../docs/system-specs/modules/slack-gateway.md) in the
+gateway spec.
 
 ### What each install does
 
@@ -603,8 +638,8 @@ Windows, where they never run and the gateway does not update itself. See the
 | Docker | Neither checks nor applies. The About page says to pull a newer image |
 | The gateway bundled in the desktop app | Neither. The app's own updater owns it |
 
-Of the installs that update by re-running the installer, the gateway re-runs it
-itself only for the `cli.sh` managed venv, so pip and pipx only notify.
+Of the non-checkout installs, the gateway applies an update itself only on the
+`cli.sh` managed venv, so pip and pipx only notify.
 
 A checkout applies when the tip of its branch carries a newer `__version__` than
 the running code, and then hard-resets to that tip and restarts. It does not
@@ -684,6 +719,12 @@ SLACK_BOT_TOKEN=xoxb-...
 KIROCREW_OWNER_ID=UXXXXXXXX
 ```
 
+Save `.env` as UTF-8. A UTF-8 byte-order mark is fine and is kept when Kiro
+Crew rewrites the file. A file saved as UTF-16 or UTF-32 (PowerShell's default
+`>` / `Out-File`) is not read: every credential in it reads as unset, the log
+warns once, and a dashboard channel save answers 409 until the file is re-saved
+as UTF-8.
+
 ## Denied Commands
 
 The built-in destructive-command deny rules are enforced at Kiro Crew's own
@@ -713,7 +754,7 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/workspace/memory/` | Memory files (default store) |
 | `~/.kiro/crew/memory_index.db` | Full-text search index (default store) |
 | `~/.kiro/crew/memory.db` | Semantic, episodic and lesson memory (default store) |
-| `~/.kiro/crew/memory_stores/<name>/` | A managed store: one member’s SQLite learning database and manual context files |
+| `~/.kiro/crew/memory_stores/<store>/` | A managed store (`<store>` is its name, also its `store_id`): one member’s SQLite learning database and manual context files |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config |

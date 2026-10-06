@@ -243,7 +243,7 @@ function CopyField({ value }: { value: string }) {
  * One sign-in choice. `primary` renders the accent-filled variant — on the
  * gate only. In card chrome every choice is the outlined, shorter form and the
  * four sit in a two-column grid: the card lives inside a Settings detail whose
- * own primary button is "Use this agent", and a second accent-filled button the
+ * own primary button is "Use {{name}}", and a second accent-filled button the
  * full width of the panel read as the page's main action rather than as one of
  * four equal ways to sign in.
  */
@@ -722,8 +722,8 @@ export interface KasLoginFlowSlots {
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
  * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on the Developer page (`KasLoginEmbedded`, rendered by
- * `KiroSignInCard` under the Agent Backend switch); this full-screen form stays
+ * is the embedded variant on Settings → Agent Harness (`KasLoginEmbedded`,
+ * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
  * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
  */
 export default function KasLoginGate({ children }: { children?: ReactNode }) {

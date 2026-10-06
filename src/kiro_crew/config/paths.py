@@ -737,8 +737,8 @@ def kiro_home() -> Path:
     Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
     moving where KiroCrew READS them, which breaks session resume. Only the agents
     directory follows it today, so this is not yet a supported way to isolate an
-    instance — ``build_pod_env()`` deliberately does not set it. Bringing the
-    remaining readers through this resolver is the prerequisite.
+    instance. (``build_pod_env()`` does set it, to ``<pod home>/kiro``.) Bringing
+    the remaining readers through this resolver is the prerequisite.
 
     Rejects the same unsafe targets as :func:`_valid_override_home` (a
     filesystem/drive root, or a known POSIX system directory) so a malformed

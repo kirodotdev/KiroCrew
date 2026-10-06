@@ -73,8 +73,11 @@ Confirm config is saved (profile name + region only). Offer to publish the first
 ## Deploy flow (MCP preview, human execution)
 
 1. For `widget`, `html`, or `markdown`, call `deploy_artifact` with `site_id` and
-   `artifact_slug`. For a built static directory, use `local_dir`; a `webapp` artifact's
-   text is only a summary and is rejected as `artifact_slug`.
+   `artifact_slug`. A `webapp` artifact also goes by `artifact_slug`: the server resolves
+   its built `public/` root from `webapp_metadata.app_dir` and records the deployment back
+   onto the artifact. It refuses with `code: "webapp_root_unavailable"` when there is no
+   built root; a `webapp` without metadata is still rejected. Use `local_dir` only for a
+   static directory that is not an artifact.
 2. The tool calls the preview path **without** `confirm` or `override_scan` → you get a
    preview that states the **public** nature + a pre-publish scan summary. It never
    creates infrastructure. A clean preview or overridable non-credential scan finding is
@@ -84,10 +87,16 @@ Confirm config is saved (profile name + region only). Offer to publish the first
    blocked, show the flagged findings: credential findings are a hard block, and only the
    dashboard can explicitly override non-credential findings after the user says publish
    anyway. Never self-confirm.
-4. On `AccessDenied` (502 with `missing_statement`), tell the user the exact IAM statement
-   to add to the policy, then they re-run (deploys are idempotent).
-5. After a successful **first** deploy (`status: "InProgress"`, `reused: false`), tell the
-   user the site is **provisioning** and can take **up to ~15 minutes** to go live while
+
+The preview makes no AWS call and you never see the confirmed deploy's result: the human
+confirms on `/deploy`, and that page shows the outcome. A preview is not a deployment;
+never tell the user a site is live or provisioning on the strength of it. If the user
+reports back what the dashboard showed:
+
+4. On `AccessDenied` (502; the error names the policy statement), tell the user the exact
+   IAM statement to add to the policy, then they re-run (deploys are idempotent).
+5. After a **first** deploy (`status: "InProgress"`, `reused: false`), tell the user the
+   site is **provisioning** and can take **up to ~15 minutes** to go live while
    CloudFront finishes its first global deployment — until then the URL returns a DNS / "site
    can't be reached" error (this is expected, not a failure). They can watch the live status
    flip from **In Progress → Deployed** in the **Deployments** card on `/deploy` (or via

@@ -241,7 +241,7 @@ def _frozen_prefix_and_foreign_appends(
     ``disk_older`` is unchanged those preserved lines would otherwise be dropped
     by a bare frozen-prefix + in-memory-window rebuild on the very next save.
 
-    Returns ``("", [])`` when the file is missing/unreadable/has no metadata line.
+    Returns ``("", [], [])`` when the file is missing/unreadable/has no metadata line.
     """
     try:
         st = path.stat()

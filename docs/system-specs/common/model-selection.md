@@ -24,7 +24,7 @@ or `"auto"` only when the backend advertises it, or `""` meaning **inherit the
 session's served backend default**. Returning `""` rather than substituting a guess is
 the whole point: the wire never receives a model the partition does not serve.
 
-Two behaviours of the resolver are worth knowing before writing a call site:
+These behaviours of the resolver are worth knowing before writing a call site:
 
 - An **unknown or empty advertised set** means entitlement is unknowable. `"auto"`
   degrades to `""` because it cannot be verified, while a concrete caller-supplied id
@@ -33,6 +33,13 @@ Two behaviours of the resolver are worth knowing before writing a call site:
   session advertises the bare id. The resolver retries the miss through
   `resolve_pin_spelling` and puts the **advertised** spelling on the wire, not the
   caller's, because the qualified spelling is one the backend never advertised.
+- `resolve_pin_spelling` never folds a pin onto a different reasoning-effort
+  suffix: a pin's effort half must match the advertised id's.
+- A wire site passes the harness it is sending to (`backend=` on
+  `resolve_usable_model`, or `resolve_pin_spelling_on` in `acp/runtime_models.py`).
+  On an `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` harness, a pin the fold could not
+  resolve widens to the bare model half, never for a `[1m]` window pin. A caller
+  not choosing a wire spelling leaves `backend` empty and keeps the plain fold.
 
 `run_bg_oneliner` adds a one-shot reactive retry on a wire rejection as a backstop.
 Treat it as a backstop, not as permission to skip the resolver.
@@ -350,7 +357,17 @@ its own once the cache refreshes with a list that carries it.
   exactly the advertised levels in their advertised order, whether the backend is
   Claude, Codex, Pi, or another capable ACP harness. A session that reports no
   effort support gets no effort row inside the picker. The composer never grows a
-  second, standalone effort control.
+  second, standalone effort control. A model pick first carries a staged effort
+  pick (or waits for an effort write already on the wire) and sends the model
+  after it; if the effort write is refused, the model pick aborts rather than
+  resetting the owner's previous selection.
+- The composer chip's marker (`modelChipMarker` in `website/src/lib/model.ts`)
+  reads `default` only when the model shown is the Settings default and the slot
+  takes it from there, and `auto` when the session was served a different model
+  for a slot that picked Auto or holds a withheld pin. A pin, an agent's own
+  model, or a default the surface cannot read carries no marker. When the config
+  read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
+  the composer shows an inline "failed to load config" notice instead.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;

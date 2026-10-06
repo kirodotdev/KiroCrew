@@ -65,8 +65,8 @@ transcripts.
 | Command | Description |
 |---------|-------------|
 | `kirocrew service install` | Install and start as system service (sudo on Linux) |
-| `kirocrew service uninstall` | Stop and remove system service |
-| `kirocrew service status` | Show service status (systemctl/launchctl) |
+| `kirocrew service uninstall` | Stop and remove system service (Linux: both system and per-user unit, each scope reported) |
+| `kirocrew service status` | Show service status (systemctl/launchctl; Linux: system and per-user unit, each named) |
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
@@ -75,12 +75,13 @@ transcripts.
 
 Ephemeral, full-stack Kiro Crew gateways — one per feature worktree — that run on
 their own port + isolated `KIROCREW_HOME` and never touch the live `:5476`
-gateway or shared data. Linux `systemd --user` only. `<wt>` is a worktree name
+gateway or shared data. Linux `systemd --user`, macOS `launchd`, Windows Task
+Scheduler. `<wt>` is a worktree name
 (resolved by directory basename or `feat/<name>` branch convention).
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew pod install` | Lay down the systemd --user template unit (once per machine) |
+| `kirocrew pod install` | Lay down the systemd --user template unit (once per machine; Linux only, a no-op elsewhere) |
 | `kirocrew pod provision <wt>` | Build the worktree's venv + SPA dist (the on-ramp) |
 | `kirocrew pod up <wt>` | Bring up an isolated pod (auto-builds venv; fails if dist missing) |
 | `kirocrew pod up <wt> --provision` | Provision (venv + dist build) then bring up |
@@ -97,9 +98,11 @@ gateway or shared data. Linux `systemd --user` only. `<wt>` is a worktree name
 | `kirocrew pod api <wt> <METHOD> <path>` | Call a running pod's HTTP API with its own token; prints `{name, method, path, status, ok, body}` |
 | `kirocrew pod api <wt> POST config --data '{…}' --allow-write` | GET and HEAD are permitted by default; every other method needs `--allow-write` |
 
-**Platform:** Linux only. On macOS/Windows every systemd-touching verb refuses
-with a one-line message pointing at `./dev-backend.sh` — it does not crash, and
-`pod install` writes no unit file. `pod url` works anywhere (pure computation).
+**Platform:** Linux (`systemd --user`), macOS (`launchd`; no memory/CPU ceiling)
+and Windows (Task Scheduler; no restart on crash, `pod api` unsupported). On a
+host with none of those, every service-manager verb refuses with a one-line
+message pointing at `./dev-backend.sh` — it does not crash, and `pod install`
+writes no unit file. `pod url` works anywhere (pure computation).
 
 Port derivation: `base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`).
 Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
@@ -122,7 +125,7 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 |---------|-------------|
 | `kirocrew chat` | Interactive chat (REPL mode) |
 | `kirocrew chat -m "message"` | Single message (non-interactive) |
-| `kirocrew chat --model claude-opus` | Use specific model |
+| `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
 
 ## Browsing (`browser` MCP tool, then `playwright-cli`)
 
@@ -193,7 +196,7 @@ What does **not** substitute for it: `pip install playwright` and
 Switching to yarn, pnpm or bun hits the same registry, so it only helps when the
 `npm` client itself is missing. And there is **no standalone binary**: the
 upstream GitHub release carries no build assets and `playwright-cli.js` starts
-with `#!/usr/bin/env node`, so Node.js 18+ is required no matter how it is
+with `#!/usr/bin/env node`, so Node.js 20+ is required no matter how it is
 fetched.
 
 **Approval:** page-scoped verbs run without prompting the user, because installing
@@ -271,6 +274,11 @@ writes.
 | `kirocrew memory import file.json` | Import memory from JSON |
 | `kirocrew memory import --store <name> file.json` | Import into a named store instead |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
+| `kirocrew memory backup [--keep N]` | Back up active memory stores now |
+| `kirocrew memory backups [--store <name>]` | List memory backups, newest first |
+| `kirocrew memory restore [--store <name>] [--from FILE \| --cancel-pending]` | Restore a store from a backup (default: its newest) |
+| `kirocrew memory carve --store <name>` | Filter or count a crew store's memory by carve facets (`--scope`, `--surface`, `--crew`, `--session-key`) |
+| `kirocrew memory retired [--restore ID]` | List episodes a semantic write superseded, and restore one |
 | `kirocrew memory show [preferences\|projects\|history]` | Show the markdown memory layer (default: all three; `--format md\|json`, `--since YYYY-MM-DD` for history) |
 | `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |
 | `kirocrew knowledge dedup --apply` | Actually collapse the duplicates |
@@ -392,6 +400,7 @@ already-running app record -- restart it.
 | `kirocrew security events` | Show recent security event log entries (last 20) |
 | `kirocrew security events -n 50` | Show N entries |
 | `kirocrew security verify` | Verify security event log HMAC integrity |
+| `kirocrew file-delivery approve` | Finish a flagged-file delivery consent armed in the dashboard's Security panel (proves you are at the host) |
 | `kirocrew eval` | Run smoke test evaluation (~30s) |
 | `kirocrew eval memory_recall_basic` | Run specific scenario by name |
 | `kirocrew eval --all` | Run all scenarios (slow) |
@@ -498,8 +507,8 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew snapshot --list` | List existing snapshots |
 | `kirocrew restore` | Restore from most recent snapshot |
 | `kirocrew restore /path/to/snap.tar.gz` | Restore from specific snapshot |
-| `kirocrew restore --mode replace` | Replace mode (default) |
-| `kirocrew restore --mode merge` | Merge mode |
+| `kirocrew restore --mode replace` | Replace mode (overwrite existing state) |
+| `kirocrew restore --mode merge` | Merge mode (keep existing state, add). Without `--mode`: merge when `memory.db` exists, else replace |
 | `kirocrew restore --dry-run` | Preview without applying |
 | `kirocrew restore --components memory,crons` | Restore specific components only |
 | `kirocrew restore --list-components` | List restorable components |
@@ -511,9 +520,11 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | Command | Description |
 |---------|-------------|
 | `!dashboard` | Get a presigned dashboard link (DM'd to you). Link expires in 5 min; session lasts 1h |
-| `!dashboard 2h` | Dashboard link with custom duration (accepts `<N>h` or `<N>m`, max 6h) |
+| `!dashboard 2h` | Dashboard link with custom duration (accepts `<N>h` or `<N>m`, max 20h) |
 | `/kirocrew dashboard` | Same via slash command |
 | `/kirocrew help` | List available slash sub-commands |
+| `/kirocrew status` | Show runtime stats |
+| `/kirocrew sessions` | List recent sessions with resume/end buttons |
 | `!stop` | Force-halt the current agent turn (bypasses semaphore, cancels active task) |
 | `status` | Show runtime stats |
 | `ping` | Auto-reply `pong` |
@@ -530,7 +541,7 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `/kirocrew config` | Open config modal |
 | `/kirocrew users` | Open allowed users management modal |
 | `/kirocrew channels` | Open tracked channels modal |
-| `/kirocrew sessions` | List recent sessions with resume/end buttons |
+| `/kirocrew restart` | Restart the gateway (needs a systemd supervisor) |
 
 ## Environment Variables
 

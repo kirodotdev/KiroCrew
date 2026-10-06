@@ -216,7 +216,9 @@ reap.
 
 The bound is tied to the session-start gate, not to the running cap:
 `2 × session_start_concurrency` (`_STARTUP_CAP_GATE_ROUNDS` rounds of the
-gate's width), clamped to `[1, cap]`, because the gate is the one resource
+gate's width), clamped to `[1, cap]` (with the default `"auto"` width, the
+floor of 2 until the gateway has sized it from the host just after boot),
+because the gate is the one resource
 every start in startup contends for: `session/new` runs under `G` permits, so
 at most `G` starts make progress at any moment, and every other admitted start
 is a spawned process (dedicated path) or a claimed slot holding nothing but a
@@ -370,5 +372,11 @@ start that later fails to commit (an accepted gap, tracked as
   measured zero usage retains the full limit. Missing or unlimited limits
   leave the host-memory fallback intact. Ancestors hidden above the cgroup
   mount cannot be measured.
+- Usage there means the working set: `memory.current` (v1:
+  `memory.usage_in_bytes`) minus the group's inactive page cache
+  (`inactive_file`, v1 `total_inactive_file`), so reclaimable cache does not
+  read as used. The agents slice (`kirocrew-agents.slice`) is a second clamp:
+  its headroom is the smaller of `memory.high` and `memory.max`, minus the
+  slice's own working set.
 - Design rationale and worked examples:
   [`docs/system-specs/modules/subagent.md`](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/subagent.md).

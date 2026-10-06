@@ -51,7 +51,9 @@ a level-0 pack shipping a font is refused.
 from: `cloud`, `flower`, `heart`, `moon`, `sparkles`, `star`, `sun`, `zap`.
 Kiro Crew maps these names to bundled Lucide symbols and keeps the stock
 cross-fading carousel; packs cannot inject loader code or SVG through this field.
-Omit it to retain the default Kiro ghost poses.
+To ship your own loader art instead, put 1–8 `.png`/`.webp`/`.gif`/`.svg` files
+in `loader/` (Level 1): one renders alone, 2–8 are cycled, and they win over
+`loaderIcons`. With neither, the default Kiro ghost poses remain.
 
 ## Fonts — the role system (the ONLY supported route)
 
@@ -69,7 +71,9 @@ Omit it to retain the default Kiro ghost poses.
   `--theme-font-*` tokens, or `font`/`font-family` on `body`/`html`/`*`/`:root`
   are rejected at install and dropped at runtime (CSS-escape evasions included).
   A `font-family` on ONE allowlisted surface (e.g. `.topbar`) is fine.
-- Ship the font's license file in the pack source (OFL/Apache/MIT).
+- Ship the font's license as the pack's top-level `LICENSE`, `LICENSE.md` or
+  `LICENSE.txt` (OFL/Apache/MIT text). Any other name or location (`OFL.txt`,
+  `styles/fonts/OFL.txt`) is an unrecognized file and fails the install.
 - Only `"sans"` and `"mono"` are valid; a wrong role *string* (e.g. the CSS
   keyword `"monospace"`) is **rejected at install** with an error naming the
   font and the bad value. An already-installed pack whose role predates this
@@ -142,7 +146,8 @@ Two different filters run, and they disagree by design:
 
 - **Install** = denylist. Refuses known-bad: `@import`, external `url()`,
   `expression()`, font pins, `display:none`, viewport-covering `position:fixed`,
-  `z-index` > 9999, selectors touching `iframe`/`script`/`.token`/`[data-auth]`.
+  `z-index` > 9999, `pointer-events:none` on a non-decorative selector,
+  selectors touching `iframe`/`script`/`.token`/`[data-auth]`.
 - **Runtime** = allowlist, the real boundary. Only rules targeting these
   surfaces survive; EVERYTHING else is silently dropped at apply time:
   `body` (and `body::before/::after`), `button.primary`, `.topbar`, `.sidebar`,
@@ -173,13 +178,14 @@ not against the count of 6.
 Beyond `theme.json`, `variables.json`, `readme.md`, `styles/` and `LICENSE.txt`,
 the classifier also recognizes `branding/logo.{svg,png}`,
 `branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}` and
-`branding/preview.{png,webp}` at level 1, and `persona.md`, `overlays/*.html`,
+`branding/preview.{png,webp}` and `loader/*.{png,webp,gif,svg}` (max 8) at
+level 1, and `persona.md`, `overlays/*.html`,
 `topbar/{dark,light}.html`, `audio/manifest.json` and `audio/*.{mp3,ogg,wav}` at
 level 2. `styles/variables.json` is accepted as an alternative to the top-level
 file. Every path is classified against that fixed table, so an unrecognized file
 fails the install — do not park notes or scratch files in the pack (only VCS and
 LICENSE metadata is tolerated). Level-2 caps: at most 5 overlays, 2000 characters
-of `persona.md`, 48 characters of bot name.
+of `persona.md`. A `branding.botName` (Level 1) is truncated to 48 characters.
 
 ## Validate and install
 

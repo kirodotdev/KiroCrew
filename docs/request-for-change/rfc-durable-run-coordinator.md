@@ -4,8 +4,8 @@ status: superseded
 revision: v1
 author: Kyle Seaman, with Codex
 created: 2026-08-22
-last-audited: 2026-08-22
-audited-at: c4f253891
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -107,7 +107,7 @@ gateway accepted the request, so the caller and gateway maintain extra
 submission accounting and lost-submission reconciliation. The manager exposes
 `record_lost_submission()` and a stuck-wave reaper `_sweep_stuck_waves()`
 (`subagent.py`), while the dashboard handler reconciles the roster
-against accepted IDs (`src/kiro_crew/dashboard/handlers/messaging.py:90-202`).
+against accepted IDs (`api_spawn_lost` in `src/kiro_crew/dashboard/messaging_api/run_control.py`).
 
 The existing preassigned run ID is an important foundation: `spawn()` assigns
 identity before every exit path and preserves it through queueing

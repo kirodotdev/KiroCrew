@@ -36,17 +36,15 @@ _LIST_LIMIT_GUARD = 500
 """Upper bound on registry entries this provider hands on per call — a
 misbehaving edition manager can't flood the fan-out with an unbounded list.
 
-It caps MATCHES, not rows scanned. Capping the rows first made the guard bound
-the search WINDOW as well: a registry larger than it was truncated before any
-client-side filter ran, so the searchable set was the first 500 rows in whatever
-order the manager listed them and every row past it was unreachable. Measured on
-an internal registry of 5612 servers: a search for a bundle sorted past the cap
-returned only substring noise from the rows inside it.
+It caps MATCHES, not rows scanned: the client-side filter runs over every row
+the manager returns, and the cap applies to what matched, so a row late in the
+manager's order stays searchable. An entry whose id equals the query is always
+kept, even past the cap.
 
 :meth:`CapabilityProvider.search` also passes the query DOWN to the manager (see
 :func:`registry_accepts_query`) so an edition that can filter server-side does
-not have to return its whole catalog. That hint is advisory, though — a manager
-may narrow its own truncation, or ignore the query entirely — and the reach of
+not have to return its whole catalog. That hint is advisory — a manager may
+narrow its own truncation, or ignore the query entirely — and the reach of
 this provider must not depend on it. Matching before the cap is what makes the
 two independent: the hint saves the manager work, the local order fixes reach."""
 
@@ -119,15 +117,12 @@ class CapabilityProvider:
         narrow its own truncation, or ignore it entirely. Callers must still
         filter the result themselves.
 
-        Which is why the guard caps MATCHES rather than rows scanned. The rows
-        are already materialized — the manager returned the whole list before
-        this coroutine resumed — so capping the list first bounded the search
-        window instead of the fan-out, and a manager that ignored the hint kept
-        the reach the hint was added to fix: on the internal 5612-server
-        registry, a bundle sorted past the cap stayed unfindable. Matching
-        first costs one :func:`_normalize_row` per row and leaves the guard
-        doing the job it is documented to do — bounding what this provider
-        hands on.
+        The guard caps MATCHES rather than rows scanned. The rows are already
+        materialized — the manager returned the whole list before this
+        coroutine resumed — so every row is normalized and filtered, and only
+        matches count toward the cap. That bounds what this provider hands on
+        without narrowing the search window, and an exact-id match displaces
+        the last capped entry so :meth:`fetch_detail` can still resolve it.
         """
         mgr = self._manager_factory()
         if not mgr.available():

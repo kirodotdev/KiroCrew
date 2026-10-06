@@ -447,7 +447,7 @@ class OpenCodeMirror(AgentConfigMirror):
                 "kind, which is streamable HTTP, so an SSE-only server is spoken "
                 "to over the wrong shape. Unlike claude the array is NOT "
                 "conditional on Crew owning a permission file: opencode's routing "
-                "is Routing.VERIFIED_SEEDED_SETTINGS -- one of the two mechanisms in "
+                "is Routing.VERIFIED_SEEDED_SETTINGS -- a mechanism in "
                 "tool_gate.ENFORCED_ROUTINGS -- seeded on OPENCODE_CONFIG_CONTENT "
                 "and READ BACK from the harness's own config resolution before the "
                 "first prompt, so a session that cannot establish the asking "

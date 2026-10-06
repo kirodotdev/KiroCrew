@@ -9,13 +9,21 @@ in [theming-contract](theming-contract.md); user-facing strings are in
 ## The stack
 
 React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
-Framer Motion, Tailwind CSS 4, Lucide React, DOMPurify, highlight.js, Monaco,
-TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
+Framer Motion, Tailwind CSS 4, Lucide React, DOMPurify, highlight.js, the Pierre
+editor (`src/pierre/`), TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
 
 Prefer the library already here over a new dependency. Every addition is bytes in a
 bundle a user downloads and a supply-chain surface someone has to review, and two
 libraries doing one job is how a codebase ends up with two animation systems whose
 transitions do not compose.
+
+## Sovereign and transient surfaces
+
+The dashboard is a **sovereign** surface: used daily with full attention, so it is
+dense, keyboard-friendly and muted. Dialogs, settings and onboarding are
+**transient** surfaces: used occasionally, so they are spacious and self-evident.
+Judge a design against the kind of surface it is; the UX review lane applies the
+same standard.
 
 ## Browser support
 
@@ -53,7 +61,10 @@ An icon does not replace the option's accessible name or typeahead text.
 
 The provenance pill is **`SourceBadge`**, not a badge named after any one source.
 Two implementations exist on purpose:
-`ui.tsx`'s takes a required `source` string and renders it as the label;
+`ui.tsx`'s takes a required `source` string plus optional `children` (a label
+shown instead of the raw value), `tone` (`'auto'` | `'neutral'`, which forces the
+grey style) and `title`; `SimpleSelect`'s `optionBadges` renders it with a badge's
+`hint` forwarded to `title`;
 `components/SourceBadge.tsx`'s takes an optional `source` plus `children`, so a
 caller can render highlighted or translated label content over the same color
 mapping. Both fall back to a neutral pill for an unrecognized source, so a new
@@ -74,8 +85,14 @@ Other shared modules:
   the height constraint and any separate recovery controls. The option defaults
   to false and has no effect on inline notices. `messageClassName` alone cannot
   constrain the text column's height while reserving room for the hand-off.
+  `messagePlacement` is `'beside'` by default; `'below'` puts the raw message on
+  its own line under a plain-language `title`, and is ignored without a `title`.
 - `Clickable.tsx` (accessible clickable div; see below)
-- `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below
+- `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below.
+  It is a WAI-ARIA radiogroup: each segment is `role="radio"` with `aria-checked`
+  and a roving `tabIndex`; arrow keys, Home and End move focus without committing
+  a value, and disabled segments are skipped. `ariaLabel` / `ariaDescribedBy`
+  label the group, and `wrap` lets full labels wrap rather than hiding them
 - `ui/tabs.tsx`, `Tablist.tsx`, `ui/tabsPill.ts` (the other two switchers and their
   shared class recipe) — see the switcher rule below
 - `DetailPanel.tsx` (resizable side panel with animated open/close)
@@ -99,7 +116,8 @@ A data table whose values get truncated lets the user drag its column
 boundaries: `useTableColumnWidths(storageKey, specs)` holds the overrides (one
 `localStorage` key per table) and `<ColumnResizer>` is the grip. On a `ui/table`
 table, render the header cell as `ResizableTableHead`, or pass `style` and
-`resizer` to `SortableTableHead`; both live in `SortableHeader.tsx`.
+`resizer` to `SortableTableHead`; both live in `SortableHeader.tsx`. Rendered markdown tables are the
+second `ColumnResizer` consumer, through `components/markdown/useMarkdownTableColumns.tsx`.
 
 It assumes a **fixed-layout** table in the shape the Schedule jobs table
 documents: every resizable column declares a px width, exactly one column
@@ -172,6 +190,12 @@ is closed), pinnable by tap for touch — so a surface outside Settings reaches
 for the same component rather than a bare `title` attribute or a hand-rolled
 hover.
 
+`InstantTip` does not show its hint on a touch tap: the mouse events a browser
+replays for a tap are ignored, because a hint appearing mid-tap can cost the click
+(a real mouse on a touch device still hovers). An anchor whose bubble outranks its
+click — one with no click action, or whose tip carries a warning the user must see
+before acting — opts in with `openOnTap`.
+
 ### The markdown renderer
 
 `components/MarkdownRenderer.tsx` is the renderer's only import path. Its default
@@ -184,14 +208,16 @@ and every other concern has one owner under `components/markdown/`.
 |---|---|
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
-| `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions; path candidates, `file:line` suffixes, probe resolution and activation |
+| `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
 | `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
 | `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
 | `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |
 | `markdown/linkBoundaryRepair.ts` | the source-level link repairs gated on remark's own parse: CJK autolink boundaries and refused link destinations |
 | `markdown/elements.tsx` | the restyle-only element overrides and the sanitizer-derived attribute forwarding they share (`sp` / `spa`) |
-| `markdown/InlineCode.tsx`, `markdown/copyFeedback.tsx` | the inline-code chips (path, session, work item, copy) and the copy outcome every chip shares |
-| `markdown/MarkdownTable.tsx` | a table and its Markdown / CSV copy row |
+| `markdown/InlineCode.tsx`, `markdown/copyFeedback.tsx` | the inline-code chips (path, session, work item, sidebar folder (`FolderChip`), copy) and the copy outcome every chip shares |
+| `markdown/MarkdownTable.tsx` | a table, its Markdown / CSV copy row, and the Widen / Narrow toggle |
+| `markdown/useMarkdownTableColumns.tsx` | resizable table columns (the second `ColumnResizer` consumer) |
+| `markdown/markdownSniff.ts` | whether an untagged or generic-tagged fence holds a markdown document, so the transcript may offer it the Formatted \| Raw card |
 | `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images (local-path routing, the layout reserve, the broken-image chip) and the click-to-load gate for remote images, video and audio |
 | `markdown/MermaidBlock.tsx` | lazily loaded mermaid, its `initialize` config (`securityLevel: 'strict'`), and the diagram's box and font gates, source view and downloads |
 | `markdown/Lightbox.tsx` | the image viewer and `dispatchLightbox` |
@@ -291,7 +317,7 @@ them. A dialog holding unsaved input must stop those chords, or one mistyped
 Ctrl+digit navigates away and unmounts the dialog with the draft still in it.
 
 `Modal` owns that boundary for its consumers: `ModalDialog` puts a bubble-phase
-`onKeyDown` on the dialog **panel**, so every one of its ~24 call sites gets it
+`onKeyDown` on the dialog **panel**, so every `Modal` consumer inherits it
 without wiring anything.
 
 **The boundary follows the REACT tree — not the DOM tree, and not the stacking
@@ -315,6 +341,12 @@ at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
 stacking context is a paint-order fact and implies nothing about event
 routing** — conflating the two is what kept #6833 open, so do not reason about
 coverage from a z-index.
+
+A dialog rendered inside the App root rather than portalled to `document.body`
+shares the shell's stacking context, so it uses the `z-[65]` band: above the chat
+chrome (at most `z-[63]`) and below the `z-[100]` shell takeover layer, which a tie
+would otherwise cover by document order. `src/components/AppRootDialogZIndex.test.tsx`
+pins it. `Modal`'s own `z-[100]` is correct because it portals.
 
 When you add an overlay that must appear above a dialog:
 
@@ -386,7 +418,10 @@ renders in `WidgetFrame`'s sandboxed iframe, and `MermaidBlock` inserts the SVG
 mermaid drew under `securityLevel: 'strict'`. The allowlist and the verbatim pass
 below live in `components/markdown/sanitize.ts`; the facade re-exports both, so a
 second surface that admits raw HTML reuses the one policy instead of carrying a
-copy.
+copy. The allowlist admits `aria-*` and `data-*` attributes wholesale with one
+exception: `data-message-*`, in any casing or dash spelling (the key is compared
+with dashes stripped), is reserved for the transcript's own hooks and is dropped
+from content before that allow.
 
 The shared markdown pass `remarkVerbatimUnknownTags` preserves unknown single
 tags as inert source text, including their case, bare attributes and quoted `>`
@@ -413,8 +448,7 @@ transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty
 href resolves to the current page — matching `md-notebook/Preview.tsx`'s
 `href ? <a …> : <span>` trade. A test that pins an anchor existing for a
-destination the transform rejects is pinning a defect. (Known outstanding
-violation: mochi's `ChatPanel` markdown anchors, tracked in #9944.)
+destination the transform rejects is pinning a defect.
 
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — drive letter or UNC) is passed through **for image
@@ -437,40 +471,9 @@ character. It is display-only and decides nothing about which paths may be read.
 
 ## Data fetching
 
-The shared memory editor keeps the existing global V1 Key/Value/Set action
-inside the lazily loaded Overview memory drill-in. The shell shows the shared
-`ContentSkeleton` while that chunk loads; the member/store URL remains the
-navigation owner throughout loading. This keeps record editing and recovery
-tools out of the initial dashboard bundle. The create action remains
-beside the paged browser. Its unscoped semantic writer is available only when
-the selected store is global and the surface is not private. The narrow form
-stacks its inputs and submit button; its draft joins the store-switch guard,
-pending submission disables the fields, and an error retains them for retry.
-
-Member-scoped recall presents the returned fact and experience snippets as compact
-evidence cards. Exact serialized model context and source diagnostics live in
-the collapsed Source and retrieval details disclosure. Rules have their own
-indicator and full context there; fact snippets do not represent the rules
-included in recall. The disclosure accepts the recall API's structured copy
-origin as well as the record browser's serialized origin.
-
-Memory V2 uses member-scoped language (成员记忆 in Chinese), without a lock badge
-or a promise of confidentiality between members. Database errors remain distinct
-from embedding-model errors; configured and active models, keyword and vector
-status, reload/rebuild confirmations, checkpoint failure evidence, and counts
-with their actual units remain visible.
-
-Only explicit member creation initializes an empty Memory V2 database. Existing
-members retain their current memory; edits offer no provisioning or migration
-action. An unavailable member database remains an error and requires restoring
-its backup. The Crew Manager notice distinguishes new members from existing
-members. A disabled Manage memory
-action shows its unsaved-changes reason as visible helper text for keyboard and
-touch users. Member status distinguishes an explicitly
-different configured owner from an unavailable or unverified binding. Unavailable
-memory views retain Retry and offer guarded Crew Manager navigation for inspecting
-settings, using an exact catalog owner when available and the manager list
-otherwise. This navigation does not grant ownership or promise an automatic repair.
+The memory editor, member recall, Memory V2 and Crew Manager memory surfaces are
+specified in [memory, skills and hooks](../../docs/system-specs/modules/memory-skills-hooks.md)
+(*Memory dashboard surfaces*).
 
 Always React Query (`useQuery` / `useMutation`) for server state. Do NOT use
 manual `useState` + `useEffect` + `useCallback` for an API call. Prefer optimistic
@@ -504,7 +507,13 @@ owns the unread / read-relay rules and the focus senders, and `browserEvents.ts`
 owns the window events that re-broadcast a frame. `frames.ts` decodes the
 `/api/ws` envelope and types its `FrameData` for the router, and `retiredIds.ts`
 holds the watermarked retired-id logs `approvals.ts` and `composerCards.ts`
-share (and `resolvedSince`). The router's other arms are written inline. A new
+share (and `resolvedSince`). `sessionProjection.ts` and `slotProjection.ts` apply
+the `session_projection` and `slot_projection` frames to their caches,
+`contextTraceRefresh.ts` decides when the Context tab re-reads its trace, and
+`rowDeliveryWatchdog.ts` re-hydrates the active slot when a running turn stops
+delivering rows over an open socket. The complete owner list is `OWNER_MODULES`
+in `src/test/useWebSocket.ownership.test.ts`. The router's other arms are written
+inline. A new
 frame gets its `case` in the router; when it needs state an owner keeps, the arm
 calls that owner (or reads a ref the owner exposes) rather than reaching into
 it. An owner receives its dependencies (`dispatch`, `queryClient`, the socket
@@ -534,8 +543,9 @@ every selector over the collection, every `useMemo` keyed on the array, and ever
 memoized child — and inside a Framer `LayoutGroup` it re-measures the entire list.
 The symptom is a collection that visibly reloads when one member changed, which
 reads as a bug rather than as an update. Broadcasts are coalesced server-side but
-not suppressed (slots at 200ms), so an active session delivers several full lists
-per second and the effect is continuous rather than incidental.
+not suppressed (slots on a 200ms floor that stretches with the frame's size, up to
+2s for a long list), so an active session delivers several full lists per second
+and the effect is continuous rather than incidental.
 
 What a merge has to hold:
 
@@ -584,6 +594,13 @@ Two habits belong to the same concern:
 - Tailwind `transition-*` for simple state changes (hover, toggle, color).
 - Tailwind `animate-*` for simple indicators (spin, pulse) and the shared
   `animate-rise` / `animate-scale-in` entrances.
+- **An always-visible indicator never runs an unbounded animation.** An infinite
+  `animate-pulse` / `animate-ping` / `animate-bounce` on something that stays on
+  screen keeps the browser producing frames on an idle dashboard. Bound it with
+  the important longhand `[animation-iteration-count:3]!` (the `!` makes the bound
+  win whatever order Tailwind emits the rules in) plus `motion-reduce:animate-none`,
+  or keep it static. `src/test/idleAnimations.test.ts` pins the top-bar and rail
+  indicators.
 - Do NOT add a new CSS `@keyframes`. The existing ones in `index.css` back
   specific low-level effects (skeleton pulse, caret blink, indeterminate
   progress); a new component animation goes through Framer Motion.
@@ -637,7 +654,10 @@ files own it:
   Tailwind's default `@media (hover: hover)` gate (a tap that reveals content makes
   iOS drop the click, so a hover-revealed control carries its own
   `[@media(hover:none)]:` visible state instead; `src/test/hoverVariantPolicy.test.ts`
-  enforces it), and
+  enforces it; content revealed from a JS `onMouseEnter` or focus handler follows
+  the same rule through `hooks/useTouchReplay.ts`: spread its `pointerProps` on
+  the anchor and return early while `fromTouch()` is true, as `useNavTip`,
+  `useHoverIntent`, `RefLink` and `MarkdownToc` do), and
   emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
   `@utility` blocks. Adding a utility for a new token means adding one
   `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
@@ -684,6 +704,13 @@ Three of those rules are enforced by `@shadcn/lint` inside the blocking
   an array `join`). Keep the class strings in the file that applies them: a
   shared class string becomes a small wrapper component (`FilterMenuLabel`),
   a helper call gets a `cn(...)`.
+
+The same gate refuses browser-native dialogs: `confirm`, `alert` and `prompt`,
+bare or as `window.*`, are errors through `no-restricted-globals` and
+`no-restricted-properties`. Use `useConfirm()` / `ConfirmDialog` or an in-app
+notice instead. A file allowlist holds the standing inventory and only shrinks:
+delete a path when its last native dialog is gone, never add one. Tests
+(`*.test.{ts,tsx}`, `src/test/`) are exempt.
 
 `shadcn/no-restyle` — a `className` that changes what a `ui/` primitive owns
 (its color, spacing, shape, typography) — is off in that gate: a few hundred
@@ -758,8 +785,9 @@ To add one:
 
 1. Create the page component under `src/apps/<name>/` (or `src/pages/`).
 2. Export it as the module default.
-3. Add one lazy entry to `BUILTIN_COMPONENT_REGISTRY`:
-   `'/my-app': lazy(() => import('./my-app/MyAppPage'))`.
+3. Add one entry to `BUILTIN_COMPONENT_REGISTRY` (a `BuiltinAppEntry`):
+   `'/my-app': { component: lazy(() => import('./my-app/MyAppPage')), appId: '<app.json name>' }`.
+   `appId` must equal the `name` in the app's `app.json` manifest.
 4. Declare `ui.pages` in the app's `app.json` manifest, and its `ui.icon` name.
 5. If the icon is not already in `src/apps/builtinIcons.tsx`, add it to
    `BUILTIN_ICON_REGISTRY` (Lucide element, `size={16}`).
@@ -773,43 +801,6 @@ icons from a downstream edition instead of editing the seed maps.
 
 ## Crew capability drafts
 
-The Crew editor has an independent Capabilities rail pane with MCP, Tools,
-Auto-approved and Skills categories. It stays mounted while hidden so both its
-local draft and its signed server preview survive rail changes. Its footer owns
-Discard draft and Review/save; the generic crew save cannot discard a capability
-draft. Closing or opening chat asks before losing that draft. A capability
-request in progress holds dismissal. Dirty and busy state reach the parent in
-layout effects, before paint, so an immediate Escape after pasting cannot close
-against an older clean state. Browser unload also warns about the draft.
-Opening the embedded editor writes an explicit `tab=crews` route, so a resize
-cannot replace its ancestry with the mobile root list. On narrow screens the
-member identity owns a full header row. The capability form scrolls independently
-above a non-overlapping footer. The horizontally scrollable category strip does
-not flex-shrink when an expanded transport form exceeds the pane height; all
-category labels retain their full height. Review shows values from the server's sanitized
-projected rows, never from secret-bearing local drafts. Source validation errors
-are distinct from provider loading failures.
-
-The editor reads and writes through `api/crewCapabilities.ts`, using the shared
-transport. Preview and save send the same explicit inheritance operations; save
-adds only the server-issued preview token. A stale version preserves the draft
-and requires reloading and reviewing against the new version. Save success never
-stands in for runtime application: runtime status comes from the server and
-active sessions are not promised a hot reload.
-
-The legacy template pane keeps its instant-save behavior for independent and
-shared definitions. Enrolled definitions direct model and skill edits to
-Capabilities instead. Reset and publish remain in the template pane but lock
-while a capability draft exists. A mask is never a literal replacement value.
-The form can keep unchanged secrets, select a configured connection, or replace the
-whole transport using a blank form. MCP set operations carry a complete transport
-plus RFC6901 `retain_paths` for unchanged `[REDACTED]` leaves. Each pointer keeps
-its original member/revision binding. Editing a hidden value removes that pointer;
-a typed mask without a retained pointer blocks preview. Hidden argument positions
-and hidden map keys cannot move until their values are replaced explicitly.
-Environment and HTTP header values remain password inputs. Managed transport
-fields use the row's authoritative `managed` flag, independently of the connection
-catalog; their supported enable switch sends only `disabled`. Absent prompt/model
-rows can be set, and model choices use the shared advertised-model query. Version
-hashes live in a collapsed details section rather than in the main status banner.
-Parent-change and impact previews use the server's redacted projection.
+The Crew editor's Capabilities pane and its draft, preview and save contract are
+specified in [crew mode](../../docs/system-specs/modules/crew-mode.md) (*Crew
+capability drafts*).

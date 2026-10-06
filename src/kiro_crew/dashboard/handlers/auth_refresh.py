@@ -702,7 +702,8 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # grace window can re-serve the same response without minting again.
     # Typed as ``dict[str, Any]`` because we deliberately mix float and str
     # values; the "_"-prefixed keys are filtered out before JSON
-    # serialization in the grace-replay path (see line ~280).
+    # serialization in the grace-replay path (the ``public = {...}`` filter in
+    # the ``state.grace_replacement`` branch above).
     grace_payload: dict[str, Any] = dict(public_payload)
     grace_payload["_access_token"] = new_access_token
     grace_payload["_refresh_token"] = new_refresh_token

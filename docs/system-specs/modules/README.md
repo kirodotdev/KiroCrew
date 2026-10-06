@@ -25,7 +25,7 @@ agent loads only the one it needs.
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
 | [member-event-log.md](member-event-log.md) | Per-member append-only event log, its four projections, the whole-value push frames, and load-time closers behind the Members page. |
 | [session-work-ledger.md](session-work-ledger.md) | Per-session durable work state (goal, phase, tried, artifacts) on disk, its MCP tools, and monitor-loop snapshot injection. |
-| [crew-log-core.md](crew-log-core.md) | Append-only per-crew and per-session crew logs: the wire format, type ownership and guest namespacing, the torn-tail rule, and the pre-release status of the session vocabulary. |
+| [crew-log-core.md](crew-log-core.md) | Append-only per-crew and per-session crew logs: the wire format, type ownership and guest namespacing, the torn-tail rule, and the session-log compatibility rule. |
 | [crew-log-emitter.md](crew-log-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `log.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |
 | [crew-log-projection.md](crew-log-projection.md) | The six session folds (`status`, `usage`, `timeline`, `tools`, `approvals`, `subagents`), their resumable checkpoints, the paged `crew-log` reads with refs resolved, and the `session_projection` push. |
 | [file-search.md](file-search.md) | The `@`-mention file/folder search: index, ranking, `kinds` filter, and the sensitive-path symmetry. |
@@ -53,11 +53,11 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [subagent.md](subagent.md) | Spawning background workers, result delivery, and orphan recovery. |
-| [adaptive-concurrency.md](adaptive-concurrency.md) | The adaptive concurrency controller: a runtime execution cap beneath the user's ceiling and the MCP daemon's spawn-gate capacity, halved on corroborated host pressure, +1 per clean window, pause-and-probe under severe pressure; provider throttling scoped to its dependency channel. |
+| [adaptive-concurrency.md](adaptive-concurrency.md) | The adaptive concurrency controller: a runtime execution cap that starts at the user's ceiling and is halved only on corroborated work-failure evidence (never loop lag or memory), and the MCP daemon's spawn-gate capacity, cut on critical memory or failing/slow backend inits with pause-and-probe on critical memory; each +1 per clean window; provider throttling scoped to its dependency channel. |
 | [taskq.md](taskq.md) | The durable task queue under every accepted unit of work: `tasks.db`, the validated state machine, write-before-ack, atomic claim with lease and generation fencing, the bounded dispatch window, legacy import and reconcile-first boot. |
 | [monitor-architecture.md](monitor-architecture.md) | The paradigm every monitoring loop follows: the seven layers, the plural probe contract, level-triggered decision, versioned state, and how to add a new monitored kind. Umbrella over the two implementation specs below. |
-| [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop for script-cron pollers, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
-| [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |
+| [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
+| [babysit-pr-watch.md](babysit-pr-watch.md) | In-gateway PR watch for babysit loops: `monitor_watch` or a finite `monitor_start` loop; `PrWatchProbe` fetches the pull request each tick and the wake judge decides whether to wake the owning session. No script-cron driver. |
 | [task.md](task.md) | Task models and state. |
 | [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion. |
 | [workflows.md](workflows.md) | The dynamic-workflow engine: the frozen `ctx` contract, the event stream, budgets, and the named conformance gates with the test pinning each. |
@@ -115,7 +115,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [papyrus.md](papyrus.md) | The Papyrus writing app. |
-| [aws-control.md](aws-control.md) | The AWS account portal and S3-backed cloud drive app: accounts, Drive/Library/Backup, consent and confirmation guards, sharing, and the crew container runtime a remote crew runs as. |
+| [aws-control.md](aws-control.md) | The AWS account portal and S3-backed cloud drive app: accounts, Drive/Library/Backup, consent and confirmation guards, sharing, the crew bundle builder, and the crew container runtime a remote crew runs as. |
 | [command-bar.md](command-bar.md) | The opt-in launcher that replaces quick-search: the overlay seam, the request-free root, ranking and scopes. |
 | [pptx-maker.md](pptx-maker.md) | Deck generation. |
 | [meetings.md](meetings.md) | Meeting capture and summarization. |

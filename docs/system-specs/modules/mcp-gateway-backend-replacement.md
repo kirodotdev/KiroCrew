@@ -80,7 +80,7 @@ Both outcomes are SEL-audited as `mcp-gateway.respawn-toolset`, `denied` on a re
 
 ## Scope
 
-This covers the daemon's transparent respawn, the path that previously compared nothing. The stub's reconnect after a broker restart (`stub.StubSession`) refuses a daemon generation whose replayed `initialize` result differs, but that check cannot see a tool set: the stub holds no listing, and acquiring one would need a synthetic `tools/list` from the stub process. Extending the reconnect to compare through `tool_surface` is the remaining increment.
+This covers the daemon's transparent respawn. The stub's reconnect after a broker restart (`stub.StubSession`) refuses a daemon generation whose replayed `initialize` result differs, but that check cannot see a tool set: the stub holds no listing, and acquiring one would need a synthetic `tools/list` from the stub process. Extending the reconnect to compare through `tool_surface` is the remaining increment.
 
 ## Tests
 

@@ -588,7 +588,8 @@ def _record_verification_misses(incident: Incident) -> None:
 
     Charged to every entry in ``ledger_matches`` rather than to a single "the one we
     used", because nothing records which match the investigation actually applied
-    (``Incident.proposed_action`` is declared and never assigned). Attributing the miss to
+    (``Incident.proposed_action`` records the proposed action, not which
+    ledger match was applied). Attributing the miss to
     a guess would be worse than attributing it to all of them: ``MAX_MATCHES_PER_SIGNAL``
     is 3, so the blast radius is bounded, and a match that keeps being shown for a failure
     that keeps coming back has genuinely not earned the fast path either.

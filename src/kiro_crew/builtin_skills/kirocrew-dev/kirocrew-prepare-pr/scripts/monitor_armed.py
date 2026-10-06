@@ -23,8 +23,10 @@ Usage:  python3 monitor_armed.py [--pr N] [--match TEXT] [--json]
                        (case-insensitive); repeatable
           --json       print the matching loops as JSON instead of text
 Exit:   0  an active loop is present (and matches, when a filter was given)
-       20  nothing armed - call monitor_start once more, and if it is still 20
-           fall back to an in-turn wait + re-poll loop this same turn
+       20  nothing armed - but an acknowledged monitor_start applies only after
+           the turn ends, so run this on a LATER turn (or monitor_inspect); re-arm
+           once only if no loop is pending, never in the same turn and never
+           beside an existing driver
         2  the loop store could not be read (missing/corrupt/permission) -
            treat exactly like 20: assume NOT armed
 """

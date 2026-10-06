@@ -10,11 +10,10 @@
  * nothing to serve — registering here is the adaptation.
  *
  * **One identity key.** `activeAppearance` (a pack id) is the whole answer: it
- * drives the art, the persona, and the default pet name together. The original
- * had a second key, `pet.character`, and migrated it away for exactly that
- * reason; this port briefly re-created the split as `avatar`, which let the pet
- * render an imported pack while its prompt described the built-in cat. The
- * built-in packs below ARE the two characters — there is nothing else to select.
+ * drives the art, the persona, and the default pet name together, so the art
+ * and the prompt cannot describe different characters (the rationale lives in
+ * the mochi app's `settings.py`). The built-in packs below ARE the two
+ * characters — there is nothing else to select.
  */
 
 import type { PackManifest } from './src/shared/appearanceTypes'
@@ -97,8 +96,7 @@ const MOCHI_PACK: BuiltinPack = {
  *
  * There are four clips for six states, so several states share one — accepted
  * deliberately: a ghost that reuses a float for "working" reads fine, whereas
- * leaving the avatar unregistered (its previous state — the files sat in the
- * bundle with zero importers) meant it could not be chosen at all.
+ * an unregistered avatar could not be chosen at all.
  *
  * `peeking` / `peekThinking` are OMITTED rather than filled with a float. They
  * are optional, and the resolver falls back to `idle` / `thinking` for them; a
@@ -199,11 +197,11 @@ export const DEFAULT_PET_NAME = 'Mochi'
  * The name to address the pet by.
  *
  * Precedence: the user's explicit `petName`, else the ACTIVE PACK's own name,
- * else 'Mochi'. Every renderer used to do `useState('Mochi')` +
- * `if (c?.petName) setPetName(c.petName)`, which silently collapses the middle
- * rung: `petName` defaults to `""` and means "use the avatar's own name" (see
- * settings.py), so a user on the ghost with no custom name was told "Ask Mochi
- * to watch a price…" while the pet itself introduced itself as Kiro.
+ * else 'Mochi'. Every renderer must use this rather than defaulting to 'Mochi'
+ * and overriding with `petName`: `petName` defaults to `""` and means "use the
+ * avatar's own name" (see settings.py), so skipping the middle rung would tell a
+ * user on the ghost "Ask Mochi to watch a price…" while the pet introduces
+ * itself as Kiro.
  *
  * A user-imported pack has no name of its own here, so it falls through to the
  * default rather than borrowing its display title — the pack's `meta.name` is a

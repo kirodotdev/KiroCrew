@@ -1,12 +1,12 @@
 ---
 title: Remote crews in the chat sidebar — per-machine groups and session ownership
-status: accepted
+status: partial
 author: zejiangg
 created: 2026-10-03
-last-audited: 2026-10-03
-audited-at: f31e2f7091
+last-audited: 2026-10-06
+audited-at: 9bf943b0f9
 doc-pr: 16489
-implementation-prs: []
+implementation-prs: [16756, 16757]
 tracking-issues: [6180, 7445, 10618, 10826, 14585]
 supersedes: []
 superseded-by: []
@@ -15,8 +15,10 @@ superseded-by: []
 # RFC: Remote crews in the chat sidebar — per-machine groups and session ownership
 
 **Status:** `accepted` on 2026-10-03 by maintainer iamwhatever (see Open
-questions). Nothing here is built. Measured against main `e698e8ca7a` and
-re-read at `f31e2f7091`, where every symbol it cites is unchanged.
+questions); now `partial`. Waves 2 and 3 are built: #16756 groups the sidebar
+per machine and #16757 opens a crew row as a window onto the peer's slot.
+Waves 4 and 5 are not. The Current state section below records main at
+`e698e8ca7a`, before either wave.
 
 ## Summary
 
@@ -67,7 +69,7 @@ slots, disagree:
 | No resume-attach — [#14585](https://github.com/kirodotdev/KiroCrew/issues/14585) | A hub restart drops the relay reader; the peer keeps running. `selectTurnInterrupted` reads the local transcript's shape, so a live peer turn shows *Turn interrupted*. Deferred in `remote_relay.py`'s *What is deliberately NOT here*. |
 | Continue / regenerate / rewind / todo refused with 409 | `remote_bound_refusal` (`remote_relay.py`), called from `chat_handlers.py`, `chat_regenerate.py`, `chat_rewind.py`, `chat_todo.py`. Each would otherwise run the turn locally and fork the transcripts. |
 | Executor lost on restore — [#10826](https://github.com/kirodotdev/KiroCrew/issues/10826) | `_apply_recent_session` (`src/kiro_crew/dashboard/chat_persistence.py`) never restores `executor` / `instance_id` / `remote_slot`; only the full rehydrate path does (`_read_executor` in `src/kiro_crew/dashboard/slot_persistence/metadata_codec.py`, which the `RECENT` purpose skips). The next send runs locally. |
-| Peer-dispatched workers need hub-side parent rewriting — [#14907](https://github.com/kirodotdev/KiroCrew/pull/14907) (merged) | A worker the peer opened cites the peer's slot key, but the hub shows the LOCAL relay slot, so `_clean_peer_parent` (`handlers_instances.py`) must map peer keys to hub keys (`hub_key`). |
+| Peer-dispatched workers need hub-side parent rewriting — [#14907](https://github.com/kirodotdev/KiroCrew/pull/14907) nested federated workers under their remote conductor, and [#15653](https://github.com/kirodotdev/KiroCrew/pull/15653) (both merged) added the rewrite | A worker the peer opened cites the peer's slot key, but the hub shows the LOCAL relay slot, so `_clean_peer_parent` (`handlers_instances.py`) must map peer keys to hub keys (`hub_key`). |
 | Older peer sessions not browsable — [#7445](https://github.com/kirodotdev/KiroCrew/issues/7445) | They live under the peer's `/api/sessions`, outside `_PROXY_ALLOWED_PREFIXES` (`api/chat`, `api/stream`) in `handlers_instances.py`. |
 | Duplicate rows | `read_peer_slots` must filter peer slots the hub drives, because the peer lists its half of every relayed pair. Only the gateway can correlate them. |
 
@@ -131,7 +133,7 @@ cannot, so "origin" stops being a row property and becomes a container.
 | Resume-attach (#14585) | New mechanism: fetch the peer's in-flight tail, splice into local transcript | Read the peer's slot state and stream directly; `running` is the peer's own flag |
 | continue / regenerate / rewind | Relay each of four endpoints, keep both transcripts consistent across truncation | Call the peer's own routes, all under `api/chat`; `remote_bound_refusal` deleted |
 | Restore (#10826) | Restore three more fields on every restore path | Nothing local to restore; the group re-reads the peer |
-| Worker lineage (#14907) | `hub_key` rewrite in `_clean_peer_parent` | Peer's own `parent.key`; rewrite deleted |
+| Worker lineage (#14907, #15653) | `hub_key` rewrite in `_clean_peer_parent` (#15653) | Peer's own `parent.key`; rewrite deleted |
 | Older sessions (#7445) | Still needs a new read path | Still needs a new read path (same in both) |
 | Dedupe in `read_peer_slots` | Required | Deleted: no hub slot drives a peer slot |
 | Hub-side history / search of crew chats | Free (local transcript) | Through federated search (exists) |
@@ -159,7 +161,7 @@ Each wave is one PR-sized change, independently shippable.
 | 1 | Freeze (a): no new relay mirrors. | No PR adds a relayed endpoint or mirrored peer field to `remote_relay.py`. | #10618 approval-mirror and #14585 tail-splice are closed as superseded by wave 3, not built. |
 | 2 | Per-machine groups in the sidebar, behind `PREVIEW_INSTANCE_SESSIONS`. Badge from `TunnelState`; cached-and-dimmed rows. | With one connected crew: two groups, collapse keeps selection, disconnect dims rows and blocks send. With none: sidebar unchanged (snapshot test). | Relay slots still render, inside the crew's group, until wave 4. |
 | 3 | Window view: opening a crew row drives the peer's slot through `/api/instances/{id}/proxy/api/chat/...` and `api/stream`. Send, stop, approve, continue, regenerate, rewind all go to the peer. | Approve on a crew session resolves the peer's pending approval (#10618). Reloading the hub mid-turn shows the peer's turn running, not *Turn interrupted* (#14585). Continue/regenerate/rewind return the peer's answer, never 409. A credential planted in peer text renders redacted in the window. | "New chat on crew" mints on the peer and opens a window; it no longer creates a local slot. |
-| 4 | Retire (a): existing relay slots migrate. On first load each `executor="remote"` slot becomes a pointer to `(instance_id, remote_slot)`; its local transcript is kept read-only under Local as an archive. | No new slot is created with `executor="remote"`. `remote_bound_refusal`, adopt backfill and the `read_peer_slots` dedupe have no callers and are deleted. | #10826 closes (nothing to restore). #14907's `hub_key` rewrite is deleted. |
+| 4 | Retire (a): existing relay slots migrate. On first load each `executor="remote"` slot becomes a pointer to `(instance_id, remote_slot)`; its local transcript is kept read-only under Local as an archive. | No new slot is created with `executor="remote"`. `remote_bound_refusal`, adopt backfill and the `read_peer_slots` dedupe have no callers and are deleted. | #10826 closes (nothing to restore). #15653's `hub_key` rewrite is deleted. |
 | 5 | Older peer sessions browsable (#7445): one GET-only, read-only route for the peer's session list. | A crew group shows *Older* rows without admitting `DELETE /api/sessions` or other mutating session routes. | Independent of waves 3–4; blocked on open question 2. |
 
 Waves 2 and 3 can ship in either order; 4 needs 3.

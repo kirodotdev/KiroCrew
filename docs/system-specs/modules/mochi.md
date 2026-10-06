@@ -32,7 +32,7 @@ the reconcile tick re-arms it once a target answers.
 
 | Path | What it is |
 |---|---|
-| `src/kiro_crew/apps/builtins/mochi/app.json` | manifest (`backend.routes`, `backend.hooks`, `backend.mcpServers`, `ui.pages`, agents, permissions, `platform.requiresDesktopApp`) |
+| `src/kiro_crew/apps/builtins/mochi/app.json` | manifest (`backend.routes`, `backend.hooks`, top-level `mcpServers`, `ui.pages`, agents, permissions, `platform.requiresDesktopApp`) |
 | `.../hooks.py` | **the owner loop** — `MochiRuntime`, the `on_startup`/`on_shutdown` lifecycle hooks, the poller/idle/watchlist callback bags, and the notify path |
 | `.../queue_file.py`, `.../queue_poller.py` | the behaviour queue (planned moves/moods/reminders) + the poller that executes it — a **file-based scheduler that lives beside core `cron.py`**, not on top of it |
 | `.../watchlist_file.py`, `.../watchlist_service.py` | watch items (add/cancel/remove/update), cross-process-locked RMW |

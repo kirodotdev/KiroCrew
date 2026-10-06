@@ -275,13 +275,15 @@ the installer writes:
 ### Command surface
 
 The full reference lives in the skill the CLI installs in step 4, which is why the
-system prompt states only the loop and the ref rule. The verbs:
+system prompt states only the loop and the ref rule. The CLI is installed at `@latest`
+(`install.py` `NPM_SPEC`), so its verbs can drift; the table below is a summary, and the
+installed skill is authoritative. The verbs:
 
 | Group | Commands |
 |---|---|
 | Lifecycle | `open [url]`, `goto`, `close`, `attach --extension` |
 | Pointer and form | `click <ref>`, `dblclick`, `fill <ref> <text>`, `type <text>`, `select`, `check`, `uncheck`, `hover`, `drag`, `upload` |
-| Read | `snapshot`, `screenshot [ref]`, `pdf`, `eval`, `console`, `network` |
+| Read | `snapshot`, `screenshot [ref]`, `pdf`, `eval`, `console`, `requests`, `request <i>`, `request-headers`/`request-body`, `response-headers`/`response-body`, `network-state-set` |
 | Navigation | `go-back`, `go-forward`, `reload`, `press <key>`, `resize` |
 | Dialogs | `dialog-accept`, `dialog-dismiss` |
 | Tabs | `tab-list`, `tab-new`, `tab-select`, `tab-close` |
@@ -521,11 +523,12 @@ rather than relative to whatever working directory an agent happened to have.
 ### Dashboard integration
 
 `playwright-cli show --port <n> --host 127.0.0.1` serves the CLI's own dashboard
-over loopback HTTP, and the panel embeds that in an iframe. The port is
-OS-assigned by default; `dashboard.browser_view_port` pins the public port, for
-remote-gateway deployments where the viewer reaches loopback through an SSH
-tunnel that forwards a fixed set of ports. The pin is never handed to the
-child: the supervisor claims the pinned port itself with a bound listener it
+over loopback HTTP, and the panel embeds that in an iframe. A remote or tunneled
+dashboard reaches the view through the same-origin relay (`/browser-view/<token>/`,
+below), so it needs no extra port. The port is OS-assigned by default;
+`dashboard.browser_view_port` pins it, which matters only for the direct-`url`
+fallback the panel uses when the relay path is not offered. The pin is never handed
+to the child: the supervisor claims the pinned port itself with a bound listener it
 keeps holding, an atomic ownership proof that makes the deterministic,
 operator-named port race-free, and relays byte-for-byte to the child's own
 ephemeral port. With a usable attribution path, the child keeps the unpinned
@@ -642,10 +645,9 @@ exact child's private post-bind report. No publication grant is retained. Every
 later status or reuse withholds the URL with
 `listener ownership cannot be re-proved on this host: <tool> is absent or cannot
 attribute processes`, preserves the live handle, and does not respawn per poll.
-A structurally blind owner lookup used to adopt a reachable listener with a
-warning and now publishes only at startup; an operator report that `the panel
-URL disappears after the first status call on host X` identifies this rule, not
-a regression. Root liveness, process identity, and HTTP health prove chain of
+A structurally blind owner lookup publishes only at startup and never adopts a
+reachable listener; an operator report that `the panel URL disappears after the
+first status call on host X` identifies this rule, not a regression. Root liveness, process identity, and HTTP health prove chain of
 custody and reachability but cannot prove which process currently owns the
 listener when PID attribution is unavailable. The spawn proof records the root
 PID, start token, and reader source. The source is `ATOMIC` for `/proc` or
@@ -681,6 +683,16 @@ presents as a broken panel rather than as a misconfiguration:
 a browser that may hold the operator's sessions, so binding it off loopback
 exposes an interactive takeover surface to the network.
 
+#### Native view focus
+
+In the desktop app keyboard focus belongs to exactly one child view of the window, and
+hiding the focused view does not move it. So when the native browser view leaves the
+screen while it holds focus (an overlay, an inactive tab, a collapsed panel, close), the
+manager in `website/electron/browser-view.js` hands focus back to the dashboard view
+(`focusHost`), and on window focus `reclaimFocus` does the same for a hidden view that
+still holds it. Without this every dashboard text input would look alive and receive no
+keystrokes.
+
 #### Address bar launcher
 
 The Browser panel has two transports. In the desktop app a native Chromium view
@@ -688,11 +700,10 @@ owns the panel and an external site typed into the address bar lands there.
 Everywhere else — a plain browser tab, including a laptop reaching a remote
 gateway over an SSH tunnel — the dashboard CSP admits only loopback into the
 preview iframe (`frame-src`/`connect-src` in `server.py`), so `google.com` could
-neither be framed nor probed and the panel reported a healthy public site as a
-dev server that "stopped responding". Nothing had ever started a browser for a
-human: the CLI's own dashboard cannot open a session (its bundle renders "No open
-sessions." and offers navigation only inside one that exists), and every other
-`playwright-cli` invocation was an agent's shell turn.
+neither be framed nor probed, and the panel would report a healthy public site as a
+dev server that "stopped responding". The CLI's own dashboard cannot open a session for a
+human (its bundle renders "No open sessions." and offers navigation only inside one
+that exists), and every other `playwright-cli` invocation is an agent's shell turn.
 
 `browser_cli/launcher.py` plus `POST /api/browser/open` (`{url, session_key}`)
 is that launcher, and the panel calls it on the non-native transport when the
@@ -828,7 +839,7 @@ is the same misreport in a narrower case. The
 `UNVERIFIED` line names the launcher it could not attribute and the remedy
 (`install.ATTRIBUTION_REMEDY` — install the CLI where `cli_path` resolves it),
 because a capability claim there points the operator at a CLI upgrade that cannot
-apply: the seams are present in the bundled 0.1.17 and in 0.1.19 alike, and what
+apply: the seams were present in every measured version, and what
 varied was only whether the launcher's ancestry reached the package. `PATH` is not
 a launcher source, so re-admitting a version-manager shim is deliberately NOT the
 remedy. Each line is emitted once per distinct reason rather than once per session
@@ -846,8 +857,9 @@ directory, beside the package's `browsers.json`), measured by
 `show` child share). The answer is cached by the bundle's path, mtime and size,
 so an upstream `@playwright/cli` bump re-runs the measurement on its own; a
 bundle missing either needle skips the reveal and logs the once-per-process
-WARNING above. Both needles are present in `@playwright/cli@0.1.18` and in
-`playwright-core@1.63.0-alpha-2026-08-31` (the dependency of `@playwright/cli@0.1.19`).
+WARNING above. As last measured (2026-09), both needles are present in
+`@playwright/cli@0.1.18` and in `playwright-core@1.63.0-alpha-2026-08-31` (the dependency
+of `@playwright/cli@0.1.19`); that is the re-measure baseline.
 When an upgrade turns the WARNING on, re-measure the needles against the new
 bundle and either update them or cut the reveal unit (`_reveal`,
 `_dashboard_socket_path`, `install.cli_dashboard_socket_support`, their tests

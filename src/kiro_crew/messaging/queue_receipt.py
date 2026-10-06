@@ -91,8 +91,9 @@ RECEIPT_MAX_PUBLISH_ATTEMPTS = 2 * RECEIPT_MAX_OWED
 #: transition ON ITS OWN KEY, so a key that stops being addressed -- a session key
 #: rotates its ``:gen{N}`` suffix on reset -- leaves a debt nothing will ever visit
 #: again, and per-debt attempts cannot expire what is never attempted. This is the bound
-#: that reaches those: past it the LEAST RECENTLY retained debt is released, which is
-#: the one whose key has been silent longest and so the one most likely to be orphaned.
+#: that reaches those: past it the LEAST RECENTLY ATTEMPTED debt is released (every
+#: attempt moves its entry to the back), which is the one whose key has been silent
+#: longest and so the one most likely to be orphaned.
 #: What it releases is COUNTED, for the same reason the body cap counts what it drops.
 RECEIPT_MAX_DEBTS = 64
 

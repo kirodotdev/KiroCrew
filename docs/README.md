@@ -24,6 +24,7 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
 | [reference/](reference/README.md) | A mirror of upstream kiro-cli documentation, with named local exceptions. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
+| `../.kiro/specs/` (repo root) | Archived feature specs from the repo's own Spec Builder runs. Each file's `Status` marker says what it is; not current context. Spec Builder writes live specs to `<project>/.kiro/specs/` in the user's project, not here. |
 
 ## The rule for changing docs
 

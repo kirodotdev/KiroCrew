@@ -37,7 +37,7 @@ Loading, empty results, filtering, and read errors therefore keep the same mode.
 Automatic session status cards and saved task views have different owners.
 With `dashboard.dynamic_dashboard_cards` enabled, host session events queue a
 bounded background update using only that session's recent, redacted messages.
-Team workers (sessions another session created) get no automatic card.
+Only a root session gets an automatic card (see the root-session rule below).
 The model chooses the card's HTML/CSS and flat text fields; subsequent updates
 can omit HTML and reuse the prior layout with exactly the same data field names.
 A field-name change requires explicit replacement HTML; invalid data-only output
@@ -59,14 +59,15 @@ Only a ROOT session gets an automatic card. Root is
 parent in the crew log's session tree (the edge an adopt or release moves later, the
 same `parent_slot is None` the sidebar reads through `parent_payload`). A worker gets no
 card; the browser's `SessionStatusFrame` mirrors both edges (`created_by` and `parent`)
-and never fetches one for it.
+and never fetches one for it. The model card also needs the crew log on: with
+`KIROCREW_CREW_LOG` opted out there is nothing to fold, so no card is generated.
 
 Every number on that card comes from the session's own crew log. `build_crew_main` in
 `kiro_crew.crew_main_contract` folds four renders -- `status`, `work`, `usage`,
 `approvals` -- into `CrewMainDerived`, every value a finished string. Absence is
 three-state in words: a missing key reads `not recorded`, a fold that could not be read
 reads `could not be read`. No value is a percentage, and every count states its
-denominator.
+denominator where one exists.
 
 The model still designs the card's layout, as before, but writes no number. It receives
 the folded values under `facts` as read-only text and binds each one by field name with
@@ -115,7 +116,13 @@ The automatic card (`SessionStatusFrame`) shows only while no published view
 exists; progress bars, status tiles, blocked and work-item lists are not drawn
 in the panel (the dock above the composer keeps its native tiles). Questions and
 Approvals remain host-rendered `AttentionCard`s — the sandboxed page can name a
-decision but never answer or approve one. The request that asks the agent for a
+decision but never answer or approve one. The Questions tab also lists an idle
+session whose newest reply ends in an `[OPTIONS: ...]` ask, keyed by the slot's
+`options_ts` and answered with the bare labels; a label starting with `/` is
+dropped, since sent bare it would run as a slash command, and a real question
+card for the same session wins. The automatic card's prompt forbids restating
+pending questions, choices or decisions, since the Questions tab is the one
+place they are answered. The request that asks the agent for a
 page (`commandCenter.prompt.ts`, `REQUEST_PUBLISHED_VIEW`) recommends, without
 enforcing, a layout for that whole-Overview placement: what needs the user first
 with the decision named or linked (answering happens in the Questions tab), one
@@ -126,11 +133,13 @@ variables. The artifacts skill repeats the recommendation.
 The whole Dynamic Dashboard surface is a developer Feature Preview
 (`PREVIEW_DASHBOARD`, `website/src/utils/previewFlags.ts`), default OFF and
 gating INGRESS only: with the flag off the dock, the + menu entry, a persisted
-Dashboard tab, the Crew chat's Dashboard tab and the Sessions menu's All
-Dashboards item are withheld, while `/session-dashboards` stays routable and
-every API above is unchanged. The **Automatic cards for all sessions** switch
+Dashboard tab and the Sessions menu's All Dashboards item are withheld, while
+`/session-dashboards` stays routable and every API above is unchanged. The Crew
+chat's Dashboard tab is not withheld: it is the crewmate's own published page,
+a standing tab whatever the flag. The **Automatic cards for all sessions** switch
 lives inside that preview's card in Settings > Developer > Feature Previews,
-shown only while the flag is on.
+shown whether the preview is on or off: it is a gateway-wide spend setting, and
+hiding it would leave cards running with no control on this device.
 Session matching strips the dashboard scope and normalizes registered channel
 keys with the history safe-key rules, retaining the channel namespace. Unknown
 prefixes are not folded; missing task roots remain fail-closed.
@@ -992,6 +1001,12 @@ inputs, distinguished by the leading **star** column:
   **All** view via `GET /api/artifacts/session-docs`. Clicking a row opens a
   **read-only preview** (`SessionDocPreview`) that fetches the file through the
   redacting `GET /api/file-read` endpoint — a pure read that registers nothing.
+  It reads through the shared `utils/fileReadQuery` entry (`['file-read', path]`),
+  the same one the chat side panel's file tabs use, so the binary verdict comes
+  with it: bytes the backend marks binary render an **undecodable** status (no
+  Retry, since a refetch cannot make them text), and a 404 at render time shows a
+  missing-file placeholder. In the table view the session documents sit under a
+  "From your chats · N" divider.
   A document recorded with a **relative path is refused client-side** (no
   request is sent): `resolve=1` would resolve it against the gateway's
   *current* project directory, not the project it was recorded under, so a
@@ -1030,6 +1045,15 @@ Materialization is authorization-gated: the requested path must appear in the
 recorded chat `file_changes` (never an arbitrary client path), and the read is
 routed through the `hooks.safe_read_file_bytes` keystone. `source` is recorded
 as `chat` for materialized documents.
+
+Both the session-document list and that allowlist come from the recorded
+`meta.file_changes`, which is capped per turn (`dashboard/chat_runner.py`): at
+most 200 entries (`_MAX_TURN_SNAPSHOT_ENTRIES`, newest kept), and 400,000 chars
+of path plus snapshot content beside the turn's protected entry
+(`_MAX_TURN_SNAPSHOT_CHARS`). An entry dropped by the cap is only counted, in
+`file_changes_omitted_files`, so it never appears and cannot be materialized. A
+demoted entry loses its snapshot content but keeps its path, so it still
+appears.
 
 ### In-session Artifacts tab
 
@@ -1291,6 +1315,15 @@ provider push status (`local_only | pending_push | synced | push_failed`).
 Provider push/reconcile itself is companion-edition-only behavior behind the
 CPP publish seam — the open-source core carries the `sync_state` field and
 enforces the provider-origin guards, but ships no remote reconcile loop.
+
+**Forwarding filter.** `GET /api/artifacts/{slug}/comments?exclude_resolved=1`
+(or `=true`) drops resolved threads at thread-root granularity: a reply inherits
+its root's status (`filter_comments_for_forward` in `artifact_store/comments.py`).
+Without the parameter the full list comes back. The companion chat's Submit
+forwards only unresolved threads, through the client mirror
+`lib/commentFilter.ts`, which also drives the agent-facing open-comment count.
+The comments sidebar still lists every thread, with resolved ones behind its
+show-resolved toggle, by design.
 
 **Inbound comment sync (fetch-on-view).** `GET /api/artifacts/{slug}/comments`
 opportunistically pulls the provider's comments (`fetch_comments`, when the
@@ -1603,6 +1636,17 @@ effect: the host route `/artifacts/:slug` owns the URL, and an in-place
 sessionStorage channel ChatPage already consumes on slot activation (the
 slot-change restore in `website/src/pages/chat/page/composerDrafts.ts`).
 
+**Selection comment composer** — selecting a passage opens a type-first comment
+composer on the artifact page, the remote artifact page and the chat side
+panel's file view. A draft is kept per passage in `sessionStorage`
+(`utils/composerDraftStore.ts`) under `mc-artifact-composer-draft:<slug>`,
+`mc-remote-artifact-composer-draft:<provider>/<id>` or
+`mc-comment-composer-draft:<path>`. Closing a non-empty draft asks before
+discarding it. Posting shows a saving state; a failed post keeps the text in the
+box for a retry; a post refused after the composer closed shows a banner quoting
+the passage. Kinds that cannot anchor a comment (`json`, `svg`, images) get Copy
+only on a selection.
+
 ## Roadmap
 
 In scope for the foundation:
@@ -1653,7 +1697,7 @@ only, mirrored by the server CSP `frame-src https://*.cloudfront.net`);
 | `deploy_target.region` | string | AWS region |
 | `deploy_target.public_url` | string | The live HTTPS URL |
 | `deploy_target.profile` | string | Named AWS CLI profile used |
-| `app_dir` | string | Absolute path of the local app tree that was/would be deployed. Set by the artifact author (the deploy API never sees the artifact and the directory together, so it cannot back-fill this). LLM-influenceable — re-validated against the allow-listed local roots at serve time. |
+| `app_dir` | string | Absolute path of the local app tree that was/would be deployed. Set by the artifact author. A deploy by slug resolves `app_dir/public` from it (`deploy.handlers.resolve_webapp_public_dir`, shared with the app preview) and writes `lifecycle` and `deploy_target` back, but never writes `app_dir` itself. LLM-influenceable — re-validated against the allow-listed local roots at serve time. |
 | `architecture.tier` | enum | `"static"`, `"api"`, `"stateful"` |
 | `architecture.resources` | list | `[{type, id}]` — infrastructure resources |
 | `lifecycle.created_at` | string | ISO 8601 creation time |

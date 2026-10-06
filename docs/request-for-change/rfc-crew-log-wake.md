@@ -1,12 +1,12 @@
 ---
 title: Crew log wake -- a worker's write pulls the conductor's tick forward
-status: in-progress
+status: implemented
 author: Raymond Chen, with kirocrew-lead
 created: 2026-10-01
-last-audited: 2026-10-01
-audited-at: 321fd996a2
+last-audited: 2026-10-06
+audited-at: ea7e91c8e6
 doc-pr: null
-implementation-prs: [15691]
+implementation-prs: [15691, 12781]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew log wake -- a worker's write pulls the conductor's tick forward
 
-- Status: in-progress. This document ships INSIDE its implementing pull request:
+- Status: implemented. [#15691](https://github.com/kirodotdev/KiroCrew/pull/15691) merged on the [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781) wake gate. This document shipped INSIDE its implementing pull request:
   the repository takes no standalone RFC pull requests, so `doc-pr` is null and
   the implementation is the one named in `implementation-prs`.
 - Builds on [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
@@ -88,7 +88,7 @@ Non-goals:
                                   v
                       bus.publish(FoldAdvanced(slot, <conductor board>, "work", value))
                                   |  conductor_wake is one subscriber; the WS exporter another
-                                  |  diff value.items[].last_report_at against the last board seen
+                                  |  diff each item's report stamp (_report_stamp) against the last board seen
                                   |  -> the items whose worker reported; none -> a conductor's own
                                   |     write, no push
 (2) worker session closed --> chat_handlers.close_slot, after the slot is gone
@@ -123,9 +123,13 @@ conductor, exactly as it names no dashboard.
 
 The event's `key` is the conductor's own board slot, because a worker's
 `work/recorded` entry carries the conductor's board in its `slot` field and the
-fold binds on it. So the subscriber reads no binding file and is not an importer of
-the work-ledger store. What the event does not say is WHICH item moved, so the
-subscriber keeps the previous board's `last_report_at` per item and diffs: an item
+fold binds on it. So this bus-side path reads no binding file. The module as a
+whole still reads bindings: triggers two and three call `_read_binding`, which is why
+`conductor_wake.py` is a permitted importer of the work-ledger store. What the event
+does not say is WHICH item moved, so the subscriber keeps the previous board's report
+stamp per item and diffs. The stamp is `_report_stamp`: `last_report_at` plus a digest
+of the report fields (`status`, `summary`, `artifacts`, `pr`) and the newest report
+event's id, because `last_report_at` alone has whole-second resolution. An item
 whose stamp changed is a worker that reported, and `fire_now` is called for its
 conductor's armed `work-ledger` loop, with that item id for the pull-forward cap
 (3.5). A board whose stamps are all unchanged moved on a conductor's own write

@@ -56,8 +56,26 @@ runs:
         fi
         if ! command -v lsof >/dev/null 2>&1; then
           export DEBIAN_FRONTEND=noninteractive
-          if ! (apt-get update -qq && apt-get install -y -qq --no-install-recommends lsof); then
-            echo "::error::run-as-runner: could not install lsof from apt; the backend suite needs it on this runner."
+          # `apt-get update` exits non-zero when ANY configured index fails,
+          # including a third-party repository mid mirror-sync ("File has
+          # unexpected size ... Mirror sync in progress?" on dl.google.com's
+          # chrome list) that has nothing to do with lsof. So an update failure
+          # is only a warning: the install is attempted after every update,
+          # bounded at three tries, and a lsof that never installs still fails
+          # the job closed.
+          lsof_ok=""
+          for attempt in 1 2 3; do
+            apt-get update -qq || echo "::warning::run-as-runner: apt-get update reported index errors (attempt $attempt); trying the install anyway."
+            if apt-get install -y -qq --no-install-recommends lsof; then
+              lsof_ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          if [ -z "$lsof_ok" ]; then
+            echo "::error::run-as-runner: could not install lsof from apt after 3 attempts; the backend suite needs it on this runner."
             exit 1
           fi
         fi

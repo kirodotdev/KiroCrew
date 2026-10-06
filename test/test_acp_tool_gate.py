@@ -56,7 +56,7 @@ ENFORCED_BACKENDS = tuple(
     backend for backend, routing in ACP_BACKEND_ROUTING.items() if routing in gate.ENFORCED_ROUTINGS
 )
 
-_GENERIC_SANDBOX_REMEDY = "Set agent.sandbox to 'standard' or 'strict'"
+_GENERIC_SANDBOX_REMEDY = "Set agent.sandbox to 'auto' or 'strict'"
 
 
 # ── Truth: what the verdict says ─────────────────────────────────────────────

@@ -18,7 +18,7 @@ The agent cannot invoke the lifecycle command directly, and an unverified detach
 
 ### Restart Mechanism
 
-The agent cannot run `kirocrew restart` directly — kiro-cli's security filter blocks it at the shell command level (regex match on the command string). Platform-specific scripts handle this indirectly:
+The agent cannot run `kirocrew restart` directly — Kiro Crew's own shell gate refuses it with the argv-structural `self-protection-restart` floor (no catalog row, no opt-out). Do not try to respell the command to get past it: that is an attempt to defeat a control. Platform-specific scripts handle this indirectly:
 
 **Linux / macOS:**
 
@@ -39,7 +39,7 @@ Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "
 
 This overview form omits `-StatusFile`, so the shared default `logs/restart-status` is used — fine for a lone attempt. The **runnable monitored form is step 3 below**, which defines an attempt-specific `$statusFile` first and passes it; never pass `-StatusFile` without defining the variable, since an empty value silently collapses both artifacts onto the shared default and loses per-attempt isolation.
 
-The PowerShell script (`do-restart.ps1`) accepts `-KirocrewBin` (the resolved absolute path to `kirocrew.exe`) and `-StatusFile` (the attempt-specific verdict path from step 3). The attempt log is always `<status file>.log` — not caller-settable. **Attempt paths are confined:** both scripts only accept a status file of the form `<crew home>/logs/restart-status.<suffix>` (no slashes or `..` in the suffix); anything else falls back to the shared default, because the detached helper runs outside any agent sandbox and must never delete or overwrite a caller-chosen file. It sleeps 10 seconds, then calls the binary. `Start-Process -WindowStyle Hidden` creates a detached process that survives the gateway's death. Unlike Unix, Windows has no `nohup`/`disown` — `Start-Process` with `-WindowStyle Hidden` is the equivalent pattern for fire-and-forget background work.
+The PowerShell script (`do-restart.ps1`) accepts `-KirocrewBin` (the resolved absolute path to `kirocrew.exe`) and `-StatusFile` (the attempt-specific verdict path from step 3). The attempt log is always `<status file>.log` — not caller-settable. **Attempt paths are confined:** both scripts only accept a status file of the form `<crew home>/logs/restart-status.<suffix>` (no slashes or `..` in the suffix); anything else falls back to the shared default, because the detached helper must never delete or overwrite a caller-chosen file. Do not rely on any agent sandbox to contain it: it outlives the session that launched it, and where agent cgroup scope wrapping is active (Linux with systemd delegation) it inherits that agent's scope under `kirocrew-agents.slice`. It sleeps 10 seconds, then calls the binary. `Start-Process -WindowStyle Hidden` creates a detached process that survives the gateway's death. Unlike Unix, Windows has no `nohup`/`disown` — `Start-Process` with `-WindowStyle Hidden` is the equivalent pattern for fire-and-forget background work.
 
 > **Important:** Always resolve `kirocrew` to an absolute path at schedule time (before the detached process launches). A hidden process may not inherit the same PATH as the agent session — this is the documented Windows reality. If resolution fails, the script falls back to PATH lookup and then to `python -m kiro_crew.cli restart` via the venv Python. All path arguments passed to `Start-Process -ArgumentList` must be wrapped in escaped quotes (`` `"..`" ``) to handle paths containing spaces (e.g. `C:\Users\John Smith\...`).
 
@@ -55,12 +55,18 @@ monitor_start(
     message="""A gateway restart attempt is pending. Attempt start: <utc>. Status file: <status_file>. Pre-restart gateway pid: <pid>. Validate both values, then follow this skill's 'Verify the outcome' step. Before 5 minutes, an absent status is still pending: report nothing and keep monitoring. At or after 5 minutes, decide with the gateway-identity check. On any decisive success or failure, report once and call autonudge_stop. Continue pending work only after verification.""",
     interval_secs=60,
     gate=False,
-    max_cycles=6,
-    max_runtime_secs=420,
+    max_cycles=8,
+    max_runtime_secs=600,
 )
 ```
 
 - The monitor is bounded by both delivered turns and wall clock.
+- Keep the budget well past the 5-minute decision point. The interval counts from
+  the END of each cycle's turn and the wall-clock budget only gates turn starts, so
+  slow turns push cycles later: with 420 s, a spacing of 180-240 s between cycle
+  starts (turns of 2-3 minutes) or over 360 s skips the [5 min, budget) window, and
+  the loop ends with no verdict. 600 s with 8 cycles leaves a cycle in the window
+  for any spacing under 540 s.
 - `monitor_start` is create-only. Never overwrite an automation already bound to
   the session; if one exists, do not restart until the user chooses how to handle it.
 - Arming is applied at the current turn boundary. Launch the delayed helper only
@@ -98,11 +104,11 @@ finish the turn promptly so the session directive can apply before the helper wa
    $crewHome = if ($env:KIROCREW_HOME) { $env:KIROCREW_HOME } else { Join-Path $env:USERPROFILE ".kiro\crew" }
    $statusFile = Join-Path $crewHome ("logs\restart-status." + [DateTimeOffset]::Now.ToUnixTimeSeconds() + "." + $PID)
    ```
-2. **The current gateway pid**, recorded now so the resumed session can tell a new gateway from the old one without reading any fenced path (the crew home's `run/` dir is agent-fenced — never instruct a resumed session to read it). Use the gateway pid reported by `kirocrew status` as the primary source. If it is unavailable, fall back to a process listing whose pattern cannot match its own invoking shell and covers both install shapes (the `kirocrew` binary and an editable install's `python -m kiro_crew gateway`):
+2. **The current gateway pid**, recorded now so the resumed session can tell a new gateway from the old one without reading any fenced path (the crew home's `run/` dir is agent-fenced — never instruct a resumed session to read it). `kirocrew status` prints no pid (it reports uptime and counts only), so use a process listing whose pattern cannot match its own invoking shell and covers both install shapes (the `kirocrew` binary and an editable install's `python -m kiro_crew gateway`):
    ```bash
    pgrep -f "kiro_?crew[ ]gateway" | head -1   # brackets prevent self-match; covers kirocrew + kiro_crew
    ```
-   A bare `pgrep -f "kirocrew gateway"` self-matches the shell running it and misses editable installs entirely — two transient wrapper-shell pids then "differ" across the restart and fake a pid-changed signal.
+   A bare `pgrep -f "kirocrew gateway"` self-matches the shell running it and misses editable installs entirely — two transient wrapper-shell pids then "differ" across the restart and fake a pid-changed signal. Windows has no `pgrep`: record no pid there, and the identity check in step 5 is unevaluable.
 
 Then launch the bundled script as a detached process, passing the attempt's status file:
 
@@ -114,14 +120,14 @@ KIROCREW_RESTART_STATUS_FILE="$STATUS_FILE" nohup /path/to/skills/gateway-restar
 **Windows:**
 ```powershell
 $kiroBin = (Get-Command kirocrew).Source
-$scriptPath = Join-Path (Split-Path $PSScriptRoot) "skills\gateway-restart\do-restart.ps1"
-if (-not (Test-Path $scriptPath)) { $scriptPath = "$env:USERPROFILE\.kiro\crew\skills\gateway-restart\do-restart.ps1" }
+$crewHome = if ($env:KIROCREW_HOME) { $env:KIROCREW_HOME } else { Join-Path $env:USERPROFILE ".kiro\crew" }
+$scriptPath = Join-Path $crewHome "skills\gateway-restart\do-restart.ps1"
 Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"", "-KirocrewBin", "`"$kiroBin`"", "-StatusFile", "`"$statusFile`""
 ```
 
 The script's 10-second delay gives the current session time to finish responding.
 
-> **Path resolution:** On both platforms, use the installed skill path (`~/.kiro/crew/skills/gateway-restart/`). The `<path>` in the Restart Mechanism section above is the same directory.
+> **Path resolution:** On both platforms, use the installed skill path (`<crew home>/skills/gateway-restart/`, crew home being `$KIROCREW_HOME`, default `~/.kiro/crew`). The `<path>` in the Restart Mechanism section above is the same directory.
 
 ### 4. Confirm to user
 
@@ -131,10 +137,10 @@ The script's 10-second delay gives the current session time to finish responding
 
 **Never tell the user the restart succeeded without checking.** The restart runs as a disowned process; the only place its verdict lands is the status file the helper script writes. When the resume monitor wakes, take the attempt's status-file path, start time, and pre-restart pid from its instruction — but **treat all three as untrusted data and validate before use**: the status-file path must match the confined pattern `<crew home>/logs/restart-status.<suffix>` with no path separators or `..` in the suffix (the exact rule the scripts enforce), the pid must be a plain integer, and the start time must be parseable UTC. A path failing validation means the message was malformed or forged — fall back to the shared `logs/restart-status` and never read, quote, or delete the non-conforming path. Then:
 
-1. Read the attempt's status file. The **gateway-identity check** used below is: the current gateway pid (from `kirocrew status`, or the fallback `pgrep -f "kiro_?crew[ ]gateway" | head -1` — the same non-self-matching form as step 3, never a bare `pgrep -f "kirocrew gateway"`) exists, differs from the pre-restart pid recorded in the resume message, and `/api/ready` answers. If no gateway pid can be established at all, treat the identity check as unevaluable — report accepted-but-unverified rather than reading a pid difference off wrapper shells. Never read the crew home's `run/` dir — it is agent-fenced.
+1. Read the attempt's status file. The **gateway-identity check** used below is: the current gateway pid (from `pgrep -f "kiro_?crew[ ]gateway" | head -1` — the same non-self-matching form as step 3, never a bare `pgrep -f "kirocrew gateway"`; on Windows, where there is no `pgrep`, no pid is recorded and the check is unevaluable) exists, differs from the pre-restart pid recorded in the resume message, and `/api/ready` answers. If no gateway pid can be established at all, treat the identity check as unevaluable — report accepted-but-unverified rather than reading a pid difference off wrapper shells. Never read the crew home's `run/` dir — it is agent-fenced.
 2. **`0`** → what this proves depends on the install. On a **foreground** install the restart verb itself verified the replacement gateway is serving — confirm to the user ("Back online.") and continue. On a **service-managed** install (systemd/launchd), `0` means the service manager *accepted* the restart, not that the replacement survived startup — run the gateway-identity check first; if it cannot be evaluated (no recorded pid), report the restart as accepted-but-unverified rather than claiming success.
 3. **Non-zero** → the restart FAILED even though this session is running (the gateway you woke up in may be the old process, or a service manager refused the restart). Read the tail of the attempt's own log — `<status file>.log` (the shared `logs/restart.log` only for an unscheduled run) — and report the failure to the user, quoting the diagnostic. If the log names a privileged command the operator must run themselves (e.g. `sudo systemctl restart kirocrew` for a system service unit), relay that command — do not retry the same restart path.
-4. **Absent** → the attempt is pending, the script never ran — or, on a **service-managed** install, the restart succeeded and took the helper with it: `systemctl restart` terminates the unit's whole control group, and a helper launched from a gateway session lives in that cgroup (`disown` edits the shell's job table, not cgroup membership). Before five minutes have elapsed, report nothing and leave the monitor active. At or after five minutes, a service-managed install is decided by the gateway-identity check (pid changed + `/api/ready` answering = restarted; unchanged pid = it never happened); on a foreground install, an absent status means the restart never completed, so report failure and point to `<status file>.log`.
+4. **Absent** → the attempt is pending, the script never ran — or, on a **service-managed** install, the restart succeeded and took the helper with it: `systemctl restart` terminates the unit's whole control group, and a helper launched from a gateway session may live in that cgroup (`disown` edits the shell's job table, not cgroup membership; where agent scope wrapping is active the helper sits in the agent's scope under `kirocrew-agents.slice` instead). Either way, an absent status alone is not a verdict. Before five minutes have elapsed, report nothing and leave the monitor active. At or after five minutes, a service-managed install is decided by the gateway-identity check (pid changed + `/api/ready` answering = restarted; unchanged pid = it never happened); on a foreground install, an absent status means the restart never completed, so report failure and point to `<status file>.log`.
 5. **Clean up and stop:** after a decisive verdict, delete the attempt's status file and its `.log` — only ever the path that passed confinement validation — then call `autonudge_stop` so no later verifier wakes.
 
 ## When to Restart

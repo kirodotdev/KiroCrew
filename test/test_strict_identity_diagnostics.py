@@ -472,7 +472,7 @@ class TestDoctorStrictIdentity:
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(self._Cfg(["aws-mcp"]))
         out = capsys.readouterr().out
-        assert "no identity channel" in out
+        assert "not routed through the gateway" in out
         assert "kirocrew-core" in out and "kirocrew-dashboard" in out
         assert "monitor_start" in out and "session_ledger" in out
 
@@ -521,7 +521,7 @@ class TestDoctorStrictIdentity:
 
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(_Broken())
-        assert "no identity channel" in capsys.readouterr().out
+        assert "not routed through the gateway" in capsys.readouterr().out
 
 
 def test_no_new_dependency_on_a_running_gateway() -> None:

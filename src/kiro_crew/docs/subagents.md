@@ -68,11 +68,11 @@ isolate shared databases, ports or external services.
 The other spawn tools:
 - `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results (a member the spawn gate deferred is reported with why it waits, and its result arrives later as a completion event); takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches
 - `spawn_continue` — dispatch a follow-up turn into a completed run's conversation (`conversation`, `task`, optional `agent` / `max_turns` / `model`); context scope is inherited, so the `include_*` flags are not accepted
-- `spawn_steer` — inject a message into a RUNNING subagent's in-flight turn (`agent_id`, `message`, `mode`: `interrupt` default or `follow_up`)
+- `spawn_steer` — inject a message into a RUNNING subagent's in-flight turn (`agent_id`, `message`, `mode`: `interrupt` default or `follow_up`). A spawn that was accepted but has not started yet answers `queued — not started` (HTTP 409 `queued_not_started`)
 - `spawn_release` — end a continuable conversation (`conversation`) so it can no longer be continued
 - `spawn_list` — list running, queued (accepted, not yet started) and completed subagents
-- `spawn_status` — read a run's transcript: the live partial view while it runs, the retained full transcript once complete (see below)
-- `resource_status` — advisory host headroom (available memory, CPU load, posture, and the current concurrent sub-agent cap)
+- `spawn_status` — read a run's transcript: the live partial view while it runs, the retained full transcript once complete (see below). A spawn that was accepted but has not started yet answers `QUEUED` with the reason it waits; it starts on its own, so do not spawn it again
+- `resource_status` — advisory host headroom (available memory, CPU load, posture, the current concurrent sub-agent cap, and the agent slice's task count against its `pids.max` ceiling)
 
 ## How It Works
 
@@ -80,6 +80,11 @@ The other spawn tools:
 2. Each subagent gets its own agent session with full tool access
 3. Results are automatically injected back as `[Subagent completion event]`
 4. Kiro Crew synthesizes the results into a final response
+
+After a gateway restart the dashboard's Subagents panel is rebuilt with recent
+finished runs: the newest 50 from the last day. Dismissing a card is recorded
+durably, so it stays dismissed after a restart. A dismissal that answers HTTP 503
+`dismissal_unwritable` could not be saved, and the card may come back.
 
 ## Limits
 

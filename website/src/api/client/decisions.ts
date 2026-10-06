@@ -51,7 +51,7 @@ export interface DecisionsConsentData {
    * One row per decision point this GATEWAY ships, projected from the seam's own
    * registry (`decisions/gate.py`). The card lists these rather than an array
    * written here, so a build that ships another point lights up a row with no
-   * frontend edit — the same arrangement the Agent Backend panel uses for its
+   * frontend edit — the same arrangement the Agent Harness tab uses for its
    * capability lines.
    *
    * Absent on a gateway older than the projection, which reads as no rows: the

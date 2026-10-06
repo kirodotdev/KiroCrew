@@ -3,8 +3,8 @@ title: Pipeline Conductor — the issue pipelines as a conductor use case
 status: partial
 author: Raymond Chen
 created: 2026-09-01
-last-audited: 2026-09-05
-audited-at: 424efa423
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [7238, 8034, 8035, 8036]
 tracking-issues: []
@@ -111,8 +111,12 @@ The `pipeline-conductor` skill is the operating procedure: idempotent pickup, th
 (one item / one worktree / one PR, six-prefix report protocol), the probe cycle and its action
 table, independent green verification, the intervention ladder, outage recovery and loop liveness,
 the adjudication and override protocol, the admission table, the credit budget rules,
-steering-as-mode-change, and merge cleanup. The design puts the bookkeeping in three
-subprocess-free scripts:
+steering-as-mode-change, and merge cleanup. The design puts the bookkeeping in bundled
+scripts. The skill ships five (`claim_preflight.py`, `coverage_filter.py`, `credit_spend.py`,
+`fleet_probe.py`, `spec_check.py`; see
+[pipeline-conductor.md](../system-specs/modules/pipeline-conductor.md)). `fleet_probe.py` and
+`credit_spend.py` spawn no subprocess; `claim_preflight.py` and `coverage_filter.py` run
+read-only `gh` calls and refuse any write verb before the subprocess starts:
 
 - `scripts/claim_preflight.py` — one deterministic verdict per candidate item, from five checks in
   one invocation: open PRs (fork PRs included), merged PRs tested for having actually landed on the
@@ -280,7 +284,7 @@ the run instead of defaulting.
 
 - **M0** — the agent and the harness: the generated `kirocrew-pipeline-conductor` spec (installer,
   filename constant, roster hiding, docs registry, installer tests mirroring the existing
-  conductor's) and the `pipeline-conductor` builtin skill with its three scripts, behavior pinned by
+  conductor's) and the `pipeline-conductor` builtin skill with its scripts, behavior pinned by
   tests (claim verdict precedence, probe classification, handled-set suppression, key containment,
   budget verdicts) and the skill's own contract pinned by tests over its text, so a rewrite cannot
   silently drop a clause the scripts depend on.

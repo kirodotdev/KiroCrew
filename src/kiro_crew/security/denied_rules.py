@@ -208,8 +208,8 @@ _PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_V
 _NETCAT_EXEC_PATTERN = r"(?<![\w.-])(?<!\w=)nc\s+-e"
 
 # ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` hold a PATH, not a
-# secret, so neither is scrubbed from an agent child's environment -- the AWS CLI
-# and every SDK read them directly.
+# secret, so the global secret scrub leaves both in an agent child's environment (the AWS CLI
+# and SDKs read them); ``acp.client._apply_pod_home_remap`` drops both for a pod child.
 #
 # Two rules are deliberately ABSENT here, and the reasoning is worth keeping
 # because it generalizes to any future "deny the variable name" proposal: a
@@ -398,10 +398,11 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "Blocks an interpreter payload that spawns the `kirocrew token` credential mint "
             "through a library call rather than as a shell command -- the CLI name and the "
             "token verb as adjacent QUOTED arguments, as in "
-            "`python -c \"subprocess.run(['kirocrew','token'])\"`. Scoped to the argv-literal "
-            "shape so a regex literal or prose mentioning both words is not a mint; a "
-            "single-string spelling is out of reach of command-text matching and is covered by "
-            "the sensitive-path floor over the signing key instead."
+            "`python -c \"subprocess.run(['kirocrew','token'])\"`, or both words in one quoted "
+            'string handed to a call that executes it (an `os.system` call given "kirocrew '
+            'token"). A quoted string with no executing call (a regex literal, prose) is not '
+            "matched; a name assembled at runtime is out of reach of command-text matching and "
+            "is covered by the sensitive-path floor over the signing key instead."
         ),
     ),
     DeniedCommandRule(
@@ -414,9 +415,8 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         #
         # SINK-QUALIFIED on purpose: the two words are matched inside ONE quoted string
         # only when that string is the argument of a call that EXECUTES it.  The sink
-        # prefix is what keeps this from becoming the co-occurrence rule this PR
-        # removed -- prose, a commit message and a regex literal have no sink, so they
-        # stay allowed.
+        # prefix is what keeps this from being a bare co-occurrence match -- prose, a
+        # commit message and a regex literal have no sink, so they stay allowed.
         pattern=(
             "(?:"
             # --- sink-qualified: a shell command handed to a call that EXECUTES it ---
@@ -1359,13 +1359,11 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "code with no chance to inspect the script first."
         ),
     ),
-    # The ``restart`` / ``update`` / ``cloud <lifecycle>`` / ``gateway restart``
-    # self-management commands have NO catalog row.  Their regex rows opened with
-    # an unbounded any-run before the product name, so the name in a worktree
-    # path plus the verb word anywhere later was a match (``ls
-    # ~/kirocrew-wt/restart.log``); a row that fires on the product's name
-    # appearing anywhere protects nothing the structural floor does not, and was
-    # deleted rather than narrowed.  Enforcement is the argv floor alone
+    # The ``restart`` / ``update`` / ``file-delivery approve`` / ``cloud <lifecycle>`` /
+    # ``gateway restart`` self-management commands have NO catalog row.  A regex row opening
+    # with an unbounded any-run before the product name matches the name in a worktree path
+    # plus the verb word later (``ls ~/kirocrew-wt/restart.log``), and protects nothing the
+    # structural floor does not.  Enforcement is the argv floor alone
     # (``argv_floor._is_self_restart`` and siblings, ungated -- see
     # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which requires the product to be
     # the argv's own PROGRAM and the action its leading subcommand.
@@ -1500,10 +1498,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "$(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE "
             "the agent sandbox: a command run through `ssh localhost` bypasses every other "
             "control here, and passwordless sudo on the far side completes a full escape. "
-            "Connections to other hosts stay allowed, with one declared exception: a "
-            "first-seen DOTTED hostname in HOST position is refused once, per process, "
-            "while an off-loop DNS check rules out a loopback alias, then cached; a "
-            "dotless name is answered from the hosts file same-call, without a refusal."
+            "Other hosts stay allowed once classified remote; an unclassified target is refused "
+            "briefly: a first-seen DOTTED hostname in HOST position, once per process, while an "
+            "off-loop DNS check rules out a loopback alias (then cached); on Linux a "
+            "non-loopback IP until this machine's address list loads; outside Windows a dotless "
+            "name while a hosts file over 64 KiB is read (a smaller one answers same-call). "
+            "Never allowed: a name that does not resolve, an IP while the address list cannot be "
+            "read, a dotless name on Windows when the hosts file is over 64 KiB."
         ),
     ),
 ]
@@ -1516,9 +1517,11 @@ _RULE_ID_BY_PATTERN: dict[str, str] = {r.pattern: r.id for r in BUILTIN_DENIED_R
 
 # ── Git-publish rule patterns are NOT evaluated in the Python regex tier ──
 # The ``git-publish`` category rules exist in the catalog for UI display /
-# opt-out parity, but git-publish enforcement is done UNCONDITIONALLY by the
-# verb-anchored ``_is_git_publish`` / ``_is_push_to_protected_branch`` floor
-# (evaluated BEFORE the tiers below).  Their patterns were authored for
+# opt-out parity, but git-publish enforcement is done by the verb-anchored ``_is_git_publish``
+# / ``_is_push_to_protected_branch`` floor (evaluated BEFORE the tiers below), gated per catalog
+# row: a disabled row stays disabled.  Only the ungated anti-obfuscation branch
+# (``_GIT_PUBLISH_UNGATED``, reported as ``git-publish-push-brace-expansion-refspec``) ignores
+# opt-out.  Their patterns were authored for
 # kiro-cli's linear-time (RE2-style) engine; under Python's backtracking
 # ``re`` the nested ``(?:...)*`` quantifiers are catastrophic (ReDoS) on
 # pathological flag-spam input, so they must never reach ``re.search``.  The
@@ -1539,9 +1542,8 @@ _GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(r.pattern for r in _GIT_P
 _GIT_PUBLISH_UNGATED = "\x00git-publish-unverifiable"
 
 # ``id -> pattern`` for the git-publish rules, so a floor denial can report the
-# rule's own pattern (as the regex tier does) instead of an opaque label. Before
-# this, a git-publish denial reported the human string "git push" and mapped back
-# to NO rule id in the SEL audit trail.
+# rule's own pattern (as the regex tier does) instead of an opaque label: the
+# human string "git push" would map back to NO rule id in the SEL audit trail.
 _GIT_PUBLISH_FLOOR_BY_ID: dict[str, str] = {r.id: r.pattern for r in _GIT_PUBLISH_RULES}
 
 # Why a git-publish floor denial happened, in words. Same role as
@@ -1589,9 +1591,10 @@ _GIT_PUBLISH_UNGATED_RULE_IDS: frozenset[str] = frozenset(
     {"git-publish-push-brace-expansion-refspec"}
 )
 
-# Catalog rules whose ENFORCEMENT is an always-on floor rather than the
-# configurable regex tier.  Derived from the category (never a hand-maintained
-# id list) so a future git-publish rule is covered automatically.
+# Catalog rules whose ENFORCEMENT is an always-on floor that no opt-out reaches.
+# This is the one explicit id in ``_GIT_PUBLISH_UNGATED_RULE_IDS``, NOT the whole
+# git-publish category: every other git-publish row is gated per row by the floor
+# and stays opt-out-able.
 _FLOOR_ENFORCED_RULE_IDS: frozenset[str] = _GIT_PUBLISH_UNGATED_RULE_IDS
 
 
@@ -1599,16 +1602,16 @@ def floor_enforced_builtin_command_ids() -> frozenset[str]:
     """Built-in rule ids enforced by an always-on floor (not opt-out-able).
 
     These rules exist in the catalog for display parity, but their enforcement
-    is the unconditional verb-anchored git-publish floor (``_is_git_publish`` /
-    ``_is_push_to_protected_branch``) evaluated before the configurable tiers,
-    which consults no opt-out state.  Persisting one of these ids into
-    ``disabled_ids`` therefore changes nothing — the Settings surface must
-    render them locked/forced-on and the toggle API must reject a disable, or
+    is the ungated anti-obfuscation branch of the verb-anchored git-publish floor
+    (``_is_git_publish`` / ``_is_push_to_protected_branch``), evaluated before the configurable
+    tiers, which consults no opt-out state (the floor's other git-publish rows are gated per
+    row).  Persisting one of these ids into ``disabled_ids`` changes nothing — the Settings
+    surface must render them locked/forced-on and the toggle API must reject a disable, or
     the opt-out is a silent no-op (UI reports success, the floor still denies).
 
     DISPLAY/API accessor only: nothing in the enforcement path reads it, so it
-    cannot weaken the floor.  Pure and deterministic (module-scope derivation
-    from the catalog category), safe to call from any thread.
+    cannot weaken the floor.  Pure and deterministic (a module-scope constant
+    naming the ungated rule id), safe to call from any thread.
     """
     return _FLOOR_ENFORCED_RULE_IDS
 
@@ -1639,19 +1642,16 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
-# The four self-management SUBCOMMAND floors -- restart, update, gateway restart,
-# cloud <destructive> -- have NO catalog row and NO opt-out.  Their regex rows
-# (``.*kiro.?crew ... restart.*`` and siblings) opened with an unbounded any-run,
-# so the product name in a worktree path plus the verb word anywhere later
-# matched: ``ls ~/kirocrew-wt/restart.log`` was a denial.  A row that fires on
-# the product's name appearing anywhere adds nothing to the structural predicate,
-# which requires the product to be the argv's own PROGRAM (console script or
-# ``python -m kiro_crew``) and the action its LEADING subcommand, so the rows were
-# deleted and the floor now carries the whole of enforcement -- ungated, like the
-# git-publish anti-obfuscation branches: with no row there is no toggle, and a
-# floor that consulted an opt-out state no row can express would be a silent
-# allow the moment the row went away (``is_denied`` used to ``continue`` past a
-# predicate whose id resolved to no pattern).  These ids are what a refusal and
+# The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
+# approve, gateway restart, cloud <destructive> -- have NO catalog row and NO opt-out.  A regex
+# row (``.*kiro.?crew ... restart.*`` and siblings) opening with an unbounded any-run would
+# match the product name in a worktree path plus the verb word later, denying
+# ``ls ~/kirocrew-wt/restart.log``, and adds nothing to the structural predicate, which requires
+# the product to be the argv's own PROGRAM (console script or ``python -m kiro_crew``) and the
+# action its LEADING subcommand.  So the floor carries the whole of enforcement -- ungated, like
+# the git-publish anti-obfuscation branches: with no row there is no toggle, and a floor that
+# consulted an opt-out no row can express would be a silent allow (an ``is_denied`` skipping a
+# predicate whose id resolved to no pattern would never fire it).  These ids are what a refusal and
 # its SEL event report; they are deliberately NOT catalog ids, and the two sets
 # are pinned disjoint so a re-added row cannot silently gate a floor again.
 _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
@@ -1681,7 +1681,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
 # ``RecoveryCard.tsx`` extracts the pattern with a per-line end-anchored regex
 # and the suite's ``_denied_by`` partitions on the first line's separator.
 #
-# The four ``_SELF_PROTECTION_UNGATED_FLOOR_IDS`` entries are the same shape, but
+# The ``_SELF_PROTECTION_UNGATED_FLOOR_IDS`` entries are the same shape, but
 # for them the first line reports the ID itself (there is no catalog pattern to
 # report), the way the gated git-publish floor does.  The opening phrase is the
 # anchor ``deny_guidance`` classifies a self-protection refusal by, so every entry

@@ -8323,17 +8323,20 @@ def test_manifest_declares_every_platform_the_app_runs_on():
     assert manifest["platform"]["os"] == ["macos", "linux", "windows"]
 
     # The pod requirement is carried in the UI copy, not the manifest gate. It
-    # must track reality: pods now run on Linux (systemd --user) AND macOS
-    # (launchd) — with no enforced resource ceiling on macOS — while Make Live
-    # stays Linux-only. The old copy ("pods need Linux systemd") became false
-    # the moment the launchd backend landed, and this test guards the manifest
-    # against lying in either direction.
+    # must track reality: pods run on Linux (systemd --user) AND macOS
+    # (launchd) — with no enforced resource ceiling on macOS — and Make Live
+    # stages its pointer on every platform, restarting automatically only under
+    # a systemd --user unit or a macOS LaunchAgent (``live._service_manager``).
+    # This test guards the manifest against lying in either direction.
     assert any(
         "launchd" in h and "Linux" in h for h in manifest["highlights"]
     ), "the highlight must state pods' per-platform reality (Linux systemd + macOS launchd)"
     assert any(
-        "Make Live is still Linux-only" in h for h in manifest["highlights"]
-    ), "Make Live remains Linux-only and the manifest copy must keep saying so"
+        "Make Live stages its pointer on every platform" in h
+        and "systemd --user" in h
+        and "LaunchAgent" in h
+        for h in manifest["highlights"]
+    ), "the manifest copy must state Make Live's per-platform restart reality"
 
 
 def test_declared_platforms_all_resolve_to_a_real_sys_platform():

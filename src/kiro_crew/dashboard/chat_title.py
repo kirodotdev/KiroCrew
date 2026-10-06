@@ -628,8 +628,7 @@ def _build_title_prompt(
     """Build a title generation prompt from conversation messages.
 
     ``ui_language`` is a validated BCP-47 tag (see ``_ui_language``); ``""``
-    omits the language directive entirely, leaving the prompt byte-identical to
-    the one workspaces on the default (auto) language have always sent. The
+    omits the language directive entirely (the default auto-language prompt). The
     directive is placed OUTSIDE the delimited transcript, so a message that
     quotes it cannot restate it as data.
     """

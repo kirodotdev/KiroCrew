@@ -740,9 +740,10 @@ class TestTheLadderConsultsTheTransport:
         """A ``dashboard:chat-*`` key names nobody; the record the gateway admitted
         on the link does, and the transport's own pairing does not object.
 
-        The record is written by the dashboard link handler and the ``!sessions``
-        pick beside the conversation id it describes and signed by the map under
-        the gateway's admission key, which is what lets a Discord DM mirror of a
+        The record is signed under the gateway's admission key by the path that
+        creates the link -- the dashboard link handler or the ``!sessions`` pick,
+        through ``sign_mirror_admission`` -- and the map stores it verbatim beside
+        the conversation id it describes; the map never signs. That is what lets a Discord DM mirror of a
         dashboard-born session pass the recipient leg -- with or without the
         transport having seen the DM in this process.
         """

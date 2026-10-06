@@ -796,7 +796,7 @@ class TestDurableModelVersionReferences:
         assert "selected object is a concrete model ID" in description
         assert "at the end of its clause" in description
         assert "other backend IDs are not lesson-refused" in description
-        assert "not new regex branches" in description
+        assert "do not disguise either refused class" in description
         assert "A model version mentioned by itself is allowed" in description
 
 

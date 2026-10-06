@@ -209,7 +209,7 @@ def perf_pr_description(
     # Phase-1 canary did not clear it, the band is a demonstrated LOWER BOUND on
     # sensitivity rather than proof the ruler resolves a small win. A human deciding in
     # minutes should be told which of those two they are reading, and only the body can
-    # tell them. Raised by the GPT review of this branch.
+    # tell them.
     caveat = (
         ""
         if ruler_proven
@@ -218,8 +218,8 @@ def perf_pr_description(
             "calibrated band, so the band is a lower bound on sensitivity rather than proof "
             "the ruler resolves a win this small. The two A/B measurements below still had "
             "to beat that band. Treat the magnitude as indicative and the direction as the "
-            "claim; configuring a real `benchmarkCommand` workload is what makes this "
-            "provable.\n"
+            "claim. A custom `benchmarkCommand` workload has no canary, so it never "
+            "proves the ruler either.\n"
         )
     )
     return f"""# auto: {_one_line(proposal.description, limit=70)}

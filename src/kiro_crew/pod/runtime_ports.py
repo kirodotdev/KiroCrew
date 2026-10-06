@@ -53,12 +53,11 @@ def _port_from_env(value: str | None) -> int | None:
     than written literally so this file stays ASCII and the reader is not relying on
     their font to tell the cases apart.
 
-    RANGE IS THE CALLER'S POLICY, not this function's, because the two callers
-    legitimately differ: :func:`allocate_port` needs an out-of-range pin like
-    ``70000`` to arrive intact so it can refuse it by name, while
-    :func:`_peer_claimed_port` wants only real ports, since a value that cannot be a
-    port is not a claim on one. This function's job is to be crash-proof, and the
-    length cap is what makes it so.
+    RANGE IS THE CALLER'S POLICY, not this function's: :func:`allocate_port` needs
+    an out-of-range pin like ``70000`` to arrive intact so it can refuse it by name,
+    and :func:`_peer_effective_port` returns such a value as-is so it agrees with
+    :func:`derive_port` (an unbindable port then never matches a band candidate).
+    This function's job is to be crash-proof, and the length cap is what makes it so.
     """
     if not value or not value.isdecimal() or len(value) > _MAX_PORT_DIGITS:
         return None
@@ -282,10 +281,9 @@ def _read_peer_env(path: Path) -> dict[str, str] | None:
     undecodable -- answers ``None``, because "this peer has no claim I can read" is
     the safe answer and matches :func:`read_env_file`'s fail-open contract.
 
-    The value goes through :func:`_port_from_env`, so every crash guard lives in one
-    place. The RANGE check is this function's own policy: a value that cannot be a
-    port is not a claim on one, whereas :func:`allocate_port` needs an out-of-range
-    pin to arrive intact so it can name it.
+    It returns the parsed mapping only and applies no port or range check: the
+    caller, :func:`_peer_effective_port`, reads ``PORT`` through
+    :func:`_port_from_env`, so every crash guard lives in one place.
     """
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:

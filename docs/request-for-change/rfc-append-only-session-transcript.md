@@ -19,7 +19,10 @@ superseded-by: []
 - Related: `docs/system-specs/modules/history.md`,
   `docs/system-specs/modules/session.md`,
   `rfc-resumable-subagent-sessions.md` (whose Phase 0 redirected the record-store
-  ladder; this RFC deliberately does not re-open model-context ownership)
+  ladder; this RFC deliberately does not re-open model-context ownership),
+  `rfc-append-only-ledger.md` and `docs/system-specs/modules/crew-log-emitter.md`
+  (the crew log dual-writes message bodies and reconciles against the transcript
+  file this RFC would change)
 
 ## 1. Problem statement
 
@@ -40,25 +43,29 @@ moved.
   event moving `stopping → stopped`, a file-change chip attaching to a row, an
   mcp_oauth banner. `_flush_segment` may also reorder already-written rows.
 - **Two paths can strand a recorded row in the archive.**
-  `_frozen_prefix_and_foreign_appends` can drop lines that are already on disk,
-  archived with `reason="foreign-dedup"`; rewrite mode (`rewrite=True`, explicit
-  `messages`, or `slot._pending_rewrite`) truncates the window tail, archiving the
-  dropped lines through `_archive_dropped_lines`. Archives are then hard-deleted by
+  `src/kiro_crew/dashboard/slot_persistence/transcript_merge.py::_frozen_prefix_and_foreign_appends`
+  can drop lines that are already on disk, archived with `reason="foreign-dedup"`;
+  rewrite mode (`rewrite=True`, explicit `messages`, or `slot._pending_rewrite`)
+  truncates the window tail, archiving the dropped lines through
+  `transcript_merge.py::_archive_dropped_lines`. Archives are then hard-deleted by
   `src/kiro_crew/history.py::_cleanup_old_archives` after
   `session.archive_retention_days` (default 30), so a row can become silently
   unrecoverable after a month.
-- **Other rewriting paths, for completeness.** `history.py::_maybe_rotate` drops the
+- **Other rewriting paths, for completeness.** `history_rewrite.py::_maybe_rotate`
+  (reached through the `history.py` facade) drops the
   oldest rows past `_SESSION_MAX_BYTES` / `_SESSION_KEEP_LINES` and archives them with
   `reason="rotate"`. Metadata edits rewrite the whole file through `os.replace` with
   mtime restored (`update_metadata`, `set_title`, `mark_consolidated`, `clear_closed`).
   `delete_session` unlinks. `channel_transcript_migration._write_merged` merges an
   orphan transcript and atomic-writes the result.
 - **Dead code advertises a capability nothing uses.** `history.py::rewrite_session`
-  (with `_rewrite_session_locked`) and `history.py::sliding_window` have no production
-  caller anywhere under `src/` — the only call sites are in
-  `test/test_ephemeral_sessions.py`, plus a docstring reference in
-  `chat_persistence.py` noting that the dashboard rewrite path and `rewrite_session`
-  share one definition.
+  (implemented in `history_rewrite.py` with `_rewrite_session_locked`) and
+  `history.py::sliding_window` (implemented in `history_projection.py`) have no
+  production caller anywhere under `src/` — their call sites are tests
+  (`test/test_ephemeral_sessions.py`, `test/test_archive_pagination.py`,
+  `test/test_history.py` and other history suites), plus a docstring reference in
+  `dashboard/slot_persistence/transcript_merge.py` noting that the dashboard rewrite
+  path and `rewrite_session` share one definition.
 
 The cost is threefold: write amplification proportional to window size rather than to
 the change, a data-loss class that only manifests as a missing archive, and a
@@ -198,7 +205,8 @@ Measurable, and to be asserted in tests rather than claimed in prose:
    appended revisions already deliver.
 4. **Event-source the whole subsystem** with a typed event enum in the style of DSH's
    ~48 known session event types. Larger than the problem. Kiro Crew already has
-   role-typed rows (`history.py::_TOOL_ROLES` covering `tool`/`tool_call`/`tool_result`,
+   role-typed rows (`history_consolidation.py::_TOOL_ROLES` covering `tool`/`tool_call`/`tool_result`,
    alongside `user`, `assistant`, `system`, `error`, `notice`, `inject`, `subagent`) plus
-   `chat_persistence.py::_TRANSIENT_ROLES` that are never persisted. The gap is
+   `dashboard/state.py::_TRANSIENT_ROLES` (imported by `chat_persistence.py`) that are
+   never persisted. The gap is
    mutability, not vocabulary.

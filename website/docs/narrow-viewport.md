@@ -23,20 +23,19 @@ phase-advance controls leaves the phone user unable to advance the phase at all.
 (a split, a resizable rail, an embedded panel), measure the PANE with a `ResizeObserver`
 rather than calling `useIsMobile()`. A 1280px window can hold a 200px pane.
 
-**A tabbed shell's pane needs its own top inset once the header goes away — and it
-must be the only one.** `SidePanelLayout` drops the desktop header block below `md` —
-the block whose `pb-3` put 12px between a tab's title and its content — and replaces it
-with a pill strip that ends in a drawn `border-b`. The pane kept no inset of its own, so
-a tab whose first element is a `Card` or a `StatCard` rendered that element's own border
-ON the divider: two lines touching, measured at a 0px gap on four of Customize's
-seven tabs and on seven of Developer's eight renderable ones at 390px. The pane carries
-`pt-3` on the narrow branch only — desktop must stay at 0 or the two insets stack.
+**A tabbed shell's pane has exactly one owner of its top gap.** On a phone
+(`useIsMobile`) `SidePanelLayout` uses iOS-style two-level navigation: a root list of
+every tab, and, drilled in, a sticky `NavBackBar` over the tab's own
+`mobile-detail-header` (whose `pb-2` owns most of the gap) and the pane, which carries
+`px-4 pt-1` to top it up. On desktop the header block's `pb-3` spaces the content and
+the pane has no top inset, or the two would stack.
+`src/test/SidePanelLayout.narrowPaneTopInset.test.tsx` pins both branches.
 
 That inset is shared by all three pages built on the shell (Customize,
 Developer, Settings), which makes the second half of the rule as load-bearing as the
 first: **a tab must not add a top margin to its own first element.** Doing so stacks on
-the pane and lands that tab 28px down while its siblings sit at 12px — the inconsistency
-reads as sloppiness precisely because the tabs are one keystroke apart. Two shapes, and
+the pane and lands that tab lower than its siblings — the inconsistency reads as
+sloppiness precisely because the tabs are one keystroke apart. Two shapes, and
 the difference is whether the heading can ever have a sibling above it:
 
 - **A heading at the tab's root** (`SkillsTab`, `SteeringTab`) drops the margin outright.
@@ -52,12 +51,9 @@ the difference is whether the heading can ever have a sibling above it:
   matches — and when a tab renders something of its own above the first section, the
   header stops being first and correctly keeps the margin.
 
-Measured at 390px with `website/scripts/capture-side-panel-pane-inset.mjs`, which reports
-the divider→first-in-flow-box distance per tab: all 31 renderable tabs across the three
-pages now read 12px. Residual differences in where the first *pixel* lands (21px on
-Connections, on Developer > System, on Settings > Remote Crew) are a control's own internal
-padding — a sub-tab's or a segmented button's tap target — not stacked page padding, and
-tightening those would shrink a touch target.
+Where the first *pixel* lands can still differ between tabs by a control's own internal
+padding — a sub-tab's or a segmented button's tap target — which is not stacked page
+padding, and tightening it would shrink a touch target.
 
 **An unbounded action cluster leaves the text row; it does not shrink it.** A row of
 actions whose count depends on state (enabled, updatable, uninstallable) and that carries
@@ -216,8 +212,9 @@ outside the viewport contract and still magnifies anything. A browser tab's own
 text-size control does too, but it is **not** a fallback in the installed app: a
 standalone PWA has no Safari toolbar to reach it from, so on a home-screen install
 Display Zoom is the only route. State it with that qualification everywhere the
-claim appears (`website/index.html`, `docs/guides/remote-and-mobile.md`) — an
-unqualified version points a low-vision user at a control that is not there.
+claim is restated (`docs/guides/remote-and-mobile.md`; `website/index.html` only
+points back here) — an unqualified version points a low-vision user at a control
+that is not there.
 
 **Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
 back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
@@ -245,8 +242,8 @@ belongs in the field components, where a real `max(16px, authored)` is expressib
 
 **The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
 every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.
-A waiver for it was written and removed; do not re-add one. The argument for waiving was
-that a permanent finding nobody can action trains contributors to ignore the console —
+Do not add a waiver for it. The argument for waiving is that a permanent finding nobody
+can action trains contributors to ignore the console —
 but the finding *is* actionable, because it is a decision, and a decision does not stop
 being owed because a scanner keeps asking for it. That recurring report is currently the
 only automated reminder that suppressing page zoom is an accessibility trade with no
@@ -274,16 +271,16 @@ keeps the controls reachable, but it is an interim, not the answer.
 
 ## The phone chat page has ONE top bar
 
-Below `md` the chat route used to stack two bars: the shell's (logo -> nav drawer,
-search square, readout capsule, bell) over the page's own title row (sessions
-toggle, title, pop-out, activity panel). Two bars cost 84px of a 844px screen for
-chrome and offered a phone user two drawers for one gesture. There is now one bar,
-the shell's, and the chat page fills it:
+Below `md` the chat route has one bar, the shell's, and the chat page fills it.
+Stacking the shell's bar (logo -> nav drawer, search square, readout capsule, bell)
+over a page title row (sessions toggle, title, pop-out, activity panel) would cost
+84px of an 844px screen for chrome and offer a phone user two drawers for one
+gesture:
 
 | cell | who renders it | what is in it |
 |---|---|---|
 | leading (`auto`) | `App.tsx` | the crew switcher (when a remote crew exists) and downstream widgets (while they exist); usually empty. Not the update pill: beside a remote crew's chip + dropdown it was a third action, so on this page a pending update is the first item of the overflow menu (`UpdatePill variant="menu-item"`, same lifecycle label) |
-| centre (`minmax(0,1fr)`) | `ChatPage.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the session title with the menu chevron flush after it (`ChatHeaderMenu` `triggerLabel`); Rename and Auto-title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's Autopilot InfoTip and `InboundLinkChip` would each be a third control, so the mode is read from the session menu's Autopilot row and a two-way link's actions from its Linked surfaces section |
+| centre (`minmax(0,1fr)`) | `ChatPage.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the session title with the menu chevron flush after it (`ChatHeaderMenu` `triggerLabel`); Rename and Auto-title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `App.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
 That is the `topbar-single` header variant (`index.css`), applied only while
@@ -325,8 +322,9 @@ the nav drawer carries it as a row in its bottom group, so every non-chat phone 
 still reaches it. The capsule's credits segment is also the desktop's door to the
 account modal (balance, sign-in state, `KiroAccountModal`), so the same two drawers
 carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
-in the chat drawer's rail, both between Capabilities and Settings, both opening the
-modal. On the Kiro backend it is always there (the modal's Refresh fills an empty
+in the chat drawer's rail, both between Capabilities and Settings (in the rail
+only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
+see below), both opening the modal. On the Kiro backend it is always there (the modal's Refresh fills an empty
 reading); on any other harness only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`, where the desktop's spinner would
@@ -357,6 +355,23 @@ so Back returns to the chat rather than to a second copy of it. The shell's nav
 drawer has no trigger on this route and its header swipe is gated off
 (`useDrawerSwipe(shellRef, { enabled: isMobile && !isChat })`); the chat
 container already claims its own swipe via `data-owns-swipe`.
+
+The rail carries everything the nav drawer does except Connect-your-phone, which is
+moot on the phone itself: the Main rows and Library on top, the apps, then
+Developer (in developer mode), Terminal (which toggles the docked panel and closes
+the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
+Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
+that secondary group: it stays pinned above Settings while the Apps list keeps
+`APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
+the apps, behind a separator. The decision reads `stableRailHeight` — the tallest
+height seen at the current window width — so the on-screen keyboard or a browser
+toolbar shrinking the rail at the same width never moves the tiles.
+
+**Haptics.** `lib/haptic.ts` makes one best-effort tap: `navigator.vibrate` on
+Android, the hidden switch-checkbox click on iOS where the `switch` attribute exists
+(iOS 17.4+), and a silent no-op everywhere else; it never throws. Call it for a
+committed change, not for a gesture that changed nothing — a drawer swipe taps only
+when it changes the drawer's state, not when it snaps back.
 
 ## A horizontal drag on mobile belongs to the nav drawer unless a page claims it
 

@@ -47,9 +47,9 @@ export interface Slot {
    *  peer row already carried. Preserving it across the bind is what makes the row
    *  the user clicked BECOME the session instead of a sibling appearing next to it.
    *
-   *  Absent on a peer row and on an older payload; `sessionRowIdentity` falls back
-   *  to `peer_id` + `key` for those. Never parse it to recover the local slot key —
-   *  read `key`. */
+   *  The server stamps it on peer rows too. Absent only on an older payload, where
+   *  `sessionRowIdentity` falls back to the bare `key`. Never parse it to recover
+   *  the local slot key — read `key`. */
   row_identity?: string
   peer_name?: string
   unread?: boolean

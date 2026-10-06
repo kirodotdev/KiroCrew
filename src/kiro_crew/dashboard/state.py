@@ -1896,7 +1896,7 @@ CONN_RECOVERY_PREFIX = "[Connection lost — automatic recovery]"
 BUSY_RECOVERY_PREFIX = "[Session busy — automatic recovery]"
 # Prefix on the runner-injected CONTINUE that resumes a turn cut short by a
 # transient backend 5xx after tokens/tools had already streamed. The body lives
-# in chat_utils as _POSTTOKEN_RECOVER_MSG; the prefix is here so all eight
+# in chat_utils as _POSTTOKEN_RECOVER_MSG; the prefix is here so all
 # recovery markers share one home and the frontend has one list to mirror.
 POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
@@ -1922,8 +1922,8 @@ COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # cross-language drift guard on that suffix — a marker outside the family is
 # invisible to it, and the card would silently render machine prose as a bubble.
 # The VALUE is what carries the user-facing meaning, and it deliberately does NOT
-# say "automatic recovery" like the five above: a person pressed the button, and
-# the card must not claim the system recovered by itself.
+# say "automatic recovery" like the automatic-recovery markers: a person pressed
+# the button, and the card must not claim the system recovered by itself.
 MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 # Prefix on the continuation injected when a content-filter refusal landed AFTER
 # the turn had already dispatched tool calls and agent.refusal_fallback_model
@@ -2020,9 +2020,8 @@ def should_queue_refusal_recovery(
     check is deliberately coarse (counts, not a per-refusal pairing): its two
     failure directions are not symmetric. Skipping wrongly leaves the model with
     kiro-cli's "User denied tool execution" and no correction, while queueing
-    wrongly costs one turn the model would otherwise have been told twice --
-    which is exactly what this path already cost before in-band delivery
-    existed. Both keep defaults so a caller on a harness without mid-turn steer
+    wrongly costs only one extra turn in which the model is told twice. Both
+    keep defaults so a caller on a harness without mid-turn steer
     behaves as if nothing was steered.
     """
     if refusal_reasons and notices_sent >= len(refusal_reasons) and notices_pending == 0:

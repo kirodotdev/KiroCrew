@@ -519,7 +519,7 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
         "spawn it unsandboxed -- either agent.sandbox is 'off', or no sandbox backend "
         "is available and agent.sandbox_allow_unsandboxed_exec is set -- so the mask "
         "is never applied and the adapter's credential reads are unfenced. Set "
-        "agent.sandbox to 'standard' or 'strict' ON A HOST WITH A WORKING BACKEND to "
+        "agent.sandbox to 'auto' or 'strict' ON A HOST WITH A WORKING BACKEND to "
         "select this harness, or select a harness whose tool calls reach the gate "
         "directly.".format(label_for(backend))
     )

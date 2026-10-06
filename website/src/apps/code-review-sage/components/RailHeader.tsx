@@ -118,8 +118,8 @@ function NavRow({
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      // Without the app's own ring the browser draws its default blue outline,
-      // which is the one control here that did not match the others.
+      // Same focus ring as every other control; without it the browser draws
+      // its default blue outline instead.
       aria-label={label}
       title={label}
       className={`inline-flex items-center justify-center rounded-md cursor-pointer transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 ${

@@ -555,8 +555,8 @@ jobs:
             RENDERED EVIDENCE: before you judge the missing-evidence trigger below,
             Read ${{ runner.temp }}/design-evidence.txt. The workflow wrote it: it
             downloaded every github.com/user-attachments asset the description
-            offers, typed each by its bytes, and listed the committed images
-            this revision adds or changes under temp-screenshots/ or
+            offers, typed each by its bytes, and listed the committed images or
+            recordings this revision adds or changes under temp-screenshots/ or
             .github/screenshots/ (the evidence path for a contributor with no
             write access, whose `--attach` upload GitHub refuses). That
             file is the predicate for "rendered evidence of THIS revision": a
@@ -582,9 +582,11 @@ jobs:
             load-bearing, and each one gives a control a named cause, which makes
             it DERIVED rather than speculative --
               - the AGENT is untrusted with respect to its own governance
-                ceiling: it can neither read nor write security_policy.json,
-                profiles/, admission_policy.json or computer_use.json, and the
-                PreToolUse gate, the deny rules and the OS sandbox enforce that;
+                ceiling: it can never WRITE security_policy.json, profiles/,
+                admission_policy.json or computer_use.json -- the OS sandbox
+                mounts them read-only in every mode -- and the PreToolUse
+                sensitive-path gate refuses its file tools reading them; a read
+                through a spawned shell is permitted by design;
               - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
                 a policy ceiling tightest-wins that a running agent or app can
                 narrow but never loosen;
@@ -684,7 +686,7 @@ jobs:
                helper that builds the path, the record field, the symbol. Cover
                every entry point, not only the one the PR is about: crew page
                (website/src/, the dashboard routes), chat (dashboard/chat_runner.py,
-               session_agent_selection.py), subagent spawn, continue and resume
+               dashboard/chat_turn/, session_agent_selection.py), subagent spawn, continue and resume
                (subagent_manager/, subagent_persistence.py), cron (cron_script.py,
                cron_service/), app bundles and manifests (apps/, an app.json's
                crons and hooks, code an app runs out of its own install dir), the
@@ -727,7 +729,8 @@ jobs:
             or line-level), DROP it. Merge findings that share one root cause. If
             you drifted into line-level review, delete it.
 
-            VERDICT (advisory — pick exactly one for the `verdict` field):
+            VERDICT (pick exactly one for the `verdict` field; PASS and CONCERNS
+            are advisory, BLOCK fails this check):
             - PASS: a real problem, solved by a sound and proportionate design.
             - CONCERNS: acceptable to proceed, but a notable design risk humans
               should see.

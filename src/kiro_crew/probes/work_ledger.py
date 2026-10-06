@@ -260,15 +260,14 @@ class WorkLedgerProbe(irq.Probe):
     ) -> list[irq.Observation]:
         """Everything about one open item that needs the conductor.
 
-        Every observation here is ``IMMEDIATE``, not ``WAKE``. A ``WAKE`` waits out the
-        kernel's coalescing floor (``irq.DEFAULT_COALESCE_SECS``) on every entry, and
-        the tick that finds it still young answers quiet and re-arms at the loop's own
-        cadence -- so a ``question`` would reach the conductor one full cadence late,
-        however fast the crew-log push pulled the tick forward. The floor exists for a
-        subject whose sub-observations may not exist yet; a report is complete the
-        moment it is written, and a stall is a decision already made, so waiting
-        observes nothing further. ``IMMEDIATE`` skips the delay and keeps the mask,
-        and these keys never recur anyway.
+        Every observation here is ``WAKE``, and :meth:`tuning` sets the coalescing
+        window to zero, so no ``WAKE`` waits out the kernel's default floor
+        (``irq.DEFAULT_COALESCE_SECS``): every fresh one in a tick is delivered at
+        once, in one delivery, and masked together. A report is complete the moment
+        it is written, and a stall is a decision already made, so waiting would
+        observe nothing further. ``WAKE`` rather than ``IMMEDIATE`` is what lets two
+        reports found in one tick share that delivery; see :meth:`tuning`. These
+        keys never recur anyway.
         """
         found: list[irq.Observation] = []
         for event in events:
