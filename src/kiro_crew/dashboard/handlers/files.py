@@ -178,6 +178,7 @@ from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
 from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
     _project_tree_allot,
     _project_tree_body,
+    _project_tree_drop_file_directory_collisions,
     _project_tree_fence,
     _project_tree_file_quotas,
     _project_tree_git_layout,
