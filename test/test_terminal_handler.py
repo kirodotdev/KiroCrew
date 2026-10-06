@@ -618,8 +618,35 @@ class TestResolveCwd:
         assert terminal._resolve_cwd({"cwd": str(tmp_path)}, None) == str(tmp_path)
 
     def test_no_request_no_config_uses_home(self, tmp_path, monkeypatch):
+        # POSIX expanduser reads HOME; Windows reads USERPROFILE — set both so
+        # the test is platform agnostic.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         assert terminal._resolve_cwd({}, None) == str(tmp_path)
+
+    def test_windows_home_unset_falls_back_to_userprofile(self, tmp_path, monkeypatch):
+        # On Windows cmd/PowerShell HOME is unset and only USERPROFILE is set.
+        # expanduser("~") resolves the profile, so the default is the user's home
+        # rather than "/" (which Windows reads as the drive root).
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setattr(
+            terminal.os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p
+        )
+        assert terminal._resolve_cwd({}, None) == str(tmp_path)
+
+    def test_posix_home_set_still_opens_at_home(self, tmp_path, monkeypatch):
+        # With HOME set and no requested/configured cwd, the default is the home
+        # directory (resolved via expanduser).
+        monkeypatch.setattr(
+            terminal.os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p
+        )
+        assert terminal._resolve_cwd({}, None) == str(tmp_path)
+
+    def test_unresolvable_home_keeps_root_last_resort(self, monkeypatch):
+        # When no home can be resolved at all, expanduser returns the literal "~";
+        # the "/" last resort applies rather than returning "~".
+        monkeypatch.setattr(terminal.os.path, "expanduser", lambda p: p)
+        assert terminal._resolve_cwd({}, None) == "/"
 
 
 # ── _kill_session ──

@@ -677,11 +677,21 @@ def _resolve_cwd(cfg: dict, requested: str | None) -> str:
     """Resolve the PTY working directory.
 
     A client-requested dir (the chat's project dir, passed as ?cwd=) must exist.
-    Without one, use the configured cwd, else $HOME. This is the user's own
-    interactive shell (auth is enforced at the WS handshake), so there is no
-    root restriction beyond isdir.
+    Without one, use the configured cwd, else the user's home directory. The
+    home is resolved with ``os.path.expanduser("~")``, which honours
+    ``USERPROFILE`` on Windows (where ``HOME`` is unset for cmd/PowerShell) and
+    ``HOME`` on POSIX, so each platform resolves to its own home. Reading
+    ``HOME`` directly would yield ``"/"`` on a Windows shell with ``HOME`` unset,
+    and ``os.path.abspath`` resolves ``"/"`` to the current drive root. The
+    ``"/"`` last resort applies only when no home resolves at all (``expanduser``
+    then returns the literal ``"~"``). This is the user's own interactive shell
+    (auth is enforced at the WS handshake), so there is no root restriction
+    beyond isdir.
     """
-    default = cfg.get("cwd") or os.environ.get("HOME") or "/"
+    home = os.path.expanduser("~")
+    if home == "~":
+        home = ""
+    default = cfg.get("cwd") or home or "/"
     if requested:
         candidate = os.path.abspath(os.path.expanduser(requested))
         if os.path.isdir(candidate):
