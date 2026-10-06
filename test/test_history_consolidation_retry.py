@@ -32,6 +32,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
+    _CONSOLIDATION_PROMPT_BUDGET_CHARS,
     _SESSION_MAX_BYTES,
     ConversationLog,
     HistoryConsolidator,
@@ -252,7 +253,7 @@ class TestTheLineIsValidatedWithTheRows:
         log = _seed_log(tmp_path)
         with history_mod.allow_on_loop_persist():
             log.update_metadata(KEY, {"memory_mode": "incognito"})
-        rows, total, generation = log.snapshot_for_consolidation(KEY)
+        rows, total, generation, _sub = log.snapshot_for_consolidation(KEY)
         assert (len(rows), total) == (3, 3)
         with pytest.raises(history_mod.TranscriptWithheld):
             log.snapshot_for_consolidation(KEY, withhold_restricted=True)
@@ -1146,7 +1147,9 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
         seen: list[tuple[str, int, str]] = []
-        c.on_abandoned = lambda key, count, reason: seen.append((key, count, reason))
+        c.on_abandoned = lambda key, count, reason, char_count=0: seen.append(
+            (key, count, reason)
+        )
         with history_mod.allow_on_loop_persist():
             log.update_metadata(
                 KEY,
@@ -1166,7 +1169,9 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
         seen: list[tuple[str, int, str]] = []
-        c.on_abandoned = lambda key, count, reason: seen.append((key, count, reason))
+        c.on_abandoned = lambda key, count, reason, char_count=0: seen.append(
+            (key, count, reason)
+        )
 
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
@@ -1179,7 +1184,7 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
-        def _boom(key: str, count: int, reason: str) -> None:
+        def _boom(key: str, count: int, reason: str, char_count: int = 0) -> None:
             raise RuntimeError("bell unavailable")
 
         c.on_abandoned = _boom
@@ -1865,10 +1870,16 @@ class TestRotationReleasesTheBudgetForNewContent:
             )
             assert c.retry_eligible(KEY) is False
 
-            # Blow the byte budget so _maybe_rotate archives the failing messages
-            # and bumps the generation itself.
-            for i in range(5):
-                log.append(KEY, "user", f"{i}" * _OVER_CAP_ROW_CHARS)
+            # Blow the FILE byte budget so _maybe_rotate archives the failing
+            # messages and bumps the generation itself. Each row stays within one
+            # prompt budget (so a pass consolidates a whole message, not a
+            # sub-chunk — sub-chunking of an over-budget head is covered in
+            # test_history_consolidation_bounds.py); it is their NUMBER that
+            # overflows the session file and triggers rotation.
+            row = "r" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS // 2)
+            rows_to_rotate = (_SESSION_MAX_BYTES // len(row)) + 4
+            for i in range(rows_to_rotate):
+                log.append(KEY, "user", f"{i}:{row}")
         assert log.get_metadata(KEY)["rotation_generation"] >= 1, "no rotation fired"
 
         with history_mod.allow_on_loop_persist():
@@ -1877,19 +1888,27 @@ class TestRotationReleasesTheBudgetForNewContent:
             c.retry_eligible(KEY) is True
         ), "a rotation left the session permanently unable to consolidate"
 
-        # Each of these rows is megabytes wide, so the prompt budget puts one
-        # message in front of the model per pass. Drive the passes to a fixed
-        # point rather than asserting on one: what the rotation released is that
-        # the tail CAN be consolidated, and a bounded pass reaches that over
-        # successive turns. The pass cap is what proves it terminates.
+        # The prompt budget puts a bounded number of messages in front of the
+        # model per pass. Drive the passes to a fixed point rather than asserting
+        # on one: what the rotation released is that the tail CAN be consolidated,
+        # and a bounded pass reaches that over successive turns. The pass cap is
+        # what proves it terminates. Progress is the durable position advancing —
+        # the message marker, or (for an over-budget head) the sub-offset.
+        def _position() -> tuple:
+            m = log.get_metadata(KEY)
+            return (
+                int(m.get("last_consolidated", 0) or 0),
+                int(m.get("consolidation_sub_offset", 0) or 0),
+            )
+
         passes = 0
         with patch.object(
             c, "_call_llm", AsyncMock(return_value={"history_entry": "after rotation"})
         ):
-            while log.unconsolidated_count(KEY) and passes < 20:
-                before = log.unconsolidated_count(KEY)
+            while log.unconsolidated_count(KEY) and passes < 400:
+                before = _position()
                 await c._consolidate(KEY, include_history=True)
-                assert log.unconsolidated_count(KEY) < before, "a pass consolidated nothing"
+                assert _position() > before, "a pass advanced nothing"
                 passes += 1
 
         assert log.unconsolidated_count(KEY) == 0, "post-rotation content never consolidated"
@@ -2204,7 +2223,7 @@ class TestAnEditedTranscriptEarnsAFreshBudget:
         log = self._plant_capped_slot(tmp_path, monkeypatch)
         key = "dashboard:chat1"
         # The consolidation turn starts: one atomic pre-turn snapshot.
-        _msgs, total, generation = log.snapshot_for_consolidation(key)
+        _msgs, total, generation, _sub = log.snapshot_for_consolidation(key)
         assert total == 2 and generation == 0
 
         state = _dashboard_state(log)

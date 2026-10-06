@@ -57,6 +57,7 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _CONSOLIDATION_META_KEYS,
     _CONSOLIDATION_PROMPT_BUDGET_CHARS,
     _CONSOLIDATION_REFUSED,
+    _CONSOLIDATION_SUBOFFSET_META_KEYS,
     _CONSOLIDATION_THRESHOLD,
     _PLACEHOLDER_BODIES,
     _SENSITIVE_TOOL_PATTERNS,
@@ -3045,8 +3046,8 @@ class ConversationLog:
 
     def snapshot_for_consolidation(
         self, key: str, *, withhold_restricted: bool = False
-    ) -> tuple[list[dict], int, int]:
-        """Atomically snapshot ``(unconsolidated_messages, total, generation)``.
+    ) -> tuple[list[dict], int, int, int]:
+        """Atomically snapshot ``(unconsolidated_messages, total, generation, sub_offset)``.
 
         With ``withhold_restricted=True`` the metadata line's ``memory_mode`` is
         read under the SAME lock hold and validated with the rows: an incognito or
@@ -3071,12 +3072,22 @@ class ConversationLog:
         it too — silently marking never-processed messages as consolidated and
         dropping them from memory/history extraction.
 
-        Holding :meth:`_locked` across all three reads makes the snapshot
-        atomic: no append/rotation can interleave, so the returned offset and
-        generation are guaranteed consistent. Returns
-        ``(messages[offset:], len(messages), generation)``. The returned list is
-        a fresh slice (never the shared ``_read_messages`` cache object), so the
-        caller may treat it as owned.
+        ``sub_offset`` is the durable sub-message extraction offset into the
+        FIRST unconsolidated message (see
+        :data:`~kiro_crew.history_consolidation._CONSOLIDATION_SUBOFFSET_META_KEYS`),
+        returned ONLY when its stored generation matches the generation read in
+        the same hold; a stale or absent sub-offset reads as ``0``, so the head
+        message is re-sliced from its start under a new generation rather than
+        resumed at an offset that describes different content. Taken in
+        the same lock as the rows and generation so it cannot pair with a
+        different content identity.
+
+        Holding :meth:`_locked` across all reads makes the snapshot atomic: no
+        append/rotation can interleave, so the returned offset, generation and
+        sub-offset are guaranteed consistent. Returns
+        ``(messages[offset:], len(messages), generation, sub_offset)``. The
+        returned list is a fresh slice (never the shared ``_read_messages`` cache
+        object), so the caller may treat it as owned.
         """
         hold = (
             self.derivation_hold(transcript_lock_stems(key))
@@ -3090,7 +3101,32 @@ class ConversationLog:
             meta = self._read_metadata(key)
             offset = meta.get("last_consolidated", 0)
             generation = int(meta.get("rotation_generation", 0) or 0)
-            return list(messages[offset:]), len(messages), generation
+            sub_offset = self._sub_offset_for_generation(meta, generation)
+            return list(messages[offset:]), len(messages), generation, sub_offset
+
+    @staticmethod
+    def _sub_offset_for_generation(meta: dict, generation: int) -> int:
+        """The durable sub-message offset, honoured only for *generation*.
+
+        Returns the stored ``consolidation_sub_offset`` when its stamped
+        ``consolidation_sub_offset_generation`` equals *generation*, else ``0``.
+        A rotation or rewrite bumps the generation, which is exactly what the
+        issue requires to discard a sub-offset: the head is then re-sliced from
+        its start rather than resumed mid-way under new content. Any unreadable
+        or negative stamp reads as ``0`` — the conservative direction, re-slicing
+        from the start rather than resuming at an unverifiable position.
+        """
+        try:
+            stamped = int(meta.get("consolidation_sub_offset_generation", -1))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        if stamped != generation:
+            return 0
+        try:
+            value = int(meta.get("consolidation_sub_offset", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return value if value > 0 else 0
 
     def mark_consolidated(self, key: str, offset: int, generation: int | None = None) -> None:
         """Rewrite metadata line with updated ``last_consolidated`` offset.
@@ -3217,6 +3253,16 @@ class ConversationLog:
             if safe_offset == offset:
                 for _acct_key in _CONSOLIDATION_META_KEYS:
                     meta.pop(_acct_key, None)
+            # The sub-message offset only ever describes extraction PART-WAY
+            # through the message now at ``last_consolidated``. mark_consolidated
+            # is reached in exactly the two cases that make it meaningless: the
+            # marker advanced past that head (its last slice succeeded, or a
+            # whole-message prefix was marked), or it was reset to 0 (rotation /
+            # edit). Both leave no partially-extracted head for it to resume, so
+            # drop it in the same locked write — a stale sub-offset left behind
+            # would otherwise seek into whatever message next lands at the marker.
+            for _sub_key in _CONSOLIDATION_SUBOFFSET_META_KEYS:
+                meta.pop(_sub_key, None)
             lines[0] = json.dumps(meta) + "\n"
             # Reduce lock hold for this one-line metadata rewrite: skip the
             # fsync (fsync=False). ``last_consolidated`` is recoverable
@@ -3235,6 +3281,93 @@ class ConversationLog:
             # writer already invalidates inside its locked section;
             # _invalidate_cache is pure in-memory work, so this adds no I/O
             # under the cross-process flock.
+            self._invalidate_cache(key)
+
+    def advance_consolidation_sub_offset(
+        self, key: str, offset: int, sub_offset: int, generation: int
+    ) -> None:
+        """Record extraction PART-WAY through the head message at *offset*.
+
+        Called after a non-final slice of an over-budget head message succeeds
+        (see :func:`~kiro_crew.history_consolidation._slice_head_for_budget`):
+        the durable ``last_consolidated`` marker must NOT move yet, because the
+        head is only partly extracted, so this advances the sub-message offset
+        instead. The next pass resumes slicing at *sub_offset*; the marker moves
+        past the whole message only once its last slice succeeds, through
+        :meth:`mark_consolidated`.
+
+        Three guards, all under the one lock, keep the sub-offset from ever
+        resuming into content it does not describe:
+
+        * The session must still exist (``_update_metadata_locked`` upserts, so
+          writing a deleted session would resurrect it as metadata-only).
+        * The rotation generation must still equal *generation* — a rotation or
+          rewrite during the (slow) slice await changed the content under the
+          head, so the sub-offset is meaningless and is NOT written (the stale
+          read in :meth:`_sub_offset_for_generation` would reject it anyway, but
+          not writing keeps the line clean).
+        * ``last_consolidated`` must still equal *offset* — the head the slice
+          came from must still be the one at the marker. A marker that moved
+          (another process consolidated) means a different head sits there now.
+
+        *sub_offset* is the absolute character offset into the head's content the
+        slice reached; it is stamped with *generation* so a later rotation
+        invalidates it the same way the attempt stamps are invalidated.
+        """
+        with self._locked(key):
+            path = self._path(key)
+            if not path.exists():
+                return
+            prev_mtime = _safe_mtime(path)
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not lines:
+                return
+            meta = json.loads(lines[0])
+            current_generation = int(meta.get("rotation_generation", 0) or 0)
+            if current_generation != generation:
+                logger.info(
+                    "advance_consolidation_sub_offset: generation changed %s->%d "
+                    "for %s; discarding sub-offset so the head re-slices from its "
+                    "start under the new content",
+                    generation,
+                    current_generation,
+                    key,
+                )
+                return
+            try:
+                current_offset = int(meta.get("last_consolidated", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                current_offset = 0
+            if current_offset != offset:
+                logger.info(
+                    "advance_consolidation_sub_offset: marker moved %d->%d for "
+                    "%s; the sliced head is no longer at the marker, dropping "
+                    "sub-offset",
+                    offset,
+                    current_offset,
+                    key,
+                )
+                return
+            meta["consolidation_sub_offset"] = max(0, int(sub_offset))
+            meta["consolidation_sub_offset_generation"] = generation
+            # A slice that reached its durable sub-offset is a span that ended —
+            # extracted on the success path, or abandoned at the cap. Either way
+            # the next pass attempts the NEXT slice, which is different content
+            # and must start with a fresh attempt budget. Clear the retry
+            # accounting in the SAME locked write so no window exists where the
+            # sub-offset advanced but the previous slice's failed attempts still
+            # stand (they would otherwise be charged against the next slice and
+            # abandon it early). This mirrors mark_consolidated clearing the
+            # accounting when it applies a message advance.
+            for _acct_key in _CONSOLIDATION_META_KEYS:
+                meta.pop(_acct_key, None)
+            meta["updated_at"] = metadata_now_iso()
+            lines[0] = json.dumps(meta) + "\n"
+            # Same cheap, mtime-preserving, no-fsync write as mark_consolidated:
+            # a lost sub-offset only re-slices the head from its start, which is
+            # correct behaviour, so it is not worth a disk flush under the lock.
+            atomic_write(path, "".join(lines), fsync=False)
+            _restore_mtime(path, prev_mtime)
             self._invalidate_cache(key)
 
     def unconsolidated_count(self, key: str) -> int:
@@ -3401,6 +3534,36 @@ class ConversationLog:
             except (TypeError, ValueError, OverflowError):
                 # Unreadable stamp — fall back to keeping the cap.
                 continue
+        # A sub-slice of an over-budget head starts at a durable sub-offset. When
+        # the sub-offset moved between the charge and now, the attempt covered a
+        # DIFFERENT slice of the same head (an earlier slice succeeded and
+        # advanced it), so the cap it was charged against describes different
+        # content than what is in front of us — a fresh budget is correct. The live sub-offset
+        # here is the raw stored value: this runs on the event loop with no
+        # transcript read, and the generation test above already caught the case
+        # where that stored value belongs to a superseded generation.
+        if "consolidation_attempts_sub_offset" in meta:
+            try:
+                if int(meta.get("consolidation_attempts_sub_offset", 0) or 0) != int(
+                    meta.get("consolidation_sub_offset", 0) or 0
+                ):
+                    return False
+            except (TypeError, ValueError, OverflowError):
+                pass
+        # A non-final slice of a head is bounded WITHIN the message: it attempted
+        # a prefix of the head's content, and appending whole messages behind the
+        # head cannot change that prefix (the next pass re-slices the same head at
+        # the same sub-offset and renders the same budget). So message growth must
+        # NOT release it, exactly as a prompted-short-of-total message prefix is
+        # not released below. Without this a head that is the ONLY unconsolidated
+        # message — where ``prompted == count`` holds for the slice — would have
+        # its cap reset by every appended turn and never reach the abandon path.
+        try:
+            sub_bounded = int(meta.get("consolidation_attempts_sub_bounded", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            sub_bounded = 0
+        if sub_bounded:
+            return True
         if message_count is not None and "consolidation_attempts_count" in meta:
             try:
                 attempted = int(meta.get("consolidation_attempts_count", 0) or 0)
@@ -3423,12 +3586,30 @@ class ConversationLog:
         The clamps are the only normalization: *span* is typed, and its values come
         from a snapshot's own ``len()``/generation reads, so there is nothing to
         coerce — but a negative offset or count would be nonsense to stamp.
+
+        ``consolidation_attempts_sub_offset`` records where in an over-budget head
+        the failed slice began, so a later pass that advanced the sub-offset
+        (an earlier slice succeeded) is recognised as a different slice.
+        ``consolidation_attempts_sub_bounded`` is 1 when the failed attempt was a
+        NON-FINAL slice of the head — a prefix of the message content — so
+        :meth:`_attempts_describe_current_span` keeps its cap through message
+        growth the same way it does for a prompt cut short of the message total.
         """
+        sub_offset = max(0, span.sub_offset)
+        # Any slice of an over-budget head is bounded WITHIN the message: it
+        # renders a budget-sized window of the head's content, and appending
+        # whole messages behind the head cannot change that window. A slice is in
+        # play whenever the prompt advanced past where it started
+        # (``sub_prompted > sub_offset``); a span that never sub-sliced carries
+        # both as 0, leaving the ordinary message-aligned accounting unchanged.
+        sub_bounded = 1 if span.sub_prompted > sub_offset else 0
         return {
             "consolidation_attempts_generation": span.generation,
             "consolidation_attempts_offset": max(0, span.offset),
             "consolidation_attempts_count": max(0, span.total),
             "consolidation_attempts_prompted": max(0, span.prompted),
+            "consolidation_attempts_sub_offset": sub_offset,
+            "consolidation_attempts_sub_bounded": sub_bounded,
         }
 
     def record_consolidation_failure(

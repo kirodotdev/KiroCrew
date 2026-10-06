@@ -359,11 +359,15 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
 
     @pytest.mark.asyncio
     async def test_an_over_budget_head_reaches_the_cap_in_a_growing_session(self, tmp_path) -> None:
-        """The termination argument for sending an oversized message.
+        """The termination argument for an oversized head under sub-chunking.
 
-        Without the prompted stamp this loop never ends: the head is re-prompted
-        and re-billed on every pass, and the turns arriving in between reset the
-        count each time.
+        A head larger than one budget is sliced rather than abandoned whole, and
+        each slice gets its own attempt budget. With the provider
+        rejecting every attempt the cap abandons ONE slice and advances the
+        durable sub-offset, so the next pass continues from the next slice and the
+        head drains slice-by-slice instead of being lost in one write. The turns
+        arriving behind the head still never reset a slice's budget — the
+        bounded-within-message accounting keeps the cap across appends.
         """
         log = _log_with(
             tmp_path,
@@ -371,21 +375,202 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
         )
         c = _make_consolidator(log)
 
+        # A 2x-budget head needs two slices. Run enough passes (cap per slice,
+        # plus margin) that both slices reach the cap; each pass clears only the
+        # deadline and appends a turn, exactly as a live session would.
+        with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS * 3):
+                if log.get_metadata(KEY).get("last_consolidated"):
+                    break
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                    log.append(KEY, "user", "another turn while the head is stuck")
+                await c._consolidate(KEY, include_history=True)
+
+        # The head is fully given up only once its LAST slice is abandoned, at
+        # which point the message marker moves past it (and the sub-offset is
+        # cleared). Reaching here means the loop terminated — the attempts were
+        # not reset forever by the turns arriving behind the head.
+        meta = log.get_metadata(KEY)
+        assert meta.get("last_consolidated") == 1, (
+            "the head drains slice-by-slice and the marker moves past it exactly "
+            "once, after the final slice is abandoned"
+        )
+        assert not meta.get("consolidation_sub_offset"), (
+            "the sub-offset is cleared once the marker moves past the whole head"
+        )
+        assert log.unconsolidated_count(KEY), "the tail behind the head must survive"
+
+    @pytest.mark.asyncio
+    async def test_an_over_budget_head_abandons_one_slice_at_a_time(self, tmp_path) -> None:
+        """The cap abandons ONE slice, not the whole head.
+
+        A head twice the budget is sliced in two. With every attempt rejected,
+        the first slice reaches the cap and is abandoned: the durable sub-offset
+        advances past it, the message marker stays put, and the next pass renders
+        the SECOND slice. So one over-budget message costs at most one slice of
+        loss per cap, never the whole message in a single write.
+        """
+        log = _log_with(
+            tmp_path,
+            ["x" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 2)],
+        )
+        c = _make_consolidator(log)
+
+        # Drive the first slice to its cap (every attempt rejected).
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS):
                 with history_mod.allow_on_loop_persist():
-                    # Only the deadline is cleared; the attempt count is what is
-                    # under test. A live session keeps appending between passes.
                     log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
-                    log.append(KEY, "user", "another turn while the head is stuck")
-                if log.unconsolidated_count(KEY) < log.consolidation_counts(KEY)[0]:
-                    break
                 await c._consolidate(KEY, include_history=True)
 
-        assert (
-            log.get_metadata(KEY).get("last_consolidated") == 1
-        ), "the cap must abandon the oversized head, and only the head"
-        assert log.unconsolidated_count(KEY), "the tail behind it must survive"
+        meta = log.get_metadata(KEY)
+        # The marker has NOT moved past the message — only the sub-offset advanced.
+        assert meta.get("last_consolidated", 0) == 0, "the whole head was not abandoned"
+        first_slice_end = int(meta["consolidation_sub_offset"])
+        assert 0 < first_slice_end < _CONSOLIDATION_PROMPT_BUDGET_CHARS * 2, (
+            "the sub-offset advanced past exactly the first slice"
+        )
+        # The abandoned-slice budget was cleared, so the next slice starts fresh.
+        assert log.consolidation_retry_state(KEY, 1)[0] == 0
+
+        # The next pass renders a slice STARTING where the first ended (the
+        # durable sub-offset), still bounded — a 2x-budget head needs more than
+        # two slices because the envelope is charged against each, so the second
+        # slice is not necessarily the last. Capture its prompt and compare it to
+        # the slice the helper produces from the sub-offset.
+        from kiro_crew.history_consolidation import _slice_head_for_budget
+
+        captured: dict = {}
+
+        async def _capture(prompt, *, memory_store="", session_key=""):  # noqa: ANN001
+            captured["prompt"] = prompt
+            return None
+
+        with patch.object(c, "_call_llm", AsyncMock(side_effect=_capture)):
+            with history_mod.allow_on_loop_persist():
+                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await c._consolidate(KEY, include_history=True)
+
+        head = log.snapshot_for_consolidation(KEY)[0][0]
+        expected_slice, start, _end, _last = _slice_head_for_budget(head, first_slice_end)
+        assert start == first_slice_end, "the second slice begins at the durable sub-offset"
+        assert expected_slice["content"] and expected_slice["content"] in captured["prompt"], (
+            "the second pass resumes slicing from the durable sub-offset"
+        )
+        assert len(expected_slice["content"]) < _CONSOLIDATION_PROMPT_BUDGET_CHARS, (
+            "a resumed slice's content is within one budget, not the whole head"
+        )
+        from kiro_crew.history import _fmt_message
+
+        assert len(_fmt_message(expected_slice)) <= _CONSOLIDATION_PROMPT_BUDGET_CHARS, (
+            "the rendered slice (content plus envelope) fits the budget"
+        )
+
+
+class TestSubChunkingDrainsAnOversizedHead:
+    """A single message larger than the budget is extracted slice by
+    slice over successive passes, with a durable sub-offset, instead of being
+    sent whole (and rejected) or abandoned unread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_head_three_times_the_budget_is_drained_over_three_passes(
+        self, tmp_path
+    ) -> None:
+        """The acceptance case: each pass's prompt is within the budget, and the
+        message marker moves past the head only after the final slice.
+        """
+        log = _log_with(tmp_path, ["y" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 3)])
+        c = _make_consolidator(log)
+
+        prompts: list[str] = []
+
+        async def _ok(prompt, *, memory_store="", session_key=""):  # noqa: ANN001
+            prompts.append(prompt)
+            return {"history_entry": "e"}
+
+        passes = 0
+        with patch.object(c, "_call_llm", AsyncMock(side_effect=_ok)):
+            while log.unconsolidated_count(KEY) and passes < 10:
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                before_marker = log.get_metadata(KEY).get("last_consolidated", 0)
+                before_sub = log.get_metadata(KEY).get("consolidation_sub_offset", 0)
+                await c._consolidate(KEY, include_history=True)
+                passes += 1
+                meta = log.get_metadata(KEY)
+                marker = meta.get("last_consolidated", 0)
+                still_pending = log.unconsolidated_count(KEY)
+                if still_pending:
+                    # A non-final slice: the marker did NOT move, the sub-offset
+                    # advanced, and the slice prompted was within the budget.
+                    assert marker == before_marker, "the marker must not move mid-message"
+                    assert (
+                        meta.get("consolidation_sub_offset", 0) > before_sub
+                    ), "a non-final slice advances the durable sub-offset"
+
+        # Drained in more than one pass (so slicing really happened) and the
+        # marker moved past the one message exactly once, at the end.
+        assert passes >= 3, "a 3x-budget head needs at least three slices"
+        assert log.unconsolidated_count(KEY) == 0
+        assert log.get_metadata(KEY).get("last_consolidated") == 1
+        assert not log.get_metadata(KEY).get("consolidation_sub_offset")
+        # Every slice prompted a budget-sized window: no single pass sent the
+        # whole over-budget head.
+        for p in prompts:
+            assert len(p) < _CONSOLIDATION_PROMPT_BUDGET_CHARS * 3
+
+    @pytest.mark.asyncio
+    async def test_a_rotation_between_passes_discards_the_sub_offset(self, tmp_path) -> None:
+        """A rotation (generation bump) invalidates a mid-message sub-offset, so
+        the head is re-sliced from its start under the new generation rather than
+        resumed at an offset describing superseded content.
+        """
+        log = _log_with(tmp_path, ["z" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 3)])
+        c = _make_consolidator(log)
+
+        # One successful slice advances the durable sub-offset without moving the
+        # message marker.
+        with patch.object(
+            c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})
+        ):
+            with history_mod.allow_on_loop_persist():
+                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await c._consolidate(KEY, include_history=True)
+
+        meta = log.get_metadata(KEY)
+        sub = int(meta.get("consolidation_sub_offset", 0))
+        assert sub > 0, "the first slice left a durable sub-offset to resume from"
+        gen_before = int(meta.get("rotation_generation", 0) or 0)
+
+        # Simulate a rotation: bump the generation the way _maybe_rotate does.
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(KEY, {"rotation_generation": gen_before + 1})
+
+        # The snapshot's sub-offset is now 0 (its stamp does not match the
+        # live generation), so the next pass re-slices the head from its start.
+        _rows, _total, gen_now, sub_now = log.snapshot_for_consolidation(KEY)
+        assert gen_now == gen_before + 1
+        assert sub_now == 0, "a rotation discards the mid-message sub-offset"
+
+        captured: dict = {}
+
+        async def _capture(prompt, *, memory_store="", session_key=""):  # noqa: ANN001
+            captured["prompt"] = prompt
+            return {"history_entry": "e"}
+
+        with patch.object(c, "_call_llm", AsyncMock(side_effect=_capture)):
+            with history_mod.allow_on_loop_persist():
+                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await c._consolidate(KEY, include_history=True)
+
+        head = log.snapshot_for_consolidation(KEY)[0][0]
+        from kiro_crew.history_consolidation import _slice_head_for_budget
+
+        first_slice_again, start, _end, _last = _slice_head_for_budget(head, 0)
+        assert start == 0, "the head is re-sliced from its start, not resumed mid-way"
+        assert first_slice_again["content"] in captured["prompt"]
 
 
 class TestConsolidateNowDrainsTheTail:

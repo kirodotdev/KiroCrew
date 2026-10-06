@@ -68,6 +68,7 @@ def test_history_facade_keeps_composed_entrypoints_callable(tmp_path: Path) -> N
         "rotation_generation",
         "snapshot_for_consolidation",
         "mark_consolidated",
+        "advance_consolidation_sub_offset",
     )
     for name in log_entrypoints:
         assert callable(getattr(log, name, None)), f"ConversationLog facade lost method {name}"

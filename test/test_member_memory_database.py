@@ -413,7 +413,7 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
     log = MagicMock()
     first = {"role": "user", "content": "The release codename is aurora 中文."}
     second = {"role": "assistant", "content": "Recorded the original decision."}
-    log.snapshot_for_consolidation.return_value = ([first, second], 2, 0)
+    log.snapshot_for_consolidation.return_value = ([first, second], 2, 0, 0)
     log.consolidation_retry_state.return_value = (0, 0.0)
     log.get_metadata.return_value = {}
     memory = MagicMock()
@@ -443,7 +443,7 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
         messages = [first]
     elif change == "key-order":
         messages[0] = dict(reversed(list(first.items())))
-    log.snapshot_for_consolidation.return_value = (messages, len(messages), 0)
+    log.snapshot_for_consolidation.return_value = (messages, len(messages), 0, 0)
     log.mark_consolidated.side_effect = None
     log.mark_consolidated.reset_mock()
     model = writer._call_llm
@@ -468,6 +468,65 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
     finally:
         if reopened is not None:
             reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_v2_member_memory_extracts_an_over_budget_head_slice_by_slice(
+    member_db, monkeypatch
+):
+    """On the V2 member store: a non-final sub-slice of an over-budget
+    head COMMITS (its receipt satisfies the source-total guard and the replay
+    digest hashes the slice), the sub-offset advances, and the message marker
+    stays put. Regression guard for the member-commit path, which the ordinary
+    (V1) sub-chunking tests do not exercise.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.history import _CONSOLIDATION_PROMPT_BUDGET_CHARS
+    from kiro_crew.history_consolidation import HistoryConsolidator
+
+    head = {"role": "user", "content": "h" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 2)}
+    # last_consolidated == 0: the over-budget head is the first unconsolidated
+    # message — the exact scenario where a naive source_total==offset==0 would
+    # trip apply_consolidation's `source_total < len(messages)` guard.
+    marker = {"value": 0, "sub": 0}
+
+    log = MagicMock()
+    log.snapshot_for_consolidation.return_value = ([head], 1, 0, 0)
+    log.consolidation_retry_state.return_value = (0, 0.0)
+    log.get_metadata.return_value = {}
+
+    def _mark(key, offset, generation=None):
+        marker["value"] = offset
+        marker["sub"] = 0
+
+    def _advance_sub(key, offset, sub_offset, generation):
+        marker["sub"] = sub_offset
+
+    log.mark_consolidated.side_effect = _mark
+    log.advance_consolidation_sub_offset.side_effect = _advance_sub
+
+    memory = MagicMock()
+    memory.read_preferences.return_value = ""
+    memory.read_projects.return_value = ""
+    writer = HistoryConsolidator(log, memory, vector_store=member_db, migrated=True)
+    writer._call_llm = AsyncMock(return_value={"history_entry": "Extracted a slice."})
+    writer._note_failed_attempt = AsyncMock()
+    monkeypatch.setattr("kiro_crew.context.store_of_session", lambda *_: "alice-store")
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda *_: 2)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", AsyncMock(return_value=member_db))
+    monkeypatch.setattr(ContextBuilder, "get_memory_for", lambda **_: memory)
+    monkeypatch.setattr(ContextBuilder, "get_lessons_for", lambda **_: None)
+
+    await writer._consolidate("chat:alice", include_history=True)
+
+    # The slice committed to the member store without raising, the message
+    # marker did NOT move past the head, and the durable sub-offset advanced.
+    writer._note_failed_attempt.assert_not_awaited()
+    assert marker["value"] == 0, "the whole over-budget head must not be marked consolidated"
+    assert marker["sub"] > 0, "a non-final slice advances the durable sub-offset"
+    assert "Extracted a slice" in member_db.read_editable_history()
 
 
 def test_member_database_cannot_open_a_separate_index_or_migrate_global_files(member_db):

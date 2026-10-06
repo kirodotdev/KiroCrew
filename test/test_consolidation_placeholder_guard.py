@@ -110,6 +110,7 @@ def _make_consolidator(memory: MagicMock) -> HistoryConsolidator:
         [{"role": "user", "content": "hi"}],
         1,
         0,
+        0,
     )
     log.get_metadata.return_value = {}
     log.get_metadata_status.return_value = ({}, True)

@@ -177,6 +177,7 @@ async def test_v2_consolidation_instructions_do_not_change_v1_prompt(stores):
             [{"role": "user", "content": "Status is active"}],
             1,
             0,
+            0,
         )
         log.consolidation_retry_state.return_value = (0, 0.0)
         memory = MagicMock()

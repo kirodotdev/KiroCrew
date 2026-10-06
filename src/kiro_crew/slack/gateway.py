@@ -8609,24 +8609,40 @@ class GatewayOrchestrator:
             logger.debug("AutoNudge expiry notification failed", exc_info=True)
             return False
 
-    def _notify_consolidation_abandoned(self, key: str, message_count: int, reason: str) -> None:
+    def _notify_consolidation_abandoned(
+        self, key: str, message_count: int, reason: str, char_count: int = 0
+    ) -> None:
         """Tell the user a session span was dropped from memory consolidation.
 
         The consolidator gives up on a span after its attempt cap and marks it
         consolidated so it stops re-billing; that span's history, preferences
         and lessons are never extracted. This note is the user-visible record
         of that, since a marked span does not appear in any pending listing.
+
+        ``char_count`` is non-zero when the abandon dropped ONE budget-sized
+        slice of a single over-budget message (sub-chunking) rather than whole
+        messages. The message marker did not move in that case, so the notice
+        names the character size of the dropped slice instead of a message count.
         """
         state = self.dashboard_state
         if state is None:
             return
-        title = "Memory consolidation gave up on a session"
-        body = (
-            f"{message_count} messages from session {key} were dropped from memory "
-            f"after repeated consolidation failures ({reason}). Their history, "
-            "preferences and lessons were not extracted. The gateway log has the "
-            "underlying error."
-        )
+        title = "Memory consolidation gave up on part of a session"
+        if char_count > 0:
+            body = (
+                f"A {char_count}-character slice of an oversized message in session "
+                f"{key} was dropped from memory after repeated consolidation "
+                f"failures ({reason}). That slice's history, preferences and "
+                "lessons were not extracted; consolidation continues from the next "
+                "slice. The gateway log has the underlying error."
+            )
+        else:
+            body = (
+                f"{message_count} messages from session {key} were dropped from memory "
+                f"after repeated consolidation failures ({reason}). Their history, "
+                "preferences and lessons were not extracted. The gateway log has the "
+                "underlying error."
+            )
         state.notify(
             "agent",
             title,

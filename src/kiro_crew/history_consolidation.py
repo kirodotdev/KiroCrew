@@ -321,6 +321,27 @@ _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
         "consolidation_attempts_offset",
         "consolidation_attempts_count",
         "consolidation_attempts_prompted",
+        "consolidation_attempts_sub_offset",
+        "consolidation_attempts_sub_bounded",
+    }
+)
+
+#: The durable sub-message extraction offset and the rotation generation it is
+#: tied to. When the FIRST unconsolidated message alone exceeds the prompt
+#: budget it is sliced (see :func:`_slice_head_for_budget`), and
+#: ``consolidation_sub_offset`` records how far into that message extraction has
+#: reached. It is honoured only while ``consolidation_sub_offset_generation``
+#: equals the live ``rotation_generation`` — a rotation or rewrite advances the
+#: generation and the stale sub-offset is dropped, so the message is re-sliced
+#: from its start rather than resumed at a character position that describes
+#: different content. Kept SEPARATE from
+#: :data:`_CONSOLIDATION_META_KEYS` because the retry accounting is cleared the
+#: moment a span is marked (success or abandon), whereas a non-final slice's
+#: sub-offset must survive to the next pass.
+_CONSOLIDATION_SUBOFFSET_META_KEYS: frozenset[str] = frozenset(
+    {
+        "consolidation_sub_offset",
+        "consolidation_sub_offset_generation",
     }
 )
 
@@ -375,12 +396,24 @@ class AttemptedSpan(NamedTuple):
     attempt that stopped short of ``total`` covered a prefix, and a prefix does
     not change when messages are appended behind it (see
     :meth:`ConversationLog._attempts_describe_current_span`).
+
+    ``sub_offset`` and ``sub_prompted`` extend that identity INSIDE a single
+    over-budget head message. When a message alone exceeds the budget it is
+    sliced (see :func:`_slice_head_for_budget`): ``sub_offset`` is the character
+    offset into the head the slice began at and ``sub_prompted`` where it
+    reached. A failed slice is charged against ``(offset, sub_offset)``, so the
+    attempt cap abandons at most one budget-sized slice rather than the whole
+    message, and growth BEHIND the head cannot release a bounded sub-slice. Both
+    are ``0`` for the ordinary message-aligned case, which leaves the existing
+    identity unchanged.
     """
 
     total: int
     generation: int
     offset: int
     prompted: int
+    sub_offset: int = 0
+    sub_prompted: int = 0
 
 
 class _ConsolidationNotDispatched(Exception):
@@ -488,6 +521,85 @@ def _consolidation_chunk(messages: list[dict]) -> list[dict]:
         used += rendered
         rendered_any = True
     return messages
+
+
+def _head_exceeds_budget(message: dict) -> bool:
+    """True when *message* alone renders larger than one prompt budget.
+
+    This is the ``_consolidation_chunk`` returned-it-anyway case (a first
+    rendered message over the budget): a whole-message prompt of it is rejected
+    by any provider that enforces a context ceiling, so it is the message that
+    sub-chunking slices rather than prompts whole.
+    """
+    if message.get("role") in DISPLAY_ONLY_ROLES:
+        return False
+    return len(_fmt_message(message)) > _CONSOLIDATION_PROMPT_BUDGET_CHARS
+
+
+def _slice_boundary(content: str, start: int, span: int) -> int:
+    """Where to end a slice of ``content[start:]`` that is at most *span* chars.
+
+    Cut on the LAST stable boundary at or before ``start + span`` — a line break,
+    then a paragraph/whitespace run, then a bare character — so the same message
+    always slices the same way regardless of how far extraction has reached. A
+    boundary search that found nothing (one unbroken token longer than the span)
+    falls back to the character cut at ``start + span``, which still terminates.
+
+    Returns an absolute offset into *content*, always ``> start`` (so a pass
+    makes progress) and ``<= len(content)``.
+    """
+    end = min(start + span, len(content))
+    if end >= len(content):
+        return len(content)
+    window = content[start:end]
+    # Prefer a line boundary: cut just after the last newline in the window so
+    # the slice ends on a whole line and the next slice starts a fresh one.
+    nl = window.rfind("\n")
+    if nl > 0:
+        return start + nl + 1
+    # Then any whitespace run (paragraph/word boundary), cut just after it.
+    for i in range(len(window) - 1, 0, -1):
+        if window[i].isspace():
+            return start + i + 1
+    # One unbroken token wider than the span: a bare character cut terminates.
+    return end
+
+
+def _slice_head_for_budget(message: dict, sub_offset: int) -> tuple[dict, int, int, bool]:
+    """Slice *message* from *sub_offset* to one budget-sized prompt-safe chunk.
+
+    Returns ``(sliced_message, start, new_sub_offset, is_last_slice)``:
+
+    * ``sliced_message`` is a shallow copy of *message* whose ``content`` is the
+      slice ``content[start:new_sub_offset]``. It renders within the budget
+      because the slice width leaves room for the envelope ``_fmt_message`` adds
+      (``[ts] ROLE[tools]: ``), which is charged against the budget too.
+    * ``start`` is the clamped offset the slice actually began at — equal to
+      *sub_offset* when it was in range, else ``0`` (a stale offset at or past
+      the content length re-slices from the start). The caller stamps the retry
+      accounting with this, not the raw argument, so the recorded slice identity
+      matches the content that was prompted.
+    * ``new_sub_offset`` is the absolute character offset extraction has now
+      reached in the ORIGINAL content, to be made durable so a later pass
+      resumes here (or, when ``is_last_slice``, so the marker moves past the
+      whole message).
+    * ``is_last_slice`` is True when the slice reaches the end of the content, so
+      the caller advances the durable message marker instead of the sub-offset.
+    """
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        content = str(content)
+    start = sub_offset
+    if start < 0 or start >= len(content):
+        start = 0
+    # The envelope (timestamp, role, tools, ": ") is charged against the budget,
+    # so the content slice must be smaller than the budget by that much. Render
+    # the message with empty content to measure the exact envelope width.
+    envelope = len(_fmt_message({**message, "content": ""}))
+    span = max(1, _CONSOLIDATION_PROMPT_BUDGET_CHARS - envelope)
+    end = _slice_boundary(content, start, span)
+    sliced = {**message, "content": content[start:end]}
+    return sliced, start, end, end >= len(content)
 
 
 _PLACEHOLDER_BODIES = frozenset(
@@ -816,11 +928,16 @@ class HistoryConsolidator:
         self._last_lifecycle: float = 0.0
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
-        # Called as ``on_abandoned(key, message_count, reason)`` when a span is
-        # abandoned at the attempt cap, so the owner can tell the user. Without
-        # it the only trace of the dropped span is a WARNING in a rotating log.
-        # Set by the gateway once its notification surface exists; None skips it.
-        self.on_abandoned: Callable[[str, int, str], None] | None = None
+        # Called as ``on_abandoned(key, message_count, reason, char_count=0)``
+        # when a span is abandoned at the attempt cap, so the owner can tell the
+        # user. ``message_count`` is the whole messages given up; ``char_count``
+        # is non-zero only when the abandon dropped ONE budget-sized slice of an
+        # over-budget head message (sub-chunking) rather than whole messages, so
+        # the notice can name the size of a partial-message loss. Without the
+        # callback the only trace of the dropped span is a WARNING in a rotating
+        # log. Set by the gateway once its notification surface exists; None
+        # skips it.
+        self.on_abandoned: Callable[..., None] | None = None
         # Track last activity per session for idle-based history consolidation
         self._last_activity: dict[str, float] = {}
         # ``_last_activity`` lives in memory only, so after a restart a session
@@ -920,6 +1037,37 @@ class HistoryConsolidator:
             return False
         return (_time.time() if now is None else now) >= retry_at
 
+    async def _advance_history_marker(self, key: str, span: AttemptedSpan) -> None:
+        """Make durable the progress a finished history span represents.
+
+        The one place that decides, from the span alone, whether a pass advanced
+        the whole-message ``last_consolidated`` marker or only the sub-message
+        offset INSIDE an over-budget head — used identically on the success path
+        and the abandon-at-cap path, since both end a slice and hand the next
+        pass the slice after it.
+
+        A span is a NON-FINAL sub-slice when its prompt advanced the sub-offset
+        (``sub_prompted > sub_offset``) but did not reach the end of the head
+        (``prompted`` still at ``offset``, i.e. the message marker was told not to
+        move). That case advances the durable sub-offset to ``sub_prompted`` so
+        the next pass resumes at the next slice; every other case — a final slice
+        (``prompted`` moved to ``offset + 1``) or an ordinary message-aligned
+        chunk — advances ``last_consolidated`` to ``prompted`` and clears the
+        sub-offset. Both run off the event loop (blocking file IO).
+        """
+        if span.sub_prompted > span.sub_offset and span.prompted <= span.offset:
+            await asyncio.to_thread(
+                self._log.advance_consolidation_sub_offset,
+                key,
+                span.offset,
+                span.sub_prompted,
+                span.generation,
+            )
+            return
+        await asyncio.to_thread(
+            self._log.mark_consolidated, key, span.prompted, span.generation
+        )
+
     async def _note_failed_attempt(self, key: str, span: AttemptedSpan, reason: str) -> None:
         """Charge one attempt for a billed turn that never reached the marker.
 
@@ -968,19 +1116,36 @@ class HistoryConsolidator:
                 max(0.0, retry_at - _time.time()),
             )
             return
-        self._logger.warning(
-            "Abandoning consolidation for %s after %d failed attempts (%s): "
-            "marking %d messages consolidated WITHOUT a memory pass, so this "
-            "span's history/preferences/lessons are not extracted",
-            key,
-            attempts,
-            reason,
-            span.prompted - span.offset,
-        )
-        try:
-            await asyncio.to_thread(
-                self._log.mark_consolidated, key, span.prompted, span.generation
+        # A non-final sub-slice abandon drops ONE budget-sized slice of an
+        # over-budget head, not whole messages: the message marker stays put and
+        # the next pass tries the next slice. Report the slice's character span so
+        # the warning and the user notice name the real size of the loss rather
+        # than "0 messages".
+        is_sub_slice_abandon = span.sub_prompted > span.sub_offset and span.prompted <= span.offset
+        slice_chars = span.sub_prompted - span.sub_offset if is_sub_slice_abandon else 0
+        if is_sub_slice_abandon:
+            self._logger.warning(
+                "Abandoning consolidation for %s after %d failed attempts (%s): "
+                "giving up one %d-character slice of an over-budget message "
+                "WITHOUT a memory pass; the next pass continues from the slice "
+                "after it",
+                key,
+                attempts,
+                reason,
+                slice_chars,
             )
+        else:
+            self._logger.warning(
+                "Abandoning consolidation for %s after %d failed attempts (%s): "
+                "marking %d messages consolidated WITHOUT a memory pass, so this "
+                "span's history/preferences/lessons are not extracted",
+                key,
+                attempts,
+                reason,
+                span.prompted - span.offset,
+            )
+        try:
+            await self._advance_history_marker(key, span)
         except Exception:
             # The count stays at the cap, so retry_eligible() keeps refusing —
             # the span stops spending even though the marker is missing.
@@ -990,7 +1155,7 @@ class HistoryConsolidator:
         callback = self.on_abandoned
         if callback is not None:
             try:
-                callback(key, span.prompted - span.offset, reason)
+                callback(key, span.prompted - span.offset, reason, char_count=slice_chars)
             except Exception:
                 self._logger.debug(
                     "Abandoned-consolidation callback failed for %s", key, exc_info=True
@@ -1409,6 +1574,7 @@ class HistoryConsolidator:
                     unconsolidated,
                     total,
                     generation_at_snapshot,
+                    sub_offset_at_snapshot,
                 ) = await asyncio.to_thread(
                     self._log.snapshot_for_consolidation, key, withhold_restricted=True
                 )
@@ -1478,12 +1644,54 @@ class HistoryConsolidator:
             # project extraction outright. Unbounded is the lesser fault while
             # that offset is a scheduling artifact rather than a durable marker.
             chunk = _consolidation_chunk(unconsolidated) if include_history else unconsolidated
-            attempted = AttemptedSpan(
-                total=total,
-                generation=generation_at_snapshot,
-                offset=offset,
-                prompted=offset + len(chunk),
-            )
+            # Sub-message chunking. When history consolidation's bounded chunk is
+            # a single message that alone exceeds the budget (the
+            # returned-it-anyway case in _consolidation_chunk), prompting it whole
+            # is rejected by any provider with a context ceiling, so the span
+            # would only ever reach the abandon path and lose the whole message.
+            # Instead slice a budget-sized, stable-boundary window of its content
+            # from the durable sub-offset and prompt only that. The message
+            # marker stays put until the LAST slice succeeds; a non-final slice
+            # advances the durable sub-offset instead, so the next pass resumes
+            # where this one stopped and the attempt cap can abandon at most one
+            # slice rather than the message.
+            #
+            # Only history passes own the durable marker and sub-offset; a
+            # prefs-only pass keeps the whole tail (see above), so it never slices.
+            sub_offset_prompted = 0
+            sub_slice_is_last = False
+            is_sub_slice = False
+            if include_history and len(chunk) == 1 and _head_exceeds_budget(chunk[0]):
+                is_sub_slice = True
+                (
+                    sliced_head,
+                    sub_slice_start,
+                    sub_offset_prompted,
+                    sub_slice_is_last,
+                ) = _slice_head_for_budget(chunk[0], sub_offset_at_snapshot)
+                chunk = [sliced_head]
+                # The message marker advances past the head ONLY on the final
+                # slice; a non-final slice leaves it at ``offset`` and records
+                # progress through the sub-offset. ``sub_prompted`` carries the
+                # char offset this slice reached so the retry accounting can tell
+                # one slice of the head from the next and keep its cap through
+                # message growth behind the head. ``sub_offset`` is the clamped
+                # start the slice actually used, not the raw snapshot value.
+                attempted = AttemptedSpan(
+                    total=total,
+                    generation=generation_at_snapshot,
+                    offset=offset,
+                    prompted=offset + (1 if sub_slice_is_last else 0),
+                    sub_offset=sub_slice_start,
+                    sub_prompted=sub_offset_prompted,
+                )
+            else:
+                attempted = AttemptedSpan(
+                    total=total,
+                    generation=generation_at_snapshot,
+                    offset=offset,
+                    prompted=offset + len(chunk),
+                )
 
             # Resolve the owning execution once. V2 learning requires its exact
             # database; only V1 retains Markdown and JSONL learning handles.
@@ -1540,26 +1748,43 @@ class HistoryConsolidator:
             if member_memory:
                 if vector_store is None:
                     raise RuntimeError("Member memory database is unavailable")
+                # The receipt identity. For an ordinary message-aligned span this
+                # is the pre-existing 5-element key, left byte-for-byte unchanged
+                # so already-written receipts still match. A sub-slice of an
+                # over-budget head shares (key, generation, offset) with every
+                # OTHER slice of the same head, so without the sub-offset two
+                # distinct slices would collide on one receipt — a slice-2 run
+                # would replay slice-1's receipt and advance the wrong state.
+                # Appending the sub-offset only when sub-slicing keeps the two
+                # cases apart without churning the common case.
+                source_id_parts: list = [
+                    key,
+                    generation_at_snapshot,
+                    attempted.offset,
+                    include_history,
+                    None if include_history else total,
+                ]
+                if is_sub_slice:
+                    source_id_parts.append(attempted.sub_offset)
                 source_id = hashlib.sha256(
-                    json.dumps(
-                        [
-                            key,
-                            generation_at_snapshot,
-                            attempted.offset,
-                            include_history,
-                            None if include_history else total,
-                        ]
-                    ).encode("utf-8")
+                    json.dumps(source_id_parts).encode("utf-8")
                 ).hexdigest()
                 committed = await asyncio.to_thread(vector_store.consolidation_receipt, source_id)
                 if committed is not None:
                     from kiro_crew.vector_memory import consolidation_source_digest
 
                     count = committed["source_count"]
+                    # The committed run hashed exactly what it put in front of the
+                    # model: the sliced head for a sub-slice (``chunk`` is
+                    # ``[sliced_head]``), the plain prefix otherwise. Compare
+                    # against the SAME shape here, or a sub-slice receipt — whose
+                    # stored digest is over the slice — could never be recognised
+                    # (``unconsolidated[:count]`` is the WHOLE head).
+                    replay_source = chunk if is_sub_slice else unconsolidated
                     if (
-                        len(unconsolidated) < count
+                        len(replay_source) < count
                         or await asyncio.to_thread(
-                            consolidation_source_digest, unconsolidated[:count]
+                            consolidation_source_digest, replay_source[:count]
                         )
                         != committed["source_digest"]
                     ):
@@ -1567,12 +1792,28 @@ class HistoryConsolidator:
                             "Committed consolidation source changed before acknowledgement"
                         )
                     if include_history:
-                        await asyncio.to_thread(
-                            self._log.mark_consolidated,
-                            key,
-                            committed["source_total"],
-                            generation_at_snapshot,
-                        )
+                        if is_sub_slice:
+                            # A sub-slice receipt. ``source_id`` folds the
+                            # sub-offset in and the digest matched the same
+                            # ``source_count``, so this replay's ``attempted``
+                            # describes the SAME slice the committed run did.
+                            # Re-apply its durable advance (the sub-offset for a
+                            # non-final slice, the message marker for the final
+                            # one) rather than a bare ``source_total``, which for
+                            # a non-final slice is the unmoved message offset and
+                            # would wrongly drop the sub-offset.
+                            await self._advance_history_marker(key, attempted)
+                        else:
+                            # The ordinary message-aligned receipt: advance to the
+                            # EXACT prefix the committed run extracted
+                            # (``source_total``), never this replay's possibly-
+                            # larger snapshot — appended messages must stay unread.
+                            await asyncio.to_thread(
+                                self._log.mark_consolidated,
+                                key,
+                                committed["source_total"],
+                                generation_at_snapshot,
+                            )
                     return None
 
             conversation = "\n".join(_fmt_message(m) for m in _prompt_rows(chunk))
@@ -1811,7 +2052,12 @@ class HistoryConsolidator:
             # was thinking makes this result one derived from a restricted
             # transcript, so it is discarded -- nothing reaches history or memory.
             try:
-                latest, latest_total, latest_generation = await asyncio.to_thread(
+                (
+                    latest,
+                    latest_total,
+                    latest_generation,
+                    latest_sub_offset,
+                ) = await asyncio.to_thread(
                     self._log.snapshot_for_consolidation, key, withhold_restricted=True
                 )
             except TranscriptWithheld:
@@ -1826,6 +2072,14 @@ class HistoryConsolidator:
                 or latest_total < total
                 or latest[: len(unconsolidated)] != unconsolidated
                 or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
+                # A sub-slice this run read started at ``sub_offset_at_snapshot``.
+                # If the durable sub-offset moved while the model was thinking
+                # (another process extracted an earlier slice of the same head),
+                # this result describes a slice other than the one now at the
+                # offset, so it must not advance anything. The generation check
+                # above misses this: a sub-offset advance does not bump the
+                # generation.
+                or (is_sub_slice and latest_sub_offset != sub_offset_at_snapshot)
             ):
                 self._logger.info(
                     "Discarding consolidation result for %s: conversation changed during extraction",
@@ -1852,12 +2106,25 @@ class HistoryConsolidator:
                 # writer applies, so the two paths cannot drift.
                 consolidation, _ = _withhold_unseen_deletes(result, semantic_visible, self._logger)
 
+                # ``source_total`` is the receipt-identity token and must satisfy
+                # ``apply_consolidation``'s ``>= len(messages)`` guard. For an
+                # ordinary span that is the prompted message boundary. For a
+                # sub-slice the message marker does NOT move (``attempted.prompted``
+                # is the unmoved ``offset``), so pass the head's own boundary
+                # (``offset + len(chunk)`` == offset + 1) instead: it clears the
+                # guard, is reproducible on replay, and is never read as the
+                # durable advance — the sub-slice durable advance goes through
+                # ``_advance_history_marker``, not ``source_total``.
+                member_source_total = (
+                    attempted.offset + len(chunk) if is_sub_slice else attempted.prompted
+                )
+
                 def _apply_member_consolidation() -> dict:
                     with self._publication_hold_checked(key, commit_state) as publication:
                         applied = store.apply_consolidation(
                             source_id=source_id,
                             session_key=key,
-                            source_total=attempted.prompted,
+                            source_total=member_source_total,
                             result=consolidation,
                             snapshot={row["key"]: row for row in current_semantic},
                             messages=chunk,
@@ -2050,13 +2317,12 @@ class HistoryConsolidator:
             # asyncio.create_task), so offload the blocking rewrite to a worker
             # thread — otherwise a slow filesystem freezes the loop (heartbeats,
             # Slack, dashboard). Same rationale as the offloads above.
+            #
+            # _advance_history_marker routes a non-final sub-slice to the durable
+            # sub-offset (the head is only partly extracted) and everything else
+            # to the whole-message marker.
             if include_history:
-                await asyncio.to_thread(
-                    self._log.mark_consolidated,
-                    key,
-                    attempted.prompted,
-                    generation_at_snapshot,
-                )
+                await self._advance_history_marker(key, attempted)
 
         except TranscriptWithheld as exc:
             if not commit_state.committed:
@@ -2088,13 +2354,10 @@ class HistoryConsolidator:
             if include_history:
                 try:
                     # The prompted prefix, not the snapshot: the messages past
-                    # it were never read, and the next pass prompts them.
-                    await asyncio.to_thread(
-                        self._log.mark_consolidated,
-                        key,
-                        attempted.prompted,
-                        generation_at_snapshot,
-                    )
+                    # it were never read, and the next pass prompts them. For a
+                    # non-final sub-slice this advances the durable sub-offset
+                    # rather than the message marker.
+                    await self._advance_history_marker(key, attempted)
                 except Exception:
                     # Same accounting as the arm below: an output committed, so
                     # the turn was billed, and the unwritten marker must back
