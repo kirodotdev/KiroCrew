@@ -324,17 +324,25 @@ background loop waits on it so Ctrl-C wakes them immediately instead of at the
 next poll. `_shutdown()` in `slack/gateway.py` then tears down in a deliberate
 order, and the order is load-bearing:
 
-1. **Loop-stall watchdog off first.** Killing every kiro-cli child produces a
-   `waitpid` reaping burst that can wedge the event loop past the watchdog's
-   threshold; an armed watchdog would turn a clean quit into a crash exit.
-2. Save active dashboard slots to history (off-loop, with a deadline, because
+1. Stop the work that must not outlive the process or spend the shutdown
+   budget: cancel in-flight wheel applies, start cancelling the update
+   coordinator (awaited later, bounded by `UPDATE_INSTALLER_STOP_SECS`, so an
+   installer it runs can restore the install it moved aside), stop memory
+   repair and memory startup, cancel the boot-time inbound-spool replay, and
+   stop the central policy refresher.
+2. **Loop-stall watchdog off before any session or child teardown.** Killing
+   every kiro-cli child produces a `waitpid` reaping burst that can wedge the
+   event loop past the watchdog's threshold; an armed watchdog would turn a
+   clean quit into a crash exit.
+3. Save active dashboard slots to history (off-loop, with a deadline, because
    the per-session lock and disk I/O must not stall shutdown), then stop file
    indexes.
-3. Cancel in-flight handler tasks.
-4. Stop the cron service, then the heartbeat service.
-5. Stop the pooled MCP gateway broker and its backends (spawned in their own
+4. Wait for the update coordinator's stop (bounded), then cancel in-flight
+   handler tasks.
+5. Stop the cron service, then the heartbeat service.
+6. Stop the pooled MCP gateway broker and its backends (spawned in their own
    session, so they would otherwise outlive the gateway).
-6. Concurrently: cancel subagents, close all sessions, close WebSocket
+7. Concurrently: cancel subagents, close all sessions, close WebSocket
    connections and then the dashboard runner, close each channel client, and
    cancel background tasks (model download, memory-store auto-migration, update check).
 

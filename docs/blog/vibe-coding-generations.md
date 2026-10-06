@@ -138,8 +138,9 @@ institutional than psychological, and that is good news for us, because you
 cannot ship a conscience but you can ship an institution.
 
 Kiro Crew already has the first part and the fourth, plus a narrow version of the
-second: the security keystone is exactly "the agent may not read or write its own
-ceiling". The third is missing entirely. Today an agent whose change gets
+second: the security keystone is exactly "the agent cannot write its own ceiling", in
+any sandbox mode. It can read it, by design: hiding a policy file would make it
+resolve to the permissive default. The third is missing entirely. Today an agent whose change gets
 reverted suffers nothing at all, and nothing in its next turn mentions that it
 happened.
 
@@ -184,16 +185,20 @@ Reputation needs a population that acts on your record, and we do not have one
 before 4.0.
 
 That second limit has a ceiling I can measure, and it is in this repository.
-Episodic ranking defaults to a recency factor of
+In the Global (V1) memory store (Memory V2 member stores do not decay), episodic ranking defaults to a recency factor of
 `math.exp(-0.03 * days_old)`, with per-tag overrides through
 `memory.decay_rates` (`_DEFAULT_DECAY_RATE` and `_sanitize_decay_rates` in
 `src/kiro_crew/vector_memory.py`, which clamps each rate to
-`[_DECAY_RATE_MIN, _DECAY_RATE_MAX]`). Scores are rounded to four decimals
-(`_rank_from_scoring_set`), so under the default rate a typical
+`[_DECAY_RATE_MIN, _DECAY_RATE_MAX]`). Scores, `sim * (0.7 + 0.3 * importance) * exp(-rate * days_old)`, are rounded to
+four decimals (`rank_from_scoring_set` in
+`src/kiro_crew/vector_memory_runtime/episodic_search.py`), so under the default rate a typical
 score reaches `0.0000` after roughly a year. The benchmark harness in
 [#2123](https://github.com/kirodotdev/KiroCrew/pull/2123) measured that default
 decay over a 293-day LoCoMo corpus: session `recall_all@1` fell from 0.4942 to
-0.0814, and turn `recall_all@5` fell from 0.4112 to 0.0754. Current prompt
+0.0814, and turn `recall_all@5` fell from 0.4112 to 0.0754. These are
+pre-correction figures over 1 977 queries; the corrected decay-neutral baseline
+and the outstanding anchored re-run are in
+[memory-benchmarks.md](../architecture/design-notes/memory-benchmarks.md). Current prompt
 injection applies a raw-cosine relevance gate before decay ranking
 (`get_episodic_context`, which drops candidates below the length-aware gate via
 `search_episodic(relevance_filter=True)`), removing irrelevant candidates

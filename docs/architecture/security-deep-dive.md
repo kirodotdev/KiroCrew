@@ -95,7 +95,7 @@ is scrubbed by the parent before spawn. The parent gateway process is unaffected
 
 **`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
 (namespace on Linux, sandbox-exec on macOS) at the `standard` tier.** The other
-values are `"strict"` and `"off"` (`config/loader.py`, `AgentConfig.sandbox`,
+values are `"strict"` and `"off"` (`config/sections.py`, `AgentConfig.sandbox`,
 `enum=["auto", "strict", "off"]`; the same three-value enum gates the dashboard
 config editor in `dashboard/handlers/core.py`, pinned equal by
 `test_sandbox_strict_selectable.py`). `"strict"` is the operator's opt-in to the
@@ -224,7 +224,7 @@ ssh-agent forwarding is unavailable inside a confined spawn. Operators who depen
 on passphrase-protected keys or hardware tokens use key files directly or leave
 `agent.sandbox` at `off`.
 
-## Layer 1: Filesystem gate (`security.py` + `hooks.py`)
+## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 
 `is_sensitive_path()` is the shared read+write block, and
 `is_sensitive_write_path()` is its strict superset: it adds paths that stay
@@ -235,9 +235,12 @@ symlink-resolved target as well as the lexically normalized and raw forms, so a
 workspace symlink into a blocked directory is refused through the link.
 
 `hooks.safe_read_file()` is the guarded read used by Kiro Crew's own non-tool file
-access: it re-checks the resolved target and then opens the canonical path with
-`O_NOFOLLOW`, which closes the TOCTOU window where the final component is swapped
-for a symlink after the check.
+access. It lives in `hook_runtime/safe_reads.py` and `hooks.py` re-exports it. It
+re-checks the resolved target and then opens the canonical path through
+`jsonl_util.open_regular_nofollow` (`O_NOFOLLOW`), which closes the TOCTOU window
+where the final component is swapped for a symlink after the check. The open
+carries `max_bytes=MAX_FILE_BYTES`, charged against every read, so a file over the
+cap, or one that grows past it after the open, is refused with `EFBIG`.
 
 The text, byte and prefix readers also check the opened descriptor before consuming
 content. They require a regular file, a kernel-reported path matching the canonical
@@ -317,7 +320,8 @@ V1 keeps its existing Markdown/JSONL behavior. See
 
 ### Audited internal carve-out
 
-`safe_read_file_internal(read_id)` permits a small hardcoded allowlist of
+`safe_read_file_internal(read_id)` (in `hook_runtime/internal_reads.py`, re-exported
+by `hooks.py`) permits a small hardcoded allowlist of
 system-internal reads of otherwise-sensitive paths. It re-verifies
 `is_sensitive_path()` (a path that has stopped being sensitive means the
 configuration drifted, so it refuses rather than silently widening), opens with
@@ -326,7 +330,7 @@ a `success` whose audit cannot be persisted returns `None`, because a log warnin
 is not an audit event and the carve-out's validity depends on every successful
 read producing one. `read_id` is never constructed from untrusted input.
 
-## Layer 2: Command gate (`security.py` + `hooks.py`)
+## Layer 2: Command gate (`security/` package + `hooks.py`)
 
 Three independent checks run on every shell-bearing tool call, each against the
 model's title **and** the raw command:
