@@ -1034,7 +1034,8 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "ensure_served_default",
     ): "The served-default backfill reads kiro-cli's own ``currentModelId`` semantics. "
     "Another host reaching it would have its resolved id rewritten from a list it did "
-    "not author.",
+    "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
+    "own ``model`` select does not list, onto an id that select does list.",
     (
         "src/kiro_crew/acp/session_handle.py",
         "_handle_update",

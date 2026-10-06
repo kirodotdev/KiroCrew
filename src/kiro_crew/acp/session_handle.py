@@ -674,6 +674,16 @@ def models_from_config_options(resp: dict[str, Any], backend: str) -> dict[str, 
     """
     if backend not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
         return None
+    return model_select_envelope(resp)
+
+
+def model_select_envelope(resp: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``model`` select of a session response as a ``models`` envelope, ungated.
+
+    The shape walk behind :func:`models_from_config_options`, without its
+    membership gate, for a caller that asks the select one narrow question rather
+    than adopting it as the session's advertised list.
+    """
     for opt in resp.get("configOptions") or []:
         if not isinstance(opt, dict) or opt.get("id") != "model" or opt.get("type") != "select":
             continue
@@ -1350,6 +1360,12 @@ class AcpSessionHandle:
         self.model_pin_partial: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
+        # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
+        # or "". One answer read from the ``model`` select, never the list itself:
+        # nobody has shown that list to be the account's complete served set, so
+        # it must not become the entitlement list the picker and the explicit-pick
+        # guard narrow by.
+        self._kas_auto_fallback: str = ""
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
         # The session-init snapshot is one unconfirmed answer captured at one
         # instant, and the read path (the dashboard picker filter) has no
@@ -3690,6 +3706,18 @@ class AcpSessionHandle:
         if isinstance(config_options, list):
             self._config_options = config_options
             self._sync_effort_levels()
+            # Read the whole select once and keep only its answer, so a long list
+            # is never truncated and never stored. Only the KAS arm of
+            # ``ensure_served_default`` reads it.
+            select = model_select_envelope(resp) or {}
+            ids = [
+                m["modelId"]
+                for m in select.get("availableModels", [])
+                if isinstance(m.get("modelId"), str)
+            ]
+            self._kas_auto_fallback = (
+                pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
+            )
         # Where this host's model list lives is asked in ONE place
         # (``session_models_envelope``): a host in
         # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object
@@ -3748,14 +3776,16 @@ class AcpSessionHandle:
         be handed ``"auto"`` at birth — and then every prompt on this session
         dies with "your account does not have access to model 'auto'".
 
-        Only the kiro backend: its advertised ids are exactly the ids
-        ``session/set_model`` accepts, so "absent from the advertised list"
-        genuinely means unusable there.
+        The kiro backend judges any current id: its advertised ids are exactly
+        the ids ``session/set_model`` accepts, so "absent from the advertised
+        list" genuinely means unusable there. KAS judges only an ``auto``
+        default, against its ``model`` select (see the branch below).
 
         Routed through :meth:`set_model` rather than a second wire call, so the
         KAS-vs-``session/set_model`` verb choice and the window/meter rebase
-        stay in one place; the id handed to it is already an advertised one, so
-        its own ``resolve_usable_model`` passes it straight through.
+        stay in one place. On kiro the id handed to it is an advertised one; on
+        KAS it comes from the host's own select and passes because KAS
+        advertises no list. Either way ``resolve_usable_model`` lets it through.
 
         ``_model`` is restored afterwards. That field is the session's INTENT
         (``""``/``"auto"`` mean "inherit"), and it is what the warm-pool
@@ -3781,6 +3811,36 @@ class AcpSessionHandle:
             intent = self._model
             try:
                 await self.set_model(fallback)
+            finally:
+                self._model = intent
+        elif self._runtime.acp_backend == ACP_BACKEND_KAS:
+            # KAS defaults a new session to ``auto`` and lists its models only in
+            # the ``model`` select. That list answers ONE question here: is the
+            # ``auto`` this session sits on missing from it? A listed id is served,
+            # so moving to one is safe even if the list is incomplete. A concrete
+            # current model is never judged against it, since a partial list would
+            # move a session off a model the account can run.
+            fallback = self._kas_auto_fallback
+            if not fallback:
+                return
+            logger.warning(
+                "KAS session %s defaults to auto, which its model select does not list; "
+                "switching to %s",
+                self._session_id,
+                fallback,
+            )
+            intent = self._model
+            try:
+                await self.set_model(fallback)
+            except (AcpError, AcpRequestTimeout) as exc:
+                # session/new already succeeded; a refused switch must not fail
+                # the session start. Stay on the backend default, the substitute
+                # path's own contract.
+                logger.warning(
+                    "KAS session %s could not switch off auto: %s",
+                    self._session_id,
+                    redact_log_via_context(str(exc)),
+                )
             finally:
                 self._model = intent
 

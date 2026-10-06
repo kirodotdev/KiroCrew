@@ -61,6 +61,13 @@ alone so the warm-pool re-apply and the slot backfill still read "inherit". The
 dashboard carries the corrected id as the slot's `served_model` so the composer
 chip names the model a turn will run on instead of `auto`.
 
+KAS sends no `models` object; its list is only the `configOptions` `model`
+select, and it defaults a new session to `auto`. The pooled check asks that select
+one question: is the session on an `auto` the select does not list? If so it moves
+to a listed id. The select never becomes the session's advertised list, so the
+picker and the explicit-pick guard are unchanged for KAS, and a concrete current
+model is never judged against a list that may be incomplete.
+
 The claude backend has a different gap on the same exits: the model it reports is
 not always the model Claude Code runs. claude-agent-acp resolves an inheriting
 session's model from `ANTHROPIC_MODEL` or the user's `settings.model` and reports it
