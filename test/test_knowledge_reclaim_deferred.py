@@ -280,6 +280,12 @@ class _QuiescentStore:
     def maintenance_window(self, timeout=None):
         yield True
 
+    def reclaim_agent_source_residue(self):
+        # The kicker calls this in the same window as reclaim_orphans; the stub
+        # provides it so a test subclass that overrides only reclaim_orphans does
+        # not have the residue call raise and get swallowed as a sweep failure.
+        return 0
+
 
 class TestGatewayKick:
     def test_kick_runs_the_sweep_off_loop_as_a_tracked_task(self, monkeypatch):
@@ -301,6 +307,28 @@ class TestGatewayKick:
         assert len(seen) == 1
         assert seen[0] != loop_thread, "the sweep ran on the event-loop thread"
         assert state._background_tasks == set()
+
+    def test_kick_also_runs_the_agent_residue_sweep_in_the_window(self):
+        # The residue sweep runs in the SAME drained maintenance window as
+        # reclaim_orphans, so it only ever sees fully-settled ingests.
+        seen: list[str] = []
+
+        class _Store(_QuiescentStore):
+            def reclaim_orphans(self):
+                seen.append("orphans")
+
+            def reclaim_agent_source_residue(self):
+                seen.append("residue")
+                return 0
+
+        state = SimpleNamespace(_knowledge_store=_Store(), _background_tasks=set())
+
+        async def run():
+            srv._kick_knowledge_orphan_reclaim(state)
+            await asyncio.gather(*state._background_tasks)
+
+        asyncio.run(run())
+        assert seen == ["orphans", "residue"]
 
     def test_kick_does_not_build_a_store_nobody_constructed(self):
         built: list[int] = []

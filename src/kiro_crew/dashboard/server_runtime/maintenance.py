@@ -289,6 +289,12 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
         with store.maintenance_window() as quiescent:
             if quiescent:
                 store.reclaim_orphans()
+                # Same drained window: an interrupted agent-document ingest can
+                # leave committed items that no agent_item_state row names, and
+                # nothing on that path reaps them (see
+                # KnowledgeStore.reclaim_agent_source_residue). Running it here
+                # means it only ever sees fully-settled ingests.
+                store.reclaim_agent_source_residue()
 
     async def _knowledge_orphan_reclaim() -> None:
         try:
