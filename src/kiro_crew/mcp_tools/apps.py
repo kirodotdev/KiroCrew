@@ -155,6 +155,69 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "design_tweak_update_thread",
+            "description": (
+                "Report progress on one Design Tweak comment thread, so its dot "
+                "in the live preview updates as you apply the batched edits. "
+                "This is the ONLY way an agent session can update a thread: the "
+                "raw `POST /thread` the skill once documented needs a dashboard "
+                "credential the session does not hold (the credential-exfil "
+                "safety floor blocks minting one), so it 403s and the dots never "
+                "change. The MCP server process holds the credential and you "
+                "never see one. Pass `request_id` (the request's id) and usually "
+                "`comment_id` (the `cid` of the specific comment you are working) "
+                "so the note lands on that comment's bubble; omit `comment_id` "
+                "only for a note that spans the whole batch. Post a short `text` "
+                "note when you start a comment and at each meaningful step; when "
+                "that comment is finished, send `status='done'` so its dot turns "
+                "green. `status` accepts only `done` — the tool reports forward "
+                "progress and exposes no destructive thread action (it cannot "
+                "clear or dismiss a request). `text` or `status` is required. "
+                "Never write the request file yourself; progress is reported "
+                "ONLY through this tool."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "description": (
+                            "The request's id (the `id` the request file is "
+                            "keyed by). Matches `^[A-Za-z0-9._-]+$`."
+                        ),
+                    },
+                    "comment_id": {
+                        "type": "string",
+                        "description": (
+                            "The `cid` of the specific comment to report against, "
+                            "so the note lands on that comment's bubble. Omit for "
+                            "a request-level note that spans the whole batch "
+                            "(e.g. 'rebuilding, one moment'). Matches "
+                            "`^[A-Za-z0-9._-]+$`."
+                        ),
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "A single short progress line, e.g. 'Editing "
+                            "styles.css — uppercasing .section-title'. Required "
+                            "unless `status` is given."
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["done"],
+                        "description": (
+                            "Set `done` to mark the comment finished so its dot "
+                            "turns green. Only `done` is accepted. Required "
+                            "unless `text` is given."
+                        ),
+                    },
+                },
+                "required": ["request_id"],
+            },
+        },
+        {
             "name": "pod_up",
             "description": (
                 "Boot a Kiro Crew POD -- a complete preview gateway for one git "
@@ -553,6 +616,60 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     return _omc_text
 
 
+# The one Design Tweak route the agent reaches, under the gateway's dashboard
+# app reverse proxy (``/apps/{name}/api/{path}`` → the app's own backend
+# process; NOT ``/api/apps/...``, which carries only the gateway's own app
+# management routes). The gateway admits exactly this path to internal-secret
+# callers (``_MIXED_INTERNAL_API_PATHS`` in dashboard/server.py); every other
+# app route stays dashboard-only.
+_DESIGN_TWEAK_THREAD_URL = "/apps/design-tweak/api/thread"
+
+
+def design_tweak_update_thread(name: str, args: dict[str, Any]) -> str:
+    """Append progress to one Design Tweak comment thread via the app proxy.
+
+    The schema (``DESIGN_TWEAK_UPDATE_THREAD_SCHEMA``) bounds the field types,
+    lengths, and the ``status`` value set; the backend's ``_h_thread`` is the
+    single authority for the id grammar and the ``text or status`` rule (this
+    handler does not restate either). The handler needs no caller identity, so
+    it does NOT touch the session resolver.
+    """
+    _dt_request_id = args["request_id"]
+    _dt_comment_id = args.get("comment_id") or ""
+    _dt_text = args.get("text") or ""
+    _dt_status = args.get("status") or ""
+
+    # The agent-authored note is passed through unchanged: the backend's
+    # ``_redact_incoming_thread_text`` runs on EVERY ``/thread`` write (the only
+    # route this tool posts to), so a credential or exfil URL in it is scrubbed
+    # before it persists. Redacting here too would be a second copy of that one
+    # enforcement point. The response IS redacted below, since that path echoes
+    # app state the backend's inbound scrub never touched.
+    _dt_body: dict[str, Any] = {"role": "agent"}
+    if _dt_text:
+        _dt_body["text"] = _dt_text
+    if _dt_status:
+        _dt_body["status"] = _dt_status
+
+    # ids are value-position only, but URL-quote them anyway so a '.' or '-'
+    # edge case cannot alter the query.
+    _dt_url = f"{_DESIGN_TWEAK_THREAD_URL}?id={quote(_dt_request_id, safe='')}"
+    if _dt_comment_id:
+        _dt_url += f"&cid={quote(_dt_comment_id, safe='')}"
+
+    _dt_resp = mcp_core._post(_dt_url, _dt_body)
+    # Redact on the way OUT: the response echoes the thread, whose entries carry
+    # text from prior turns and the app's own state.
+    _dt_text_out = redact(json.dumps(_dt_resp, ensure_ascii=False, default=str))
+    _dt_cap = 20_000
+    if len(_dt_text_out) > _dt_cap:
+        _dt_text_out = (
+            _dt_text_out[:_dt_cap]
+            + f"\n… truncated ({len(_dt_text_out)} chars total)."
+        )
+    return _dt_text_out
+
+
 _POD_API_BASE = "/api/apps/dev-fleet/pod"
 
 # Client-side ceilings, each one step above the ceiling the gateway route enforces
@@ -837,6 +954,7 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
+    "design_tweak_update_thread": design_tweak_update_thread,
     "pod_up": pod_up,
     "pod_down": pod_down,
     "pod_status": pod_status,

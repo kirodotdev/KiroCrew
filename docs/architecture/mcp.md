@@ -1688,8 +1688,8 @@ answers `tools/list` from):
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `pod_up`, `pod_down`, `pod_status`, `pod_ls`,
-  `issue_radar_crew_read`, `issue_radar_crew_record`
+  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_down`,
+  `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`
 - **Browser:** `browser`
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
@@ -1718,7 +1718,14 @@ answers `tools/list` from):
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
-  sees a credential (same shape as `issue_radar_record_investigation`)
+  sees a credential (same shape as `issue_radar_record_investigation`).
+  `design_tweak_update_thread` — the same shape for the Design Tweak app: the
+  server forwards a single route (`POST /apps/design-tweak/api/thread`, the
+  gateway's app reverse-proxy path) so
+  the agent can mark a batched visual-edit comment in progress or done as it
+  applies it. `status` is restricted to `done` (forward progress only — no
+  clear/dismiss), and the gateway admits only that one path for internal-secret
+  callers, never the app's state-mutating routes
 
 ### A `kirocrew-core` tool has two halves
 

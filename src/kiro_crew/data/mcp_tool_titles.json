@@ -76,6 +76,7 @@
     "workflow_rerun_subtree": "Rerun workflow",
     "issue_radar_record_investigation": "Record investigation",
     "ops_mission_control_api": "Call Ops Mission Control",
+    "design_tweak_update_thread": "Update design-tweak thread",
     "pod_up": "Start pod",
     "pod_down": "Stop pod",
     "pod_status": "Read pod status",

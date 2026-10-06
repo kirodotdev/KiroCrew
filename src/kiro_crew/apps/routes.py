@@ -4254,11 +4254,24 @@ _PROXY_HOP_HEADERS = frozenset(
     }
 )
 
-# Strip sensitive auth headers — app backends use X-KiroCrew-Proxy HMAC, not user cookies
+# Strip sensitive auth headers — app backends authenticate via the per-app
+# X-KiroCrew-Proxy HMAC (injected below), never via user cookies or the
+# gateway's own internal-auth headers. The internal-auth set (X-Internal-Secret,
+# X-Session-Token, X-Session-Key, X-Internal-Caller) is stripped because a
+# credentialed internal caller — the design_tweak_update_thread MCP tool is the
+# first to reach an app backend through this proxy — would otherwise hand the
+# gateway-wide secret (which opens every strict internal route) to an app
+# subprocess that also serves content from the user's own projects. The HMAC is
+# all the backend needs to trust a proxied request, so dropping the rest is a
+# pure hardening with no functional loss.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
         "cookie",
         "authorization",
+        "x-internal-secret",
+        "x-session-token",
+        "x-session-key",
+        "x-internal-caller",
     }
 )
 

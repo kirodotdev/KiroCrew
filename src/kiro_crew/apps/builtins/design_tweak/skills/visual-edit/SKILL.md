@@ -36,35 +36,48 @@ Each comment has its own progress bubble in the preview, so notes must be
 addressed to a `cid`:
 
 ```
-POST /apps/design-tweak/api/thread?id=<requestId>&cid=<commentId>
-body: {"role": "agent", "text": "Editing styles.css — uppercasing .section-title"}
+design_tweak_update_thread(
+  request_id=<requestId>,
+  comment_id=<commentId>,
+  text="Editing styles.css — uppercasing .section-title",
+)
 ```
 
 Post one note when you start a comment, and one per meaningful step. Keep each to
-a single short line. When that comment is finished, post a final note carrying a
-status so its dot turns green:
+a single short line. When that comment is finished, send `status="done"` so its
+dot turns green:
 
 ```
-POST /apps/design-tweak/api/thread?id=<requestId>&cid=<commentId>
-body: {"role": "agent", "text": "Done — added text-transform: uppercase", "status": "done"}
+design_tweak_update_thread(
+  request_id=<requestId>,
+  comment_id=<commentId>,
+  text="Done — added text-transform: uppercase",
+  status="done",
+)
 ```
 
 The request's own status is **derived**: it flips to `done` on its own once every
 comment is `done`. Never set it directly.
 
+> **Why a tool and not a raw request.** The app's `/thread` route needs a
+> dashboard credential your session does not hold, so a hand-rolled HTTP POST
+> would be refused and the dots would never change. `design_tweak_update_thread`
+> is the sanctioned path: the credential lives in the MCP server process and you
+> never see one. `status` accepts only `done` — there is no clear/dismiss here.
+
 > **Never write to the request file yourself.** Do not edit `state`, `status`,
 > `sentAt`, or any other field by writing the JSON — the panel derives the
 > request's badge from its comments, and a hand-written `state` desynchronises
-> them. Progress is reported *only* through `POST /thread`. The file is the
-> app's state, not a scratchpad.
+> them. Progress is reported *only* through `design_tweak_update_thread`. The
+> file is the app's state, not a scratchpad.
 
-- Omitting `&cid=` posts a request-level note. Use that only for something that
-  spans the whole batch ("rebuilding, one moment").
-- A request-level `{"status": "done"}` marks *every* comment done. It is a
+- Omitting `comment_id` posts a request-level note. Use that only for something
+  that spans the whole batch ("rebuilding, one moment").
+- A request-level `status="done"` marks *every* comment done. It is a
   fallback, not the normal path — prefer per-comment reporting so the designer
   can see which specific edits landed.
-- Do **not** clear a request unless the user asks to dismiss it — clearing
-  removes the pins. (`POST /clear?id=<requestId>` archives it to History.)
+- Do **not** dismiss a request unless the user asks — dismissing removes the
+  pins. The tool cannot do this; it only appends thread progress.
 
 ## Resolving each comment's target source
 

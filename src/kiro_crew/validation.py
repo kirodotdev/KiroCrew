@@ -2769,6 +2769,53 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
     custom_validator=_validate_omc_api,
 )
 
+# ── Tool Schema (Design Tweak app) ──
+#
+# ``design_tweak_update_thread`` is the agent's ONLY credentialed path to the
+# Design Tweak app's ``POST /thread`` route (same pattern as
+# ``ops_mission_control_api`` and ``issue_radar_record_investigation``: the MCP
+# server process holds the internal secret; the agent never sees a credential).
+# The app hands the agent batched click-anchored comments to apply, but the
+# agent cannot update the preview's thread bubbles — posting to ``/thread``
+# needs the dashboard credential an agent session is deliberately denied — so
+# it reported progress inline in chat and the dots never changed.
+#
+# Both ids are value-position only: the schema URL-quotes them with
+# ``safe=''`` so neither can carry a '/', '?' or '#' that would rewrite the
+# single ``/thread`` route, and the backend's own ``_ID_RE``
+# (``^[A-Za-z0-9._-]+$``) is the authority that rejects a malformed id. The
+# tool boundary therefore bounds only length, not grammar. ``status`` is
+# restricted to the one FORWARD-progress value ``done`` — the agent may mark a
+# comment it finished, but the tool exposes no destructive thread action
+# (``/clear`` archives a request and removes its pins, and is NOT reachable
+# here). The ``text or status`` rule is likewise the backend's
+# (``_h_thread``): an empty call is refused there, so it is not restated here.
+# The one thread status the tool may set: forward progress only. The backend's
+# full set is ``new | sent | done`` (COMMENT_STATUSES); ``new``/``sent`` are
+# the app's own lifecycle, not something an agent reports, so the scoped tool
+# admits only ``done``.
+_DESIGN_TWEAK_ALLOWED_STATUSES = frozenset({"done"})
+# Bounds one progress note. The backend caps a thread at MAX_THREAD_ENTRIES
+# short lines; 2 KiB is well above one legitimate note and keeps an unbounded
+# string from being carried further.
+_DESIGN_TWEAK_MAX_TEXT = 2_048
+
+
+DESIGN_TWEAK_UPDATE_THREAD_SCHEMA = ToolSchema(
+    tool_name="design_tweak_update_thread",
+    fields=[
+        FieldSpec(
+            "request_id",
+            str,
+            required=True,
+            max_len=200,
+        ),
+        FieldSpec("comment_id", str, max_len=200, default=""),
+        FieldSpec("text", str, max_len=_DESIGN_TWEAK_MAX_TEXT, default=""),
+        FieldSpec("status", str, allowed=_DESIGN_TWEAK_ALLOWED_STATUSES, default=""),
+    ],
+)
+
 # Dev Fleet pod lifecycle (agent surface). A pod name is a git worktree basename,
 # so it reaches `git worktree list` matching and a filesystem path before
 # `rt.validate_name` -- the real authority -- ever sees it. Bounded here so an
@@ -3876,6 +3923,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    "design_tweak_update_thread": DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     "pod_up": POD_UP_SCHEMA,
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,

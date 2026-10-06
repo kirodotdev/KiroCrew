@@ -112,7 +112,7 @@ rewriting except the one injected script tag.
 | Per-app scoping | Each request carries `projectId` + `projectRoot`; the panel shows only the previewed app's requests, and numbering is derived per project (not a global counter) |
 | Agent delivery target | One chat slot per app folder, keyed by a hash of its path — created idempotently, so a request can never open a second session |
 | Source mapping | `projectRoot` per request + `sourceFile` per comment, stamped from the serving path; where an element carries `data-kiro-source="file:line:col"` the agent gets a high-confidence target, otherwise it falls back to React Fiber `_debugSource` (medium) or HTML-snippet matching (low) and verifies before editing |
-| Delivery into agent | The batch is queued as JSON in the app's data dir and handed to that app's chat session; the bundled `visual-edit` skill teaches the agent to work a batch and report per comment via `POST /thread?id=…&cid=…` |
+| Delivery into agent | The batch is queued as JSON in the app's data dir and handed to that app's chat session; the bundled `visual-edit` skill teaches the agent to work a batch and report per comment via the `design_tweak_update_thread` MCP tool (the credentialed path to `POST /thread`; an agent session cannot post to it directly) |
 | Node toolchain | The gateway spawns the backend with a minimal PATH, so `npm` is resolved by absolute path from a list of known install dirs (homebrew, MacPorts, volta, bun, asdf, fnm, nvm, `/usr/local/bin`, `/usr/bin`) and that dir is put on the child's PATH |
 
 ## Structure

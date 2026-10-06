@@ -563,7 +563,18 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 cands = []
                             for cand in cands:
                                 norm = _normalise(cand)
-                                at = norm.find("/api/")
+                                # A transport call normally addresses the gateway
+                                # API surface at ``/api/...``, so the resolved path
+                                # is anchored at its first ``/api/``. One shape is
+                                # NOT ``/api``-rooted: the dashboard app reverse
+                                # proxy ``/apps/{name}/api/{path}`` (handle_app_api_proxy),
+                                # which an internal-secret MCP caller
+                                # (design_tweak_update_thread) now reaches. Slicing
+                                # that at its inner ``/api/`` would check a fragment
+                                # (``/api/thread``) instead of the real admitted
+                                # path, so a ``/apps/`` route is kept whole and must
+                                # itself appear in an internal allowlist.
+                                at = 0 if norm.startswith("/apps/") else norm.find("/api/")
                                 if at >= 0:
                                     method = _call_method(child, called)
                                     paths.setdefault(norm[at:], set()).add(

@@ -844,6 +844,35 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Redundant under the prefix match above; kept explicit so a reader sees
         # both routes the crew tools actually call.
         "/api/apps/issue-radar/crew/work",
+        # Design Tweak thread progress — the ONE app route reachable with the
+        # internal secret, for the ``design_tweak_update_thread`` MCP tool. The
+        # app hands the agent batched click-anchored comments and the agent
+        # applies them, but it cannot update the preview's comment-thread
+        # bubbles: posting to ``/thread`` needs a dashboard credential, and an
+        # agent session holds none (cookies are httpOnly, the IPC secret is
+        # stripped from agent env, and the CLI credential mint is denied by the
+        # builtin ``credential-exfil`` rules — the same trust model as the
+        # ``/api/apps/issue-radar/investigation`` and Ops Mission Control
+        # entries above). So the documented raw POST 403s unconditionally and
+        # the dots never change; this admission is what lets the scoped tool
+        # carry progress through.
+        #
+        # ONE path, never the ``/apps/design-tweak`` prefix. ``internal_path_matches``
+        # admits an entry AND its children (``path == p or path.startswith(p + "/")``),
+        # so this entry admits ``/thread`` and ``/thread/<x>`` — but NOT the app's
+        # sibling state-mutating routes ``/submit``, ``/send``, ``/clear`` (archives
+        # a request and removes its pins), ``/delete``, ``/delete-comment`` or the
+        # project/dev-server management routes, which are separate entries this set
+        # does not list. A ``/thread/<x>`` child is harmless: Design Tweak's backend
+        # matches ``route == "/thread"`` exactly, so a child path 404s there. The
+        # agent only needs to append thread progress, so only ``/thread`` is admitted.
+        #
+        # The path is the gateway's reverse-proxy route ``/apps/{name}/api/{path}``
+        # (``apps/routes.py`` ``handle_app_api_proxy``), NOT ``/api/apps/...``:
+        # Design Tweak runs its ``_h_thread`` in its own backend process reached
+        # only through that proxy, unlike Issue Radar / Ops Mission Control which
+        # register aiohttp routes directly under ``/api/apps/<name>``.
+        "/apps/design-tweak/api/thread",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.
