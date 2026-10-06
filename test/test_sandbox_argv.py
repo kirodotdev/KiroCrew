@@ -777,6 +777,77 @@ class TestBuildSeatbeltProfile:
         )
         assert isinstance(excinfo.value.__cause__, OSError)
 
+    @staticmethod
+    def _pin_primed_voice_runtime(monkeypatch, home):
+        """Prime a real runtime under *home*, as the gateway does at startup."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox_mod, "_voice_runtime_paths_cache", None)
+        return Path(sandbox_mod.prime_voice_runtime_sandbox_paths())
+
+    def test_voice_guard_recreates_a_runtime_root_deleted_after_priming(
+        self, monkeypatch, tmp_path
+    ):
+        """A root removed after the cache filled is re-created, then checked."""
+        home = tmp_path / "data"
+        home.mkdir()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        root = self._pin_primed_voice_runtime(monkeypatch, home)
+        root.rmdir()
+        root.parent.rmdir()
+
+        sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+        assert root.is_dir()
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(root.parent.stat().st_mode) == 0o700
+
+    def test_voice_bind_recreates_a_runtime_root_deleted_after_priming(self, monkeypatch, tmp_path):
+        home = tmp_path / "data"
+        home.mkdir()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        root = self._pin_primed_voice_runtime(monkeypatch, home)
+        root.rmdir()
+
+        path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace(workspace)
+        try:
+            assert path == os.fspath(workspace)
+            assert descriptor is not None
+        finally:
+            os.close(descriptor)
+        assert root.is_dir()
+
+    def test_voice_bind_still_refuses_a_workspace_above_a_recreated_root(
+        self, monkeypatch, tmp_path
+    ):
+        home = tmp_path / "data"
+        home.mkdir()
+        root = self._pin_primed_voice_runtime(monkeypatch, home)
+        root.rmdir()
+
+        with pytest.raises(RuntimeError, match="protected voice runtime"):
+            sandbox_mod.bind_voice_safe_agent_workspace(home)
+
+    def test_voice_guard_fails_closed_when_the_root_cannot_be_recreated(
+        self, monkeypatch, tmp_path
+    ):
+        """A data home that is gone too cannot be re-primed: cannot-verify."""
+        home = tmp_path / "data"
+        home.mkdir()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        root = self._pin_primed_voice_runtime(monkeypatch, home)
+        root.rmdir()
+        root.parent.rmdir()
+        home.rmdir()
+
+        with pytest.raises(RuntimeError, match="cannot verify"):
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+        with pytest.raises(RuntimeError, match="cannot verify"):
+            sandbox_mod.bind_voice_safe_agent_workspace(workspace)
+
     def test_macos_workspace_binding_uses_opened_ancestor_identities(self, monkeypatch):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         monkeypatch.setattr(

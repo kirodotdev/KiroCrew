@@ -5026,6 +5026,35 @@ def prime_voice_runtime_sandbox_paths() -> str:
         return canonical_root
 
 
+def _restore_missing_voice_runtime_roots(runtime_paths: tuple[str, ...]) -> None:
+    """Re-create a cached voice-runtime root that was deleted after priming.
+
+    The prime cache is filled once, so a root removed later stays missing and
+    every identity check on it fails with ENOENT. When a root the cache names
+    has no directory entry, re-create the gateway-owned 0700 ``run`` and root
+    directories the same way priming does. The guards that call this still
+    check the re-created paths exactly as before and fail closed on any error.
+    """
+    cached = _voice_runtime_paths_cache
+    if cached is None:
+        return
+    missing = False
+    for path in runtime_paths:
+        if path not in cached[2]:
+            continue
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            missing = True
+            break
+    if not missing:
+        return
+    canonical_root = cached[1]
+    with _voice_runtime_paths_lock:
+        _ensure_voice_runtime_directory(os.path.dirname(canonical_root))
+        _ensure_voice_runtime_directory(canonical_root)
+
+
 def _voice_runtime_sandbox_paths() -> tuple[str, ...]:
     """Return lexical and canonical snapshot roots, priming as a safe fallback."""
     prime_voice_runtime_sandbox_paths()
@@ -5511,6 +5540,7 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
     # walking both ancestor directions so case, normalization, symlink, and
     # firmlink aliases on an existing APFS workspace cannot evade the guard.
     try:
+        _restore_missing_voice_runtime_roots(raw_runtime_paths)
         workspace_identities = tuple(
             (info.st_dev, info.st_ino) for info in (os.stat(path) for path in raw_workspace_paths)
         )
@@ -5607,6 +5637,7 @@ def bind_voice_safe_agent_workspace(
         # colliding runtime path in its refusal -- resolving after the open
         # would print "<unknown>" for exactly the failure a user hits first.
         runtime_paths = _voice_runtime_sandbox_paths()
+        _restore_missing_voice_runtime_roots(runtime_paths)
 
         workspace_fd = _open_directory_descriptor(workspace_path)
         workspace_identity = os.fstat(workspace_fd)
