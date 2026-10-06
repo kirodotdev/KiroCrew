@@ -84,6 +84,7 @@ on:
       - "Merge Queue Ruleset Audit"
       - "Nightly Build"
       - "OTA Update Test (macOS)"
+      - "Playwright CLI Banner Check"
       - "PR Merge-Conflict Label"
       - "PR Readiness Self-Heal Sweep"
       - "Ship Report"

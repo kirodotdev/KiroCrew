@@ -60,7 +60,8 @@ CLI_BIN = "playwright-cli"
 # printed ``Listening on http://127.0.0.1:45613`` and
 # ``Listening on http://127.0.0.1:42963``, respectively. Each line was read only
 # after its listener had bound. ``@latest`` may change that wording; the parser
-# then fails closed and reports the installed version for diagnosis.
+# then fails closed and reports the installed version for diagnosis, and the
+# daily ``playwright-cli-banner.yml`` workflow catches the drift first.
 NPM_SPEC = "@playwright/cli@latest"
 
 # ``install --skills`` writes the command reference where an agent can read it.

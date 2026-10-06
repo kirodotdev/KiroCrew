@@ -613,7 +613,12 @@ recognized listener URL fails closed and logs the installed `playwright-cli`
 version beside the verified banner form. On a structurally blind host,
 `status()` names the same runtime contract in operator terms: the Browser CLI
 version did not print `Listening on http://127.0.0.1:<port>`, and an upgrade may
-have changed it. A present attribution path that fails names the tool, its
+have changed it. Because the installer tracks `@latest`, the daily
+`playwright-cli-banner.yml` workflow installs that same spec, launches
+`show --port 0 --host 127.0.0.1` once, and feeds its stdout to this parser
+(`scripts/check_playwright_cli_banner.py`); a drift fails the run with the CLI
+version and every line read, and `scheduled-failure-watch.yml` files it as an
+issue before users meet the fail-closed view. A present attribution path that fails names the tool, its
 resolved path when applicable, and the failed control-listener check; the reason
 tells the operator
 to inspect permissions or the process namespace. Ownership and relay failures
