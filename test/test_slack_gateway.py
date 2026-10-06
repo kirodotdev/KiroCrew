@@ -1032,7 +1032,9 @@ class TestShutdown:
         orch.heartbeat_svc = None
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
-        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("cancel_all"))
+        orch.subagent_mgr.cancel_all = AsyncMock(
+            side_effect=lambda **_kw: order.append("cancel_all")
+        )
         orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
         orch.sessions = None
         orch.dashboard_state = None
@@ -1040,6 +1042,171 @@ class TestShutdown:
         await orch._shutdown()
         orch.subagent_mgr.close.assert_called_once_with()
         assert order == ["cancel_all", "close"]
+
+    @staticmethod
+    def _orch_with_sessions(order: list[str], running: asyncio.Event | None = None):
+        """An orchestrator whose session closing and producer are both observable."""
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch._dashboard_runner = None
+        orch.dashboard_state = None
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
+
+        async def _close_all(drain_timeout=None):
+            order.append("close_all:started")
+            orch._captured_close_drain = drain_timeout
+            if running is not None:
+                running.set()
+            order.append("close_all:finished")
+
+        orch.sessions = MagicMock()
+        orch.sessions.close_all = _close_all
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_session_closing_waits_for_the_producer_so_reports_are_not_refused(self):
+        """Session closing starts only AFTER `cancel_all` returns, not alongside it.
+
+        `close_all` sets each session's `_closing` flag at its first step, and
+        `cancel_all` emits terminal subagent reports whose channel-parent injection
+        acquires the parent through `get_or_create` -- which raises `SessionClosingError`
+        once that flag is set. A completed-but-refused report is swallowed to `return
+        False` and falls outside the cancelled-only re-admission loop, so overlapping the
+        two silently and permanently drops a finished subagent's result on an ordinary
+        restart with a live channel-parent run. The flush is still created and gathered;
+        it just must not begin until the producer has finished delivering.
+
+        Pinned as a dependency rather than two indices: the producer records when it
+        finished, and the flush must not have started before that point.
+
+        The store close is the other half and must NOT move: `cancel_all` stops the runs
+        still writing to it, so it stays after the cancellation.
+        """
+        order: list[str] = []
+        orch = self._orch_with_sessions(order)
+
+        async def _producer(**_kw):
+            order.append("cancel_all:entered")
+            await asyncio.sleep(0)
+            order.append("cancel_all:finished")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_producer)
+
+        try:
+            await asyncio.wait_for(orch._shutdown(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pytest.fail(f"shutdown did not complete: {order}")
+
+        assert order.index("cancel_all:finished") < order.index(
+            "close_all:started"
+        ), f"the flush started before the producer finished, so a report could be refused: {order}"
+        assert "close_all:finished" in order, f"the gather stopped awaiting it: {order}"
+        assert order.index("cancel_all:finished") < order.index(
+            "close"
+        ), f"the subagent store closed before cancellation: {order}"
+
+    @pytest.mark.asyncio
+    async def test_a_producer_that_outlasts_the_deadline_never_starts_the_flush(self):
+        """The protection this ordering gives, driven end to end.
+
+        The producer never returns and the caller's deadline expires on it. Because the
+        flush is launched only after the producer finishes, a stuck producer means the
+        flush is never created -- which is the point: the session-map flush sets
+        `_closing`, and starting it while the producer is still trying to inject terminal
+        reports is exactly what would refuse a completed report and lose it forever. A
+        shutdown that cannot finish delivering reports must not race their sessions shut.
+        """
+        order: list[str] = []
+        orch = self._orch_with_sessions(order)
+
+        async def _never_returns(**_kw):
+            order.append("cancel_all:entered")
+            await asyncio.sleep(30)
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_never_returns)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(orch._shutdown(), timeout=0.2)
+
+        assert "cancel_all:entered" in order, f"the producer never ran: {order}"
+        # The flush is sequenced AFTER the producer, so a producer stuck past the
+        # deadline means the flush was never launched -- sessions never entered
+        # `_closing` while a terminal report might still have needed injection.
+        assert (
+            "close_all:started" not in order
+        ), f"the flush started while the producer was still stuck: {order}"
+
+    @pytest.mark.asyncio
+    async def test_close_all_turn_drain_is_bounded_so_session_persistence_survives(self):
+        """GPT 5.6 F5 (gateway.py close_all launch): `close_all()` is launched only after
+        `cancel_all()` returns, so a slow `cancel_all()` can leave little of the outer
+        GRACEFUL_SHUTDOWN_SECS budget. `close_all()`'s cooperative turn drain
+        (`drain_active_turns`) runs BEFORE its durability point (`SessionMap.aclose()`);
+        unbounded (`drain_timeout=None` -> module default ~6s), it would run past the
+        outer `wait_for` deadline and the gather would be cancelled before `aclose()`
+        persisted the resumable session map -- losing that state with no replay on next
+        start. The fix passes a budget-reserved `drain_timeout`, so the drain is capped
+        and `aclose()` still runs. This pins that `close_all` is called with a bounded,
+        non-None `drain_timeout` -- NOT the unbounded default -- after a slow producer.
+        """
+        order: list[str] = []
+        orch = self._orch_with_sessions(order)
+        orch._captured_close_drain = "UNSET"
+
+        async def _slow_producer(**_kw):
+            order.append("cancel_all:entered")
+            # Consume a meaningful slice of the budget before returning, so the
+            # remaining budget at close_all launch is well below the drain default.
+            await asyncio.sleep(0.1)
+            order.append("cancel_all:finished")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_slow_producer)
+
+        await asyncio.wait_for(orch._shutdown(), timeout=5.0)
+
+        assert "close_all:started" in order, f"close_all never launched: {order}"
+        drain = orch._captured_close_drain
+        assert drain is not None and drain != "UNSET", (
+            "close_all was launched with an UNBOUNDED turn drain (drain_timeout=None); "
+            "a slow cancel_all can then push the drain past the deadline and lose "
+            f"session persistence. captured={drain!r}"
+        )
+        assert (
+            isinstance(drain, (int, float)) and drain >= 0.0
+        ), f"close_all drain_timeout must be a non-negative bound, got {drain!r}"
+
+    @pytest.mark.asyncio
+    async def test_close_drain_is_capped_at_the_ceiling_even_when_budget_is_full(self):
+        """Opus 5.5 F10 (gateway.py:close_drain): a FAST `cancel_all()` leaves the
+        budget nearly full, and `budget_left() - reserve` would then let the drain run
+        ~8s -- longer than its own ~6s default -- so the outer `wait_for` cancels the
+        gather before `SessionMap.aclose()` persists the resumable map. The drain must
+        be capped at the SMALLER of its default ceiling and the reserve net of its
+        grace, so it never runs longer than the module default regardless of how much
+        budget is left. This pins the ceiling, not just non-None-ness.
+        """
+        from kiro_crew.gateway_shutdown_budget import _SESSION_CLOSE_DRAIN_CEILING_SECS
+
+        order: list[str] = []
+        orch = self._orch_with_sessions(order)
+        orch._captured_close_drain = "UNSET"
+
+        # Fast producer: returns immediately, so budget_left() at close_all launch is
+        # near the full GRACEFUL_SHUTDOWN_SECS.
+        orch.subagent_mgr.cancel_all = AsyncMock(return_value=None)
+
+        await asyncio.wait_for(orch._shutdown(), timeout=5.0)
+
+        drain = orch._captured_close_drain
+        assert isinstance(drain, (int, float)), f"drain not captured: {drain!r}"
+        assert drain <= _SESSION_CLOSE_DRAIN_CEILING_SECS + 1e-9, (
+            "close_drain exceeded its ceiling on a full budget "
+            f"({drain} > {_SESSION_CLOSE_DRAIN_CEILING_SECS}); a wedged turn can then "
+            "push the drain past the deadline and lose the resumable session map"
+        )
 
     @pytest.mark.asyncio
     async def test_shutdown_cancels_handler_tasks(self):
@@ -1114,9 +1281,9 @@ class TestShutdown:
         orch.heartbeat_svc = None
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
-        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("reap"))
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda **_kw: order.append("reap"))
         orch.sessions = _mock_sessions()
-        orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("reap"))
+        orch.sessions.close_all = AsyncMock(side_effect=lambda **_kw: order.append("reap"))
         ds = _mock_dashboard_state()
         wd = MagicMock()
         wd.stop = MagicMock(side_effect=lambda: order.append("watchdog_stop"))
@@ -2869,22 +3036,73 @@ class TestNotifMeta:
 
     def test_dashboard_slot(self):
         result = GatewayOrchestrator._notif_meta("dashboard:my-slot")
-        assert result == {"slot": "my-slot"}
+        # Carries the parent key as governance subject alongside the jump slot.
+        assert result == {"session_key": "dashboard:my-slot", "slot": "my-slot"}
 
     def test_slack_link(self):
         result = GatewayOrchestrator._notif_meta("C123:1234.567890")
         assert result is not None
         assert "slack_link" in result
         assert "C123" in result["slack_link"]
+        # The parent key is carried so the bridge judges the parent's profile.
+        assert result["session_key"] == "C123:1234.567890"
 
-    def test_cron_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("cron:j1") is None
+    def test_cron_key_carries_session_key_only(self):
+        # No jump-source for a cron parent, but its key must still be the
+        # governance subject so the bridge evaluates the cron session's profile.
+        assert GatewayOrchestrator._notif_meta("cron:j1") == {"session_key": "cron:j1"}
 
-    def test_subagent_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("subagent:a1") is None
+    def test_subagent_key_carries_session_key_only(self):
+        assert GatewayOrchestrator._notif_meta("subagent:a1") == {"session_key": "subagent:a1"}
 
-    def test_hook_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("hook:h1") is None
+    def test_hook_key_carries_session_key_only(self):
+        assert GatewayOrchestrator._notif_meta("hook:h1") == {"session_key": "hook:h1"}
+
+    def test_subagent_notif_meta_carries_producer_app(self):
+        # F9: the spawning app's identity must reach the completion note so the
+        # bridge can consult its profile. source stays "system", so producer_app
+        # is the only carrier.
+        meta = GatewayOrchestrator._subagent_notif_meta("dashboard:my-slot", "my-app")
+        assert meta == {
+            "session_key": "dashboard:my-slot",
+            "slot": "my-slot",
+            "producer_app": "my-app",
+        }
+
+    def test_subagent_notif_meta_without_app_is_plain_meta(self):
+        # A non-app subagent (no SubagentInfo.app) adds no producer_app.
+        assert GatewayOrchestrator._subagent_notif_meta("dashboard:my-slot", "") == {
+            "session_key": "dashboard:my-slot",
+            "slot": "my-slot",
+        }
+
+    def test_subagent_notif_meta_app_only_when_no_jump_source(self):
+        # A no-key spawn (app spawns set no parent key) still carries the app so
+        # its denial binds, even with no slot/slack_link jump target.
+        assert GatewayOrchestrator._subagent_notif_meta("", "my-app") == {"producer_app": "my-app"}
+        assert GatewayOrchestrator._subagent_notif_meta("", "") is None
+
+    def test_cron_notif_meta_names_the_owning_app(self):
+        # GPT 6.1 (v62): an app-owned job's result must carry its app so the bridge
+        # vets that app's profile; source is "system", so producer_app is the carrier.
+        job = SimpleNamespace(id="j1", created_by="app:my-app")
+        assert GatewayOrchestrator._cron_notif_meta(job, failure_hash="h") == {
+            "job_id": "j1",
+            "failure_hash": "h",
+            "producer_app": "my-app",
+        }
+
+    @pytest.mark.parametrize("created_by", [None, "", "dashboard", "app:", 42])
+    def test_cron_notif_meta_without_an_owning_app_is_the_job_id_alone(self, created_by):
+        job = SimpleNamespace(id="j1", created_by=created_by)
+        assert GatewayOrchestrator._cron_notif_meta(job) == {"job_id": "j1"}
+
+    def test_every_cron_notify_site_uses_the_app_aware_meta(self):
+        # A cron notify site spelling its own {"job_id": ...} dict drops the app again.
+        source = inspect.getsource(gw)
+        assert 'meta={"job_id"' not in source
+        assert '= {"job_id": job.id}' not in source
+        assert source.count("self._cron_notif_meta(job") >= 9
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2966,7 +3184,13 @@ class TestNotifyNudgeExpired:
         assert "24 of 24" in args[2]
         # Dashboard loops bind on the BARE slot key; the notification must
         # still deep-link, which requires re-qualifying it for _notif_meta.
-        assert kwargs["meta"] == {"slot": "chat-7-1700000000"}
+        # The parent key is also carried as the governance subject (F8). Exact
+        # dict equality (ratchet may only tighten): both the jump slot and the
+        # re-qualified session_key, nothing else.
+        assert kwargs["meta"] == {
+            "slot": "chat-7-1700000000",
+            "session_key": "dashboard:chat-7-1700000000",
+        }
 
     def test_channel_loop_gets_no_synthesized_meta(self):
         """A channel key must not be fed to _notif_meta at all.
@@ -8905,7 +9129,7 @@ class TestCallbackSafeUpdateRestart:
         orch.dashboard_state = None
         sessions = SimpleNamespace(inbound_callback_count=0)
         sessions.fence_update_restart = MagicMock(side_effect=lambda: order.append("fence") or True)
-        sessions.close_all = AsyncMock(side_effect=lambda: order.append("close"))
+        sessions.close_all = AsyncMock(side_effect=lambda **_kw: order.append("close"))
         orch.sessions = sessions
 
         async def drain(*, timeout):

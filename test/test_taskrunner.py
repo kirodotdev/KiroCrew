@@ -5506,6 +5506,30 @@ class TestNotifySessionKey:
         assert seen == [("[spec] Task 1 requires approval", "telegram:kirocrew:direct:U9")]
 
     @pytest.mark.asyncio
+    async def test_the_owning_app_reaches_the_sink_as_a_keyword(self, tmp_path: Path) -> None:
+        """GPT 6.1 F1: a run owned by an app carries that app to the notify sink.
+
+        Without it, a run started under an app allowed task_run but denied
+        messaging egresses its notice under the permissive host profile, because
+        the bridge vets only host/session subjects. The app rides as a keyword the
+        same way session_key does, so the bridge can bind a producer_app subject.
+        """
+        import dataclasses
+
+        seen: list[tuple[str, str]] = []
+
+        async def _sink(
+            title: str, body: str, task_id: str = "", *, session_key: str = "", app: str = ""
+        ) -> None:
+            seen.append((title, app))
+
+        runner, run = await self._start(tmp_path, _sink, "")
+        run.execution_context = dataclasses.replace(run.execution_context, app="rogue-app")
+        await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
+
+        assert seen == [("[spec] Task 1 requires approval", "rogue-app")]
+
+    @pytest.mark.asyncio
     async def test_omitted_session_key_leaves_the_call_shape_untouched(
         self, tmp_path: Path
     ) -> None:
