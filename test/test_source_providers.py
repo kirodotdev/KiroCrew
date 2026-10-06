@@ -2238,7 +2238,11 @@ def _rollup_reply(rows: list[dict], head: str = "abc123") -> dict:
     nodes = [
         {"__typename": "StatusContext" if "context" in row else "CheckRun", **row} for row in rows
     ]
-    contexts = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+    contexts = {
+        "totalCount": len(nodes),
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": nodes,
+    }
     commit = {"oid": head, "statusCheckRollup": {"contexts": contexts}}
     pull = {"headRefOid": head, "commits": {"nodes": [{"commit": commit}]}}
     return {"data": {"repository": {"pullRequest": pull}}}

@@ -13,11 +13,6 @@ from typing import Any
 from kiro_crew.dashboard.source_providers import projection, runner
 from kiro_crew.dashboard.source_providers.contract import SourceProviderError, SourceRef
 
-# The supersession rule and the row flattening are the structured monitor's own,
-# imported rather than copied: the dashboard glyph and the monitor read the same
-# rollup, so a second implementation would be a second place to be wrong.
-from kiro_crew.monitoring.github_pull_request import _flat_check_row, _mark_superseded_rows
-
 
 def _github_check(item: dict[str, Any]) -> dict[str, Any]:
     conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
@@ -57,7 +52,9 @@ def _github_checks(rollup: list[Any]) -> list[dict[str, Any]]:
     The rows arrive flat from ``_github_rollup_read`` (each check run's
     workflow-run fields lifted beside its own), and the collapse is the rule the
     structured monitor's GitHub provider enforces, called rather than copied so
-    the glyph and the monitor cannot disagree: identity is the workflow
+    the glyph and the monitor cannot disagree (imported at call time, because
+    loading the gateway with monitors off must not load the monitor's provider
+    runtime): identity is the workflow
     DEFINITION id, the run's triggering event and the check name; newest is the
     greatest run id; and a row is dropped only when its older run concluded
     ``CANCELLED`` and the row itself is ``COMPLETED``+``CANCELLED``. Two rows of
@@ -67,6 +64,8 @@ def _github_checks(rollup: list[Any]) -> list[dict[str, Any]]:
 
     Input order is preserved.
     """
+    from kiro_crew.monitoring.github_pull_request import _mark_superseded_rows
+
     rows: list[object] = [item for item in rollup if isinstance(item, dict)]
     return [
         _github_check(row)
@@ -111,7 +110,7 @@ _GITHUB_REVIEW_THREADS_QUERY = (
 _GITHUB_ROLLUP_QUERY = (
     "query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r)"
     "{pullRequest(number:$n){headRefOid commits(last:1){nodes{commit{oid "
-    "statusCheckRollup{contexts(first:100,after:$c){pageInfo{hasNextPage endCursor} "
+    "statusCheckRollup{contexts(first:100,after:$c){totalCount pageInfo{hasNextPage endCursor} "
     "nodes{__typename ... on CheckRun{name status conclusion startedAt completedAt "
     "detailsUrl checkSuite{conclusion workflowRun{databaseId event "
     "workflow{databaseId name}}}} "
@@ -433,6 +432,8 @@ async def _github_rollup_read(ref: SourceRef) -> tuple[list[dict[str, Any]], str
     past the page cap raises, so the caller degrades the checks section instead
     of rendering a partial or mixed board.
     """
+    from kiro_crew.monitoring.github_pull_request import _rollup_page
+
     rows: list[dict[str, Any]] = []
     head = ""
     cursor = ""
@@ -447,37 +448,23 @@ async def _github_rollup_read(ref: SourceRef) -> tuple[list[dict[str, Any]], str
                 raise TypeError
             pull = data["data"]["repository"]["pullRequest"]
             page_head = str(pull.get("headRefOid") or "")
-            commits = pull["commits"]["nodes"]
-            commit = commits[0]["commit"] if commits else None
-        except (KeyError, TypeError, IndexError, AttributeError):
+            page_rows, revision, _total, has_next, next_cursor = _rollup_page(pull)
+        except (KeyError, TypeError, ValueError, AttributeError):
             raise SourceProviderError("GitHub returned an invalid checks payload") from None
         if head and page_head != head:
             raise SourceProviderError("GitHub head moved while reading checks")
         head = page_head
-        if commit is None:
-            return [], head  # a pull request with no commit has no checks
-        if not isinstance(commit, dict) or (head and commit.get("oid") != head):
+        if revision and head and revision != head:
             raise SourceProviderError("GitHub returned checks for a different commit")
-        rollup = commit.get("statusCheckRollup")
-        if rollup is None:
-            return rows, head  # the host reports no checks for this head
-        try:
-            contexts = rollup["contexts"]
-            nodes = contexts["nodes"]
-            page = contexts["pageInfo"] or {}
-            rows.extend(_flat_check_row(node) for node in nodes)
-        except (KeyError, TypeError, ValueError, AttributeError):
-            raise SourceProviderError("GitHub returned an invalid checks payload") from None
-        if not page.get("hasNextPage"):
+        rows.extend(page_rows)
+        if not has_next:
             # The panel polls the checks endpoint while checks are pending and
             # writes the result straight over the full payload's `checks`, so
             # every consumer MUST collapse identically — an uncollapsed reply
             # would re-inflate the counts and resurrect a superseded CANCELLED
             # failure on the first poll after the panel opens.
             return _github_checks(rows), head
-        cursor = str(page.get("endCursor") or "")
-        if not cursor:
-            raise SourceProviderError("GitHub returned an invalid checks payload")
+        cursor = next_cursor or ""
     # A board past the cap reads unavailable rather than in part: a partial read
     # could keep a displaced row whose successor sits on a page never fetched.
     raise SourceProviderError("GitHub check rollup exceeds the page limit")
