@@ -327,6 +327,34 @@ class ExecutionContext:
             selection_name=selection_name,
         )
 
+    def reconcile_app(self, request_app: str) -> ExecutionContext:
+        """Attach the request's authenticated app, or reject a conflicting inherited one.
+
+        The resolver GPT 6.1 F1 names: a spawn's producer app must come from the
+        authenticated request on EVERY app-token spawn, not only a parentless one. An
+        app token allowed ``/api/spawn`` but denied messaging can hand a parent session
+        key whose stored execution carries ``app=""`` (an archived personal session);
+        without this the request's app never reaches the child, so the completion note's
+        producer is empty, the bridge vets only the permissive host profile, and the
+        app's own channel denial is bypassed on the owner's DM.
+
+        ``request_app`` is the kernel-attested owning app, server-set by the auth
+        middleware (empty for an ordinary dashboard-user spawn). Three outcomes:
+
+        * empty request app -> inherited attribution is left exactly as-is, so a
+          dashboard-user spawn and an internal caller are unchanged;
+        * request app set, inherited app empty -> ATTACH it, which is the bypass fix:
+          the parentless and the parent-session-with-``app=""`` paths now agree;
+        * request app set and DIFFERENT from a non-empty inherited app -> REJECT, because
+          an app token must not inherit another app's ownership through a borrowed parent
+          session. An inherited app that already EQUALS the request app is left alone.
+        """
+        if not request_app or self.app == request_app:
+            return self
+        if self.app:
+            raise _unavailable("the parent session is owned by a different app than the caller")
+        return replace(self, app=request_app)
+
 
 @overload
 def execution_from_record(

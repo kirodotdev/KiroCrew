@@ -35,10 +35,17 @@ class SessionAwareNotify(Protocol):
     the surface the operator is watching instead of one hard-wired destination.
     Empty means "no originating conversation" (a dashboard or CLI start), never
     "route it anywhere".
+
+    ``app`` is the run's owning app id (``execution_context.app``), carried the
+    same keyword-only-with-default way so an older sink needs no change. The
+    bridge binds it as a ``producer_app`` governance subject so a run owned by
+    an app that is allowed ``task_run`` but denies ``messaging`` cannot egress
+    its notice under the permissive host profile. Empty means "no owning app"
+    (a dashboard, cron or CLI start), vetted host-only exactly as before.
     """
 
     def __call__(
-        self, title: str, body: str, task_id: str = "", *, session_key: str = ""
+        self, title: str, body: str, task_id: str = "", *, session_key: str = "", app: str = ""
     ) -> Awaitable[None]: ...
 
 
@@ -71,6 +78,22 @@ def _accepts_session_key(callback: NotifyCallback) -> bool:
     return True
 
 
+def _accepts_app(callback: NotifyCallback) -> bool:
+    """Whether *callback* takes the ``app`` keyword.
+
+    Probed separately from ``session_key`` for the same reason it was probed at
+    all: a sink predating this parameter must keep receiving its notices, so the
+    keyword is handed over only when the signature actually binds it. A sink that
+    adopted ``session_key`` but not ``app`` still gets the originating session; it
+    simply vets host-only for the owning app, which is the lossless direction.
+    """
+    try:
+        inspect.signature(callback).bind("", "", "", app="")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 async def notify(
     title: str,
     body: str,
@@ -78,6 +101,7 @@ async def notify(
     callback: NotifyCallback | None = None,
     *,
     session_key: str = "",
+    app: str = "",
 ) -> None:
     """Send notification via callback if registered."""
     if run:
@@ -88,13 +112,18 @@ async def notify(
     if callback:
         task_id = run.task_id if run else ""
         try:
-            # Widen the call only when there is a conversation to carry, so a
-            # notification with no origin reaches every sink through the exact
-            # call it received before this parameter existed.
+            # Widen the call only with the keywords the sink actually binds and
+            # only when there is a value to carry, so a notification with no
+            # origin reaches every sink through the exact call it received before
+            # these parameters existed. ``app`` tightens egress governance; a sink
+            # that cannot take it simply vets the owning app host-only.
+            kwargs: dict[str, str] = {}
             if session_key and _accepts_session_key(callback):
-                await cast(SessionAwareNotify, callback)(
-                    title, body, task_id, session_key=session_key
-                )
+                kwargs["session_key"] = session_key
+            if app and _accepts_app(callback):
+                kwargs["app"] = app
+            if kwargs:
+                await cast(SessionAwareNotify, callback)(title, body, task_id, **kwargs)
             else:
                 await cast(LegacyNotify, callback)(title, body, task_id)
         except Exception:
