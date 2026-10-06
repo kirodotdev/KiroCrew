@@ -468,7 +468,8 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     """Pre-create the shared, immutable instance permissions boundary (admin step).
 
     Normally the first ``launch`` auto-creates this (the launcher policy grants
-    only ``iam:CreatePolicy`` on the fixed boundary name). Operators who want to
+    ``iam:CreatePolicy`` plus the two read verbs, ``iam:GetPolicy`` and
+    ``iam:GetPolicyVersion``, on the fixed boundary names). Operators who want to
     eliminate the first-write race entirely run this ONCE as an admin, then remove
     the ``iam:CreatePolicy`` action from the ``IamInstanceBoundaryCreateOnce``
     statement in the applied launcher policy — the launcher then only *references*
