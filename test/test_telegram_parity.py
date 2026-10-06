@@ -2073,10 +2073,16 @@ class TestSessionTrust:
         """
         import inspect
         import re
+        from pathlib import Path
 
         from kiro_crew.dashboard import server as dash_server
 
         src = inspect.getsource(dash_server)
+        # With the server_runtime owners server.py composes, which hold the rest of
+        # its startup code.
+        owners = sorted((Path(dash_server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        src += "".join(path.read_text(encoding="utf-8") for path in owners)
         # A TOKEN match, so `clear_trusted_sessions` (which contains the substring)
         # is not mistaken for a reference to the container itself.
         bare = re.findall(r"(?<![A-Za-z0-9_])_trusted_sessions\b", src)

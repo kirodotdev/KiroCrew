@@ -8,7 +8,7 @@ import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import type { useRemoteCapabilities } from '../../../hooks/useRemoteCapabilities'
 import { i18nT } from '../../../i18n/t'
-import { modelSupportsEffort } from '../../../lib/effort'
+import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
 import { useModelsDegraded } from '../../../providers/modelListHealth'
@@ -31,7 +31,7 @@ interface ComposerChipsOptions {
   codexPairModels: boolean
   /** The slot's ACP capability answer, once known. */
   selectionCapabilities: Awaited<ReturnType<typeof api.chatSlotSelectionCapabilities>> | undefined
-  selectionCapabilitiesQ: { isError: boolean }
+  selectionCapabilitiesQ: { isError: boolean; error?: unknown }
   remoteCrew: ReturnType<typeof useRemoteCapabilities>
   dispatch: AppDispatch
   queryClient: QueryClient
@@ -129,7 +129,7 @@ export function useComposerChips({
     // a bare `auto` for a session running one specific model.
     codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
   )
-  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesQ.isError && (
+  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
     selectionCapabilities
       ? selectionCapabilities.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)

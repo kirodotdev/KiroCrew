@@ -125,6 +125,22 @@ class TestTheLatchWaitsForAnAnswerWorthKeeping:
         assert repository._REPO_INVALID_MSG is not None
         assert "/somewhere/not-a-checkout" in repository._REPO_INVALID_MSG
 
+    async def test_a_malformed_configured_path_latches_as_unreadable(
+        self, fresh_discovery, monkeypatch
+    ) -> None:
+        """An embedded NUL follows the configured-path refusal, never a 500."""
+        malformed = "/somewhere/kirocrew\x00bad"
+        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: (malformed, True))
+        monkeypatch.setattr(repository, "_repo_source_hint", lambda: "set dev_fleet.repo_path")
+        monkeypatch.setattr(runtime, "_trusted_bin", lambda _name: "git")
+
+        await repository.ensure_main_repo_discovered()
+
+        assert repository.MAIN_REPO == malformed
+        assert repository._DISCOVERY_DONE is True
+        with pytest.raises(repository.RepoUnreadable, match="not a Kiro Crew checkout"):
+            repository._repo()
+
 
 class TestNoVerdictOutlivesTheAttemptThatProducedIt:
     async def test_an_attempt_finding_nothing_clears_a_stale_invalid_path_message(

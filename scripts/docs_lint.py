@@ -2599,7 +2599,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--accept-new",
         action="store_true",
-        help="ADD the triples firing now to the baseline, printing each one (needs a reason)",
+        help=(
+            "ADD the triples firing now to the baseline, printing each one "
+            "(each one is an exemption a reviewer must agree with)"
+        ),
     )
     parser.add_argument(
         "--strict-identifiers",

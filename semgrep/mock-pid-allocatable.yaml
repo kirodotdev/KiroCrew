@@ -11,9 +11,11 @@ rules:
   # raises and the suppressed exception swallows the whole path.
   #
   # Use a pid above every pid_max any supported platform will allocate, so
-  # the lookup fails before a signal is composed. `test/test_update_provider.py`
-  # names the spelling as `_UNALLOCATABLE_PID`, and asserts it exceeds 2**32;
-  # this rule uses the same threshold.
+  # the lookup fails before a signal is composed. The shared spelling is
+  # `kiro_crew.testing.ids.UNALLOCATABLE_PID` (`unallocatable_pids(n)` for
+  # several); `test/test_update_provider.py` keeps its own
+  # `_UNALLOCATABLE_PID` and asserts it exceeds 2**32, the threshold this
+  # rule uses.
   #
   # Unconditional on purpose. Whether a given double reaches a kill path is
   # not decidable from the file that declares it: the neutralising mock can
@@ -66,8 +68,8 @@ rules:
       signals it reaches whatever holds it on the runner — under pytest-xdist,
       a sibling worker, which dies with no assertion and no traceback. Bind a
       pid above every supported platform's pid_max instead: import
-      _UNALLOCATABLE_PID from the shared spelling in
-      test/test_update_provider.py, or write a literal greater than 2**32. A
+      UNALLOCATABLE_PID (or unallocatable_pids(n)) from kiro_crew.testing.ids,
+      or write a literal greater than 2**32. A
       reserved pid is not an alternative — kill_pid passes its argument
       straight to os.kill, where 0 addresses the caller's own process group.
     severity: ERROR

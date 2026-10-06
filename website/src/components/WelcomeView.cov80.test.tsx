@@ -59,6 +59,15 @@ describe('WelcomeView', () => {
     expect(setInput).toHaveBeenCalledWith(i18nT('components.welcomeView.suggestion_search_code'))
   })
 
+  it('falls back to the built-in pills when every server suggestion is malformed', async () => {
+    suggestions.mockResolvedValue(payload([null, { text: 42 }] as unknown as Suggestions['suggestions']))
+    renderWithProviders(<WelcomeView setInput={vi.fn()} />)
+
+    expect(await screen.findByRole('button', {
+      name: i18nT('components.welcomeView.suggestion_search_code'),
+    })).toBeInTheDocument()
+  })
+
   it('prefers the server suggestions and feeds a clicked pill to the composer', async () => {
     suggestions.mockResolvedValue(payload(['zzq alpha', 'zzq beta']))
     const setInput = vi.fn()

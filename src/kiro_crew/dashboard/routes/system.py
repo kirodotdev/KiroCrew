@@ -147,6 +147,11 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/security/trusted-apps/allow-all", handlers.api_trusted_apps_allow_all)
     app.router.add_post("/api/security/trusted-apps/{name}", handlers.api_trusted_app_grant)
     app.router.add_delete("/api/security/trusted-apps/{name}", handlers.api_trusted_app_revoke)
+    app.router.add_get("/api/security/trusted-registries", handlers.api_trusted_registries_list)
+    app.router.add_post("/api/security/trusted-registries", handlers.api_trusted_registry_grant)
+    app.router.add_post(
+        "/api/security/trusted-registries/revoke", handlers.api_trusted_registry_revoke
+    )
     # Read-only governance policy viewer — effective Level-1 ∩ Level-2 ceiling
     # across every governed scope (no write path; the ceiling is file-authored).
     app.router.add_get("/api/governance/policy", handlers.api_governance_policy)

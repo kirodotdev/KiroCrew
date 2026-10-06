@@ -1624,11 +1624,16 @@ async def test_initial_enabled_activation_is_deferred_and_seeds_restored_session
 
 def test_both_server_entrypoints_defer_card_activation_until_after_listening():
     import inspect
+    from pathlib import Path
 
     from kiro_crew.dashboard import server
 
+    # The boot phases an entrypoint delegates to live in its server_runtime owners.
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    phases = "".join(path.read_text(encoding="utf-8") for path in owners)
     for entrypoint in (server.start_dashboard, server.start_api_server):
-        source = inspect.getsource(entrypoint)
+        source = inspect.getsource(entrypoint) + phases
         listener = (
             "await _start_site(site, port)"
             if entrypoint is server.start_api_server

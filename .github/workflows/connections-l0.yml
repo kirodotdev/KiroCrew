@@ -8,15 +8,16 @@ name: Connections L0 Static Metadata Probe
 # documents (RFC 9728 protected-resource, RFC 8414 authorization-server) against
 # the committed `l0_expectations` baseline. It does NOT check challenge shape --
 # whether an unauthenticated request answers 401 with a well-formed
-# `WWW-Authenticate: Bearer resource_metadata=...`. Two of the seven providers
-# fail that today while serving good metadata (Stripe omits the parameter, Vercel
-# answers HTTP 500), so it needs its own baseline of known exceptions and is a
-# separate follow-up (L0b). A green run here says nothing about it.
+# `WWW-Authenticate: Bearer resource_metadata=...`. Some providers fail that
+# while serving good metadata (Stripe omits the parameter, Vercel answers HTTP
+# 500), so it needs its own baseline of known exceptions and is a separate
+# follow-up (L0b). A green run here says nothing about it.
 #
-# Deliberately NOT a pull_request check. The probe talks to seven third-party
-# services, so on a per-PR trigger its result would depend on those services'
-# availability rather than on the diff -- every contributor would learn to
-# ignore it, and a rate limit somewhere would block unrelated work. Nightly is
+# Deliberately NOT a pull_request check. The probe talks to every third-party
+# service in the registry, so on a per-PR trigger its result would depend on
+# those services' availability rather than on the diff -- every contributor
+# would learn to ignore it, and a rate limit somewhere would block unrelated
+# work. Nightly is
 # the right cadence for "has a provider changed its OAuth surface"; the drift
 # gate is what keeps a single bad night from being reported as a change.
 #

@@ -86,6 +86,7 @@ jobs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
+      wheel_closure: ${{ steps.filter.outputs.wheel_closure }}
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
@@ -94,7 +95,7 @@ jobs:
       # Linux consumers retain a fallback when this job never reports:
       # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`.
       # if this job fails or is cancelled the output is empty, and a job that
-      # runs anyway (`coverage-gate` fails closed with `if: always()`) must still
+      # runs anyway (`coverage-gate` fails closed with `if: !cancelled()`) must still
       # get a runner rather than error out before its own checks execute.
       linux_runner: ${{ steps.runner.outputs.linux_runner }}
       linux_runner_large: ${{ steps.runner.outputs.linux_runner_large }}
@@ -181,6 +182,13 @@ jobs:
               - 'packaging/build-desktop.sh'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
+            # Independent of the buckets above, like linux_packaging: the files
+            # that declare what `pip install` resolves for the installers, plus
+            # the script that reads them.
+            wheel_closure:
+              - 'setup.cfg'
+              - 'pyproject.toml'
+              - 'scripts/ci/install_requires_closure.py'
 
       - name: Decide surface
         id: decide
@@ -338,6 +346,47 @@ jobs:
       - name: Install the packages in their target distros
         run: ./scripts/smoke-linux-packages.sh website/electron/dist
 
+  # cli.sh, install.sh and the self-update venv install with
+  # `--only-binary=:all:` and refuse a host that no wheel of a dependency fits.
+  # CI hosts are new enough that a wheel always fits, so a sdist-only entry
+  # added to install_requires passes every other job and only refuses on old
+  # glibc. This job resolves the install_requires closure as wheels at the
+  # manylinux2014 / manylinux_2_17 floor, cp312, on x86_64 and aarch64 -- the
+  # floor the installers' supported-platform message promises. Advisory: it is
+  # not a required check and not part of any review gate.
+  wheel-closure:
+    name: Install Requires Wheel Closure (${{ matrix.machine }})
+    needs: [changes, await-fast-gate]
+    if: ${{ needs.changes.outputs.wheel_closure == 'true' }}
+    # Hosted, not the fleet: two short pip downloads that need only PyPI.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve install_requires as wheels only
+        env:
+          MACHINE: ${{ matrix.machine }}
+        run: |
+          set -euo pipefail
+          python -m pip install "packaging==26.2"
+          python scripts/ci/install_requires_closure.py --machine "$MACHINE" \
+            --out "$RUNNER_TEMP/install_requires.txt"
+          python -m pip download --only-binary=:all: \
+            --platform "manylinux2014_$MACHINE" --platform "manylinux_2_17_$MACHINE" \
+            --python-version 3.12 --implementation cp --abi cp312 --abi abi3 --abi none \
+            -d "$RUNNER_TEMP/closure" -r "$RUNNER_TEMP/install_requires.txt"
+
   # ── Fast gate barrier (see .github/workflows/fast-gate.yml) ──────────
   # The eleven cheap gates live in their own workflow so the fork reviewers can
   # key on them, which means ci.yml cannot reach them with `needs:` -- a needs
@@ -372,12 +421,11 @@ jobs:
       # checkout is sparse and shallow, and it carries no credentials -- the gh
       # read authenticates with GH_TOKEN below, not the checkout token.
       #
-      # ref is pinned to the TRUSTED script, never the untrusted one. On a
-      # pull_request the default checkout is the merge ref, which contains the
-      # PR head's -- i.e. a fork's -- copy of this script; a fork could edit it
-      # to exit success unconditionally and release the heavy matrix on a Fast
-      # Gate that never confirmed. The checkout uses the default ref (the
-      # merge ref on a pull_request) so the script this job just added is
+      # On a pull_request the default checkout is the merge ref, which contains
+      # the PR head's -- i.e. a fork's -- copy of this script; a fork could edit
+      # it to exit success unconditionally and release the heavy matrix on a
+      # Fast Gate that never confirmed. The checkout still uses the default ref
+      # (the merge ref on a pull_request) so the script this job just added is
       # present -- a base-pinned ref would predate the script and fail the step
       # exit 127. The barrier is not the control against a fork editing the
       # script: on a pull_request the fork also supplies this step's run:/env:,
@@ -1680,8 +1728,10 @@ jobs:
       # --max-worker-restart=2 --timeout=120`; with no xdist and no pytest-timeout
       # installed that is an argument error, not a test run. Its `pytest==8.3.4` also
       # contradicts the dev group's `9.0.3` that the rootdir conftest is written
-      # against, so the two sets cannot share one resolution. The image build still
-      # uses that file; CI installs the runtime half plus this repo's own toolchain.
+      # against, so the two sets cannot share one resolution. The image installs
+      # only `container/requirements.txt`; `requirements-dev.txt` is for developer
+      # machines running container_tests. CI installs the runtime half plus this
+      # repo's own toolchain.
       - name: Install dependencies
         run: |
           uv pip install --system -e "." --group dev
@@ -2061,15 +2111,19 @@ jobs:
       # three baseline rules live in scripts/check_per_file_coverage.py's
       # docstring -- deliberately not restated here, where it would go stale.
       PER_FILE_MIN: 80
-    # Always run so the required check emits a real verdict. Without
-    # `if: always()`, a failing OR skipped dependency would SKIP this job, and
-    # GitHub treats a skipped required check as SATISFIED -- silently defeating
-    # the fail-closed guarantee (including the `if-no-files-found: error` upload
-    # guard this workflow relies on). The first step below converts any
-    # non-success upstream result into an explicit failure.
+    # Run whatever the upstream jobs concluded so the required check emits a
+    # real verdict. With the default `success()`, a failing OR skipped dependency
+    # would SKIP this job, and GitHub treats a skipped required check as
+    # SATISFIED -- silently defeating the fail-closed guarantee (including the
+    # `if-no-files-found: error` upload guard this workflow relies on). The first
+    # step below converts any non-success upstream result into an explicit
+    # failure. `!cancelled()` rather than `always()`: a run the workflow itself
+    # cancelled (a superseded revision, an evicted merge group) has no verdict to
+    # give, while a job that hit its own timeout cancels only that job, so this
+    # gate still runs and fails closed on it.
     # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true', where
     # the matrix it judges does not run.
-    if: ${{ always() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
     steps:
       - name: Require upstream coverage jobs to have succeeded
         env:
@@ -2630,7 +2684,7 @@ jobs:
 
       - name: Windows port-identity tests
         working-directory: website/electron
-        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js
 
   frontend-test:
     name: Frontend Tests

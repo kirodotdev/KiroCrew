@@ -991,11 +991,47 @@ async def internal_memory_scope(
     )
 
 
-#: The two chat routes a script cron opens and seeds sessions on. Session control
-#: is what ``agent.session_control`` switches off, and these are its writes.
+#: The three chat routes a script cron opens, seeds and sets the approval mode of
+#: its sessions on. Session control is what ``agent.session_control`` switches
+#: off, and these are its writes.
 _CRON_SESSION_CONTROL_PATHS = frozenset(
-    {"/api/chat", "/api/chat/", "/api/chat/slots", "/api/chat/slots/"}
+    {
+        "/api/chat",
+        "/api/chat/",
+        "/api/chat/slots",
+        "/api/chat/slots/",
+        "/api/chat/mode",
+        "/api/chat/mode/",
+    }
 )
+
+
+async def _audit_cron_chat_denial(request: web.Request, error: str, resources: str = "") -> None:
+    """Record a cron's refused chat-route call, best-effort, off the loop.
+
+    One shape for every refusal the cron gate on these routes makes, so the
+    switch, the creator fence and the mode rule read alike in the log. The SEL
+    write can touch the disk, so it runs in a thread, and its failure is logged
+    rather than raised: an audit that cannot be written must not turn a
+    refusal into an admission.
+    """
+
+    def _write() -> None:
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_api_access(
+            caller="internal",
+            operation="chat.control",
+            outcome="denied",
+            source="session_control",
+            resources=resources or request.path,
+            error=error,
+        )
+
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.debug("SEL audit for a refused cron chat call (%s) failed", error, exc_info=True)
 
 
 async def _cron_session_control_refusal(request: web.Request) -> web.Response | None:
@@ -1005,7 +1041,7 @@ async def _cron_session_control_refusal(request: web.Request) -> web.Response | 
     every internal chat-route call passes after the internal secret validates.
     Only a ``cron:`` key is checked, because the switch gates a cron caller the
     same way the session-control routes do. Owner and member callers keep their
-    own gates. Only the two routes a script cron writes to are checked. The
+    own gates. Only the three routes a script cron writes to are checked. The
     folder routes are not session control.
     """
     if request.method != "POST" or request.path not in _CRON_SESSION_CONTROL_PATHS:
@@ -1018,23 +1054,7 @@ async def _cron_session_control_refusal(request: web.Request) -> web.Response | 
     if await asyncio.to_thread(session_control_enabled):
         return None
     message = "session control is disabled in config (agent.session_control)"
-
-    def _write() -> None:
-        from kiro_crew.sel import sel as _sel
-
-        _sel().log_api_access(
-            caller="internal",
-            operation="chat.control",
-            outcome="denied",
-            source="session_control",
-            resources=request.path,
-            error="session_control_disabled",
-        )
-
-    try:
-        await asyncio.to_thread(_write)
-    except Exception:
-        logger.debug("SEL audit for a switched-off cron chat call failed", exc_info=True)
+    await _audit_cron_chat_denial(request, "session_control_disabled")
     return web.json_response({"error": message, "code": "session_control_disabled"}, status=403)
 
 
@@ -1059,11 +1079,12 @@ async def cron_slot_creator(request: web.Request) -> str:
 async def cron_creator_refusal(
     request: web.Request, state: Any, slot_name: str | None, cron_creator: str
 ) -> web.Response | None:
-    """The creator fence for a ``cron:`` caller on the two chat routes, or ``None``.
+    """The creator fence for a ``cron:`` caller on the chat routes, or ``None``.
 
-    A script cron opens a slot with ``POST /api/chat/slots`` and seeds it with
-    ``POST /api/chat``. Both routes mint a fresh slot under any key that is not
-    live, and both act on whatever live slot a key names. This mirrors
+    A script cron opens a slot with ``POST /api/chat/slots``, seeds it with
+    ``POST /api/chat`` and sets its approval mode with ``POST /api/chat/mode``.
+    The first two mint a fresh slot under any key that is not live, and all three
+    act on whatever live slot a key names. This mirrors
     session-control's ``_created_by_other`` fence, so a cron reaches only slots
     it created: a live slot is judged on its ``_created_by``, and a key with no
     live slot is judged on the ``created_by`` its persisted metadata line
@@ -1075,7 +1096,9 @@ async def cron_creator_refusal(
 
     The persisted read runs off the loop. The live slot is judged again after
     that read, so a slot opened while it ran is judged as live. The caller
-    therefore makes its mint decision with no await after this returns.
+    therefore makes its mint decision with no await after this returns. The
+    mode route mints nothing and calls this only once its slot is live, so for
+    it the whole judgement is the synchronous ``_created_by`` read.
     """
     if not cron_creator or not slot_name:
         return None
@@ -1113,23 +1136,7 @@ async def cron_creator_refusal(
             return None
     if slot is not None and not _created_by_other(slot, cron_creator):
         return None
-
-    def _write() -> None:
-        from kiro_crew.sel import sel as _sel
-
-        _sel().log_api_access(
-            caller="internal",
-            operation="chat.control",
-            outcome="denied",
-            source="session_control",
-            resources=f"{request.path} slot={key}",
-            error="not_creator",
-        )
-
-    try:
-        await asyncio.to_thread(_write)
-    except Exception:
-        logger.debug("SEL audit for a cron chat call on another's slot failed", exc_info=True)
+    await _audit_cron_chat_denial(request, "not_creator", f"{request.path} slot={key}")
     return web.json_response(
         {
             "error": "a scheduled run can only control sessions it created itself",
@@ -1137,6 +1144,60 @@ async def cron_creator_refusal(
         },
         status=403,
     )
+
+
+#: Approval modes that grant auto-approval to the SLOT they name, as opposed to
+#: the process-global YOLO grant. ``api_chat_mode`` reads it to keep a slot-scoped
+#: grant from revoking the global one, and :func:`cron_mode_refusal` reads it as
+#: the whole allowlist for a ``cron:`` caller: both are creation-time postures for
+#: one unattended session, while ``yolo`` is the global grant and ``normal`` is the
+#: off-switch at any scope, so a cron gets neither. A tuple, not a set: membership
+#: is tested against a request-supplied value, and tuple ``in`` compares by
+#: equality rather than hashing, so a non-string body value such as a list
+#: answers False instead of raising.
+_SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads")
+
+
+async def cron_mode_refusal(
+    request: web.Request, cron_creator: str, mode: object, slot_name: object
+) -> web.Response | None:
+    """The mode rule for a ``cron:`` caller on ``POST /api/chat/mode``, or ``None``.
+
+    ``ScriptContext.set_session_mode`` is the cron path to that route. A cron
+    sets ``trust`` or ``trust_reads``, and nothing else, on the one slot it
+    names: any other mode answers 403 ``mode_not_allowed`` and an unnamed slot
+    answers 400 ``slot_required``, each audited. The mode is judged first, so a
+    cron asking for ``yolo`` is refused as a cron before the request reaches
+    governance or the safety override, and whatever the slot. A mode that is not
+    a string at all, a list say, is refused the same way rather than raising. The
+    creator fence, :func:`cron_creator_refusal`, is the handler's job once the
+    slot resolves. Like the other two checks, this keys on the attested key the
+    caller presents.
+    """
+    if not cron_creator:
+        return None
+    where = f"{request.path} slot={slot_name or ''} mode={mode!r}"
+    if mode not in _SLOT_SCOPED_TRUST_MODES:
+        await _audit_cron_chat_denial(request, "mode_not_allowed", where)
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "a scheduled run can set only trust or trust_reads on a session it created",
+                "code": "mode_not_allowed",
+            },
+            status=403,
+        )
+    if not slot_name:
+        await _audit_cron_chat_denial(request, "slot_required", where)
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "a scheduled run must name the session it created",
+                "code": "slot_required",
+            },
+            status=400,
+        )
+    return None
 
 
 async def private_chat_route_refusal(request: web.Request) -> web.Response | None:

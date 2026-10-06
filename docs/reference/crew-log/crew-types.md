@@ -120,11 +120,13 @@ unthreaded and would otherwise drop out of the item's history.
 
 A dispatched party reported back on one work item.
 
-**Kind and `src`** — `crew`; written by the reporting party, so `src` is
-`crew:<name>` for a crew and `gateway` for a session's own report.
+**Kind and `src`** — `crew`; the reporting party is a session and the gateway
+writes its report into the dispatching crew's log, so `src` is `gateway`. Reports
+are told apart by `ref.id`, the reporting session's unit, not by signer.
 
 **Pairing** — Closer in practice, though a `progress` status leaves the item open.
-`thread` is the dispatch's `seq`.
+`thread` is the dispatch's `seq` when the writer resolved the dispatch anchor;
+otherwise the report is written unthreaded.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
@@ -136,11 +138,13 @@ A dispatched party reported back on one work item.
 **Envelope requirements** — Unlike every other type documented here, `crew/report`
 constrains the envelope as well as `data`:
 
-- **`ref` is required.** It cites the segment of the child's crew log holding the
-  work, so a report is never a claim without evidence. The span cap of 500 lines
-  (`MAX_REF_SPAN`) applies, so a long run is cited by its relevant span rather than
-  in full.
-- **`thread`** is the `seq` of the `crew/dispatch` being answered.
+- **`ref` is required.** It cites the reporting session's own crew log, so a report
+  is never a claim without evidence. The writer builds the span from that unit's
+  newest `seq`, clamped to the newest 500 lines (`MAX_REF_SPAN`). A session with no
+  readable log yields no citation, and no report is written.
+- **`thread`** is the `seq` of the `crew/dispatch` being answered, present only
+  when the writer resolved that dispatch. A report whose anchor is missing is
+  written unthreaded and reads like a volunteered one.
 
 **Invariants** — A report without a `ref` is invalid. `status: "progress"` may
 appear several times for one dispatch; a terminal status appears once.
@@ -155,7 +159,7 @@ rather than folded into `blocked`: the two differ by WHICH party must act, and a
 conductor reading the fold acts on that difference.
 
 ```json
-{"type":"crew/report","seq":58,"time":1789000004000,"src":"crew:qa","thread":41,"ref":{"unit":"session","id":"s-7f3a","from":12,"to":40},"data":{"item":"WI-4","status":"done","credits":1.42,"summary":"six pages and a test"}}
+{"type":"crew/report","seq":58,"time":1789000004000,"src":"gateway","thread":41,"ref":{"unit":"session","id":"s-7f3a","from":12,"to":40},"data":{"item":"WI-4","status":"done","credits":1.42,"summary":"six pages and a test"}}
 ```
 
 **Reader hint** — Resolve the `ref` to read the work itself, and handle all four

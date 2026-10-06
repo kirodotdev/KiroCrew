@@ -84,7 +84,7 @@ on:
         required: false
         default: false
         type: boolean
-  # Manual build-only probe: builds every platform's artifacts from any ref
+  # Manual build-only probe: builds every macOS and Linux artifact from any ref
   # WITHOUT publishing anything (no callers, no S3, no feeds). Used to
   # validate packaging changes (e.g. a new platform lane) before merge.
   workflow_dispatch:

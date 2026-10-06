@@ -29,6 +29,10 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
+import { sidebarPaintWidth } from '../pages/chat/sidebarWidth'
+import { CHAT_PANE_MIN_W } from '../pages/chat/SidePanel'
+import { railWidthFor } from '../hooks/useRailWidth'
+import { boardSidebarWidth } from '../pages/chat-sidebar/board'
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
 vi.mock('framer-motion', async () => {
@@ -551,11 +555,21 @@ describe('mc-history-height', () => {
 
 describe('mc-sidebar-width', () => {
   const separator = () => screen.getByRole('separator', { name: 'Resize sidebar' })
+  // Wide enough that SIDEBAR_MAX fits beside the nav rail and a minimum chat
+  // pane, so these tests read the stored range rather than the window's room.
+  let outerWidth: PropertyDescriptor | undefined
+  beforeEach(() => {
+    outerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 2400 })
+  })
+  afterEach(() => {
+    if (outerWidth) Object.defineProperty(window, 'innerWidth', outerWidth)
+  })
 
   it('defaults to 260 and honours a stored width inside the sidebar range', () => {
     const cases: Array<[string | null, string]> = [
       [null, '260'], ['180', '180'], ['1400', '1400'], ['400', '400'],
-      ['179', '260'], ['1401', '260'], ['wide', '260'],
+      ['179', '260'], ['wide', '260'],
     ]
     for (const [stored, expected] of cases) {
       localStorage.clear()
@@ -564,6 +578,17 @@ describe('mc-sidebar-width', () => {
       expect(separator()).toHaveAttribute('aria-valuenow', expected)
       view.unmount()
     }
+  })
+
+  it('keeps a width wider than 1400 as saved and paints it at 1400 in list view', () => {
+    // A width past 1400 exists only because board view on a wider window
+    // allowed it (#14853), so it loads as saved instead of falling back to
+    // 260. The list views gain nothing past 1400, so they paint it there and
+    // leave the saved width for board view.
+    localStorage.setItem('mc-sidebar-width', '1401')
+    renderSidebar({ slots: [], folders: [] })
+    expect(separator()).toHaveAttribute('aria-valuenow', '1400')
+    expect(localStorage.getItem('mc-sidebar-width')).toBe('1401')
   })
 
   it('persists a keyboard nudge at once, clamped to the range', () => {
@@ -630,6 +655,37 @@ describe('mc-sidebar-width', () => {
       expect(localStorage.getItem('mc-sidebar-width')).toBe('260')
       expect(localStorage.getItem('mc-sidebar-width-pre-board')).toBe('')
       expect(separator()).toHaveAttribute('aria-valuenow', '260')
+    })
+
+    it('weighs a clipped wide width at its painted size and leaves the saved width alone', async () => {
+      // 2884 saved on an ultra-wide, loaded on a 1440 px window: the sidebar
+      // paints at the room beside the rail and the chat pane minimum, which
+      // is already wider than the board's own target here (1440 - 220 - 520),
+      // so seeding lanes widens nothing and the saved width survives.
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 })
+      localStorage.setItem('mc-sidebar-width', '2884')
+      const painted = sidebarPaintWidth({ stored: 2884, winW: 1440, railW: railWidthFor({ isMobile: false, collapsed: false }), chatMin: CHAT_PANE_MIN_W })
+      expect(painted).toBeGreaterThan(boardSidebarWidth(4, 0, 1440))
+      const live: Array<Record<string, unknown>> = []
+      // A read that returns seeded lanes is the refetch the seed's success
+      // handler triggers, the same handler that decides the widen.
+      let seededReads = 0
+      mocks.tagColumns.mockImplementation(async () => {
+        if (live.length > 0) seededReads += 1
+        return live.map(c => ({ ...c }))
+      })
+      mocks.createTagColumn.mockImplementation(async (body: Record<string, unknown>) => {
+        const col = { id: `lane-${live.length}`, name: '', order: live.length, ...body }
+        live.push(col)
+        return col
+      })
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', messages: 1, running: false }], folders: [] })
+      fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
+      fireEvent.click(await screen.findByText('Switch to board view'))
+      await waitFor(() => expect(seededReads).toBeGreaterThan(0))
+      expect(localStorage.getItem('mc-sidebar-width')).toBe('2884')
+      expect(localStorage.getItem('mc-sidebar-width-pre-board')).toBeNull()
+      expect(separator()).toHaveAttribute('aria-valuenow', String(painted))
     })
   })
 })

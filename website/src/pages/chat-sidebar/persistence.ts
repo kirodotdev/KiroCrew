@@ -103,6 +103,20 @@ export const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 /** Lane preference. Replaces the `FLAT_VIEW_LS_KEY` boolean. */
 export const SIDEBAR_LANE_LS_KEY = 'mc-sidebar-lane'
 
+/** Crew groups the user has COLLAPSED, as a JSON array of instance ids. Open is the
+ *  default, so a crew this browser has never seen shows its rows. */
+export const CREW_COLLAPSED_LS_KEY = 'mc-sidebar-crew-collapsed'
+
+/** The collapsed crew ids, or an empty set when the value is unusable. */
+export function readCollapsedCrews(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CREW_COLLAPSED_LS_KEY) ?? '[]')
+    return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
 /** Which conductor rows the user has OPENED, as a JSON array of row keys. A row absent
  *  from it is collapsed, which is what makes one crew read as one row: a conductor
  *  with fourteen workers is a line with a count on it, not fifteen lines, until the

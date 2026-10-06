@@ -604,6 +604,10 @@ export interface Skill {
    *  its figure historical. `null`/absent means no ledger entry, which is NOT
    *  the same as zero (an entry can also age out of the window). */
   deliveries?: number | null
+  /** Unix time (seconds) of the latest delivery; `null`/absent exactly when
+   *  `deliveries` is. Drives the Skills list's "last used" text and its
+   *  Recently used sort. */
+  last_used_at?: number | null
   /** False when the SKILL.md lives outside the directory Kiro Crew owns (e.g. a
    *  `skills.extra_paths` entry). Such a skill is listed but not ours to rewrite,
    *  so the injection toggle must not be offered — the endpoint refuses it. */
@@ -1184,7 +1188,12 @@ export interface ChatSlot {
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields
-  has_options?: boolean; options_ts?: string; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
+  has_options?: boolean; options_ts?: string; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
+  /** The sub-agent queued depth the gateway last published for this session —
+   * the same value as its newest `subagent_queued` frame. Read only to
+   * reconcile `chat.subagentQueued` on a `slots` push; absent from a
+   * `slot_patch` and from an older gateway. */
+  subagents_queued?: number
   /** An unanswered question card the turn is parked on, so the row would
    * otherwise read "Thinking…" with nothing able to advance it. Narrower than
    * `waiting_for_input` (true of every finished turn, and therefore no signal)

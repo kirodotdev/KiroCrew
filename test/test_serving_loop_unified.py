@@ -248,12 +248,15 @@ def test_no_latched_loop_held_across_a_closure() -> None:
     )
     from kiro_crew.dashboard import server as server_mod
 
+    # The server_runtime owners server.py composes hold its startup closures too.
+    owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
     offenders: dict[str, list[str]] = {}
-    for mod in (server_mod, state_mod, updates):
-        name = Path(mod.__file__).name
+    for path in (*(Path(mod.__file__) for mod in (server_mod, state_mod, updates)), *owners):
+        name = path.name
         hits = [
             line.strip()
-            for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
+            for line in path.read_text(encoding="utf-8").splitlines()
             if annotated.search(line)
         ]
         if hits:

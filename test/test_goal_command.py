@@ -76,7 +76,7 @@ async def test_status_no_active_goal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_status_with_active_goal_shows_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    loop = SimpleNamespace(id="loop-1", max_cycles=15)
+    loop = SimpleNamespace(id="loop-1", max_cycles=15, active=True)
     svc = _fake_service(loop=loop)
     _install(monkeypatch, svc)
     slot, state = _make_slot(), _make_state()
@@ -85,6 +85,31 @@ async def test_status_with_active_goal_shows_budget(monkeypatch: pytest.MonkeyPa
 
     body = _last_assistant_body(slot)
     assert "Active goal" in body and "15" in body
+    svc.add.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "word"),
+    [("stop_sentinel", "finished"), ("monitor_terminal", "finished"), ("manual", "stopped")],
+)
+async def test_status_of_a_kept_inactive_record_is_not_an_active_goal(
+    monkeypatch: pytest.MonkeyPatch, reason: str, word: str
+) -> None:
+    """The service keeps a stopped loop's record (a goal its stop file finished,
+    a paused one); ``get_by_slot`` returns it, and status must read the state,
+    not the presence -- a killed or finished goal reported as active is the
+    one reading this command exists to prevent."""
+    loop = SimpleNamespace(id="loop-1", max_cycles=15, active=False, stopped_reason=reason)
+    svc = _fake_service(loop=loop)
+    _install(monkeypatch, svc)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal status")
+
+    body = _last_assistant_body(slot)
+    assert "Active goal" not in body
+    assert f"Goal {word} ({reason})" in body and "/goal clear" in body
     svc.add.assert_not_awaited()
 
 

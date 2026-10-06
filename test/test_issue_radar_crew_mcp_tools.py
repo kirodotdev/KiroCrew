@@ -26,8 +26,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from turn_harness import SlotSpec, TurnScript, run_turn
 
 from kiro_crew import mcp_core
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
 from kiro_crew.dashboard.token_auth import token_auth_middleware
 from kiro_crew.validation import MCP_CORE_SCHEMAS, ValidationError, validate_tool_args
 
@@ -58,6 +60,9 @@ CREW_PAYLOAD = {
     "recent_skips": [{"number": 91, "reason": "needs a design decision", "scope": "needs-design"}],
     "counts": {"open": 1},
 }
+
+_ANSWER = AcpEvent(kind=EVENT_TEXT_CHUNK, text="swept the queue")
+_LANDED = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
 
 
 async def _ok_handler(request: web.Request) -> web.Response:
@@ -496,7 +501,6 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         slot = MagicMock()
         slot.key = slot_key
         slot.running = False
-        slot._in_stage_execution = False
         slot._closing = False
         slot.mode = ""
         slot.memory_mode = "persistent"
@@ -607,27 +611,30 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
             "relies on is broken at the source"
         )
 
-    def test_the_shared_identity_writer_is_still_the_one_run_chat_calls(self):
-        """The construction the refutation rests on: ONE writer, called by _run_chat.
+    @pytest.mark.asyncio
+    async def test_a_dashboard_turn_publishes_the_slots_own_identity(self):
+        """The construction the refutation rests on: the real turn publishes it.
 
-        If ``_run_chat`` stopped importing/calling ``publish_turn_identity``, the
-        nudge turn (and the human turn) would publish no identity at all and the
-        crew tools would fail closed. Asserting the wiring by source keeps the
-        "correct by construction" claim honest: the property tests above stub the
-        writer, so only this guards the real edge between the runner and the one
-        shared writer.
+        Through the real ``_run_chat``: one turn on the crew's slot publishes
+        exactly ``effective_session_key(slot)`` -- the key the strict gate reads
+        back -- through the session manager's pid mapping. If ``_run_chat``
+        stopped calling the shared writer, a nudge or human turn would publish no
+        identity and every crew tool would refuse; if it passed the bare slot key,
+        the mapping would name a session nothing resolves.
         """
+        record = await run_turn(
+            TurnScript(events=[_ANSWER, _LANDED]), slot=SlotSpec(key="crew-c_7f3a")
+        )
+        published = [call.args[0] for call in record.session_calls if call.name == "get_pid"]
+        assert published == ["dashboard:crew-c_7f3a"]
+        assert record.stop_reason == STOP_REASON_END_TURN
+
+    def test_the_shared_writer_maps_the_key_it_is_handed(self):
+        """The writer keys off the session key it is handed, not a re-resolve."""
         import inspect
 
-        from kiro_crew.dashboard import chat_runner
         from kiro_crew.messaging import identity
 
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "publish_turn_identity" in src, (
-            "_run_chat no longer calls the shared identity writer; a nudge or "
-            "human turn would publish no session identity and crew tools refuse"
-        )
-        # The writer keys off the slot's session key it is handed, not a re-resolve.
         writer_src = inspect.getsource(identity.publish_turn_identity)
         assert "session_key" in inspect.signature(identity.publish_turn_identity).parameters
         assert "get_pid" in writer_src, (

@@ -169,7 +169,27 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_412
+#:
+#: Raised for the ``registry_trust.json`` leaf added to ``_CREW_SECRET_LEAVES`` in
+#: ``paths.py``: the operator's grants of ``owner`` trust to a hand-configured app
+#: registry live in a keystone file on the same read+write floor as
+#: ``denied_commands.json``, so the leaf and its two-line reason are three lines the gate
+#: cannot avoid.
+#:
+#: Raised for the read-only bash gate's refusal of variable-assigning expansions
+#: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
+#:
+#: Raised for six stdout-only filters on the read-only bash allowlist (`tr`, `nl`,
+#: `rev`, `comm`, `od`, `column`) and their reason comment.
+#:
+#: Raised for pass 3's macOS per-user directory exemption in ``redaction``:
+#: withholding this host's own ``confstr`` id from the bare-secret scan, so a macOS
+#: temp path (a computer-use screenshot among them) is not read as a key, costs the
+#: id lookup, its grammar, the per-id pattern, the reason only the host's own id is
+#: safe to withhold, and window classification with whole-run context that exempts
+#: only windows sharing ≥ 24 bytes with that id while every other positive window
+#: redacts each piece it touches. One mechanism, no new pass.
+_PACKAGE_LINE_BUDGET = 28_551
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -741,6 +741,7 @@ export default function ProjectScaffolderPage() {
               open={true}
               onOpenChange={(o) => { if (!o) setPickerOpen(false) }}
               anchorRef={browseRef}
+              startPath={root}
               onSelect={(path) => {
                 setRoot(path)
                 setPickerOpen(false)

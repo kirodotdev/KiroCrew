@@ -260,6 +260,7 @@ class LoopStore:
             records = autonudge_stop_log.stop_records(self.committed_active, rows, self.stop_notes)
             for record in records:
                 autonudge_stop_log.log_record(record)
+                autonudge_stop_log.append_record(self.path.parent, record)
         except Exception:  # noqa: BLE001 - the store write already committed
             logger.warning("AutoNudge: could not record a loop stop", exc_info=True)
         finally:

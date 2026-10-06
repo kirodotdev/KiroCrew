@@ -199,9 +199,16 @@ is what the SDK resolves when Kiro Crew does not pin a model.
   withhold spec-referenced servers. See "MCP tools on a Claude session" in
   [claude-code-provider.md](../system-specs/modules/claude-code-provider.md)
   for the exact rules. A project that already carries its own
-  `.claude/settings.local.json` is the exception: Crew did not author the file
-  that governs tool use there, so that session gets no seed and no
-  `mcpServers` array at all. Tool calls pre-approved in your own `~/.claude`
+  `.claude/settings.local.json` keeps that file untouched. With
+  claude-agent-acp 0.84.0 or later Crew leaves it out of the session instead
+  (`settingSources` `["user"]`, Crew's settings inline), and the session still
+  gets Crew's `mcpServers` array; the cost is that the project's
+  `settings.json` env and plugins and its `CLAUDE.md` do not load. The array
+  is withheld only when the adapter is older or reports no version, a project
+  settings file cannot be examined or sets `hooks` or `sandbox`, or the session
+  asked for a permission mode of its own. See "A project-owned settings file"
+  in [claude-code-provider.md](../system-specs/modules/claude-code-provider.md).
+  Tool calls pre-approved in your own `~/.claude`
   settings (including a `.claude/settings.json` inside a cloned project) never
   reach Crew's approval path, so Crew's deny rules and audit log do not see
   them.

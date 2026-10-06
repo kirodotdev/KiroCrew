@@ -132,19 +132,37 @@ class KasHarness(MembershipHarness):
             )
         return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
 
-    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
-        """Take the API key OUT of the child's environment.
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
+        """Settle kiro-cli's own ``KIRO_API_KEY`` by who owns the credential.
 
-        The relay expects an OIDC bearer from the callback, not a Crew API key,
-        and an ambient key would be sent with the wrong token type. Removing it
-        is the positive action here, not an omission.
+        Crew-owned (``cli_owned_auth`` False, the relay answers
+        ``_kiro/auth/getAccessToken`` from Crew's vault): the key is taken OUT.
+        The engine prefers an API key in its environment over the callback, so a
+        key left set would override the identity the operator signed in with and
+        keep answering after a dashboard sign-out.
+
+        cli-owned (``--auth-method cli``): the relay is kiro-cli authenticating
+        itself, and an API key IS a kiro-cli sign-in -- kiro-cli keeps no stored
+        record of it, the variable is the whole login. The launcher refuses to
+        start without some sign-in, and the v3 engine sends the key as its own
+        ``api_key`` token type. So the key is handed over exactly as the kiro
+        harness hands it: inherited, or re-read from the data home's ``.env``.
 
         The relay is kiro-cli, so it reads the same Tool Search never-defer list;
         :func:`pin_mandatory_mcps_env` pins it by operator override or engine version.
         """
-        from kiro_crew.config.loader import strip_kiro_cli_api_key
+        from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
-        strip_kiro_cli_api_key(env)
+        if cli_owned_auth:
+            inject_kiro_cli_api_key(env)
+        else:
+            strip_kiro_cli_api_key(env)
         pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
 
     @property

@@ -297,7 +297,13 @@ class CodexHarness(MembershipHarness):
             private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
         )
 
-    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
         """Take kiro-cli's API key OUT of the child's environment.
 
         A foreign adapter must never receive it, and removing it is the positive

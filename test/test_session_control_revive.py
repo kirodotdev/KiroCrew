@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -827,54 +827,45 @@ def test_route_is_registered_and_strict():
 # ── MCP tool ─────────────────────────────────────────────────────────────────
 
 
-def test_mcp_tool_posts_to_the_revive_route_with_the_callers_key(monkeypatch):
-    from kiro_crew import mcp_dashboard
+def _revive_tool(args: dict, routes: dict, caller=None):
+    """One ``session_revive`` frame through the dashboard table, in memory."""
+    from kiro_crew.mcp_dashboard import TABLE
+    from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+    from kiro_crew.mcp_tools.table import Caller, ToolContext
 
-    posted: dict = {}
+    dash = InMemoryDashboardClient(routes)
+    ctx = ToolContext(dash, caller or Caller.strict("dashboard:chat-1"))
+    return TABLE.call("session_revive", args, ctx), dash.requests
 
-    def _post(path, body, session_key=""):
-        posted.update(path=path, body=body, session_key=session_key)
-        return {"ok": True, "target": "chat-2", "title": "Lookup", "messages": 4, "filed": False}
 
-    monkeypatch.setattr(mcp_dashboard, "_post", _post)
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
+def test_mcp_tool_posts_to_the_revive_route_with_the_callers_key():
+    reply = {"ok": True, "target": "chat-2", "title": "Lookup", "messages": 4, "filed": False}
+    out, (post,) = _revive_tool({"target": "chat-2"}, {"POST /api/session-control/revive": reply})
+
+    assert (post.path, post.body, post.session_key) == (
+        "/api/session-control/revive",
+        {"target": "chat-2"},
+        "dashboard:chat-1",
     )
-
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2"})
-
-    assert posted == {
-        "path": "/api/session-control/revive",
-        "body": {"target": "chat-2"},
-        "session_key": "dashboard:chat-1",
-    }
     assert "Revived `chat-2`" in out and "4 messages" in out
 
 
-def test_mcp_tool_refuses_a_caller_without_a_strict_key(monkeypatch):
-    from kiro_crew import mcp_dashboard
+def test_mcp_tool_refuses_a_caller_without_a_strict_key():
+    from kiro_crew.mcp_tools.table import Caller
 
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("", "Error: nope")
+    out, requests = _revive_tool(
+        {"target": "chat-2"},
+        {"POST /api/session-control/revive": {"ok": True}},
+        Caller.unverified("dashboard:chat-1", diagnosis=" [no channel]"),
     )
-    with patch.object(mcp_dashboard, "_post") as post:
-        out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2"})
-    assert out == "Error: nope"
-    post.assert_not_called()
+    assert out.startswith("Error: this session cannot be identified well enough")
+    assert out.endswith(" [no channel]")
+    assert requests == []
 
 
-def test_mcp_tool_names_the_live_key_when_the_target_is_open(monkeypatch):
-    from kiro_crew import mcp_dashboard
-
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_post",
-        lambda *a, **k: {"error": "'x' is already open as `chat-5`; address it directly"},
-    )
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
-    )
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "x"})
+def test_mcp_tool_names_the_live_key_when_the_target_is_open():
+    refused = {"error": "'x' is already open as `chat-5`; address it directly"}
+    out, _ = _revive_tool({"target": "x"}, {"POST /api/session-control/revive": refused})
     assert out.startswith("Error: could not revive") and "chat-5" in out
 
 
@@ -1214,33 +1205,27 @@ def test_a_target_that_goes_live_during_the_scan_is_reported_live(tmp_path, monk
     assert exc.value.code == "target_already_live" and key in exc.value.message
 
 
-def test_mcp_reply_does_not_warn_when_the_session_was_already_in_the_folder(monkeypatch):
+def test_mcp_reply_does_not_warn_when_the_session_was_already_in_the_folder():
     """``revive_session`` files only when the folder differs and answers
     ``filed: False`` for a session already where it was asked to go; the reply
     must not read that as a filing failure."""
-    from kiro_crew import mcp_dashboard
-
-    monkeypatch.setattr(
-        mcp_dashboard, "require_strict_session_key", lambda *a, **k: ("dashboard:chat-1", "")
-    )
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_resolve_folder_for_new_session",
-        lambda ref, verb: ("f1", "Gamma", "", None),
-    )
-    monkeypatch.setattr(
-        mcp_dashboard,
-        "_post",
-        lambda *a, **k: {
-            "ok": True,
-            "target": "chat-2",
-            "title": "T",
-            "messages": 3,
-            "folder_id": "f1",
-            "filed": False,
+    reply = {
+        "ok": True,
+        "target": "chat-2",
+        "title": "T",
+        "messages": 3,
+        "folder_id": "f1",
+        "filed": False,
+    }
+    out, requests = _revive_tool(
+        {"target": "chat-2", "folder": "Gamma"},
+        {
+            "GET /api/chat/slots": [{"key": "chat-1", "title": "Caller"}],
+            "GET /api/chat/folders": [{"id": "f1", "name": "Gamma", "parent_id": ""}],
+            "POST /api/session-control/revive": reply,
         },
     )
-    out = mcp_dashboard._call_tool_inner("session_revive", {"target": "chat-2", "folder": "Gamma"})
+    assert requests[-1].body == {"target": "chat-2", "folder_id": "f1"}
     assert "could not be applied" not in out
     assert "Revived `chat-2`" in out
 
@@ -1663,16 +1648,12 @@ def test_a_cancellation_during_the_deferred_clear_still_discards_the_build(tmp_p
     assert log.get_metadata(f"dashboard:{key}").get("closed") is True
 
 
-def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_marker(
-    tmp_path, monkeypatch
-):
-    """The hook-less History path clears ``closed`` eagerly. A click that passes
-    the early construction guard, clears, and then finds the key under
+def test_a_history_click_that_loses_the_race_leaves_the_marker_untouched(tmp_path, monkeypatch):
+    """The History path clears ``closed`` only after construction. A
+    click that passes the early construction guard and then finds the key under
     construction (a revive retracted its build inside the click's read window)
-    is refused ``resume_in_progress``; if that revive is then refused too, the
-    click's clear would be the only durable change left, and the archived
-    session would come back as a sidebar row at the next start. The click puts
-    the marker back before answering."""
+    is refused ``resume_in_progress`` with the marker exactly as it found it, so
+    if that revive is then refused too, the archived session stays archived."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -1682,8 +1663,8 @@ def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_
     real_agent = chat_handlers._restored_agent_name
 
     def _agent_then_contend(*a, **kw):
-        # Runs after the eager clear and before the post-clear guard: another
-        # resume of the same key takes the construction mark meanwhile.
+        # Runs inside the click's read window, before the post-read guard:
+        # another resume of the same key takes the construction mark meanwhile.
         state.begin_slot_construction(key)
         return real_agent(*a, **kw)
 
@@ -1699,42 +1680,44 @@ def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_
     assert log.get_metadata(f"dashboard:{key}").get("closed") is True
 
 
-def test_a_history_click_that_loses_the_race_and_cannot_restore_answers_rollback_failed(
-    tmp_path, monkeypatch
-):
-    """Same race as above, but the marker restore keeps raising and the re-read
-    shows the marker absent: the click must not answer an ordinary
-    ``resume_in_progress`` that a retry would clear, because the durable session
-    is now reopened. Same ``reopen_rollback_failed`` 503 the hooked discard gives."""
+def test_a_history_click_refused_by_an_in_flight_delete_writes_nothing(tmp_path, monkeypatch):
+    """A delete of the session is in flight when the click reaches its last
+    check. The click refuses with a retryable ``resume_conflict`` before any
+    durable write: the ``closed`` marker is still set, and neither the reopen
+    clear nor a marker restore was attempted, so there is nothing a failed
+    rollback could leave half-done."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"))
     log = state.conversation_log
-    real_agent = chat_handlers._restored_agent_name
+    writes = []
+    real_clear = log.clear_closed
     real_update = log.update_metadata_if
 
-    def _agent_then_contend(*a, **kw):
-        state.begin_slot_construction(key)
-        return real_agent(*a, **kw)
+    def _record_clear(*a, **kw):
+        writes.append("clear_closed")
+        return real_clear(*a, **kw)
 
-    def _restore_fails(k, fields, guard, **kw):
-        if "closed" in fields:
-            raise OSError(errno.EIO, "injected")
-        return real_update(k, fields, guard, **kw)
+    def _record_update(*a, **kw):
+        writes.append("update_metadata_if")
+        return real_update(*a, **kw)
 
-    monkeypatch.setattr(chat_handlers, "_restored_agent_name", _agent_then_contend)
-    monkeypatch.setattr(log, "update_metadata_if", _restore_fails)
+    monkeypatch.setattr(log, "clear_closed", _record_clear)
+    monkeypatch.setattr(log, "update_metadata_if", _record_update)
 
-    outcome = asyncio.run(
-        chat_handlers.resume_slot_from_history(state, name=key, history_key=f"dashboard:{key}")
-    )
-    state.end_slot_construction(key)
+    with log.delete_in_flight_window(f"dashboard:{key}"):
+        outcome = asyncio.run(
+            chat_handlers.resume_slot_from_history(state, name=key, history_key=f"dashboard:{key}")
+        )
 
     assert outcome.refusal is not None
-    assert outcome.refusal.code == "reopen_rollback_failed" and outcome.refusal.status == 503
+    assert outcome.refusal.code == "resume_conflict" and outcome.refusal.status == 409
+    assert writes == [], f"a refused resume wrote durable state: {writes}"
+    assert log.get_metadata(f"dashboard:{key}").get("closed") is True
     assert key not in state._slots
+    assert key not in state._slots_under_construction
 
 
 def test_a_concurrent_resume_during_the_hook_gets_a_coded_conflict_not_a_500(tmp_path):
@@ -2222,10 +2205,15 @@ def test_a_channel_link_written_to_the_line_during_the_read_is_seen_by_the_hook(
 
 
 def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_path, monkeypatch):
-    """The synchronous identity read after the last await is the one place
-    nothing follows: an unreadable answer there is the delete-and-recreate's
-    own signature (the file being rewritten) and refuses ``resume_conflict``
-    instead of falling through, with the marker rolled back."""
+    """A mutation landing after the last await refuses rather than publishing.
+
+    The identity re-read runs off the loop so it survives a transient Windows
+    file lock, then the containment pass is the last await. A delete or
+    delete-and-recreate landing in that pass bumps the key's invalidation
+    generation; the synchronous generation re-check after the pass is the
+    delete-and-recreate's lock-free signature, and refuses ``resume_conflict``
+    with the marker rolled back instead of publishing over it.
+    """
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -2233,25 +2221,63 @@ def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_pa
     key = _archive(state, caller, _slot(state, "chat-2"))
     log = state.conversation_log
     hk = f"dashboard:{key}"
-    real_status = log.get_metadata_status
     passes: list[int] = []
-    flags: dict = {}
 
     async def _count(_built):
         passes.append(1)
         if len(passes) == 2:
-            flags["unreadable_next"] = True  # the very next read is the final one
+            # A delete-and-recreate landing during the last await bumps the
+            # generation under the file lock, which the re-check below catches.
+            log._invalidate_cache(hk)
         return None
 
-    def _status(k):
-        if flags.pop("unreadable_next", False):
-            return {}, False
-        return real_status(k)
-
-    monkeypatch.setattr(log, "get_metadata_status", _status)
     outcome = asyncio.run(
         chat_handlers.resume_slot_from_history(state, name=key, history_key=hk, containment=_count)
     )
+    assert len(passes) == 2
+    assert outcome.refusal is not None and outcome.refusal.code == "resume_conflict"
+    assert key not in state._slots and key not in state._slots_under_construction
+    assert log.get_metadata(hk).get("closed") is True
+
+
+def test_a_delete_in_flight_during_the_last_await_refuses_before_it_unlinks(tmp_path, monkeypatch):
+    """An in-flight delete opened during the containment await, before it bumps
+    the generation, is caught by the lock-free in-flight marker.
+
+    ``delete_session`` bumps the invalidation generation only after the unlink,
+    so a delete that opens its in-flight window during the last await has not
+    bumped it yet. ``_identity_refusal``'s own marker check runs before that
+    await, so the synchronous re-check after it carries the marker term too and
+    refuses ``resume_conflict`` with the marker rolled back.
+    """
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    log = state.conversation_log
+    hk = f"dashboard:{key}"
+    passes: list[int] = []
+    window = {}
+
+    async def _count(_built):
+        passes.append(1)
+        if len(passes) == 2:
+            # A delete opens its in-flight window during the last await but has
+            # not reached its generation-bumping unlink yet.
+            window["cm"] = log.delete_in_flight_window(hk)
+            window["cm"].__enter__()
+        return None
+
+    try:
+        outcome = asyncio.run(
+            chat_handlers.resume_slot_from_history(
+                state, name=key, history_key=hk, containment=_count
+            )
+        )
+    finally:
+        if "cm" in window:
+            window["cm"].__exit__(None, None, None)
     assert len(passes) == 2
     assert outcome.refusal is not None and outcome.refusal.code == "resume_conflict"
     assert key not in state._slots and key not in state._slots_under_construction

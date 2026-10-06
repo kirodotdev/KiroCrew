@@ -94,6 +94,12 @@ in `dev_fleet_startup()`. The startup result is then normalized through
 `_resolve_primary_checkout`, so a hint naming a linked worktree still manages the whole
 fleet.
 
+The agent pod routes run in the gateway process and do not run the managed backend's
+startup hook. Their shared operation wrapper calls `ensure_main_repo_discovered()` before
+it invokes a worktree operation. This lazy gateway entry point runs tiers 2 and 5 before
+`_repo()` can reject an empty import-time hint. It also preserves the unresolved retry
+and resolved single-flight behavior described below.
+
 The `/fleet` payload reports both the resolved `main_repo` and
 `main_repo_inferred`. The latter is true for tiers 3–5 and false for the two
 operator-configured tiers. The page surfaces an inferred path once above the fleet,

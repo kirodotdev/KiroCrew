@@ -1,6 +1,6 @@
 ---
 name: writing-tests
-description: "Kiro Crew repo only: how to write a backend pytest test with NO side effects that does not flake. Use when adding, editing, reviewing or debugging a test there: which conftest applies, what leaks (temp dirs, data home, ~/.kiro, cron, threads), the six flake classes, cross-platform traps."
+description: "Kiro Crew repo only: how to write a backend pytest test with NO side effects that does not flake. Use when adding, editing, reviewing or debugging a test there: which conftest applies, what leaks (temp dirs, data home, ~/.kiro, cron, threads), the seven flake classes, cross-platform traps."
 triggers: write a test, add a test, fix a flaky test, test is flaky, test side effect, temp dir residue, tmp residue, kirocrew test, pytest kirocrew, test isolation, conftest, xdist, test leaked
 ---
 
@@ -31,7 +31,7 @@ neighbouring steps, and none of them restates what is here:
 
 The line that matters most in practice: **kirocrew-worktree-dev** tells you whether a
 failure is yours (re-run it on `origin/main`, mine CI for what is genuinely flaky);
-once it is yours, the fix is here. Do not fix a flake from a summary of the five
+once it is yours, the fix is here. Do not fix a flake from a summary of the
 determinism classes — pick the class from the symptom, in Rule 2.
 
 ## The two properties, and why they are one problem
@@ -48,8 +48,8 @@ surfaces as a flake in a file you never touched.
 table is in [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § Which conftest you are standing on — read it rather than a second copy here, which
 would drift. The short version: only `test/` gets `test/conftest.py`;
-`src/kiro_crew/apps/builtins/*/tests/` gets the rootdir `conftest.py` plus that app's
-own `tests/conftest.py` where one exists.
+`src/kiro_crew/apps/builtins/**/tests/` (and the one `**/*_tests/` suite) gets the
+rootdir `conftest.py` plus that suite's own `conftest.py` where one exists.
 
 The rootdir `conftest.py` is the **host floor** — the guards that protect the
 developer's machine, so they hold everywhere. That covers damage (temp dirs, the data
@@ -262,19 +262,34 @@ The rootdir conftest traps the stdlib spawn funnels and refuses a
 (`show`, `cat`, `is-active`) are allowed and need no stub. A test reaching the make-live
 cutover path must stub **both** `_run_cmd` and `_dropin_path`.
 
-## Rule 2 — Determinism: six classes, one correct fix each
+## Rule 2 — Determinism: seven classes, one correct fix each
 
 Never "fix" a flake with a rerun, a longer `sleep`, a weakened assertion, or a skip.
-Full detail and examples: testing-conventions § Determinism.
+Full detail and examples: testing-conventions § Determinism. Its short form, twelve
+MUST rules, is the
+[Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first)
+at the top of that document, and the checklist below opens with the same twelve.
 
-The six classes, the tell that identifies each, and the ONE correct fix for each are in
+The seven classes, the tell that identifies each, and the ONE correct fix for each are in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § Determinism. Read the section matching your symptom before changing anything: most of them
 have a fix that looks like the obvious one and is not.
 
 What this skill adds is when to go looking — a test that passes alone and fails in the suite, or
-one that splits by Python version rather than by machine load, is one of those six and not a
+one that splits by Python version rather than by machine load, is one of those seven and not a
 mystery. Do not reach for a rerun, a longer `sleep`, a weakened assertion, or a skip.
+
+The seventh class is the one a sleep hides best: **two stamps written back to back can be
+EQUAL.** On Windows through Python 3.12 `time.time()` steps ~15.6 ms, like
+`time.monotonic()`, and some filesystems store mtimes in whole seconds, so a `sleep`
+between two writes makes a tie less likely, never impossible. Set the stamps (`os.utime(ns=...)`, a stepped
+clock, an explicit `created_at`), assert strictly, and pin a time-sorted output's
+tie-break with an equal-stamp pair.
+
+Prove a test rather than trusting a green run: 20 repeats at `-n0`, 10 at `-n 4` beside
+its neighbours, and a shuffled order. A FIX to a flaky test also shows the forced
+condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
+commit and green on the fix (testing-conventions § Proving a determinism fix).
 
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
@@ -339,9 +354,11 @@ test must first establish the concurrency it is asserting about.
 - **Case-insensitive filesystems.** macOS and Windows are case-insensitive by default,
   so a test asserting that two paths differing only in case are distinct is broken
   there.
-- **Windows timer granularity** rounds `sleep`/`Event.wait` up to ~15.6ms and has
-  coarser file mtime resolution — so "two writes have different timestamps" is a flake
-  there.
+- **Windows clock granularity.** Through Python 3.12 `time.time()` and
+  `time.monotonic()` step ~15.6 ms, and so do `Event.wait`, lock and queue timeouts;
+  only `time.sleep` has been high-resolution since 3.11 — so a short sleep can put two
+  writes on one stamp, and "two writes have different timestamps" is a flake there
+  (class 7).
 - **Probe, do not guess the platform.** `test/conftest.py::_can_create_symlink` is the
   model: creating a symlink needs `SeCreateSymbolicLinkPrivilege`, which CI runners
   hold and an ordinary shell does not, so a blanket `skipif(IS_WINDOWS)` would drop the
@@ -447,6 +464,41 @@ The consequence for how you write a test:
 
 ## Checklist before you push a test
 
+### Determinism top 12
+
+One box per rule of the [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first),
+naming the shape; the contract line holds the detail and its numbers. The helpers are in
+`kiro_crew.testing` (`clock`, `wait`, `ids`). Every other item below is a specialised trap.
+
+- [ ] D1: wait on the asserted state with a raising, bounded poll (`wait_until`,
+      `async_wait_until`, `until_parked`), never a sleep
+      ([class 2](../../../../../docs/system-specs/common/testing-conventions.md#2-wall-clock-races))
+- [ ] D2: one clock, installed on the module-under-test's own binding
+      (`ManualClock.install`, the `manual_clock` fixture)
+      ([class 2](../../../../../docs/system-specs/common/testing-conventions.md#2-wall-clock-races))
+- [ ] D3: set the timestamps (`ManualClock(tick=...)`, `os.utime(ns=...)`, `seq_ids`),
+      assert order strictly, pin the tie-break
+      ([class 7](../../../../../docs/system-specs/common/testing-conventions.md#7-data-order-and-timestamp-ties))
+- [ ] D4: no asserted order the code does not define
+      ([class 7](../../../../../docs/system-specs/common/testing-conventions.md#7-data-order-and-timestamp-ties))
+- [ ] D5: the product's zone and a frozen instant, never the host's (`local_tz`)
+      ([class 1](../../../../../docs/system-specs/common/testing-conventions.md#1-nondeterministic-input))
+- [ ] D6: seeded RNGs and unallocatable fake PIDs (`seeded_rng`, `unallocatable_pids`)
+      ([class 1](../../../../../docs/system-specs/common/testing-conventions.md#1-nondeterministic-input))
+- [ ] D7: no upper bound on a measured duration beyond what the contract allows
+      ([class 5](../../../../../docs/system-specs/common/testing-conventions.md#5-absolute-time-budgets-on-instrumented-runs))
+- [ ] D8: every self-unblocked await, join or communicate bounded, failing by name
+      ([class 6](../../../../../docs/system-specs/common/testing-conventions.md#6-a-hang-is-a-lost-run-not-a-failed-test))
+- [ ] D9: listeners bind port 0 and report the port ([Rules](../../../../../docs/system-specs/common/testing-conventions.md#rules))
+- [ ] D10: loopback only, the network stubbed at the product's seam
+      ([side effects](../../../../../docs/system-specs/common/testing-conventions.md#side-effects-what-a-full-run-does-to-the-host-and-how-to-see-it))
+- [ ] D11: globals through `monkeypatch`, no in-process reload, evictions restored
+      ([class 4](../../../../../docs/system-specs/common/testing-conventions.md#4-order-dependence-and-shared-state))
+- [ ] D12: proven by repeats, a shuffled order and, for a fix, the forced condition
+      ([proving a fix](../../../../../docs/system-specs/common/testing-conventions.md#proving-a-determinism-fix))
+
+### Specialised traps (search when your test touches X)
+
 - [ ] Nothing outlives the run: no temp residue, no write to `~/.kiro` or the real data
       home, no cron job, no service change, no file in the checkout
 - [ ] Every `mkdtemp` has `addCleanup` on the next line (or uses `tmp_path`)
@@ -527,10 +579,12 @@ The consequence for how you write a test:
       offender, or (with an `any(...)` assertion) keeps passing on it; the gate keeps its
       own scope filter, because `_vendor` is tracked
 - [ ] A fixture stamped from a module-level `NOW` is only compared by production code
-      whose clock is pinned to that same `NOW` (a `frozen_clock` fixture) -- never two clocks
+      whose clock is pinned to that same `NOW` on the module-under-test's own `time`
+      binding (D2) -- never two clocks
 - [ ] After `await handler(...)`, an assertion on something a worker thread emits via
       `call_soon_threadsafe` waits on that signal, not on the handler returning
-- [ ] No assertion on a rate, a sample count, or an absolute duration
+- [ ] No upper bound on a rate, a sample count, or a measured duration beyond what D7
+      allows
 - [ ] Source files read via `_REPO_ROOT = Path(__file__).resolve().parents[N]`, never a
       relative `Path("src/...")` — xdist workers may change CWD
 - [ ] Passes at `-n0` **and** under `-n auto`, and passes when run alone

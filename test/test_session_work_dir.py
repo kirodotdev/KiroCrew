@@ -48,6 +48,7 @@ def _residue_dir(
     home: str | None = None,
     owner_pid: int | str | None = None,
     raw_marker: str | None = None,
+    kiro_cli_agents: bool = False,
 ) -> Path:
     """A run directory exactly as a marked spawn leaves it.
 
@@ -55,12 +56,16 @@ def _residue_dir(
     provenance marker, which only the shutdown path (whose provenance is the
     factory flag) may reclaim. The marker names this data home and this process
     unless *home* / *owner_pid* say otherwise; *raw_marker* plants bytes as is.
+    *kiro_cli_agents* adds the empty ``.kiro/agents`` kiro-cli creates in the
+    folder it starts in.
     """
     work_dir = root / name
     settings = work_dir / ".kiro" / "settings"
     settings.mkdir(parents=True)
     (settings / "cli.json").write_text(json.dumps({"chat.modelDefaults": {}}), encoding="utf-8")
     (settings / CLI_SETTINGS_LOCK_NAME).write_bytes(b"")
+    if kiro_cli_agents:
+        (work_dir / ".kiro" / "agents").mkdir()
     if marked:
         text = _marker_text(home, owner_pid) if raw_marker is None else raw_marker
         (work_dir / session_work_dir.RUN_DIR_MARKER).write_text(text, encoding="ascii")
@@ -69,7 +74,7 @@ def _residue_dir(
         for path in (
             work_dir,
             work_dir / ".kiro",
-            settings,
+            *(work_dir / ".kiro").iterdir(),
             *settings.iterdir(),
             *work_dir.iterdir(),
         ):
@@ -80,6 +85,27 @@ def _residue_dir(
 
 def _tree(work_dir: Path) -> list[str]:
     return sorted(str(p.relative_to(work_dir)) for p in work_dir.rglob("*"))
+
+
+def _spec_inside_agents(work_dir: Path) -> None:
+    agents = work_dir / ".kiro" / "agents"
+    agents.mkdir()
+    (agents / "planted.json").write_text("{}", encoding="utf-8")
+
+
+def _folder_inside_agents(work_dir: Path) -> None:
+    (work_dir / ".kiro" / "agents" / "nested").mkdir(parents=True)
+
+
+def _file_named_agents(work_dir: Path) -> None:
+    (work_dir / ".kiro" / "agents").write_text("not a folder", encoding="utf-8")
+
+
+AGENTS_NOT_RESIDUE = pytest.mark.parametrize(
+    "plant",
+    [_spec_inside_agents, _folder_inside_agents, _file_named_agents],
+    ids=["a spec inside", "a folder inside", "a file named agents"],
+)
 
 
 class TestDisposableSessionKey:
@@ -93,14 +119,69 @@ class TestDisposableSessionKey:
             ("subagent:0123abcd", True),
             ("subagent:0123abc", False),
             ("subagent:notes", False),
+            (f"memory-consolidation:work:{'0123456789abcdef' * 2}", True),
+            (f"memory-consolidation:member-scout-{'a' * 32}:{'0123456789abcdef' * 2}", True),
+            (f"memory-consolidation:work:{'0123456789abcdef' * 2}0", False),
+            ("memory-consolidation:work", False),
+            (f"memory-consolidation::{'0123456789abcdef' * 2}", False),
         ],
     )
     def test_only_generated_one_run_key_shapes_are_disposable(
-        self, key: str, expected: bool
+        self, key: str, expected: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: True)
         assert session_work_dir.is_disposable_session_key(key) is expected
         name = key.replace(":", "_")
         assert (session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None) is expected
+        assert session_work_dir._is_disposable_dir_name(name) is expected
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            "a",
+            "work",
+            f"member-scout-{'a' * 32}",
+            "a" * 80,
+            "a" * 81,
+            "-work",
+            "work-",
+            "Work",
+            "work_1",
+            "wo.rk",
+            "",
+        ],
+    )
+    def test_a_memory_consolidation_store_follows_the_store_name_grammar(
+        self, store: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``background_turn`` mints ``memory-consolidation:<store>:<uuid4 hex>``."""
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: True)
+        import uuid
+
+        from kiro_crew.memory_stores import memory_store_name_defect
+
+        key = f"memory-consolidation:{store}:{uuid.uuid4().hex}"
+        valid = memory_store_name_defect(store) is None
+        assert session_work_dir.is_disposable_session_key(key) is valid
+
+    def test_a_walk_without_the_pin_keeps_memory_consolidation_long_lived(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The by-name form unlinks by path, so it is never handed these folders."""
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: False)
+        key = f"memory-consolidation:work:{'0123456789abcdef' * 2}"
+        assert session_work_dir.is_disposable_session_key(key) is False
+        assert session_work_dir._is_disposable_dir_name(key.replace(":", "_")) is False
+        assert session_work_dir.is_disposable_session_key("subagent:0123456789abcdef") is True
+        assert session_work_dir._is_disposable_dir_name("subagent_0123456789abcdef") is True
+        assert session_work_dir.is_disposable_session_key("cron:aaaa1111:bbbb2222") is True
+        assert session_work_dir._is_disposable_dir_name("cron_aaaa1111_bbbb2222") is True
+
+    def test_the_store_component_is_the_memory_store_grammar(self) -> None:
+        """The sampled names above cannot catch a widening, so the copy is pinned to the source."""
+        from kiro_crew.memory_stores import _STORE_NAME_RE
+
+        assert _STORE_NAME_RE.pattern == rf"^{session_work_dir._MEMORY_STORE_NAME}\Z"
 
 
 class TestMarker:
@@ -366,6 +447,96 @@ class TestReclaimRule:
         )
         assert all(p.exists() for p in tmp_path.iterdir()), "the census removed something"
 
+    @pytest.mark.parametrize("pinned", [True, False])
+    def test_the_doctor_census_counts_every_run_shape_on_either_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned: bool
+    ) -> None:
+        """The by-name walk never marks a memory consolidation folder; counting it deletes nothing."""
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        memory = _residue_dir(
+            tmp_path,
+            f"memory-consolidation_work_{'0123456789abcdef' * 2}",
+            marked=False,
+            kiro_cli_agents=True,
+        )
+        subagent = _residue_dir(
+            tmp_path, "subagent_0123456789abcdef", marked=False, kiro_cli_agents=True
+        )
+
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+
+        assert census == session_work_dir.RunDirCensus(unmarked=2)
+        assert memory.exists()
+        assert subagent.exists()
+
+    def test_kiro_clis_empty_agents_folder_is_residue(self, tmp_path: Path) -> None:
+        """kiro-cli creates ``.kiro/agents`` in the folder it starts in; it must not pin the run."""
+        work_dir = _residue_dir(tmp_path, "subagent_0123456789abcdef", kiro_cli_agents=True)
+        before = _tree(work_dir)
+        if session_work_dir.pinned_fs.supports_pinned_walk():
+            assert session_work_dir.reclaim_session_work_dir(work_dir) is True
+            assert not work_dir.exists()
+        else:
+            assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+            assert _tree(work_dir) == before
+        alone = tmp_path / "subagent_00000003"
+        (alone / ".kiro" / "agents").mkdir(parents=True)
+        before = _tree(alone)
+        if session_work_dir.pinned_fs.supports_pinned_walk():
+            assert session_work_dir.reclaim_session_work_dir(alone) is True
+            assert not alone.exists()
+        else:
+            assert session_work_dir.reclaim_session_work_dir(alone) is False
+            assert _tree(alone) == before
+
+    @AGENTS_NOT_RESIDUE
+    def test_an_agents_folder_that_is_not_empty_keeps_the_whole_directory(
+        self, tmp_path: Path, plant
+    ) -> None:
+        work_dir = _residue_dir(tmp_path, "subagent_0000000000000009")
+        plant(work_dir)
+        before = _tree(work_dir)
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert _tree(work_dir) == before
+
+    @requires_symlinks
+    def test_a_linked_agents_folder_is_refused(self, tmp_path: Path) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        work_dir = _residue_dir(tmp_path, "subagent_000000000000000a")
+        (work_dir / ".kiro" / "agents").symlink_to(elsewhere, target_is_directory=True)
+        before = _tree(work_dir)
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert _tree(work_dir) == before and elsewhere.is_dir()
+
+    def test_a_fresh_agents_folder_renews_an_old_directory(self, tmp_path: Path) -> None:
+        work_dir = _residue_dir(tmp_path, "subagent_000000000000000b", age_secs=7200)
+        (work_dir / ".kiro" / "agents").mkdir()
+        old = time.time() - 7200
+        os.utime(work_dir / ".kiro", (old, old))
+        assert session_work_dir.reclaim_session_work_dir(work_dir, min_age_secs=3600) is False
+        assert work_dir.exists()
+
+    def test_an_agents_folder_that_gains_an_entry_stops_the_reclaim_before_any_unlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The check and the ``rmdir`` are two syscalls; a file landing between them costs nothing."""
+        work_dir = _residue_dir(tmp_path, "subagent_000000000000000c", kiro_cli_agents=True)
+        check = session_work_dir._empty_directory_mtime_at
+
+        def check_then_a_file_arrives(parent_fd: int, name: str) -> float | None:
+            mtime = check(parent_fd, name)
+            (work_dir / ".kiro" / "agents" / "late.json").write_text("{}", encoding="utf-8")
+            return mtime
+
+        monkeypatch.setattr(
+            session_work_dir, "_empty_directory_mtime_at", check_then_a_file_arrives
+        )
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert (work_dir / ".kiro" / "settings" / "cli.json").exists()
+        if session_work_dir.pinned_fs.supports_pinned_walk():
+            assert (work_dir / ".kiro" / "agents" / "late.json").exists()
+
 
 class TestByNameForm:
     """The platform form without descriptor-relative opens (Windows), driven here.
@@ -508,6 +679,37 @@ class TestByNameForm:
         (work_dir / session_work_dir.RUN_DIR_MARKER).symlink_to(tmp_path / "real-marker")
         assert session_work_dir.mark_run_dir(work_dir) is False
 
+    def test_a_tree_holding_kiro_clis_agents_folder_is_kept(self, tmp_path: Path) -> None:
+        """Without a pin on ``.kiro``, removing ``agents`` by name could follow a swapped junction."""
+        work_dir = _residue_dir(tmp_path, "subagent_00000020", age_secs=7200, kiro_cli_agents=True)
+        before = _tree(work_dir)
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert _tree(work_dir) == before
+        alone = tmp_path / "subagent_00000021"
+        (alone / ".kiro" / "agents").mkdir(parents=True)
+        assert session_work_dir.reclaim_session_work_dir(alone) is False
+        assert (alone / ".kiro" / "agents").is_dir()
+
+    @AGENTS_NOT_RESIDUE
+    def test_an_agents_folder_that_is_not_empty_keeps_the_directory(
+        self, tmp_path: Path, plant
+    ) -> None:
+        work_dir = _residue_dir(tmp_path, "subagent_00000022", age_secs=7200)
+        plant(work_dir)
+        before = _tree(work_dir)
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert _tree(work_dir) == before
+
+    @requires_symlinks
+    def test_a_linked_agents_folder_is_refused(self, tmp_path: Path) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        work_dir = _residue_dir(tmp_path, "subagent_00000023", age_secs=7200)
+        (work_dir / ".kiro" / "agents").symlink_to(elsewhere, target_is_directory=True)
+        before = _tree(work_dir)
+        assert session_work_dir.reclaim_session_work_dir(work_dir) is False
+        assert _tree(work_dir) == before and elsewhere.is_dir()
+
 
 def _sweep(root: Path, *, retained=frozenset(), live=(), **kwargs) -> int:
     return session_work_dir.sweep_predecessor_work_dirs(
@@ -612,6 +814,31 @@ class TestSweep:
     def test_a_missing_root_sweeps_nothing(self, tmp_path: Path) -> None:
         assert _sweep(tmp_path / "no") == 0
 
+    def test_reclaims_what_real_runs_leave_including_memory_consolidation(
+        self, tmp_path: Path
+    ) -> None:
+        """Every run directory kiro-cli started in holds its empty agents folder."""
+        consolidation = _residue_dir(
+            tmp_path,
+            f"memory-consolidation_work_{'0123456789abcdef' * 2}",
+            age_secs=7200,
+            owner_pid=PREDECESSOR_PID,
+            kiro_cli_agents=True,
+        )
+        subagent = _residue_dir(
+            tmp_path,
+            "subagent_00000000000000aa",
+            age_secs=7200,
+            owner_pid=PREDECESSOR_PID,
+            kiro_cli_agents=True,
+        )
+        if session_work_dir.pinned_fs.supports_pinned_walk():
+            assert _sweep(tmp_path) == 2
+            assert not consolidation.exists() and not subagent.exists()
+        else:
+            assert _sweep(tmp_path) == 0
+            assert consolidation.exists() and subagent.exists()
+
 
 class TestRetainedGatewayPids:
     """The one read the sweep makes of the pid ledger; the file is never changed."""
@@ -644,6 +871,15 @@ class TestRetainedGatewayPids:
         )
         with pytest.raises(OSError):
             session_pid.retained_gateway_pids()
+
+    def test_a_ledger_with_a_damaged_line_still_answers(self, ledger: Path) -> None:
+        """A byte that is not UTF-8 is a malformed entry, as an ASCII-garbled one is."""
+        ledger.write_bytes(b"111:222\n4\xff21:333\n")
+        assert session_pid.retained_gateway_pids() == frozenset({111})
+
+    def test_damage_outside_the_gateway_pid_keeps_the_gateway(self, ledger: Path) -> None:
+        ledger.write_bytes(b"111:2\xff2\n")
+        assert session_pid.retained_gateway_pids() == frozenset({111})
 
 
 class TestGatewayWiring:
@@ -754,11 +990,27 @@ class TestFactoryMarksOnlyDerivedOneRunDirectories:
             _cfg(tmp_path).create_provider_factory()(**factory_kwargs)
         return seen[0]
 
-    @pytest.mark.parametrize("key", ["subagent:0123456789abcdef", "cron:aaaa1111:bbbb2222"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "subagent:0123456789abcdef",
+            "cron:aaaa1111:bbbb2222",
+            f"memory-consolidation:work:{'0123456789abcdef' * 2}",
+        ],
+    )
     def test_a_derived_one_run_directory_is_marked(self, tmp_path, monkeypatch, key) -> None:
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: True)
         got = self._captured(tmp_path, monkeypatch, session_key=key)
         assert got["disposable_work_dir"] is True
         assert Path(got["work_dir"]).parent == Path(os.path.realpath(tmp_path / "ws"))
+
+    def test_a_walk_without_the_pin_does_not_mark_a_memory_consolidation_directory(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: False)
+        key = f"memory-consolidation:work:{'0123456789abcdef' * 2}"
+        got = self._captured(tmp_path, monkeypatch, session_key=key)
+        assert got["disposable_work_dir"] is False
 
     @pytest.mark.parametrize(
         "key",
@@ -766,6 +1018,7 @@ class TestFactoryMarksOnlyDerivedOneRunDirectories:
             "cron:aaaa1111",
             "cron:aaaa1111:myagent",
             "subagent:notes",
+            "memory-consolidation:work",
             "dashboard:slot-1",
             "slack:C123:456.789",
             None,

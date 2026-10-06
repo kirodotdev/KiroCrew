@@ -100,12 +100,14 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     AUTONUDGE_STOP_REASON,
     CONSECUTIVE_FAILURE_REASON,
     CYCLE_CAP_REASON,
+    FINISHED_LOOP_REASONS,
     MANUAL_STOP_REASON,
     MONITOR_TERMINAL_REASON,
     NUDGE_RENEW_DUE_SHARE,
     RUNTIME_BUDGET_REASON,
     SENTINEL_DROPPED_REASON,
     SESSION_START_FAILURE_REASON,
+    STOP_SENTINEL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeStaleBaseline,
     AutoNudgeStoreUnvetted,
@@ -118,6 +120,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     is_structured_monitor_loop,
     new_goal_token,
     nudge_cycle_header,
+    reason_in,
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
 )
@@ -1586,7 +1589,7 @@ class AutoNudgeService:
 
     async def start(self) -> None:
         if not enabled():
-            logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE not set)")
+            logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE is 0/false/no)")
             return
         # This lock spans load, repair, timer arming and singleton publication.
         # Disabled-mode maintenance that got here first finishes its whole

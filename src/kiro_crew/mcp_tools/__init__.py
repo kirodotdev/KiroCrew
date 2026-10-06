@@ -5,8 +5,14 @@ from. Domain modules are imported lazily inside it so this package stays a
 leaf at import time: ``mcp_core`` reads ``_limits`` from here at module
 level, and an eager import of the domain modules would close that loop.
 
-Adding a tool means adding its descriptor to the domain module and its
-handler to ``mcp_core``; nothing here needs to change.
+Adding a tool means adding its descriptor to the domain module's
+``schemas()`` and its handler to that module's ``HANDLERS``; nothing here needs
+to change.
+
+Two modules in this package are not domains, and nothing here imports them:
+``table`` (:class:`~kiro_crew.mcp_tools.table.ToolTable`, the one-row-per-tool
+server shape ``kirocrew-dashboard`` is built on) and ``dashboard_client`` (the
+``DashboardClient`` port a table's tools reach the gateway through).
 """
 
 from __future__ import annotations

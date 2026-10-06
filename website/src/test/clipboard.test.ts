@@ -39,6 +39,24 @@ describe('copyCode', () => {
     expect(execCommand).toHaveBeenCalledWith('copy')
   })
 
+  it('writes the text through the copy event even when focus left the staging textarea', async () => {
+    // An open modal menu's focus trap pulls focus back off the textarea on
+    // select(), so the browser would copy an empty selection and still report
+    // success. The fallback must hand the text over in the copy event instead.
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    const setData = vi.fn()
+    const execCommand = vi.fn(() => {
+      const ev = new Event('copy', { bubbles: true, cancelable: true }) as Event & { clipboardData: { setData: typeof setData } }
+      ev.clipboardData = { setData }
+      document.body.dispatchEvent(ev)
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+
+    await expect(copyToClipboard('assistant reply')).resolves.toBe(true)
+    expect(setData).toHaveBeenCalledWith('text/plain', 'assistant reply')
+  })
+
   it('resolves false when neither clipboard path succeeds', async () => {
     writeText.mockRejectedValueOnce(new Error('denied'))
     mockExecCommand(false)

@@ -33,6 +33,35 @@ from kiro_crew.slack import handler as h
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
 
+#: Lost-run ceiling for a wait the test itself must end (a park, a click it
+#: delivers). These paths make no executor hop. Timed wait by wait: at most 0.06 s,
+#: both at ``-n 4`` on a loaded 32-CPU host and with every executor hop delayed by
+#: 1.2 s (a starved-runner model). 30 s is far over ten times that and a quarter of
+#: the module's ``--timeout=120``, so only a regression that never gets there
+#: reaches it.
+_LOST_RUN_SECS = 30.0
+
+
+async def _within_lost_run(awaitable, what: str):
+    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+
+    A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
+    finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
+    raises on its own, before the ceiling, propagates unchanged.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
+        if elapsed < _LOST_RUN_SECS - 1.0:
+            raise
+        pytest.fail(
+            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"({elapsed:.1f}s elapsed)"
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # state hygiene
@@ -1839,7 +1868,11 @@ class TestRequestApproval:
             return ts
 
         slack.post_blocks = _post
-        outcome = await h._request_approval(slack, provider, "C1", "t1", _perm_event())
+        # Bounded: the only other bound is the 120 s production approval budget.
+        outcome = await _within_lost_run(
+            h._request_approval(slack, provider, "C1", "t1", _perm_event()),
+            "the approval request after its prompt resolved",
+        )
         assert outcome == h._OUTCOME_APPROVED
         assert [a for a in slack.actions if a[0] == "delete"]
         assert not h._pending_approvals
@@ -1952,8 +1985,9 @@ class TestApprovalTimeoutInbandNotice:
             return True  # pragma: no cover - unreachable
 
         provider.steer = _hanging_steer  # type: ignore[method-assign]
-        outcome = await asyncio.wait_for(
-            h._request_approval(slack, provider, "C1", "t1", _perm_event()), timeout=2.0
+        outcome = await _within_lost_run(
+            h._request_approval(slack, provider, "C1", "t1", _perm_event()),
+            "the approval request after its steer timed out",
         )
         assert outcome == h._OUTCOME_REJECTED
         assert ("reject_tool", "r1") in provider.calls
@@ -1981,7 +2015,11 @@ class TestApprovalTimeoutInbandNotice:
             return ts
 
         slack.post_blocks = _post
-        outcome = await h._request_approval(slack, provider, "C1", "t1", _perm_event())
+        # Bounded: the lost-claim await has no bound of its own by design.
+        outcome = await _within_lost_run(
+            h._request_approval(slack, provider, "C1", "t1", _perm_event()),
+            "the approval request whose click claimed the entry",
+        )
         # The claim winner answers the wire; the loser stays entirely off it —
         # a second answer would land in the ACP client's cancelled-outcome
         # fallback and cancel the whole turn. And the returned outcome is the
@@ -2013,17 +2051,55 @@ class TestApprovalTimeoutInbandNotice:
             asyncio.get_running_loop().call_soon(_claim)
             return ts
 
+        # "No bound" is checked structurally, not by outwaiting a guessed bound:
+        # the arm's second shield is the lost-claim await itself, and any bound
+        # on it (wait_for, asyncio.timeout, sleep, call_later, a helper task's
+        # sleep) arms a loop timer that this test did not arm itself. Timers are
+        # recorded from the FIRST shield on: the timeout-0 wait around it arms
+        # none, so anything armed from there to the park is a bound on the arm.
+        loop = asyncio.get_running_loop()
+        test_task = asyncio.current_task()
+        shields: list[object] = []
+        parked = asyncio.Event()
+        timers_while_parked: list[object] = []
+
+        class _RecordingAsyncio:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            @staticmethod
+            def shield(aw):
+                shields.append(aw)
+                if len(shields) == 2:
+                    parked.set()
+                return asyncio.shield(aw)
+
+        real_call_at = loop.call_at
+
+        def _call_at(when, callback, *args, **kwargs):
+            if shields and asyncio.current_task() is not test_task:
+                timers_while_parked.append(callback)
+            return real_call_at(when, callback, *args, **kwargs)
+
+        monkeypatch.setattr(h, "asyncio", _RecordingAsyncio())
+        monkeypatch.setattr(loop, "call_at", _call_at)
         slack.post_blocks = _post
         task = asyncio.create_task(h._request_approval(slack, provider, "C1", "t1", _perm_event()))
-        # Long enough that a timer-based fallback would have fired: the click is
-        # still "writing", and the arm is still waiting on it.
-        await asyncio.sleep(0.2)
-        assert not task.done()
-        assert provider.calls == []
-        # The click finishes its answer -- Approve -- and resolves the waiter.
-        assert claimed and not claimed[0].future.done()
-        claimed[0].future.set_result(h._OUTCOME_APPROVED)
-        outcome = await asyncio.wait_for(task, timeout=2.0)
+        try:
+            await _within_lost_run(parked.wait(), "the lost-claim park")
+            # One more turn: a bound armed by a helper task the arm started runs
+            # its first step now, and would arm its timer here.
+            await asyncio.sleep(0)
+            # Parked on the click-owned future: the click is still "writing".
+            assert claimed and not claimed[0].future.done()
+            assert timers_while_parked == [], "the lost-claim await must carry no bound"
+            assert not task.done()
+            assert provider.calls == []
+            # The click finishes its answer -- Approve -- and resolves the waiter.
+            claimed[0].future.set_result(h._OUTCOME_APPROVED)
+            outcome = await _within_lost_run(task, "the request after the click resolved")
+        finally:
+            task.cancel()
         assert outcome == h._OUTCOME_APPROVED
         # The click's approve is the only answer this request ever gets.
         assert provider.calls == []
@@ -2044,10 +2120,10 @@ class TestApprovalTimeoutInbandNotice:
 
         provider.steer = _hanging_steer  # type: ignore[method-assign]
         task = asyncio.create_task(h._request_approval(slack, provider, "C1", "t1", _perm_event()))
-        await asyncio.wait_for(steer_parked.wait(), timeout=2.0)
+        await _within_lost_run(steer_parked.wait(), "the park in the steer")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=2.0)
+            await _within_lost_run(task, "the cancelled request")
         assert ("reject_tool", "r1") in provider.calls
         assert not h._pending_approvals
 

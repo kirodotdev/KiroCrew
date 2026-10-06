@@ -1,7 +1,7 @@
 """``ScriptContext`` opens and seeds dashboard sessions with the cron's own credential.
 
 A script cron that drives the dashboard cannot hold a dashboard token:
-``POST /api/token/local`` refuses a sandboxed child. These tests pin the four
+``POST /api/token/local`` refuses a sandboxed child. These tests pin the five
 methods that call the ``/api/chat`` routes the internal secret already reaches,
 presenting the same ``X-Internal-Secret`` / ``X-Session-Key`` pair ``notify()``
 presents plus the run's signed session token. No bearer token is minted or
@@ -202,6 +202,71 @@ class TestSendToSession:
             ctx.send_to_session("chat-77", "hello")
 
 
+class TestSetSessionMode:
+    """``set_session_mode`` asks the gateway for a slot-scoped approval mode.
+
+    The mode is sent as the script gave it. The gateway owns the rule that a
+    cron sets only ``trust`` or ``trust_reads`` on a slot it created, and it
+    audits each refusal, so no allowlist is duplicated here.
+    """
+
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    def test_posts_the_slot_and_mode_and_returns_the_receipt(self, ctx, gateway, mode):
+        receipt = {"ok": True, "mode": mode}
+        gateway.answers[("POST", "/api/chat/mode")] = receipt
+
+        assert ctx.set_session_mode("chat-77", mode) == receipt
+
+        (req,) = gateway.seen
+        assert req.full_url == "http://127.0.0.1:7788/api/chat/mode"
+        assert req.get_method() == "POST"
+        assert json.loads(req.data) == {"slot": "chat-77", "mode": mode}
+        assert _cron_headers(req) == {
+            "secret": "tok",
+            "key": f"cron:{_JOB}",
+            "token": "signed-run-token",
+        }
+
+    def test_a_mode_the_gateway_refuses_raises_with_its_code(self, ctx, gateway):
+        """``yolo`` reaches the gateway as sent; the gateway refuses and audits it."""
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": "a scheduled run can set only trust or trust_reads on a session it created",
+                "code": "mode_not_allowed",
+            }
+        ).encode()
+        gateway.answers[("POST", "/api/chat/mode")] = urllib.error.HTTPError(
+            "http://127.0.0.1:7788/api/chat/mode", 403, "Forbidden", {}, io.BytesIO(body)
+        )
+
+        with pytest.raises(RuntimeError, match="mode_not_allowed"):
+            ctx.set_session_mode("chat-77", "yolo")
+
+        (req,) = gateway.seen
+        assert json.loads(req.data) == {"slot": "chat-77", "mode": "yolo"}
+
+    def test_a_slot_the_cron_did_not_create_raises_with_the_gateway_reason(self, ctx, gateway):
+        body = json.dumps(
+            {
+                "error": "a scheduled run can only control sessions it created itself",
+                "code": "not_creator",
+            }
+        ).encode()
+        gateway.answers[("POST", "/api/chat/mode")] = urllib.error.HTTPError(
+            "http://127.0.0.1:7788/api/chat/mode", 403, "Forbidden", {}, io.BytesIO(body)
+        )
+
+        with pytest.raises(RuntimeError, match="not_creator"):
+            ctx.set_session_mode("owner-tab", "trust")
+
+    def test_a_non_dict_answer_is_an_error(self, ctx, gateway):
+        gateway.answers[("POST", "/api/chat/mode")] = ["unexpected"]
+
+        with pytest.raises(RuntimeError, match="unexpected response"):
+            ctx.set_session_mode("chat-77", "trust")
+
+
 class TestTheCronCredential:
     def test_an_http_refusal_carries_status_and_body(self, ctx, gateway):
         """A 403 body names the remedy; ``HTTP Error 403: Forbidden`` alone does not."""
@@ -218,8 +283,9 @@ class TestTheCronCredential:
         [
             ("POST", "/api/chat/slots", lambda c: c.open_session("Nightly", folder_id="f9")),
             ("POST", "/api/chat?ws=1", lambda c: c.send_to_session("chat-77", "triage")),
+            ("POST", "/api/chat/mode", lambda c: c.set_session_mode("chat-77", "trust")),
         ],
-        ids=["open_session", "send_to_session"],
+        ids=["open_session", "send_to_session", "set_session_mode"],
     )
     def test_a_switched_off_gateway_refusal_names_its_code(self, ctx, gateway, method, path, call):
         """The gateway owns the switch. The method surfaces its refusal code."""

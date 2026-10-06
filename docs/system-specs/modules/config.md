@@ -25,13 +25,14 @@ the loader: `config_path`, `config_dir`, `config_local_path`, `env_path`,
 `_apply_document_migrations`, `_log_config_clamp_event`,
 `_DEFAULT_CHAT_TURN_TIMEOUT_SECS`, `DEFAULT_POOL_SIZE`, `unsandboxed_exec_declared`,
 `publish_config_timezone`, `record_adoptions` (the loader passes it to the
-migration transform at call time), each `_build_*` name as `_load_resolved`
+migration transform at call time), each `_build_*` name as `build_config`
 calls it, and the published-snapshot globals. A helper or constant read INSIDE a
 relocated builder or migration rule is patched on the module that reads it:
 `config.section_builders` for the value coercers, the STT, computer-use and
 instance bounds, `coerce_runtime_ceiling` (which reads the monitoring bounds in
 `monitoring.limits`), the `_resolve_stub_*` roster
-readers and the section DTO classes a builder constructs; `config.migration` for
+readers and the section DTO classes a builder constructs (a replacement must be a
+dataclass, and its field defaults are what an omitted key reads); `config.migration` for
 `auto_adoptable`, `drop_drifted_keys`, `stored_value_or_none`,
 `superseded_default_drift` and `drift_summary`. The loader facade and
 `config.migration` hold the same warn-once set `_REPORTED_SUPERSEDED_KEYS`: clear
@@ -40,12 +41,12 @@ representative seams of each kind.
 
 | Owner | Owns |
 |---|---|
-| `config/fields.py` | `_meta` field metadata and the `_safe_*` value coercers every section shares. A leaf: it imports nothing from `kiro_crew`. |
-| `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. |
+| `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). A leaf: it imports nothing from `kiro_crew`. |
+| `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. It also holds `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
 | `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
-| `config/section_builders.py` | The `_build_*` helper of 28 sections, grouped by the module that owns each section's DTO. Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in `KiroCrewConfig._load_resolved` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
+| `config/section_builders.py` | The `_build_*` helper of 27 sections, grouped by the module that owns each section's DTO. Each reads its section through `sections.SectionReader`, so an omitted key builds the DTO field's default and a `read()` coercer falls back to it; the values a builder keeps of its own and the deliberate departures are listed under "Defaults come from the DTO fields". Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in the loader's `build_config` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
 | `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, the legacy `skills.lazy_load` cohort test, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
@@ -83,10 +84,10 @@ because its readers look up a name the loader's callers and tests patch there:
 | Document I/O: `_raw_config`, `read_config_for_update`, `write_config_atomically`, `update_config_locked`, the meta stamp | The config-writer scans in `test_config_rmw_preserves_settings.py` exempt only `loader.py`, and the writers read this module's patched path and `atomic_write` names. |
 | Write-back persistence (`_persist_config_migration`, the backup) and the `_apply_document_migrations` seam | It rewrites `config.json` under the same writer exemption, and passes this module's `record_adoptions` to the transform as the adoption-ledger writer. |
 | The validated-document cache fingerprint, its overlay sidecar and invalidation | `_config_fingerprint` reads the patched `config_path`/`config_local_path` and is itself patched on this module; `save()` and the write-back call `_invalidate_config_cache` beside it. |
-| `KiroCrewConfig.load`, `_load_resolved` and `save` | They read `config_path`, `config_local_path`, `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration` and `write_config_atomically` by name, all patched on this module. `test_config_section_construction.py` pins `_load_resolved`'s assembly shape. |
+| `KiroCrewConfig.load`, the load pipeline (`read_config_document`, `build_config`, `persist_write_back`) and `save` | They read `config_path`, `config_local_path`, `_config_fingerprint`, `_validate_config_data`, `_persist_config_migration` and `write_config_atomically` by name, all patched on this module. `test_config_section_construction.py` pins `build_config`'s assembly shape. |
 | The security clamp and its SEL event | [security](security.md), [sel](sel.md) and [resource-protection](../../architecture/resource-protection.md) name the loader. |
 | The loop-stall and managed-launch readers | `load_loop_stall_exit_after` reads the loader's patchable `KiroCrewConfig`; `resolve_loop_stall_exit_after` and `consume_managed_service_launch_environment` are its two halves, and the dashboard server imports all three from here. The consume takes the marker out of `os.environ` so descendants do not inherit it, and hands it to `platform_compat.keep_for_reexec`, so the gateway's own exec successor (an in-app restart) is still a managed launch; `launched_as_managed_service` answers from either place, so it does not change once the dashboard has started. |
-| The agent, session, telemetry and dashboard builders | The harness-parity review scope and a source check on the `session_control` read; the patchable `DEFAULT_POOL_SIZE` fallback; [metrics](metrics.md) naming the loader as the telemetry parser; the feature map naming the loader's `folder_sort` read. |
+| The agent, session, telemetry and dashboard builders | The harness-parity review scope; the patchable `DEFAULT_POOL_SIZE` fallback; [metrics](metrics.md) naming the loader as the telemetry parser; the feature map naming the loader's `folder_sort` read. |
 | Published snapshots: materialized agents, the alias table, the compaction threshold, the timezone | Tests rebind this module's snapshot state, and the second-boot witness in `test/integration/test_boot_smoke.py` keys the counters to `kiro_crew.config.loader`. |
 | Agent resolution and the provider factory | [crew-mode](crew-mode.md) and [context-management](../../architecture/context-management.md) name the loader for `resolve_agent_bindings` and `resolve_effective_model`. The agent-spec read inventory keys its call sites to this file, the ACP import is a baselined agent-SDK edge, and the blocking harness-parity and memory-store review rules cover `config/loader.py`. |
 
@@ -621,6 +622,7 @@ names that test; every other report-only row gives its plain reason:
 | `watchdog.tool_stall_suspect_secs` | 3600.0 -> 5400.0, #8949 | reports | a tuning knob; holding it cancels a tool the oracle cannot attest after an hour, with no re-run, so that tool's work is lost. Coupled with the hard cap (`note`): the window is the smaller of the two, so both must be adopted to get 5400 |
 | `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
 | `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
+| `agent.session_start_concurrency` | 2 -> "auto", #17055 | reports | the knob to lower when the host or provider is the bottleneck; holding 2 only serialises a burst of starts |
 
 A row whose old value is a supported configuration is not stale noise, whatever
 its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
@@ -660,7 +662,7 @@ per-key provenance the config layer still lacks:
   that READS the base document can decide an adoption (`adoptable` is empty on a cache
   hit, by design), so a read-and-skip that left its document cached would have every
   later load serve the stale value and never retry. A contended lock and an exception
-  caught by the best-effort handler both skip the write, so `_load_resolved` tracks
+  caught by the best-effort handler both skip the write, so `persist_write_back` tracks
   `adoption_landed` separately from `persisted` (which starts True so the
   `connections_ui` marker still lands on a load that needed no migration) and
   invalidates in a `finally` both share. Both variables are bound before the `try`,
@@ -997,6 +999,10 @@ kirocrew config set --local agent.yolo true
 # Save to config.json (the persistent settings file):
 kirocrew config set agent.yolo true
 ```
+
+A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
+(`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
+written. Details: [cli](cli.md) (`config set`).
 
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
@@ -1363,17 +1369,148 @@ never as a match; two unknown provenances in particular are not equal. The membe
 log is the current consumer: see `member-event-log.md` for how a roster read and the
 startup sweep each refuse to correct the log from a config they cannot name.
 
+**The load pipeline.** `load()` publishes what `_load_resolved` returns, and that
+runs three stages in `config/loader.py`, each callable on its own:
+
+| Stage | Does | Never does |
+|---|---|---|
+| `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
+| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the project-skills off-switch an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
+| `persist_write_back(cfg, doc)` | Returns at once for an unloaded document. Otherwise decides the pending migrations, seeds the default crew and `default_agent` into `cfg`, writes the delta under the lock, moves `cfg` to each confirmed adoption, records the `connections_ui` marker, and drops the cache when an adoption did not land. | Write after a load that degraded a section, or raise. |
+
+A `ConfigDocument` carries what the read tells the later stages: the ticket, the
+path, `data`, whether a file `loaded`, the content digest, `base_unreadable`, the
+overlay's `base_shadow`, the `overlay` as read, the `adoptable` defaults and the
+`legacy_lazy_stamp`; the one other input of the build is the process-wide sticky
+degraded set. `data` is the read stage's output, not raw file content: the
+overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
+agent off-switch reads as `false`; an unreadable source leaves
+`skills.project_skills_enabled` off), and the document is validated and clamped.
+When nothing loaded it is `{}` or carries only that project-skills marker. A cache
+hit carries no adoption and no stamp, because a load that did not read the base
+must not decide one. A document is single-use: building normalizes `data` in
+place. Tests build one in memory, holding what the read stage would produce, and
+call `build_config` with no config file on disk.
+
 **Section construction.** Compound section constructors run in small private
-helpers: `config/section_builders.py` holds 28 of them and `config/loader.py`
+helpers: `config/section_builders.py` holds 27 of them and `config/loader.py`
 keeps the agent, session, telemetry and dashboard ones (see the Overview); the
 loader re-exports all of them. This bounds each construction frame instead of
 putting every field expression in one large traced resolver frame. The helpers
-preserve field evaluation order, coercion, defaults, and section-local assignment
+preserve field evaluation order, coercion and section-local assignment
 expressions. Each call creates fresh dataclasses and mutable defaults; no resolved
-configuration or permission value is cached by a helper. File fingerprinting,
-validation, overlay handling, cache-generation fencing, migration, degradation,
-and publication remain in the existing load path. Store admission and workflow
-identity checks still run at every existing call site.
+configuration or permission value is cached by a helper. Store admission and
+workflow identity checks still run at every existing call site.
+
+**Defaults come from the DTO fields.** A builder reads its section through
+`sections.SectionReader(DTO, data)`. `get(key)` returns the stored value, `None`
+included, or the default declared on the DTO's field when the section omits the
+key. `read(key, coerce, *bounds, **options)` calls
+`coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
+that same default. A `default_factory` field gives a
+fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
+`__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
+stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
+`_read_skip_permissions`, the STT validators and the like), read a fallback that
+is the field's default from the field as well: through a `SectionReader` of their
+own; through
+`fields.field_default(DTO, name)`, which `SectionReader.default` reads through too,
+so the rule has one implementation, and which serves a normalizer or single-value
+reader with no section mapping to wrap, in `sections` and in the section owners
+(which cannot import `sections`); or through the class attribute that holds a
+plain default (`DecisionProviderConfig`). Two fallbacks are the exceptions:
+`monitoring.max_runtime_secs` and an unrecognised `stt.model` are coerced in
+modules the config package imports (`monitoring.limits.coerce_runtime_ceiling`,
+`stt.models.resolve`), which cannot import the DTO at module scope, so a
+malformed value falls back to `DEFAULT_RUNTIME_CEILING_SECS` or
+`stt.models.DEFAULT_MODEL`, the constants the fields' defaults name.
+
+A few readers keep a value of their own that equals the field's default, because
+their rule is about the value rather than the default. Apart from the MCP
+stub-roster migration (the last item), an omitted key still reads the field; only
+a present value the reader cannot use takes the reader's value:
+
+- The empty container or string that a type guard, a shape coercer or a
+  fail-closed check returns (`_safe_list`, `_safe_dict`, the id, host,
+  link-pattern and session-folder coercers, the Telegram-account parser and the
+  Jira-auth row filter, `_safe_color`, `_safe_avatar`, and the effort, bot-name and
+  refusal-fallback sanitizers among them), so a malformed `slack.trusted_bot_ids`
+  trusts no bot and a malformed `mcp.extra_path_dirs` adds no directory.
+- A narrowing or safe value that holds whatever the default is: `mention` for an
+  invalid `slack.channels.<id>.activation`, `true` for a non-boolean
+  `dashboard.tailscale.bind_refresh_chains`, `node` for an unrecognised
+  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
+  `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
+  two people's DMs), and unset (`0`) for a malformed or out-of-range
+  `dashboard.browser_view_port` (never a port nobody named).
+- `None` for an out-of-domain `resource_limits` value, and `local` for a retired
+  `stt.provider` (the recogniser that user already had).
+- The sentinel a clamp lands on, among them automatic for a negative
+  `instances.warm_set_cap`; disabled for an out-of-range
+  `messaging.daily_reset_hour` and a negative `messaging.idle_reset_minutes` or
+  `skills.max_triggered`; and no pruning or cap for a negative
+  `telemetry.retention_days` or `max_total_mb`.
+- The MCP stub-roster migration (`_resolve_stub_roster`), which reproduces the
+  stub set a legacy install was running, whatever the field defaults are. When
+  `mcp_gateway` omits `stub_servers`, it reads an omitted or non-boolean `enabled`
+  as off and the roster as empty, and with `enabled: true` an omitted
+  `poolable_servers` as an empty roster.
+
+This list describes the build stage. Values that the read stage's schema
+validation rejects never reach it. The deliberate departures, all unchanged by the
+reader:
+
+- An omitted key that does not read the field default:
+  - `agent.sandbox_allow_unsandboxed_exec` folds in the platform default
+    (`unsandboxed_exec_platform_default`).
+  - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
+  - An external registry entry that omits `branch` keeps the legacy `mainline`.
+  - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
+    `dashboard.onboarded` when omitted or malformed, and
+    `dashboard.model_picker_configured` is inferred from
+    `model_picker_hidden_models`.
+- A built value that is not the bare dataclass's although the default is:
+  `agent.member_acp_backend` passes the selectable-backend gate, and an empty
+  `workspaces` or `memory_stores` table gains a `default` entry. While the
+  dashboard section or the whole file is degraded, or was observed degraded,
+  `dashboard.default_memory_mode` builds `temporary` whatever the section holds:
+  `build_config`'s fail-closed override, applied before the reader runs.
+- A malformed value that does not fall back to the field default:
+  - `auto_update` reads as off, and `skills.project_skills_enabled` and
+    `mcp.honour_auto_approve` honour only a real `true`.
+  - An unknown `stt.provider` reads as `off`, an unrecognised
+    `dashboard.default_memory_mode` as `temporary`, and an invalid
+    `slack.dm_activation` or `telegram.forum_activation` as `mention`: each
+    narrows instead.
+  - A `telemetry.beacon_endpoint` that is not a usable `https://` URL is cleared,
+    which turns the beacon off.
+  - `dashboard.loop_stall_exit_after_secs` reads as `LOOP_STALL_EXIT_AFTER_DEFAULT`
+    rather than automatic, and `instances.connect_timeout_secs` /
+    `mint_timeout_secs` as the transport constants. Validation removes a value of
+    the wrong type at these keys and at `mcp.honour_auto_approve`, so through
+    `load()` they read their field default (when jsonschema is installed).
+  - The read stage reads a present non-boolean `auto_update` as off
+    (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
+    `agent.member_dispatch`, `agent.crew_panel` or `skills.project_skills_enabled`
+    as `false` before validation can remove it, and resolves `stt.provider` and
+    `dashboard.default_memory_mode` by the builders' rules, so those keys load as
+    above.
+
+`test_config_load_pipeline.py` builds every section from an empty one and compares
+each field with the bare dataclass, allowing two declared exceptions: the
+platform-resolved `agent.sandbox_allow_unsandboxed_exec` and
+`agent.member_acp_backend` (the seeded `workspaces` / `memory_stores` entries are
+not part of that comparison). It also checks the inline entry reads and pins the
+registry branch, the pool-size seam and the platform fold-in. The top-level reads
+use `KiroCrewConfig`'s own field defaults even when `load()` builds a subclass.
+`test_config_load_pipeline_field_defaults.py` loads a value of the wrong type for
+every section field outside the declared exceptions above and the fields another
+suite owns, through the read and build stages, allowing only the read-stage repairs
+above; pins what each malformed-value departure builds and loads; and moves field
+defaults to show that the builders, the DTO normalizers and the shared readers
+follow the field, and that a value a reader keeps of its own, or either constant
+above, does not.
 
 ### `KiroCrewConfig._resolve_agent_model() -> str`
 Reads model from installed agent config (`~/.kiro/agents/kirocrew.json`),
@@ -1577,7 +1714,7 @@ to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behi
 common hot path — no `_app`, or already resolved):
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
-   loop** with the same pattern `server.py` uses at boot —
+   loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
    `await loop.run_in_executor(subprocess_executor(), refresh_materialized_agents)`
    (`refresh_materialized_agents` never raises, so awaiting it via the executor is
    safe) — then **re-resolve once**. This recovers an app slot whose spec is on
@@ -1588,7 +1725,7 @@ common hot path — no `_app`, or already resolved):
    (`register_app`, `apps/bridges.py`, registers the app's MCP servers BEFORE its
    agents and publishes the snapshot synchronously; imported via a **local** import
    inside the function to avoid the top-level `apps`↔`dashboard` cycle, mirroring
-   `server.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
+   `dashboard/server_runtime/app_platform.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
    is used rather than the narrower `refresh_app_agents` because a never-materialized
    app also has unregistered MCP servers, and re-materializing only the agent would
    inline an empty server map — recreating an agent whose own `@<app>:<server>` tool
@@ -2219,7 +2356,7 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
-live in `server.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`), and
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`). The log-level applier
@@ -2329,7 +2466,9 @@ answers it, and this prose is a reader's convenience.
 
 The broker's admission keys are in that `mcp_gateway.*` set and ride the
 daemon's argv from `GatewayManager._spawn_once`: `spawn_concurrency_initial`
-(4), `spawn_concurrency_min` (1) and `spawn_concurrency_max` (8) size the
+(4), `spawn_concurrency_min` (1) and `spawn_concurrency_max` (8, raised on the
+daemon's argv to the subagent ceiling when that is higher --
+`mcp_gateway.admission.derive_spawn_gate_ceiling`) size the
 daemon-global spawn gate (a fixed count of backend spawn+initialize windows in
 flight, FIFO past it; the band is what the adaptive controller later moves the
 live value within); `spawn_queue_wait_secs` (600) is the CEILING on how long a
@@ -2397,7 +2536,7 @@ watcher itself by `test_config_live.py`.
 
 Tests: `test/test_config_live.py` (diff, registry, lifecycle, fingerprint,
 dispatch order and scope, every write path, the schema/handler agreement, the
-`server.py` appliers, and the owned-applier shapes `watch_section` /
+`dashboard/server_runtime/config_watch.py` appliers, and the owned-applier shapes `watch_section` /
 `watch_object` / `bind`) and `test/test_channels_a_hot_reload.py` (every
 channel's applier, its fail-closed degrade refusal and its point-of-use reads,
 parametrized over the case table in `test/_hot_reload_helpers.py`;
@@ -2418,8 +2557,8 @@ class AgentConfig:
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
-    max_subagents: int = 0         # 0 = auto-size from host memory and learned per-agent cost; fixed pins load in [3, 64]
-    subagent_auto_max: int = 32    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
+    max_subagents: int = 0         # 0 = auto: the subagent_auto_max ceiling (3 when host memory cannot be read); memory bounds starts beneath it (spawn_min_memory_gb). With spawn_min_memory_gb <= 0 the floor is off and auto is sized from memory (compute_memory_sized_parallel_cap). Fixed pins load in [3, 64]
+    subagent_auto_max: int = 32    # the count ceiling when max_subagents=0 (provider concurrency / fd / PID stand-in; not sized from memory while the spawn floor is on, and capping the memory-sized figure when spawn_min_memory_gb <= 0 disables it); also caps the TaskRunner's memory-sized auto value. Load-time clamped to [3, 64]
     subagent_max_turns: int = 1000  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
     subagent_timeout_secs: int = 10800  # per-subagent wall-clock timeout; 0 uses the default; load-time clamped to 60..86400
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
@@ -2430,17 +2569,18 @@ class AgentConfig:
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True
     task_store_journal_mode: str = "auto"  # tasks.db SQLite journal: "auto" = WAL locally, DELETE when $KIROCREW_HOME is on a network filesystem; "wal" | "delete" force one (RFC overload-resilience §13 Q6 reversal). Unknown -> "auto"; restart=True
     admit_wait_secs: int = 30         # admitted -> queued after this, and how long a memory-deferred spawn waits before re-check. Load-time clamped to [1, 3600]; restart=True
+    subagent_queue_max_wait_secs: int = 1800  # DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS; longest a spawn deferred by spawn_min_memory_gb or the posture gate stays parked (time spent eligible, queued for a slot, is not counted) before it ends as 'never started: waiting for memory' (delivered, depth 0). Also the per-start and per-episode bound of the macOS kernel memory-pressure hold. 0 = no bound. Load-time clamped to [0, 86400]. Live (SubagentManager.LIVE_CONFIG_PATHS). See modules/subagent.md § Durable task queue and § macOS: the kernel memory-pressure hold
     start_collect_timeout_secs: int = 300  # how long the session-start gate's StartCollector keeps a timed-out session/new (row `recovering`) to adopt a late answer before the attempt is abandoned. Load-time clamped to [10, 3600]; restart=True
-    session_start_concurrency: int = 2  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. Load-time clamped to [1, 64]; restart=True
+    session_start_concurrency: int | str = "auto"  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. "auto" is sized once per process by session_start_sizing: clamp(min(cpus // 4, available_GB // 3), 2, 16), cpus = affinity capped by cgroup v2 cpu.max; an integer is load-time clamped to [1, 64]; junk falls back to "auto"; restart=True
     lane_weights: dict[str, int] = {}    # per-lane weight overrides keyed by root session key or 'system'; unlisted lanes weigh 1, and a weight shapes the share of picks, never a hard cap. Each value load-time clamped to [1, 64]; non-string and empty keys dropped. Live
     child_reserve: int = 1               # execution slots a depth-0 task may never take while a nested task is queued or a parent waits on children; also lifts an adaptive squeeze to adaptive_floor + child_reserve while a parent waits (never above max_subagents). 0 disables. Load-time clamped to [0, 8]. Live. See modules/subagent.md § Fairness lanes and the child reserve
     recovery_backoff_base_secs: float = 2.0    # first retry delay of the shared recovery ladder (tool call / backend / ACP runtime) and of a dependency wait; doubles with equal jitter. Snapshotted onto the process ladder by `recovery.ladder.configure_default_ladder(cfg)` in `GatewayOrchestrator._init_subagents`; the gatewayd supervisor's rung is pinned and does not follow it, and the two import-time readers (`acp/client._ACP_RESPAWN_BACKOFF_S`, `taskq/model.recovery_backoff_secs`) keep the static defaults. Load-time clamped to [0.1, 60]; restart=True. See modules/session.md § Recovery ladder
     recovery_backoff_max_secs: float = 120.0   # cap on that delay; a server retry hint is honoured up to it. Same snapshot seam and same exclusions as the base. Load-time clamped to [1, 3600], never below the base; restart=True
-    adaptive_concurrency: bool = True        # run the adaptive concurrency controller: a runtime execution cap beneath max_subagents (the ceiling, never written) plus the MCP daemon's spawn-gate capacity. false = user cap only. Live. See modules/adaptive-concurrency.md
-    adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values -- the one-flip reversal). Live
-    adaptive_floor: int = 1                  # lowest execution cap under sustained pressure. Load-time clamped to [1, 64]. Live
-    adaptive_initial: int = 4                # fresh-gateway execution cap, bounded by max_subagents; earned upward. Load-time clamped to [1, 64]. Live
-    adaptive_slow_start: bool = True          # before the first corroborated pressure, double the execution cap per clear 5 s window instead of +1 per 30 s, bounded by max_subagents and by what this host's memory and CPU size the cap at. Live
+    adaptive_concurrency: bool = True        # run the adaptive concurrency controller: a runtime execution cap beneath max_subagents (the ceiling, never written; starts AT it; cut only by failing work, never by loop lag or memory) plus the MCP daemon's spawn-gate capacity. false = user cap only. Live. See modules/adaptive-concurrency.md
+    adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values, the execution cap at its ceiling -- the one-flip reversal). Live
+    adaptive_floor: int = 1                  # lowest execution cap under sustained work pressure. Load-time clamped to [1, 64]. Live
+    adaptive_initial: int = 4                # Inert (not flagged deprecated: every save writes it): the execution cap starts at its ceiling. Load-time clamped to [1, 64] and preserved on save
+    adaptive_slow_start: bool = True          # before the first corroborated pressure, double a cap below its ceiling per clear 5 s window instead of +1 per 30 s, bounded by max_subagents. Live
     # AIMD tuning uses fixed constants in adaptive/policy.py.
     controller_sample_secs: int = 5          # adaptive controller sampling interval. Load-time clamped to [1, 300]. Live
     dependency_max_attempts: int = 20          # coordinated probes a dependency scope gets before every waiter is failed. Load-time clamped to [1, 1000]
@@ -3533,7 +3673,9 @@ corrupt existing document as described above.
 
 - Missing file → defaults
 - Invalid JSON → defaults (warning logged)
-- Missing fields → individual defaults
+- Missing fields → individual defaults: each is the default declared on its DTO
+  field, apart from the departures listed under "Defaults come from the DTO fields"
+  above
 
 ### Default context discovery
 

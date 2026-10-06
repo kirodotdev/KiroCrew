@@ -981,6 +981,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.dim-inactive-panes",
+    "label": "Dim Inactive Panes",
+    "labelKey": "pages.settings.chatPanel.dim_inactive_panes",
+    "description": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.double-click-to-edit-your-messages",
     "label": "Double-click to edit your messages",
     "labelKey": "pages.settings.chatPanel.double_click_to_edit",
@@ -1610,6 +1622,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
+  },
+  {
+    "id": "developer.automatic-cards-for-all-sessions",
+    "label": "Automatic cards for all sessions",
+    "labelKey": "commandCenter.automatic_cards",
+    "description": "Summaries of each session’s recent work and next steps.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.dynamic_dashboard_cards"
   },
   {
     "id": "developer.chat-on-a-crew",

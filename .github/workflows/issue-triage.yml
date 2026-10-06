@@ -56,8 +56,9 @@
 # TESTING: `on: issues` always runs the DEFAULT-BRANCH copy of a workflow, so
 # opening an issue from a feature branch exercises nothing. Use the
 # `workflow_dispatch` entry point (issue number + `dry_run`, default true) to
-# rehearse against a real issue; it reports the verdict in the job summary
-# without touching labels.
+# rehearse against a real issue; it writes the model verdict to the job summary
+# and reports the release-channel label it would add as a `::notice::`
+# annotation, without touching labels.
 #
 # Config:
 #   secrets.ISSUE_TRIAGE_BEDROCK_ROLE_ARN -- OIDC role, bedrock:InvokeModel only.
@@ -79,7 +80,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: "Report the verdict in the job summary instead of applying labels"
+        description: "Apply no labels: write the model verdict to the job summary and report the channel label as a ::notice:: annotation"
         type: boolean
         default: true
 

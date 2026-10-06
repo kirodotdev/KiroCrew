@@ -55,9 +55,14 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00chart-pixels"
 
 @pytest.fixture(autouse=True)
 def _quiet_sel():
-    """No audit file is written by a renderer or events test."""
+    """No audit file is written by a renderer or events test.
+
+    The outbound-upload audit lives in ``slack/files`` (the shared admission
+    seal the renderer delegates to), so that is where it is quieted; the events
+    path keeps its own ``sel``.
+    """
     fake = MagicMock()
-    with patch("kiro_crew.slack.renderer.sel", return_value=fake):
+    with patch("kiro_crew.slack.files.sel", return_value=fake):
         with patch("kiro_crew.slack.events.sel", return_value=fake):
             yield fake
 
@@ -309,7 +314,7 @@ class TestOutboundUploads:
         renderer = _renderer(slack, tmp_path)
         tiny = ExtractLimits(max_files=4, max_total_bytes=1024, max_file_bytes=4)
 
-        with patch("kiro_crew.slack.renderer.UPLOAD_LIMITS", tiny):
+        with patch("kiro_crew.slack.files.UPLOAD_LIMITS", tiny):
             await _turn(renderer, f"see ![c]({chart})")
 
         shown = slack.shown()

@@ -1,6 +1,6 @@
 name: Publish Linux Desktop (reusable)
 
-# Reusable workflow: publish one already-built Linux artifact (AppImage or deb) to a release
+# Reusable workflow: publish one already-built Linux artifact (AppImage, deb or rpm) to a release
 # channel on the distribution CDN. Called by nightly.yml (channel: nightly)
 # and release.yml (channel: insider | stable) as its own lane BESIDE the
 # macOS sign-and-notarize workflow, mirroring publish-cli.yml: the Linux
@@ -53,7 +53,8 @@ on:
         type: string
       format:
         description: >-
-          Linux artifact format this invocation publishes: appimage | deb.
+          Linux artifact format this invocation publishes: appimage | deb | rpm
+          (rpm publishes under feed/<channel>/rpm).
           One invocation publishes exactly ONE (arch, format) pair, so no two
           formats ever share a CDN key, a feed, or a latest alias — the same
           discipline the arch dimension already enforces.

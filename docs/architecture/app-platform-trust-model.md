@@ -45,15 +45,15 @@ sandbox** around app code itself.
     window. It reports what it could not stop rather than claiming success, and
     `agent.apps_allow_third_party` is excluded from the generic settings PATCH so
     no caller reaches the setting without that sequencing.
-  - `start_enabled_app_backends` revokes at boot: an app the ceiling no longer
-    admits has its agents, skills, and MCP entries deregistered and its backend
+  - `start_enabled_app_backends` revokes at boot: an app the ceiling does not
+    admit has its agents, skills, and MCP entries deregistered and its backend
     is not spawned. A policy tightened while the gateway was down therefore does
     not survive the restart.
   - the per-backend liveness watch re-reads the ceiling each sweep and stops a
-    backend that is no longer admitted. This is what closes the CLI and the
+    backend the ceiling does not admit. This is what closes the CLI and the
     hand-edited `config.json`: both reach the setting without passing the
-    endpoint, and before this a backend they un-trusted kept serving until the
-    next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
+    endpoint, and without the watch a backend they un-trust would keep serving
+    until the next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
 
   Scope is the executing surface. An app with its own `agent.apps_trusted` grant
   keeps running while that grant stands — the blanket flag does not govern it — and
@@ -91,12 +91,13 @@ sandbox** around app code itself.
   **An unreadable policy is a deny.** `third_party_execution_allowed` fails closed,
   and the config loader falls back to defaults when neither config file can be read,
   where the flag is `false` and the trusted set is empty. Because the liveness watch
-  re-reads the ceiling each sweep, that answer now stops running backends rather than
-  only refusing new admissions. This is deliberate: sparing a backend whenever the
+  re-reads the ceiling each sweep, that answer stops running backends as well as
+  refusing new admissions. This is deliberate: sparing a backend whenever the
   policy cannot be read would make deleting `config.json` the one operator action
-  guaranteed to stop nothing. It is the mirror of the `installed.json` rule above --
-  that file belongs to the app, so its absence must not spare it, and this file
-  belongs to the operator, so its absence is honoured as a withdrawal. The cost is
+  guaranteed to stop nothing. An app's `installed.json` is app-writable,
+  so it is consulted only to remove trust and never spares a backend from the
+  ceiling; `config.json` belongs to the operator, so its absence is honoured as a
+  withdrawal. The cost is
   availability and it is bounded: a genuine transient read fault stops third-party
   backends for that sweep, and they return at the next gateway start.
 
@@ -211,7 +212,7 @@ tracked follow-up.
 ### WebSocket event scope (CWE-269)
 
 `/api/ws` is a *third* surface reachable with the same app token, and it is scoped
-separately: connecting no longer grants the full event stream. On connect the socket
+separately: connecting does not grant the full event stream. On connect the socket
 records the caller's app identity and its manifest `permissions.events` declarations
 (`dashboard/ws.py`), and every fan-out is filtered per socket at a single chokepoint
 (`DashboardState._send_ws_all` → `_ws_client_allowed` → `dashboard/ws_event_scope.py`).
@@ -245,7 +246,7 @@ Widening does not work
 that way — a new scope reaches the app only on its next connection, so an edit can
 never hand a live session more than it opened with.
 
-Filtering a frame's payload is not always enough: the `slots` re-push is a full slot list,so it is re-filtered per app on the send path (`DashboardState._serialize_for_client`) —
+Filtering a frame's payload is not always enough: the `slots` re-push is a full slot list, so it is re-filtered per app on the send path (`DashboardState._serialize_for_client`) —
 but its *envelope* also carries global safety-posture booleans that no slot scope narrows.
 `yolo` (is the blanket approval override active) is therefore gated by the same `yolo`
 declaration that gates the `yolo_expired` event, and `channelTrusted` is withheld from app
@@ -275,11 +276,14 @@ because there the manifest being trusted is not the one being widened.
 Two payloads need more than a yes/no gate. The `slots` re-push carries every slot, so it
 is re-filtered per app in `_serialize_for_client` (failing closed to an empty list); and
 the log ring-buffer replay plus the subagent reconnect replay write to the socket
-directly, so `ws.py` gates those at the source.
+directly, so `ws.py` gates those at the source. A persisted subagent run is replayed
+or listed only when its recorded app equals the slot's current owner, failing closed
+both ways, because slot keys are not namespaced by app; see
+[subagent](../system-specs/modules/subagent.md).
 
 Dashboard-user sockets are exempt, identified by a **positive** `is_dashboard_user`
 claim set by the auth middleware — never by the absence of an app claim, which would
-fail *open* on any path that forgot to set it. Because the stream is now filtered,
+fail *open* on any path that forgot to set it. Because the stream is filtered,
 `/api/ws` is implicitly allowed for app tokens (`_APP_TOKEN_IMPLICIT_ALLOW`) rather
 than requiring every app to declare the transport; that grant is recorded in the
 Security Event Log. `/api/status` is **not** implicitly allowed — it has no
@@ -313,7 +317,7 @@ real session key; absence cannot identify the restricted session to the backend.
 
 This is an **HTTP-reach boundary distinct from the in-process module-loading
 privilege**: an app's loaded Python still runs with full gateway privileges (the
-warning above stands), but an app's own HTTP token can no longer reach arbitrary
+warning above stands), but an app's own HTTP token cannot reach arbitrary
 gateway or sibling-app endpoints. Dashboard-user tokens (empty app claim) are never
 subject to this gate.
 

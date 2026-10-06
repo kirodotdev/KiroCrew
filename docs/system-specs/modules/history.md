@@ -209,8 +209,12 @@ mode, so a restricted transcript is cached and paged like any other.
 ### The Sessions sidebar (frontend)
 
 The dashboard's session list, `website/src/pages/ChatSidebar.tsx`, draws two
-projections of this history. The live list shows the open slots, plus peer rows
-from connected crews when the instance-sessions preview is on. The Older Sessions
+projections of this history. The live list shows the open slots. With the
+instance-sessions preview on and a crew group to show, it groups them per machine:
+`Local` first, then one collapsible group per crew holding that crew's peer rows and
+the local slots whose turns run there, under a badge read from the tunnel state. A
+disconnected crew keeps its last listed rows, dimmed and without live state, until a
+reload. With no crew group the list draws no group headers. The Older Sessions
 pane shows the `fetchHistory` pages owned by `store/chat/lifecycle.ts`. Once its
 search box holds `SEARCH_MIN_CHARS` characters it shows `search_sessions` results in
 the server's order, federated across connected crews while one is connected. Both lists order, group
@@ -228,10 +232,11 @@ order, and pins that no owner imports the facade:
 
 | Owner (`website/src/pages/chat-sidebar/`) | Owns |
 |---|---|
-| `sessionSources.ts` | the rendered row set (local tabs plus live peer rows, deduplicated by row identity, local wins), the peer-list error, and the federated Older Sessions search |
+| `sessionSources.ts` | the rendered row set (local tabs plus live peer rows, deduplicated by row identity, local wins), the crew groups, the peer-list error, and the federated Older Sessions search |
+| `CrewGroups.tsx` | the per-machine group chrome: the `Local` header, each crew group's header, badge, offline note and tunnel-error notice, and the collapsed-crew set |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer guards on local pin and folder state |
-| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
+| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
 | `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state, the Recent window, the running, recent and unread sets and chip counts, and the unread auto-drain |
 | `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage availability (pushed `slot_patch`, no poll), population, lineage tree and open conductors |
 | `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, and folder writes |
@@ -307,6 +312,28 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   reversible, while deleting a successor's state is not. The teardown contract
   is specified in [session.md](session.md) under **Permanent history deletion
   keeps ownership exact**.
+- `delete_in_flight_window(key)` / `delete_in_flight(key)` — process-local
+  marker for a permanent delete in progress, keyed by store directory and
+  transcript lock stem (every spelling of one session shares it). Non-blocking,
+  so it is safe on the event loop. `delete_session` holds it for its whole
+  transaction, and `DELETE /api/sessions/{key}` opens it before it captures the
+  slot to remove. History resume does not publish while it is held: the
+  resume's lock-free existence re-check cannot see a delete that has the
+  transcript lock but has not unlinked yet, and a slot published then is in no
+  delete claim, so it would survive as a tab of a deleted conversation. Resume
+  instead refuses with a retryable `resume_conflict` (409): it cannot know yet
+  whether the delete goes through (a bulk clear skips a pinned row), and a retry
+  after the delete ends finds the session gone or opens it. The refusal leaves
+  the session as it found it: resume clears the `closed` marker only after the
+  slot is built (retracted under its construction mark) and, with a hook, after
+  the hook passes, and it publishes only once that write has landed and been
+  verified; a later refusal puts the marker back, and a failed write refuses
+  with `reopen_failed` (503) instead of publishing a tab that would not restore.
+  An app's resume re-checks on every re-read in that window that the app still
+  owns the transcript, so a line deleted and recreated under another owner
+  refuses with the app's uniform 404, and the rollback puts the marker back only
+  on a line that app owns. A delete in another process is not visible here; the save's delete-won guard
+  below still keeps that case from rewriting the file.
 
 ### MCP chat-history tools (`mcp_core.py`)
 
@@ -432,17 +459,39 @@ and slot builders (`restore_open_slots`, `restore_recent_sessions`, their async
 twins, `_rehydrate_slot_from_history`, `_apply_recent_session` and the prefetch
 reads they share); the reasoning-effort allowlist; the persisted-entry memo
 `_build_message_entry` with its bounds; the private member-store assignment; and
-the retired-mode map. The rules those consult live in `dashboard/slot_persistence/`,
-and each file names the work that belongs in it:
+the request-side retired-mode coercion (`_coerce_requested_mode`). The rules those
+consult live in `dashboard/slot_persistence/`, and each file names the work that
+belongs in it:
 
 - `write_guards.py` -- the paired window/queue snapshot, the routing snapshot, the
   note-row filter, the line a full save folds, the delete witness with the
   lock-free `session_was_deleted` / `session_transcript_remains` probes,
   `_keep_owed_after_refusal`, and the guarded-write registry. New refusal paths.
-- `metadata_line.py` -- the full-save line fold (`build_full_line`), the
-  empty-window merge (`merge_empty_window`), the `memory_mode` ratchet and its
-  worker-to-loop witness, `last_user_at` and the dismissed source-link line. New
-  slot-owned metadata fields.
+- `metadata_codec.py` -- every slot field the metadata line carries, in one
+  field-by-purpose table (`FIELDS`): how the full save and the empty-window merge
+  write each key (`encode`, in the `LINE_ORDER` / `MERGE_ORDER` key order the
+  bytes follow), and which reads take it back -- `RESTORE` (the open-tab restore
+  and a targeted rehydrate, `_rehydrate_slot_from_history`), `RECENT`
+  (`_apply_recent_session`) and `RESUME` (`chat_api/resume.py`'s
+  `_hydrate_slot_from_history`, shared by History resume and the transfer
+  import) -- through `slot_args` (the constructor keywords), `apply` (every other
+  field) and `AppliedMeta.settle` (the fields that need the loaded window: held
+  notes already delivered, the turn-in-flight marker, the title refresh mark). A
+  purpose missing from a row is a declared asymmetry with its reason. The value
+  checks a read applies live beside their rows, among them the title state, the
+  auto-compaction threshold, the dismissed source links, the model and effort, the
+  retired modes and the color. Outside the table,
+  `channel_slots.surface_channel_session` and the cron binders still read a few
+  fields of the line by hand. New slot-owned metadata fields (a row, its key in
+  `LINE_ORDER` / `MERGE_ORDER`, and in `SLOT_OWNED_META_KEYS` when absence must
+  clear it) and new validation of a persisted slot field.
+- `metadata_line.py` -- what a save folds against the line on disk before it
+  encodes: the full-save line (`build_full_line`), the empty-window merge
+  (`merge_empty_window`), the `memory_mode` ratchet and its worker-to-loop
+  witness, `last_user_at`, the bounded dismissed source-link line
+  (`_capped_dismissed_line`), the held-note retirement and the rows-only
+  deferral. New rules about what a save keeps from
+  the line it replaces.
 - `transcript_merge.py` -- the frozen prefix, the foreign-append merge and its
   time-ordered interleave, the dedup and rewrite archives, and the composed
   payload (`compose_payload`). New rules about what a save keeps from the file it
@@ -450,9 +499,6 @@ and each file names the work that belongs in it:
 - `message_entries.py` -- the persisted-row projection
   (`_build_message_entry_uncached`) and the restored-variant attach. New fields a
   persisted row carries.
-- `restored_metadata.py` -- the re-validation of the title state, the
-  auto-compaction threshold and the dismissed source links on restore. New
-  validation of a persisted slot field.
 - `restore_inputs.py` -- the restore-time reads and screens: the agent-to-model
   map, the restore config, the open-tab snapshot and its key screen, the committed
   agent, the delete-during-read witness, the app-owned channel-row screen and the
@@ -463,8 +509,8 @@ and each file names the work that belongs in it:
 The orchestration stays in the facade because gates key the restore builders, the
 prefetch reads, the async drivers, `save_slot_off_loop` and the recreate-won guard
 to `chat_persistence.py`, and test fixtures reset its process state there. Every
-name the facade bound is still importable from it, and the owners read every name
-a test rebinds on it through it at call time;
+project name the facade bound is still importable from it, and the owners read
+every name a test rebinds on it through it at call time;
 `test/test_chat_persistence_composition_contract.py` pins both, plus the bytes a
 save writes.
 
@@ -558,6 +604,29 @@ no longer destroy older turns.
   empty child. Any published assignment remains attached to that unique key,
   including after a later save failure, so partial history cannot lose its
   recorded owner. This can leave an unused session identity record.
+- **Consistent transcript snapshot** (`dashboard/transcript_snapshot.py`): the fork,
+  the transfer bundle (send and file export) and the bounded slot-detail page read
+  the durable rows off the event loop and pair them with the window rows not yet on
+  disk through one call, `read_consistent_transcript(state, slot, purpose, read, *,
+  persist=, rewrite=, discard=)`. It observes the slot on the loop, awaits the
+  caller's `read`, observes again, and keeps the attempt only when the purpose's
+  witness fields held still; otherwise the attempt is spent. All three share one
+  budget, `SNAPSHOT_ATTEMPTS` (the save's own `_FLUSH_SNAPSHOT_RETRIES`, 4), and
+  spending it raises `SnapshotUnstable` (re-exported by `session_transfer`). The
+  differences between the readers are one table, kept as each reader behaved:
+
+  | Purpose | Witness | Pending rewrite | Boundary ahead of the window | Dirty slot | Deleted session |
+  |---|---|---|---|---|---|
+  | `FORK` | boundary, `_dirty_gen`, length, `_disk_older_count`, `_dirty` | saved through the fork's `rewrite`, then retried | capped restore merges from `_resumed_count`; otherwise `persist` and retry | read as is; the tail carries it | the fork checks after the snapshot |
+  | `TRANSFER` | `_dirty_gen`, boundary, length | refused before and after the read | refused | `persist` before every read | refused before and after the read |
+  | `PAGE` | `_dirty_gen`, `_disk_older_count`, durable older count | read through | read through | read through | not checked |
+
+  The read and the saves stay with each reader -- the fork's plain chained read and
+  its guarded truncating rewrite, the transfer's derivation-seam read and assembly,
+  the page's bounded reader -- and a reader answers a refusal in its own terms: the
+  fork 503 `fork_snapshot_unstable` / 409 `fork_source_deleted`, the transfer
+  `SnapshotUnstable`, the page by falling back to the full reader. A new consistent
+  reader of a slot's transcript adds a purpose row there.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a
@@ -914,7 +983,8 @@ no longer destroy older turns.
     narrow residual window (the dropped tail is handled by the rewrite's
     archive-diff, not the foreign scan).
 - **The metadata line is a fold, and three of its fields only move one way**
-  (`metadata_line.py`). A full save rebuilds the slot-owned fields from slot state
+  (`metadata_line.py`, encoding through `metadata_codec.py`). A full save rebuilds
+  the slot-owned fields from slot state
   and carries every key another layer owns (`carry_unowned_metadata`); a forced
   or closing save of a message-less slot merges instead, writing clearable fields
   even when empty because a merge cannot delete a key, and only into a line that
@@ -942,7 +1012,7 @@ no longer destroy older turns.
   (`meta.kind = "gateway_restart_interruption"`) lands past the window boundary
   so the next save writes it. A second restart before that save re-decides from
   the same bytes, so rows do not accumulate.
-- **Title state round-trips with its provenance** (`restored_metadata.py`). The
+- **Title state round-trips with its provenance** (`metadata_codec.py`). The
   save writes `title_origin`, `title_refresh_mark` and `title_low_signal` beside
   the title; a restore redacts the title for display and resolves the three
   (a legacy titled session with no origin reads as `"user"`), then

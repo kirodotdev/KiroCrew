@@ -23,8 +23,9 @@ unknown posture. (A hard, cross-session admission lease is a separate, heavier
 design.)
 
 The memory figure reuses :func:`kiro_crew.subagent._available_memory_gb`, the
-same cgroup-clamped, container-aware probe that auto-sizes the sub-agent cap, so
-the two never disagree. It is imported lazily to keep this module import-cheap
+same cgroup-clamped, container-aware probe behind the sub-agent cap's
+memory-readability check and the TaskRunner's memory-sized auto value, so the
+two never disagree. It is imported lazily to keep this module import-cheap
 and free of any import cycle (``context`` imports this; ``subagent`` is heavy).
 
 Alongside memory the probe reads one more ceiling: the agent slice's TASK count
@@ -599,13 +600,14 @@ def adaptive_exec_cap() -> int:
     """The execution cap IN FORCE in this process, or ``0`` when unknown.
 
     The number a caller sizing a fan-out needs: ``agent.max_subagents`` is a
-    ceiling the adaptive controller may be dispatching 1 at a time under. The
-    same registry read as :func:`adaptive_state` -- a dict lookup, no request --
-    so it is safe on every session-assembly path; outside the gateway it is 0
-    and the caller falls back to the configured ceiling, LABELLED as one. A
-    disabled controller leaves the user's max as the cap in force, so that is
-    what it reports; a paused dispatch (cap 0) reads as unknown, because "up to
-    0" is no fan-out guidance at all.
+    ceiling the adaptive controller may have cut after admitted work kept
+    failing. The same registry read as :func:`adaptive_state` -- a dict lookup,
+    no request -- so it is safe on every session-assembly path; outside the
+    gateway it is 0 and the caller falls back to the configured ceiling,
+    LABELLED as one. A disabled controller leaves the user's max as the cap in
+    force, so that is what it reports; a cap of 0 (which the controller no
+    longer produces) reads as unknown, because "up to 0" is no fan-out guidance
+    at all.
     """
     state = adaptive_state()
     if not state:
@@ -619,7 +621,7 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     """Effective caps and controller state, for the ``resource_status`` tool.
 
     Empty when no controller runs here. Otherwise: the live execution cap
-    against the user's ceiling, the spawn-gate capacity, whether dispatch is
+    against the user's ceiling, the spawn-gate capacity and whether the gate is
     paused or probing, and the last decision's action and reason -- what the
     dashboard's resources popover and ``kirocrew doctor`` show as "effective
     concurrency vs user max and the current pressure reason". When the state
@@ -645,9 +647,10 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     status = "paused" if state.get("paused") else "active"
     if state.get("probing"):
         status = "probing"
+    # The pause is the spawn gate's: the execution cap is never paused.
     lines.append(
         f"  Mode: {mode}   Execution cap: {exec_cap}/{ceiling}   "
-        f"MCP spawn gate: {gate_cap}/{gate_ceiling}   Dispatch: {status}"
+        f"MCP spawn gate: {gate_cap}/{gate_ceiling} ({status})"
     )
     # The growth regime: without it "4/64" reads as an unexplained throttle.
     # The cap climbs toward the user's ceiling on clean samples; a low one is

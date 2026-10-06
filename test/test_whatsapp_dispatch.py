@@ -173,6 +173,10 @@ class FakeSessions:
     def get_pid(self, key):
         return None  # skip identity publication in tests
 
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs`` (unset: 300 s)."""
+        return 300.0
+
 
 class FakeHooks:
     auto_approve_subagent_spawn = False

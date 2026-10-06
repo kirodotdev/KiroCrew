@@ -476,6 +476,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     "policy_cache",
     "admission_policy.json",
     "denied_commands.json",
+    # Operator grants of ``owner`` trust to hand-configured app registries, on the same floor
+    # as ``denied_commands.json``: a writable grant clones a registry the agent controls.
+    "registry_trust.json",
     # The cron store. It holds access-control state, not just scheduling data:
     # ``session_key`` decides which session may manage a job through the MCP cron
     # tools and where the job's output is delivered, ``approval_mode`` is a

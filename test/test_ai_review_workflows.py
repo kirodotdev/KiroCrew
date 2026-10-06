@@ -752,31 +752,34 @@ class TestHumanOverrideHandler:
         # hatch. On a same-repo PR the re-run's own override step skips the whole
         # review -- model call, candidate validation and differential alike -- and
         # the gate passes on the marker, so a script-confirmed regression clears
-        # here just as a model-side BLOCK does. On a fork PR the Stage-2 lane reads
-        # no marker, so its re-run recomputes the same verdict and the override
-        # does not clear it.
+        # here just as a model-side BLOCK does. The fork Stage-2 lane consumes the
+        # record the same way, ahead of its per-head floor.
         assert 'rerun_reviewer "security-scope-review.yml"' in workflow
 
-    def test_rerun_resolves_fork_lane_runs_from_the_stamped_check_run(self) -> None:
+    def test_rerun_resolves_fork_lane_runs_from_the_bound_check_run(self) -> None:
         # A fork PR's reviewers are the workflow_run-triggered Stage-2 lanes.
         # Their run objects are keyed to the DEFAULT branch context (head_sha
         # is main's tip, pull_requests is empty), so the same-repo lookup by
-        # PR head can never find them -- the rerun step must branch on the
-        # PR's head repo and read the lane's run id back from the details_url
-        # the lane stamps into its check-run on the PR head.
+        # PR head can never find them. The re-run step reads the row PR
+        # Readiness binds instead -- `<lane>-pr-<PR>-<Fast Gate run>-<attempt>`,
+        # newest by check-run id -- and takes the lane's run id from the marker
+        # the lane writes into that row's output.text. Never from details_url,
+        # which GitHub stores as the check-run's own page.
         workflow = _workflow("ai-review-human-override.yml")
         script = _step_script(workflow, "Re-run line reviewers with the human decision")
 
         assert 'if [ "$IS_FORK" = "true" ]; then' in script
-        assert "check-runs?check_name=$enc" in script
-        # The id is now attempt-scoped (<lane>-pr-<PR>-<run>-<attempt>), so the
-        # lookup matches the PR dimension by PREFIX and lets sort_by|last pick
-        # the newest attempt; the old attempt-blind exact match must be gone.
-        assert 'select(.external_id | startswith(\\"$lane-pr-$PR-\\"))' in script
-        assert 'select(.external_id == \\"$lane-pr-$PR\\")' not in script
-        assert "sort_by(.started_at) | last" in script
-        # The default filter=latest returns one check-run per name: nothing to sort.
+        assert ".details_url" not in script
+        assert '--arg path ".github/workflows/fast-gate.yml"' in script
+        assert '"\\(.id)-\\(.run_attempt // 1)"' in script
+        assert 'want="$lane-pr-$PR-$fork_trigger"' in script
+        assert "select(.external_id == $x)] | max_by(.id) // empty" in " ".join(script.split())
+        # The default filter=latest returns one check-run per name, which can be
+        # a sibling pull request's row on a shared head.
         assert "check-runs?check_name=$enc&per_page=100&filter=all" in script
+        assert 'capture("<!-- ai-review-fork-lane run=(?<id>[0-9]+) -->")' in script
+        # Digits only, whatever the capture produced.
+        assert '[[ ! "$run_id" =~ ^[0-9]+$ ]]' in script
         # The resolved run must be verified to belong to the expected fork
         # lane before anything is re-run: any workflow with checks:write
         # could post a check-run of the same name.
@@ -790,6 +793,21 @@ class TestHumanOverrideHandler:
             "fork-security-scope-review.yml",
         ):
             assert f'"{fork_lane}"' in script
+
+    def test_rerun_reads_keep_their_exit_status(self) -> None:
+        # `gh` prints the API's JSON error body on STDOUT on an HTTP error, so a
+        # read with its status swallowed hands that body on as the answer and the
+        # failure is reported as whatever it parses to ("points at ''"). Judge
+        # code lines only: the step's comments quote the shapes they replaced.
+        script = _step_script(
+            _workflow("ai-review-human-override.yml"),
+            "Re-run line reviewers with the human decision",
+        )
+        code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+        assert not any("|| true" in ln for ln in code), [ln for ln in code if "|| true" in ln]
+        assert not any("2>/dev/null" in ln for ln in code), [
+            ln for ln in code if "2>/dev/null" in ln
+        ]
 
     def test_rerun_failure_is_a_warning_once_the_judgment_recorded(self) -> None:
         # The judgment records in the step BEFORE the rerun. A rerun-lookup
@@ -806,43 +824,45 @@ class TestHumanOverrideHandler:
         assert "post_notice" in script
         assert "could not be re-run automatically" in script
 
-    def test_fork_lanes_stamp_their_run_url_into_the_check_run(self) -> None:
+    def test_fork_lanes_write_their_run_id_into_every_check_run_write(self) -> None:
         # The only link from a PR head back to the workflow_run-keyed lane run
-        # is the run URL the lane stamps into its check-run's details_url; the
-        # override handler's fork rerun path reads it back. Both the opening
-        # POST and the finalize fallback POST (used when the job dies before
-        # opening one) must carry the stamp -- and the fallback must also
-        # carry the external_id the handler filters on, or the one check-run
-        # holding the run URL is never a lookup candidate. The id is now
-        # two-dimensional (PR + triggering run id + attempt), so a rerun on an
-        # unchanged head cannot reuse the previous attempt's verdict; the env
-        # must supply WR_RUN_ID and WR_RUN_ATTEMPT so a future edit cannot drop
-        # the attempt dimension silently.
-        stamp = '-f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"'
+        # is the lane-run marker in its check-run's output.text; the override
+        # handler's fork re-run path reads it back. GitHub stores an
+        # Actions-created check-run's details_url as the check-run's own page,
+        # so that field cannot carry it. EVERY write of the row carries the
+        # marker -- the opening POST, each completing PATCH and the finalize
+        # fallback POST -- because whichever write landed last is the row the
+        # handler reads. The fallback must also carry the external_id the
+        # handler and readiness bind on, or the one row holding the marker is
+        # never a candidate.
+        marker = "<!-- ai-review-fork-lane run=%s -->"
+        args = '"${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")"'
         # `posts` is how many check-run POSTs the lane makes, and it is a
         # PERMISSION fact, not a style choice. The five lanes below open a
-        # check-run early and re-POST a finalize fallback, so both POSTs must
-        # carry the stamp. fork-security-scope-review.yml POSTs exactly once
-        # because `checks: write` is held only by its publishing job -- the one
-        # that executes nothing -- and the job that would open a check-run early
-        # is the one running the fork's own classifier code, which is precisely
-        # what that permission split exists to keep write scope away from. So it
-        # gets its own arm rather than a lowered bar for the other five: its one
-        # POST still has to carry the stamp and the attempt-scoped external_id,
-        # since that single row is the only link from the PR head to the run.
-        for name, lane, posts in (
-            ("fork-opus-review.yml", "opus", 2),
-            ("fork-gpt-review.yml", "gpt", 2),
-            ("fork-design-review.yml", "design", 2),
-            ("fork-ux-review.yml", "ux", 2),
-            ("fork-first-principles-review.yml", "first-principles", 2),
-            ("fork-security-scope-review.yml", "scope", 1),
+        # check-run early and re-POST a finalize fallback. The scope lane POSTs
+        # exactly once because `checks: write` is held only by its publishing
+        # job -- the one that executes nothing -- and the job that would open a
+        # check-run early is the one running the fork's own classifier code.
+        for name, lane, posts, patches in (
+            ("fork-opus-review.yml", "opus", 2, 1),
+            ("fork-gpt-review.yml", "gpt", 2, 1),
+            ("fork-design-review.yml", "design", 2, 1),
+            ("fork-ux-review.yml", "ux", 2, 1),
+            ("fork-first-principles-review.yml", "first-principles", 2, 1),
+            ("fork-security-scope-review.yml", "scope", 1, 0),
         ):
             workflow = _workflow(name)
-            assert workflow.count(stamp) >= posts, name
             assert (
                 workflow.count('gh api --method POST "repos/$REPO/check-runs"') == posts
             ), f"{name}: expected {posts} check-run POST(s)"
+            assert workflow.count(marker) == posts, name
+            assert workflow.count(args) == posts, name
+            # Every POST and every PATCH names the marker text in its output.
+            writes = workflow.count(
+                'gh api --method POST "repos/$REPO/check-runs"'
+            ) + workflow.count('gh api --method PATCH "repos/$REPO/check-runs/$1"')
+            assert writes == posts + patches, name
+            assert workflow.count("output[text]=") == writes, name
             assert (
                 f'ext_args=(-f external_id="{lane}-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")' in workflow
             ), name
@@ -4106,11 +4126,14 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         edit) into one variable, hands that variable to grep as a here-string
         and nothing else, and downloads only allowlisted GitHub asset URLs with
         the same anonymous, size-capped curl as the same-repo lane. The step is
-        gated on the UI-scope pass, and the egress allowlist the job already
-        carries admits both hosts a download touches: github.com and the
-        user-asset S3 bucket its 302 points at."""
+        gated on the UI-scope pass (and skipped under an accepted human
+        override), and the egress allowlist the job already carries admits both
+        hosts a download touches: github.com and the user-asset S3 bucket its
+        302 points at."""
         step = _step("fork-ux-review.yml", FORK_ATTACHMENT_STEP)
-        assert step["if"] == "steps.scope.outputs.ui == 'true'"
+        assert " ".join(step["if"].split()) == (
+            "steps.human_override.outputs.active != 'true' && (steps.scope.outputs.ui == 'true')"
+        )
         env = _step_env("fork-ux-review.yml", FORK_ATTACHMENT_STEP)
         assert env["REPO"] == "${{ github.repository }}"
         assert env["PR"] == "${{ steps.pr.outputs.pr }}"
@@ -5322,8 +5345,12 @@ class TestPreparePrPreSubmitReview:
         assert "concurrently" in skill.lower() or "run at the same time" in skill.lower()
         assert "Charter is read-only" in skill
         # The two reviewers mirror their own (divergent) server contracts.
-        assert ".github/workflows/codex-review.yml" in skill
-        assert ".github/workflows/claude-review.yml" in skill
+        charters = (PREPARE_PR_SKILL.parent / "references" / "fallback-charters.md").read_text(
+            encoding="utf-8"
+        )
+        assert "references/fallback-charters.md" in skill
+        assert ".github/workflows/codex-review.yml" in charters
+        assert ".github/workflows/claude-review.yml" in charters
         assert "REVIEWED_SHA=$(git rev-parse HEAD)" in skill
         assert '"$(git rev-parse HEAD)" = "$REVIEWED_SHA"' in skill
 
@@ -9191,6 +9218,12 @@ _GUARDED_LANES = [
 # the model produced -- and without the stamp the guarded upsert withholds the whole
 # comment, leaving the broken operation and its tier readable only in the job logs.
 
+#: The fork lanes whose accepted human override note goes through the guarded
+#: upsert. The fork UX lane writes it the way ux-review.yml does instead,
+#: because its scope skip exits before the upsert is defined, and the scope
+#: lane's override note carries the lane's own stamp.
+_GUARDED_OVERRIDE_LANES = ("fork-gpt", "fork-opus", "fork-design", "fork-first-principles")
+
 _GUARDED_LANE_PARAMS = [pytest.param(lane, id=lane["id"]) for lane in _GUARDED_LANES]
 
 # Every lane that publishes a review VERDICT into a marker comment, including
@@ -10721,10 +10754,19 @@ class TestReviewLaneVerdictVisibility:
                 for line in script.splitlines()
                 if line.strip().startswith("guarded_comment_upsert ")
             ]
+            # A fork lane's accepted human override publishes its note through
+            # the same guarded upsert, under the head-scoped `[<LANE>-OVERRIDE]`
+            # needle the note carries instead of a review stamp. Every other
+            # call names the lane's own stamp.
+            override = lane["stamp"].replace("-REVIEWED]", "-OVERRIDE]")
+            verdict_calls = [call for call in calls if f'"{override}"' not in call]
+            override_calls = [call for call in calls if f'"{override}"' in call]
             expected = 2 if lane["id"] == "fork-first-principles" else 1
-            assert len(calls) == expected, (lane["id"], calls)
-            for call in calls:
+            assert len(verdict_calls) == expected, (lane["id"], calls)
+            for call in verdict_calls:
                 assert f'"{lane["stamp"]}"' in call
+            expected_override = 1 if lane["id"] in _GUARDED_OVERRIDE_LANES else 0
+            assert len(override_calls) == expected_override, (lane["id"], calls)
 
 
 class TestGptRefusalTerminalState:
@@ -13917,36 +13959,36 @@ class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
 
 
 class TestTheForkLaneNamesARemedyThatClearsAForkPullRequest:
-    """A fork PR cannot clear this lane with `/ai-review override`.
+    """A fork PR clears this lane with `/ai-review override scope`, as a same-repo one does.
 
-    The Stage-2 lane consumes no override marker -- it recomputes both halves from
-    the same two refs and reaches the same verdict -- so naming that command as the
-    remedy sends a contributor to a command that does nothing, on the one lane that
-    blocks their pull request.
+    The Stage-2 lane's `generate` job reads the record before it mints the Bedrock
+    credential, and `publish` completes the check `success` past the per-head
+    floor. So the lane's own messages name the override as a remedy and no line
+    may still tell a fork contributor that it does nothing.
     """
 
-    #: The ways a line may name the override: each states, in the same sentence,
-    #: that this lane does not consume it. The list is spellings of ONE property --
-    #: a mention carrying no negation sends a fork contributor to a command that
-    #: does nothing on the one lane blocking their pull request -- so a new phrasing
-    #: is added here only when it carries the negation itself.
-    NEGATIONS = (
+    STALE = (
         "does NOT clear",
         "reads no /ai-review override",
         "consumes NO `/ai-review override",
         "consumes no override marker",
     )
 
-    def test_no_fork_lane_message_offers_the_override_as_a_remedy(self) -> None:
+    def test_no_fork_lane_message_says_the_override_does_nothing(self) -> None:
         fork = _workflow("fork-security-scope-review.yml")
         for line in fork.splitlines():
-            if "/ai-review override" not in line:
-                continue
-            assert any(negation in line for negation in self.NEGATIONS), line
+            assert not any(stale in line for stale in self.STALE), line
+
+    def test_the_fork_lane_offers_it_where_a_row_was_redacted(self) -> None:
+        fork = _workflow("fork-security-scope-review.yml")
+        assert "/ai-review override scope <sha>: <reason>" in _step_script(
+            fork, "Fold the reports into one verdict"
+        )
+        assert "/ai-review override scope $HEAD: <reason>" in _step_script(
+            fork, "Assemble the comment body"
+        )
 
     def test_the_same_repo_lane_still_offers_it(self) -> None:
-        # The same-repo lane's "Resolve human override" step does consume the
-        # marker, so the remedy is real there and must not be edited out with it.
         assert "/ai-review override scope" in _workflow("security-scope-review.yml")
 
 
@@ -15197,7 +15239,7 @@ _NOTICE_LANES = (
     ("fork-gpt-review.yml", "Post/update summary comment", False, False),
     ("fork-opus-review.yml", "Post/update summary comment", False, False),
     ("fork-security-scope-review.yml", "Post/update the scope review comment", False, False),
-    ("fork-ux-review.yml", "Post UX review summary", True, False),
+    ("fork-ux-review.yml", "Post UX review summary", True, True),
     ("security-scope-review.yml", "Post the scope verdict", False, False),
     ("ux-review.yml", "Post UX review summary", True, True),
 )
@@ -17560,3 +17602,895 @@ class TestForkVerdictCaptureNeverAbortsAboveItsOwnFallback:
             f"{workflow}: a {review_kind} review captured {got!r} "
             f"({len(out.stdout)} chars), expected {expected!r}"
         )
+
+
+# ---- A fork lane consumes the accepted override record ---------------------
+# The Stage-2 fork lanes read the bot-written `/ai-review override` record for
+# their own lane at their exact head before any credential or model call. An
+# accepted record skips the review and publishes the human decision -- a
+# `success` check-run and the override note -- as the same-repo lanes do. Each
+# condition fails closed, and a feed the step could not read leaves the lane
+# reviewing normally.
+
+_FORK_OVERRIDE_TARGETS = (
+    ("fork-opus-review.yml", "fable"),
+    ("fork-gpt-review.yml", "gpt"),
+    ("fork-design-review.yml", "design"),
+    ("fork-ux-review.yml", "ux"),
+    ("fork-first-principles-review.yml", "first-principles"),
+    ("fork-security-scope-review.yml", "scope"),
+)
+
+_OVERRIDE_GATE = "steps.human_override.outputs.active != 'true'"
+
+#: Steps an accepted override skips that are not a credential or claude-code-action
+#: step: the GPT lane's own model calls and CLI setup, and every step that fetches
+#: the untrusted description or its attachments.
+_OVERRIDE_SKIPPED_STEPS = {
+    "fork-gpt-review.yml": (
+        "Install review CLI",
+        "Configure the review CLI for Amazon Bedrock",
+        "GPT 6.1 review (discovery pass)",
+        "GPT 6.1 review (falsification pass)",
+        "Fetch PR intent (stated purpose — data only, for the scope check)",
+    ),
+    "fork-design-review.yml": (
+        "Collect rendered evidence",
+        "Capture the PR intent (untrusted data file)",
+    ),
+    "fork-ux-review.yml": (
+        "Collect review evidence (description attachments and committed media)",
+        "Capture the PR intent (untrusted data file)",
+    ),
+    "fork-first-principles-review.yml": ("Fetch PR intent (untrusted data file)",),
+}
+
+
+def _gated_on_the_override(step: dict) -> bool:
+    """The override gate is a TOP-LEVEL conjunct of the step's `if:`.
+
+    A substring match would accept `x || <gate>`, which runs the step whenever
+    `x` holds, override or not.
+    """
+    cond = " ".join(str(step.get("if") or "").split())
+    if cond == _OVERRIDE_GATE:
+        return True
+    lead = _OVERRIDE_GATE + " && ("
+    if not cond.startswith(lead):
+        return False
+    # The parenthesis opened after the gate must close at the very end, or a
+    # trailing `|| x` would run the step whenever `x` holds.
+    depth = 1
+    for i, ch in enumerate(cond[len(lead) :], start=len(lead)):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth == 0:
+            return i == len(cond) - 1
+    return False
+
+
+def _fork_child_env(tmp_path: Path, stub_dir: Path, **extra: str) -> dict[str, str]:
+    """A from-scratch child env: stubs first on PATH, HOME and TMPDIR in tmp_path.
+
+    No live credential can reach a stub-resolution miss: GH_TOKEN is a dummy and
+    GH_CONFIG_DIR keeps a real gh, if one were reached, from loading the user's
+    persisted authentication.
+    """
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("the step pipes through jq; skip where jq is absent")
+    path = os.pathsep.join(
+        [str(stub_dir), str(Path(jq).parent), "/usr/local/bin", "/usr/bin", "/bin"]
+    )
+    env = {
+        "PATH": path,
+        "HOME": str(tmp_path),
+        "TMPDIR": str(tmp_path),
+        "GH_TOKEN": "stub-token",
+        "GH_CONFIG_DIR": str(tmp_path / "gh-config"),
+        "LC_ALL": "C",
+    }
+    env.update(extra)
+    return _child_env(env)
+
+
+def _github_outputs(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            out[key] = value
+    return out
+
+
+def _write_stub(path: Path, body: str) -> None:
+    path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+
+
+class TestForkLaneConsumesTheOverrideRecord:
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    OTHER = "aaaa567890abcdef1234567890abcdef1234aaaa"
+
+    def _record(self, target: str, head: str, login: str = "github-actions[bot]", lead: str = ""):
+        return {
+            "user": {"login": login},
+            "body": (
+                f"{lead}<!-- ai-review-human-override target={target} head={head} "
+                "actor=alice source=42 -->\n## Human judgment recorded\n\n> a reason"
+            ),
+        }
+
+    def _run(self, tmp_path: Path, workflow: str, comments: list | None):
+        bash = _bash()
+        if bash is None or os.name == "nt":
+            pytest.skip("the resolve step is Bash with a stubbed gh; POSIX only")
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        attempts = tmp_path / "attempts"
+        if comments is None:
+            # What gh does on an HTTP error: the API's JSON error body on STDOUT,
+            # the message on stderr, a non-zero exit.
+            _write_stub(
+                stub_dir / "gh",
+                f'printf x >> "{attempts}"\n'
+                'printf \'{"message":"Resource not accessible by integration","status":"403"}\'\n'
+                'echo "gh: Resource not accessible by integration (HTTP 403)" >&2\n'
+                "exit 1\n",
+            )
+        else:
+            reply = tmp_path / "comments.json"
+            reply.write_text(json.dumps(comments), encoding="utf-8")
+            _write_stub(stub_dir / "gh", f'printf x >> "{attempts}"\ncat "{reply}"\n')
+        _write_stub(stub_dir / "sleep", "exit 0\n")
+        script = tmp_path / "step.sh"
+        script.write_text(
+            _step_script(_workflow(workflow), "Resolve human override"),
+            encoding="utf-8",
+            newline="\n",
+        )
+        out = tmp_path / "github-output"
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env=_fork_child_env(
+                tmp_path,
+                stub_dir,
+                REPO="example/repo",
+                PR="7",
+                HEAD=self.HEAD,
+                GITHUB_OUTPUT=str(out),
+            ),
+        )
+        return result, _github_outputs(out), attempts
+
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS)
+    def test_an_accepted_record_for_this_lane_and_head_is_active(
+        self, tmp_path: Path, workflow: str, target: str
+    ) -> None:
+        result, outputs, _ = self._run(tmp_path, workflow, [self._record(target, self.HEAD)])
+        assert result.returncode == 0, _proc_log(result)
+        assert outputs == {"active": "true", "actor": "alice", "source": "42"}, _proc_log(result)
+
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS)
+    def test_a_record_for_all_lanes_is_active(self, tmp_path: Path, workflow: str, target: str):
+        result, outputs, _ = self._run(tmp_path, workflow, [self._record("all", self.HEAD)])
+        assert result.returncode == 0, _proc_log(result)
+        assert outputs["active"] == "true", _proc_log(result)
+
+    @pytest.mark.parametrize(
+        "case", ["wrong-head", "wrong-lane", "not-the-bot", "not-leading", "short-head"]
+    )
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS)
+    def test_a_record_that_fails_any_condition_is_ignored(
+        self, tmp_path: Path, workflow: str, target: str, case: str
+    ) -> None:
+        other_lane = "gpt" if target != "gpt" else "design"
+        record = {
+            "wrong-head": self._record(target, self.OTHER),
+            "wrong-lane": self._record(other_lane, self.HEAD),
+            "not-the-bot": self._record(target, self.HEAD, login="mallory"),
+            "not-leading": self._record(target, self.HEAD, lead="quoting: "),
+            # The handler writes the FULL head; a prefix names no exact head.
+            "short-head": self._record(target, self.HEAD[:12]),
+        }[case]
+        result, outputs, _ = self._run(tmp_path, workflow, [record])
+        assert result.returncode == 0, _proc_log(result)
+        assert outputs == {"active": "false", "actor": "", "source": ""}, _proc_log(result)
+
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS)
+    def test_a_failed_read_falls_back_to_the_model_review(
+        self, tmp_path: Path, workflow: str, target: str
+    ) -> None:
+        # Never an accepted record, and never a failed step: the lane reviews
+        # normally, and the JSON error body gh printed on stdout is not read as
+        # a comment feed.
+        result, outputs, attempts = self._run(tmp_path, workflow, None)
+        assert result.returncode == 0, _proc_log(result)
+        assert outputs == {"active": "false", "actor": "", "source": ""}, _proc_log(result)
+        assert "::warning::" in result.stdout
+        assert "Reviewing normally" in result.stdout
+        assert attempts.read_text(encoding="utf-8") == "xxx"
+
+    def test_the_resolve_step_is_one_body_across_the_fork_lanes(self) -> None:
+        bodies = set()
+        for workflow, target in _FORK_OVERRIDE_TARGETS:
+            script = _step_script(_workflow(workflow), "Resolve human override")
+            # The slice runs up to the next step's `- name:`, so it carries that
+            # step's leading comment block; only the step itself is compared.
+            script = script[: script.index('\n} >> "$GITHUB_OUTPUT"')]
+            needle = f'exact="<!-- ai-review-human-override target={target} head=$HEAD "'
+            assert script.count(needle) == 1, workflow
+            bodies.add(
+                script.replace(needle, 'exact="<!-- ai-review-human-override target=@ head=$HEAD "')
+            )
+        assert len(bodies) == 1, "the fork lanes' Resolve human override steps drifted apart"
+
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS)
+    def test_no_credential_or_model_step_runs_under_an_accepted_record(
+        self, workflow: str, target: str
+    ) -> None:
+        doc = yaml.safe_load(_workflow(workflow))
+        seen = 0
+        for job in doc["jobs"].values():
+            steps = job["steps"]
+            names = [s.get("name") for s in steps]
+            named = _OVERRIDE_SKIPPED_STEPS.get(workflow, ())
+            for i, step in enumerate(steps):
+                uses = str(step.get("uses") or "")
+                if (
+                    "configure-aws-credentials" not in uses
+                    and "claude-code-action" not in uses
+                    and step.get("name") not in named
+                ):
+                    continue
+                seen += 1
+                # Read in the SAME job, before the step it gates.
+                assert "Resolve human override" in names[:i], (workflow, step.get("name"))
+                assert _gated_on_the_override(step), (workflow, step.get("name") or uses)
+        assert seen >= 2 + len(_OVERRIDE_SKIPPED_STEPS.get(workflow, ())), workflow
+
+    @pytest.mark.parametrize(("workflow", "target"), _FORK_OVERRIDE_TARGETS[:5])
+    def test_the_record_is_read_after_the_lanes_row_is_open(
+        self, workflow: str, target: str
+    ) -> None:
+        # The handler posts the record and then reads the lane's row; the lane
+        # opens its row and then reads the record. Either order alone leaves a
+        # window in which neither sees the other.
+        names = [
+            s.get("name")
+            for s in yaml.safe_load(_workflow(workflow))["jobs"][
+                next(iter(yaml.safe_load(_workflow(workflow))["jobs"]))
+            ]["steps"]
+        ]
+        assert names.index("Open check-run (in progress)") < names.index("Resolve human override")
+
+    def test_the_scope_lane_reads_the_record_again_before_it_decides(self) -> None:
+        # Its only check-run is the one `publish` posts, so a record posted while
+        # `generate`, `validate` or `adjudicate` ran would have no row for the
+        # handler to find. `publish` repeats the read just before deciding.
+        workflow = _workflow("fork-security-scope-review.yml")
+        doc = yaml.safe_load(workflow)
+        publish = doc["jobs"]["publish"]["steps"]
+        names = [s.get("name") for s in publish]
+        i = names.index("Resolve human override")
+        assert i < names.index("Decide the lane's conclusion")
+        assert publish[i]["if"] == "always()"
+        assert publish[i]["env"]["HEAD"] == "${{ needs.generate.outputs.head_sha }}"
+        # One read, byte for byte the same in both jobs.
+        scripts = {
+            s["run"]
+            for job in ("generate", "publish")
+            for s in doc["jobs"][job]["steps"]
+            if s.get("name") == "Resolve human override"
+        }
+        assert len(scripts) == 1
+        either = (
+            "${{ needs.generate.outputs.override == 'true' "
+            "|| steps.human_override.outputs.active == 'true' }}"
+        )
+        for step in (
+            "Decide the lane's conclusion",
+            "Assemble the comment body",
+            "Publish check-run",
+        ):
+            assert (
+                next(s for s in publish if s.get("name") == step)["env"]["HUMAN_OVERRIDE"] == either
+            )
+
+
+class TestForkLaneFinalizeHonoursTheOverride:
+    """The check-run a fork lane completes is the row readiness reads."""
+
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    LANES = (
+        # workflow, finalize step, check name, how a BLOCK verdict reaches the step
+        ("fork-design-review.yml", "Finalize check-run (advisory)", "Design Review", "env"),
+        ("fork-ux-review.yml", "Finalize check-run (advisory)", "UX Review", "env"),
+        (
+            "fork-first-principles-review.yml",
+            "Finalize check-run (advisory)",
+            "First Principles Review",
+            "env",
+        ),
+        ("fork-opus-review.yml", "Finalize check-run (fail closed)", "Opus 5.5 Review", "OPUS"),
+        ("fork-gpt-review.yml", "Finalize check-run (fail closed)", "GPT 6.1 Review", "GPT"),
+    )
+
+    def _run(
+        self, tmp_path: Path, workflow: str, step: str, how: str, *, override: bool, check_id: str
+    ):
+        bash = _bash()
+        if bash is None or os.name == "nt":
+            pytest.skip("the finalize step is Bash with a stubbed gh; POSIX only")
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        calls = tmp_path / "calls"
+        calls.mkdir()
+        _write_stub(
+            stub_dir / "gh",
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            f'  printf \'%s\\n\' "$@" >> "{calls}/patch-argv.txt"; exit 0\n'
+            "fi\n"
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "POST" ]; then\n'
+            f'  printf \'%s\\n\' "$@" >> "{calls}/post-argv.txt"; echo 1; exit 0\n'
+            "fi\n"
+            "exit 0\n",
+        )
+        _write_stub(stub_dir / "sleep", "exit 0\n")
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+        env = {
+            "REPO": "example/repo",
+            "PR": "7",
+            "HEAD": self.HEAD,
+            "CHECK_ID": check_id,
+            "WR_RUN_ID": "900",
+            "WR_RUN_ATTEMPT": "2",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "5551",
+            "RUNNER_TEMP": str(runner_temp),
+            "HUMAN_OVERRIDE": "true" if override else "false",
+            "OVERRIDE_ACTOR": "alice" if override else "",
+            "ADJ_DECISION": "",
+            "ADJ_NOTE": "",
+            "WITHHELD": "",
+            "UNFETCHED": "",
+        }
+        if how == "env":
+            env["VERDICT"] = "BLOCK"
+        else:
+            out = "claude-review-output.md" if how == "OPUS" else "codex-review-output.md"
+            (cwd / out).write_text(
+                f"BLOCKING -- src/a.py:1 -- x\n[BLOCK-MERGE] {self.HEAD}\n[{how}-REVIEWED] {self.HEAD}\n",
+                encoding="utf-8",
+            )
+        script = tmp_path / "step.sh"
+        script.write_text(_step_script(_workflow(workflow), step), encoding="utf-8", newline="\n")
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
+            env=_fork_child_env(tmp_path, stub_dir, **env),
+        )
+        return result, calls
+
+    @pytest.mark.parametrize(("workflow", "step", "name", "how"), LANES)
+    def test_an_accepted_override_completes_the_row_success(
+        self, tmp_path: Path, workflow: str, step: str, name: str, how: str
+    ) -> None:
+        # A BLOCK left behind by the skipped review steps does not outvote it.
+        result, calls = self._run(tmp_path, workflow, step, how, override=True, check_id="4242")
+        assert result.returncode == 0, _proc_log(result)
+        argv = (calls / "patch-argv.txt").read_text(encoding="utf-8")
+        assert "conclusion=success" in argv and "conclusion=failure" not in argv, argv
+        assert f"output[title]={name} — human override accepted" in argv, argv
+        assert "@alice" in argv
+        assert "<!-- ai-review-fork-lane run=5551 -->" in argv, argv
+
+    @pytest.mark.parametrize(("workflow", "step", "name", "how"), LANES)
+    def test_the_fallback_post_carries_the_conclusion_the_verdict_earned(
+        self, tmp_path: Path, workflow: str, step: str, name: str, how: str
+    ) -> None:
+        # No opening row to complete: the fallback POST is the row readiness
+        # reads, so a BLOCK must not publish as a neutral pass.
+        result, calls = self._run(tmp_path, workflow, step, how, override=False, check_id="")
+        assert result.returncode == 0, _proc_log(result)
+        argv = (calls / "post-argv.txt").read_text(encoding="utf-8")
+        assert "conclusion=failure" in argv, argv
+        assert "conclusion=neutral" not in argv and "conclusion=success" not in argv, argv
+        assert "external_id=" in argv and "-pr-7-900-2" in argv, argv
+        assert "<!-- ai-review-fork-lane run=5551 -->" in argv, argv
+
+    @pytest.mark.parametrize(("workflow", "step", "name", "how"), LANES)
+    def test_the_fallback_post_records_an_accepted_override(
+        self, tmp_path: Path, workflow: str, step: str, name: str, how: str
+    ) -> None:
+        result, calls = self._run(tmp_path, workflow, step, how, override=True, check_id="")
+        assert result.returncode == 0, _proc_log(result)
+        argv = (calls / "post-argv.txt").read_text(encoding="utf-8")
+        assert "conclusion=success" in argv, argv
+        assert f"output[title]={name} — human override accepted" in argv, argv
+
+
+class TestForkLanePublishesTheOverrideNote:
+    """The note replaces a BLOCK the head already shows, through the lane's slot."""
+
+    HEAD = TestReviewLaneVerdictVisibility.HEAD
+    LANES = [
+        pytest.param(lane, id=lane["id"])
+        for lane in _GUARDED_LANES
+        if lane["id"] in _GUARDED_OVERRIDE_LANES + ("fork-ux",)
+    ]
+
+    def _block_body(self, lane: dict) -> str:
+        return (
+            f"{lane['marker']}\n## Review — 🔴 BLOCK (blocking)\n\n"
+            f"Design-Verdict: BLOCK\n\n{lane['stamp']} {self.HEAD}\n"
+        )
+
+    def _run(self, lane: dict, tmp_path: Path, existing_body: str | None):
+        harness = TestReviewLaneVerdictVisibility()
+        return harness._run_step(
+            lane,
+            tmp_path,
+            existing_body=existing_body,
+            kind="incomplete",
+            extra_env={
+                "HUMAN_OVERRIDE": "true",
+                "OVERRIDE_ACTOR": "alice",
+                "OVERRIDE_SOURCE": "42",
+                "UI_SCOPE": "true",
+                "HOME": str(tmp_path),
+                "TMPDIR": str(tmp_path),
+            },
+        )
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_the_note_replaces_a_standing_block_for_this_head(self, lane: dict, tmp_path: Path):
+        calls, result = self._run(lane, tmp_path, self._block_body(lane))
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        assert patched.startswith(lane["marker"]), patched
+        assert "✅ human override accepted" in patched
+        assert "@alice" in patched and "#issuecomment-42" in patched
+        # No review ran, so the note carries no review stamp for any head.
+        assert f"{lane['stamp']} " not in patched, patched
+        assert "[BLOCK-MERGE]" not in patched and "Verdict: BLOCK" not in patched
+        assert not (calls / "created-body.md").exists()
+        assert "verdict=OVERRIDE" in (tmp_path / "github-output.txt").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_an_empty_slot_gets_the_note(self, lane: dict, tmp_path: Path):
+        calls, result = self._run(lane, tmp_path, None)
+        assert result.returncode == 0, result.stderr.decode()
+        created = (calls / "created-body.md").read_text(encoding="utf-8")
+        assert "✅ human override accepted" in created
+        assert f"{lane['stamp']} " not in created, created
+
+    def test_the_override_arm_comes_before_every_verdict_write(self) -> None:
+        for workflow, step, first in (
+            (
+                "fork-design-review.yml",
+                "Post/update design review comment",
+                'guarded_comment_upsert "$MARKER" "[DESIGN-REVIEWED]"',
+            ),
+            (
+                "fork-opus-review.yml",
+                "Post/update summary comment",
+                'guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]"',
+            ),
+            (
+                "fork-gpt-review.yml",
+                "Post/update summary comment",
+                'guarded_comment_upsert "$MARKER" "[GPT-REVIEWED]"',
+            ),
+            (
+                "fork-first-principles-review.yml",
+                "Post/update first-principles review comment",
+                'guarded_comment_upsert "$MARKER" "[FIRST-PRINCIPLES-REVIEWED]"',
+            ),
+            ("fork-ux-review.yml", "Post UX review summary", 'if [ "$UI_SCOPE" != "true" ]; then'),
+        ):
+            script = _step_script(_workflow(workflow), step)
+            arm = script.index('if [ "${HUMAN_OVERRIDE:-}" = "true" ]; then')
+            assert arm < script.index(first), workflow
+
+
+class TestForkScopeLaneHonoursTheOverride:
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+
+    def _run(self, tmp_path: Path, step: str, real_python: bool = False, **env: str):
+        bash = _bash()
+        if bash is None or os.name == "nt":
+            pytest.skip("the publish steps are Bash with a stubbed gh; POSIX only")
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        gh_calls = tmp_path / "gh-calls"
+        # Any gh call from an override run is a defect: the floor's read of the
+        # prior check-runs is exactly what an accepted override skips.
+        _write_stub(stub_dir / "gh", f'printf \'%s\\n\' "$*" >> "{gh_calls}"\nexit 1\n')
+        if real_python:
+            # The conclusion table, run from the repository root like the job runs it.
+            _write_stub(stub_dir / "python3", f'exec "{sys.executable}" "$@"\n')
+        else:
+            _write_stub(
+                stub_dir / "python3", 'echo "python3 must not run under an override" >&2\nexit 1\n'
+            )
+        out = tmp_path / "github-output"
+        script = tmp_path / "step.sh"
+        script.write_text(
+            _step_script(_workflow("fork-security-scope-review.yml"), step),
+            encoding="utf-8",
+            newline="\n",
+        )
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT if real_python else tmp_path,
+            env=_fork_child_env(
+                tmp_path,
+                stub_dir,
+                HEAD=self.HEAD,
+                PR="7",
+                REPO="example/repo",
+                GITHUB_OUTPUT=str(out),
+                **env,
+            ),
+        )
+        return result, _github_outputs(out), gh_calls
+
+    def test_an_accepted_override_concludes_success_past_the_floor(self, tmp_path: Path) -> None:
+        result, outputs, gh_calls = self._run(
+            tmp_path,
+            "Decide the lane's conclusion",
+            HUMAN_OVERRIDE="true",
+            OVERRIDE_ACTOR="alice",
+            IN_SCOPE="true",
+            FOLD_RC="1",
+            MODEL_VERDICT="BLOCK",
+            REVIEW=str(tmp_path / "absent.md"),
+            BODY=str(tmp_path / "absent-body.md"),
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert outputs["conclusion"] == "success", outputs
+        assert outputs["settled"] == "yes", outputs
+        assert "@alice" in outputs["title"], outputs
+        assert not gh_calls.exists(), gh_calls.read_text(encoding="utf-8")
+
+    def test_without_an_override_the_floor_is_consulted(self, tmp_path: Path) -> None:
+        # Control: the arm is keyed on the record. Without it the step reaches the
+        # per-head floor, whose read of the prior check-runs the override skips.
+        result, outputs, gh_calls = self._run(
+            tmp_path,
+            "Decide the lane's conclusion",
+            real_python=True,
+            HUMAN_OVERRIDE="false",
+            IN_SCOPE="true",
+            FOLD_RC="1",
+            MODEL_VERDICT="BLOCK",
+            REVIEW=str(tmp_path / "absent.md"),
+            BODY=str(tmp_path / "absent-body.md"),
+        )
+        assert outputs.get("conclusion") != "success", (outputs, _proc_log(result))
+        assert "check-runs" in gh_calls.read_text(encoding="utf-8"), _proc_log(result)
+
+    def test_the_note_is_stamped_for_this_head_like_the_same_repo_one(self, tmp_path: Path) -> None:
+        body = tmp_path / "scope-comment.md"
+        result, _, _ = self._run(
+            tmp_path,
+            "Assemble the comment body",
+            HUMAN_OVERRIDE="true",
+            OVERRIDE_ACTOR="alice",
+            CONCLUSION="success",
+            OUT=str(body),
+            REVIEW=str(tmp_path / "absent.md"),
+            BODY=str(tmp_path / "absent-body.md"),
+        )
+        assert result.returncode == 0, _proc_log(result)
+        text = body.read_text(encoding="utf-8")
+        assert text.startswith("<!-- security-scope-review -->\n"), text
+        assert "✅ human override accepted" in text and "@alice" in text
+        assert f"[SCOPE-REVIEWED] {self.HEAD}" in text
+
+    def test_validate_and_adjudicate_are_skipped_under_an_override(self) -> None:
+        doc = yaml.safe_load(_workflow("fork-security-scope-review.yml"))
+        assert "needs.generate.outputs.override != 'true'" in doc["jobs"]["validate"]["if"]
+        # adjudicate runs only on validate's own answer, so skipping validate
+        # skips it.
+        assert "needs.validate.outputs.adjudicate == 'true'" in doc["jobs"]["adjudicate"]["if"]
+        outputs = doc["jobs"]["generate"]["outputs"]
+        assert outputs["override"] == "${{ steps.human_override.outputs.active }}"
+        # The read needs the comment feed and nothing more.
+        assert doc["jobs"]["generate"]["permissions"]["pull-requests"] == "read"
+
+
+class TestOverrideHandlerReRunsTheBoundForkLaneRun:
+    """Execute the handler's re-run step against a stubbed GitHub API."""
+
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    TRIGGER = {"id": 900, "run_attempt": 2}
+
+    def _check_run(
+        self, cid: int, lane: str, attempt: int, conclusion: str, text: str, pr: int = 7
+    ):
+        return {
+            "id": cid,
+            "external_id": f"{lane}-pr-{pr}-900-{attempt}",
+            "status": "completed",
+            "conclusion": conclusion,
+            "details_url": f"https://github.com/example/repo/runs/{cid}",
+            "output": {"text": text},
+        }
+
+    @staticmethod
+    def _marker(run_id: str) -> str:
+        return f"Lane run: https://github.com/example/repo/actions/runs/{run_id}\n\n<!-- ai-review-fork-lane run={run_id} -->"
+
+    def _run(
+        self,
+        tmp_path: Path,
+        target: str,
+        check_runs: list,
+        runs: dict,
+        head_repo: str = "fork/repo",
+    ):
+        bash = _bash()
+        if bash is None or os.name == "nt":
+            pytest.skip("the handler step is Bash with a stubbed gh; POSIX only")
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        data = tmp_path / "data"
+        data.mkdir()
+        calls = tmp_path / "calls"
+        calls.mkdir()
+        (data / "runs.json").write_text(
+            json.dumps(
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 900,
+                            "run_attempt": 2,
+                            "path": ".github/workflows/fast-gate.yml",
+                            "head_repository": {"full_name": "fork/repo"},
+                            "head_branch": "feature",
+                        },
+                        # Sibling pull requests' newer Fast Gates on the same head:
+                        # another fork, and the same fork's other branch.
+                        {
+                            "id": 950,
+                            "run_attempt": 1,
+                            "path": ".github/workflows/fast-gate.yml",
+                            "head_repository": {"full_name": "other/repo"},
+                            "head_branch": "feature",
+                        },
+                        {
+                            "id": 960,
+                            "run_attempt": 1,
+                            "path": ".github/workflows/fast-gate.yml",
+                            "head_repository": {"full_name": "fork/repo"},
+                            "head_branch": "other-branch",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (data / "checkruns.json").write_text(
+            json.dumps({"check_runs": check_runs}), encoding="utf-8"
+        )
+        for run_id, payload in runs.items():
+            (data / f"run-{run_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+        _write_stub(
+            stub_dir / "gh",
+            'args="$*"\n'
+            f'printf \'%s\\n\' "$args" >> "{calls}/all.txt"\n'
+            'case "$args" in\n'
+            f'  *"/dispatches"*) printf \'%s\\n\' "$args" >> "{calls}/dispatch.txt"; exit 0 ;;\n'
+            f'  *"/issues/"*"/comments"*) cat >> "{calls}/notice.txt"; exit 0 ;;\n'
+            f'  *"/rerun"*) printf \'%s\\n\' "$args" >> "{calls}/rerun.txt"; exit 0 ;;\n'
+            '  *"/cancel"*)\n'
+            '    id="${args##*actions/runs/}"; id="${id%%/*}"\n'
+            f'    touch "{calls}/cancelled-$id"; exit 0 ;;\n'
+            f'  *"actions/runs?event=pull_request"*) cat "{data}/runs.json"; exit 0 ;;\n'
+            f'  *"/check-runs?"*) cat "{data}/checkruns.json"; exit 0 ;;\n'
+            '  *"actions/runs/"*)\n'
+            '    id="${args##*actions/runs/}"; id="${id%% *}"\n'
+            "    filter=.\n"
+            '    case "$args" in *"--jq "*) filter="${args##*--jq }" ;; esac\n'
+            f'    if [ -f "{data}/run-$id.json" ]; then\n'
+            f'      if [ -f "{calls}/cancelled-$id" ]; then\n'
+            f'        jq -c \'.status = "completed"\' "{data}/run-$id.json" | jq -r "$filter"\n'
+            "      else\n"
+            f'        jq -r "$filter" "{data}/run-$id.json"\n'
+            "      fi\n"
+            "      exit 0\n"
+            "    fi\n"
+            '    printf \'{"message":"Not Found","status":"404"}\'\n'
+            '    echo "gh: Not Found (HTTP 404)" >&2\n'
+            "    exit 1 ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $args" >&2\n'
+            "exit 9\n",
+        )
+        _write_stub(stub_dir / "sleep", "exit 0\n")
+        script = tmp_path / "step.sh"
+        script.write_text(
+            _step_script(
+                _workflow("ai-review-human-override.yml"),
+                "Re-run line reviewers with the human decision",
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env=_fork_child_env(
+                tmp_path,
+                stub_dir,
+                REPO="example/repo",
+                PR="7",
+                HEAD=self.HEAD,
+                HEAD_REPO=head_repo,
+                HEAD_REF="feature",
+                TARGET=target,
+                IS_FORK="true",
+                DEFAULT_BRANCH="main",
+            ),
+        )
+
+        def read(name: str) -> str:
+            f = calls / name
+            return f.read_text(encoding="utf-8") if f.exists() else ""
+
+        return result, read
+
+    @staticmethod
+    def _lane_run(run_id: int, workflow: str) -> dict:
+        return {"id": run_id, "path": f".github/workflows/{workflow}", "status": "completed"}
+
+    def test_it_re_runs_the_run_readiness_binds(self, tmp_path: Path) -> None:
+        rows = [
+            # An earlier attempt of the same trigger, and a sibling PR's row.
+            self._check_run(10, "design", 1, "failure", self._marker("111")),
+            self._check_run(11, "design", 2, "failure", self._marker("222")),
+            self._check_run(12, "design", 2, "failure", self._marker("333"), pr=8),
+        ]
+        result, read = self._run(
+            tmp_path, "design", rows, {"222": self._lane_run(222, "fork-design-review.yml")}
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert "actions/runs/222/rerun" in read("rerun.txt"), _proc_log(result)
+        assert "111" not in read("rerun.txt") and "333" not in read("rerun.txt")
+        assert read("notice.txt") == ""
+        assert read("dispatch.txt") == "", "a lane re-run reaches readiness through its sweep"
+
+    def test_target_all_re_runs_only_the_red_lanes(self, tmp_path: Path) -> None:
+        rows = [
+            self._check_run(20, "design", 2, "failure", self._marker("401")),
+            self._check_run(21, "ux", 2, "success", self._marker("402")),
+            self._check_run(22, "first-principles", 2, "neutral", self._marker("403")),
+            self._check_run(23, "scope", 2, "failure", self._marker("404")),
+        ]
+        runs = {
+            "401": self._lane_run(401, "fork-design-review.yml"),
+            "402": self._lane_run(402, "fork-ux-review.yml"),
+            "403": self._lane_run(403, "fork-first-principles-review.yml"),
+            "404": self._lane_run(404, "fork-security-scope-review.yml"),
+        }
+        result, read = self._run(tmp_path, "all", rows, runs)
+        assert result.returncode == 0, _proc_log(result)
+        reruns = read("rerun.txt")
+        assert "runs/401/rerun" in reruns and "runs/404/rerun" in reruns, _proc_log(result)
+        assert "402" not in reruns and "403" not in reruns, reruns
+        # Opus and GPT have posted no row at this attempt: nothing to re-run,
+        # and not a failure either.
+        assert read("notice.txt") == "", read("notice.txt")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "no marker at all",
+            "<!-- ai-review-fork-lane run=55a -->",
+            "<!-- ai-review-fork-lane run= -->",
+        ],
+    )
+    def test_a_row_without_a_digits_only_run_id_is_not_re_run(self, tmp_path: Path, text: str):
+        rows = [self._check_run(30, "design", 2, "failure", text)]
+        result, read = self._run(tmp_path, "design", rows, {})
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "carries no lane-run id" in result.stdout, _proc_log(result)
+        assert "Design Review" in read("notice.txt")
+        # Nothing was re-run, so readiness is dispatched to read the record now.
+        dispatch = read("dispatch.txt")
+        assert "pr-readiness.yml/dispatches" in dispatch, _proc_log(result)
+        assert "inputs[pr]=7" in dispatch and f"inputs[sha]={self.HEAD}" in dispatch
+        assert "ref=main" in dispatch
+
+    def test_a_failed_run_read_is_reported_as_a_read_failure(self, tmp_path: Path) -> None:
+        # gh prints the 404 JSON body on stdout. Swallowing the exit status read
+        # that body's `.path` as empty and reported "points at ''".
+        rows = [self._check_run(40, "design", 2, "failure", self._marker("777"))]
+        result, read = self._run(tmp_path, "design", rows, {})
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "reading fork-design-review.yml run 777 failed" in result.stdout, _proc_log(result)
+        assert "HTTP 404" in result.stdout
+        assert "points at" not in result.stdout
+
+    def test_a_run_of_another_workflow_is_refused(self, tmp_path: Path) -> None:
+        rows = [self._check_run(50, "design", 2, "failure", self._marker("888"))]
+        result, read = self._run(
+            tmp_path, "design", rows, {"888": self._lane_run(888, "some-other.yml")}
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "refusing to re-run it" in result.stdout, _proc_log(result)
+
+    def test_a_passing_lane_is_left_alone_and_readiness_recomputes(self, tmp_path: Path) -> None:
+        rows = [self._check_run(60, "design", 2, "success", self._marker("999"))]
+        result, read = self._run(
+            tmp_path, "design", rows, {"999": self._lane_run(999, "fork-design-review.yml")}
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "already passes" in result.stdout
+        assert "pr-readiness.yml/dispatches" in read("dispatch.txt")
+
+    def test_the_newest_row_for_the_bound_id_wins(self, tmp_path: Path) -> None:
+        # A re-run on an unchanged head keeps the trigger-bound id, so the stale
+        # attempt's row and the fresh one share it; readiness reads the newest by
+        # check-run id, and so does the handler.
+        rows = [
+            self._check_run(71, "design", 2, "failure", self._marker("111")),
+            self._check_run(75, "design", 2, "failure", self._marker("222")),
+            self._check_run(73, "design", 2, "failure", self._marker("333")),
+        ]
+        runs = {r: self._lane_run(int(r), "fork-design-review.yml") for r in ("111", "222", "333")}
+        result, read = self._run(tmp_path, "design", rows, runs)
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt").strip().endswith("actions/runs/222/rerun"), read("rerun.txt")
+        assert "111" not in read("rerun.txt") and "333" not in read("rerun.txt")
+
+    def test_a_running_lane_is_cancelled_then_re_run(self, tmp_path: Path) -> None:
+        row = self._check_run(80, "design", 2, "failure", self._marker("444"))
+        row.update(status="in_progress", conclusion=None)
+        run = self._lane_run(444, "fork-design-review.yml")
+        run["status"] = "in_progress"
+        result, read = self._run(tmp_path, "design", [row], {"444": run})
+        assert result.returncode == 0, _proc_log(result)
+        assert "actions/runs/444/cancel" in read("all.txt"), _proc_log(result)
+        assert "actions/runs/444/rerun" in read("rerun.txt"), _proc_log(result)
+
+    def test_a_deleted_fork_binds_no_run(self, tmp_path: Path) -> None:
+        # Readiness binds no run to a head repository that is gone; neither may
+        # the handler, by matching an empty name against a null one.
+        rows = [self._check_run(90, "design", 2, "failure", self._marker("555"))]
+        result, read = self._run(
+            tmp_path,
+            "design",
+            rows,
+            {"555": self._lane_run(555, "fork-design-review.yml")},
+            head_repo="",
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "head repository or branch is gone" in result.stdout, _proc_log(result)
+        assert "pr-readiness.yml/dispatches" in read("dispatch.txt")

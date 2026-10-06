@@ -7,7 +7,12 @@ notices when only one half lands: a descriptor with no handler advertises a tool
 that answers with the dispatcher's fallthrough, and a handler with no descriptor
 is unreachable because the model is never told the name.
 
-The last test here guards the seam that makes the split safe. Handlers read this
+``kirocrew-dashboard`` has no two halves: each tool is one row of
+``mcp_dashboard.TABLE``, so the tests for it check what a row has to agree with
+outside itself -- the validation registry, the gate the session-control rows are
+named for, and the body's calling shape.
+
+The last test here guards the seam that makes the core split safe. Handlers read this
 server's plumbing as attributes of ``mcp_core`` -- ``mcp_core._post``,
 ``mcp_core.sel`` -- so that a test rebinding one still intercepts. That is an
 attribute lookup resolved at call time, which no import checker validates: a
@@ -98,11 +103,41 @@ def test_handler_signature(domain: str) -> None:
         assert params == ["name", "args"], f"{tool} takes {params}"
 
 
+#: Modules in the package that are not tool domains: the tool table and its
+#: dashboard port. Every other module must be a registered domain.
+_SUPPORT_MODULES = frozenset({"table", "dashboard_client"})
+
+
 def test_domain_modules_covers_the_package() -> None:
     """A domain module absent from DOMAIN_MODULES is never advertised at all."""
     package = Path(mcp_core.__file__).parent / "mcp_tools"
     on_disk = {p.stem for p in package.glob("*.py") if not p.stem.startswith("_")}
-    assert on_disk == set(DOMAIN_MODULES)
+    assert on_disk - _SUPPORT_MODULES == set(DOMAIN_MODULES)
+
+
+@pytest.mark.parametrize("support", sorted(_SUPPORT_MODULES))
+def test_a_support_module_declares_no_tools(support: str) -> None:
+    """The exclusion above holds only while a support module carries no tool half."""
+    module = importlib.import_module(f"kiro_crew.mcp_tools.{support}")
+    assert not hasattr(module, "HANDLERS") and not hasattr(module, "schemas"), support
+    assert support not in DOMAIN_MODULES
+
+
+def test_the_package_import_stays_a_leaf() -> None:
+    """``mcp_core`` imports this package at module scope, so importing it must
+    not drag in a domain module or the tool table -- that is what keeps the
+    cycle open. Checked in a clean interpreter, where nothing is preloaded."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, kiro_crew.mcp_tools as p\n"
+        "print(sorted(m for m in sys.modules if m.startswith('kiro_crew.mcp_tools.')))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, encoding="utf-8"
+    ).stdout.strip()
+    assert out == "['kiro_crew.mcp_tools._limits']" or out == "[]", out
 
 
 def test_unknown_tool_falls_through() -> None:
@@ -115,6 +150,63 @@ def test_workflow_library_mutations_are_human_only(tool_name: str) -> None:
     """Untrusted model output cannot persist or replace a durable workflow."""
     assert tool_name not in {tool["name"] for tool in build_tool_list()}
     assert dispatch(tool_name, {}) == f"Unknown tool: {tool_name}"
+
+
+# ── kirocrew-dashboard: one row per tool ────────────────────────────────────
+
+
+def _dashboard_table():
+    from kiro_crew.mcp_dashboard import TABLE
+
+    return TABLE
+
+
+def test_every_dashboard_tool_is_validated() -> None:
+    """A row whose name is missing from the dashboard registry runs on raw args.
+
+    ``ToolTable.validate`` passes an unregistered tool's arguments through as
+    sent, so the registry and the table must name the same tools.
+    """
+    from kiro_crew.validation import MCP_DASHBOARD_SCHEMAS
+
+    assert set(_dashboard_table().names()) == set(MCP_DASHBOARD_SCHEMAS)
+
+
+def test_the_session_control_rows_are_the_strict_rows() -> None:
+    """The gate and the containment list read one set, derived from the rows."""
+    from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
+
+    table = _dashboard_table()
+    assert SESSION_CONTROL_TOOLS == table.names("strict")
+    assert {n for n in table.names() if n.startswith("session_")} == set(SESSION_CONTROL_TOOLS)
+
+
+def test_every_dashboard_row_is_well_formed() -> None:
+    """A descriptor kiro-cli drops, or a body the table cannot call, is a dead tool."""
+    for tool in _dashboard_table():
+        spec = tool.descriptor()
+        assert set(spec) == {"name", "description", "inputSchema"}, tool.name
+        assert spec["description"].strip(), tool.name
+        assert spec["inputSchema"]["type"] == "object", tool.name
+        assert list(inspect.signature(tool.run).parameters) == ["args", "ctx"], tool.name
+        assert tool.identity in ("attribution", "strict"), tool.name
+        for route in tool.routes:
+            method, _, path = route.partition(" ")
+            assert method in {"GET", "POST", "PATCH", "PUT", "DELETE"}, (tool.name, route)
+            assert path.startswith("/api/") and "?" not in path, (tool.name, route)
+
+
+def test_the_dashboard_advertises_its_rows_in_order() -> None:
+    """``tools/list`` is the rows in order, titled; ``_tool_definitions`` is untitled."""
+    from kiro_crew import mcp_dashboard
+    from kiro_crew.mcp_tool_titles import with_titles
+
+    table = _dashboard_table()
+    assert [t["name"] for t in mcp_dashboard._list_tools()] == list(table.names())
+    assert all("title" not in d for d in mcp_dashboard._tool_definitions())
+    assert mcp_dashboard._list_tools() == with_titles(
+        mcp_dashboard.SERVER_NAME, mcp_dashboard._tool_definitions()
+    )
 
 
 @pytest.mark.parametrize("domain", DOMAIN_MODULES)

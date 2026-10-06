@@ -136,7 +136,13 @@ class KiroHarness(MembershipHarness):
             )
         return SpawnPlan(argv=argv, native_context_documents=native_documents)
 
-    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
         """Hand kiro-cli the API key from Crew's own configuration, and pin Tool
         Search exemptions by operator override or engine version
         (:func:`pin_mandatory_mcps_env`).

@@ -369,7 +369,9 @@ class WhatsAppDispatcher:
             await provider.compact()
             # Failure and timeout come back as the result's ``type``, not as an
             # exception, so the receipt is read off it rather than assumed.
-            cr = await provider.wait_for_compaction()
+            cr = await provider.wait_for_compaction(
+                timeout=self.sessions.compact_wait_budget_secs()
+            )
             if cr["type"] == "completed":
                 await self._say(scope, COMPACTED_TEXT)
             elif cr["type"] == "failed":
@@ -667,7 +669,10 @@ class WhatsAppDispatcher:
             self._conv.clear_awaiting(scope)
             try:
                 await provider.compact()
-                kind = (await provider.wait_for_compaction())["type"]
+                result = await provider.wait_for_compaction(
+                    timeout=self.sessions.compact_wait_budget_secs()
+                )
+                kind = result["type"]
             except Exception:  # noqa: BLE001: the reply already landed
                 logger.debug("whatsapp: hard-threshold compaction failed", exc_info=True)
                 return

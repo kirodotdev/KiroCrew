@@ -13,10 +13,12 @@ reused; each launch uploads to ``<tag>/kirocrew-src.tar.gz``.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import logging
 import os
 import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -214,6 +216,10 @@ def _group_shared_with_another_account(gid: int) -> Optional[str]:
     presence in the enumeration is the control: a passwd database that cannot see
     this account cannot show that no other account shares the gid, however many
     rows it returns.
+
+    ``getgrgid`` answers with ONE group entry, but a host may carry several entries
+    with the same gid, and each grants its members that gid as a supplementary
+    group. So the supplementary half reads every entry carrying the gid.
     """
     # Local import: neither module exists on Windows, where the walk has already
     # stood down before reaching here.
@@ -228,7 +234,12 @@ def _group_shared_with_another_account(gid: int) -> Optional[str]:
         me = pwd.getpwuid(os.geteuid()).pw_name
     except (KeyError, OSError):
         return f"group {entry.gr_name!r}, which cannot be compared to this account"
-    supplementary = sorted({name for name in entry.gr_mem if name != me})
+    try:
+        same_gid = [g for g in grp.getgrall() if g.gr_gid == gid]
+    except OSError:
+        return f"group {entry.gr_name!r}, whose entries this host will not enumerate"
+    members = {name for g in [entry, *same_gid] for name in g.gr_mem}
+    supplementary = sorted(members - {me})
     if supplementary:
         return f"group {entry.gr_name!r}, shared with {len(supplementary)} other account(s)"
     try:
@@ -240,6 +251,55 @@ def _group_shared_with_another_account(gid: int) -> Optional[str]:
     primary = sorted({p.pw_name for p in everyone if p.pw_gid == gid and p.pw_name != me})
     if primary:
         return f"group {entry.gr_name!r}, the primary group of {len(primary)} other account(s)"
+    return None
+
+
+_ACL_XATTR_VERSION = 2
+_ACL_USER = 0x02
+_ACL_GROUP = 0x08
+_ACL_MASK = 0x10
+_ACL_WRITE = 0o2
+# A filesystem or kernel that keeps no POSIX ACL answers with one of these.
+_NO_ACL_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("ENODATA", "ENOTSUP", "EOPNOTSUPP")) if e
+)
+
+
+def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
+    """Why ``node``'s POSIX access ACL lets another account write it, or ``None``.
+
+    With an extended ACL the mode's group bits show the ACL mask, so a named entry
+    can give a peer write access behind a group bit that looks private. Only an
+    EFFECTIVE write counts: a named entry's bits are ANDed with the mask. A named
+    user that is ``mine`` (this process's uid) or root is already trusted, and a named group gets
+    the same membership question as the owning group. The default ACL governs what
+    is created inside, not this directory, so it is not read.
+
+    No ACL API (macOS, BSD) or no ACL on this node leaves the mode bits as the test.
+    Any other read failure, or a value this parser does not recognise, fails closed.
+    """
+    getxattr = getattr(os, "getxattr", None)
+    if getxattr is None:
+        return None
+    try:
+        raw = getxattr(node, "system.posix_acl_access")
+    except OSError as exc:
+        if exc.errno in _NO_ACL_ERRNOS:
+            return None
+        return "an ACL this host cannot read"
+    if len(raw) < 4 or (len(raw) - 4) % 8 or struct.unpack_from("<I", raw)[0] != _ACL_XATTR_VERSION:
+        return "an ACL this host cannot read"
+    entries = [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
+    mask = next((perm for tag, perm, _ in entries if tag == _ACL_MASK), 0o7)
+    for tag, perm, ident in entries:
+        if not perm & mask & _ACL_WRITE:
+            continue
+        if tag == _ACL_USER and ident not in (mine, 0):
+            return f"an ACL entry for another account (uid {ident})"
+        if tag == _ACL_GROUP:
+            shared = _group_shared_with_another_account(ident)
+            if shared is not None:
+                return f"an ACL entry for {shared}"
     return None
 
 
@@ -275,6 +335,8 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
     all on a user-private one, where a group holds the operator alone.
     :func:`_group_shared_with_another_account` settles which from the membership,
     and fails closed -- a group whose privacy cannot be PROVEN counts as shared.
+    With an extended POSIX ACL that bit is the ACL mask, so
+    :func:`_acl_admits_another_account` asks the named entries the same question.
 
     Root-first, so the answer is the outermost problem rather than an inner symptom
     of it. Windows mode bits and uids carry no ACL information, so the walk stands
@@ -296,7 +358,9 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
         if mode & stat.S_IWOTH and not mode & stat.S_ISVTX:
             return node, f"is writable by any account and not sticky (mode {mode:04o})"
         if mode & stat.S_IWGRP and not mode & stat.S_ISVTX:
-            shared = _group_shared_with_another_account(info.st_gid)
+            shared = _acl_admits_another_account(node, mine) or _group_shared_with_another_account(
+                info.st_gid
+            )
             if shared is not None:
                 return node, f"is writable by {shared} and not sticky (mode {mode:04o})"
     return None
@@ -411,8 +475,9 @@ def _staging_dir() -> Path:
         raise aws.AWSError(
             f"'{node}' {reason}, so what it holds can be replaced wholesale and the AWS CLI "
             "would re-open the staged name inside the replacement -- refusing to build the "
-            f"source tarball. Drop the write bit ('chmod go-w {node}') or move the data home "
-            "under a directory only you can write.",
+            f"source tarball. Drop the write bit ('chmod go-w {node}'), remove the ACL "
+            f"('setfacl -b {node}'), or move the data home under a directory only you can "
+            "write.",
             action="source:PackageLocalCheckout",
         )
     staging = base / _STAGING_DIR_LEAF

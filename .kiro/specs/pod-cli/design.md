@@ -1,6 +1,9 @@
 # `kirocrew pod` — Design
 
-Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`.
+Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`. This design is
+historical: the shipped systemd unit has no `ExecStopPost` hook (teardown runs from
+`stop_pod` in `runtime_lifecycle.py`), and macOS launchd and Windows backends exist
+beside systemd. The current contract is [`src/kiro_crew/pod/README.md`](../../../src/kiro_crew/pod/README.md).
 
 ## Module layout
 

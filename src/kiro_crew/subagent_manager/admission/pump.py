@@ -53,16 +53,6 @@ class _PumpMixin(ManagerComponent):
             self, info: "SubagentInfo", *, approval_id: str, reason: str
         ) -> "tuple[str, int]": ...
 
-        def _record_crew_log_spawn_approval_decided(
-            self,
-            origin: "tuple[str, int]",
-            *,
-            approval_id: str,
-            decision: str,
-            by: str = "",
-            cause: str = "",
-        ) -> None: ...
-
         @staticmethod
         def entry_is_resident_resume(params: "Mapping[str, Any]") -> bool: ...
 
@@ -151,6 +141,10 @@ class _PumpMixin(ManagerComponent):
             loop = None
         if loop is None or not SpawnAdmissionCoordinator.pump_off_loop:
             self._drain_queue_sync_impl(refill=self._manager._admission.taskq_refill_window)
+            # After the pass, like the coroutine pump: the rows it re-parked are
+            # the ones whose wait may now be past the bound.
+            if store is not None:
+                self._manager._admission.taskq_expire_memory_waits()
             return
         pending = getattr(self._manager, "_drain_task", None)
         if pending is not None and not pending.done():
@@ -262,7 +256,6 @@ class _PumpMixin(ManagerComponent):
         granting: list[dict[str, Any]] = []
         in_dispatch = self._manager._undurable_in_dispatch
         try:
-            await self._manager.retry_pending_boundary_cancellations()
             await admission.retry_retained_claims()
             store = admission.taskq_store()
             if store is not None:
@@ -329,6 +322,10 @@ class _PumpMixin(ManagerComponent):
                     )
                     self._unmark_dispatching(params, retained=retained)
                 self._after_dispatch_impl(params, drained, refill=lambda **_kw: 0)
+            # Last, so a row this pass re-checked and re-parked for memory is
+            # already parked again when its wait is measured against the bound.
+            if store is not None:
+                await admission.taskq_expire_memory_waits_async()
         except Exception:
             logger.error("drain pump failed", exc_info=retain_error_detail)
         finally:
@@ -535,7 +532,6 @@ class _PumpMixin(ManagerComponent):
         """
         store = self.taskq_store()
         assert store is not None
-        report_params: dict[str, Any] | None = None
         claim_will_register = False
         claim_retained = False
         result: Any = None
@@ -547,6 +543,8 @@ class _PumpMixin(ManagerComponent):
             )
             generation, proceed, _reason = claimed
             if proceed:
+                import asyncio as _asyncio
+
                 from kiro_crew import taskq as _taskq
 
                 # Every claim the store took re-reads its row before it
@@ -556,7 +554,7 @@ class _PumpMixin(ManagerComponent):
                 # cancelled the row by now: registering anyway starts work the
                 # parent was told had stopped. Generation 0 is a row the store
                 # never saw (``taskq_claim``), which has nothing to re-read and
-                # keeps its legacy start; a boundary claim always re-reads.
+                # keeps its legacy start.
                 try:
                     still_current = (
                         await store.run(
@@ -564,38 +562,24 @@ class _PumpMixin(ManagerComponent):
                             point.agent_id,
                             generation,
                         )
-                        if generation or point.boundary_owner
+                        if generation
                         else True
                     )
-                    cancellation_pending = getattr(
-                        self._manager,
-                        "_boundary_cancellation_pending",
-                        None,
-                    )
-                    pending = (
-                        bool(point.boundary_owner)
-                        and callable(cancellation_pending)
-                        and cancellation_pending(
-                            {
-                                "parent_session_key": point.parent_session_key,
-                                "_stage_boundary_owner": point.boundary_owner,
-                            }
-                        )
-                    )
-                    if still_current and pending:
-                        stopped = await store.run(
-                            store.cancel,
+                    # A Stop all batch whose cancel of this row was queued
+                    # AFTER that re-read answers it stale, and installs no
+                    # record until its answer comes back. Wait for that answer,
+                    # then re-read behind the cancel: the start is decided only
+                    # by a read the cancel cannot have overtaken.
+                    while still_current and generation:
+                        batched = self._batched_stop_of(point.agent_id)
+                        if batched is None:
+                            break
+                        await _asyncio.shield(batched)
+                        still_current = await store.run(
+                            self.taskq_claim_still_current,
                             point.agent_id,
-                            reason="boundary_cancel_before_registration",
-                            only_from=frozenset({_taskq.ADMITTED}),
-                            generation=generation,
+                            generation,
                         )
-                        claimed = (generation, False, self.CLAIM_REFUSED)
-                        if stopped is not None:
-                            report_params = dict(stop_params or {})
-                            report_params.setdefault("_preassigned_id", point.agent_id)
-                            report_params.setdefault("parent_session_key", point.parent_session_key)
-                            report_params.setdefault("_stage_boundary_owner", point.boundary_owner)
                 except _taskq.TaskStoreUnavailable:
                     still_current = None
                     _glue_logger.warning(
@@ -615,10 +599,11 @@ class _PumpMixin(ManagerComponent):
                 elif self._stopped_while_claimed(point.agent_id):
                     # The re-read answered before a stop landed, and the stop
                     # ran before this coroutine resumed. A queued stop installs
-                    # its record synchronously, so the loop's own state is the
-                    # last word: the row is not ours to start.
+                    # its record synchronously, and a batched one's answer was
+                    # waited for above, so the loop's own state is the last
+                    # word: the row is not ours to start.
                     claimed = (generation, False, self.CLAIM_REFUSED)
-            # No await between a successful final durable/boundary check and
+            # No await between a successful final durable check and
             # registration: cancellation cannot interleave after the
             # revalidation a registered start relies on. A refused claim may
             # await its terminal store write because it never registers.
@@ -651,10 +636,13 @@ class _PumpMixin(ManagerComponent):
                 # coalesces it into at most one more read.
                 started = self._manager._agents[point.agent_id]
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
-            if report_params is not None:
-                self._manager._report_queued_stop(report_params)
         assert not isinstance(result, ClaimPoint)
         return result
+
+    def _batched_stop_of(self, agent_id: str) -> "asyncio.Future[Any] | None":
+        """The answer a Stop all batch owes *agent_id*, while its cancel is in
+        flight (``cancellation._stop_queued`` files it), else ``None``."""
+        return self._manager.__dict__.get("_batched_stops", {}).get(agent_id)
 
     def _stopped_while_claimed(self, agent_id: str) -> bool:
         """Whether a stop was recorded for *agent_id* while its claim was in flight.
@@ -719,24 +707,10 @@ class _PumpMixin(ManagerComponent):
         # this pump so a wake never bypasses capacity, but a resume is not a
         # process start -- the run is already resident -- so it neither waits
         # for the spawn stagger nor consumes it; granting hands the slot back
-        # to the waiting coroutine instead of spawning. Compatibility doubles
-        # can expose no cancellation predicate and therefore have no matching
-        # authority to apply.
-        boundary_cancellation_pending = getattr(
-            self._manager,
-            "_boundary_cancellation_pending",
-            None,
-        )
+        # to the waiting coroutine instead of spawning.
         while self._manager._queue:
             index = next(
-                (
-                    i
-                    for i, p in enumerate(self._manager._queue)
-                    if self.entry_is_resident_resume(p)
-                    and not (
-                        callable(boundary_cancellation_pending) and boundary_cancellation_pending(p)
-                    )
-                ),
+                (i for i, p in enumerate(self._manager._queue) if self.entry_is_resident_resume(p)),
                 None,
             )
             if index is None:
@@ -1087,7 +1061,7 @@ class _PumpMixin(ManagerComponent):
         finally:
             # The request's answer, on every exit including the cancelled one.
             # A no-op when no request was written, so the two are all-or-nothing.
-            self._record_crew_log_spawn_approval_decided(
+            self._record_crew_log_approval_decided(
                 _log_origin,
                 approval_id=request_id,
                 decision=_log_decision,

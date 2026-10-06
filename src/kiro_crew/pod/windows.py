@@ -126,10 +126,11 @@ _HANDOFF_FRESHNESS_MARGIN_SECS = 5.0
 #: Windows ``ERROR_SHARING_VIOLATION``: another process has the file open.
 _WIN_ERROR_SHARING_VIOLATION = 32
 
-#: How long ``stop`` keeps retrying the task wrapper's delete while some other
-#: process still has it open. The pod's own processes are already drained by then;
-#: what is left is a short hold by a process this backend does not own (the Task
-#: Scheduler service finishing with the action file, an indexer or AV scanner).
+#: How long ``stop``, and the startup rollback of a cancelled start, keep retrying
+#: the task wrapper's delete while some other process still has it open. The pod's
+#: own processes are already drained, or never started, by then; what is left is a
+#: short hold by a process this backend does not own (the Task Scheduler service
+#: finishing with the action file, an indexer or AV scanner).
 #: Those holds last milliseconds to a few seconds, so the bound is a ceiling, and
 #: a hold that outlives it still fails closed exactly as before.
 _SCRIPT_UNLINK_TIMEOUT_SECS = 10.0
@@ -147,7 +148,8 @@ def _unlink_waiting_out_sharing(
     """``path.unlink(missing_ok=True)``, retrying only a sharing violation.
 
     Any other error, and a sharing violation still present at *timeout*, raises as
-    the bare unlink would, so ``stop`` keeps its fail-closed answer.
+    the bare unlink would, so ``stop`` and the startup rollback keep their
+    fail-closed answer.
     """
     deadline = clock() + timeout
     while True:
@@ -698,7 +700,7 @@ def _rollback_start(cfg: PodConfig, name: str, reservation: dict) -> None:
                     f"schtasks /Delete rc={deleted.returncode}: "
                     f"{(deleted.stderr or deleted.stdout or '').strip()}"
                 )
-        task_script_path(cfg, name).unlink(missing_ok=True)
+        _unlink_waiting_out_sharing(task_script_path(cfg, name))
         result_path(cfg, name).unlink(missing_ok=True)
 
 

@@ -50,7 +50,6 @@ import asyncio
 import logging
 import os
 import re
-import secrets
 import time
 import urllib.parse
 from collections.abc import Callable, Sequence
@@ -90,6 +89,7 @@ from kiro_crew.messaging.renderer import (
     chunk_text,
     count_redaction_tags,
     new_approval_nonce,
+    nonce_eq,
     redaction_notice,
     repaired_after_a_sent_tail,
     session_provenance_tag,
@@ -619,7 +619,7 @@ class DiscordApprovalDecider:
         """Resolve a pending approval by key. Returns True iff one was waiting
         AND the button's nonce matches the registered per-prompt nonce."""
         expected = cls._NONCES.get(key)
-        if not expected or not nonce or not secrets.compare_digest(nonce, expected):
+        if not expected or not nonce or not nonce_eq(expected, nonce):
             return False  # stale/foreign button — fail closed
         fut = cls._REGISTRY.get(key)
         if fut is not None and not fut.done():

@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
@@ -30,9 +28,6 @@ from kiro_crew.slack.handler import handle_message, set_allowed_users, set_owner
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
 _golden = importlib.import_module("test_slack_golden_transcript")
 _parent_ctx = importlib.import_module("test_thread_parent_context")
 

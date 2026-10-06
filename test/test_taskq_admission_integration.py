@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -654,7 +655,9 @@ async def test_cancel_store_only_queued_row_never_starts(quiet) -> None:
     assert [p["_preassigned_id"] for p in mgr._queue] == [in_window.id]
     assert mgr._taskq.state_of(outside.id) == model.QUEUED
     reported: list[SubagentInfo] = []
-    mgr._report_queued_stop = lambda params: reported.append(params)  # type: ignore[method-assign]
+    mgr._report_queued_stop = lambda params, **_kw: reported.append(  # type: ignore[method-assign]
+        params
+    )
     assert await mgr.cancel(outside.id) is True
     assert mgr._taskq.state_of(outside.id) == model.CANCELLED
     assert reported and reported[0]["_preassigned_id"] == outside.id
@@ -705,6 +708,51 @@ async def test_a_queued_row_the_drain_started_is_not_cancelled_under_the_spawn(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parked_in", [model.QUEUED, model.RETRY_WAIT])
+async def test_a_stop_whose_generation_moved_under_an_unstarted_row_still_cancels(
+    quiet, monkeypatch: pytest.MonkeyPatch, parked_in: str
+) -> None:
+    """A generation bump that leaves the row UNSTARTED does not lose the stop.
+
+    Between ``taskq_cancel_queued``'s read and its cancel a concurrent claim moves
+    the row to ``admitted`` under generation+1. A cancel fenced on the read's
+    generation was refused as ``stale_result``, leaving a ``retry_wait`` row that
+    the boot reconciler never examines and the parent's queued count kept
+    attached, so the stop stayed lost. ``only_from`` alone must let it land.
+    """
+    mgr = await _manager(max_concurrent=1)
+    mgr._taskq._window = 1
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first = mgr.spawn("run", parent_session_key="dash:1")
+        outside = mgr.spawn("o", parent_session_key="dash:1")
+    store = mgr._taskq
+    if parked_in == model.RETRY_WAIT:
+        assert store.claim(outside.id) is not None
+        assert store.transition(outside.id, model.STARTING)
+        assert store.transition(outside.id, model.RETRY_WAIT)
+    assert store.state_of(outside.id) == parked_in
+    real_get = store.get
+    raced: list[int] = []
+
+    def _claim_between(task_id: str):
+        rec = real_get(task_id)
+        if task_id == outside.id and not raced:
+            raced.append(rec.generation)
+            assert store.claim(task_id) is not None
+        return rec
+
+    monkeypatch.setattr(store, "get", _claim_between)
+    params = mgr._admission.taskq_cancel_queued(outside.id)
+    assert raced, "the race was never forced"
+    assert params is not None and params["_preassigned_id"] == outside.id
+    assert store.state_of(outside.id) == model.CANCELLED
+    assert raced[0] < store.get(outside.id).generation, "the generation never moved"
+    kinds = [e.kind for e in store.events(outside.id)]
+    assert "stale_result" not in kinds, "the stop was fenced on a stale generation"
+    del first
+
+
+@pytest.mark.asyncio
 async def test_cancel_in_window_marks_store_and_unqueues(quiet) -> None:
     mgr = await _manager(max_concurrent=1)
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
@@ -734,115 +782,6 @@ async def test_cancel_landing_between_claim_and_start_stops_the_spawn(quiet) -> 
 
 
 @pytest.mark.asyncio
-async def test_boundary_cancel_after_claim_before_registration_refuses_start(quiet) -> None:
-    """Cancellation authority wins after claim but before loop registration."""
-    mgr = await _manager(max_concurrent=1)
-    store: TaskStore = mgr._taskq
-    parent, owner = "dash:claim-race", "owner-a"
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        mgr.spawn("occupy", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        waiting = mgr.spawn(
-            "waiting",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-        )
-    params = mgr._queue.pop(0)
-    mgr._running_count = 0
-    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
-    claimed = asyncio.Event()
-    release_claim = asyncio.Event()
-    real_run = store.run
-    taskq_claim = mgr._admission.taskq_claim
-
-    async def _pause_after_claim(fn, /, *args, **kwargs):
-        result = await real_run(fn, *args, **kwargs)
-        if fn == taskq_claim:
-            claimed.set()
-            await release_claim.wait()
-        return result
-
-    with (
-        patch.object(store, "run", side_effect=_pause_after_claim),
-        patch.object(SubagentManager, "_run", new=AsyncMock()),
-    ):
-        dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
-        await claimed.wait()
-        assert await mgr.cancel_for_boundary(parent, owner) == (0, 1)
-        release_claim.set()
-        result = await dispatch
-
-    assert store.state_of(waiting.id) == model.CANCELLED
-    assert waiting.id not in mgr._agents
-    assert result is not None and result.done and result.user_stopped
-    assert mgr._running_count == 0
-
-
-@pytest.mark.asyncio
-async def test_claim_revalidation_outage_retains_generation_and_slot_until_retry(quiet) -> None:
-    """An admitted generation stays owned until its durable check can finish."""
-    mgr = await _manager(max_concurrent=1)
-    store: TaskStore = mgr._taskq
-    parent, owner = "dash:claim-outage", "owner-a"
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        mgr.spawn("occupy", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        waiting = mgr.spawn(
-            "waiting",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-        )
-    params = mgr._queue.pop(0)
-    # The pump marks a row dispatching at pop time (SubagentManager._queue ->
-    # _dispatching_ids/_dispatch_window_ids); replicate it so the retained-claim
-    # guard operates on the same state the real drain pass sees.
-    mgr._dispatching_ids.add(waiting.id)
-    mgr._dispatch_window_ids.add(waiting.id)
-    mgr._running_count = 0
-    real_run = store.run
-    taskq_revalidate = mgr._admission.taskq_claim_still_current
-    revalidation_attempts = 0
-
-    async def _fail_first_revalidation(fn, /, *args, **kwargs):
-        nonlocal revalidation_attempts
-        if fn == taskq_revalidate:
-            revalidation_attempts += 1
-            if revalidation_attempts == 1:
-                return None
-        return await real_run(fn, *args, **kwargs)
-
-    with (
-        patch.object(store, "run", side_effect=_fail_first_revalidation),
-        patch.object(SubagentManager, "_run", new=AsyncMock()),
-    ):
-        first = await mgr._admission._dispatch_async_impl(params)
-        admitted = await store.run(store.get, waiting.id)
-        assert first is not None and first.queued and not first.done
-        assert admitted is not None and admitted.state == model.ADMITTED
-        assert admitted.generation == 1
-        assert mgr._running_count == 1
-        assert mgr._retained_claims[waiting.id][1] == admitted.generation
-        assert waiting.id not in mgr._agents
-        # While the claim is retained the row is in neither _queue nor _agents,
-        # but it is still pending work: is_queued must report it so the serial
-        # done-probe keeps the caller's guard rather than reading it as done
-        # (the gap GPT F1 named -- the outer drain-pass cleanup must not erase
-        # _dispatch_window_ids for a still-retained claim).
-        assert waiting.id in mgr._dispatch_window_ids
-        assert mgr.is_queued(waiting.id) is True
-
-        await mgr._drain_queue_pass()
-
-    assert revalidation_attempts == 2
-    assert waiting.id not in mgr._retained_claims
-    assert mgr._retained_claim_retry_handle is None
-    assert waiting.id in mgr._agents
-    # Once the retry registers the run, the retention window closes: the row is
-    # an _agents entry now, so is_queued stops naming it.
-    assert waiting.id not in mgr._dispatch_window_ids
-    assert mgr.is_queued(waiting.id) is False
-    assert await store.run(store.state_of, waiting.id) == model.STARTING
-    assert mgr._running_count == 1
-
-
 def _no_store_read(store: TaskStore):
     """Fail the test if anything takes the store's connection.
 
@@ -990,29 +929,21 @@ async def test_is_queued_holds_for_a_row_deferred_at_drain_time(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ended_by", ["boundary_cancel", "cancel_tree"])
-async def test_is_queued_releases_a_store_only_row_ended_without_running(
-    quiet, ended_by: str
-) -> None:
-    """A store-only row the store ends before it ever ran -- an exact boundary
-    cancel, or a parent's cancel-tree -- must stop holding the guard. If it
-    stayed named, the probe would hold the caller's serial lock until its
+async def test_is_queued_releases_a_store_only_row_ended_without_running(quiet) -> None:
+    """A store-only row the store ends before it ever ran must stop holding the guard.
+    If it stayed named, the probe would hold the caller's serial lock until its
     timeout for work that will never run."""
     mgr = await _manager(max_concurrent=1)
     store: TaskStore = mgr._taskq
     store._window = 1
-    parent, owner = "dash:ended", "owner-a"
+    parent = "dash:ended"
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
         mgr.spawn("occupy", parent_session_key="dash:busy")
         mgr.spawn("windowed", parent_session_key="dash:w")
-        on_disk = mgr.spawn("on disk", parent_session_key=parent, _stage_boundary_owner=owner)
+        on_disk = mgr.spawn("on disk", parent_session_key=parent)
     _assert_pending_off_every_manager_list(mgr, on_disk.id)
 
-    if ended_by == "boundary_cancel":
-        mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
-        await mgr.cancel_for_boundary(parent, owner)
-    else:
-        mgr._admission._cancel_live_or_row(on_disk.id, reason="parent cancelled")
+    mgr._admission._cancel_live_or_row(on_disk.id, reason="parent cancelled")
     await _settle(store)
 
     assert store.state_of(on_disk.id) == model.CANCELLED
@@ -1022,82 +953,66 @@ async def test_is_queued_releases_a_store_only_row_ended_without_running(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary_writer_wins", [False, True])
-async def test_boundary_cancel_marker_after_claim_releases_and_stops_row(
-    quiet,
-    boundary_writer_wins: bool,
-) -> None:
-    """A claim refused by exact cancellation leaves no admitted task behind."""
+async def test_claim_revalidation_outage_retains_generation_and_slot_until_retry(quiet) -> None:
+    """An admitted generation stays owned until its durable check can finish."""
     mgr = await _manager(max_concurrent=1)
     store: TaskStore = mgr._taskq
-    parent, owner = "dash:claim-release", "owner-a"
+    parent = "dash:claim-outage"
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        mgr.spawn("occupy", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        waiting = mgr.spawn(
-            "waiting",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-        )
+        mgr.spawn("occupy", parent_session_key=parent)
+        waiting = mgr.spawn("waiting", parent_session_key=parent)
     params = mgr._queue.pop(0)
+    # The pump marks a row dispatching at pop time (SubagentManager._queue ->
+    # _dispatching_ids/_dispatch_window_ids); replicate it so the retained-claim
+    # guard operates on the same state the real drain pass sees.
+    mgr._dispatching_ids.add(waiting.id)
+    mgr._dispatch_window_ids.add(waiting.id)
     mgr._running_count = 0
-
-    def _record_terminal(_params: dict) -> None:
-        mgr._agents[waiting.id] = SubagentInfo(
-            id=waiting.id,
-            task=waiting.task,
-            parent_session_key=parent,
-            queued=True,
-            done=True,
-            user_stopped=True,
-        )
-
-    mgr._report_queued_stop = MagicMock(side_effect=_record_terminal)  # type: ignore[method-assign]
-    claimed = asyncio.Event()
-    release_claim = asyncio.Event()
     real_run = store.run
-    taskq_claim = mgr._admission.taskq_claim
     taskq_revalidate = mgr._admission.taskq_claim_still_current
+    revalidation_attempts = 0
 
-    async def _pause_after_claim(fn, /, *args, **kwargs):
-        result = await real_run(fn, *args, **kwargs)
-        if fn == taskq_claim:
-            claimed.set()
-            await release_claim.wait()
-        elif fn == taskq_revalidate and boundary_writer_wins:
-            previous = await real_run(
-                store.cancel,
-                waiting.id,
-                reason="user_stop",
-                only_from=frozenset({model.ADMITTED}),
-                generation=args[1],
-            )
-            assert previous == model.ADMITTED
-            _record_terminal(params)
-        return result
+    async def _fail_first_revalidation(fn, /, *args, **kwargs):
+        nonlocal revalidation_attempts
+        if fn == taskq_revalidate:
+            revalidation_attempts += 1
+            if revalidation_attempts == 1:
+                return None
+        return await real_run(fn, *args, **kwargs)
 
     with (
-        patch.object(store, "run", side_effect=_pause_after_claim),
+        patch.object(store, "run", side_effect=_fail_first_revalidation),
         patch.object(SubagentManager, "_run", new=AsyncMock()),
     ):
-        dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
-        await claimed.wait()
-        mgr._pending_boundary_cancellations[(parent, owner)] = ""
-        release_claim.set()
-        result = await dispatch
+        first = await mgr._admission._dispatch_async_impl(params)
+        admitted = await store.run(store.get, waiting.id)
+        assert first is not None and first.queued and not first.done
+        assert admitted is not None and admitted.state == model.ADMITTED
+        assert admitted.generation == 1
+        assert mgr._running_count == 1
+        assert mgr._retained_claims[waiting.id][1] == admitted.generation
+        assert waiting.id not in mgr._agents
+        # While the claim is retained the row is in neither _queue nor _agents,
+        # but it is still pending work: is_queued must report it so the serial
+        # done-probe keeps the caller's guard rather than reading it as done
+        # (the gap GPT F1 named -- the outer drain-pass cleanup must not erase
+        # _dispatch_window_ids for a still-retained claim).
+        assert waiting.id in mgr._dispatch_window_ids
+        assert mgr.is_queued(waiting.id) is True
 
-    assert store.state_of(waiting.id) == model.CANCELLED
-    terminal = mgr._agents.pop(waiting.id)
-    assert terminal.queued and terminal.done and terminal.user_stopped
-    assert waiting.id not in mgr._tasks
-    assert result is not None and result.done and result.user_stopped
-    assert mgr._running_count == 0
-    if boundary_writer_wins:
-        mgr._report_queued_stop.assert_not_called()
-    else:
-        mgr._report_queued_stop.assert_called_once_with(params)
+        await mgr._drain_queue_pass()
 
+    assert revalidation_attempts == 2
+    assert waiting.id not in mgr._retained_claims
+    assert mgr._retained_claim_retry_handle is None
+    assert waiting.id in mgr._agents
+    # Once the retry registers the run, the retention window closes: the row is
+    # an _agents entry now, so is_queued stops naming it.
+    assert waiting.id not in mgr._dispatch_window_ids
+    assert mgr.is_queued(waiting.id) is False
+    assert await store.run(store.state_of, waiting.id) == model.STARTING
+    assert mgr._running_count == 1
 
-# ── Stop all between a claim and its start ───────────────────────────────────
 
 _STOP_PARENT = "dash:stop-after-claim"
 
@@ -1260,7 +1175,9 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
     all reaps it as one: its ``_agents`` record is the run's own, never a
     queued-stop record laid over it, and its store row is not cancelled out
     from under the run. The run's ``admitted -> starting`` mark is held, which
-    is the moment a registered run's row is still ``admitted``.
+    is the moment a registered run's row is still ``admitted``. The pass's
+    writer-thread cancel job never names the run's row: the running sweep's
+    reap is its only stop.
     """
     mgr, params = await _popped_row(monkeypatch)
     store: TaskStore = mgr._taskq
@@ -1268,6 +1185,14 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
     real_run = store.run
     real_post = store.post
     listed, release_stop = asyncio.Event(), asyncio.Event()
+    batched: list[str] = []
+    real_batch = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+    def _record_batch(self: Any, ids: Any) -> Any:
+        batched.extend(ids)
+        return real_batch(self, ids)
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", _record_batch)
     held_marks: list[tuple[Any, tuple, dict, asyncio.Future]] = []
 
     async def _gated(fn, /, *args, **kwargs):
@@ -1308,12 +1233,122 @@ async def test_a_row_registered_during_stop_alls_read_is_reaped_not_replaced(
         await settle_store_writes(store, rounds=4)
 
         assert stopped == (1, 0), "a registered run is stopped as the running run it is"
+        assert agent_id not in batched, "the queued pass's cancel job left the run's row out"
         assert mgr._agents[agent_id] is started
         assert started.reaped and started.user_stopped and not started.queued
         assert agent_id not in mgr._tasks
         assert store.state_of(agent_id) == model.CANCELLED
     finally:
         await _land_held_marks()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("claim_joins", [True, False], ids=["claim_joins", "start_unjoined"])
+async def test_a_claim_resumed_between_stop_alls_post_and_answer_refuses_the_start(
+    quiet, monkeypatch: pytest.MonkeyPatch, claim_joins: bool
+) -> None:
+    """The pump's post-claim re-read is queued ahead of Stop all's batched
+    cancel, so it answers "still current"; the claimer resumes after the job
+    is posted and before its answer comes back, when no queued-stop record
+    exists yet. Explicit barriers, no sleeps: the re-read's answer is held
+    until the job is posted, and the job's answer until the claimer has
+    either looked up the batch's answer for its row or registered.
+
+    * ``claim_joins``: the claimer waits for the batch's answer and re-reads
+      behind the cancel, so it refuses the start. The row is stopped once,
+      as the queued row it was: ``(0, 1)``, as on main, where the synchronous
+      cancel installed the record before the claimer resumed.
+    * ``start_unjoined``: a start that does not join (the join disabled)
+      registers the run before the answer. The batch neither counts nor
+      reports that row; the running sweep reaps and counts it: ``(1, 0)``.
+
+    Before the claimer joined, it registered the run, the cancel ended it
+    under the run, and Stop all counted the one agent twice: ``(1, 1)``.
+    """
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_revalidate = mgr._admission.taskq_claim_still_current
+    if not claim_joins:
+        monkeypatch.setattr(
+            SpawnAdmissionCoordinator, "_batched_stop_of", lambda _self, _id: None, raising=False
+        )
+    reread, posted, looked = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release_answer = asyncio.Event()
+    rereads: list[tuple] = []
+    batched: list[str] = []
+    real_batch = SpawnAdmissionCoordinator.taskq_post_cancel_queued
+
+    def _hold_answer(self: Any, ids: Any) -> Any:
+        job = real_batch(self, ids)
+        batched.extend(ids)
+        posted.set()
+
+        async def _answer_later() -> Any:
+            answer = await job
+            await release_answer.wait()
+            return answer
+
+        return asyncio.ensure_future(_answer_later())
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_post_cancel_queued", _hold_answer)
+
+    class _WatchedJoins(dict):
+        def get(self, key: Any, default: Any = None) -> Any:
+            found = super().get(key, default)
+            if key == agent_id and found is not None:
+                looked.set()
+            return found
+
+    mgr._batched_stops = _WatchedJoins()
+
+    async def _gated(fn, /, *args, **kwargs):
+        result = await real_run(fn, *args, **kwargs)
+        if fn == taskq_revalidate:
+            rereads.append(args)
+            if len(rereads) == 1:
+                reread.set()
+                await posted.wait()
+        return result
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await asyncio.wait_for(reread.wait(), 10)
+            assert store.state_of(agent_id) == model.ADMITTED
+            stop = asyncio.create_task(mgr.cancel_for_parent(_STOP_PARENT))
+            await asyncio.wait_for(posted.wait(), 10)
+            assert agent_id in batched
+            watch = asyncio.ensure_future(looked.wait())
+            await asyncio.wait({dispatch, watch}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            watch.cancel()
+            assert dispatch.done() or looked.is_set()
+            release_answer.set()
+            stopped = await asyncio.wait_for(stop, 10)
+            result = await asyncio.wait_for(dispatch, 10)
+        await settle_store_writes(store, rounds=4)
+
+        assert store.state_of(agent_id) == model.CANCELLED
+        assert agent_id not in mgr._tasks
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        if claim_joins:
+            assert stopped == (0, 1), "stopped once, as the queued row it was"
+            assert len(rereads) == 2, "the start was decided by a re-read behind the cancel"
+            assert result is not None and result.done and result.user_stopped
+            terminal = mgr._agents[agent_id]
+            assert terminal.queued and terminal.user_stopped
+        else:
+            assert stopped == (1, 0), "a registered run is stopped as the running run it is"
+            assert result is not None and mgr._agents[agent_id] is result
+            assert result.reaped and result.user_stopped and not result.queued
+    finally:
+        release_answer.set()
         await mgr.cancel_all()
 
 
@@ -1447,390 +1482,171 @@ async def test_cancel_for_parent_reaches_store_only_rows(quiet) -> None:
     del running
 
 
-@pytest.mark.asyncio
-async def test_cancel_for_boundary_reaches_only_its_store_rows(quiet) -> None:
-    mgr = await _manager(max_concurrent=1)
-    mgr._taskq._window = 1
-    parent = "dash:shared"
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        running_b = mgr.spawn(
-            "run-b",
-            parent_session_key=parent,
-            _stage_boundary_owner="owner-b",
-        )
-        queued_b = mgr.spawn(
-            "queue-b",
-            parent_session_key=parent,
-            _stage_boundary_owner="owner-b",
-        )
-        store_a = mgr.spawn(
-            "store-a",
-            parent_session_key=parent,
-            _stage_boundary_owner="owner-a",
-        )
-    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
-    mgr._force_reap = AsyncMock()  # type: ignore[method-assign]
-
-    running, queued = await mgr.cancel_for_boundary(parent, "owner-a")
-
-    assert (running, queued) == (0, 1)
-    assert mgr._taskq.state_of(store_a.id) == model.CANCELLED
-    assert mgr._taskq.state_of(queued_b.id) == model.QUEUED
-    assert mgr._taskq.state_of(running_b.id) == model.STARTING
-
-
-@pytest.mark.asyncio
-async def test_cancel_for_boundary_store_io_runs_off_the_loop_thread(quiet) -> None:
-    import threading
-
-    mgr = await _manager(max_concurrent=1)
-    store: TaskStore = mgr._taskq
-    store._window = 1
-    parent = "dash:shared"
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        mgr.spawn("run-b", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        mgr.spawn("queue-b", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        store_a = mgr.spawn("store-a", parent_session_key=parent, _stage_boundary_owner="owner-a")
-    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
-    loop_thread = threading.current_thread()
-    calls: list[tuple[str, object]] = []
-    real_list_pending = store.list_pending
-    real_active_rows = store.active_rows
-    real_cancel = store.cancel
-
-    def _list_pending(*args, **kwargs):
-        calls.append(("pending", threading.current_thread()))
-        return real_list_pending(*args, **kwargs)
-
-    def _active_rows(*args, **kwargs):
-        calls.append(("active", threading.current_thread()))
-        return real_active_rows(*args, **kwargs)
-
-    def _cancel(*args, **kwargs):
-        calls.append(("cancel", threading.current_thread()))
-        return real_cancel(*args, **kwargs)
-
-    with (
-        patch.object(store, "list_pending", side_effect=_list_pending),
-        patch.object(store, "active_rows", side_effect=_active_rows),
-        patch.object(store, "cancel", side_effect=_cancel),
-    ):
-        assert await mgr.cancel_for_boundary(parent, "owner-a") == (0, 1)
-
-    assert store.state_of(store_a.id) == model.CANCELLED
-    assert {kind for kind, _thread in calls} == {"pending", "active", "cancel"}
-    assert all(thread is not loop_thread for _kind, thread in calls)
-
-
-@pytest.mark.asyncio
-async def test_boundary_cancel_refuses_completion_before_store_settlement(quiet) -> None:
-    parent, owner = "dash:shared", "owner-a"
-    mgr = await _manager(max_concurrent=1)
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        live = mgr.spawn(
-            "live-a",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-        )
-    assert live is not None
-    settlement_started = asyncio.Event()
-    release_settlement = asyncio.Event()
-
-    async def _blocked_settlement(*_args) -> tuple[list[dict], str]:
-        settlement_started.set()
-        await release_settlement.wait()
-        return [], ""
-
-    with patch.object(
-        type(mgr._admission),
-        "taskq_cancel_boundary_async",
-        side_effect=_blocked_settlement,
-    ):
-        cancelling = asyncio.create_task(mgr.cancel_for_boundary(parent, owner))
-        try:
-            await settlement_started.wait()
-            assert live.user_stopped is True
-            assert live._stage_boundary_cancelled is True
-            accepted, detail = await mgr.follow_up_run(
-                live.id,
-                "must not re-arm the cancelled stage",
-            )
-            assert accepted is False
-            assert detail == "not_running: owning stage was cancelled"
-        finally:
-            release_settlement.set()
-            await cancelling
-
-
-@pytest.mark.asyncio
-async def test_boundary_cancel_revokes_completed_unrouted_owner_before_store_settlement(
-    quiet,
-) -> None:
-    parent, owner = "dash:shared", "owner-a"
-    mgr = await _manager(max_concurrent=1)
-    completed = SubagentInfo(
-        id="completed-a",
-        task="completed before cancellation",
-        done=True,
-        parent_session_key=parent,
-        _stage_boundary_owner=owner,
-    )
-    report_release = asyncio.Event()
-    report_task = asyncio.create_task(report_release.wait())
-    mgr._report_owners[report_task] = completed
-    settlement_started = asyncio.Event()
-    release_settlement = asyncio.Event()
-
-    async def _blocked_settlement(*_args) -> tuple[list[dict], str]:
-        settlement_started.set()
-        await release_settlement.wait()
-        return [], ""
-
-    with patch.object(
-        type(mgr._admission),
-        "taskq_cancel_boundary_async",
-        side_effect=_blocked_settlement,
-    ):
-        cancelling = asyncio.create_task(mgr.cancel_for_boundary(parent, owner))
-        try:
-            await settlement_started.wait()
-            assert completed.id not in mgr._agents
-            assert completed.user_stopped is True
-            assert completed._stage_boundary_cancelled is True
-        finally:
-            release_settlement.set()
-            await cancelling
-            report_release.set()
-            await report_task
-            mgr._report_owners.pop(report_task, None)
-
-
-@pytest.mark.asyncio
-async def test_boundary_cancel_store_failure_blocks_dispatch_until_retry_tick(quiet) -> None:
-    mgr = await _manager(max_concurrent=1)
-    store: TaskStore = mgr._taskq
-    store._window = 1
-    parent, owner = "dash:shared", "owner-a"
-    run = AsyncMock()
-    with patch.object(SubagentManager, "_run", new=run):
-        mgr.spawn("run-b", parent_session_key=parent, _stage_boundary_owner="owner-b")
-        queue_a = mgr.spawn("queue-a", parent_session_key=parent, _stage_boundary_owner=owner)
-        store_a = mgr.spawn("store-a", parent_session_key=parent, _stage_boundary_owner=owner)
-    run.reset_mock()
-    mgr._report_queued_stop = MagicMock()  # type: ignore[method-assign]
-    real_list_pending = store.list_pending
-    attempts = 0
-
-    def _fail_twice(*args, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts <= 2:
-            raise TaskStoreUnavailable("locked")
-        return real_list_pending(*args, **kwargs)
-
-    with (
-        patch.object(store, "list_pending", side_effect=_fail_twice),
-        patch.object(SubagentManager, "_run", new=run),
-    ):
-        assert await mgr.cancel_for_boundary(parent, owner) == (0, 0)
-        assert mgr.boundary_cancellation_pending_reason(parent, owner)
-        mgr._running_count = 0
-        await mgr._drain_queue_pass()
-        assert mgr.boundary_cancellation_pending_reason(parent, owner)
-        assert store.state_of(queue_a.id) == model.QUEUED
-        assert store.state_of(store_a.id) == model.QUEUED
-        assert queue_a.id not in mgr._agents
-        assert store_a.id not in mgr._agents
-        await mgr._drain_queue_pass()
-        await _settle(store)
-
-    assert attempts >= 3, "the settlement passes did not retry the store read"
-    assert store.state_of(queue_a.id) == model.CANCELLED
-    assert store.state_of(store_a.id) == model.CANCELLED
-    assert mgr.boundary_cancellation_pending_reason(parent, owner) == ""
-    assert queue_a.id not in mgr._agents
-    assert store_a.id not in mgr._agents
-
-
-@pytest.mark.asyncio
-async def test_boundary_cancel_scope_cap_bounds_failures_and_retries_in_order(
-    quiet, monkeypatch
-) -> None:
-    """A store outage cannot grow retained cancellation state without bound."""
-    from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, StageBoundary
-
-    assert subagent_mod._PENDING_BOUNDARY_CANCELLATION_SCOPE_CAP == MAX_LIVE_SLOTS
-    scope_cap = 2
-    failure_cap = 32
-    monkeypatch.setattr(
-        subagent_mod,
-        "_PENDING_BOUNDARY_CANCELLATION_SCOPE_CAP",
-        scope_cap,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        subagent_mod,
-        "_PENDING_BOUNDARY_CANCELLATION_FAILURE_MAX_CHARS",
-        failure_cap,
-        raising=False,
-    )
-    boundaries: dict[tuple[str, str], StageBoundary] = {}
-    scopes: list[tuple[str, str]] = []
-    for index in range(scope_cap + 1):
-        boundary = StageBoundary()
-        boundary.arm(1)
-        owner = boundary.owner
-        assert owner is not None
-        scope = (f"dash:cancel-cap-{index}", owner)
-        boundaries[scope] = boundary
-        scopes.append(scope)
-
-    mgr = await _manager(
-        stage_boundary_for_scope=lambda parent, owner: boundaries.get((parent, owner))
-    )
-    attempts: list[tuple[str, str]] = []
-    store_available = False
-    failure = "task store unavailable: " + ("x" * 200)
-
-    async def _cancel_boundary(parent: str, owner: str) -> tuple[list[dict], str]:
-        attempts.append((parent, owner))
-        return ([], "" if store_available else failure)
-
-    with (
-        patch.object(
-            type(mgr._admission),
-            "taskq_cancel_boundary_async",
-            side_effect=_cancel_boundary,
-        ),
-        patch.object(mgr, "_schedule_boundary_cancel_retry"),
-    ):
-        for scope in scopes[:scope_cap]:
-            assert await mgr.cancel_for_boundary(*scope) == (0, 0)
-
-        extra = scopes[-1]
-        assert await mgr.cancel_for_boundary(*extra) == (0, 0)
-        retained = mgr._pending_boundary_cancellations
-        assert len(retained) == scope_cap
-        assert all(len(reason) <= failure_cap for reason in retained.values())
-        assert sum(len(reason) for reason in retained.values()) <= scope_cap * failure_cap
-        overflow_reason = mgr.boundary_cancellation_pending_reason(*extra)
-        assert overflow_reason.startswith(subagent_mod._BOUNDARY_CANCELLATION_SCOPE_CAP_REASON)
-        assert "overflow count 1" in overflow_reason
-        assert mgr.boundary_cancellation_refused(*extra) is True
-        assert mgr._boundary_cancellation_pending(
-            {
-                "parent_session_key": extra[0],
-                "_stage_boundary_owner": extra[1],
-            }
-        )
-
-        store_available = True
-        attempts.clear()
-        await mgr.retry_pending_boundary_cancellations()
-        assert attempts == scopes[:scope_cap]
-        assert retained == {}
-
-        assert await mgr.cancel_for_boundary(*extra) == (0, 0)
-        assert attempts == scopes
-        assert mgr.boundary_cancellation_pending_reason(*extra) == ""
-        assert mgr.boundary_cancellation_refused(*extra) is False
-
-
-@pytest.mark.asyncio
-async def test_boundary_cancel_scope_reservation_is_atomic_across_parent_aliases(
-    quiet, monkeypatch
-) -> None:
-    """A partial fit cannot reopen one alias while another remains unretained."""
-    from kiro_crew.dashboard.state import StageBoundary
-
-    monkeypatch.setattr(
-        subagent_mod,
-        "_PENDING_BOUNDARY_CANCELLATION_SCOPE_CAP",
-        2,
-        raising=False,
-    )
-    boundary = StageBoundary()
-    boundary.arm(1)
-    owner = boundary.owner
-    assert owner is not None
-    parents = ("dash:alias-a", "slack:alias-b")
-    mgr = await _manager(
-        stage_boundary_for_scope=lambda parent, candidate: (
-            boundary if parent in parents and candidate == owner else None
-        )
-    )
-    occupied = ("dash:occupied", "other-owner")
-    mgr._pending_boundary_cancellations[occupied] = "store unavailable"
-
-    reason = mgr.reserve_boundary_cancellation_scopes(parents, owner)
-
-    assert reason.startswith(subagent_mod._BOUNDARY_CANCELLATION_SCOPE_CAP_REASON)
-    assert list(mgr._pending_boundary_cancellations) == [occupied]
-    assert all(mgr.boundary_cancellation_refused(parent, owner) for parent in parents)
-
-    mgr._pending_boundary_cancellations.clear()
-    assert mgr.reserve_boundary_cancellation_scopes(parents, owner) == ""
-    assert list(mgr._pending_boundary_cancellations) == [
-        (parents[0], owner),
-        (parents[1], owner),
-    ]
-    assert all(not mgr.boundary_cancellation_refused(parent, owner) for parent in parents)
-
-
 # ── restart survival ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "defer_queue_dispatch",
-    [False, True],
-    ids=["unheld", "held-until-memory-ready"],
-)
 @pytest.mark.asyncio
-async def test_restart_refill_cancels_row_from_gone_stage_boundary(
+async def test_a_queued_stop_carries_the_origin_its_caller_named(quiet) -> None:
+    """A stop the user never pressed is announced with the caller's own origin."""
+    mgr = await _manager(max_concurrent=1)
+    published: list[SubagentInfo] = []
+    with patch.object(
+        SubagentManager,
+        "_spawn_terminal_report",
+        new=lambda _self, info, **_kw: published.append(info),
+    ):
+        mgr._report_queued_stop(
+            {
+                "_preassigned_id": "retired-row",
+                "task": "t",
+                "parent_session_key": "dash:p",
+                "_stop_origin": "queued by chat Autopilot, which was removed",
+            }
+        )
+        mgr._report_queued_stop(
+            {"_preassigned_id": "user-row", "task": "t", "parent_session_key": "dash:p"}
+        )
+
+    origins = {info.id: info._stop_origin for info in published}
+    assert origins == {
+        "retired-row": "queued by chat Autopilot, which was removed",
+        "user-row": "",
+    }
+    await mgr.cancel_all()
+
+
+@pytest.mark.parametrize("off_loop", [False, True], ids=["inline", "off-loop"])
+@pytest.mark.asyncio
+async def test_a_row_with_an_empty_stage_owner_still_refills_and_starts(
     quiet,
     monkeypatch,
-    defer_queue_dispatch: bool,
+    off_loop: bool,
 ) -> None:
-    """A process-local cancellation hold is re-derived from boundary absence."""
+    """Rows written before the owner token was removed carry it as ``""``."""
     first = await _manager(max_concurrent=1)
-    parent, owner = "dash:restart-boundary", "owner-a"
+    parent = "dash:old-row"
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
         first.spawn("occupy", parent_session_key=parent)
-        stale = first.spawn(
-            "stale-stage-row",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-        )
-    assert first._taskq.state_of(stale.id) == model.QUEUED
-    first._taskq.close()  # crash: the process-local boundary hold is gone
+        old = first.spawn("pre-upgrade-row", parent_session_key=parent)
+    assert first._taskq.state_of(old.id) == model.QUEUED
+    first._taskq.close()
     del first
+    conn = sqlite3.connect(_store_path())
+    with conn:
+        conn.execute(
+            "UPDATE tasks SET params_json=json_set(params_json, '$._stage_boundary_owner', '')"
+            " WHERE id=?",
+            (old.id,),
+        )
+    conn.close()
 
-    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
-    second = await _manager(
-        max_concurrent=1,
-        stage_boundary_for_scope=lambda _parent, _owner: None,
-        defer_queue_dispatch=defer_queue_dispatch,
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", off_loop)
+    second = await _manager(max_concurrent=2)
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        if off_loop:
+            await second._drain_queue_pass()
+        else:
+            second._drain_queue()
+        await asyncio.sleep(0)
+
+    assert old.id in second._agents, "the pre-upgrade row never started"
+    assert second._taskq.state_of(old.id) != model.CANCELLED
+    await second.cancel_all()
+
+
+def test_a_store_outage_mid_retirement_still_reports_every_committed_cancel() -> None:
+    """Rows cancelled before the outage are reported; no stage row is dispatched."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    def _row(row_id: str, owner: str = "") -> SimpleNamespace:
+        params = {"task": row_id, "_stage_boundary_owner": owner} if owner else {"task": row_id}
+        return SimpleNamespace(id=row_id, generation=1, params=params)
+
+    calls: list[str] = []
+
+    def _cancel(row_id: str, **_kw):
+        calls.append(row_id)
+        if len(calls) > 1:
+            raise TaskStoreUnavailable("disk gone")
+        return model.QUEUED
+
+    store = SimpleNamespace(cancel=_cancel)
+    rows = [_row("stage-1", "o"), _row("plain-1"), _row("stage-2", "o"), _row("stage-3", "o")]
+
+    kept, retired, stranded = _TaskqBridgeMixin._retire_legacy_stage_rows(store, rows)
+
+    assert [rec.id for rec in kept] == ["plain-1"]
+    assert [params["_preassigned_id"] for params in retired] == ["stage-1"]
+    assert calls == ["stage-1", "stage-2"], "cancelling stops at the outage"
+    assert stranded, "the uncancelled stage rows are flagged for a retry pass"
+
+
+def test_a_stage_row_an_outage_left_queued_arms_a_retry_pass() -> None:
+    """The retry wake is armed even when the rest of the refill touches no store."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    wakes: list[float] = []
+    reported: list[dict] = []
+    bridge = SimpleNamespace(
+        _manager=SimpleNamespace(_report_queued_stop=reported.append),
+        taskq_admit_wait_secs=lambda: 30.0,
+        _refill_schedule_wake=lambda _store, at: wakes.append(at),
     )
+    store = SimpleNamespace(now=lambda: 100.0)
+
+    _TaskqBridgeMixin._report_retired_stage_rows(bridge, store, [], True)
+    assert wakes == [130.0]
+
+    wakes.clear()
+    _TaskqBridgeMixin._report_retired_stage_rows(bridge, store, [{"_preassigned_id": "r"}], False)
+    assert wakes == [], "a clean pass arms no retry"
+    assert [p["_preassigned_id"] for p in reported] == ["r"]
+
+
+@pytest.mark.parametrize("off_loop", [False, True], ids=["inline", "off-loop"])
+@pytest.mark.asyncio
+async def test_restart_refill_stops_a_row_a_retired_autopilot_stage_queued(
+    quiet,
+    monkeypatch,
+    off_loop: bool,
+) -> None:
+    """A durable row that names a stage owner is stopped at refill, never run."""
+    first = await _manager(max_concurrent=1)
+    parent = "dash:retired-stage"
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        first.spawn("occupy", parent_session_key=parent)
+        stale = first.spawn("stale-stage-row", parent_session_key=parent)
+        fresh = first.spawn("ordinary-row", parent_session_key=parent)
+    assert first._taskq.state_of(stale.id) == model.QUEUED
+    first._taskq.close()
+    del first
+    # The shape a row written by the retired Autopilot stage loop has on disk.
+    conn = sqlite3.connect(_store_path())
+    with conn:
+        conn.execute(
+            "UPDATE tasks SET params_json=json_set(params_json, '$._stage_boundary_owner', ?)"
+            " WHERE id=?",
+            ("owner-a", stale.id),
+        )
+    conn.close()
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", off_loop)
+    second = await _manager(max_concurrent=2)
     store: TaskStore = second._taskq
     second._report_queued_stop = MagicMock()  # type: ignore[method-assign]
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        if defer_queue_dispatch:
-            second._drain_queue()
-            await asyncio.sleep(0)
-            assert store.state_of(stale.id) == model.QUEUED
-            second._report_queued_stop.assert_not_called()
-            second.release_queue_dispatch()
-            drain = second._drain_task
-            assert drain is not None
-            await drain
-        else:
+        if off_loop:
             await second._drain_queue_pass()
+        else:
+            second._drain_queue()
 
     assert store.state_of(stale.id) == model.CANCELLED
     assert stale.id not in second._agents
     assert all(row.get("_preassigned_id") != stale.id for row in second._queue)
     reported = [call.args[0] for call in second._report_queued_stop.call_args_list]
     assert [row.get("_preassigned_id") for row in reported] == [stale.id]
+    assert "chat Autopilot, which was removed" in reported[0]["_stop_origin"]
+    assert store.state_of(fresh.id) != model.CANCELLED
 
 
 @pytest.mark.asyncio

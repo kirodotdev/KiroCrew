@@ -10,6 +10,7 @@ import pytest
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     CONSECUTIVE_FAILURE_REASON,
+    STOP_SENTINEL_REASON,
     AutoNudgeService,
 )
 from kiro_crew.autonudge_authz import authorize_and_update_monitor
@@ -824,6 +825,45 @@ async def test_denied_monitor_update_names_the_consecutive_failure_bound(tmp_pat
     assert "paused manually" not in text
     assert "reached a model session and then died" in text
     assert "re-arm it with monitor_start" in text
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_monitor_update_names_a_stop_file_finish_and_revives_nothing(tmp_path):
+    """A loop its stop file finished is not paused: raising a bound buys nothing
+    and the service refuses the revival, so the denial has to say the goal is
+    finished and point at a NEW goal, not at a bound or at the user."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "finish the report", idle_secs=60, max_cycles=5)
+    await service.update(loop.id, active=False, stopped_reason=STOP_SENTINEL_REASON)
+    state = SimpleNamespace(
+        _slots={
+            "chat-1": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(key="chat-1", _app="", messages=[])
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.state.append_and_surface", MagicMock()),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"max_cycles": 50}},
+        )
+
+    assert "finished" in result and "NEW goal" in result
+    assert "paused manually" not in result
+    kept = service.get_by_slot("chat-1")
+    assert kept is not None and kept.active is False
+    assert kept.stopped_reason == STOP_SENTINEL_REASON
+    assert kept.max_cycles == 5, "a refused revival applies nothing"
     service.stop()
 
 

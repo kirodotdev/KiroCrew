@@ -25,8 +25,9 @@ feature. Only ONE card is allowed per message.
 
 from __future__ import annotations
 
-import secrets
 from typing import Any
+
+from kiro_crew.messaging.renderer import nonce_eq
 
 #: The attachment content type Webex (and Microsoft Teams) accept.
 CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
@@ -173,7 +174,7 @@ class LiveChoices:
         if entry is None:
             return ""
         minted, choices = entry
-        if not minted or not nonce or not secrets.compare_digest(nonce, minted):
+        if not minted or not nonce or not nonce_eq(minted, nonce):
             return ""
         if not index.isdigit():
             return ""

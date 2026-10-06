@@ -187,7 +187,7 @@ loss because no line was appended for a rejected or exhausted job. The marker is
 facts are missing. The next drain for that session puts it ahead of every ordinary entry; more loss
 before it lands is merged into the same marker, and a marker that is itself dropped carries its
 counts into the next one. It carries no reason code: every loss marks, and the one site that knows a
-cause cannot separate them — `_permanent` collapses a malformed entry and an entry refused because
+cause cannot separate them — the writer's refusal check collapses a malformed entry and an entry refused because
 another process owns the log into a single boolean. What a reader can act on is that facts are
 missing and how many.
 

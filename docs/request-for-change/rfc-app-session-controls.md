@@ -118,7 +118,7 @@ commands #7423 established there:
 | `id` | Stable per-app identifier, kebab-case (e.g. `"env-picker"`) |
 | `entryPoint` | ESM bundle path relative to `ui/` |
 | `label` | Accessible name, and the chip tooltip |
-| `icon` | lucide icon name |
+| `icon` | icon name from a fixed rendered set; other names fall back to `Package` (see the `contributes.sessionControls[].icon` row of `docs/app-kit/manifest-reference.md`) |
 | `statusPath` | Optional backend route reporting per-session chip state |
 
 Validation, enforced at install:
@@ -241,7 +241,7 @@ simply carry no state until opened.
 
 The change is additive in both directions.
 
-- **An app that declares nothing is unaffected.** `UIConfig.from_dict` reads
+- **An app that declares nothing is unaffected.** `Contributes.from_dict` reads
   `data.get("sessionControls", [])` (`manifest.py`), so a manifest without
   the key parses to an empty list and behaves exactly as before — no chip, no
   request, no DOM change.
@@ -315,7 +315,7 @@ The change is additive in both directions.
    which cannot be withdrawn once apps write it — bought against a surface that
    does not exist. Adding a field when the second surface arrives is a
    backward-compatible change; removing one is not. The same reasoning removed
-   `agent`, `model` and `workspace` from the props contract in §4.3.
+   `agent`, `model` and `workspace` from the props contract in §4.2.
 
 ## 10. Alternatives considered
 

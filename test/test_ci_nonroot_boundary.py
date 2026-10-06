@@ -72,6 +72,28 @@ def test_the_boundary_follows_setup_and_covers_every_test_and_coverage_step(jobs
             assert step.get("shell", "bash") == "bash"
 
 
+def test_fast_gate_static_ratchets_run_behind_the_boundary():
+    # The Fast Gate copy of the source-only ratchets runs on the same CodeBuild
+    # fleet as backend-test, and its poll tests start sanitized subprocesses
+    # that need what the boundary provisions. Same order as backend-test: every
+    # setup action, then the boundary, then pytest through ci-shell.
+    steps = yaml.safe_load(
+        (_REPO_ROOT / ".github/workflows/fast-gate.yml").read_text(encoding="utf-8")
+    )["jobs"]["static-ratchets"]["steps"]
+    provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
+    setups = [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith(("actions/setup-", "astral-sh/setup-"))
+    ]
+    assert setups and provision > max(setups)
+    consumers = [i for i, step in enumerate(steps) if "pytest " in step.get("run", "")]
+    assert consumers
+    for index in consumers:
+        assert provision < index
+        assert steps[index]["shell"] == _CI_SHELL
+
+
 def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
     for name in ("backend-test", "backend-lint", "bundle-size"):
         assert jobs[name]["runs-on"] == _LARGE

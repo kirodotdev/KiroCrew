@@ -1102,6 +1102,13 @@ class GatewayManager:
                 ),
                 timeout=_left(),
             )
+        except FileNotFoundError:
+            # No socket (or named pipe) at the address: no daemon is running.
+            # That is the expected answer on every cold start, so it is a
+            # probe result, not a fault. A socket that exists but refuses or
+            # times out stays at WARNING below.
+            logger.debug("mcp-gateway ping: no daemon socket at %s", self._spec.socket_path)
+            return None
         except (asyncio.TimeoutError, OSError) as exc:
             logger.warning("mcp-gateway ping connect failed: %s", exc)
             return None

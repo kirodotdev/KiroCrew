@@ -183,10 +183,9 @@ from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
+    _slot_for_parent,
     _spawn_on_loop,
     _spawn_request_memory_mode,
-    _stage_boundary_owner_for_parent,
-    _stage_boundary_slot_for_parent,
     api_spawn,
     api_spawn_continue,
 )
@@ -224,7 +223,6 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     LINK_WINDOW_SECS,
@@ -279,7 +277,6 @@ from kiro_crew.subagent import (  # noqa: F401
     effort_applied_note,
     effort_drop_reason,
     parent_spawn_allowlists,
-    stage_boundary_owner_for_run,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
     QueuedReadUnavailable,
@@ -1057,13 +1054,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # cronLabel in cls JSON provides structured data for frontend.
                     wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{text}\n{CRON_NOTIFY_END}'
                     inject_cls = json.dumps({"cronLabel": label})
-                    # Queue while a turn is live OR a multi-stage plan is mid-flight.
-                    # During stage execution slot.task is None between stages (see
-                    # chat_orchestrator), so slot.running alone reads False in that
-                    # window and would let this injection start a concurrent turn that
-                    # clobbers the plan. _in_stage_execution closes it — same predicate
-                    # the user-typed path uses (chat_handlers._api_chat).
-                    if slot.running or slot._in_stage_execution:
+                    # Queue while a turn is live -- same predicate the user-typed
+                    # path uses (chat_handlers._api_chat).
+                    if slot.running:
                         from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 
                         if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:

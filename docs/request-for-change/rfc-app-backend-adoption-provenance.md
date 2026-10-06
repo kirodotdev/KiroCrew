@@ -24,8 +24,11 @@ instead. Nothing here is implemented by this document; the implementation is
 - Author: drafted by the agent working #13403; the acceptance decision is a
   maintainer's, not the author's.
 - Related: `docs/system-specs/modules/app-kit-platform.md` section 17 (backend health),
-  `docs/app-kit/api-reference.md` (gateway origin freshness),
-  `docs/request-for-change/rfc-app-sandbox-isolation.md` (the mask this relies on).
+  `docs/app-kit/api-reference.md` (gateway origin freshness: the
+  `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_GATEWAY_ORIGIN_PROOF` rows of Backend
+  Environment Variables),
+  `docs/system-specs/modules/security.md` (the mask this relies on: the
+  `sandbox._CREW_HIDDEN_LEAVES` leaf dispositions).
 
 ## Problem
 

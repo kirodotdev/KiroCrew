@@ -37,7 +37,7 @@ def _stub_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(core, "_transcribe_extra_importable", lambda: True)
     monkeypatch.setattr(core, "_pip_install_channel_available", lambda: True)
     monkeypatch.setattr(core.platform_compat, "is_bundled_interpreter", lambda: False)
-    monkeypatch.setattr(core, "is_available", lambda _stt: False)
+    monkeypatch.setattr(core, "availability_detail", lambda _stt: core.stt.Availability(False))
 
 
 def _stored_stt() -> dict:

@@ -16,8 +16,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,9 +29,6 @@ from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack import thread_parent, transport_dispatch
 
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
 _golden = importlib.import_module("test_slack_golden_transcript")
 
 _THREAD_TS = "1790142420.100100"

@@ -931,7 +931,6 @@ GATED = {
     "slack/transport_dispatch.py",
     "slack/handler.py",
     "telegram/transport_dispatch.py",
-    "discord/transport_dispatch.py",
 }
 
 #: Turn sites that must NOT compose the ceiling, each with the reason. A reason

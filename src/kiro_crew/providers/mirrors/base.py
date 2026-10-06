@@ -149,6 +149,14 @@ class SessionProjection:
     response) and ends the session on a change. ``None`` for an agent that mirrors
     nothing, and for a mirror that built no array.
     """
+    zero_tools: bool = False
+    """Whether the spec declares ``"tools": []`` -- a third client obligation the
+    wire must not carry, alongside ``denied_tools``. The MCP array and the
+    allowlist already answer "which servers mount"; this answers a broader
+    question the array has no opinion on: whether the agent's own native tools
+    (the harness's built-in Bash/Read/Write, not an MCP server) should be
+    callable at all. See ``AcpClient._spec_zero_tools`` for the refusal.
+    """
 
 
 class AgentConfigMirror(ABC):

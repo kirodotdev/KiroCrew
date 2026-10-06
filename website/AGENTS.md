@@ -91,6 +91,15 @@ the `internal-content-scan` check.
   the UX Review lane (lens 13) — a hard swap with no stated reason is a BLOCK.
 - **Styling uses design tokens** (`var(--bg)`, `var(--text)`, …), never a literal
   color.
+- **Frontend tests are deterministic.** No promise-sleep barrier and no
+  `page.waitForTimeout` barrier; `Date` pinned with `vi.setSystemTime`; fake timers
+  restored in an `afterEach` or `onTestFinished`, which still run when the test times
+  out; wait for every value you read whose content comes from a different async source
+  than the one you awaited. Enforced on new and
+  changed test lines by `AUTOSDE.yaml` (`frontend-tests-are-deterministic`). A
+  Playwright spec that passes only on a retry is flaky: fix it, never raise `retries`.
+  Detail in
+  [testing § Determinism](docs/testing.md#determinism-establish-the-state-you-assert-on).
 - **Typography:** no `text-xs`, and no text below 10px.
 - **Accessibility:** use `<Clickable>` rather than `<div onClick>`; give every
   icon-only button an `aria-label`; use `<Btn>` / `<SendBtn>` rather than a raw

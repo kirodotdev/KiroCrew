@@ -866,12 +866,21 @@ class TelegramDispatcher:
                 await self._reply(chat_id, _BUSY_OPTIONS_REFUSAL, thread=reply_thread)
                 return
             if resumed_key is not None:
-                await self._reply(
-                    chat_id,
-                    "⏳ That session is busy with a turn started elsewhere. Send your "
-                    "message again once it finishes, or /unlink to return to your "
-                    "Telegram conversation.",
+                # NOT `_handle_busy`: that queues into THIS dispatcher's queue, drained
+                # only at the tail of a TELEGRAM-driven turn and replayed with resume
+                # routing off, so the message would run later in the NATIVE session.
+                # The dashboard slot has its own steer path and queue; the refusal
+                # stays for the cases the slot cannot take.
+                await self._handle_resumed_busy(
+                    session_key,
+                    msg,
+                    text,
+                    override_mode,
                     thread=reply_thread,
+                    route=route,
+                    interpret_commands=interpret_commands,
+                    drain=drain,
+                    principal=str(user_id),
                 )
                 return
             await self._handle_busy(
@@ -1531,6 +1540,7 @@ class TelegramDispatcher:
 
     # dispatch/midturn.py
     _handle_busy = _midturn._handle_busy
+    _handle_resumed_busy = _midturn._handle_resumed_busy
 
     async def _drain_queue(self, session_key: str) -> None:
         """Collapse every message ONE SENDER queued during the just-finished turn

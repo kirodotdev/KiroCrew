@@ -211,11 +211,17 @@ dead predecessor gateway. It never probes the liveness of a pid another process
 wrote to decide a deletion, and it never judges a directory marked by another
 data home. The provider factory marks a work directory it DERIVED from an exact
 generated one-run key -- `subagent:<16 hex>` from `SubagentManager._mint_agent_id`
-(eight hex on the shipped builds whose directories the sweep also recognises), or
-`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context` -- never a
-caller-supplied `cwd`. The key predicate and corresponding directory-name regex
-come from one shared shape table; stable `cron:<job>:<agent>` keys are not
-one-run directories. `AcpProvider.start` writes a `.kirocrew-run-dir` marker before
+(eight hex on the shipped builds whose directories the sweep also recognises),
+`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context`, or
+`memory-consolidation:<store>:<32 hex>` from `llm_helpers.background_turn`, which
+discards the key when the call ends -- never a caller-supplied `cwd`. That key
+counts as one-run only where the walk holds `.kiro` open; on the by-name walk
+(Windows) its folder is never marked, so neither the shutdown reclaim nor the sweep
+removes it, and its name is no sweep candidate. The doctor's census below still
+counts it with the unmarked folders, since counting deletes nothing. The key
+predicate and corresponding directory-name regex come from one shared shape table;
+stable `cron:<job>:<agent>` keys are not one-run directories.
+`AcpProvider.start` writes a `.kirocrew-run-dir` marker before
 any other writer: two ASCII lines, the data-home identity (`data_home_id()`, the
 digest of the resolved `config_dir()`) and the gateway pid. That marker is the
 directory's only provenance: a name under the workspace root is not one (a person
@@ -231,8 +237,12 @@ and the pid in the kernel range; any other shape keeps the directory.
 `AcpProvider.shutdown` removes a marked-by-flag directory only after its client
 positively confirms the root and every tracked child exited (`process_tree_confirmed_dead`),
 and when it holds only Crew's own residue (`.kiro/settings/` with `cli.json` and
-its lock sidecar, plus the marker). The factory flag permits an absent marker on
-this path, so a refused marker write never makes the directory unreclaimable; a
+its lock sidecar, plus the marker) and the `.kiro/agents` folder kiro-cli creates
+in the folder it starts in, while that folder is empty. On platforms without
+descriptor-relative opens (Windows) the by-name walk keeps a tree that holds that
+folder, since it cannot pin `.kiro` against a junction swapped in after the check.
+The factory flag permits an absent marker on this path, so a refused marker write
+never makes the directory unreclaimable; a
 present marker must name this data home AND this process exactly, and anything
 else refuses. The flag says the directory was derived from a one-run KEY, not
 that this instance is the one the registry kept for it, so registration installs
@@ -1909,7 +1919,7 @@ Subprocess lifecycle:
 - **Off-loop PID inspection**: the PID-recycling/ownership helpers that shell out on macOS — `_get_start_time` / `_read_basename` (`ps`), `_get_child_pids` → `_direct_children` (`pgrep`), the `_capture_child_records` batch wrapper, and the `_kill_escaped_children` sweep — MUST run via `run_in_executor(subprocess_executor(), ...)`, never directly on the event loop. The PID-file tracking writes — `_track_pid`, `_track_session_pid`, `_track_child_pids` in `AcpClient._spawn()`, and `_track_child_pids` plus the `_untrack_child_pids` prune in `AcpRuntime._snapshot_descendants()` / `_prune_dead_descendants()` (the latter reached through `asyncio.to_thread`) — carry the same obligation: each takes an exclusive file lock and does a read-modify-append under it, and `ensure_ready()` awaits `_spawn()` from the loop on every cold start, so an on-loop tracker serializes concurrent spawns behind one file lock with the waiter holding the loop. The subprocess spawn (fork/exec) can block, and on a wedged child the loop would freeze (the macOS wedge class). `subprocess_executor` is a *dedicated* bounded pool (distinct from the `maintenance_executor` orphan sweep) so a wedged scan/close cannot starve the recovery sweep. The `ps` and `pgrep` calls each carry a 2s timeout so no offloaded scan occupies a pool worker indefinitely.
 - **Windows exe-casing normalization** (`_normalize_exe_casing`, applied to the kiro / claude-agent-acp / claude-code resolver results): `shutil.which` builds the resolved name's extension from `PATHEXT`, which lists `.EXE` upper-case, so it returns e.g. `…\kiro-cli.EXE` even though the on-disk file is `kiro-cli.exe`. A case-sensitive multiplexer shim spawned as `kiro-cli.EXE` fails to dispatch, exits instantly, and the ACP pipe breaks (`AcpProcessDied`) → the dashboard shows **"session stuck"** on the first chat turn. `os.path.realpath()` restores the true directory-entry casing. No-op on POSIX (case-sensitive FS). Runnability is checked via `platform_compat.is_executable_file()` (POSIX execute bit; on Windows the X-bit is meaningless so a known runnable extension is required instead), so a bare `.js` adapter entry is correctly treated as **not** directly runnable on Windows and gets wrapped with `node`.
 - **Sandbox ownership**: `_spawn()` calls `sandbox.wrap_argv()` to wrap the command with platform-native isolation (Linux: two-stage `unshare -rm` → `unshare -U` bind-mounts + UID drop; macOS: `sandbox-exec` Seatbelt profile). On Windows, where Kiro Crew has no native OS wrapper, an explicitly classified official Kiro backend delegates to Kiro CLI's built-in sandbox; every other backend retains the no-backend fail-closed policy. The parent passes a fully scrubbed child environment on every platform, which is the enforcement point for raw Windows delegation. Configurable via `sandbox_mode` constructor param (`"auto"` default, `"off"` to disable). See `docs/system-specs/modules/security.md`.
-- **Parent-level channel-credential scrub**: both spawn paths (`AcpClient._spawn` and `AcpRuntime._spawn`) build the child environment from a raw `os.environ` copy (plus `_extra_env`) and pass it directly to `create_subprocess_exec`, so they call `sandbox.scrub_agent_denied_env(env)` after merging `_extra_env` to strip `_AGENT_DENIED_ENV_KEYS` (Slack/WeCom/Telegram tokens + owner id seeded into `os.environ` by `config.loader.load_credentials`). This is required because these paths do NOT route through `sandboxed_spawn_argv`, and the OS-sandbox launcher only strips those keys for the `cc`/`strict` tiers — on the default `auto`/`standard` tier the launcher leaves them in place, so without the parent scrub they would be inherited by the agent subprocess. The scrub is deliberately narrower than `scrub_env`: it leaves the AWS/SSH env the `standard` sandbox intentionally exposes (git-over-SSH, AWS CLI, kubectl) untouched. One credential is settled per-backend rather than by the deny list: `KIRO_API_KEY` (kiro-cli's own model credential, in `CREDENTIAL_KEYS` but deliberately NOT in `_AGENT_DENIED_ENV_KEYS`) is re-injected from the data home's `.env` via `config.loader.inject_kiro_cli_api_key` for a kiro-cli child (whose environment is where the CLI reads it — required after the Docker entrypoint scrubs it from the gateway's environ) and actively stripped via `strip_kiro_cli_api_key` for a foreign backend (Claude seam, KAS), which must never receive it; both run inside the spawn paths' existing off-loop env hop.
+- **Parent-level channel-credential scrub**: both spawn paths (`AcpClient._spawn` and `AcpRuntime._spawn`) build the child environment from a raw `os.environ` copy (plus `_extra_env`) and pass it directly to `create_subprocess_exec`, so they call `sandbox.scrub_agent_denied_env(env)` after merging `_extra_env` to strip `_AGENT_DENIED_ENV_KEYS` (Slack/WeCom/Telegram tokens + owner id seeded into `os.environ` by `config.loader.load_credentials`). This is required because these paths do NOT route through `sandboxed_spawn_argv`, and the OS-sandbox launcher only strips those keys for the `cc`/`strict` tiers — on the default `auto`/`standard` tier the launcher leaves them in place, so without the parent scrub they would be inherited by the agent subprocess. The scrub is deliberately narrower than `scrub_env`: it leaves the AWS/SSH env the `standard` sandbox intentionally exposes (git-over-SSH, AWS CLI, kubectl) untouched. One credential is settled per-backend rather than by the deny list: `KIRO_API_KEY` (kiro-cli's own model credential, in `CREDENTIAL_KEYS` but deliberately NOT in `_AGENT_DENIED_ENV_KEYS`) is re-injected from the data home's `.env` via `config.loader.inject_kiro_cli_api_key` for a kiro-cli child (whose environment is where the CLI reads it — required after the Docker entrypoint scrubs it from the gateway's environ) and actively stripped via `strip_kiro_cli_api_key` for a foreign backend (Claude seam), which must never receive it. The KAS relay is a kiro-cli, so its answer follows the spawn plan's auth owner (`apply_spawn_env(..., cli_owned_auth=not plan.host_auth)`): a cli-owned relay (`--auth-method cli`) is handed the key like the kiro backend, because kiro-cli keeps no stored record of an API-key sign-in and the variable is the whole login; a Crew-owned relay has it stripped, because the engine prefers an environment key over the vault callback; both run inside the spawn paths' existing off-loop env hop.
 - **Client application tag**: every kiro-cli ACP child on the kiro backend (the kiro harness's `apply_spawn_env` and `AcpClient._spawn`, both via `harness._common.apply_client_application_env`) gets `KIRO_CLI_CLIENT_APPLICATION=kirocrew` (`CLIENT_NAME`, the `clientInfo.name` value, is the same constant), overwriting any inherited value. kiro-cli puts it on the user-agent of every request to its model backend as `clientApp/kirocrew`, which is how a backend-side record identifies Crew traffic. `clientInfo.name` does not do this: kiro-cli keeps it in telemetry (`acp_client_name`) and in the `AWS_EXECUTION_ENV` of the tools it spawns, never on its own requests. The KAS harness does not set it: the v3 engine behind the KAS relay builds its own fixed user-agent, so the tag would reach no KAS model request until kiro-cli forwards it there. One-shot kiro-cli commands outside ACP (`/usage`, `whoami`, `--list-models`) run no model turn and are not tagged.
 - `_resolve_kiro_bin()` delegates to the side-effect-free `kiro_cli.resolve_kiro_cli()` discovery module shared with first-run setup. It checks the explicit `KIROCREW_KIRO_BIN` operator/test override first, then the desktop app's bundled copy (`KIROCREW_BUNDLED_KIRO_DIR`, set by the Electron shell only when the payload shipped; the candidate there is `<dir>/kiro-cli-chat`, `kiro_cli.BUNDLED_KIRO_CLI_ENTRY`, because the `kiro-cli` launcher never resolves the chat binary beside itself), then the supported fixed install locations and augmented PATH; the bundled directory sits in the fixed part of the list, so `pin_kiro_cli` (the off-`PATH` pin every unattended spawn uses) resolves it too. Setup status may inspect the same candidates but never mutates the override or other process-global environment. The gateway's prerequisite service and the direct `chat`/`tui`/`run`/`consolidate`/`eval` CLI entry paths both register the override's canonical path and first-observed digest before any provider can be created; process-lifetime first-observation-wins semantics prevent a later service reconstruction from blessing replacement bytes. `runtime.py` imports and reuses the ACP wrapper so both ACP transports select the binary identically. Immediately before OS sandboxing, `sandbox.py` routes argv[0] through the edition-neutral `PlatformContext.agent_executable` resolver; the public Default is identity and a companion can return a direct executable behind an edition-managed launcher without changing the core. One core-side swap exists above that seam and only for the KAS backend: on the Crew-owned branch (Crew's vault holds the identity) the harness replaces a resolved `kiro-cli` with the `kiro-cli-chat` in the same directory when there is one (`kiro_cli.chat_sibling`), because the POSIX launcher checks its own sign-in before it execs the chat binary for `acp`, which is exactly the check a Crew-owned spawn on a signed-out kiro-cli cannot pass; the cli-owned branch keeps the launcher (see [kas-auth](kas-auth.md)).
 - The dashboard `/api/models` one-shot subprocess validates completion before parsing stdout: nonzero exit (with a bounded, redacted stderr tail), empty stdout, malformed JSON, or a payload without a model list each returns HTTP 503 so the client retries. A subprocess failure is never misreported as `JSONDecodeError` or cached as a successful empty model list. Before the spawn, it uses `config.loader.inject_kiro_cli_api_key` off-loop just like the interactive Kiro ACP path, so a headless Docker gateway whose entrypoint moved `KIRO_API_KEY` out of the long-lived parent environment still authenticates this official fixed-argv `kiro-cli` read; the general child-environment scrub remains unchanged.
@@ -2033,13 +2043,29 @@ Cold-start admission bounds runtime spawn + `initialize`. The **session-start
 gate** bounds the other expensive start: `session/new` on an already-running
 runtime, which blocks while the backend initializes the session's MCP servers.
 `AcpRuntime.create_session` acquires the current loop's `SessionStartGate`
-(`agent.session_start_concurrency`, default 2, FIFO within a start priority,
-sized once per loop from config; `restart=True`) BEFORE `session/new` goes on
+(`agent.session_start_concurrency`, default `auto`, FIFO within a start priority,
+sized once per loop from config; `restart=True`; `auto` resolves once per process in
+`kiro_crew/session_start_sizing.py` to `clamp(min(cpus // 4, available_GB // 3), 2, 16)`,
+with cpus the affinity count capped by a cgroup v2 `cpu.max` quota and memory from the
+`resource_status` probe; the gateway resolves it in a worker thread at boot and logs the
+value in force with its inputs, and `kirocrew doctor` prints what `auto` picks for the
+host at the time it runs; an explicit integer wins) BEFORE `session/new` goes on
 the wire and releases it as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
 loop is the gatewayd spawn gate plus the execution-cap controller, and two
 adapting loops on one resource oscillate. It is one gate for every harness
 (kiro-cli, KAS, a later Claude host), because every backend's session start
 runs through `create_session` (harness-parity: no per-backend branch).
+
+**The shared `_bg` runtime starts under its own gate.** Every `run_bg_oneliner`
+(auto-titles, nav labels, folder icons, summaries, STT endpointing) opens a fresh
+`session/new` on the one shared `_bg` runtime, which answers them serially.
+`get_bg_session` passes `bg_runtime_start=True`, so those starts take a permit
+from `bg_runtime_session_start_gate()`: a separate per-loop `SessionStartGate`
+of one permit, ordered by start priority like the user gate. Priority alone
+cannot keep them off a person's path: a title fires on the first send and reaches
+the gate before the sender's own start has finished spawning, so in a burst the
+titles take the user permits first and hold each one while they wait inside the
+`_bg` process. Pinned by `test/test_bg_runtime_session_start_gate.py`.
 
 **Start priority: a start a person is waiting on is served ahead of background
 starts.** Three in-process queues bound a start, and all three are one primitive,
@@ -2326,6 +2352,40 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 6. Appends an image content block with the content-derived `mimeType`
 7. Replaces the path in the text with `[image: filename.png]`
 8. Sends both text and image blocks in the `prompt` array
+
+**One prompt's own rules** (`build_prompt_blocks`). The marker lands only where the path grammar matched: a URL's own path or a longer path that merely contains the same characters is left alone (one pass over the grammar's match spans, never a whole-text replace), while a local path quoted as a URL query value (`?src=/tmp/a.png`) is a path to the grammar and is rewritten like any other; and the shared path grammar refuses a name that merely begins with a picture's path (`/var/a.png.backup`, `/var/a.png~`, `/var/a.png/other`), so neither this builder nor the replay scrubber treats it as a picture -- nothing is read, rewritten or scrubbed for it; a period followed by a capital letter is sentence punctuation (`/var/a.png.Then`), so the path ends there and the picture is attached. A second distinct file with the same basename in one message gets `[image: filename.png (2)]`, and so on, so every block's marker is unique within the prompt. The same bytes under two names are one block, marked at both places with the first name: the digest of the file's bytes is compared before any cap is consulted, so a duplicate of an attached picture past the cap maps to that picture's block instead of being dropped. A `[image: ...]` or `[image not attached: ...]` token the user typed, in any case, is escaped with a backslash, so only a marker this builder wrote reads as an attachment; the replay scrubber's own `[image not carried into this context]` is left as it is. A kept-out picture written as a markdown image (`![alt](path)`, `![alt](<path>)` or `![alt](path "title")`) gets its note after the closing parenthesis, so the link stays intact. A typed marker is escaped even when the agent takes no images, since the text still reaches the model. One prompt inlines at most `MAX_PROMPT_IMAGE_BLOCKS` (20) images and `MAX_PROMPT_IMAGE_B64_BYTES` (12 MiB) of base64; a picture past either cap stays a path in the text, followed by `[image not attached: prompt image limit]`, exactly as one over the per-image cap (or one that cannot be rendered within the size caps) is followed by `[image not attached: image size limit]`, so neither the user nor the model takes a dropped picture as seen (the notes speak about images, so only bytes that sniff as a raster earn one -- a text file named like a picture stays plain text, and so does an oversize picture reached through a hardlink, which the bounded sniff refuses to read); each is logged, the pictures past the block cap tallied into one line, and a picture past the block cap is read only to tell a duplicate from a new one, never decoded. The byte cap is half of the images' share (three quarters) of the smallest backend request-body ceiling measured so far -- 32 MiB, bracketed by a replayed request of 30.4 MB of base64 that was accepted and one of 33.8 MB that was refused as improperly formed; the count is where the backend's many-image dimension rule begins, and each replayed image costs about 1,600 tokens on every later turn. Both caps bound one prompt alone; what the conversation's replayed history carries in total is not measured here. Nothing here remembers earlier prompts: what a conversation's replayed history may carry in total is the backend's contract, not this builder's.
+
+Within a path run delimited by whitespace or punctuation -- ASCII punctuation
+outside a path, Unicode punctuation such as a dash or a bullet, the arrow blocks,
+CJK/fullwidth punctuation, and for the replay scrubber a code span -- the shared grammar takes the
+last supported image suffix: `/var/a.png版本/final.jpg` and `/var/a.png.jpg` each
+name one picture. Whitespace, commas, parentheses and the other delimiters stop that
+lookahead, so pictures separated by any of them remain separate
+(`/tmp/a.png—/tmp/b.png` inlines two pictures, as a comma between them would), and
+CJK prose without a later suffix can still follow a path. A path begins only at
+the start of the text or after a delimiter, except a colon, which reads as a URL
+scheme's (`/a.png:/b.png` names the first picture only). Two paths glued by letters
+with nothing between them (`/tmp/a.png和/tmp/b.png`, and on Windows
+`C:/x/a.png和C:/y/b.png` -- the second path's drive colon does not split the token,
+though only a drive letter glued to the token continues it: after whitespace a
+drive begins its own path, and a URL scheme's colon ends the token, so
+`C:\me\report.md and https://example.com/logo.png` names no picture, the URL
+stays as written, and `C:\docs\readme.txt and D:\tmp\shot.png` names exactly
+the picture)
+read as one token, so the
+builder inlines nothing for them and the replay scrubber replaces them with one
+marker; two paths glued by a symbol (an emoji, or on POSIX a backslash, which is
+not a path character there) start no path at all, so the builder inlines nothing
+and the replay scrubber leaves the text as written -- never the second picture
+alone with the first dropped silently. On Windows a backslash is a path
+character, so a backslash-glued pair is one path like the letter-glued one. A later
+separator in that run makes the earlier suffix a directory
+component, so non-image descendants stay text; without a later separator or image
+suffix, non-ASCII text glued to the suffix is read as prose even if it could be a
+directory name mentioned alone. The path body and every guard scan inspect at
+most 512 characters (a UNC share's host segment too), so a path longer than that
+stays text: space is legal inside a path, so an unbounded body would re-walk a
+message of spaced fragments from every start before the tail guard refused it.
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
 

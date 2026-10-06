@@ -1555,12 +1555,13 @@ class TestTheChannelPipelineReadsTheSessionsOwnSilo:
 _CONVERTED_TURN_SURFACES: tuple[tuple[str, str], ...] = (
     ("src/kiro_crew/slack/handler.py", "candidate_key"),
     ("src/kiro_crew/slack/transport_dispatch.py", "session_key"),
-    ("src/kiro_crew/discord/transport_dispatch.py", "session_key"),
     ("src/kiro_crew/telegram/transport_dispatch.py", "session_key"),
     ("src/kiro_crew/messaging/dispatch.py", "session_key"),
     # Auto-nudge continues the nudged session; both injections continue the PARENT.
     ("src/kiro_crew/slack/gateway.py", "key"),
     ("src/kiro_crew/slack/gateway.py", "parent_key"),
+    # The heartbeat resolves the store of its own fixed key.
+    ("src/kiro_crew/slack/gateway.py", "session_key"),
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]

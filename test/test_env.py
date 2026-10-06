@@ -486,6 +486,8 @@ class TestNodeAllBinDirs:
         )
         monkeypatch.delenv("MISE_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        # A macOS runner can carry real Homebrew node kegs; keep them out.
+        monkeypatch.setattr(env_mod, "_HOMEBREW_NODE_KEG_ROOT", str(tmp_path / "no-homebrew"))
         return tmp_path
 
     def test_empty_when_no_managers(self, fake_home) -> None:

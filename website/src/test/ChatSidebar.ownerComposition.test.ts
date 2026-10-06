@@ -111,10 +111,10 @@ describe('the facade composition', () => {
   const CALL_ORDER = [
     'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSidebarLane',
     'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'usePinnedSessionOrder',
-    'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarResize', 'useSidebarTags',
-    'useBoardColumns', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
+    'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarTags',
+    'useBoardColumns', 'useSidebarResize', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
-    'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
+    'useCollapsedCrews', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
     'useFolderFilterReveal', 'useFlatLane', 'useConductorLane', 'useLaneCycle', 'useShortcutOrder',
     'useFolderFilterRows', 'useFolderMutations', 'useBoardFolderCollapse', 'useNativeSessionDrag', 'useFolderDropOps',
     'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useSidebarDragHandlers',

@@ -9,12 +9,13 @@ when the sandboxed process exits — filling the runtime tmpfs until
 fails.
 
 Two halves lock the fix in:
-  (a) the generated launcher tags every staging site with a pid-bearing
-      ``_src_prefix`` (``kirocrew_sb_<pid>_``) assigned in the post-fork CHILD
-      branch — asserted by AST so an unprefixed ``mkdtemp(dir=_tmpfs_src)`` /
-      ``mkstemp(dir=_tmpfs_src)`` cannot reappear and the assignment cannot
-      drift above the fork, at every sandbox level, with the script staying
-      parseable;
+  (a) the launcher (``kiro_crew.sandbox_launcher_program``) tags every staging
+      site with a pid-bearing prefix (``kirocrew_sb_<pid>_``) taken from the
+      process that execs the agent — a whole child run over a tree that reaches
+      every staging site, with a libc whose binds hide their target, shows every
+      name it creates on the stand-in root carries it, and the launcher's child
+      stages run in a separate process show the pid is that process's own, at
+      every sandbox level;
   (b) ``_cleanup_stale_sandbox_mount_sources`` reclaims layered by cost: plain
       files and empty dirs on dead pid or over-age; dirs (whose contents are
       visible inside a live mount namespace, and whose removal S_DEADs it)
@@ -41,16 +42,17 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import CoveringLibc, launch, payload
 
-import kiro_crew.sandbox as sandbox_mod
+from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_plan
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import (
     _MOUNT_SOURCE_MAX_AGE_SECONDS,
-    _build_launcher_script,
     _cleanup_legacy_mount_source_residue,
     _cleanup_stale_sandbox_mount_sources,
     _mount_pinned_source_names,
@@ -58,23 +60,13 @@ from kiro_crew.sandbox import (
     cleanup_stale_sandbox_profiles,
 )
 
+program = sandbox_launcher_program
 
-@pytest.fixture(autouse=True)
-def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
-
-    The staging sites read out of the launcher do not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
-    about. Pinned so no binary runs.
-    """
-    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
-
-
-# ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
-# namespace launcher never runs on Windows).
-requires_posix = pytest.mark.skipif(
-    not hasattr(os, "getuid"),
-    reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
+# The launcher's stages pin their targets through ``O_PATH`` and address them as
+# ``/proc/self/fd/<n>``, which only Linux has; the namespace launcher runs nowhere else.
+requires_linux = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the namespace launcher is Linux-only",
 )
 # The legacy-residue pass fences on the exact POSIX mode ``mkdtemp``/``mkstemp``
 # create (0o700 / 0o600) and on ``st_uid``; neither is meaningful on Windows,
@@ -1685,71 +1677,198 @@ class TestMountSourceCandidateRoots:
         ]
 
 
-@requires_posix
+#: Run in a fresh interpreter, a process other than the test that rendered the launcher:
+#: drives the rendered launcher's child stages to the exec with a libc that mounts
+#: nothing, and prints the pid of the process that reached the exec and the stand-in
+#: prefix it used.
+_PREFIX_DRIVER = """
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("launcher_under_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+class _Libc:
+    def mount(self, source, target, fstype, flags, data):
+        return 0
+
+    def umount2(self, target, flags):
+        return 0
+
+    def unshare(self, flags):
+        return 0
+
+    def prctl(self, option, a2, a3, a4, a5):
+        return 0
+
+
+at_exec = []
+run = module.Launch(
+    dict(module._PLAN, stand_in_roots=[]),
+    _Libc(),
+    environ={"HOME": sys.argv[2]},
+    execvp=lambda file, argv: at_exec.append(run.src_prefix),
+)
+module.run_child(run, ["/bin/agent"])
+print(os.getpid(), at_exec[0])
+"""
+
+
+@requires_linux
 class TestLauncherStagingSitesArePrefixed:
-    """Every generated staging call against the tmpfs source carries the pid prefix."""
+    """Every name the launcher stages on the stand-in root carries the pid prefix."""
 
     @staticmethod
-    def _staging_calls(tree: ast.AST) -> list[ast.Call]:
-        """tempfile.mkdtemp/mkstemp calls whose ``dir=`` is ``_tmpfs_src``."""
-        calls = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if not (
-                isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "tempfile"
-                and func.attr in ("mkdtemp", "mkstemp")
-            ):
-                continue
-            dir_kw = next((k for k in node.keywords if k.arg == "dir"), None)
-            if dir_kw is not None and (
-                isinstance(dir_kw.value, ast.Name) and dir_kw.value.id == "_tmpfs_src"
-            ):
-                calls.append(node)
-        return calls
+    def _run_over_every_staging_site(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[program.Launch, list[str], dict[str, list[str]]]:
+        """A whole child run over a tree that reaches every staging site.
 
-    @staticmethod
-    def _src_prefix_assignments(tree: ast.AST) -> list[ast.Assign]:
-        return [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "_src_prefix" for t in node.targets)
-        ]
-
-    @pytest.mark.parametrize("level", ["strict", "cc", "standard"])
-    def test_launcher_parses_and_all_staging_sites_prefixed(self, level: str):
-        script = _build_launcher_script(level)
-        tree = ast.parse(script)  # string-template edits must keep it parseable
-
-        staging = self._staging_calls(tree)
-        # The template always emits all six staging sites (per-dir empties,
-        # per-file empties, SSH shadow, the private-window stage that holds a
-        # window's real contents while its parent is masked, the nested
-        # re-mask that re-hides a masked leaf sitting INSIDE such a window after
-        # the window is bound, and the private tmpfs stage for an unreadable
-        # mask); the level varies the DATA, not the code.
-        assert len(staging) == 6
-        for call in staging:
-            prefix_kw = next((k for k in call.keywords if k.arg == "prefix"), None)
-            assert prefix_kw is not None, ast.dump(call)
-            assert isinstance(prefix_kw.value, ast.Name)
-            assert prefix_kw.value.id == "_src_prefix"
-
-    @pytest.mark.parametrize("level", ["strict", "cc", "standard"])
-    def test_every_tempfile_call_has_a_known_staging_role(self, level: str):
-        """Closed over ALL tempfile.mkdtemp/mkstemp calls, however spelled.
-
-        The staging-site assertion above keys on ``dir=_tmpfs_src``, which a
-        future positional ``mkdtemp(_tmpfs_src)`` or ``dir=_tmpfs_src or
-        None`` would evade — silently re-opening the unprefixed-orphan class.
-        Mount staging must carry the pid-bearing ``_src_prefix`` or the probe's
-        literal prefix.
+        A credential directory, a masked tree holding a private window that itself holds
+        a masked leaf, a secret file, an unreadable-mask leaf (the launcher non-dumpable,
+        as entering the namespaces leaves it, so its private stage is tried) and
+        ``~/.ssh``. ``HOME`` sits on another filesystem than the stand-in root, so the
+        root qualifies and is probed. Returns the run, its libc, every name
+        ``tempfile`` created during it, and the stand-in-root names the mounts used,
+        by the role each played.
         """
-        tree = ast.parse(_build_launcher_script(level))
+        home = tmp_path / "home"
+        keys = home / ".aws"
+        keys.mkdir(parents=True)
+        (keys / "credentials").write_text("[default]\n", encoding="utf-8")
+        crew = home / ".kiro" / "crew"
+        apps = crew / "apps"
+        window = apps / "alpha" / "data"
+        window.mkdir(parents=True)
+        nested = window / "edits"
+        nested.mkdir()
+        (nested / "draft").write_text("draft", encoding="utf-8")
+        netrc = home / ".netrc"
+        netrc.write_text("machine x\n", encoding="utf-8")
+        signing_key = crew / "token_signing.key"
+        signing_key.write_bytes(b"k" * 32)
+        ssh = home / ".ssh"
+        ssh.mkdir()
+        (ssh / "known_hosts").write_text("host ssh-ed25519 AAAA\n", encoding="utf-8")
+        root = tmp_path / "stand-ins"
+        plan = payload(
+            sensitive_dirs=[str(keys), str(apps), str(nested)],
+            private_dirs=[str(window)],
+            sensitive_files=[str(netrc), str(signing_key)],
+            unreadable_masks=["token_signing.key"],
+            ssh_dir=str(ssh),
+            ssh_known_hosts=str(ssh / "known_hosts"),
+            hide_ssh=1,
+            stand_in_roots=[str(root)],
+        )
+        created: list[str] = []
+        real_mkdtemp, real_mkstemp = tempfile.mkdtemp, tempfile.mkstemp
+
+        def _mkdtemp(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            path = real_mkdtemp(*args, **kwargs)
+            created.append(path)
+            return path
+
+        def _mkstemp(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            fd, path = real_mkstemp(*args, **kwargs)
+            created.append(path)
+            return fd, path
+
+        libc = CoveringLibc()
+        run = launch(tmp_path, plan, libc=libc, environ={"HOME": "/proc"})
+        run.tmpfs_src = None  # chosen by the run itself, from the plan's stand-in roots
+        run.nondumpable = True
+        with monkeypatch.context() as patched:
+            patched.setattr(program.tempfile, "mkdtemp", _mkdtemp)
+            patched.setattr(program.tempfile, "mkstemp", _mkstemp)
+            program.run_child(run, ["/bin/agent"])
+
+        def _in_root(path: object) -> str | None:
+            spelled = os.fsdecode(path) if isinstance(path, bytes) else path
+            if isinstance(spelled, str) and os.path.dirname(spelled) == str(root):
+                return spelled
+            return None
+
+        roles: dict[str, list[str]] = {
+            "directory mask": [],
+            "nested re-mask": [],
+            "file mask": [],
+            "ssh mask": [],
+            "window stage": [],
+            "unreadable stage": [],
+        }
+        for call in libc.calls:
+            source, target = _in_root(call.source), _in_root(call.target_path)
+            if call.fstype == b"tmpfs" and target:
+                roles["unreadable stage"].append(target)
+            elif call.flags & 4096 and target:
+                roles["window stage"].append(target)
+            elif call.flags & 4096 and source in roles["window stage"]:
+                continue  # the stage bound back at its window's own path
+            elif call.flags & 4096 and source:
+                role = {
+                    str(keys): "directory mask",
+                    str(apps): "directory mask",
+                    str(nested): "nested re-mask",
+                    str(netrc): "file mask",
+                    str(signing_key): "file mask",
+                    str(ssh): "ssh mask",
+                }[call.target_path]
+                roles[role].append(source)
+        return run, created, roles
+
+    def test_every_staging_site_names_its_source_with_the_pid_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        run, _, roles = self._run_over_every_staging_site(tmp_path, monkeypatch)
+
+        # The run reached all six staging sites: per-dir empties, the nested re-mask that
+        # re-hides a masked leaf sitting INSIDE a window after the window is bound,
+        # per-file empties, the SSH shadow, the private-window stage that holds a
+        # window's real contents while its parent is masked, and the private tmpfs stage
+        # for an unreadable mask.
+        assert {role: bool(names) for role, names in roles.items()} == dict.fromkeys(roles, True)
+        prefix = "kirocrew_sb_%d_" % os.getpid()
+        assert run.src_prefix == prefix
+        for role, names in roles.items():
+            for name in names:
+                assert os.path.basename(name).startswith(prefix), (role, name)
+
+    def test_every_tempfile_call_has_a_known_staging_role(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Closed over EVERY name ``tempfile`` creates during a run, however called.
+
+        The staging-site assertion above follows the names the mounts used; a name made
+        and never mounted, or made with a positional ``mkdtemp(root)`` or a
+        ``dir=root or None``, would evade it -- silently re-opening the
+        unprefixed-orphan class. Each must land on the stand-in root and carry the
+        pid-bearing prefix, or be the root's probe, which carries its own sibling prefix
+        and is gone again.
+        """
+        run, created, roles = self._run_over_every_staging_site(tmp_path, monkeypatch)
+
+        root = str(tmp_path / "stand-ins")
+        assert created, "the run created nothing on the stand-in root"
+        probes = [p for p in created if os.path.basename(p).startswith("kirocrew_sbprobe_")]
+        assert len(probes) == 1 and not os.path.lexists(probes[0])
+        for path in created:
+            assert os.path.dirname(path) == root, path
+            name = os.path.basename(path)
+            assert name.startswith(run.src_prefix) or path in probes, path
+        assert {name for names in roles.values() for name in names} <= set(created)
+
+    def test_every_tempfile_call_in_the_program_carries_a_known_prefix(self):
+        """Closed over EVERY ``tempfile`` call the program makes, reached by a run or not.
+
+        The run above sees only the branches one host takes; a staging site on a branch
+        it never reaches (a degraded mount, a refusal path) would escape it. So the
+        program's source is read too: each ``mkdtemp``/``mkstemp`` names
+        ``prefix=launch.src_prefix`` -- the pid-bearing staging prefix the sweep keys on
+        -- or is the stand-in root's probe with its own literal prefix.
+        """
+        tree = ast.parse(sandbox_launcher.launcher_program_source())
         calls = [
             node
             for node in ast.walk(tree)
@@ -1757,59 +1876,43 @@ class TestLauncherStagingSitesArePrefixed:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "tempfile"
-            and node.func.attr in ("mkdtemp", "mkstemp")
+            and node.func.attr not in ("gettempdir", "gettempdirb", "gettempprefix")
         ]
-        assert len(calls) == 7  # six staging sites and the tmpfs probe
+        assert calls, "the program makes no tempfile call"
         for call in calls:
-            prefix_kw = next((k for k in call.keywords if k.arg == "prefix"), None)
-            assert prefix_kw is not None, ast.dump(call)
-            ok_name = isinstance(prefix_kw.value, ast.Name) and prefix_kw.value.id == "_src_prefix"
-            ok_probe = (
-                isinstance(prefix_kw.value, ast.Constant)
-                and prefix_kw.value.value == "kirocrew_sbprobe_"
-            )
-            assert ok_name or ok_probe, ast.dump(call)
+            assert call.func.attr in ("mkdtemp", "mkstemp"), ast.dump(call)
+            prefix = next((k.value for k in call.keywords if k.arg == "prefix"), None)
+            assert prefix is not None, ast.dump(call)
+            staged = ast.unparse(prefix) == "launch.src_prefix"
+            probe = isinstance(prefix, ast.Constant) and prefix.value == "kirocrew_sbprobe_"
+            assert staged or probe, ast.dump(call)
 
     @pytest.mark.parametrize("level", ["strict", "cc", "standard"])
-    def test_prefix_is_assigned_in_the_post_fork_child_branch(self, level: str):
-        """The embedded pid must be the CHILD's — the process that execs the
-        agent — so the assignment has to sit in the fork's else branch, after
-        ``os.fork()`` returned 0. An assignment hoisted above the fork would
-        bake in the short-lived parent launcher's pid and every entry would
-        read dead the moment the parent exits."""
-        tree = ast.parse(_build_launcher_script(level))
+    def test_prefix_embeds_launcher_runtime_pid(self, level: str, tmp_path: Path):
+        """The prefix is the pid of the process that execs the agent, read at run time.
 
-        assignments = self._src_prefix_assignments(tree)
-        assert len(assignments) == 1
-        assignment = assignments[0]
+        Not baked in by the gateway when it renders the launcher: the launcher is
+        rendered here and its child stages run in another process, which must stage
+        under ITS OWN pid. The pid has to be the one that execs the agent -- the child
+        the launcher forks, not the short-lived parent that writes the uid maps --
+        or every entry would read dead the moment the parent exits.
+        """
+        plan = sandbox_plan.plan_confinement(
+            sandbox_plan.SandboxRequest(tier=level), sandbox_plan.PlanHost(home=str(tmp_path))
+        )
+        script = tmp_path / "kirocrew_sandbox_prefix.py"
+        script.write_text(sandbox_launcher.render_namespace_launcher(plan), encoding="utf-8")
 
-        def _in_child_branch(node: ast.AST) -> bool:
-            for candidate in ast.walk(node):
-                if (
-                    isinstance(candidate, ast.If)
-                    and isinstance(candidate.test, ast.Compare)
-                    and isinstance(candidate.test.left, ast.Name)
-                    and candidate.test.left.id == "pid"
-                ):
-                    return any(assignment is n for b in candidate.orelse for n in ast.walk(b))
-            return False
+        done = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", _PREFIX_DRIVER, str(script), "/proc"],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+            cwd=str(tmp_path),
+        )
 
-        assert _in_child_branch(tree), "_src_prefix must be assigned in the fork child branch"
-
-    @pytest.mark.parametrize("level", ["strict", "cc", "standard"])
-    def test_prefix_embeds_launcher_runtime_pid(self, level: str):
-        """The prefix value is computed from ``os.getpid()`` at launcher
-        runtime (not baked in by the gateway at template-format time)."""
-        tree = ast.parse(_build_launcher_script(level))
-        (assignment,) = self._src_prefix_assignments(tree)
-
-        getpid_calls = [
-            node
-            for node in ast.walk(assignment.value)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "getpid"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "os"
-        ]
-        assert getpid_calls, "_src_prefix must derive from os.getpid() at runtime"
+        assert done.returncode == 0, done.stderr
+        pid, prefix = done.stdout.split()
+        assert int(pid) != os.getpid()
+        assert prefix == "kirocrew_sb_%s_" % pid

@@ -21,13 +21,22 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
+from turn_harness import Raise, SlotSpec, TurnRecord, TurnScript, run_turn
 
 from conftest import requires_symlinks
+from kiro_crew.acp.types import (
+    EVENT_CLEAR_STATUS,
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
+    STOP_REASON_END_TURN,
+    AcpEvent,
+)
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _MAX_SNAPSHOT_PATH_CHARS,
@@ -421,12 +430,38 @@ class TestFlushFileChanges:
         assert "file_changes" not in slot.messages[0].get("meta", {})
         assert slot.messages[-1]["content"] == ""
 
-    def test_the_mid_turn_clear_resets_the_boundary_id_beside_the_text(self):
-        # The clear branch restarts the turn's row bookkeeping. Capturing the
-        # start id there must be ADDED next to the accumulator reset, not put in
-        # its place: without `assistant_text = ""` the text streamed before the
-        # clear survives it and the terminal flush re-appends what the user
-        # just deleted.
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_clear_drops_the_text_streamed_before_it(self):
+        """Through the real ``_run_chat``: a confirmed ``/clear`` mid-turn restarts
+        the turn's text, so the reply that lands is only what streamed after it --
+        never the pre-clear draft re-appended and persisted over what the user just
+        deleted."""
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="PRE-CLEAR draft "),
+                    AcpEvent(kind=EVENT_CLEAR_STATUS),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="post"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            ),
+            slot=SlotSpec(rows=[("user", "earlier"), ("assistant", "earlier answer")]),
+        )
+        assert record.stop_reason == STOP_REASON_END_TURN
+        assert not any("PRE-CLEAR" in str(row.get("content")) for row in record.history_rows)
+        assert [row["content"] for row in record.rows("assistant")][-1] == "post"
+
+    def test_the_mid_turn_clear_restarts_the_turns_start_row_id(self):
+        """Kept as a source pin: the reset it guards changes nothing observable.
+
+        The clear arm resets ``_turn_start_mid`` beside the text. Without it the
+        flush would look for the pre-clear tail row's id in a window that no
+        longer holds it -- and fall back to the whole window, exactly as the reset
+        value does, so every turn renders the same chips either way (an
+        equivalent mutant; ``test_a_mid_turn_clear_drops_the_text_streamed_before_it``
+        covers the reset that IS observable). What is left is code intent, so it
+        stays a narrow AST check, counted in ``test_source_pin_budget.py``.
+        """
         tree = ast.parse(inspect.getsource(_run_chat))
         [clear] = [
             node
@@ -445,7 +480,7 @@ class TestFlushFileChanges:
             for target in stmt.targets
             if isinstance(target, ast.Name)
         }
-        assert {"assistant_text", "_turn_start_mid"} <= resets, resets
+        assert "_turn_start_mid" in resets, resets
 
     @pytest.mark.parametrize(
         ("before_length", "after_length"),
@@ -1708,67 +1743,69 @@ class TestRedactedSideBound:
 # ── omitted files on the persisted snapshot ────────────────────────────────
 
 
-@pytest.fixture
-def snapshot_turn():
-    """Execute the runner's actual admission and flush statements.
-
-    Extracting these statements avoids starting an ACP session or duplicating
-    the admission code. Both event sites and both exit sites must exist, and a
-    mutation to either executes in the test.
-    """
-    tree = ast.parse(inspect.getsource(_run_chat))
-    [runner] = tree.body
-    admissions = sorted(
-        (
-            node
-            for node in ast.walk(runner)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id in {"_file_snapshot", "_file_snapshot_upd"}
-        ),
-        key=lambda node: node.lineno,
-    )
-    flushes = sorted(
-        (
-            node
-            for node in ast.walk(runner)
-            if isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "_flush_file_changes"
-        ),
-        key=lambda node: node.lineno,
-    )
-    assert len(admissions) == len(flushes) == 2
-
-    def run(nodes, env):
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), "<snapshot-turn>", "exec"), env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION admission statements lifted out of this repo's own source by AST, never external input; a hand-copied duplicate of them is exactly what this test exists to rule out  # noqa: E501  # fmt: skip
-
-    def start(slot):
-        # The flush sites read the runner's turn boundary; the harness has no
-        # turn, so it scopes to the whole slot the way a turn started on an
-        # empty slot would.
-        env = {
-            **_run_chat.__globals__,
-            "slot": slot,
-            "_turn_msg_boundary": 0,
-            "_turn_start_mid": "",
-        }
-
-        def record(path, key="call", site=0, content="before\n"):
-            env["event"] = SimpleNamespace(tool_call_id=key)
-            env["_file_snapshot" if site == 0 else "_file_snapshot_upd"] = {
-                "path": path,
-                "content": content,
-                "truncated": False,
-            }
-            run([admissions[site]], env)
-
-        return SimpleNamespace(
-            record=record, flush=lambda site=0: run([flushes[site]], env), env=env
+def _write_call(index: int, path: Path, before: str) -> list[AcpEvent]:
+    """A write announced with its arguments on the TOOL_CALL itself."""
+    return [
+        AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id=f"call-{index}",
+            tool_name="fs_write",
+            tool_kind="edit",
+            title="Write",
+            raw_tool_params={"command": "create", "path": str(path)},
+            diff_old_text=before,
+            diff_path=str(path),
         )
+    ]
 
-    return start
+
+def _write_update(index: int, path: Path, before: str) -> list[AcpEvent]:
+    """A write whose arguments arrive only on a later TOOL_CALL_UPDATE."""
+    return [
+        AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id=f"call-{index}",
+            tool_name="fs_write",
+            tool_kind="edit",
+            title="Write",
+        ),
+        AcpEvent(
+            kind=EVENT_TOOL_CALL_UPDATE,
+            tool_call_id=f"call-{index}",
+            raw_tool_params={"command": "create", "path": str(path)},
+            diff_old_text=before,
+            diff_path=str(path),
+        ),
+    ]
+
+
+_WRITES = {"call": _write_call, "update": _write_update}
+_LANDS = [
+    AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+    AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+]
+#: An exit that never lands: no reply, so the finally's flush is the only one
+#: and its chips ride a content-less anchor.
+_DIES = [Raise(RuntimeError("boom"))]
+
+
+def _files(directory: Path, count: int, *, disk: str = "after\n") -> list[Path]:
+    paths = [directory / f"f{index}.py" for index in range(count)]
+    for path in paths:
+        path.write_text(disk, encoding="utf-8")
+    return paths
+
+
+async def _snapshot_turn(*events: AcpEvent | Raise, seeded: bool = True) -> TurnRecord:
+    """One real turn; *seeded* gives the slot an earlier exchange to stay clean."""
+    rows = [("user", "earlier"), ("assistant", "earlier answer")] if seeded else []
+    return await run_turn(TurnScript(events=list(events)), slot=SlotSpec(rows=rows))
+
+
+def _persisted_meta(record: TurnRecord, content: str) -> dict:
+    """The meta of the last PERSISTED assistant row whose text is *content*."""
+    [*_, row] = [row for row in record.rows("assistant") if row["content"] == content]
+    return row.get("meta") or {}
 
 
 class TestOmittedSnapshotFiles:
@@ -1810,93 +1847,142 @@ class TestOmittedSnapshotFiles:
         # Count index traversal work, not elapsed time or constructor calls.
         assert visited <= dropped
 
-    @pytest.mark.parametrize("site", [0, 1], ids=["call", "update"])
-    def test_a_turn_past_the_row_cap_keeps_the_files_it_wrote_last(self, snapshot_turn, site):
-        slot = _make_slot_with_assistant_message()
-        turn = snapshot_turn(slot)
-        extra = 50
-        total = _MAX_TURN_SNAPSHOT_ENTRIES + extra
-        for index in range(total):
-            turn.record(f"/f{index}.py", f"call-{index}", site)
-        assert len(slot._file_changes) == total
-        turn.flush(site)
-        meta = slot.messages[-1]["meta"]
-        assert {fc["path"] for fc in meta["file_changes"]} == {
-            f"/f{index}.py" for index in range(extra, total)
-        }
-        assert meta["file_changes_omitted_files"] == extra
-        assert type(meta["file_changes_omitted_files"]) is int
-        # The success path's finally flush must not change the count.
-        turn.flush(1)
-        assert slot.messages[-1]["meta"]["file_changes_omitted_files"] == extra
-
-    def test_repeating_a_path_adds_no_row_and_keeps_the_first_before(
-        self, snapshot_turn, short_tmp_dir
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("site", ["call", "update"])
+    async def test_a_turn_past_the_row_cap_keeps_the_files_it_wrote_last(
+        self, monkeypatch, short_tmp_dir, site
     ):
-        slot = _make_slot_with_assistant_message()
-        turn = snapshot_turn(slot)
-        target = short_tmp_dir / "same.py"
-        target.write_text("last\n")
-        turn.record(str(target), "a", 0, content="first\n")
-        turn.record(str(target), "a", 1, content="second\n")
-        turn.record(str(target), "b", 0, content="third\n")
-        assert len(slot._file_changes) == 1
-        turn.flush()
-        [stored] = slot.messages[-1]["meta"]["file_changes"]
+        # Through the real turn; a cap of 3 instead of 200 keeps the script short.
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_ENTRIES", 3)
+        paths = _files(short_tmp_dir, 5)
+        writes = [
+            event
+            for index, path in enumerate(paths)
+            for event in _WRITES[site](index, path, "before\n")
+        ]
+        record = await _snapshot_turn(*writes, *_LANDS)
+        assert record.stop_reason == STOP_REASON_END_TURN
+        # The landed turn runs the success flush, then the finally flush: the
+        # persisted count is what both left.
+        meta = _persisted_meta(record, "done")
+        assert {fc["path"] for fc in meta["file_changes"]} == {str(path) for path in paths[2:]}
+        assert meta["file_changes_omitted_files"] == 2
+        assert type(meta["file_changes_omitted_files"]) is int
+
+    @pytest.mark.asyncio
+    async def test_repeating_a_path_adds_no_row_and_keeps_the_first_before(self, short_tmp_dir):
+        [target] = _files(short_tmp_dir, 1, disk="last\n")
+        record = await _snapshot_turn(
+            *_write_call(0, target, "first\n"),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                tool_call_id="call-0",
+                raw_tool_params={"command": "create", "path": str(target)},
+                diff_old_text="second\n",
+                diff_path=str(target),
+            ),
+            *_write_call(1, target, "third\n"),
+            *_LANDS,
+        )
+        meta = _persisted_meta(record, "done")
+        [stored] = meta["file_changes"]
         assert stored["before"] == "first\n"
         assert stored["after"] == "last\n"
-        assert "file_changes_omitted_files" not in slot.messages[-1]["meta"]
-
-    def test_row_cap_and_path_budget_drops_are_counted_as_files(self, snapshot_turn, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_ENTRIES", 2)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", 0)
-        slot = _ChatSlot("stopped")
-        turn = snapshot_turn(slot)
-        for index in range(3):
-            turn.record(f"/f{index}.py", f"call-{index}")
-            turn.record(f"/f{index}.py", f"call-{index}-again", site=1)
-        turn.flush(1)
-        meta = slot.messages[-1]["meta"]
-        assert [fc["path"] for fc in meta["file_changes"]] == ["/f2.py"]
-        assert meta["file_changes_omitted_files"] == 2
-        assert slot._dirty
-
-    def test_the_count_is_absent_when_nothing_was_omitted(self, snapshot_turn):
-        slot = _make_slot_with_assistant_message()
-        turn = snapshot_turn(slot)
-        turn.record("/a.py")
-        turn.record("/b.py", site=1)
-        turn.flush()
-        meta = slot.messages[-1]["meta"]
-        assert len(meta["file_changes"]) == 2
         assert "file_changes_omitted_files" not in meta
 
-    def test_demoted_files_keep_their_path_and_are_not_counted(self, snapshot_turn, monkeypatch):
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("site", ["call", "update"])
+    async def test_a_rewritten_path_moves_to_the_end_and_keeps_its_first_before(
+        self, short_tmp_dir, site
+    ):
+        # P, then Q, then P again through the SAME site: the chips follow the
+        # order the files were last written, and P keeps the content it had
+        # before the turn first touched it.
+        p_path, q_path = short_tmp_dir / "p.py", short_tmp_dir / "q.py"
+        p_path.write_text("P-after\n", encoding="utf-8")
+        q_path.write_text("Q-after\n", encoding="utf-8")
+        write = _WRITES[site]
+        record = await _snapshot_turn(
+            *write(0, p_path, "P1\n"),
+            *write(1, q_path, "Q1\n"),
+            *write(2, p_path, "P2\n"),
+            *_LANDS,
+        )
+        meta = _persisted_meta(record, "done")
+        assert [fc["path"] for fc in meta["file_changes"]] == [str(q_path), str(p_path)]
+        assert meta["file_changes"][1]["before"] == "P1\n"
+
+    @pytest.mark.asyncio
+    async def test_row_cap_and_path_budget_drops_are_counted_as_files(
+        self, monkeypatch, short_tmp_dir
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_ENTRIES", 2)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", 0)
+        paths = _files(short_tmp_dir, 3)
+        writes = [
+            event
+            for index, path in enumerate(paths)
+            for event in (
+                *_write_call(index, path, "before\n"),
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL_UPDATE,
+                    tool_call_id=f"call-{index}",
+                    raw_tool_params={"command": "create", "path": str(path)},
+                    diff_old_text="before\n",
+                    diff_path=str(path),
+                ),
+            )
+        ]
+        # A turn that never lands: only the finally's flush runs, and only the
+        # forced save after it makes the anchor durable.
+        record = await _snapshot_turn(*writes, *_DIES, seeded=False)
+        meta = _persisted_meta(record, "")
+        assert [fc["path"] for fc in meta["file_changes"]] == [str(paths[2])]
+        assert meta["file_changes_omitted_files"] == 2
+
+    @pytest.mark.asyncio
+    async def test_the_count_is_absent_when_nothing_was_omitted(self, short_tmp_dir):
+        a_path, b_path = _files(short_tmp_dir, 2)
+        record = await _snapshot_turn(
+            *_write_call(0, a_path, "before\n"), *_write_update(1, b_path, "before\n"), *_LANDS
+        )
+        meta = _persisted_meta(record, "done")
+        assert {fc["path"] for fc in meta["file_changes"]} == {str(a_path), str(b_path)}
+        assert "file_changes_omitted_files" not in meta
+
+    @pytest.mark.asyncio
+    async def test_demoted_files_keep_their_path_and_are_not_counted(
+        self, monkeypatch, short_tmp_dir
+    ):
         # A demoted file stays on the message as a path, so it is not omitted.
-        # The synthetic-message branch carries no zero count either.
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", 20)
-        slot = _ChatSlot("stopped")
-        turn = snapshot_turn(slot)
-        for index in range(3):
-            turn.record(f"/f{index}.py", f"call-{index}", content="x" * 50)
-        turn.flush()
-        meta = slot.messages[-1]["meta"]
+        # The synthetic anchor of a turn with no reply carries no zero count.
+        paths = _files(short_tmp_dir, 3)
+        # Room for two paths beside the protected entry, none of their content.
+        budget = 2 * len(str(paths[0])) + 5
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", budget)
+        writes = [e for i, path in enumerate(paths) for e in _write_call(i, path, "x" * 4096)]
+        record = await _snapshot_turn(*writes, *_DIES, seeded=False)
+        meta = _persisted_meta(record, "")
         assert len(meta["file_changes"]) == 3
         assert sum(bool(fc.get("content_omitted")) for fc in meta["file_changes"]) == 2
         assert "file_changes_omitted_files" not in meta
 
-    def test_the_count_is_dropped_files_only_beside_a_demoted_one(self, snapshot_turn, monkeypatch):
-        # Room for one path beside the protected entry: /f1.py is demoted to its
-        # path, /f0.py is dropped, and only the dropped one is counted.
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", 10)
-        slot = _make_slot_with_assistant_message()
-        turn = snapshot_turn(slot)
-        for index in range(3):
-            turn.record(f"/f{index}.py", f"call-{index}", content="x" * 50)
-        turn.flush()
-        meta = slot.messages[-1]["meta"]
-        assert sorted(fc["path"] for fc in meta["file_changes"]) == ["/f1.py", "/f2.py"]
+    @pytest.mark.asyncio
+    async def test_the_count_is_dropped_files_only_beside_a_demoted_one(
+        self, monkeypatch, short_tmp_dir
+    ):
+        # Room for one path beside the protected entry: f1 is demoted to its
+        # path, f0 is dropped, and only the dropped one is counted.
+        paths = _files(short_tmp_dir, 3)
+        budget = len(str(paths[0])) + 5
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._MAX_TURN_SNAPSHOT_CHARS", budget)
+        writes = [e for i, path in enumerate(paths) for e in _write_call(i, path, "x" * 4096)]
+        record = await _snapshot_turn(*writes, *_LANDS)
+        meta = _persisted_meta(record, "done")
+        assert sorted(fc["path"] for fc in meta["file_changes"]) == [str(paths[1]), str(paths[2])]
         assert meta["file_changes_omitted_files"] == 1
+        # The earlier exchange's reply is not this turn's anchor.
+        assert "file_changes" not in _persisted_meta(record, "earlier answer")
 
     def test_a_flush_without_drops_clears_an_earlier_count_on_its_message(self, monkeypatch):
         slot = _make_slot_with_assistant_message()

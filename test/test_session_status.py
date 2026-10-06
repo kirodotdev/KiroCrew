@@ -38,6 +38,8 @@ from kiro_crew.crew_log.session_tree import OpenedRecord
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 
 
 @pytest.fixture(autouse=True)
@@ -114,21 +116,6 @@ class TestLiveness:
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         _busy(_child(state, "chat-2", caller))
-        row = _rows(_status(state, caller))["chat-2"]
-        assert row["status"] == "working" and row["running"] is True
-
-    def test_a_session_between_a_plans_stages_still_reads_as_working(self, tmp_path):
-        """`running` alone is not busy: a multi-stage plan closes each stage's own
-        turn, so it reads False in the gap while the plan is live.
-
-        Mutation guard: drop `_in_stage_execution` and a patrol concludes a worker
-        mid-plan is idle and needs a decision, then steers into a plan that is
-        about to open its next stage.
-        """
-        state = _make_state(tmp_path)
-        caller = _slot(state, "chat-1")
-        child = _child(state, "chat-2", caller)
-        child._in_stage_execution = True
         row = _rows(_status(state, caller))["chat-2"]
         assert row["status"] == "working" and row["running"] is True
 
@@ -368,15 +355,9 @@ class TestTheMcpQualityCaveats:
     def test_a_history_quality_gap_is_caveated_separately_from_the_tree(
         self, monkeypatch, history_state
     ):
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "require_strict_session_key",
-            lambda *_args, **_kwargs: ("dashboard:chat-1", None),
-        )
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "_get",
-            lambda *_args, **_kwargs: {
+        rendered = self._render(
+            monkeypatch,
+            {
                 "tree": "readable",
                 "history": history_state,
                 "sessions": [
@@ -390,20 +371,15 @@ class TestTheMcpQualityCaveats:
             },
         )
 
-        rendered = mcp_dashboard._call_tool_inner("session_status", {})
-
         assert "transcript-metadata roster" in rendered.lower()
         assert history_state in rendered.lower()
         assert "crew-log roster" not in rendered.lower()
 
     def _render(self, monkeypatch, payload):
-        monkeypatch.setattr(
-            mcp_dashboard,
-            "require_strict_session_key",
-            lambda *_args, **_kwargs: ("dashboard:chat-1", None),
-        )
-        monkeypatch.setattr(mcp_dashboard, "_get", lambda *_args, **_kwargs: payload)
-        return mcp_dashboard._call_tool_inner("session_status", {})
+        """One ``session_status`` frame whose roster route answers ``payload``."""
+        dash = InMemoryDashboardClient({"GET /api/session-control/status": payload})
+        ctx = ToolContext(dash, Caller.strict("dashboard:chat-1"))
+        return mcp_dashboard.TABLE.call("session_status", {}, ctx)
 
     def _one_row(self, status, **extra):
         row = {"target": "chat-2", "title": "worker", "status": status, "queue_depth": 0}
@@ -802,18 +778,17 @@ class TestTheCallerSurfaceIsRecheckedAfterTheScan:
         caller = _slot(state, "chat-1")
         child = _child(state, "chat-2", caller)
         child.title = "acquisition terms Q4"
-        mirrored: dict[str, bool] = {"now": False}
         real_scan = sc._created_history_roster
 
         def _scan_then_mirror(state_, caller_key_, workspace_):
             # The mirror lands while the scan is on its worker thread, which is
-            # exactly the window the synchronous gate cannot see.
+            # exactly the window the synchronous gate cannot see -- in the store the
+            # re-check reads.
             out = real_scan(state_, caller_key_, workspace_)
-            mirrored["now"] = True
+            state.sessions.set_mirror_link(_key(caller), "C0FFEE", "1758.0004")
             return out
 
         monkeypatch.setattr(sc, "_created_history_roster", _scan_then_mirror)
-        monkeypatch.setattr(sc, "_has_channel_mirror", lambda state_, slot_: mirrored["now"])
 
         with pytest.raises(sc.SessionControlError) as excinfo:
             _status(state, caller)

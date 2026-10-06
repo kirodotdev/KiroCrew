@@ -478,6 +478,11 @@ class DiscordTransport(MessagingTransport):
         the peer, and when this pairing knows the channel too the two must agree --
         a disagreement refuses the send, whatever the record says.
 
+        Session control's owner-DM predicate (``owner_dm_refusal``) reads the same
+        answer to place a dashboard tab's mirror as the owner's own DM, and refuses
+        on ``""``: a DM opened before a restart stays refused THERE until the
+        pairing is learned again, while the recipient leg below admits it.
+
         In-process only, by the pairing's own contract: a DM opened before a
         restart names nobody until the bot re-opens it or the peer writes into it,
         and the reader treats ``""`` as "not on record" rather than as a

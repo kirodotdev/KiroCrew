@@ -141,6 +141,7 @@ import { useNavTip } from './shell/nav/navTip'
 import { isChatRoute, useRouteActiveModel } from './shell/nav/routeActive'
 import { useDeveloperMode } from './shell/nav/developerMode'
 import { RailHeaderGlyph, RailBrandToggle, RailCommunityLinks } from './shell/nav/railChrome'
+import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -598,7 +599,7 @@ export function NavItem({ path, label, icon, active, collapsed, badge, onClickOv
   // the row-reorder glide that `layout` buys there.
   const isMobileRow = useIsMobile()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
-  const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
+  const { tip, tipOn, rowRef, showTip, hideTip, pointerProps: tipPointerProps } = useNavTip<HTMLDivElement>(collapsed)
   // Derived from the shortcut registry by route, so a row with a bound panel
   // chord advertises it and a row without one is untouched. Null when the user
   // has turned shortcuts off. See useNavShortcutHint for why this resolves per
@@ -643,6 +644,7 @@ export function NavItem({ path, label, icon, active, collapsed, badge, onClickOv
       className={`nav-item group/nav relative flex items-center min-w-0 cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 transition-colors duration-200 ${touch ? 'w-16 h-14 px-0.5 flex-col justify-center gap-0.5 rounded-xl shrink-0 [&_.app-icon-nav]:w-5 [&_.app-icon-nav]:h-5 [&_.app-icon-nav>svg]:w-5 [&_.app-icon-nav>svg]:h-5 [&_.app-icon-nav]:opacity-100' : 'rounded-md py-2 pl-3 pr-3'} ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
+      {...tipPointerProps}
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
       // Keyboard-only users (no pointer) can't trigger the mouse-driven hover
@@ -1484,127 +1486,125 @@ export default function App() {
         ? i18nT('app.open_command_bar')
         : i18nT('app.search_sessions_files_and_commands')
       return (
-        <nav
+        <AdaptiveMobileRail
           data-testid="mobile-nav-rail"
           role="navigation"
           aria-label={i18nT('app.main_navigation')}
-          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-hidden"
-        >
-          <button
-            type="button"
-            data-testid="mobile-nav-rail-home"
-            onClick={() => { onActivate(); if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true }) }}
-            className="w-11 h-11 mb-1 flex items-center justify-center shrink-0 rounded-xl bg-transparent border-none cursor-pointer"
-            // Named for what it DOES (home = the chat root), not for the brand
-            // it shows: an icon-only control announced as the product name told
-            // a screen-reader user nothing about where the tap goes.
-            aria-label={i18nT('nav.home')}
-          >
-            <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
-          </button>
-          {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
-          <NavItem
-            navId="apps"
-            path="/apps"
-            label={i18nT('nav.discover')}
-            icon={<Compass size={16} />}
-            active={discoverNavActive}
-            collapsed
-            touch
-            replace
-            onClickOverride={discoverNavActive ? onActivate : undefined}
-            badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-          />
-          <NavItem
-            navId="apps-library"
-            path="/apps/library"
-            label={i18nT('nav.library')}
-            icon={<LayoutGrid size={16} />}
-            active={libraryNavActive}
-            collapsed
-            touch
-            replace
-            onClickOverride={libraryNavActive ? onActivate : undefined}
-          />
-          {/* Apps list: scrolls in its OWN frame when many apps are installed --
-              the brand mark, the Main rows and Discover above it, and
-              Capabilities / Settings / Search below it stay pinned, exactly as
-              the desktop rail does. The scroller has no gap of its own so a
-              short list sits flush under Discover. */}
-          <div
-            data-testid="mobile-nav-rail-apps"
-            className="flex-1 min-h-0 w-full flex flex-col items-center gap-1 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none"
-            style={{ scrollbarWidth: 'none' }}
-          >
-            {sortedAppGroup.map(railRow)}
-          </div>
-          {devMode && (
+          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-y-auto overflow-x-hidden overscroll-y-contain scrollbar-none"
+          style={{ scrollbarWidth: 'none' }}
+          top={<>
+            <button
+              type="button"
+              data-testid="mobile-nav-rail-home"
+              onClick={() => { onActivate(); if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true }) }}
+              className="w-11 h-11 mb-1 flex items-center justify-center shrink-0 rounded-xl bg-transparent border-none cursor-pointer"
+              // Named for what it DOES (home = the chat root), not for the brand
+              // it shows: an icon-only control announced as the product name told
+              // a screen-reader user nothing about where the tap goes.
+              aria-label={i18nT('nav.home')}
+            >
+              <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
+            </button>
+            {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
             <NavItem
-              navId="developer"
-              path="/developer"
-              label={i18nT('app.developer')}
-              icon={<Code size={16} />}
-              active={activePath === '/developer'}
+              navId="apps"
+              path="/apps"
+              label={i18nT('nav.discover')}
+              icon={<Compass size={16} />}
+              active={discoverNavActive}
               collapsed
               touch
               replace
-              onClickOverride={activePath === '/developer' ? onActivate : undefined}
+              onClickOverride={discoverNavActive ? onActivate : undefined}
+              badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
             />
-          )}
-          {terminalEnabled && (
             <NavItem
-              navId="terminal"
-              path="#"
-              label={i18nT('app.terminal')}
-              icon={<SquareTerminal size={16} />}
-              active={bottomTerminalOpen || terminalPoppedOut}
-              pressed={bottomTerminalOpen || terminalPoppedOut}
+              navId="apps-library"
+              path="/apps/library"
+              label={i18nT('nav.library')}
+              icon={<LayoutGrid size={16} />}
+              active={libraryNavActive}
               collapsed
               touch
-              onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+              replace
+              onClickOverride={libraryNavActive ? onActivate : undefined}
             />
-          )}
-          {railRow(capabilitiesSurface)}
-          {/* The account modal (balance, sign-in state): the desktop opens it
-              from the readout capsule, which the phone does not render, so the
-              rail carries it -- on exactly the readings the desktop segment
-              shows (`kiroAccountEntry`). Toggles a surface, so `pressed`. */}
-          {kiroAccountEntry && (
+          </>}
+          apps={sortedAppGroup.map(railRow)}
+          // Pinned above Settings while the rail has room; folded into the Apps
+          // scroller (behind a divider) on screens where pinning them would leave
+          // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
+          secondary={<>
+            {devMode && (
+              <NavItem
+                navId="developer"
+                path="/developer"
+                label={i18nT('app.developer')}
+                icon={<Code size={16} />}
+                active={activePath === '/developer'}
+                collapsed
+                touch
+                replace
+                onClickOverride={activePath === '/developer' ? onActivate : undefined}
+              />
+            )}
+            {terminalEnabled && (
+              <NavItem
+                navId="terminal"
+                path="#"
+                label={i18nT('app.terminal')}
+                icon={<SquareTerminal size={16} />}
+                active={bottomTerminalOpen || terminalPoppedOut}
+                pressed={bottomTerminalOpen || terminalPoppedOut}
+                collapsed
+                touch
+                onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+              />
+            )}
+            {railRow(capabilitiesSurface)}
+            {/* The account modal (balance, sign-in state): the desktop opens it
+                from the readout capsule, which the phone does not render, so the
+                rail carries it -- on exactly the readings the desktop segment
+                shows (`kiroAccountEntry`). Toggles a surface, so `pressed`. */}
+            {kiroAccountEntry && (
+              <NavItem
+                navId="account"
+                path="#"
+                label={i18nT('components.kiroAccountModal.kiro_account')}
+                icon={<Coins size={16} />}
+                active={kiroUsageOpen}
+                pressed={kiroUsageOpen}
+                collapsed
+                touch
+                onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+              />
+            )}
+          </>}
+          bottom={<>
             <NavItem
-              navId="account"
-              path="#"
-              label={i18nT('components.kiroAccountModal.kiro_account')}
-              icon={<Coins size={16} />}
-              active={kiroUsageOpen}
-              pressed={kiroUsageOpen}
+              path={settingsSurface.path}
+              label={surfaceLabel(settingsSurface)}
+              icon={settingsSurface.icon}
+              active={navRowActive(settingsSurface.path)}
               collapsed
               touch
-              onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+              replace
+              onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
+              badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
             />
-          )}
-          <NavItem
-            path={settingsSurface.path}
-            label={surfaceLabel(settingsSurface)}
-            icon={settingsSurface.icon}
-            active={navRowActive(settingsSurface.path)}
-            collapsed
-            touch
-            replace
-            onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
-            badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
-          />
-          <button
-            type="button"
-            data-testid="mobile-nav-rail-search"
-            onClick={() => { onActivate(); commandPalette.openPalette() }}
-            className="mt-1 w-16 h-14 px-0.5 rounded-xl border border-border bg-card text-text flex flex-col items-center justify-center gap-0.5 cursor-pointer shrink-0"
-            aria-label={searchLabel}
-            title={searchLabel}
-          >
-            <SearchIcon size={18} />
-            <span aria-hidden="true" className="max-w-full whitespace-normal text-center text-[10px] leading-[1.1] font-medium tracking-tight line-clamp-2">{i18nT('nav.search_short')}</span>
-          </button>
-        </nav>
+            <button
+              type="button"
+              data-testid="mobile-nav-rail-search"
+              onClick={() => { onActivate(); commandPalette.openPalette() }}
+              className="mt-1 w-16 h-14 px-0.5 rounded-xl border border-border bg-card text-text flex flex-col items-center justify-center gap-0.5 cursor-pointer shrink-0"
+              aria-label={searchLabel}
+              title={searchLabel}
+            >
+              <SearchIcon size={18} />
+              <span aria-hidden="true" className="max-w-full whitespace-normal text-center text-[10px] leading-[1.1] font-medium tracking-tight line-clamp-2">{i18nT('nav.search_short')}</span>
+            </button>
+          </>}
+        />
       )
     }
     : null

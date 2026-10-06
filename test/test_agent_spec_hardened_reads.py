@@ -1334,6 +1334,9 @@ _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # the delete, so that read needs the failure to surface rather than fold to None.
 _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    "kiro_crew/agent_materialization/conductor_agents.py": [
+        ("conductor_spec_regeneration", "unknown"),
+    ],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
     "kiro_crew/dashboard/handlers/sessions.py": [
         ("session_tool_policy", "dashboard"),

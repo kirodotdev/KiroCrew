@@ -20,6 +20,7 @@ import logging
 import time
 import uuid
 from dataclasses import fields
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import autonudge_stop_log
@@ -31,13 +32,15 @@ from kiro_crew.autonudge_service.maintenance import (
     _unclaim_mutation_lock,
 )
 from kiro_crew.autonudge_service.model import (
+    _KEPT_STOP_REASONS,
     _MAX_IDLE_SECS,
     _MIN_IDLE_SECS,
-    _TERMINAL_BOUND_REASONS,
     AUTONUDGE_STOP_REASON,
     CYCLE_CAP_REASON,
+    FINISHED_LOOP_REASONS,
     MANUAL_STOP_REASON,
     RUNTIME_BUDGET_REASON,
+    STOP_SENTINEL_REASON,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
@@ -47,6 +50,7 @@ from kiro_crew.autonudge_service.model import (
     cap_reached,
     is_structured_monitor_loop,
     new_goal_token,
+    reason_in,
 )
 from kiro_crew.autonudge_service.subject import infer_monitor, infer_subject
 from kiro_crew.monitoring.limits import validate_runtime_secs
@@ -57,6 +61,19 @@ if TYPE_CHECKING:
 
 # The service's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.autonudge")
+
+
+def _stop_file_lifted(loop: NudgeLoop) -> bool:
+    """Whether a loop its stop file finished may run again: the file is gone.
+
+    Only a ``stop_sentinel`` row with a known path answers True, and only while
+    nothing exists at that path. A finished watch has no file to lift, and a row
+    whose path was dropped at load (``repair_sentinel_path``) has nothing to
+    consult, so both stay finished. The same ``exists`` the timer runs.
+    """
+    if loop.stopped_reason != STOP_SENTINEL_REASON or not loop.stop_sentinel_path:
+        return False
+    return not Path(loop.stop_sentinel_path).exists()
 
 
 async def add(
@@ -810,6 +827,8 @@ async def _update_unserialized(
             loop.max_cycles = max(0, int(max_cycles))
         if max_runtime_secs is not None:
             loop.max_runtime_secs = max(0, int(max_runtime_secs))
+        #: Set when ``active=True`` reached a FINISHED row and was declined.
+        refused_revival = False
         if active is not None:
             if (
                 active
@@ -837,6 +856,34 @@ async def _update_unserialized(
                 # activated.
                 loop.active = False
                 loop.next_due_ts = 0.0
+            elif (
+                active
+                and not loop.active
+                and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                and not _stop_file_lifted(loop)
+            ):
+                # A FINISHED loop: the agent created its stop file, or the watched
+                # subject merged or closed (that one is usually refused above by
+                # its outcome; this also covers a row whose monitor was cleared by
+                # a retarget after it finished). There is nothing to resume --
+                # reviving would re-fire a goal the agent declared met, or poll a
+                # settled subject -- so the revival is declined whoever asks: the
+                # popover's Play, ``monitor_update``, an app reconciler. The
+                # record stays inactive under its reason; clearing it, or arming
+                # a NEW loop that displaces it, are the ways on.
+                #
+                # The one exception is a stop file that is GONE: Issue Radar and
+                # Research Lab arm the same file as an operator's kill switch, and
+                # an operator who deletes it means "run again" -- their reconciler
+                # re-arms the row on its next pass. The goal popover never deletes
+                # the file (the next arm on the slot does, after Clear), so its Done
+                # stays as it is.
+                logger.info(
+                    "AutoNudge: loop %s is finished (%s) — not reviving it",
+                    loop.id,
+                    loop.stopped_reason,
+                )
+                refused_revival = True
             # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
             # (stopped_reason supplied — the _timer's cycle_cap /
             # runtime_budget paths) must never OVERWRITE a deactivation
@@ -868,21 +915,27 @@ async def _update_unserialized(
                 not active
                 and stopped_reason is None
                 and not loop.active
-                and loop.stopped_reason in _TERMINAL_BOUND_REASONS
+                and reason_in(loop.stopped_reason, _KEPT_STOP_REASONS)
             ):
                 # The MIRROR of the race above: the bound landed first and a
                 # reasonless pause (the goal popover's, pressed off a stale
                 # running reading) arrives second. A repeat of an inactive state
                 # is not a new stop, and "manual" over the bound would lose why
-                # the loop ended.
+                # the loop ended. A FINISHED stop is kept for one more reason:
+                # its reason is what refuses the revival, so "manual" over it
+                # would hand Play back on a loop with nothing to resume.
                 logger.info(
                     "AutoNudge: loop %s keeps its %s stop on reasonless inactive update",
                     loop.id,
                     loop.stopped_reason,
                 )
-            elif stopped_reason in _TERMINAL_BOUND_REASONS and not active and not loop.active:
+            elif reason_in(stopped_reason, _KEPT_STOP_REASONS) and not active and not loop.active:
+                # A bound or the stop file landing on a loop already inactive --
+                # a pause that beat the timer's own stop to the lock -- is not a
+                # new transition either, and must not make that pause look like
+                # a finished or capped-out loop.
                 logger.info(
-                    "AutoNudge: loop %s already deactivated (%s) — %s bound " "not overwriting it",
+                    "AutoNudge: loop %s already deactivated (%s) — %s stop not overwriting it",
                     loop.id,
                     loop.stopped_reason or MANUAL_STOP_REASON,
                     stopped_reason,
@@ -954,6 +1007,21 @@ async def _update_unserialized(
                             loop.created_ts = time.time()
                 else:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+        if (
+            refused_revival
+            and not any(
+                value is not None
+                for value in (message, idle_secs, max_cycles, max_runtime_secs, banner, judge)
+            )
+            and not requested_watch
+        ):
+            # Only the revival was asked, and it was declined, so nothing changed:
+            # no store write, no ``updated`` frame. The Issue Radar and Research Lab
+            # reconcilers re-arm every inactive loop of a live crew or campaign on
+            # each pass (every 60 s and 5 s), so a finished row they cannot revive
+            # would otherwise cost a full store rewrite and a broadcast per pass
+            # for the life of the campaign.
+            return loop
         revived = loop.active and not was_active
         if revived:
             # A revival re-arms the loop for a fresh run: a structural verdict

@@ -1,4 +1,4 @@
-"""One catalog row per enumerated skill: metadata, size, deliveries and the ``owned`` hint.
+"""One catalog row per enumerated skill: metadata, size, usage and the ``owned`` hint.
 
 ``list_skills`` reads metadata only through the loader's choke-point readers,
 reuses a persisted metadata row while its stat fingerprint matches, and reuses
@@ -355,7 +355,7 @@ def list_skills(
                 "fingerprint": fingerprint if project_root is None else "",
                 "content_digest": (meta.get("_content_digest", "") if project_root is None else ""),
                 "metadata_indexed": project_root is None and bool(fingerprint),
-                "deliveries": loader._delivery_count(name),
+                **loader._usage_fields(name),
                 "owned": loader._owned_hint(skill_file),
             }
         )
@@ -397,16 +397,21 @@ def _owned_hint(loader: SkillsLoader, skill_file: Path) -> bool:
         return False
 
 
-def _delivery_count(loader: SkillsLoader, key: str) -> int | None:
-    """Body deliveries recorded for *key*, or ``None`` when untracked.
+def _usage_fields(loader: SkillsLoader, key: str) -> dict[str, int | float | None]:
+    """The listing's ``deliveries`` and ``last_used_at`` for *key*.
 
-    Best-effort: the ledger is telemetry, so a missing or unreadable one
-    yields ``None`` rather than failing the whole listing.
+    ``deliveries`` is the ledger's body-delivery count and ``last_used_at``
+    the unix time of the latest one; both are ``None`` when the key is
+    untracked. Best-effort: the ledger is telemetry, so a missing or
+    unreadable one yields ``None`` rather than failing the whole listing.
     """
+    untracked: dict[str, int | float | None] = {"deliveries": None, "last_used_at": None}
     if loader._usage is None:
-        return None
+        return untracked
     try:
-        hits, _ = loader._usage.score(key)
+        hits, last_seen = loader._usage.score(key)
     except Exception:
-        return None
-    return int(hits) if hits else None
+        return untracked
+    if not hits:
+        return untracked
+    return {"deliveries": int(hits), "last_used_at": last_seen or None}

@@ -103,8 +103,10 @@ describe('the Content Width setting reaches the user bubble', () => {
     // The card stands in for the hidden transcript row at hand-off; a card that
     // kept the old 550px cap would visibly change width the moment a long
     // prompt pins. Scoped to the card: the thumbnail's own `max-w-[160px]` is
-    // an image size, not a bubble cap.
-    expect(/data-testid="pinned-prompt"[\s\S]{0,1200}?className="pointer-events-auto max-w-full min-w-0"/.test(text)).toBe(true)
+    // an image size, not a bubble cap. The `relative z-[1]` prefix lifts the
+    // card above the opaque mask layer behind it; the width cap that preserves
+    // parity is still `max-w-full min-w-0`.
+    expect(/data-testid="pinned-prompt"[\s\S]{0,1200}?className="relative z-\[1\] pointer-events-auto max-w-full min-w-0"/.test(text)).toBe(true)
     expect(text).not.toMatch(/max-w-\[(?:min\()?550px/)
   })
 })

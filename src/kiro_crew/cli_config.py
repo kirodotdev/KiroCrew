@@ -210,7 +210,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 print("       kirocrew config set --local <key> <value>", file=sys.stderr)
                 print("       kirocrew config set --file <path.json>", file=sys.stderr)
                 sys.exit(1)
-            parsed = _parse_value(value)
+            # A list-typed key takes a list or is refused: the generic parser
+            # answers an unparsable word with the STRING itself, and a string
+            # stored under a list key is replaced by the default at load.
+            parsed: object
+            try:
+                if _is_list_key(key):
+                    parsed = _parse_list_value(key, value)
+                else:
+                    parsed = _parse_value(value)
+            except ValueError as list_error:
+                print(f"❌ {key}: {list_error}", file=sys.stderr)
+                sys.exit(1)
             # A declared enum is checked on EVERY write, stored or not, and what is
             # written is the enum's own spelling. The type check below runs only on
             # a first write, because a stored value's type stands in for the
@@ -815,6 +826,78 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
     return None
+
+
+def _is_list_key(key: str) -> bool:
+    """True when *key* is declared ``array`` in the registry.
+
+    The declaration is the authority (a wildcard path such as
+    ``telegram.accounts.*.allowed_user_ids`` matches segment by segment). A key the
+    registry does not know returns False: the base write path refuses an unknown
+    key outright before this is consulted, so there is no reachable undeclared key
+    for the loader-reset harm to apply to.
+    """
+    from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+    parts = key.split(".")
+    for entry in SCHEMA_REGISTRY:
+        e_parts = entry.path.split(".")
+        if len(e_parts) == len(parts) and all(
+            e == "*" or e == p for e, p in zip(e_parts, parts, strict=True)
+        ):
+            return entry.type == "array"
+    return False
+
+
+def _parse_list_value(key: str, raw: str) -> list:
+    """Parse *raw* as the value of the list-typed *key*, or raise ``ValueError``.
+
+    Only a JSON array is accepted. The case that matters is the array whose quotes
+    a shell removed (Windows PowerShell 5.1 delivers ``'["a","b"]'`` as ``[a,b]``):
+    it is not JSON, so the scalar parser stored it as a string and the loader then
+    dropped the whole field back to its default, un-trusting whatever the list
+    held. No other spelling is guessed at: a list field's item type (``list[int]``
+    for a Telegram user id, ``list[str]`` for a Slack one) is not known here, and a
+    wrongly typed list is dropped the same way.
+    """
+    text = raw.strip()
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        raise ValueError(f"expected a JSON array, got {raw!r}\n" + _list_hint(key)) from None
+    if isinstance(loaded, list):
+        return loaded
+    raise ValueError(
+        f"expected a JSON array, got a JSON {type(loaded).__name__}\n" + _list_hint(key)
+    )
+
+
+def _list_hint(key: str) -> str:
+    """The retry lines for a refused list value: the forms that survive PowerShell.
+
+    Both the example items (``["a","b"]``) and the key are rendered so that nothing
+    the caller typed can break out of the retry line: the hint is printed for a
+    human or an agent to paste into a shell, so a shell metacharacter in either
+    would let the pasted command run something else. The items are a STATIC
+    example; the key is shown verbatim only when it is a plain config dot-path
+    (the only shape a real key has) and is replaced by a ``<key>`` placeholder
+    otherwise, so a wildcard segment carrying ``;`` or a quote never reaches the
+    shell. The task is to demonstrate the quoting that survives each shell, which
+    a safe key and fixed items do.
+    """
+    as_json = '["a","b"]'
+    escaped = as_json.replace('"', '\\"')
+    safe_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.*-")
+    safe_key = key if key and set(key) <= safe_chars else "<key>"
+    prefix = f"kirocrew config set {safe_key}"
+    return "\n".join(
+        [
+            "   Nothing was written. A shell may have stripped the quotes of a JSON array",
+            "   (Windows PowerShell 5.1 does), leaving [a,b], which is not JSON. Retry with:",
+            f"     PowerShell 7.3+, sh:    {prefix} '{as_json}'",
+            f"     Windows PowerShell 5.1: {prefix} '{escaped}'",
+        ]
+    )
 
 
 def _parse_value(raw: str) -> object:

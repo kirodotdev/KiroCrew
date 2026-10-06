@@ -440,7 +440,6 @@ class SlotProjection:
             # with the same window the stop route uses, so the button's hint and
             # the backend's answer cannot disagree.
             "stop_declined": stop_declined_armed(slot),
-            "orchestrating": slot._in_stage_execution,
             "queue_depth": slot.queue_depth,
             "stopping": slot._stopping,
             "pending_approval": pending_approval,

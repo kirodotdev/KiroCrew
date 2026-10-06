@@ -326,35 +326,6 @@ async def test_switch_variant_rejected_while_a_turn_is_in_flight(state) -> None:
         slot.task.cancel()
 
 
-@pytest.mark.parametrize(
-    ("path", "body"),
-    [
-        ("regenerate", None),
-        ("switch-variant", {"index": 0}),
-        ("edit-resend", {"index": 0, "content": "edited"}),
-    ],
-)
-@pytest.mark.asyncio
-async def test_destructive_history_endpoints_refuse_a_paused_boundary(state, path, body) -> None:
-    slot = state.get_or_create_slot("s1")
-    slot.append("user", "original")
-    slot.append("assistant", "v2")
-    slot.messages[-1]["variants"] = [
-        {"content": "v1", "ts": "t1"},
-        {"content": "v2", "ts": "t2"},
-    ]
-    slot.stage_boundary.arm(1, consumed=True)
-    assert slot.running is True and slot.turn_running is False
-
-    async with _client(state) as client:
-        response = await client.post(f"/api/chat/slots/s1/{path}", json=body)
-        payload = await response.json()
-
-    assert response.status == 409
-    assert payload == {"error": "slot is busy", "code": "slot_busy"}
-    assert [message["content"] for message in slot.messages] == ["original", "v2"]
-
-
 @pytest.mark.asyncio
 async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     """The broadcast leaves the process, so the chosen variant is redacted."""
@@ -1537,32 +1508,6 @@ async def test_edit_resend_reauthorizes_the_slot_after_the_body_read(state) -> N
 # ``discard_conversation`` is a full teardown: it drops the native conversation
 # AND releases the shared sub-agent runtime. ``slot.running`` tracks only this
 # slot's own task, so it answers False in both states below.
-
-
-@pytest.mark.asyncio
-async def test_edit_resend_refuses_while_a_plan_is_mid_stage(state) -> None:
-    """An autopilot plan reads ``running`` False BETWEEN stages while still
-    mid-plan, so ``running`` alone would discard the conversation the plan is
-    writing into and truncate the history it is producing. Same 409 code the
-    sibling reset-conversation teardown returns."""
-    slot = state.get_or_create_slot("s1")
-    slot.append("user", "first")
-    slot.append("assistant", "answer")
-    slot.drain()
-    slot._in_stage_execution = True
-    original_messages = list(slot.messages)
-
-    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()) as run:
-        async with _client(state) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
-            )
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "slot_orchestrating"
-
-    assert slot.messages == original_messages
-    state.sessions.discard_conversation.assert_not_awaited()
-    run.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -409,11 +409,13 @@ def test_an_opencode_mcp_deny_hook_meets_the_fused_tool(matcher, tmp_path, monke
     assert not _blocks(event, "mcp__other__*", tmp_path, monkeypatch)
 
 
-def test_an_at_server_slash_tool_matcher_is_not_a_spec_matcher(tmp_path, monkeypatch):
-    # The object form's matcher rule takes no "@" or "/", on every backend; the
-    # spec names an MCP tool as mcp__server__tool instead.
-    event = _opencode_mcp_permission_event(("kirocrew-core",))
-    assert not _blocks(event, "@kirocrew-core/monitor_start", tmp_path, monkeypatch)
+@pytest.mark.parametrize("matcher", ["@kirocrew-core/monitor_start", "@kirocrew-core/*"])
+def test_an_at_server_slash_tool_matcher_meets_the_fused_tool(matcher, tmp_path, monkeypatch):
+    # The documented MCP spelling the split already produces: Crew-fired spec
+    # hooks accept it beside the object form's rule, scoped to its own server.
+    event = _opencode_mcp_permission_event(("kirocrew-core", "other"))
+    assert _blocks(event, matcher, tmp_path, monkeypatch)
+    assert not _blocks(event, "@other/*", tmp_path, monkeypatch)
 
 
 def test_a_server_whose_name_prefixes_a_native_tool_keeps_the_native_names(tmp_path, monkeypatch):

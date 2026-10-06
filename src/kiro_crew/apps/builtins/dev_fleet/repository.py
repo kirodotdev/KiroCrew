@@ -43,7 +43,7 @@ def _resolve_primary_checkout(path: str) -> str:
         common = out.stdout.strip()
         if out.returncode == 0 and Path(common).name == ".git":
             return str(Path(common).parent)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return path
 

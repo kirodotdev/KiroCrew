@@ -5,85 +5,85 @@ timestamp) and returns :class:`Decision` objects; it owns no clock, no task, no
 socket. The controller in :mod:`.controller` is the only thing that acts on a
 decision, and the tests drive the policy with hand-built samples.
 
-Two tracks, one verdict. The gateway's execution cap (subagent spawns) and the
-daemon's spawn gate (backend forks) have different bounds -- ``min(user_max, 4)``
-/ 1 / ``user_max`` and 4 / 1 / 8 -- but they move on the same pressure verdict,
-because both describe how many cold starts this HOST can absorb at once. Each
-track earns its increases on its own evidence (completions for the exec track,
-successful backend inits for the gate) and only when demand is actually at its
-limit, so an idle track never drifts up.
+Two tracks, two kinds of evidence, one decision per sample. The gateway's
+execution cap (subagent and runner-lane starts) and the daemon's spawn gate
+(backend forks) have different bounds -- ``user_max`` / ``floor`` /
+``user_max`` and ``spawn_concurrency_initial`` / ``_min`` / the gate ceiling --
+and they read different evidence (:mod:`.signals`):
+
+* the **execution cap** reads WORK evidence only: attributable timeouts, slow
+  starts, failing MCP servers, spawn-gate init failures, fd and process
+  exhaustion, a low completion rate. It never reads the gateway's loop lag or
+  free memory. Memory is the per-start spawn floor's (``agent.spawn_min_memory_gb``),
+  which prices every start against what it will settle at; a count cap moved
+  by memory or lag on top of that floor is what throttled one chat's subagents
+  behind another's. Nothing is sufficient alone for it: a cut needs two
+  distinct work signals in one sample. It is never paused.
+* the **spawn gate** reads every signal EXCEPT the gateway's loop lag, plus the
+  daemon's own slow inits: memory at the critical line, gate init failures and
+  slow inits are each sufficient alone, and critical memory pauses it at its
+  floor. It bounds how many backend processes fork and initialize at once
+  inside the MCP daemon, a separate process, so the dashboard gateway's
+  event-loop lag is no evidence about it.
+
+Each track earns its increases on its own evidence (completions for the exec
+track, successful backend inits for the gate) and only when demand is actually
+at its limit, so an idle track never drifts up.
 
 Rules, with fixed tuning constants owned by this module:
 
-* **Decrease** (multiplicative). Only on CORROBORATED pressure: a signal that
-  is sufficient alone (loop lag >= 250 ms, memory <= critical) or at least two
-  distinct signals in one sample (timeouts + slow starts, fds + gate failures,
-  ...). Target ``max(ceil(cap * 0.5), healthy_in_flight)``, at most ``cap - 1``,
-  never below the floor: halving is the lower bound, but a cut below the work
-  that is currently succeeding frees nothing (nothing is ever killed) and would
-  only be undone. That is what turns 10 concurrent starts with 4 timing out
-  into 6, then 4. Cooldown 30 s between decreases; the successes counted
-  before a decrease are discarded on the track that was cut, and only there
-  -- a track already at its floor keeps the successes it has earned.
-* **Increase**. Two regimes, one rule each, and the bound is the user's
-  configured ceiling (``exec_ceiling``: an explicit ``max_subagents``, or the
-  memory-sized auto cap when it is 0). No static host prediction sits under
-  that ceiling: the point of the loop is to let many sessions ask for many
-  workers, admit them up to the ceiling, and QUEUE and back off on the live
-  pressure signals below (memory under the pressure line, loop lag, timeouts)
-  rather than pin the cap at a number guessed from peak readings. Memory is
-  the one resource whose over-commit is unrecoverable, and it is guarded
-  live: an increase needs a MEASURED free-memory reading at or above the
-  pressure line (an unreadable host, ``free_mem_mb < 0``, fails open here as
-  it does for the spawn gate's own guard), a decrease fires at the critical
-  line, and the spawn gate defers every cold start that would not leave
-  ``spawn_min_memory_gb`` free after its own start price and the running agents'
-  unobserved growth.
+* **Decrease** (multiplicative). Only on CORROBORATED pressure for that track.
+  Exec: ``max(ceil(cap * 0.5), healthy_in_flight)``, at most ``cap - 1``, never
+  below the floor: halving is the lower bound, but a cut below the work that is
+  currently succeeding frees nothing (nothing is ever killed) and would only be
+  undone. That is what turns 10 concurrent starts with 4 timing out into 6, then
+  4. Gate: ``ceil(cap * 0.5)`` at most ``cap - 1``, never below its floor.
+  Cooldown 30 s between decreases, per track; the successes counted before a
+  decrease are discarded on the track that was cut, and only there -- a track
+  that did not move keeps the successes it has earned.
+* **Increase**. Two regimes, one rule each. The exec bound is the user's
+  configured ceiling (``exec_ceiling``: an explicit ``max_subagents``, or
+  ``agent.subagent_auto_max`` when it is 0), which stands in for provider
+  concurrency and fd/PID limits; no host prediction sits under it.
 
   * **Slow start**, until this process meets its first corroborated pressure or
     pause: ``x2`` per clean sample window (``slow_start_clean_secs``, 5 s),
     once ``slow_start_successes`` (1) completions land and demand is at the
-    cap. A fresh gateway therefore reaches the host's own figure in a handful
-    of windows: a flat ``+1`` per ``increase_clean_secs`` (30 s) window from
-    the fresh-start 4 to a 64 ceiling is 60 windows, i.e. 30 minutes of clean
-    samples.
+    cap. Only a cap below its ceiling uses it -- the exec track STARTS at the
+    ceiling -- so it is what a lowered cap or a raised ceiling climbs with.
   * **Congestion avoidance**, afterwards: ``+1`` per ``increase_clean_secs``
     (30 s) window, once demand is at the cap and enough work has landed:
     ``min(increase_successes, cap)`` completions on the exec track -- one full
     wave of the CURRENT cap -- and ``increase_successes`` on the gate, whose
-    counter is backend inits rather than finished runs. Scaling the exec bar to
-    the CAP is what makes the first step off a floored cap affordable: a flat 20
-    made ``1 -> 2`` cost twenty serial runs, so a cap cut to the floor stayed
-    there.
+    counter is backend inits rather than finished runs.
 
-  Both regimes also require the sample to be clear on the hysteresis side
-  (lag < 100 ms, memory >= pressure line, no signal at all) and at least one
-  window since the last pressure. An idle track never drifts up PAST the
-  fresh-start cap.
+  Each track also requires the sample to be clear of ITS evidence and at least
+  one window since its last pressure: the exec track no work signal, the gate
+  none of its signals plus memory at or above the pressure line.
 * **Idle recovery**. A cut is evidence about the work that was running when
   it fired. Once the exec track has had no demand at all (nothing running or
-  queued) and the host no pressure signal for ``idle_recovery_secs`` (60 s),
-  that evidence is stale, yet the earn rules above can never retire it: they
-  need demand at the cap and completions, and an idle track -- or one whose
-  load runs on the runner lane (workflow ``ctx.agent()`` calls, TaskRunner
-  steps), which the exec track does not count -- produces neither. So a cap
-  below the fresh-start value climbs ``+1`` per clean window while that holds,
-  and a pause whose probe never reported (nothing ran, or it ran where no
-  completion is counted) resumes at ``floor + 1`` (never above the fresh-start
-  cap). The bound is the fresh-start
-  cap, ``min(user_max, adaptive_initial)``: a drained process never holds MORE
-  untested concurrency than a restart would, and everything above it is still
-  earned. Any signal restarts the idle clock; the next corroborated pressure
-  cuts again.
-* **Pause and probe**. Severe pressure (memory below critical, or loop lag
-  beyond 2 s) for two consecutive samples pauses dispatch: the exec cap goes
-  to 0 grants and the gate to its floor. Running work is untouched. Once the
-  severe condition clears, one probe is admitted (exec cap 1); when that probe
-  completes without pressure the caps return to ``floor + 1`` and normal AIMD
-  resumes. A probe that meets corroborated pressure re-pauses.
+  queued) and no work signal for ``idle_recovery_secs`` (60 s), that evidence
+  is stale, yet the earn rules above can never retire it: they need demand at
+  the cap and completions, and an idle track -- or one whose load runs on the
+  runner lane, which the exec track does not count -- produces neither. So a
+  cap below the fresh-start value climbs ``+1`` per clean window while that
+  holds. The bound is the fresh-start cap (the ceiling, unless a test pins
+  ``exec_initial``). Any work signal restarts the idle clock. The spawn gate
+  recovers the same way: below its fresh-start value, ``idle_recovery_secs``
+  with none of its signals and no cut climbs it ``+1`` per clean window, with
+  or without demand, so a cut is not permanent just because no backend start
+  happens to be queued at the cap.
+* **Pause and probe** (spawn gate only). Memory below critical for two
+  consecutive samples holds the gate
+  at its floor. Once the severe condition clears, the gate probes: when a
+  completion lands without pressure it resumes at ``floor + 1``; an idle host
+  resumes it at the floor. A probe that meets corroborated pressure re-pauses.
+  The execution cap is untouched throughout.
 * **Provider throttling** never reaches the host caps. Throttled scopes are
   reported on the decision for the dependency coordinator (area L).
-* **Fresh start** is ``min(user_max, 4)``; the process earns its way up.
+* **Fresh start**: the exec track at its ceiling, the gate at its initial
+  value. A raised ceiling is followed at once while the exec cap sits at the
+  old one (nothing cut it); a cap below it earns the room.
 * **Why the cap is low** is on the snapshot: ``last_cut`` is the decision that
   last lowered the exec cap (action, reason, signals, sample time), and a hold
   names what the next increase is waiting for (demand at the cap, completions,
@@ -138,7 +138,7 @@ DEFAULT_LAG_DECREASE_MS = 250.0
 DEFAULT_LAG_INCREASE_MS = 100.0
 DEFAULT_LAG_SEVERE_MS = 2000.0
 DEFAULT_TIMEOUT_RATE = 0.2
-#: Idle recovery: no exec demand and no pressure signal for this long retires a
+#: Idle recovery: no exec demand and no work signal for this long retires a
 #: cut, and the cap climbs back toward the fresh-start value one clean window
 #: at a time. Two congestion-avoidance windows, so a cap is never restored on
 #: the sample right after the pressure that set it.
@@ -146,13 +146,29 @@ DEFAULT_IDLE_RECOVERY_SECS = 60.0
 
 _NEVER = float("-inf")
 
+#: How strongly each action speaks for a sample that moved both tracks: the
+#: decision's ``action`` is the strongest of the two tracks' actions.
+_ACTION_RANK = {
+    ACTION_HOLD: 0,
+    ACTION_INCREASE: 1,
+    ACTION_DECREASE: 2,
+    ACTION_RESUME: 3,
+    ACTION_PROBE: 4,
+    ACTION_PAUSE: 5,
+}
+
 
 @dataclass(frozen=True)
 class PolicyParams:
-    """Bounds and rates. ``exec_ceiling`` is the user's cap and is never written."""
+    """Bounds and rates. ``exec_ceiling`` is the user's cap and is never written.
+
+    ``exec_initial`` is ``None`` in production: the execution cap starts at its
+    ceiling. A test that pins a congestion-avoidance rule from a lower cap
+    passes a number.
+    """
 
     exec_ceiling: int
-    exec_initial: int = DEFAULT_INITIAL
+    exec_initial: Optional[int] = None
     floor: int = DEFAULT_FLOOR
     gate_initial: int = DEFAULT_INITIAL
     gate_floor: int = DEFAULT_FLOOR
@@ -189,7 +205,8 @@ class PolicyParams:
 
     @property
     def exec_start(self) -> int:
-        return _clamp(self.exec_initial, self.exec_floor, self.exec_ceiling)
+        initial = self.exec_ceiling if self.exec_initial is None else self.exec_initial
+        return _clamp(initial, self.exec_floor, self.exec_ceiling)
 
     @property
     def gate_start(self) -> int:
@@ -202,6 +219,8 @@ class Decision:
 
     effective_exec_cap: int
     spawn_gate_capacity: int
+    #: The SPAWN GATE is paused at its floor (severe host pressure). The
+    #: execution cap is never paused.
     paused: bool
     probing: bool
     action: str
@@ -231,6 +250,7 @@ class AdaptivePolicy:
         self._p = params
         self._exec_cap = params.exec_start
         self._gate_cap = params.gate_start
+        # The spawn gate's pause. The execution cap has none.
         self._paused = False
         self._probing = False
         self._severe_streak = 0
@@ -238,9 +258,18 @@ class AdaptivePolicy:
         # not retired it after the first corroborated pressure or pause.
         self._slow_start_retired = False
         self._slow_start = bool(params.slow_start)
-        self._last_decrease_at = _NEVER
-        self._last_increase_at = _NEVER
+        # Per-track clocks: each track decreases, waits out its clean window and
+        # takes one increase per window on its own evidence.
+        self._last_exec_decrease_at = _NEVER
+        self._last_gate_decrease_at = _NEVER
+        self._last_exec_increase_at = _NEVER
+        self._last_gate_increase_at = _NEVER
+        # Last sample with ANY signal (the gate's evidence) and last sample with
+        # a WORK signal (the exec track's: everything but loop lag and memory).
         self._last_pressure_at = _NEVER
+        # Last sample carrying one of the GATE's signals (loop lag excluded).
+        self._last_gate_pressure_at = _NEVER
+        self._last_exec_pressure_at = _NEVER
         # Last sample with exec demand (running + queued > 0): idle recovery
         # measures its clock from the later of this and the last pressure.
         self._last_busy_at = _NEVER
@@ -279,6 +308,7 @@ class AdaptivePolicy:
 
     @property
     def paused(self) -> bool:
+        """Whether the SPAWN GATE is paused at its floor."""
         return self._paused
 
     @property
@@ -312,19 +342,23 @@ class AdaptivePolicy:
     def update_params(self, params: PolicyParams) -> None:
         """Adopt new bounds / rates without losing the earned position.
 
-        A lowered ceiling clamps the live cap; a raised one leaves it where it
-        is (the process still has to earn the room). Switching to ``fixed``
-        snaps both caps to their initial values on the next decision.
+        A lowered ceiling clamps the live cap. A raised one is followed at once
+        when the exec cap sat AT the old ceiling -- nothing had cut it, and the
+        track starts at its ceiling -- and otherwise leaves the cap where it is,
+        to earn the room. Switching to ``fixed`` snaps both caps to their
+        initial values on the next decision.
 
         Slow start follows its config flag until this process observes its first
         corroborated pressure or pause. That evidence retires slow start for the
         process lifetime, so later config edits cannot revive it.
         """
+        old = self._p
         self._p = params
         self._slow_start = bool(params.slow_start) and not self._slow_start_retired
-        self._exec_cap = _clamp(
-            self._exec_cap, 0 if self._paused else params.exec_floor, params.exec_ceiling
-        )
+        exec_cap = self._exec_cap
+        if params.exec_ceiling > old.exec_ceiling and exec_cap >= old.exec_ceiling:
+            exec_cap = params.exec_ceiling
+        self._exec_cap = _clamp(exec_cap, params.exec_floor, params.exec_ceiling)
         self._gate_cap = _clamp(
             self._gate_cap, params.gate_floor, max(params.gate_floor, params.gate_ceiling)
         )
@@ -344,39 +378,51 @@ class AdaptivePolicy:
         self._rebase_dropped_gate_successes(sample)
         report = classify(sample, self._p.thresholds)
         now = sample.t
-        if self._last_increase_at == _NEVER:
+        if self._last_exec_increase_at == _NEVER:
             # A fresh process earns its first increase: the first clean window
             # is measured from the first sample, not from the dawn of time.
-            self._last_increase_at = now
+            self._last_exec_increase_at = now
+            self._last_gate_increase_at = now
         if report.any:
             self._last_pressure_at = now
+        if report.gate_signals:
+            self._last_gate_pressure_at = now
+        if report.exec_signals:
+            self._last_exec_pressure_at = now
         if sample.demand > 0:
             self._last_busy_at = now
-        self._severe_streak = self._severe_streak + 1 if report.severe else 0
-
-        if self._paused:
-            return self._while_paused(sample, report)
-
-        if self._severe_streak >= self._p.thresholds.severe_samples:
-            return self._pause(
-                sample, report, "severe pressure for " f"{self._severe_streak} samples"
-            )
-
+        self._severe_streak = self._severe_streak + 1 if report.gate_severe else 0
         if report.corroborated:
             # Corroborated pressure is the evidence slow start was waiting for:
-            # from here on this process grows +1 at a time, never x2. Set before
-            # the cooldown check, so pressure the cooldown merely HOLDS still
-            # ends slow start -- the host said no either way.
-            self._slow_start_retired = True
-            self._slow_start = False
-            if now - self._last_decrease_at < self._p.decrease_cooldown_secs:
-                return self._emit(ACTION_HOLD, "pressure inside the decrease cooldown", report)
-            return self._decrease(sample, report)
+            # from here on this process grows +1 at a time, never x2. Retired
+            # before either track's cooldown check, so pressure a cooldown
+            # merely HOLDS still ends slow start -- the host said no either way.
+            self._retire_slow_start()
 
-        if report.any:
-            return self._emit(ACTION_HOLD, "single uncorroborated signal", report)
+        exec_action, exec_note = self._exec_step(sample, report)
+        gate_action, gate_note = self._gate_step(sample, report)
+        action = max(exec_action, gate_action, key=_ACTION_RANK.__getitem__)
+        moved = [
+            note
+            for act, note in ((exec_action, exec_note), (gate_action, gate_note))
+            if act != ACTION_HOLD
+        ]
+        if not moved:
+            # Two holds. The exec hold names what the next exec step waits for,
+            # unless the news is the gate's: it is paused, or only host-only
+            # evidence (loop lag, memory) fired, which the exec track ignores.
+            gate_news = self._paused or (report.any and not report.exec_signals)
+            reason = gate_note if gate_news else exec_note
+        elif exec_action == gate_action == ACTION_DECREASE:
+            # One cut of both caps on one sample: one reason, every signal.
+            reason = "corroborated pressure: " + ",".join(sorted(report.signals))
+        else:
+            reason = "; ".join(moved)
+        return self._emit(action, reason, report)
 
-        return self._maybe_increase(sample, report)
+    def _retire_slow_start(self) -> None:
+        self._slow_start_retired = True
+        self._slow_start = False
 
     def _windowed_gate_failures(self, sample: Sample) -> int:
         """Spawn-gate failures that landed inside the evidence window.
@@ -429,222 +475,109 @@ class AdaptivePolicy:
         if successes < self._gate_success_base:
             self._gate_success_base = successes
 
-    def _idle_for(self, sample: Sample) -> float:
-        """Seconds this exec track has been idle AND pressure-free, else 0.
+    def _idle_for(self, sample: Sample, *, since_pressure: float) -> float:
+        """Seconds the exec track has been idle AND free of *since_pressure*'s
+        evidence, else 0.
 
         Idle is no demand at all on this sample (nothing running or queued on
-        the exec track) and none since the idle clock started; pressure-free is
-        no signal of any kind in that time. Both reset the clock, so a cap is
-        restored only on samples that could not have been caused by the load
-        that cut it.
+        the exec track) and none since the idle clock started. Both reset the
+        clock, so a cap is restored only on samples that could not have been
+        caused by the load that cut it.
         """
         if sample.demand > 0:
             return 0.0
-        since = max(self._last_pressure_at, self._last_busy_at)
+        since = max(since_pressure, self._last_busy_at)
         if since == _NEVER:
             # No pressure and no demand ever seen: measured from the first
             # sample, like the first clean window.
-            since = self._last_increase_at
+            since = self._last_exec_increase_at
         return max(0.0, sample.t - since)
 
-    def _idle_recovery_due(self, sample: Sample, report: PressureReport) -> bool:
-        return report.clear_for_increase and self._idle_for(sample) >= self._p.idle_recovery_secs
+    def _exec_idle_for(self, sample: Sample) -> float:
+        return self._idle_for(sample, since_pressure=self._last_exec_pressure_at)
 
-    def _note_cut(self, sample: Sample, action: str, reason: str, report: PressureReport) -> None:
+    def _note_cut(self, sample: Sample, action: str, reason: str, signals: frozenset[str]) -> None:
         self._last_cut = {
             "t": sample.t,
             "action": action,
             "reason": reason,
-            "signals": sorted(report.signals),
+            "signals": sorted(signals),
         }
 
-    # -- transitions ---------------------------------------------------------
+    # -- the execution track -------------------------------------------------
 
-    def _pause(self, sample: Sample, report: PressureReport, why: str) -> Decision:
-        old_exec, old_gate = self._exec_cap, self._gate_cap
-        self._paused = True
-        self._probing = False
-        self._slow_start_retired = True
-        self._slow_start = False
-        self._exec_cap = 0
-        self._gate_cap = self._p.gate_floor
-        self._last_decrease_at = sample.t
-        self._reset_bases(sample, old_exec, old_gate)
-        self._note_cut(sample, ACTION_PAUSE, f"paused: {why}", report)
-        return self._emit(ACTION_PAUSE, f"paused: {why}", report)
-
-    def _while_paused(self, sample: Sample, report: PressureReport) -> Decision:
-        if report.severe:
-            if self._probing:
-                # The probe met severe pressure: take the grant back.
-                self._probing = False
-                self._exec_cap = 0
-                reason = "probe met severe pressure; re-paused"
-                self._note_cut(sample, ACTION_PAUSE, reason, report)
-                return self._emit(ACTION_PAUSE, reason, report)
-            return self._emit(ACTION_HOLD, "paused: severe pressure persists", report)
-        if not self._probing:
-            self._probing = True
-            self._exec_cap = min(1, self._p.exec_ceiling)
-            self._gate_cap = self._p.gate_floor
-            self._probe_base = sample.completions
-            return self._emit(ACTION_PROBE, "severe pressure cleared; admitting one probe", report)
-        # Probing: wait for the probe to complete without pressure.
-        if report.corroborated:
-            self._probing = False
-            self._exec_cap = 0
-            self._last_decrease_at = sample.t
-            reason = "probe met corroborated pressure; re-paused"
-            self._note_cut(sample, ACTION_PAUSE, reason, report)
-            return self._emit(ACTION_PAUSE, reason, report)
-        base = self._probe_base if self._probe_base is not None else sample.completions
-        probe_done = sample.completions > base and not report.any
-        # ``sample.completions`` carries both manager and runner-lane
-        # completions, so a probe satisfied by lane work resumes here. The idle
-        # path below only backstops a probe where nothing ran at all -- idle and
-        # clear for the idle window is the same verdict a clean completion gives.
-        idle_done = not probe_done and self._idle_recovery_due(sample, report)
-        if probe_done or idle_done:
-            old_exec, old_gate = self._exec_cap, self._gate_cap
-            self._paused = False
-            self._probing = False
-            self._probe_base = None
-            # Idle recovery never passes the fresh-start cap, including when
-            # ``adaptive_floor`` sits at or above ``adaptive_initial``.
-            target = self._p.exec_floor + 1
-            if idle_done:
-                target = min(target, self._p.exec_start)
-            self._exec_cap = _clamp(target, self._p.exec_floor, self._p.exec_ceiling)
-            if probe_done:
-                # Only a probe that completed is evidence for the gate too; an
-                # idle resume leaves the gate at its floor to earn on inits.
-                self._gate_cap = _clamp(
-                    self._p.gate_floor + 1, self._p.gate_floor, self._p.gate_ceiling
-                )
-            self._reset_bases(sample, old_exec, old_gate)
-            self._last_increase_at = sample.t
-            if idle_done:
-                reason = (
-                    f"idle and clear for {self._idle_for(sample):.0f}s with no probe "
-                    f"result; resuming at {self._exec_cap}"
-                )
-            else:
-                reason = "probe completed; resuming at floor + 1"
-            return self._emit(ACTION_RESUME, reason, report)
-        return self._emit(ACTION_HOLD, "probe in flight", report)
-
-    def _decrease(self, sample: Sample, report: PressureReport) -> Decision:
-        new_exec = _decrease_target(
-            self._exec_cap, sample.healthy_in_flight, self._p.exec_floor, self._p.decrease_factor
-        )
-        new_gate = _decrease_target(self._gate_cap, 0, self._p.gate_floor, self._p.decrease_factor)
-        if new_exec == self._exec_cap and new_gate == self._gate_cap:
-            return self._emit(ACTION_HOLD, "pressure at the floor; nothing left to cut", report)
-        old_exec, old_gate = self._exec_cap, self._gate_cap
-        self._exec_cap = new_exec
-        self._gate_cap = new_gate
-        self._last_decrease_at = sample.t
-        self._reset_bases(sample, old_exec, old_gate)
-        reason = "corroborated pressure: " + ",".join(sorted(report.signals))
-        if self._exec_cap < old_exec:
-            self._note_cut(sample, ACTION_DECREASE, reason, report)
-        return self._emit(ACTION_DECREASE, reason, report)
-
-    def _maybe_increase(self, sample: Sample, report: PressureReport) -> Decision:
+    def _exec_step(self, sample: Sample, report: PressureReport) -> tuple[str, str]:
+        """One sample on the execution cap: work evidence only, never paused."""
         p = self._p
         now = sample.t
-        if not report.clear_for_increase:
-            return self._emit(ACTION_HOLD, "clear but inside the hysteresis band", report)
-        window = p.slow_start_clean_secs if self._slow_start else p.increase_clean_secs
-        if now - self._last_pressure_at < window:
-            return self._emit(ACTION_HOLD, "clear; waiting out the clean window", report)
-        if now - self._last_increase_at < window:
-            return self._emit(ACTION_HOLD, "clear; one increase per window", report)
+        if report.exec_corroborated:
+            if now - self._last_exec_decrease_at < p.decrease_cooldown_secs:
+                return ACTION_HOLD, "pressure inside the decrease cooldown"
+            new_exec = _decrease_target(
+                self._exec_cap, sample.healthy_in_flight, p.exec_floor, p.decrease_factor
+            )
+            if new_exec == self._exec_cap:
+                return ACTION_HOLD, "pressure at the floor; nothing left to cut"
+            self._exec_cap = new_exec
+            self._last_exec_decrease_at = now
+            self._exec_success_base = sample.completions
+            reason = "corroborated pressure: " + ",".join(sorted(report.exec_signals))
+            self._note_cut(sample, ACTION_DECREASE, reason, report.exec_signals)
+            return ACTION_DECREASE, reason
+        if report.exec_signals:
+            return ACTION_HOLD, "single uncorroborated signal"
+        return self._exec_maybe_increase(sample, report)
 
-        changed = False
-        exec_target = self._growth_ceiling(sample)
+    def _exec_maybe_increase(self, sample: Sample, report: PressureReport) -> tuple[str, str]:
+        p = self._p
+        now = sample.t
+        window = p.slow_start_clean_secs if self._slow_start else p.increase_clean_secs
         exec_successes = sample.completions - self._exec_success_base
+        if now - self._last_exec_pressure_at < window:
+            return ACTION_HOLD, "clear; waiting out the clean window"
+        if now - self._last_exec_increase_at < window:
+            return ACTION_HOLD, "clear; one increase per window"
+        target = self._growth_ceiling(sample)
         completion_earned = exec_successes >= self._required_exec_successes(self._exec_cap)
         # A long useful run need not FINISH before a second slot can open.
-        # Fresh stream progress buys only one exploratory slot, with free
-        # memory above the pressure line and no provider throttle, after the
-        # same clean window. It never buys doubling or relaxes the independent
-        # init-gate bar.
+        # Fresh stream progress buys only one exploratory slot, with no
+        # provider throttle, after the same clean window. It never buys
+        # doubling or relaxes the independent init-gate bar. Free memory is not
+        # a term: the spawn floor prices every start it admits.
         progress_probe = (
             sample.progressing > 0
             and sample.queued > 0
             and sample.at_cap_running >= self._exec_cap
-            and sample.free_mem_mb >= max(0.0, p.thresholds.mem_pressure_mb)
             and not report.throttled_providers
         )
-        probed = False
         if (
-            self._exec_cap < exec_target
+            self._exec_cap < target
             and (completion_earned or progress_probe)
             and sample.at_cap_demand >= self._exec_cap
         ):
             probed = not completion_earned
             self._exec_cap = (
-                min(exec_target, self._exec_cap + 1)
-                if probed
-                else self._step_up(self._exec_cap, exec_target)
+                min(target, self._exec_cap + 1) if probed else self._step_up(self._exec_cap, target)
             )
             self._exec_success_base = sample.completions
-            changed = True
-        exec_changed = changed
-
-        gate_changed = False
-        gate_before = self._gate_cap
-        gate = sample.spawn_gate
-        gate_successes = gate.successes - self._gate_success_base
-        gate_demand = gate.queued > 0 or gate.in_flight >= self._gate_cap
-        if (
-            self._gate_cap < p.gate_ceiling
-            and gate_successes >= self._required_gate_successes()
-            and gate_demand
-        ):
-            self._gate_cap = self._step_up(self._gate_cap, p.gate_ceiling)
-            self._gate_success_base = gate.successes
-            changed = True
-            gate_changed = True
-
-        # Judged on the EXEC track alone: a gate step on THIS sample must not
-        # suppress an idle exec step due on it. (Both tracks still share one
-        # increase-per-window clock across samples, as the earn rules do.)
-        idle_step = False
-        # Read before ``_last_increase_at`` moves below: with no pressure and
-        # no demand ever seen, the idle clock is measured from that instant.
-        idle_secs = self._idle_for(sample)
-        if not exec_changed and self._exec_cap < min(p.exec_start, exec_target):
-            idle_step = self._idle_recovery_due(sample, report)
-            if idle_step:
-                self._exec_cap += 1
-                self._exec_success_base = sample.completions
-                changed = True
-
-        if not changed:
-            return self._emit(ACTION_HOLD, self._hold_reason(sample, exec_successes), report)
-        self._last_increase_at = now
-        # One decision can move both tracks; each move names itself, so the
-        # history never files one track's step under the other's reason. The
-        # gate figure is the policy's TARGET: the daemon confirms (or clamps)
-        # it on apply, and ``recent_decisions`` carries what it confirmed.
-        notes: list[str] = []
-        if idle_step:
-            notes.append(
+            self._last_exec_increase_at = now
+            if probed:
+                return ACTION_INCREASE, "fresh progress earned one exec probe"
+            if self._slow_start:
+                return ACTION_INCREASE, f"clean window earned x{p.slow_start_factor} (slow start)"
+            return ACTION_INCREASE, "clean window earned +1"
+        # Read before ``_last_exec_increase_at`` moves: with no pressure and no
+        # demand ever seen, the idle clock is measured from that instant.
+        idle_secs = self._exec_idle_for(sample)
+        if self._exec_cap < min(p.exec_start, target) and idle_secs >= p.idle_recovery_secs:
+            self._exec_cap += 1
+            self._exec_success_base = sample.completions
+            self._last_exec_increase_at = now
+            return ACTION_INCREASE, (
                 f"idle and clear for {idle_secs:.0f}s: +1 toward the "
                 f"fresh-start cap {p.exec_start}"
             )
-        elif exec_changed and probed:
-            notes.append("fresh progress with host headroom earned one exec probe")
-        elif exec_changed and self._slow_start:
-            notes.append(f"clean window earned x{p.slow_start_factor} (slow start)")
-        elif exec_changed:
-            notes.append("clean window earned +1")
-        if gate_changed:
-            notes.append(f"spawn gate target {gate_before} -> {self._gate_cap} on backend inits")
-        reason = "; ".join(notes)
-        return self._emit(ACTION_INCREASE, reason, report)
+        return ACTION_HOLD, self._hold_reason(sample, exec_successes)
 
     def _hold_reason(self, sample: Sample, exec_successes: int) -> str:
         """What a clear, in-window hold is waiting for on the exec track."""
@@ -652,7 +585,7 @@ class AdaptivePolicy:
         if cap >= self._growth_ceiling(sample):
             return "clear; exec cap at the ceiling"
         if sample.demand <= 0 and cap < self._p.exec_start:
-            wait = max(0.0, self._p.idle_recovery_secs - self._idle_for(sample))
+            wait = max(0.0, self._p.idle_recovery_secs - self._exec_idle_for(sample))
             return f"idle; restoring toward {self._p.exec_start} in {wait:.0f}s"
         if sample.demand < cap:
             return f"clear; no demand at the cap ({sample.demand} running or queued < {cap})"
@@ -669,9 +602,8 @@ class AdaptivePolicy:
         host figure predicted from p90 peak memory and CPU per agent; on a
         32-core host with tens of GB free that prediction held the cap at its
         fresh-start value for the life of the process, because one build-heavy
-        agent's burst priced every slot. The live signals in the sample -- free
-        memory against the pressure line, loop lag, timeouts -- are what say
-        whether THIS increase is safe, and the spawn gate's memory reserve is
+        agent's burst priced every slot. The work signals in the sample say
+        whether THIS increase is safe, and the spawn floor's memory reserve is
         what queues a cold start the host cannot absorb yet.
         """
         return self._p.exec_ceiling
@@ -689,21 +621,139 @@ class AdaptivePolicy:
             return max(1, self._p.slow_start_successes)
         return max(1, min(self._p.increase_successes, cap))
 
+    # -- the spawn-gate track ------------------------------------------------
+
+    def _gate_step(self, sample: Sample, report: PressureReport) -> tuple[str, str]:
+        """One sample on the spawn gate: its own signals, never the gateway's loop lag."""
+        p = self._p
+        now = sample.t
+        if self._paused:
+            return self._gate_while_paused(sample, report)
+        if self._severe_streak >= p.thresholds.severe_samples:
+            return self._gate_pause(sample, f"severe pressure for {self._severe_streak} samples")
+        if report.gate_corroborated:
+            if now - self._last_gate_decrease_at < p.decrease_cooldown_secs:
+                return ACTION_HOLD, "pressure inside the decrease cooldown"
+            new_gate = _decrease_target(self._gate_cap, 0, p.gate_floor, p.decrease_factor)
+            if new_gate == self._gate_cap:
+                return ACTION_HOLD, "pressure at the floor; nothing left to cut"
+            self._gate_cap = new_gate
+            self._last_gate_decrease_at = now
+            self._gate_success_base = sample.spawn_gate.successes
+            return ACTION_DECREASE, "spawn gate: corroborated pressure: " + ",".join(
+                sorted(report.gate_signals)
+            )
+        if report.gate_signals:
+            return ACTION_HOLD, "single uncorroborated signal"
+        return self._gate_maybe_increase(sample, report)
+
+    def _gate_maybe_increase(self, sample: Sample, report: PressureReport) -> tuple[str, str]:
+        p = self._p
+        now = sample.t
+        if not report.gate_clear_for_increase:
+            return ACTION_HOLD, "clear but inside the hysteresis band"
+        window = p.slow_start_clean_secs if self._slow_start else p.increase_clean_secs
+        if now - self._last_gate_pressure_at < window:
+            return ACTION_HOLD, "clear; waiting out the clean window"
+        if now - self._last_gate_increase_at < window:
+            return ACTION_HOLD, "clear; one increase per window"
+        gate = sample.spawn_gate
+        gate_successes = gate.successes - self._gate_success_base
+        gate_demand = gate.queued > 0 or gate.in_flight >= self._gate_cap
+        if (
+            self._gate_cap < p.gate_ceiling
+            and gate_successes >= self._required_gate_successes()
+            and gate_demand
+        ):
+            before = self._gate_cap
+            self._gate_cap = self._step_up(self._gate_cap, p.gate_ceiling)
+            self._gate_success_base = gate.successes
+            self._last_gate_increase_at = now
+            # The gate figure is the policy's TARGET: the daemon confirms (or
+            # clamps) it on apply, and ``recent_decisions`` carries what it
+            # confirmed.
+            return (
+                ACTION_INCREASE,
+                f"spawn gate target {before} -> {self._gate_cap} on backend inits",
+            )
+        quiet = now - max(self._last_gate_pressure_at, self._last_gate_decrease_at)
+        if self._gate_cap < p.gate_start and quiet >= p.idle_recovery_secs:
+            before = self._gate_cap
+            self._gate_cap = before + 1
+            self._gate_success_base = gate.successes
+            self._last_gate_increase_at = now
+            return ACTION_INCREASE, (
+                f"spawn gate {before} -> {self._gate_cap}: none of its signals for "
+                f"{quiet:.0f}s, toward its fresh-start {p.gate_start}"
+            )
+        return ACTION_HOLD, "clear; spawn gate holds"
+
+    def _gate_pause(self, sample: Sample, why: str) -> tuple[str, str]:
+        self._paused = True
+        self._probing = False
+        self._retire_slow_start()
+        old_gate = self._gate_cap
+        self._gate_cap = self._p.gate_floor
+        self._last_gate_decrease_at = sample.t
+        if self._gate_cap != old_gate:
+            self._gate_success_base = sample.spawn_gate.successes
+        return ACTION_PAUSE, f"spawn gate paused: {why}"
+
+    def _gate_while_paused(self, sample: Sample, report: PressureReport) -> tuple[str, str]:
+        if report.gate_severe:
+            if self._probing:
+                self._probing = False
+                return ACTION_PAUSE, "spawn gate probe met severe pressure; re-paused"
+            return ACTION_HOLD, "spawn gate paused: severe pressure persists"
+        if not self._probing:
+            self._probing = True
+            self._probe_base = sample.completions
+            return ACTION_PROBE, "severe pressure cleared; spawn gate probing"
+        if report.gate_corroborated:
+            self._probing = False
+            self._last_gate_decrease_at = sample.t
+            return ACTION_PAUSE, "spawn gate probe met corroborated pressure; re-paused"
+        base = self._probe_base if self._probe_base is not None else sample.completions
+        probe_done = sample.completions > base and not report.gate_signals
+        # ``sample.completions`` carries both manager and runner-lane
+        # completions, so a probe satisfied by lane work resumes here. The idle
+        # path only backstops a probe where nothing ran at all; idle is no
+        # evidence about backend inits, so it resumes the gate at its floor.
+        idle_secs = self._idle_for(sample, since_pressure=self._last_gate_pressure_at)
+        idle_done = (
+            not probe_done
+            and report.gate_clear_for_increase
+            and idle_secs >= self._p.idle_recovery_secs
+        )
+        if not (probe_done or idle_done):
+            return ACTION_HOLD, "spawn gate probe in flight"
+        self._paused = False
+        self._probing = False
+        self._probe_base = None
+        self._last_gate_increase_at = sample.t
+        if idle_done:
+            return ACTION_RESUME, (
+                f"idle and clear for {idle_secs:.0f}s with no probe result; "
+                "spawn gate resumes at its floor"
+            )
+        old_gate = self._gate_cap
+        self._gate_cap = _clamp(self._p.gate_floor + 1, self._p.gate_floor, self._p.gate_ceiling)
+        if self._gate_cap != old_gate:
+            self._gate_success_base = sample.spawn_gate.successes
+        return ACTION_RESUME, "probe completed; spawn gate resumes at floor + 1"
+
     def _required_gate_successes(self) -> int:
         """The gate's bar, which is NOT scaled to its cap and NOT eased by slow start.
 
-        Backend inits land far faster than subagent runs finish and the gate
-        ceiling is 8, so ``increase_successes`` was never the barrier on this
-        track -- and the restart-rebase contract (a respawned daemon owes the
-        whole bar again on its fresh counter) is pinned against that number.
+        Backend inits land far faster than subagent runs finish, so
+        ``increase_successes`` was never the barrier on this track -- and the
+        restart-rebase contract (a respawned daemon owes the whole bar again on
+        its fresh counter) is pinned against that number.
 
-        Slow start deliberately does not reach here. It exists to cross the
-        distance between a floored EXECUTION cap and the user's ceiling, which
-        is tens of steps; the gate's whole range is ``4 -> 8``, one doubling. Had
-        it applied, a single backend init inside one clean window would take the
-        gate to its ceiling and hand a respawned daemon its full capacity back
-        for one success -- a bar of 1, in the one place the contract above says
-        the bar must be the full number.
+        Slow start deliberately does not reach here. Had it applied, a single
+        backend init inside one clean window would double the gate and hand a
+        respawned daemon its capacity back for one success -- a bar of 1, in
+        the one place the contract above says the bar must be the full number.
         """
         return max(1, self._p.increase_successes)
 
@@ -714,24 +764,6 @@ class AdaptivePolicy:
         return min(ceiling, cap + 1)
 
     # -- helpers -------------------------------------------------------------
-
-    def _reset_bases(self, sample: Sample, old_exec: int, old_gate: int) -> None:
-        """Discard the successes counted before a cap change -- on the track
-        that MOVED, and only there.
-
-        The two tracks share one pressure verdict but earn separately, and a
-        cut on one is not evidence about the other. Resetting both on every
-        transition made the exec track re-owe its full ``increase_successes``
-        each time the gate alone was cut: with exec already at its floor, one
-        corroborated loop-lag sample lowered the gate, wiped the exec
-        completions earned since the last exec change, and the exec cap never
-        climbed back. A track whose cap did not change keeps its base, so its
-        earned position survives the other track's transition.
-        """
-        if self._exec_cap != old_exec:
-            self._exec_success_base = sample.completions
-        if self._gate_cap != old_gate:
-            self._gate_success_base = sample.spawn_gate.successes
 
     def _emit(self, action: str, reason: str, report: Optional[PressureReport]) -> Decision:
         prev = self._last
@@ -781,7 +813,9 @@ def params_from_config(
 
     Every read has a default so a partial or duck-typed config works; the
     memory thresholds come from the same ``resource_pressure_gb`` /
-    ``resource_critical_gb`` pair the advisory surfaces use.
+    ``resource_critical_gb`` pair the advisory surfaces use (they shape the
+    spawn gate only). ``agent.adaptive_initial`` is not read: the execution cap
+    starts at its ceiling (the key is deprecated and inert).
     """
     agent = getattr(cfg, "agent", None)
 
@@ -801,7 +835,6 @@ def params_from_config(
     )
     return PolicyParams(
         exec_ceiling=max(1, int(exec_ceiling)),
-        exec_initial=_i(_get("adaptive_initial", DEFAULT_INITIAL), DEFAULT_INITIAL),
         floor=max(1, _i(_get("adaptive_floor", DEFAULT_FLOOR), DEFAULT_FLOOR)),
         gate_initial=gate_initial,
         gate_floor=max(1, gate_floor),

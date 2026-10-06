@@ -1,16 +1,19 @@
 """``agent.session_control`` binds a script cron on the two chat routes it writes to.
 
-A script cron opens a dashboard session with ``POST /api/chat/slots`` and seeds
-it with ``POST /api/chat``, presenting its ``cron:<job id>`` key behind the
-internal secret. While the switch is off, ``private_chat_route_refusal`` refuses
-that caller on those two routes with the same body the session-control routes
+A script cron opens a dashboard session with ``POST /api/chat/slots``, seeds
+it with ``POST /api/chat`` and sets its approval mode with ``POST
+/api/chat/mode``, presenting its ``cron:<job id>`` key behind the internal
+secret. While the switch is off, ``private_chat_route_refusal`` refuses that
+caller on those three routes with the same body the session-control routes
 send. Owner and member callers keep their own gates, and every other chat route
-is left alone.
+is left alone. ``cron_mode_refusal`` holds a cron to the two slot-scoped trust
+modes on the mode route.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -101,6 +104,24 @@ class TestTheSwitchOff:
         assert _body(resp) == _DISABLED_BODY
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/api/chat/mode", "/api/chat/mode/"])
+    async def test_a_cron_key_is_refused_on_setting_a_session_mode(
+        self, unscoped, audit, switch, path
+    ):
+        """Setting a session's approval mode is session control, like opening it."""
+        switch(False)
+        resp = await _shared.private_chat_route_refusal(_internal_request("POST", path))
+
+        assert resp is not None
+        assert resp.status == 403
+        assert _body(resp) == _DISABLED_BODY
+        (event,) = audit
+        assert event["operation"] == "chat.control"
+        assert event["outcome"] == "denied"
+        assert event["error"] == "session_control_disabled"
+        assert event["resources"] == path
+
+    @pytest.mark.asyncio
     async def test_a_cron_key_reading_the_session_list_is_not_refused_by_the_switch(
         self, unscoped, audit, switch
     ):
@@ -135,6 +156,142 @@ class TestTheSwitchOn:
             is None
         )
         assert reads == [True]
+        assert audit == []
+
+    @pytest.mark.asyncio
+    async def test_a_cron_key_setting_a_session_mode_is_not_refused_by_the_switch(
+        self, unscoped, audit, switch
+    ):
+        reads = switch(True)
+
+        assert (
+            await _shared.private_chat_route_refusal(_internal_request("POST", "/api/chat/mode"))
+            is None
+        )
+        assert reads == [True]
+        assert audit == []
+
+
+class TestCronModeRefusal:
+    """A ``cron:`` caller sets only ``trust`` or ``trust_reads``, on a slot it names.
+
+    ``yolo`` is process-global and ``normal`` is the off-switch at any scope;
+    neither is a creation-time posture for one unattended session, so a cron is
+    refused both before the mode reaches governance or the safety override.
+    """
+
+    _SLOT = "nightly-triage"
+
+    @staticmethod
+    async def _refusal(mode, slot_name, cron_creator=_CRON_KEY):
+        req = _internal_request("POST", "/api/chat/mode")
+        return await _shared.cron_mode_refusal(req, cron_creator, mode, slot_name)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    async def test_a_slot_scoped_trust_mode_is_admitted(self, audit, mode):
+        assert await self._refusal(mode, self._SLOT) is None
+        assert audit == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["yolo", "normal", "", "TRUST", "trust ", None, 7])
+    async def test_any_other_mode_is_refused_and_audited(self, audit, mode):
+        resp = await self._refusal(mode, self._SLOT)
+
+        assert resp is not None
+        assert resp.status == 403
+        assert _body(resp) == {
+            "ok": False,
+            "error": "a scheduled run can set only trust or trust_reads on a session it created",
+            "code": "mode_not_allowed",
+        }
+        (event,) = audit
+        assert event["caller"] == "internal"
+        assert event["operation"] == "chat.control"
+        assert event["outcome"] == "denied"
+        assert event["source"] == "session_control"
+        assert event["error"] == "mode_not_allowed"
+        assert event["resources"] == f"/api/chat/mode slot={self._SLOT} mode={mode!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("slot_name", [None, ""])
+    async def test_a_cron_must_name_the_slot_it_created(self, audit, slot_name):
+        """An absent slot is the owner's all-slots request; a cron never gets it."""
+        resp = await self._refusal("trust", slot_name)
+
+        assert resp is not None
+        assert resp.status == 400
+        assert _body(resp) == {
+            "ok": False,
+            "error": "a scheduled run must name the session it created",
+            "code": "slot_required",
+        }
+        (event,) = audit
+        assert event["operation"] == "chat.control"
+        assert event["outcome"] == "denied"
+        assert event["source"] == "session_control"
+        assert event["error"] == "slot_required"
+        assert event["resources"] == "/api/chat/mode slot= mode='trust'"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_mode_is_answered_before_the_missing_slot(self, audit):
+        resp = await self._refusal("yolo", None)
+
+        assert resp is not None
+        assert resp.status == 403
+        assert _body(resp)["code"] == "mode_not_allowed"
+        (event,) = audit
+        assert event["error"] == "mode_not_allowed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", [[], ["trust"], {"mode": "trust"}, {"trust"}])
+    async def test_a_non_hashable_mode_is_refused_rather_than_raised(self, audit, mode):
+        """The allowlist is a tuple so that membership compares by equality: a
+        body value that cannot be hashed answers the audited 403, not a TypeError."""
+        resp = await self._refusal(mode, self._SLOT)
+
+        assert resp is not None
+        assert resp.status == 403
+        assert _body(resp)["code"] == "mode_not_allowed"
+        (event,) = audit
+        assert event["error"] == "mode_not_allowed"
+        assert event["resources"] == f"/api/chat/mode slot={self._SLOT} mode={mode!r}"
+
+    def test_the_allowlist_is_the_handlers_slot_scoped_tuple(self):
+        """One constant names the slot-scoped trust modes. The handler reads it to
+        keep a slot-scoped grant off the global one; the cron rule reads it as the
+        whole allowlist. A second spelling would let the two drift apart."""
+        from kiro_crew.dashboard import chat_handlers
+
+        assert chat_handlers._SLOT_SCOPED_TRUST_MODES is _shared._SLOT_SCOPED_TRUST_MODES
+        assert isinstance(_shared._SLOT_SCOPED_TRUST_MODES, tuple)
+        assert _shared._SLOT_SCOPED_TRUST_MODES == ("trust", "trust_reads")
+        assert not hasattr(_shared, "_CRON_SESSION_MODES")
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_still_answers_when_its_audit_write_fails(self, monkeypatch, caplog):
+        """An audit that cannot be written is logged, never raised: the SEL failure
+        must not turn a refusal into an admission or into a 500."""
+
+        def _broken(**_kw):
+            raise OSError("sel store unavailable")
+
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: SimpleNamespace(log_api_access=_broken))
+        with caplog.at_level(logging.DEBUG, logger=_shared.logger.name):
+            resp = await self._refusal("yolo", self._SLOT)
+
+        assert resp is not None
+        assert resp.status == 403
+        assert _body(resp)["code"] == "mode_not_allowed"
+        assert any(
+            "SEL audit for a refused cron chat call (mode_not_allowed) failed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["yolo", "trust"])
+    async def test_a_caller_with_no_cron_creator_is_not_judged(self, audit, mode):
+        assert await self._refusal(mode, None, cron_creator="") is None
         assert audit == []
 
 

@@ -172,6 +172,44 @@ describe('listNarrowed derives from the filter dimensions', () => {
   })
 })
 
+/** `k-alpha` is pinned; neither row is running, and `k-gamma` shares alpha's
+ *  tag without the pin, so it is the control that shows the filter still acts
+ *  on an unpinned row. */
+const PINNED_SLOTS: ChatSlot[] = [
+  { key: 'k-alpha', title: 'alpha session', running: false, messages: 2, tags: ['t1'], pinned: true },
+  { key: 'k-beta', title: 'beta session', running: false, messages: 2, tags: ['t2'] },
+  { key: 'k-gamma', title: 'gamma session', running: false, messages: 2, tags: ['t1'] },
+] as unknown as ChatSlot[]
+
+describe('a pinned session is exempt from the property filters', () => {
+  it('a status chip that excludes the pinned row by property still shows it, and hides the unpinned rows', async () => {
+    localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    expect(utils.queryByText('beta session')).toBeNull()
+    expect(utils.queryByText('gamma session')).toBeNull()
+    // The list IS narrowed (the chip still acts), so this is not the empty
+    // state either: the pinned band stands alone above nothing.
+    expect(utils.queryByText('No sessions match')).toBeNull()
+  })
+
+  it('a tag filter the pinned row does not carry still shows it, and hides the unpinned row without the tag', async () => {
+    localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t2']))
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+    expect(utils.queryByText('alpha session')).not.toBeNull()
+    expect(utils.queryByText('gamma session')).toBeNull()
+  })
+
+  it('the search is not exempt: a pinned row the query does not name is dropped', async () => {
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    fireEvent.change(utils.getByPlaceholderText('Search sessions…'), { target: { value: 'beta' } })
+    await waitFor(() => expect(utils.queryByText('alpha session')).toBeNull())
+    expect(utils.queryByText('beta session')).not.toBeNull()
+  })
+})
+
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 // Flattened first: a line-by-line scan misses a construct the moment a
 // reformat splits it across lines.

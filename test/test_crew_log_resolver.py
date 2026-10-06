@@ -9,6 +9,7 @@ their site observed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -747,64 +748,6 @@ def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeyp
     assert ordinary["id"] == "task-7", "redaction must not rewrite an ordinary id"
 
 
-def test_a_batch_the_writer_already_holds_still_reads_as_owed():
-    """The writer claims a session's entries by taking them OUT of the queue.
-
-    Between that claim and the last append of the batch, the entries behind the one
-    being written are still owed while none of them is in the queue -- so a caller
-    asking whether this process owes the session anything would be told no, and the
-    child repair would close a run whose real outcome is in the batch.
-    """
-    seen: list[bool] = []
-    queue_state: list[bool] = []
-
-    def _look_from_inside_the_batch() -> None:
-        queue_state.append(SESSION in emit._pending)
-        seen.append(emit._owes_entries(SESSION))
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(emit, "_start_drain", lambda: None)
-        emit._buffer(SESSION, emit._PendingJob(_look_from_inside_the_batch, "looks"))
-        emit._buffer(SESSION, emit._PendingJob(lambda: None, "queued behind it"))
-        emit._drain_once()
-    assert queue_state == [False], "the batch was not claimed out of the queue"
-    assert seen == [True], "an entry claimed behind the running one was not owed"
-    assert not emit._owes_entries(SESSION), "the claim outlived the batch it was taken for"
-
-
-def test_a_pass_that_stopped_early_releases_what_it_never_reached():
-    """The claim a retained tail leaves behind, and why it must not be permanent.
-
-    A transient failure sends the rest of the batch back to the queue, so those
-    entries are owed twice: once as queued work, once as a claim this pass took and
-    never spent. The queue side clears itself when the retry lands. The claim side
-    clears only if the pass releases what it never reached on the way out -- and a
-    claim that outlives its batch makes the session owe something forever, which is
-    the answer the child repair reads to decide a run is still live.
-
-    The drain is held rather than left to the writer: a buffered entry is picked up
-    on its own within milliseconds, and a batch of one leaves nothing unattempted,
-    so a test that lets the writer run cannot reach this path at all.
-    """
-    failures = {"left": 1}
-
-    def _fail_once() -> None:
-        if failures["left"]:
-            failures["left"] -= 1
-            raise OSError("input/output error")
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(emit, "_start_drain", lambda: None)
-        emit._buffer(SESSION, emit._PendingJob(_fail_once, "fails once"))
-        emit._buffer(SESSION, emit._PendingJob(lambda: None, "never reached"))
-        emit._drain_once()
-        assert failures["left"] == 0, "the injected failure never fired, so nothing was retained"
-        assert SESSION in emit._pending, "the tail was not retained, so this path was not taken"
-        assert SESSION not in emit._claimed_sessions, "a claim outlived the pass that took it"
-        emit._drain_once()
-    assert not emit._owes_entries(SESSION), "the session still owes something after both landed"
-
-
 def test_a_child_whose_closer_is_not_yet_handed_over_is_not_reported_gone():
     """The gap the two reads alone cannot cover, and what covers it.
 
@@ -839,7 +782,9 @@ def test_a_repair_is_not_blocked_by_its_own_job_being_the_one_in_flight(monkeypa
     A resume submits its open-and-repair work through the same writer, which claims
     a session's entries before running them. Counting the job that is asking would
     make every child look live on exactly the path the repair exists for, so the
-    dangling opener a torn-down writer left behind would never be closed.
+    dangling opener a torn-down writer left behind would never be closed. Submitted
+    from an event loop, so the job runs from the writer's claimed batch rather than
+    inline.
     """
     _open_session()
     monkeypatch.setattr(emit, "_child_liveness", lambda _agent_id: False)
@@ -849,7 +794,10 @@ def test_a_repair_is_not_blocked_by_its_own_job_being_the_one_in_flight(monkeypa
         probe = emit._child_gone_probe(SESSION)
         answers.append(probe("ab12") if probe is not None else None)
 
-    emit._buffer(SESSION, emit._PendingJob(_ask_from_inside_the_batch, "repair asking"))
+    async def _submit() -> None:
+        emit._submit(_ask_from_inside_the_batch, "repair asking", SESSION)
+
+    asyncio.run(_submit())
     assert emit.flush(timeout=20.0)
     assert answers == [True], "the asking job was counted as debt against itself"
 

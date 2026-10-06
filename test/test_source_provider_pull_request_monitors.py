@@ -13,6 +13,7 @@ from urllib.request import Request
 import pytest
 
 from kiro_crew import github_runner
+from kiro_crew import sandbox as sandbox_module
 from kiro_crew.acp import client as acp_client_module
 from kiro_crew.monitoring import azure_devops_pull_request as azure_module
 from kiro_crew.monitoring import bitbucket_pull_request as bitbucket_module
@@ -1761,6 +1762,82 @@ def test_provider_cli_accepts_only_pod_local_azure_config_in_a_pod(monkeypatch, 
     )
     with pytest.raises(provider_cli_module.SetupError, match="must stay beneath KIROCREW_HOME"):
         provider_cli_env("az")
+
+
+def _stub_az_spawn(monkeypatch, sandbox_stub):
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.provider_cli.resolve_provider_cli",
+        lambda _executable: sys.executable,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.provider_cli._audit_provider_cli",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr("kiro_crew.monitoring.provider_cli.sandboxed_spawn_argv", sandbox_stub)
+
+
+def _pod_azure_env(monkeypatch, operator_home, pod_home):
+    monkeypatch.setattr(sandbox_module.Path, "home", staticmethod(lambda: operator_home))
+    monkeypatch.setenv("HOME", os.fspath(operator_home))
+    monkeypatch.setenv("KIROCREW_HOME", os.fspath(pod_home))
+    monkeypatch.setenv("KIROCREW_POD", "1")
+    monkeypatch.setenv("AZURE_CONFIG_DIR", os.fspath(pod_home / ".azure"))
+    monkeypatch.setenv("AZURE_EXTENSION_DIR", os.fspath(pod_home / ".azure" / "cliextensions"))
+
+
+def test_pod_azure_spawn_refuses_a_data_home_beneath_a_foreign_mask(monkeypatch, tmp_path):
+    def _never_spawn(*_args, **_kwargs):
+        raise AssertionError("a shadowed carve-out must not reach the sandbox")
+
+    _stub_az_spawn(monkeypatch, _never_spawn)
+    _pod_azure_env(monkeypatch, tmp_path, tmp_path / ".gnupg" / "pods" / "p1")
+
+    with pytest.raises(provider_cli_module.SetupError, match="independently masked"):
+        run_provider_cli("az", ["-c", "print('unreachable')"], timeout=5)
+
+
+def test_pod_azure_spawn_carves_both_dirs_on_the_default_pod_layout(monkeypatch, tmp_path):
+    calls = []
+
+    def _record(argv, **kwargs):
+        calls.append(kwargs)
+        return argv, kwargs["env"], None
+
+    pod_home = tmp_path / ".kirocrew-pods" / "p1"
+    _stub_az_spawn(monkeypatch, _record)
+    _pod_azure_env(monkeypatch, tmp_path, pod_home)
+
+    result = run_provider_cli("az", ["-c", "print('ok')"], timeout=5)
+
+    assert result.stdout.strip() == "ok"
+    assert [call["extra_visible_dirs"] for call in calls] == [
+        (
+            os.fspath(pod_home / ".azure"),
+            os.fspath(pod_home / ".azure" / "cliextensions"),
+        )
+    ]
+
+
+def test_host_azure_spawn_does_not_ask_the_shadow_guard(monkeypatch, tmp_path):
+    def _never_asked(*_args, **_kwargs):
+        raise AssertionError("the host Azure grant must not ask the shadow guard")
+
+    calls = []
+
+    def _record(argv, **kwargs):
+        calls.append(kwargs)
+        return argv, kwargs["env"], None
+
+    _stub_az_spawn(monkeypatch, _record)
+    monkeypatch.setattr(provider_cli_module, "carveout_shadowed_by_foreign_mask", _never_asked)
+    monkeypatch.setattr(provider_cli_module, "agent_writable_roots", lambda: ())
+    monkeypatch.setenv("HOME", os.fspath(tmp_path / "home"))
+    monkeypatch.setenv("KIROCREW_HOME", os.fspath(tmp_path / "crew"))
+
+    result = run_provider_cli("az", ["-c", "print('ok')"], timeout=5)
+
+    assert result.stdout.strip() == "ok"
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("extension_suffix", ["", "extensions"])

@@ -42,7 +42,7 @@ vi.mock('../api/client', () => ({
   api: { listInstances: listInstancesMock, instanceChatSlots: instanceChatSlotsMock },
 }))
 
-import { useInstanceSessions } from '../hooks/useInstanceSessions'
+import { crewBadge, crewGroupsFor, useInstanceSessions } from '../hooks/useInstanceSessions'
 import { lastActivityEpoch } from '../pages/chat/sessionOrder'
 import type { InstanceView } from '../api/client'
 
@@ -339,5 +339,47 @@ describe('useInstanceSessions', () => {
     const row = result.current.rows[0]
     expect(row.last_turn_ts).toBeUndefined()
     expect(lastActivityEpoch(row)).toBe(new Date('2026-08-31T14:36:00Z').getTime() / 1000)
+  })
+
+  it('keeps a crew\'s last rows after it disconnects, and stops asking it', async () => {
+    instanceChatSlotsMock.mockResolvedValue([{ key: 'chat-1', title: 'cached row', running: true, pending_approval: true }])
+    const { result, rerender } = renderHook(
+      ({ list }: { list: unknown[] }) => useInstanceSessions(true, list as InstanceView[]),
+      { wrapper, initialProps: { list: [CONNECTED] } },
+    )
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    const calls = instanceChatSlotsMock.mock.calls.length
+
+    expect(result.current.rows[0].running).toBe(true)
+
+    rerender({ list: [{ ...CONNECTED, status: { state: 'disconnected' } }] })
+    expect(result.current.rows.map(r => r.title)).toEqual(['cached row'])
+    // A cached answer carries no live state.
+    expect(result.current.rows[0].running).toBe(false)
+    expect(result.current.rows[0].pending_approval).toBe(false)
+    expect(result.current.failed).toEqual([])
+    expect(instanceChatSlotsMock.mock.calls.length).toBe(calls)
+  })
+})
+
+describe('crew groups', () => {
+  it('badges the tunnel states it can name, with disconnected and stopped as offline', () => {
+    expect(crewBadge('connected')).toBe('online')
+    expect(crewBadge('connecting')).toBe('reconnecting')
+    expect(crewBadge('error')).toBe('error')
+    expect(crewBadge('disconnected')).toBe('offline')
+    expect(crewBadge('stopped')).toBe('offline')
+    expect(crewBadge(undefined)).toBeNull()
+  })
+
+  it('groups a listable crew, and an offline one only while a row belongs to it', () => {
+    const list = [CONNECTED, OFFLINE] as unknown as InstanceView[]
+    expect(crewGroupsFor(list, []).map(g => g.id)).toEqual(['astro'])
+    const relay = { executor: 'remote', instance_id: 'chick' }
+    expect(crewGroupsFor(list, [relay])).toEqual([
+      { id: 'astro', name: 'astro', badge: 'online', offline: false },
+      { id: 'chick', name: 'chick', badge: 'offline', offline: true },
+    ])
+    expect(crewGroupsFor([], [relay, { peer_id: 'astro' }])).toEqual([])
   })
 })

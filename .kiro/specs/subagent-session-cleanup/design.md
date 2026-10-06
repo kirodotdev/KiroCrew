@@ -1,6 +1,6 @@
 # Design Document: Subagent Session Cleanup
 
-Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks.
+Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks. The ClaudeCodeProvider and Bedrock sections describe providers that are not shipped; ACP is the only provider. The shipped `_is_safe_path` (`src/kiro_crew/providers/cleanup.py`) refuses the root directory itself.
 
 ## Overview
 
@@ -212,11 +212,11 @@ A shared helper to validate paths before deletion:
 
 ```python
 def _is_safe_path(target: Path, expected_root: Path) -> bool:
-    """Validate target is under expected_root (no traversal)."""
+    """Validate target is strictly under expected_root (no traversal, never the root)."""
     try:
         resolved = target.resolve()
         root = expected_root.resolve()
-        return resolved == root or str(resolved).startswith(str(root) + os.sep)
+        return str(resolved).startswith(str(root) + os.sep)
     except (OSError, ValueError):
         return False
 ```

@@ -5,7 +5,7 @@ reaches through ``ctx``. They are pure ``asyncio`` combinators over caller-suppl
 thunks / stage callables — they hold no agent, session, or gateway logic, so this
 module sits at the BOTTOM of the layering (``dsl`` → ``context`` → ``runner``;
 GATE F1) and imports nothing heavy. The runner injects the concurrency ``limit``
-(from ``resolve_max_subagents()``); tests pass a small limit or ``None``.
+(the host's fixed workflow cap); tests pass a small limit or ``None``.
 
 Semantics (frozen — see ``docs/system-specs/modules/workflows.md``):
 
@@ -100,7 +100,7 @@ async def parallel(thunks: Sequence[Thunk], *, limit: Optional[int] = None) -> l
     """Run thunks concurrently (barrier), results in input order.
 
     A failing thunk → ``None``; this never raises (GATE A5). ``limit`` bounds
-    concurrency via a semaphore (the runner passes the subagent cap).
+    concurrency via a semaphore (the runner passes its run-global cap).
     """
     if not thunks:
         return []

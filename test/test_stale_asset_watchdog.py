@@ -745,6 +745,20 @@ def _verdict(status, reason="", *, probed=False):
     return ReentryVerdict(getattr(Reentry, status), reason, probed=probed)
 
 
+def _assert_backoff_doubles(asked_at: list[float], interval: float) -> None:
+    """Each re-ask waited at least its backoff step: interval, then doubling.
+
+    The watchdog sets the next ask to ``loop.time() + backoff`` after a check
+    returns, and the asks are timed on that same clock, so every gap is at least
+    its step however coarse the clock is or however late a tick wakes. Two
+    measured gaps are not compared with each other: on a 15.6 ms clock a late
+    tick turns the 20 ms step into the same reading as the 40 ms one.
+    """
+    gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
+    steps = [interval * 2 ** (k + 1) for k in range(len(gaps))]
+    assert gaps and all(gap >= step - 1e-9 for gap, step in zip(gaps, steps)), (gaps, steps)
+
+
 async def _run_until(shutdown, done: asyncio.Event, **kwargs):
     """Run the watchdog until *done* fires (or it returns), then stop it like SIGTERM."""
     task = asyncio.ensure_future(_run(shutdown, **kwargs))
@@ -791,8 +805,7 @@ async def test_a_refused_relaunch_stays_up_says_so_once_and_backs_off(caplog):
     # One confirm-and-drain pass (the drain is counted again after the check),
     # then only the backoff's re-asks.
     assert drains["n"] == 2
-    gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
-    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+    _assert_backoff_doubles(asked_at, interval=0.01)
 
 
 @pytest.mark.asyncio
@@ -825,8 +838,7 @@ async def test_an_inconclusive_recheck_does_not_lift_a_refusal(caplog):
     assert fired is False
     assert len(_records(caplog, level=logging.CRITICAL)) == 1
     assert drains["n"] == 2
-    gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
-    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+    _assert_backoff_doubles(asked_at, interval=0.01)
 
 
 @pytest.mark.asyncio

@@ -380,9 +380,8 @@ def harvest_metrics(repo: str, since_iso: str) -> dict:
     # A PR merged into a release branch ran that branch's workflow version, which
     # has no harvest step; a PR whose hygiene check never ran under the gate was
     # likewise never asked. Counting either as a non-adopter reports a hole that
-    # does not exist -- the first audit of this mechanism misread the first case
-    # and called two release backports escapes. They are reported separately so a
-    # REAL escape still stands out.
+    # does not exist: a release backport would read as an escape. They are
+    # reported separately so a REAL escape still stands out.
     base = default_branch(repo)
     on_default = [p for p in fix_prs if (p.get("baseRefName") or "") == base]
     other_base = len(fix_prs) - len(on_default)

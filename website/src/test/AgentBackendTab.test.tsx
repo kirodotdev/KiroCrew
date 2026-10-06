@@ -2178,3 +2178,36 @@ describe('AgentBackendTab new backend', () => {
     )
   })
 })
+
+/**
+ * The shared probe verdict, rendered (#14517). The same states as
+ * acpBackend.eligibility.test.ts and the first-run gate's block, so a surface that
+ * stopped reading `acpProbeBlocksUse` fails here. Settings is the OPTIMISTIC reader:
+ * only a known block disables Use; a failed check leaves it live.
+ */
+describe('AgentBackendTab shared probe eligibility', () => {
+  it.each([
+    ['installed', {}, true],
+    ['missing', { installed: 'missing', missing_components: ['claude-agent-acp'] }, false],
+    ['restart required', { restart_required: true }, false],
+    ['check failed', { installed: 'unknown' }, true],
+  ] as const)('%s: Use enabled = %s', async (_label, over, enabled) => {
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('claude', { ...over })],
+    })
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    if (enabled) await waitFor(() => expect(useButton('Claude Code')).toBeEnabled())
+    else await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
+  })
+
+  it('unselectable: not offered at all', async () => {
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('claude', { selectable: false }), probeRow('kas')],
+    })
+    wrap()
+    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
+    expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
+  })
+})

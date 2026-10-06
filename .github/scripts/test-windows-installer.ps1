@@ -11,7 +11,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-$MaxInstallSeconds = 120
+# A performance ceiling, deliberately tighter than the 300 s release smoke in
+# scripts/smoke-windows-install.ps1. 45 green main runs (2026-10-03..04) installed
+# in 39-98 s, median 60 s; 200 s is about twice the slowest, so a slow hosted
+# runner alone does not fail it while a real installer slowdown still does.
+$MaxInstallSeconds = 200
 # Healthy boot on the runner is ~12-24 s (observed 2026-09-29). /api/ready does not await
 # the Kiro CLI probe, but a tolerated probe timeout (_PROBE_TIMEOUT_SECS = 10 s in
 # src/kiro_crew/kiro_prerequisite.py) still slowed one boot from 12.8 s to 30.1 s on the

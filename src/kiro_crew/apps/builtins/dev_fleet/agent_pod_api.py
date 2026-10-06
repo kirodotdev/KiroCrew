@@ -260,10 +260,16 @@ async def _run_op(op: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]
     the others answering a setup problem with a 500. One place, before the result is
     ever inspected, is the only shape that covers all of them -- and it stays correct
     when a new verb is added, because a new verb cannot forget it.
+    These routes run in the gateway process, which does not run the managed backend's
+    ``dev_fleet_startup`` hook. The import-time repository hint deliberately skips
+    config-file and conventional-location discovery. Run the full discovery chain here
+    before any operation reads the repository, so every agent verb shares one lazy
+    gateway entry point.
     """
     from kiro_crew.apps.builtins.dev_fleet import repository
 
     try:
+        await repository.ensure_main_repo_discovered()
         return await op()
     except repository.RepoUnavailable as exc:
         return {"ok": False, "repo_unavailable": True, "error": str(exc)}

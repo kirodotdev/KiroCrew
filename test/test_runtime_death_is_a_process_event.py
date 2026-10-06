@@ -974,8 +974,8 @@ def test_the_reported_count_is_the_one_the_bound_is_taken_on():
 def _channel_dispatch_files() -> list[Path]:
     """The modules that end a channel turn and charge its session's breaker.
 
-    ``messaging/dispatch.py`` is the shared seam seven channels ride; Discord,
-    Telegram and Slack each fork it and keep their own copy of the turn loop. A
+    ``messaging/dispatch.py`` is the shared seam eight channels ride; Telegram and
+    Slack each fork it and keep their own copy of the turn loop. A
     list derived by GLOB rather than written out, so a channel that forks the
     loop later is judged by the same rule without anybody remembering to add it.
     """
@@ -1045,7 +1045,7 @@ def test_a_generic_turn_handler_never_charges_a_breaker_without_asking():
     # Two controls. Without them an empty offender list is indistinguishable from
     # a glob that matched nothing and an AST walk that recognised no handler.
     assert generic_handlers >= 4, f"only {generic_handlers} generic handlers -- scan is broken"
-    assert helper_calls >= 4, f"only {helper_calls} helper calls -- scan is broken"
+    assert helper_calls >= 3, f"only {helper_calls} helper calls -- scan is broken"
     assert not offenders, (
         "a generic turn handler charges the session's breaker without asking "
         f"whose fault the failure was: {offenders}"
@@ -1086,7 +1086,7 @@ def test_the_channel_charge_helpers_provider_is_the_one_the_turn_acquired():
                 bad.append(f"{path.name}:{call.lineno}: {ast.unparse(subject)} is not a held name")
             elif subject.id not in real and subject.id not in params:
                 bad.append(f"{path.name}:{call.lineno}: {subject.id} is never filled")
-    assert checked >= 4, f"only {checked} charge calls found -- scan is broken"
+    assert checked >= 3, f"only {checked} charge calls found -- scan is broken"
     assert not bad, f"a channel charge site asks about a provider it never held: {bad}"
 
 

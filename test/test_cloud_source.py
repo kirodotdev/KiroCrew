@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
+import shutil
 import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -35,6 +38,48 @@ class _FakeUser:
     def __init__(self, name: str, gid: int) -> None:
         self.pw_name = name
         self.pw_gid = gid
+
+
+_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_GROUP, _ACL_MASK, _ACL_OTHER = (
+    0x01,
+    0x02,
+    0x04,
+    0x08,
+    0x10,
+    0x20,
+)
+
+
+def _acl_xattr(*named: tuple[int, int, int], mask: int = 0o7, group_obj: int = 0o0) -> bytes:
+    """A ``system.posix_acl_access`` value in the kernel's on-disk layout.
+
+    ``named`` holds ``(tag, perm, id)`` entries for named users and groups; the
+    owner, owning-group, mask and other entries every extended ACL carries are
+    filled in around them.
+    """
+    unset = 0xFFFFFFFF
+    entries = [(_ACL_USER_OBJ, 0o7, unset), *named, (_ACL_GROUP_OBJ, group_obj, unset)]
+    entries += [(_ACL_MASK, mask, unset), (_ACL_OTHER, 0o0, unset)]
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+
+
+def _serve_acl(monkeypatch, node: Path, value) -> None:
+    """Make ``os.getxattr`` answer ``value`` for ``node``'s access ACL.
+
+    ``value`` is the bytes to return, or an ``OSError`` to raise. Every other
+    path and attribute goes to the real call, so the rest of the chain reads as
+    the host has it.
+    """
+    real = os.getxattr
+
+    def _fake(path, attribute, *a, **kw):
+        if Path(path) == node and attribute == "system.posix_acl_access":
+            if isinstance(value, OSError):
+                raise value
+            return value
+        return real(path, attribute, *a, **kw)
+
+    monkeypatch.setattr(os, "getxattr", _fake)
 
 
 class TestRepoRoot:
@@ -796,6 +841,7 @@ class TestTarballStagingDirectory:
         mine = grp.getgrgid(me.pw_gid)
 
         monkeypatch.setattr(grp, "getgrgid", lambda gid: _FakeGroup("solo", []))
+        monkeypatch.setattr(grp, "getgrall", lambda: [])
         monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
         monkeypatch.setattr(pwd, "getpwall", lambda: [])
         empty = source._group_shared_with_another_account(mine.gr_gid)
@@ -821,6 +867,7 @@ class TestTarballStagingDirectory:
         me = pwd.getpwuid(os.geteuid())
         gid = me.pw_gid
         monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
+        monkeypatch.setattr(grp, "getgrall", lambda: [])
 
         # Supplementary half alone: gr_mem names somebody else, and passwd shows this
         # account as the only holder of the gid.
@@ -853,7 +900,10 @@ class TestTarballStagingDirectory:
 
         me = pwd.getpwuid(os.geteuid())
         entry = grp.getgrgid(me.pw_gid)
-        supplementary = {name for name in entry.gr_mem if name != me.pw_name}
+        same_gid = [g for g in grp.getgrall() if g.gr_gid == me.pw_gid]
+        supplementary = {
+            name for g in [entry, *same_gid] for name in g.gr_mem if name != me.pw_name
+        }
         everyone = pwd.getpwall()
         enumerates = any(p.pw_name == me.pw_name for p in everyone)
         primary = {p.pw_name for p in everyone if p.pw_gid == me.pw_gid and p.pw_name != me.pw_name}
@@ -864,6 +914,177 @@ class TestTarballStagingDirectory:
             f"databases say supplementary={sorted(supplementary)} "
             f"enumerates={enumerates} other_primary={len(primary)}"
         )
+
+    def test_a_second_group_entry_with_the_same_gid_counts_as_shared(self, monkeypatch):
+        # Drives the REAL helper. getgrgid answers with the first entry carrying the
+        # gid, and a second entry with that gid hands its members the same group, so
+        # an empty first entry must not read as private.
+        if os.name != "posix":
+            pytest.skip("POSIX group databases")
+        import grp
+        import pwd
+
+        me = pwd.getpwuid(os.geteuid())
+        gid = me.pw_gid
+        twin = _FakeGroup("twin", ["peer"])
+        twin.gr_gid = gid
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
+        monkeypatch.setattr(pwd, "getpwall", lambda: [me])
+        monkeypatch.setattr(grp, "getgrgid", lambda g: _FakeGroup("first", []))
+        monkeypatch.setattr(grp, "getgrall", lambda: [_FakeGroup("first", []), twin])
+        verdict = source._group_shared_with_another_account(gid)
+        assert verdict is not None and "shared with 1 other" in verdict, verdict
+
+        # The same entry on ANOTHER gid shares nothing with this one.
+        twin.gr_gid = gid + 1
+        assert source._group_shared_with_another_account(gid) is None
+
+        # A group database that will not enumerate cannot show there is no second
+        # entry, so privacy is unproven and reads as shared.
+        def _no_enumeration():
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+        monkeypatch.setattr(grp, "getgrall", _no_enumeration)
+        unproven = source._group_shared_with_another_account(gid)
+        assert unproven is not None and "will not enumerate" in unproven, unproven
+
+    def test_an_acl_entry_for_another_account_refuses_a_private_group_writable_parent(
+        self, monkeypatch, tmp_path
+    ):
+        # The group bit of an extended-ACL directory is the ACL mask. A named entry
+        # for a peer turns it on while the owning group stays private, so the
+        # membership answer alone would accept a directory the peer can write.
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        monkeypatch.setattr(source, "_group_shared_with_another_account", lambda gid: None)
+        shared = tmp_path / "acl-parent"
+        home = shared / "data-home"
+        home.mkdir(mode=0o700, parents=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(shared, 0o770)  # noqa: S103 - the ACL mask shape is the fixture. lockdown-ok.
+        _serve_acl(monkeypatch, shared, _acl_xattr((_ACL_USER, 0o7, 4242)))
+        with pytest.raises(aws.AWSError) as caught:
+            source._staging_dir()
+        message = str(caught.value)
+        assert str(shared) in message, message
+        assert "uid 4242" in message, message
+        assert f"setfacl -b {shared}" in message, "the refusal must name the ACL remedy"
+
+    def test_a_read_only_acl_entry_leaves_a_private_group_writable_parent_accepted(
+        self, monkeypatch, tmp_path
+    ):
+        # A user-private group with a group-write umask plus a read-only entry for a
+        # backup or web account is an ordinary layout. Nobody else can write it.
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        monkeypatch.setattr(source, "_group_shared_with_another_account", lambda gid: None)
+        shared = tmp_path / "acl-parent"
+        home = shared / "data-home"
+        home.mkdir(mode=0o700, parents=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(shared, 0o770)  # noqa: S103 - the ACL mask shape is the fixture. lockdown-ok.
+        _serve_acl(monkeypatch, shared, _acl_xattr((_ACL_USER, 0o5, 4242), group_obj=0o7))
+        assert source._staging_dir() == home / source._STAGING_DIR_LEAF
+
+    def test_acl_entries_count_only_an_effective_write_by_another_account(
+        self, monkeypatch, tmp_path
+    ):
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        node = tmp_path / "acl-node"
+        node.mkdir()
+        me = os.geteuid()
+
+        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, me), (_ACL_USER, 0o7, 0)))
+        assert (
+            source._acl_admits_another_account(node, os.geteuid()) is None
+        ), "this account and root"
+
+        # The mask caps every named entry, so rwx under an r-x mask writes nothing.
+        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, 4242), mask=0o5))
+        assert source._acl_admits_another_account(node, os.geteuid()) is None, "masked write"
+
+        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, 4242)))
+        verdict = source._acl_admits_another_account(node, os.geteuid())
+        assert verdict is not None and "uid 4242" in verdict, verdict
+
+    def test_a_named_group_acl_entry_asks_that_groups_membership(self, monkeypatch, tmp_path):
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        node = tmp_path / "acl-node"
+        node.mkdir()
+        asked = []
+
+        def _shared_only_for_4343(gid):
+            asked.append(gid)
+            return "group 'peers', shared with 2 other account(s)" if gid == 4343 else None
+
+        monkeypatch.setattr(source, "_group_shared_with_another_account", _shared_only_for_4343)
+        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_GROUP, 0o7, 4343)))
+        verdict = source._acl_admits_another_account(node, os.geteuid())
+        assert verdict is not None and "shared with 2 other" in verdict, verdict
+
+        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_GROUP, 0o7, 4444)))
+        assert (
+            source._acl_admits_another_account(node, os.geteuid()) is None
+        ), "a private named group"
+        assert asked == [4343, 4444], asked
+
+    def test_no_acl_leaves_the_mode_bits_as_the_test(self, monkeypatch, tmp_path):
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        node = tmp_path / "acl-node"
+        node.mkdir()
+        for code in (errno.ENODATA, errno.ENOTSUP):
+            _serve_acl(monkeypatch, node, OSError(code, os.strerror(code)))
+            assert source._acl_admits_another_account(node, os.geteuid()) is None, code
+        monkeypatch.delattr(os, "getxattr")
+        assert (
+            source._acl_admits_another_account(node, os.geteuid()) is None
+        ), "no ACL API on this host"
+
+    def test_an_acl_that_cannot_be_read_or_parsed_fails_closed(self, monkeypatch, tmp_path):
+        if not hasattr(os, "getxattr"):
+            pytest.skip("POSIX ACL xattrs")
+        node = tmp_path / "acl-node"
+        node.mkdir()
+        good = _acl_xattr()
+        for value in (
+            struct.pack("<I", 3) + good[4:],  # an unknown version
+            good[:-3],  # a torn entry
+            b"\x02\x00",  # shorter than the header
+            OSError(errno.EACCES, os.strerror(errno.EACCES)),
+        ):
+            _serve_acl(monkeypatch, node, value)
+            verdict = source._acl_admits_another_account(node, os.geteuid())
+            assert verdict == "an ACL this host cannot read", (value, verdict)
+
+    def test_a_real_acl_entry_is_read_from_the_filesystem(self, tmp_path):
+        # The other ACL pins serve crafted bytes. This one asks the kernel, so the
+        # parser is checked against the layout the host really writes.
+        if not hasattr(os, "getxattr") or shutil.which("setfacl") is None:
+            pytest.skip("needs setfacl and POSIX ACL xattrs")
+        node = tmp_path / "acl-node"
+        node.mkdir(mode=0o700)
+
+        def _setfacl(entry: str) -> bool:
+            done = subprocess.run(
+                ["setfacl", "-m", entry, str(node)], capture_output=True, check=False
+            )
+            return done.returncode == 0
+
+        # An entry for this account is trusted, so a parser that reads the real
+        # layout answers None here rather than failing closed on it.
+        if not _setfacl(f"u:{os.geteuid()}:rwx"):
+            pytest.skip("this filesystem will not take a named ACL entry")
+        assert source._acl_admits_another_account(node, os.geteuid()) is None
+        peer = 65534 if os.geteuid() != 65534 else 65533
+        if not _setfacl(f"u:{peer}:rwx"):
+            pytest.skip("this namespace maps no other uid")
+        verdict = source._acl_admits_another_account(node, os.geteuid())
+        assert verdict is not None and f"uid {peer}" in verdict, verdict
 
     def test_a_sticky_ancestor_is_accepted(self, monkeypatch, tmp_path):
         # The sticky bit is exactly the rule that only an entry's owner may rename

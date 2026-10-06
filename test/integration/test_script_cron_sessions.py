@@ -26,6 +26,12 @@ reaches only a slot that same job created, whether the slot is live or only
 persisted. A key naming the owner's slot, another job's slot, or a closed slot
 whose transcript names no matching creator is refused with ``not_creator``, and
 nothing is minted or queued. The owner still reaches a cron's slot.
+
+The final group pins ``ScriptContext.set_session_mode`` and the cron rules on
+``POST /api/chat/mode``: a cron sets ``trust`` or ``trust_reads`` on its own
+slot and is refused every other mode, the owner's slot, another job's slot and
+the route itself while the switch is off, each refusal audited, while the owner
+keeps every mode on every slot.
 """
 
 from __future__ import annotations
@@ -521,3 +527,200 @@ async def test_a_cron_key_cannot_mint_a_closed_owner_slot_by_name(gateway_boot) 
 
         await _assert_not_creator_refusal(resp)
         assert key not in gw.state._slots
+
+
+# ── the approval mode of a cron-opened session ──
+#
+# ``ScriptContext.set_session_mode`` posts to ``POST /api/chat/mode``. A caller
+# that presents a ``cron:`` key sets ``trust`` or ``trust_reads`` on a slot that
+# same job created, and nothing else: ``yolo`` and ``normal`` are refused before
+# governance or the safety override is consulted, the owner's slot and another
+# job's slot are refused by the creator fence, and the switch refuses the route
+# as it refuses the other two. The owner keeps every mode on every slot.
+
+
+async def _cron_sets_mode(gw, key: str, mode: str, job_id: str = _JOB_ID):
+    return await _cron_post(gw, "/api/chat/mode", {"slot": key, "mode": mode}, job_id)
+
+
+async def _owner_sets_mode(gw, key: str, mode: str) -> None:
+    resp = await gw.post("/api/chat/mode", {"slot": key, "mode": mode})
+    body = await resp.text()
+    assert resp.status == 200, body
+    assert json.loads(body) == {"ok": True, "mode": mode}, body
+
+
+def _cron_slot_without_the_routes(gw, key: str, job_id: str = _JOB_ID):
+    """A slot the cron owns, minted directly: for a gateway whose switch is off."""
+    from kiro_crew.dashboard.state import SlotOrigin
+
+    slot = gw.state.get_or_create_slot(key, origin=SlotOrigin.CRON)
+    slot._created_by = f"cron:{job_id}"
+    return slot
+
+
+def _posture(slot) -> tuple[bool, bool]:
+    """``(_trust, _trust_reads)``: the per-slot grant the approval flow consults.
+
+    The session approval policy is not asserted here: ``set_approval_policy``
+    is a no-op for a slot whose ACP session has not started, which is every slot
+    these tests open and never run a turn on.
+    """
+    return bool(getattr(slot, "_trust", False)), bool(getattr(slot, "_trust_reads", False))
+
+
+async def _audit_rows(gw, *, operation_prefix: str) -> list[dict]:
+    """SEL access rows whose operation starts with *operation_prefix*, newest first."""
+    from kiro_crew.sel import sel
+
+    rows = await asyncio.to_thread(sel().recent, 200)
+    return [
+        r
+        for r in rows
+        if r.get("event_type") == "api_access"
+        and str(r.get("operation", "")).startswith(operation_prefix)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_script_context_sets_trust_and_trust_reads_on_its_own_session(
+    gateway_boot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.safety_override import safety_override
+
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+
+        with _script_context(gw, tmp_path, monkeypatch) as ctx:
+            key = await asyncio.to_thread(ctx.open_session, "Nightly triage")
+            slot = gw.state._slots[key]
+            assert _posture(slot) == (False, False)
+
+            receipt = await asyncio.to_thread(ctx.set_session_mode, key, "trust")
+            assert receipt == {"ok": True, "mode": "trust"}, json.dumps(receipt)[:300]
+            assert _posture(slot) == (True, False)
+
+            receipt = await asyncio.to_thread(ctx.set_session_mode, key, "trust_reads")
+            assert receipt == {"ok": True, "mode": "trust_reads"}, json.dumps(receipt)[:300]
+            assert _posture(slot) == (False, True)
+
+        # A slot-scoped grant is per slot: the process-global override stays off.
+        assert safety_override().is_active() is False
+        # Both calls are on the record, under the job's own key, naming the slot.
+        rows = await _audit_rows(gw, operation_prefix="mode_change:")
+        ops = [(r["operation"], r["caller_identity"], r["resources"]) for r in rows]
+        assert ("mode_change:trust", f"cron:{_JOB_ID}", key) in ops, ops
+        assert ("mode_change:trust_reads", f"cron:{_JOB_ID}", key) in ops, ops
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["yolo", "normal"])
+async def test_a_script_context_is_refused_every_other_mode(
+    gateway_boot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from kiro_crew.safety_override import safety_override
+
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+
+        with _script_context(gw, tmp_path, monkeypatch) as ctx:
+            key = await asyncio.to_thread(ctx.open_session, "Nightly triage")
+            await asyncio.to_thread(ctx.set_session_mode, key, "trust")
+            slot = gw.state._slots[key]
+            assert _posture(slot) == (True, False)
+
+            with pytest.raises(RuntimeError, match="mode_not_allowed"):
+                await asyncio.to_thread(ctx.set_session_mode, key, mode)
+
+        # Refused before anything moved: the grant it held, the policy, the override.
+        assert _posture(slot) == (True, False)
+        assert safety_override().is_active() is False
+        rows = await _audit_rows(gw, operation_prefix="chat.control")
+        denials = [r for r in rows if r.get("error") == "mode_not_allowed"]
+        assert denials, [(r["operation"], r["error"]) for r in rows]
+        assert f"slot={key}" in denials[0]["resources"], denials[0]
+        assert f"mode={mode!r}" in denials[0]["resources"], denials[0]
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_cannot_set_the_mode_of_the_owners_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        resp = await _cron_sets_mode(gw, key, "trust")
+
+        await _assert_not_creator_refusal(resp)
+        assert _posture(gw.state._slots[key]) == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_cannot_set_the_mode_of_another_jobs_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        _register_script_job(gw, _OTHER_JOB_ID)
+        theirs = await _cron_opens(gw, "Weekly digest", _OTHER_JOB_ID)
+
+        resp = await _cron_sets_mode(gw, theirs, "trust_reads")
+
+        await _assert_not_creator_refusal(resp)
+        assert _posture(gw.state._slots[theirs]) == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_must_name_the_slot(gateway_boot) -> None:
+    """The owner's all-slots request is not a cron's to make."""
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        mine = await _cron_opens(gw, "Nightly triage")
+        owner = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        resp = await _cron_post(gw, "/api/chat/mode", {"mode": "trust"})
+
+        body = await resp.text()
+        assert resp.status == 400, body
+        assert json.loads(body).get("code") == "slot_required", body
+        assert _posture(gw.state._slots[mine]) == (False, False)
+        assert _posture(gw.state._slots[owner]) == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_gateway_refuses_a_cron_key_setting_a_mode(
+    gateway_boot, integration_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _switch_session_control_off(integration_home)
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        slot = _cron_slot_without_the_routes(gw, "nightly-triage")
+
+        resp = await _cron_sets_mode(gw, slot.key, "trust")
+        await _assert_switched_off_refusal(resp)
+        assert _posture(slot) == (False, False)
+
+        with _script_context(gw, tmp_path, monkeypatch) as ctx:
+            with pytest.raises(RuntimeError, match="session_control_disabled"):
+                await asyncio.to_thread(ctx.set_session_mode, slot.key, "trust")
+        assert _posture(slot) == (False, False)
+
+        # The switch binds the cron, not the owner, who still sets the cron's slot.
+        await _owner_sets_mode(gw, slot.key, "trust")
+        assert _posture(slot) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_the_owner_still_sets_and_clears_the_mode_of_a_cron_opened_slot(
+    gateway_boot,
+) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        key = await _cron_opens(gw, "Nightly triage")
+        slot = gw.state._slots[key]
+
+        await _owner_sets_mode(gw, key, "trust")
+        assert _posture(slot) == (True, False)
+
+        await _owner_sets_mode(gw, key, "trust_reads")
+        assert _posture(slot) == (False, True)
+
+        await _owner_sets_mode(gw, key, "normal")
+        assert _posture(slot) == (False, False)

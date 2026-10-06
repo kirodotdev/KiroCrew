@@ -6,6 +6,7 @@
  * don't have to re-export it.
  */
 
+import { isNotFoundError } from '../api/apiError'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -75,4 +76,19 @@ export function modelSupportsEffort(model: string | undefined): boolean {
   const m = model.toLowerCase()
   if (m === 'auto' || m.includes('haiku')) return false
   return m.includes('opus') || m.includes('sonnet') || m.includes('fable') || m.includes('gpt')
+}
+
+/**
+ * Did the slot's selection-capability read actually FAIL?
+ *
+ * A 404 is not a failure: the gateway answers `slot_not_found` while a new chat's
+ * slot has not been registered yet, which is the same "no ACP session has
+ * advertised its options" state that `known: false` reports. Treating it as an
+ * error flashed the "could not verify effort options" notice, and disabled the
+ * effort control, on every cold-start poll (issue #14817). Only a real fault --
+ * a 403, a 503 `peer_unavailable`, a transport failure -- counts, which keeps the
+ * notice's "until the connection recovers" claim true.
+ */
+export function selectionCapabilitiesFailed(q: { isError: boolean; error?: unknown }): boolean {
+  return q.isError && !isNotFoundError(q.error)
 }

@@ -283,18 +283,23 @@ _SUBAGENT_BATCH_ITEM_KEY = {
 }
 
 # ---------------------------------------------------------------------------
-# Owner-only event types: the dashboard USER receives them (dashboard-user
-# tokens bypass this gate entirely), but an app token never does. The
-# per-member event log's frames belong here — they carry the operator's crew
+# Owner-only event types: an app token never receives them. The per-member
+# event log's frames (``MEMBER_LOG_EVENTS``) go further and reach only the
+# OWNER's dashboard socket: a non-owner dashboard session is refused them in
+# ``WebSocketHub._ws_client_allowed``, the same boundary the ``/api/members``
+# reads apply. The per-member event log's frames belong here — they carry the operator's crew
 # roster/activity/patrol state, which is not an app's business (the same
 # posture the whole ``handlers/members.py`` surface takes: app tokens are
 # denied outright). Classified here rather than left to the unknown-event
 # floor so the denial is INTENTIONAL and audited with its own reason instead
 # of reading as a misconfiguration, and so a future literal broadcast of one
 # of these names cannot silently start reaching app tokens.
-_OWNER_ONLY_EVENTS = frozenset({
+MEMBER_LOG_EVENTS = frozenset({
     "member_projection",   # types.WS_MEMBER_PROJECTION
     "members_subscribed",  # types.WS_MEMBERS_SUBSCRIBED
+})
+
+_OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # Per-row slot metadata edits. Sent only to dashboard-user sockets that
     # declared the capability; an app token gets its filtered full list.
     "slot_patch",

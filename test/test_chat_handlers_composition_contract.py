@@ -150,7 +150,7 @@ _BASE_NAMES = frozenset("""
         restore_agent_selection restore_replacement_if_handover_did_not_land
         resume_slot_from_history row_mid safety_override save_slot_off_loop schedule_eager_spawn
         sel session_agent_selection_name session_start_failure_streak slot_history_key
-        slot_switch_session_lock spawn_guarded_turn stage_boundary_for start_queue_persist
+        slot_switch_session_lock spawn_guarded_turn start_queue_persist
         steer_into_running_turn steer_is_auto stop_declined_armed stop_slot_turn
         subagents_attached_async tags_write_lock tempfile tighten_live_slot_memory_mode time
         timezone uuid validate_folder_tag_ids validate_tool_args

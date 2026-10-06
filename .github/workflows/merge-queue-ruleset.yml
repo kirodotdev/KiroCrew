@@ -1,0 +1,52 @@
+name: Merge Queue Ruleset Audit
+
+# The merge queue is what makes "every PR was green" imply "main is green":
+# ci.yml, fast-gate.yml and build.yml run on `merge_group`, the tree that
+# actually lands (docs/ci/ci-and-reviews.md, "Merge queue"). Requiring the queue
+# is a ruleset setting, not a file, so no pull request check notices when it is
+# switched off, and main then goes red from two PRs that were each green alone.
+#
+# This workflow reads main's live rules and goes red when `merge_queue` is not
+# among them, or when the MERGE_QUEUE_ENABLED variable says the queue is on but
+# the ruleset does not require it (then ci.yml skips main's push run and nothing
+# tests the merged tree).
+#
+# WHY ITS OWN SCHEDULED WORKFLOW, NOT A JOB IN main-ratchet-audit.yml: the fact
+# it reads belongs to no commit. A per-push job would stay red on every merge
+# until a maintainer acts, and that run status is the per-commit ratchet signal,
+# so a real ratchet regression would look the same as this red. On a schedule it
+# is red once per tick, and scheduled-failure-watch.yml (which lists this
+# workflow) turns a red scheduled run into one tracking issue.
+#
+# It runs main's own copy of scripts/check_merge_queue_ruleset.py: a scheduled
+# or dispatched run checks out the default branch.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Merge queue required on main
+    # A fork has none of upstream's rulesets; there the check would only ever
+    # report upstream's setting as missing.
+    if: ${{ github.repository == 'kirodotdev/KiroCrew' }}
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read main's live rules and require merge_queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_QUEUE_ENABLED: ${{ vars.MERGE_QUEUE_ENABLED }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/rules/branches/main" > "$RUNNER_TEMP/rules.json"
+          python3 scripts/check_merge_queue_ruleset.py "$RUNNER_TEMP/rules.json"

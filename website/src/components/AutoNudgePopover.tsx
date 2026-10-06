@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Goal, Pause, Play, Radar, X, Zap } from 'lucide-react'
+import { Check, Goal, Pause, Play, Radar, X, Zap } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -11,7 +11,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
-import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, PULL_REQUEST_WATCH_KINDS, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
 export type { AutoNudgeLoop } from './autoNudgeLoop'
 
 interface Props {
@@ -272,6 +272,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   }
   const formDirty = editedFields() !== null
 
+  /** DONE: a finished loop -- the agent created its stop file, or the watched
+   *  pull request merged or closed. Not a kind of paused: the service refuses to
+   *  revive it, so this surface offers nothing to press and the fields go read-only. */
+  const finished = loopFinished(loop)
+
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
@@ -284,6 +289,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   /** An icon-only `Btn` is square: `twMerge` lets `p-1.5` replace the text
    *  button's `px-2.5 py-1`. `relative` anchors Play's dirty dot. */
   const ICON_BTN = 'relative p-1.5'
+  /** Appended to each field's classes once the loop is finished: read-only and
+   *  dimmed, values kept. A string rather than `disabled:` variants so the
+   *  crew/member capability note keeps its own undimmed disabled look. */
+  const FINISHED_FIELD = finished ? ' opacity-60' : ''
 
   const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -469,22 +478,46 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  this is safe in aria-label: it changes once per cycle, not once per
    *  second. */
   const cycleText = loopCycleText(loop)
+  /** Which of the finishes, and whether it earns a check mark: a goal the agent
+   *  declared reached, a merge and an accepted work ledger do; a pull request
+   *  closed without merging ended on a question (reopen or abandon), as did a
+   *  rejected ledger, so those do not. The merged-vs-closed reading is the settled
+   *  `monitor_outcome` the frame carries, never prose; a finished watch whose
+   *  subject is not a pull or merge request (`monitor_kind`) is worded as a
+   *  subject, because its finish is neither a merge nor a close; its two
+   *  outcomes get two sentences, not one sentence and a glyph, because a
+   *  screen reader hears the sentence and not the glyph. */
+  const doneLine = !finished
+    ? null
+    : loop?.stopped_reason === 'stop_sentinel'
+      ? { key: 'components.autoNudgePopover.done_stop_file', check: true }
+      : !PULL_REQUEST_WATCH_KINDS.has(loop?.monitor_kind ?? '')
+        ? loop?.monitor_outcome === 'success'
+          ? { key: 'components.autoNudgePopover.done_subject_finished', check: true }
+          : { key: 'components.autoNudgePopover.done_subject_ended', check: false }
+        : loop?.monitor_outcome === 'success'
+          ? { key: 'components.autoNudgePopover.done_pr_merged', check: true }
+          : { key: 'components.autoNudgePopover.done_pr_closed', check: false }
   /** THE STATUS LINE under the title, independent of the controls: a running
-   *  loop's countdown, or why a paused one is paused. */
+   *  loop's countdown, why a finished one is done, or why a paused one is paused. */
   const statusText = loop
     ? loop.active
       ? countdownText
-      : loop.stopped_reason && loop.stopped_reason in PAUSED_STATUS_KEY
-        ? i18nT(PAUSED_STATUS_KEY[loop.stopped_reason], { cycles: loop.cycle_count, max: loop.max_cycles })
-        : i18nT('components.autoNudgePopover.loop_paused')
+      : doneLine
+        ? i18nT(doneLine.key)
+        : loop.stopped_reason && loop.stopped_reason in PAUSED_STATUS_KEY
+          ? i18nT(PAUSED_STATUS_KEY[loop.stopped_reason], { cycles: loop.cycle_count, max: loop.max_cycles })
+          : i18nT('components.autoNudgePopover.loop_paused')
     : ''
-  /** The title names the state: the goal's cycle while running, Paused while
-   *  not, and the invitation when there is no loop. */
+  /** The title names the state: the goal's cycle while running, Done once
+   *  finished, Paused otherwise, and the invitation when there is no loop. */
   const titleText = !loop
     ? i18nT('components.autoNudgePopover.set_a_goal')
     : loop.active
       ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })
-      : i18nT('components.autoNudgePopover.loop_paused')
+      : finished
+        ? i18nT('components.autoNudgePopover.loop_done')
+        : i18nT('components.autoNudgePopover.loop_paused')
   /** Whether a cycle is ALREADY armed to run. Derived from the same countdown
    *  the status line renders, so the button and the text can never disagree. */
   const cycleAlreadyDue =
@@ -556,10 +589,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           </button>
         </div>
         {loop && (
-          /* Boxed in the state's tone (ok while running, warn while paused) so
-             the state reads before the form does -- except while writes are
-             disabled, where a green box beside the capability note would assert
-             a fire this session cannot act on; the countdown then stays in the
+          /* Boxed in the state's tone (ok while running, info once finished, warn
+             while paused) so the state reads before the form does -- except while
+             writes are disabled, where a green box beside the capability note would
+             assert a fire this session cannot act on; the countdown then stays in the
              note's neutral tone. Not an aria-live region: a running loop's line
              ticks every second and would re-announce itself to a screen reader
              each time. */
@@ -568,9 +601,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             className={`mb-2 rounded-md border px-2 py-1.5 text-[11px] leading-relaxed ${
               loop.active
                 ? writeDisabled ? 'border-border bg-bg text-muted' : 'border-ok/30 bg-ok-subtle text-ok-fg'
-                : 'border-warn/30 bg-warn-subtle text-warn-fg'
+                : finished
+                  ? 'border-info/30 bg-info-subtle text-info'
+                  : 'border-warn/30 bg-warn-subtle text-warn-fg'
             }`}
           >
+            {doneLine?.check && <Check size={12} className="lucide-inline mr-1" aria-hidden data-testid="auto-nudge-done-check" />}
             {statusText}
           </p>
         )}
@@ -671,13 +707,15 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         ) : null}
 
         <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.goal_description')}</div>
+        {/* Once finished the three fields are read-only and dimmed, values kept:
+            Done is a dead end, so there is nothing an edit could be saved into. */}
         <textarea
           aria-label={i18nT('components.autoNudgePopover.goal_description')}
           value={message}
-          disabled={writeDisabled}
+          disabled={writeDisabled || finished}
           onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
           rows={6}
-          className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
+          className={`w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text${FINISHED_FIELD}`}
           placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
           aria-describedby={stopFileHelp ? stopFileHelpId : undefined}
         />
@@ -706,10 +744,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               min={15}
               max={86400}
               value={idleInput}
-              disabled={writeDisabled}
+              disabled={writeDisabled || finished}
               onChange={e => { hasEdited.current = true; setIdleInput(e.target.value) }}
               onBlur={() => setIdleInput(String(parseIdle(idleInput)))}
-              className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
+              className={`w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text${FINISHED_FIELD}`}
             />
           </div>
           <div className="flex-1">
@@ -719,10 +757,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               aria-label={i18nT('components.autoNudgePopover.max_cycles_0_infinite')}
               min={0}
               value={maxCyclesInput}
-              disabled={writeDisabled}
+              disabled={writeDisabled || finished}
               onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
               onBlur={() => setMaxCyclesInput(String(parseCycles(maxCyclesInput)))}
-              className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
+              className={`w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text${FINISHED_FIELD}`}
             />
           </div>
         </div>
@@ -834,9 +872,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 disabled={saving}
                 className="border-none bg-transparent p-0 text-[11px] text-danger underline cursor-pointer hover:text-danger disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                {i18nT('components.autoNudgePopover.clear_stopped_goal')}
+                {i18nT(finished ? 'components.autoNudgePopover.clear_finished_goal' : 'components.autoNudgePopover.clear_stopped_goal')}
               </button>
             )}
+            {/* DONE keeps the row's shape and kills both controls: the service
+                would refuse the resume anyway, and a live Play here would promise
+                one. Clear is the only way on; a new goal is set after it. */}
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
               <Btn type="button" className={ICON_BTN} onClick={pause} disabled={saving || writeDisabled || !loop.active} aria-label={pauseName} title={pauseName}>
                 <Pause size={14} aria-hidden />
@@ -852,7 +893,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                    the only save path while a loop exists, and "due" can last a
                    whole in-flight turn; the write leg lands and a refused fire
                    shows inline. */
-                disabled={saving || writeDisabled || !message.trim() || (loop.active && cycleAlreadyDue && !formDirty)}
+                disabled={saving || writeDisabled || finished || !message.trim() || (loop.active && cycleAlreadyDue && !formDirty)}
                 aria-label={playName}
                 title={playName}
               >

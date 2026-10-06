@@ -1,83 +1,90 @@
 # Dynamic Sub-Agent Max Count
 
-Kiro Crew sizes the concurrent sub-agent cap **automatically** by default
-(`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from
-the host's actual memory, plus a per-agent memory cost Kiro Crew *learns* from
-past runs. A fixed number is wrong in both directions — it wastes capacity on a
-large host and over-commits a tiny one — so auto is the default; set an
-integer >= 3 to pin an explicit cap.
+Free memory, not a count, bounds how many sub-agents run at once. Each start is
+admitted only if the host still has `agent.spawn_min_memory_gb` (2 GB) free
+after it, counting what the starts already admitted will grow to (the *memory
+floor*, below). The count cap is a high ceiling on top of that:
+`agent.max_subagents = 0` (the default) means `agent.subagent_auto_max`, 32. On
+a 16-32 GB host, memory runs out long before 32 sub-agents start, so the floor
+is what you see. The ceiling stands in for limits the floor cannot see: your
+LLM provider's concurrency, and the host's file-descriptor and process limits.
+
+The count used to be sized from host memory as well, and an adaptive cap started
+at 4 and halved whenever the gateway's event loop lagged or memory ran low.
+Those were count limits sitting under the memory floor. With two or more chats
+fanning out at once, one chat's wave held the slots the other chat's sub-agents
+waited for while memory was still free. Now nothing but memory (and work that
+keeps failing, below) holds a start back.
 
 ## Enabling It
 
-Auto-sizing is the default. To pin an explicit cap instead:
+The auto ceiling is the default. To pin an explicit cap instead:
 
 ```
 kirocrew config set agent.max_subagents 8
 ```
 
-- `agent.max_subagents = 0` — **auto** (default): compute the cap at startup.
+- `agent.max_subagents = 0` — **auto** (default): the ceiling is
+  `agent.subagent_auto_max`.
 - `agent.max_subagents >= 3` — explicit ceiling; adaptive control may run below it.
 
-`max_subagents` accepts **0 (auto) or an integer >= 3**. A pin of 1 or 2 would
-silently disable auto-sizing *and* run below today's default of 3, so it is
+`max_subagents` accepts **0 (auto) or an integer >= 3**. A pin of 1 or 2 is
 normalized UP to 3 (config loader, with a `config_bounds_clamped` SEL event) and
 rejected by the dashboard API. `resolve_max_subagents` also floors any explicit
-value at 3 as a runtime backstop. `0` is the only way to request the host-safe
-auto cap.
+value at 3 as a runtime backstop.
 
-The cap is re-resolved whenever `agent.max_subagents` changes in `config.json`:
-the running gateway picks the new value up within a couple of seconds, so a
-change from the dashboard, the CLI or an editor never needs a restart. The
-host-safe auto cap (`0`) is measured when the value is resolved -- at boot and
-again on each such change -- not on a timer, so after the host's resources
-change it is re-measured by the next subagent-setting edit or a restart.
+The cap is re-resolved whenever `agent.max_subagents`,
+`agent.subagent_auto_max` or `agent.spawn_min_memory_gb` changes in
+`config.json`, and, while the spawn floor is off, whenever one of the memory
+terms the cap is then sized from (`agent.subagent_mem_buffer_pct`,
+`agent.subagent_cost_gb`, `session.pool_size`) changes: the running gateway
+picks the new value up within a couple of seconds, so a change from the
+dashboard, the CLI or an editor never needs a restart.
 
-For long-running work, new provider/tool stream activity can earn one additional
-slot after a clear observation window, without waiting for the task to finish.
-This probe requires queued work, free memory above the pressure line and no
-provider throttle. An unchanged activity timestamp, a queued/stalled/parked run
-or an unreadable memory probe cannot earn it. Successful completions still earn faster startup
-doubling; after pressure, growth remains bounded to one slot per clean window.
-The configured ceiling is never a command to start unnecessary workers.
-
-The configured ceiling is the growth bound. The adaptive controller climbs
-toward it on live pressure signals (free memory against the pressure line, loop
-lag, timeouts) and never against a number predicted from past peaks: many
-sessions may ask for many workers, the controller admits them up to the ceiling
-you chose, and what the host cannot absorb yet queues -- at the per-spawn memory
-gate below and in the controller's own back-off -- rather than being refused
-for a guessed cap. An explicit ceiling such as 64 is not clamped by the
-auto-sizing-only `subagent_auto_max`.
+The adaptive controller ([adaptive-concurrency](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/adaptive-concurrency.md))
+starts the running cap AT the ceiling and lowers it only when admitted work keeps
+failing: attributable start timeouts, slow or failing MCP servers, file
+descriptors or processes near their limit, or a low completion rate, two of them
+agreeing in one sample. It never lowers it for event-loop lag or low memory. A
+provider's rate limit (429) is handled per provider and never lowers the cap
+either. After a cut, the cap climbs back one step per clean window, and fresh
+stream progress from a long-running task can earn one extra slot without waiting
+for the task to finish. The configured ceiling is never a command to start
+unnecessary workers.
 
 ## How the Cap Is Computed
 
 ```
-buf      = 1 - subagent_mem_buffer_pct / 100
-mem_term = floor( (avail_gb * buf - pool_size * mem_cost) / mem_cost )
-cap      = clamp( mem_term, 3, hard_cap )
+cap = agent.max_subagents            if it is > 0 (floored at 3)
+cap = max(3, agent.subagent_auto_max) otherwise
+cap = memory-sized (see below)       when agent.spawn_min_memory_gb <= 0
+cap = 3                              when host memory cannot be read at all
 ```
 
-- **Memory term** — how many agents fit in available RAM after reserving a
-  buffer for the OS and other processes, and after holding back one worker's
-  cost per warm-pool slot. `avail_gb` comes from `_available_memory_gb()`,
-  which on Linux is `min(MemAvailable, cgroup headroom)` so a memory-capped
-  container is respected.
-- **No CPU term** — deliberately. Over-committing memory ends in the OOM
-  killer, an unrecoverable hard failure, so it is sized up front. Over-committing
-  CPU only slows work down, and the adaptive controller already backs off on the
-  pressure that slowness produces. A static CPU term stacked on that loop did
-  the opposite of what it promised: agents are mostly I/O-bound, but the term
-  was priced from each agent's one-minute *peak*, so a single build-heavy run
-  (20 cores for a minute) priced every slot at that burst and pinned a 32-core
-  host with 96 GB free at 4.
-- **Floor of 3** — the auto-sized cap never drops below the legacy default
-  (`_LEGACY_DEFAULT_MAX`), so enabling auto can't regress a small host. This is
-  a hard floor: `compute_max_subagents` clamps to `[3, hard_cap]`, and the
-  config loader clamps `subagent_auto_max` itself UP to 3 (with a warning) if a
-  file sets it lower. The per-spawn memory gate (`agent.spawn_min_memory_gb`,
-  2.0 GB by default, which must remain free after the start) still holds
-  individual spawns in the queue under real memory pressure.
-- **`hard_cap`** — an absolute ceiling (see "Why a hard cap" below).
+- **No memory term, no CPU term.** Memory is judged start by start by the floor,
+  which prices each start at what it will settle at; sizing the count from the
+  same memory as well only stalled work while memory was still free. CPU
+  over-commit only slows work down, and slow, failing work is exactly what the
+  adaptive controller backs off on.
+- **The unreadable-memory fallback.** On a platform with no memory probe, or
+  when the read fails, the floor cannot bound starts (it admits rather than
+  refusing everything forever), so the count is the only guard left and the cap
+  falls back to the legacy 3.
+- **The disabled-floor fallback.** `agent.spawn_min_memory_gb` at 0 or below
+  turns the floor off, so it admits every start just as an unreadable host does.
+  The count is then the only bound, and it is sized from host memory:
+  `floor((avail_gb * buf - pool_size * typical - heavy_peak) / typical)`, with
+  `buf = 1 - subagent_mem_buffer_pct / 100`, clamped to
+  `[3, agent.subagent_auto_max]` -- the same figure the TaskRunner's auto value
+  uses. `typical` and `heavy_peak` come from the learned cost store (below);
+  before any are learned, `typical` is `agent.subagent_cost_gb` and nothing is
+  reserved.
+- **`subagent_auto_max`** — the ceiling itself (see "Why a hard cap" below).
+
+The figure the model is told -- the `{{MAX_SUBAGENTS}}` prompt token and the
+spawn tool's description -- is this cap (or the controller's cap in force), and
+the spawn tool adds that each start also waits until host memory can hold it, so
+a wide batch may start in waves.
 
 ## Learned Per-Agent Cost
 
@@ -85,16 +92,24 @@ Kiro Crew doesn't hard-code how much an agent costs — it measures it:
 
 - While an agent runs, the reaper loop periodically samples its process-tree
   RSS (memory) and CPU, keeping the **high-water** mark for that run (a single
-  reading at exit would miss a mid-run peak that has already declined).
-- At exit, one sample `{agent, mem_gb, cpu_cores, ts}` is appended to
-  `~/.kiro/crew/subagents/cost_samples.jsonl`. The CPU figure is telemetry
-  only; sizing reads `mem_gb`.
-- At the next startup, Kiro Crew takes the **p90 of the last N memory samples
-  per agent name** (robust to the occasional outlier run), then the worst case
-  across agent types, as the divisor.
+  reading at exit would miss a mid-run peak that has already declined), and,
+  once it is up and idle, a **settled** reading of what the runtime holds before
+  its work grows the tree.
+- At exit, one sample `{agent, mem_gb, cpu_cores, ts}` (plus `settled_gb` when
+  it was captured) is appended to `~/.kiro/crew/subagents/cost_samples.jsonl`.
+  The CPU figure is telemetry only.
+- The memory floor prices a dedicated start of an agent at its learned settled
+  figure once three runs have measured it (below). The TaskRunner's auto
+  parallel-step cap (`taskrunner.max_parallel_steps = 0`) is still sized from
+  the whole-run figures, because no per-start floor prices a TaskRunner step;
+  that is the one memory-sized count left (plus the disabled-floor fallback
+  above). It prices every slot at a **typical** run -- the p50 of each agent's
+  last N samples, then the median across agent names, each agent counted once
+  -- so one build-heavy agent does not price every slot, and it **reserves the
+  heaviest agent's p90 once** to cover that agent's growth after it starts.
+  One reserve means several concurrent heavy runs are an accepted risk.
 
-The longer the gateway runs, the more accurate the learned cost becomes. The
-sample log is bounded to the last N records per agent (FIFO compaction at
+The sample log is bounded to the last N records per agent (FIFO compaction at
 startup and periodically at runtime), so it never grows without limit. Before
 enough samples accumulate, a conservative fallback is used
 (`agent.subagent_cost_gb`).
@@ -109,13 +124,11 @@ whole process.
 
 Because every sharing sub-agent reports the **same** runtime PID, naive per-PID
 sampling would charge the entire shared process to *each* of them and inflate
-the learned cost — pinning the cap to the floor of 3, the opposite of what we
-want now that shared sub-agents are cheap. So the sampler special-cases them:
+the learned cost. So the sampler special-cases them:
 
 - **Shared** sub-agents attribute the runtime's measured RSS/CPU **divided by
   the number of concurrently-live shared sessions** on that PID — an empirical
-  per-session *average share*, not a guessed constant. As concurrency rises the
-  per-agent share falls, so the learned cost tracks reality.
+  per-session *average share*, not a guessed constant.
 - **Dedicated** (per-process) spawns keep the per-PID subtree sampling above.
   A spawn takes that path when it sets `model`, `reasoning_effort`,
   `allowed_tools`, `bare`, or `keep: true`; when `agent.role_models["subagent"]`
@@ -123,40 +136,47 @@ want now that shared sub-agents are cheap. So the sampler special-cases them:
   when `agent.session_sharing` is off; when there is no parent session; or when
   the parent is not ACP/kiro-backed (e.g. a Claude-Code parent).
 
-The practical effect: for the common session-shared case the memory term no
-longer binds, so the cap rises to the **provider-concurrency ceiling**
-(`agent.subagent_auto_max`) rather than host RAM — which is the real constraint
-when N sessions share one process calling one upstream account.
+The practical effect: the memory floor prices a shared start at a fraction of a
+dedicated one, so many more shared sub-agents fit before the floor holds the
+next start.
 
 ## Why a Hard Cap
 
-The formula sizes for **local** resources, but every sub-agent calls the same
-upstream LLM provider under one account. The provider's concurrency / rate
-limit is frequently the *real* bottleneck — a host that fits 48 agents in RAM
-may only get useful throughput from a handful before requests start queueing.
+Every sub-agent calls the same upstream LLM provider under one account. The
+provider's concurrency / rate limit is frequently the *real* bottleneck — a host
+with room for 48 agents in RAM may only get useful throughput from a handful
+before requests start queueing. Many sub-agents also mean many open files and
+processes.
 
-`agent.subagent_auto_max` (default **32**) is an honest ceiling for that
-unmodeled limit. On a big host the hard cap binds; on a small host memory
-binds below it. If you've confirmed your provider serves more concurrency,
-raise it. Kiro Crew does **not** yet measure provider saturation — that's a
-deliberate v1 simplification we may revisit.
+`agent.subagent_auto_max` (default **32**) is an honest ceiling for those
+unmodeled limits. On most hosts memory binds below it. If you've confirmed your
+provider serves more concurrency and the host has the memory, raise it. Kiro
+Crew does **not** yet measure provider saturation beyond backing off on 429s per
+provider — a deliberate simplification we may revisit.
+
+The MCP gateway's backend spawn gate (`mcp_gateway.spawn_concurrency_max`, how
+many MCP server processes fork and initialize at once) is raised to this ceiling
+when it is lower, so a fan-out the cap admits is not queued behind eight
+backend initializations. It still starts at `spawn_concurrency_initial` and
+grows only while backends keep initializing cleanly.
 
 ## Configuration
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `agent.max_subagents` | `0` | `0` = auto-size (default); `>0` = explicit cap |
-| `agent.subagent_mem_buffer_pct` | `20` | % of memory reserved for the OS and other processes |
-| `agent.subagent_cost_gb` | `0.5` | Minimum price of a warming dedicated start in the admission gate (the measured or learned projection applies when higher); also the cap-sizing fallback (GB/agent) until a learned cost exists |
-| `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes the cap; kept so an existing config is not rewritten |
-| `agent.subagent_auto_max` | `32` | Absolute ceiling on the computed cap (provider-concurrency stand-in) |
-| `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the queue, never refused (one in temporary or incognito memory mode, or with `agent.task_queue_enabled` off, is lost if the gateway restarts). `0` disables the gate |
+| `agent.max_subagents` | `0` | `0` = auto: the `subagent_auto_max` ceiling (default); `>0` = explicit cap |
+| `agent.subagent_mem_buffer_pct` | `20` | % of memory reserved for the OS and other processes when sizing the TaskRunner's auto parallel-step cap; it sizes the sub-agent auto cap only while `spawn_min_memory_gb <= 0` disables the floor |
+| `agent.subagent_cost_gb` | `0.5` | Minimum price of a warming dedicated start in the admission gate (the measured or learned projection applies when higher); also the TaskRunner figure's fallback (GB/agent) until a learned cost exists, and the sub-agent auto cap's while `spawn_min_memory_gb <= 0` |
+| `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes anything; kept so an existing config is not rewritten |
+| `agent.subagent_auto_max` | `32` | The sub-agent count ceiling when `max_subagents=0` (provider-concurrency and fd/PID stand-in); memory binds below it on most hosts. With the floor disabled it caps the memory-sized figure instead |
+| `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the queue, never refused (one in temporary or incognito memory mode, or with `agent.task_queue_enabled` off, is lost if the gateway restarts), for at most `agent.subagent_queue_max_wait_secs` before it ends as `never started: waiting for memory`. `0` disables the gate, and the sub-agent auto cap is then sized from memory like the TaskRunner figure |
 | `agent.subagent_spawn_stagger_secs` | `0.25` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
-| `session.pool_size` | `0` | Warm-pool size; reserved in the memory term when > 0 |
+| `session.pool_size` | `0` | Warm-pool size; reserved in the TaskRunner figure's memory term when > 0 (and in the sub-agent auto cap's while the floor is disabled) |
 
-The cap interacts with `spawn_min_memory_gb` but does not replace it: the cap is
-a bound on the RUNNING population, while `spawn_min_memory_gb` is a real-time
-floor on what each admitted start must leave free. They are independent guards.
+The cap and `spawn_min_memory_gb` bound different things: the cap is a high
+bound on the RUNNING population, while `spawn_min_memory_gb` is the real-time
+floor on what each admitted start must leave free -- and it is the floor that
+binds first on most hosts.
 
 Three things bound a fan-out, and they bound different quantities. The cap
 bounds how many agents RUN at once. `subagent_spawn_stagger_secs` bounds the
@@ -225,7 +245,8 @@ value somewhere worse, and the operator's real lever already exists:
 Time spent WAITING FOR A PERMIT is not charged to the startup deadline, on
 either start path. A start can queue at three places: the session manager's
 cold-start semaphore, the gateway's spawn admission, and the ACP
-`SessionStartGate` (`agent.session_start_concurrency`) around `session/new`.
+`SessionStartGate` (`agent.session_start_concurrency`, default `auto`: 2..16
+sized from the host) around `session/new`.
 Each fires two callbacks around its wait: `on_gate_queued` immediately before
 the wait begins, and `on_gate_acquired` when the permit is granted, with the
 wait and the queue's name. The manager's `_gate_wait_mark` stamps
@@ -289,7 +310,15 @@ reclaimable figure clears the floor, for at most 30 minutes, after which it ends
 without starting; with none running
 it is judged on the figure alone. The level lags (it can read NORMAL on a Mac
 that is already swapping), so it backs the figure up rather than replacing it.
-It never changes the auto-sized cap.
+It never changes the count cap.
+
+What the floor guarantees, stated plainly: admission never takes the host below
+the floor. It does not shed running work: a settled sub-agent that later runs a
+build or a test suite, or another application, can still push free memory below
+it, and then new starts wait. On Windows the floor reads available physical
+memory, not the commit charge, so a host near its commit limit can admit a
+start that later fails to commit (an accepted gap, tracked as
+[#16983](https://github.com/kirodotdev/KiroCrew/issues/16983)).
 
 ## Notes
 
@@ -303,7 +332,7 @@ It never changes the auto-sized cap.
   no cgroup clamp.
 - On a platform with no probe yet, or with no usable memory bound, the memory reader
   fails open and the cap falls back to the floor of 3 (`_LEGACY_DEFAULT_MAX`),
-  not to the configured value.
+  not to the configured ceiling: the floor cannot bound starts it cannot measure.
   The per-spawn memory guard uses the native reader on macOS and Windows, and
   also respects Linux cgroup headroom even if the host memory read fails.
 - Linux cgroup headroom uses the process's memory-controller membership and

@@ -425,12 +425,14 @@ def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
 
     The request helper answers ``("", 0)`` when it wrote nothing, and handing that
     back is what makes the decision write nothing too -- so a log can never hold a
-    spawn decision whose request is absent.
+    spawn decision whose request is absent. The closer lives on
+    ``ManagerComponent`` because a running child's tool prompts owe the log the
+    same pair, so this reaches it through the gate, the asker under test here.
     """
     from kiro_crew.subagent_manager.admission.gate import _GateMixin
 
     _open_session()
-    _GateMixin._record_crew_log_spawn_approval_decided(
+    _GateMixin._record_crew_log_approval_decided(
         SimpleNamespace(),
         ("", 0),
         approval_id="spawn:orphan",

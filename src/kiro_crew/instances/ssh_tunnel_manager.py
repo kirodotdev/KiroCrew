@@ -345,6 +345,42 @@ def _reclaim_identity_key() -> bytes | None:
     return hmac.new(raw, _RECLAIM_SIG_DOMAIN, hashlib.sha256).digest()
 
 
+def _forwarder_orphan_state(pid: int, forwarder_start: str) -> tuple[bool, int]:
+    """Return ``(orphaned, parent_pid)`` for a recorded forwarder child.
+
+    "Orphaned" means the gateway that spawned *pid* has exited, so
+    nothing will ever reap it. Blocking (process-table reads), so callers run it
+    off the event loop.
+
+    POSIX: the kernel re-parents an orphan when its parent dies, so the test is
+    ``get_ppid == 1``. A live gateway's forwarder still names that gateway, and a
+    subreaper host names the subreaper, so both read as not orphaned and the
+    reclaim fails closed.
+
+    Windows never re-parents: the parent pid stays whatever it was at spawn, dead
+    or alive, and the number can be handed to a new process later. So the
+    recorded parent counts as gone when either:
+
+    * nothing runs at that pid (and its start time cannot be read either); or
+    * the process now at that pid started AFTER the forwarder, so it cannot be
+      the process that spawned it (pid reuse).
+
+    A parent that is alive and started before the forwarder -- this gateway or a
+    second one on the same box -- is refused. So is every case the order cannot
+    be settled: an unreadable parent pid, a parent that exists but whose start
+    time is unreadable, or equal or unparsable start tokens.
+    """
+    ppid = platform_compat.get_ppid(pid)
+    if not platform_compat.IS_WINDOWS:
+        return ppid == 1, ppid
+    if ppid <= 0:
+        return False, ppid
+    parent_start = platform_compat.process_start_time(ppid)
+    if parent_start is None:
+        return not platform_compat.pid_exists(ppid), ppid
+    return platform_compat.created_after(parent_start, forwarder_start), ppid
+
+
 def _forwarder_identity_sig(key: bytes, instance_id: str, pid: int, start: str, port: int) -> str:
     """MAC over one instance's recorded forwarder identity.
 
@@ -1508,7 +1544,12 @@ def _verify_and_reclaim_forwarder(
         if tree and _SshTunnel._signal_group(pid, sig):
             return
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError, ValueError):
-            platform_compat.kill_pid(pid, sig)
+            # Pinned on the recorded start time. POSIX delegates straight to
+            # ``kill_pid``. On Windows the command-line read in ``_identity_holds``
+            # is a WMI query that takes about a second, so the start time is
+            # checked AGAIN under an open process handle right at the kill: the
+            # pid taskkill resolves cannot be a recycled one.
+            platform_compat.kill_pid_pinned(pid, expected_start, sig)
 
     def _wait_gone(grace_secs: float) -> bool:
         deadline = time.monotonic() + grace_secs
@@ -1529,6 +1570,12 @@ def _verify_and_reclaim_forwarder(
         except Exception as exc:  # noqa: BLE001 — audit must never break reclaim
             logger.debug("SEL audit failed for forwarder_orphan_reclaim: %s", exc)
 
+    if tree and platform_compat.IS_WINDOWS:
+        # The SSM group signal on Windows is an unpinned ``taskkill /T``, and a
+        # pinned pid signal would end only the ``aws`` wrapper: the plugin child
+        # keeps the port, and with the wrapper gone nothing recorded points at it
+        # any more, so the leak could never be reclaimed. Signal nothing.
+        return "windows_group_unsupported"
     if not _identity_holds():
         return "identity_mismatch"
     _deliver(platform_compat.SIGTERM)
@@ -2121,8 +2168,10 @@ class SshTunnelManager:
         replace — so a record written or re-pointed by anything but this
         gateway fails verification outright. Behind the MAC, defense in depth
         from kernel-owned facts: the candidate must be a genuine ORPHAN — not
-        a pid this manager currently supervises, and reparented to init
-        (``get_ppid == 1``), which no live gateway's forwarder is. Then the
+        a pid this manager currently supervises, and whose spawning gateway is
+        gone (:func:`_forwarder_orphan_state`: reparented to init on POSIX; on
+        Windows, a recorded parent that is dead or was replaced by a later
+        process), which no live gateway's forwarder is. Then the
         recorded pid is trusted only behind a STRICT identity check, both
         halves recorded at spawn: the pid's start time must equal the recorded
         ``forwarder_start``, AND its full argv must exactly equal the forward
@@ -2203,7 +2252,7 @@ class SshTunnelManager:
             return
         # Defense in depth behind the MAC, from gateway-/kernel-owned facts: a
         # pid this manager is CURRENTLY supervising is never a leak candidate,
-        # and a genuine hard-kill orphan has been reparented to init — a
+        # and a genuine hard-kill orphan has lost its spawning gateway — a
         # forwarder whose parent is still alive belongs to a running gateway
         # (this one or another), so it is refused no matter what the registry
         # says. Subreaper hosts read as non-orphaned and merely miss the
@@ -2211,7 +2260,18 @@ class SshTunnelManager:
         live_pids = {t.pid for t in self._tunnels.values() if t.pid}
         if pid in live_pids:
             return
-        if await asyncio.to_thread(platform_compat.get_ppid, pid) != 1:
+        orphaned, ppid = await asyncio.to_thread(_forwarder_orphan_state, pid, start)
+        if not orphaned:
+            logger.info(
+                "Not reclaiming recorded %s forwarder pid %d for %s: its parent "
+                "pid %d still reads as its live spawner (or the parent could not "
+                "be confirmed gone); port %d is left to it",
+                params.method,
+                pid,
+                inst.id,
+                ppid,
+                port,
+            )
             return
         if await asyncio.to_thread(_is_port_free, port):
             return  # nothing holds the recorded port — nothing leaked to reclaim
@@ -2255,6 +2315,16 @@ class SshTunnelManager:
         if outcome == "reclaimed":
             logger.info(
                 "Reclaimed leaked %s forwarder pid %d for %s (released port %d)",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+        elif outcome == "windows_group_unsupported":
+            logger.info(
+                "Not reclaiming leaked %s forwarder pid %d for %s: on Windows its "
+                "plugin child cannot be ended through a start-time-pinned signal; "
+                "port %d stays excluded from allocation",
                 params.method,
                 pid,
                 inst.id,

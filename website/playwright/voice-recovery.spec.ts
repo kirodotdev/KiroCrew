@@ -163,8 +163,9 @@ for (const touch of [false, true]) {
       if (touch) await more.tap(); else await more.click()
       await expect(page.getByTestId('speak-message')).toHaveText(label('pages.chat.assistantMessage.speak'))
       await expect(page.getByTestId('speak-message')).toHaveAttribute('aria-description', label('pages.chat.assistantMessage.speak_message'))
-      await expect(page.getByTestId('copy-message-menu-item')).toHaveText(label('pages.chat.assistantMessage.copy_text'))
-      await expect(page.getByTestId('copy-message-menu-item')).toBeVisible()
+      // Copy stays a row button beside More (it is never inside the menu while Quote is offered).
+      await expect(more.locator('..').getByRole('button', { name: label('pages.chat.assistantMessage.copy'), exact: true })).toBeVisible()
+      await expect(page.getByTestId('copy-message-menu-item')).toHaveCount(0)
       await expect(composer).toHaveValue(draft)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
       await capture('copy-menu-open', touch)

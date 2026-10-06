@@ -109,6 +109,7 @@ from kiro_crew.apps.registry import (
     _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,
+    _registry_trust_tier_of,
     _repo_key_owner_count,
     _same_git_target,
     _sel_credential_grant,
@@ -726,11 +727,18 @@ async def _restore_app_after_failed_update(name: str) -> None:
     unconditional re-register would publish a disabled app's agents, skills,
     MCP servers and crons, and nothing scrubs them again until the next
     enable/disable. Live read: a failed update leaves the record unchanged.
+
+    Recovery failures are logged and never escape: the caller still owes the
+    failed-update audit line and the 400 body, and the cause of the failed
+    update (disk full, no free port) is often what breaks the restore too.
     """
     if not await _app_may_run_after_install(name):
         return
-    await _register_app_off_loop(name)
-    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+    try:
+        await _register_app_off_loop(name)
+    except Exception:
+        logger.warning("Re-register after failed update failed for app %s", name, exc_info=True)
+    await _start_backend_after_install(name)
 
 
 async def _suspend_app_for_session_approval_reconsent(
@@ -4588,23 +4596,37 @@ async def handle_registries(request: web.Request) -> web.Response:
     """GET/PUT /api/apps/registries — manage external federated registries."""
     if request.method == "GET":
         config = KiroCrewConfig.load()
-        # Operator rows report `index` as their tier because that is what is in
-        # FORCE for them: `registry._registry_trust_tier` resolves `owner` only
-        # from build-pinned rows, since `config.json` is agent-writable. Echoing a
-        # hand-edited `owner` back would report a grant the runtime does not honour.
-        # `label`/`review` are reported empty for the same reason: they are claims
-        # only the build may make, so an operator row makes neither.
-        registries = [
-            {
-                "name": r.name,
-                "repo": _strip_git_target_userinfo(r.repo),
-                "branch": r.branch,
-                "trust": _TRUST_INDEX,
-                "label": "",
-                "review": "",
-            }
-            for r in config.registries
-        ]
+
+        # Operator rows report the tier in FORCE for them, never the one the row
+        # declares: `registry._registry_trust_tier` reads `owner` only from a
+        # build-pinned row or from the operator's keystone grant
+        # (`registry_trust.json`, written through `/api/security/trusted-registries`),
+        # since `config.json` is agent-writable and a hand-edited `owner` there is
+        # a claim the runtime does not honour. `label`/`review` are reported empty
+        # for the same reason: they are claims only the build may make, so an
+        # operator row makes neither. The tier is read off each row object, never
+        # by name, so two rows sharing a name each report their own grant; a row
+        # whose name a pinned registry takes is not served and reads `index`. The
+        # lookup reads the grant file, so it runs off the event loop.
+        def _operator_rows() -> list[dict[str, Any]]:
+            pinned_keys = {_registry_identity_key(p.name or p.repo) for p in _pinned_registries()}
+            return [
+                {
+                    "name": r.name,
+                    "repo": _strip_git_target_userinfo(r.repo),
+                    "branch": r.branch,
+                    "trust": (
+                        _TRUST_INDEX
+                        if _registry_identity_key(r.name or r.repo) in pinned_keys
+                        else _registry_trust_tier_of(r)
+                    ),
+                    "label": "",
+                    "review": "",
+                }
+                for r in config.registries
+            ]
+
+        registries = await asyncio.to_thread(_operator_rows)
         # Edition-pinned registries are reported SEPARATELY and read-only. They
         # are not part of ``registries`` because PUT replaces that list verbatim:
         # a GET→edit→PUT round-trip would persist an edition default into the
@@ -4703,19 +4725,21 @@ async def handle_registries(request: web.Request) -> web.Response:
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-./]*$", branch) or ".." in branch:
             return _deny(f"invalid branch name: {branch!r}", f"branch={branch}")
         # `trust` is accepted only as `index` for an operator row, and that is the
-        # value stored. `registry._registry_trust_tier` resolves `owner` solely
-        # from `default_registries()` — the build — because `config.json` is
-        # agent-writable, so a tier persisted here could never be honoured.
-        # Accepting it would hand back a setting the runtime ignores, and there is
-        # correspondingly no tier to PRESERVE across a replace-all PUT: an omitted
-        # value simply means `index`, which is what an operator row always is.
+        # value stored. `registry._registry_trust_tier` never reads `owner` off a
+        # config row — `config.json` is agent-writable, so a tier persisted here
+        # could never be honoured. The operator lifts a row to `owner` through
+        # Settings > Security (`/api/security/trusted-registries`), which writes
+        # the keystone `registry_trust.json` keyed by the row's repository, so
+        # there is correspondingly no tier to PRESERVE across a replace-all PUT: an
+        # omitted value simply means `index`, which is what a stored row always is.
         raw_trust = entry.get("trust")
         trust = _TRUST_INDEX if raw_trust is None else (str(raw_trust).strip() or _TRUST_INDEX)
         if trust not in _REGISTRY_TRUST_TIERS:
             return _deny(f"invalid registry trust: {trust!r}", f"trust={trust}")
         if trust == _TRUST_OWNER:
             return _deny(
-                "the trusted tier is supplied by this build, not by configuration",
+                "the trusted tier is supplied by this build or granted in "
+                "Settings > Security, not by configuration",
                 f"owner_trust_refused={name}",
             )
         # A name an edition-pinned registry already owns is refused rather than

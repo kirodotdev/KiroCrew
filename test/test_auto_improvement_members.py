@@ -138,12 +138,18 @@ def test_deleted_member_is_not_replaced_by_a_fresh_identity():
 
 @pytest.mark.asyncio
 async def test_installed_members_are_visible_in_the_roster():
+    from aiohttp import web
     from aiohttp.test_utils import make_mocked_request
 
     from kiro_crew.dashboard.handlers.members import api_members
 
     identities = await asyncio.to_thread(crew.ensure_team)
-    response = await api_members(make_mocked_request("GET", "/api/members"))
+    app = web.Application()
+    app["state"] = SimpleNamespace(owner_id="", _slots={}, conversation_log=None)
+    request = make_mocked_request("GET", "/api/members", app=app)
+    request["app"] = ""
+    request["user"] = "local-app"
+    response = await api_members(request)
     assert isinstance(response.body, bytes)
     rows = {row["name"]: row for row in json.loads(response.body)["members"]}
     for role, spec in crew.ROLES.items():

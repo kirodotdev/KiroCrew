@@ -1242,18 +1242,14 @@ jobs:
                 # exception: the fork UX lane completes as `failure` when an
                 # attachment download from the description failed for a
                 # transport reason, a `cannot evaluate` that a re-run of that
-                # lane clears. NOTE: `/ai-review
-                # override` records the judgment and re-runs the Stage-2 fork
-                # lane (located via the run URL its check-run carries), but the
-                # fork lanes consume no override marker, so the re-run is a
-                # fresh review roll -- a fork false BLOCK clears via a clean
-                # re-roll or a new commit, never a forced pass -- identical to
-                # the fork Opus / GPT / Design lanes, which already block a
-                # fork PR the same way. A clean re-roll at the SAME head
-                # replaces the BLOCK sample; the supersession gate above reads
-                # an override record that post-dates the block as adjudicating
-                # it (GPT also has its downgrade heading), and without either
-                # the re-roll reads as a dropped block.
+                # lane clears. A false BLOCK clears with `/ai-review override`:
+                # the handler records the judgment and re-runs the bound
+                # Stage-2 lane run (located through the lane-run marker in its
+                # check-run's output), whose "Resolve human override" step
+                # reads the record for this exact head, skips the model, and
+                # completes this row `success` with the override note in the
+                # slot -- the same outcome as the same-repo lane. This branch
+                # therefore reads that row like any other.
                 if [ "$fail" -gt 0 ]; then
                   failed+=("$label (BLOCK)")
                 elif [ "$pass" -gt 0 ]; then
@@ -1609,11 +1605,11 @@ jobs:
                 [ -n "$lane" ] || continue
                 # Both halves of this text were wrong and each sent the reader
                 # somewhere the code does not look. `/ai-review override <lane>
-                # <head>` is an exit for EVERY lane, fork PRs included: the gate
-                # reads the accepted record itself as adjudicating every block
-                # the lane raised at this head before it was recorded (a fork
-                # lane writes no override note, so the record is its only
-                # same-head exit). And what clears the GPT lane by decision
+                # <head>` is an exit for EVERY lane, fork PRs included: the
+                # lane's re-run replaces the block with the override note, and
+                # the gate also reads the accepted record itself as adjudicating
+                # every block the lane raised at this head before it was
+                # recorded. And what clears the GPT lane by decision
                 # is the workflow-authored `(all downgraded on adjudication)`
                 # heading, NOT the `[BLOCK-MERGE-DOWNGRADED]` marker, which sits
                 # in embedded model output. A new head is the expensive advice: it

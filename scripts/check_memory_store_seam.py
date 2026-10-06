@@ -42,9 +42,9 @@ scanner matches the ``ast.Attribute`` by name EQUALITY, walks to the ENCLOSING
 
 ## What the resolvers take: two namespaces, two arguments
 
-``ContextBuilder.get_memory_for`` / ``get_lessons_for`` (``context.py:1932``,
-``:1988``) take BOTH roots — ``workspace`` on the v1 path and ``memory_store``
-for a crew's silo — and ``_target_key`` (``context.py:125``) resolves the pair,
+``ContextBuilder.get_memory_for`` / ``get_lessons_for`` (in ``context.py``)
+take BOTH roots — ``workspace`` on the v1 path and ``memory_store`` for a
+crew's silo — and ``context._target_key`` resolves the pair,
 a named store winning outright. Collapsing them into one argument is the defect
 the split exists to prevent: a crew bound to store ``acme`` and a workspace also
 called ``acme`` shared one cache slot, so whichever was built first decided where
@@ -152,17 +152,18 @@ TARGET_METHODS = frozenset({"build_message", "build_session_context"})
 STORE_KEYWORD = "memory_store"
 
 # Names a store expression may not be derived from. ``agent=`` on these call
-# sites carries a kiro-cli ``modeId`` (acp/client.py:3971 sends it as
+# sites carries a kiro-cli ``modeId`` (``acp.client`` sends it as
 # ``session/set_mode``'s ``modeId``), which is a namespace DISJOINT from
 # ``cfg.agents`` — a kiro agent registered under ``~/.kiro/agents/`` is never
 # added to ``cfg.agents`` at all. Deriving a store from one resolves to
 # ``default`` with ``requested_resolved=False`` and reads the operator's real
 # store for exactly the crew that configured otherwise. Resolution belongs to
-# ``config.loader.resolve_agent_bindings`` (loader.py:4563), whose result the
+# ``config.loader.resolve_agent_bindings``, whose result the
 # call site then passes by name.
 AGENT_DERIVED_NAMES = frozenset({"agent", "kiro_agent", "agent_id", "_agent", "agent_name"})
 
-# The lazy per-root resolvers (context.py:1932, :1988). BOTH parameters are
+# The lazy per-root resolvers (ContextBuilder.get_memory_for /
+# get_lessons_for in context.py). BOTH parameters are
 # optional — ``workspace`` on the v1 path, ``memory_store`` for a crew's silo — so
 # a call with nothing in it silently means "whatever the fallback names" and says
 # nothing about having wanted it.
@@ -218,7 +219,8 @@ RULE_NOT_AGENT_DERIVED = Rule(
     rule_id="store-not-derived-from-agent",
     message=(
         f"{STORE_KEYWORD}= derived from an agent name. `agent=` here carries a "
-        f"kiro-cli modeId (acp/client.py:3971), a namespace DISJOINT from "
+        f"kiro-cli modeId (acp.client sends it as session/set_mode's modeId), "
+        f"a namespace DISJOINT from "
         f"cfg.agents, so resolve_agent_bindings(cfg, 'kirocrew-ops') answers store "
         f"`default` with requested_resolved=False — the derivation fails SILENTLY "
         f"toward the operator's real store, for exactly the crew that configured "
@@ -247,8 +249,8 @@ RULE_NONE_STORE = Rule(
     rule_id="literal-none-store",
     message=(
         f"{STORE_KEYWORD}=None, which is omission spelled out: the consumer hands the "
-        f"pair to _target_key (context.py:125), which collapses a None store onto the "
-        f"v1 path — so build_session_context's own resolver call (context.py:2716) "
+        f"pair to context._target_key, which collapses a None store onto the "
+        f"v1 path — so ContextBuilder.build_session_context's own resolver call "
         f"reads exactly what passing no keyword at all reads"
     ),
     fix=(

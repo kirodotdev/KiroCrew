@@ -154,19 +154,43 @@ class TestImportPurity:
         # (potentially on the asyncio event loop). _DEFAULT_DIR must therefore
         # be a pure literal; config_dir() is resolved lazily in
         # LessonStore.__init__.
-        import importlib
-        from unittest.mock import patch
+        #
+        # Probed on a PRIVATE copy of learn.py, never by reloading kiro_crew.learn: a
+        # reload rebinds Lesson, LessonStore and _PATH_LOCKS inside the shared module
+        # while every by-value importer (onboarding_import, context, taskrunner,
+        # cli_server, slack.gateway) keeps the old objects, so a later identity
+        # contract in the same worker goes red.
+        import importlib.util
 
-        import kiro_crew.learn as learn_mod
+        import kiro_crew.config.loader as config_loader
 
-        with patch(
-            "kiro_crew.config.loader.config_dir",
-            side_effect=AssertionError("config_dir() called at learn import scope"),
-        ):
-            importlib.reload(learn_mod)
-        # Restore the module to its normal state for other tests.
-        importlib.reload(learn_mod)
-        assert learn_mod._DEFAULT_DIR == Path.home() / ".kiro" / "crew"
+        inherited = dict(vars(learn_mod))
+        real_config_dir = config_loader.config_dir
+        owner = threading.get_ident()
+
+        def _tripwire() -> Path:
+            if threading.get_ident() != owner:
+                # An earlier test's leftover thread, not this import.
+                return real_config_dir()
+            raise AssertionError("config_dir() called at learn import scope")
+
+        name = "_kiro_crew_learn_import_purity_probe"
+        spec = importlib.util.spec_from_file_location(name, learn_mod.__file__)
+        assert spec is not None and spec.loader is not None
+        probe = importlib.util.module_from_spec(spec)
+        assert name not in sys.modules
+        # Registered while it executes: Lesson's annotations are strings, which
+        # @dataclass resolves through sys.modules[cls.__module__].
+        sys.modules[name] = probe
+        try:
+            with patch("kiro_crew.config.loader.config_dir", _tripwire):
+                spec.loader.exec_module(probe)
+        finally:
+            sys.modules.pop(name, None)
+        assert probe._config_dir is _tripwire, "the probe never bound the seam it trips"
+        assert probe._DEFAULT_DIR == Path.home() / ".kiro" / "crew"
+        rebound = sorted(k for k, v in inherited.items() if vars(learn_mod).get(k) is not v)
+        assert rebound == [], f"the shared kiro_crew.learn was re-executed: {rebound}"
 
 
 class TestSaveOrEnrich:

@@ -277,7 +277,7 @@ MOVED_MEMBERS = {
         "_reply_markdown",
         "_require_direct_chat",
     ),
-    "midturn": ("_handle_busy",),
+    "midturn": ("_handle_busy", "_handle_resumed_busy"),
     "pickers": (
         "_agent_choices",
         "_apply_agent",
@@ -521,8 +521,9 @@ BASE_MEMBERS = {
 }
 
 #: Members the composition added: the turn engine ``handle_message`` hands an admitted
-#: message to. Anything else new on the class is unexplained surface.
-ADDED_MEMBERS = frozenset({"_run_turn"})
+#: message to, and the midturn owner's hand-off of a message into a busy RESUMED
+#: dashboard session. Anything else new on the class is unexplained surface.
+ADDED_MEMBERS = frozenset({"_run_turn", "_handle_resumed_busy"})
 
 
 def _owner(stem: str) -> ModuleType:

@@ -36,6 +36,16 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 These fields are admission metadata, not a replacement for declaring minimal
 permissions or setting `minKiroCrewVersion`.
 
+The signature covers `name`, `version`, `signer` and `permissions`, plus each of
+these groups when it is non-empty: `notifications`, `crons`, `contributes`,
+`setup`, `mcpServers`, `backend`, `ui`, `agents`, `skills`, `sops`,
+`dependencies` and `platform`. An empty group is left out of the signed bytes.
+
+A gateway computes the signed bytes from the groups it knows. A signed manifest
+that declares a group an older gateway does not sign fails verification there.
+It fails closed: the install is refused, not downgraded. Set
+`minKiroCrewVersion` on a signed app so that refusal names the version floor.
+
 ## Resources
 
 | Field | Type | Description |
@@ -117,7 +127,7 @@ installed against:
 | `agent` | string | Agent to run (optional, uses default if omitted) |
 | `agent_sequence` | string[] | Ordered agents to run |
 | `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
-| `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent |
+| `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent. The path resolves against the app's own bundle, must stay inside it, must name a `.py` file, and is stored as an absolute path; re-enable the app after its bundle moves |
 | `env` | object | String environment variables passed to the job |
 | `persistent_session` | boolean | Default `true`; retain one agent session across runs |
 | `silent` | boolean | Default `false`; suppress automatic result delivery |
@@ -126,11 +136,14 @@ installed against:
 | `skip_dates` | string[] | Calendar dates the job must not fire on, evaluated in `timezone`. Must be zero-padded `YYYY-MM-DD` — `2026-1-1` parses but never matches the padded fire-time rendering, so it is rejected at manifest validation rather than silently skipping nothing |
 | `enabled` | boolean | Default `true`. Must be a JSON boolean — any other type is rejected at manifest validation. When `false` the cron is registered **paused** (visible in the Schedule view, resumable) instead of firing on install/enable — for jobs that need user configuration first |
 
-> **Caveat:** disabling an app deletes its registered cron jobs, and re-enabling
-> the app re-registers them from the manifest. A cron shipped with
-> `"enabled": false` that a user later resumed will therefore be reset back to
-> the paused state after an app disable → re-enable cycle and must be resumed
-> again.
+> **Caveat:** disabling an app deletes its registered cron jobs when a cron
+> service is reachable, and re-enabling the app re-registers them from the
+> manifest. A cron shipped with `"enabled": false` that a user later resumed
+> will therefore be reset back to the paused state after an app disable →
+> re-enable cycle and must be resumed again. A job the disable could not remove
+> stays in the store but does not run while the app is disabled: each fire is
+> skipped and the run is marked as an error. It runs again once the app is
+> re-enabled.
 
 ## Frontend UI
 
@@ -327,14 +340,12 @@ still load. Commands from a disabled app do not appear at all.
 **If your app is SIGNED, set `minKiroCrewVersion`.** Contributions are covered by the
 admission signature -- a contributed prompt goes to an agent with tools and `autoSend`
 fires it, so leaving it unsigned would make your rows the one part of a signed app an
-attacker could rewrite with the signature still verifying. The consequence for you is
-that a signed manifest declaring `contributes` does not verify on a gateway older than
-this change, because that gateway computes the signed bytes without the
-`contributes` key. It fails CLOSED -- a refused install, not a silent downgrade -- but
-the error will not obviously point here, so declare the floor and the install refuses
+attacker could rewrite with the signature still verifying. A gateway that does not
+sign `contributes` computes the signed bytes without it, so a signed manifest
+declaring `contributes` fails CLOSED there (see [Admission metadata](#admission-metadata)).
+The error will not obviously point here, so declare the floor and the install refuses
 for a legible reason instead. Unsigned apps are unaffected, as are signed apps that
-contribute nothing: the key is only added to the payload when non-empty, so every
-signature issued before this existed still verifies.
+contribute nothing: the key is only added to the payload when non-empty.
 
 ### `contributes.sessionControls` — A Per-Chat Control in the Composer
 
@@ -823,7 +834,7 @@ packages at all.
 | `permissions.network` | boolean | Can make external network requests |
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
-| `permissions.jobs` | boolean | May run durable background work through `ctx.jobs` and the app-owned `_jobs/*` routes |
+| `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
 #### `permissions.spawn` — Background Agents
@@ -963,19 +974,22 @@ only one app is uninstalled.
     "managedBy": "gateway",
     "capabilities": {
       "mcp": [
-        { "id": "some-mcp-server", "source": "registry" }
+        { "id": "some-mcp-server" }
       ],
       "skills": [
-        { "id": "some-skill", "source": "registry" }
+        "some-skill"
       ],
       "agents": [
-        { "id": "some-agent", "source": "registry" }
+        { "id": "some-agent", "managedBy": "app" }
       ]
     },
     "commands": ["jq", "node", "python3"]
   }
 }
 ```
+
+Each capability entry is a string id or an object `{ id, managedBy }`. An
+entry's own `managedBy` overrides `dependencies.managedBy`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -1125,6 +1139,12 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 cloud/remote environment with no display, the endpoint returns the command for
 the user to run locally instead of executing it on the server.
 
+The launched process does not inherit the gateway's environment. It gets the
+scrubbed minimal allowlist, which carries no SSH agent, AWS secrets or model
+credentials. On top of that it gets these desktop-session variables when the
+gateway has them: `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
+`DBUS_SESSION_BUS_ADDRESS`, `XDG_SESSION_TYPE` and `XDG_CURRENT_DESKTOP`.
+
 ## Validation Rules
 
 - `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case)
@@ -1143,7 +1163,8 @@ the user to run locally instead of executing it on the server.
   (`console`, `com10`, `null-app`) are fine. Refused on every platform: an app
   name is a persistent published identity, so it must mean the same thing on
   whichever host installs the app.
-- `version` must match semver (`X.Y.Z`)
+- `version` must start with `MAJOR.MINOR.PATCH`; a pre-release (`-`) or build
+  (`+`) suffix may follow it
 - Paths in `agents`, `skills`, `sops`, `ui.entry`, `ui.pages[].entryPoint`,
   `contributes.sessionControls[].entryPoint`, `contributes.panelTabs[].entry`, and
   `backend.entryPoint` must be relative and stay inside the app root: absolute paths

@@ -114,6 +114,47 @@ class TestNormalizeSlotKey:
         assert _safe_key(f"dashboard:{key}") == f"dashboard_{key}"
 
 
+class TestNormalizeSlotKeyLengthCap:
+    """A very long slot name must still give a transcript filename the OS accepts.
+
+    The key becomes ``dashboard_<key>.jsonl``; most filesystems refuse a name
+    over 255 bytes, so an uncapped 300-character name made every transcript
+    write fail with ENAMETOOLONG.
+    """
+
+    LONG_A = "a" * 300
+    LONG_B = "a" * 299 + "b"
+
+    def test_long_name_is_capped(self):
+        assert len(_normalize_slot_key(self.LONG_A)) <= 200
+
+    def test_capped_key_is_stable_and_idempotent(self):
+        once = _normalize_slot_key(self.LONG_A)
+        assert _normalize_slot_key(self.LONG_A) == once
+        assert _normalize_slot_key(once) == once
+
+    def test_names_sharing_a_prefix_stay_distinct(self):
+        assert _normalize_slot_key(self.LONG_A) != _normalize_slot_key(self.LONG_B)
+
+    def test_name_whose_transcript_could_exist_is_unchanged(self):
+        # A channel slot's transcript is ``<key>.jsonl``, so a 249-char key still
+        # fits in 255 bytes and may already own a transcript: re-keying it would
+        # orphan that file and lose every later save.
+        for name in ("x" * 239, "teams_" + "a" * 243):
+            assert _normalize_slot_key(name) == name
+        assert len(_normalize_slot_key("x" * 250)) <= 200
+
+    def test_capped_key_keeps_the_filename_invariant(self):
+        key = _normalize_slot_key("Artifact: " + "word " * 80)
+        assert _safe_key(f"dashboard:{key}") == f"dashboard_{key}"
+
+    def test_transcript_file_for_a_long_name_can_be_written(self, tmp_path):
+        key = _normalize_slot_key(self.LONG_A)
+        path = tmp_path / f"{_safe_key(f'dashboard:{key}')}.jsonl"
+        path.write_text("{}\n", encoding="utf-8")
+        assert path.read_text(encoding="utf-8") == "{}\n"
+
+
 class TestGetOrCreateSlotFilenameNormalization:
     def test_display_name_creates_folded_key(self, tmp_path):
         state = _make_state(tmp_path)

@@ -191,12 +191,15 @@ CHAT_TURN_TIMEOUT = 14400.0
 # overrides it and is clamped below the turn ceiling at load time.
 TOOL_APPROVAL_TIMEOUT = 600.0
 
-# How long any caller waits for a compaction to report completed/failed —
-# the default of ``LLMProvider.wait_for_compaction`` and the cap on the
-# automatic context-threshold compaction in ``session.py``. Manual (/compact,
-# !compact) and automatic compaction deliberately share this single budget:
-# the operation is identical, so a shorter manual budget only reports
-# "timed out" on work that is still running and subsequently succeeds.
+# How long any caller waits for a compaction to report completed/failed when
+# ``session.compact_wait_secs`` is unset (0) -- the default of
+# ``LLMProvider.wait_for_compaction``. Manual (/compact, !compact, channel
+# commands) and automatic compaction deliberately share one budget: the
+# operation is identical, so a shorter manual budget only reports "timed out"
+# on work that is still running and subsequently succeeds. A configured key
+# raises both: every caller -- the automatic coordinator, the task runner,
+# the dashboard and each chat channel -- resolves it through the one
+# ``SessionManager.compact_wait_budget_secs()``.
 COMPACT_WAIT_TIMEOUT_SECS = 300.0
 
 # Wall-clock ceiling on one subagent execution: the default of
@@ -230,6 +233,13 @@ DEFAULT_SUBAGENT_MAX_TURNS = 1000
 # ``check_memory_available``'s default, so a later change cannot move some of
 # them and leave the others behind.
 DEFAULT_SPAWN_MIN_MEMORY_GB = 2.0
+
+# Default of ``agent.subagent_queue_max_wait_secs``: how long a spawn the memory
+# floor keeps deferring (durable or in memory) may wait before it ends with the
+# delivered terminal ``never started: waiting for memory``. Finite by owner
+# decision (a memory wait is never unbounded); one number for the config default,
+# the loader fallback and the manager's boot value.
+DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS = 1800
 
 # Default of ``agent.subagent_cost_gb``: the least a dedicated subagent start is
 # priced at, and the auto cap's per-agent fallback. Same one-source reason.

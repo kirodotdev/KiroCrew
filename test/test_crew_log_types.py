@@ -10,6 +10,7 @@ while the session families are checked.
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import subprocess
@@ -35,6 +36,7 @@ from kiro_crew.crew_log import store as store_mod
 from kiro_crew.crew_log import (
     validate_data,
 )
+from kiro_crew.crew_log import writer as writer_mod
 from kiro_crew.crew_log.store import (
     STOP_REASON_INTERRUPTED,
     TOOL_STATUS_UNKNOWN,
@@ -370,8 +372,8 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
     assert {spec_type for spec_type, _ in closed} <= emitted
 
 
-#: The append primitives in :mod:`kiro_crew.crew_log.emit`, each mapped to the
-#: index of the positional argument that names the entry type.
+#: The append primitives in :mod:`kiro_crew.crew_log.emit` and its durable writer,
+#: each mapped to the index of the positional argument that names the entry type.
 #:
 #: Keyed on the CALLEE rather than on any type-shaped literal, because emit.py also
 #: hands an entry type to helpers that append nothing -- ``_entry_line_fits`` is
@@ -406,9 +408,10 @@ def _types_the_writers_append() -> dict[str, bool]:
     of it ignorable.
 
     Parsed off the writers' own syntax trees, so a newly wired site is covered the
-    day it lands rather than the day someone remembers to extend a list here. Both
-    writers are read: the emitter, and ``store``'s crash-repair closer, which names
-    its types with a ``type=`` keyword instead. Missing a call shape would
+    day it lands rather than the day someone remembers to extend a list here. Every
+    writer is read: the emitter, its durable writer (which authors the
+    ``write/dropped`` loss marker itself), and ``store``'s crash-repair closer, which
+    names its types with a ``type=`` keyword instead. Missing a call shape would
     under-report the undeclared side -- the direction that breaks folds -- which is
     why the declared-but-never-appended column below is checked as a control rather
     than assumed empty.
@@ -425,7 +428,7 @@ def _types_the_writers_append() -> dict[str, bool]:
         # one non-ignorable append is all it takes to stop a folding reader.
         skippable[entry_type] = skippable.get(entry_type, True) and ignorable
 
-    for module in (emit, store_mod):
+    for module in (emit, writer_mod, store_mod):
         tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -463,8 +466,8 @@ def _types_with_a_producing_site():
     # producing module names it. This holds the closed-enum rule to code that
     # exists, so wiring a resolver cannot quietly leave an unenforceable set behind.
     sources = [
-        Path(emit.__file__).read_text(encoding="utf-8"),
-        Path(store_mod.__file__).read_text(encoding="utf-8"),
+        Path(module.__file__).read_text(encoding="utf-8")
+        for module in (emit, writer_mod, store_mod)
     ]
     for spec_type in SESSION_ENTRY_TYPES:
         if any(f'"{spec_type}"' in text for text in sources):
@@ -944,8 +947,30 @@ def test_an_oversize_body_and_its_chunk_group_validate():
 
 
 def test_the_loss_marker_the_writer_builds_validates():
-    loss = emit._PendingLoss(dropped_count=3, dropped_bytes=2048)
-    validate_data("session", "write/dropped", loss.data())
+    """The marker the writer authors is the frozen ``write/dropped`` shape.
+
+    Driven through the writer's interface: three appends refused at a zero ceiling owe
+    one marker, and the data it hands the log is validated against the declaration.
+    """
+    appended: list[tuple[str, dict]] = []
+
+    class _Capture:
+        def append(self, entry_type: str, data: dict, **kwargs) -> None:
+            appended.append((entry_type, data))
+
+    writer = writer_mod.CrewLogWriter(
+        lambda unit: _Capture(), limits=writer_mod.WriterLimits(max_pending_count=0)
+    )
+
+    async def _refused() -> None:
+        for n in range(3):
+            job = writer_mod.WriteJob.append(lambda: None, "refused", nbytes=1000 + n)
+            assert writer.submit(SESSION, job) is False
+
+    asyncio.run(_refused())
+    assert writer.flush(timeout=5.0)
+    assert appended == [("write/dropped", {"dropped_count": 3, "dropped_bytes": 3003})]
+    validate_data("session", "write/dropped", appended[0][1])
 
 
 def test_the_failed_turn_closer_validates_without_credits_or_tokens():

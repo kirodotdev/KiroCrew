@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
-import { extractAll, generateAgentRegistryJson } from '../../../../scripts/settingsExtract'
+import { extractAll, generateAgentRegistryJson, panelRoots } from '../../../../scripts/settingsExtract'
 import { settingsRoute } from '../settingsRoute'
 import { SUBNAV_LEGACY_PARAMS, SUBNAV_PARAM } from '../../subNavParams'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
@@ -24,7 +24,7 @@ import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const SETTINGS_DIR = path.resolve(__dirname, '../../../pages/settings')
+const ROOTS = panelRoots(path.resolve(__dirname, '../../..'))
 /** Repo root is five levels up: providers → commandPalette → components → src → website. */
 const AGENT_REGISTRY_FILE = path.resolve(
   __dirname,
@@ -35,14 +35,14 @@ const AGENT_REGISTRY_FILE = path.resolve(
 // Valid tabs from SettingsPage.tsx (fork: KiroACP-only + de-Amazoned, so no
 // provider/secretary/sync/tasks tabs).
 const VALID_TABS = new Set([
-  'overview', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
+  'overview', 'imports', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'secrets', 'notifications', 'channels', 'developer', 'about',
   'privacy', 'shortcuts', 'connections',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {
   it('checked-in registry matches live extraction (run `npm run gen:settings` if this fails)', () => {
-    const { entries } = extractAll(SETTINGS_DIR)
+    const { entries } = extractAll(ROOTS)
     expect(entries).toEqual(SETTINGS_REGISTRY)
   })
 
@@ -112,7 +112,7 @@ function agentEntries(): AgentEntry[] {
 
 describe('settings-registry.generated.json — bundled agent registry', () => {
   it('checked-in JSON matches live extraction (run `npm run gen:settings` if this fails)', () => {
-    const { entries } = extractAll(SETTINGS_DIR)
+    const { entries } = extractAll(ROOTS)
     expect(fs.readFileSync(AGENT_REGISTRY_FILE, 'utf-8')).toBe(generateAgentRegistryJson(entries))
   })
 

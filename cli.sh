@@ -47,7 +47,7 @@ set -eu
 unset PYTHONPATH PYTHONHOME
 
 # The URL contract splits by class: FEED_BASE serves the mutable pointers
-# (latest-cli.json), ARTIFACT_BASE serves the bytes (wheels, SHA256SUMS).
+# (latest-cli.json), ARTIFACT_BASE serves the bytes (wheels, cli-manifest.json).
 # Both are aliases of the same distribution today; --cdn / KIROCREW_CDN_BASE
 # overrides BOTH (test / alternate-CDN escape hatch).
 FEED_BASE="${KIROCREW_CDN_BASE:-https://updates.crew.kiro.dev}"

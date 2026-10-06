@@ -1738,10 +1738,11 @@ def test_the_gate_prints_parseable_json_and_exits_zero_on_unknown(capsys) -> Non
 
 
 # ---- A human override adjudicates a superseded block (fork PRs) -------------
-# A Stage-2 fork lane writes no override note into its slot, so the only same-head
-# exit a fork lane has is the override RECORD itself. The shape pinned here: First
-# Principles BLOCKS a fork head, a writer records `/ai-review override
-# first-principles <head>`, the handler re-rolls the lane, the re-roll returns
+# The override RECORD adjudicates a block whatever the lane's slot shows, so a
+# head whose lane re-sampled instead of writing the override note (a re-run that
+# could not read the record reviews normally) is not held either. The shape
+# pinned here: First Principles BLOCKS a fork head, a writer records
+# `/ai-review override first-principles <head>`, the lane's next sample returns
 # CONCERNS -- and readiness must not hold the head on the replaced BLOCK.
 
 FP_KEY = "first-principles-review"

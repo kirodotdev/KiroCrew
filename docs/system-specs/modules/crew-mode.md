@@ -44,7 +44,7 @@ Missing history must never silently turn a private topic into Global memory.
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A crewmate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
-| `website/src/pages/chat/CrewmateMessage.tsx` | One crewmate message in its chat: author line on the run opener, bubble in the avatar gutter |
+| `website/src/pages/chat/CrewmateMessage.tsx` | One crewmate message in its chat: the bubble alone, placed by its run position (no author line, no avatar gutter) |
 
 Crew creation reports `409 agent_exists` for both an existing name and a
 concurrent name collision. The member-titled form uses its translated duplicate
@@ -122,6 +122,13 @@ A pick sends `agent_kind` with the name on slot create and on
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list
 projection exposes it, so a same-name member and template are distinct sessions. A
+local switch publishes the name and kind together and writes them to history in one
+operation. Remote create, switch and adopt carry the kind across the gateway boundary
+and mirror the same pair locally. A successful local metadata write makes that pair
+restart-safe on either machine. If the peer commits but the local metadata write
+fails, the response says `local_persistence: pending`, the live slot stays aligned
+with the peer, and the dirty-slot flush retries the local record; until that retry
+lands, a local restart can restore the prior pair. A
 member DM thread's pin covers the namespace too: the same name picked as a template
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.
@@ -1468,12 +1475,14 @@ when the roster's quote or recency moved since the read observed it, so a
 message the crewmate speaks while a roster read is in flight is never
 overwritten by the older answer.
 
-How it is drawn: the crewmate's messages form Slack-style **runs**. The first
-message of a run carries the author line — `CrewAvatar` seeded by the crewmate's
-name (its `avatar` record when it has one) at 28px, the name, the message time
-through the locale seam — and every message is its own bubble (`bg-card`,
-`border-border`, `max-w-[72ch]`) in the text column right of the avatar gutter,
-so consecutive bubbles share one avatar. Corner rule on the run's (left) side:
+How it is drawn: the crewmate's messages form **runs**. A message carries NO
+author line — no avatar, no name, no time row — and no avatar gutter: the chat
+is a 1:1 thread with one speaker besides the user, and the DM header's identity
+chip already names that speaker (#16617 retired the per-run author line #15167
+had made redundant). Every message is its own bubble (`bg-card`,
+`border-border`, `max-w-[72ch]`) in the full text column, and consecutive
+bubbles read as one speaker through their grouped corners alone. Corner rule on
+the run's (left) side:
 single = all corners full; first = bottom-left small; middle = top-left and
 bottom-left small; last = top-left small; right corners always full. A run is
 ONE TURN's bubbles (RFC screen 05): it breaks on a user message, on any row the
@@ -1663,7 +1672,8 @@ name, and it resolves an empty crew too so the concrete template stays inside
 | `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape |
 | `website/src/test/AgentTemplatesTab.test.tsx` | Grouping by origin, the two-control action row with its overflow menu (enroll hint, Delete vs Duplicate-to-edit by editability), the definition save through the detail PATCH (changed keys only — a prompt-only save never resends the model), the dirty-draft guard on row switch, on a background refetch, on Discard (asks; declined keeps the draft) and on New custom agent (a create never inherits the previous draft), a saved skill list written into the detail cache before the refetch lands, the saved confirmation in the bar's slot and the visible Add tool label, a delete naming the deleted template over the next row and, on a narrow viewport, returning to the list, every in-app link routed through the shell's leave gate with its target, `beforeunload` armed only while dirty, a rejected detail read rendering its error rather than Loading, a refused save reported inside the save bar beside Save and cleared by Discard, resources as plain rows, string-only MCP fields from a hand-edited spec, one Skills heading, the referenced-delete dialog (opened directly from the row's own holders with no confirm or request, and from the server's refusal when a holder landed later; including a chat-folder row and a private-copy row that links to its crew), a private copy's Open crewmate, the usage line naming folder and webhook holders with each holder linked to where it is held, blank vs `from` create with the created row selected after the roster refetch, and chat-with in the template namespace (enabled while dirty, behind the discard confirm) |
 | `website/src/components/RestartButton.cov80.test.tsx` | Apply & Restart (mounted in the Connections header) asks first, naming what stays (chats and history) and what stops (a reply in progress); declined does nothing, and the confirmed paths (success, failure, in-flight, MCP reconcile) run with the ask answered yes |
-| `test/test_chat_agent_kind.py` | `agent_kind` on slot create and switch: template picks skip the member store pin, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
+| `test/test_chat_agent_kind.py` | `agent_kind` on local and remote slot create and switch: template picks skip the member store pin, name and kind persist atomically, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
+| `test/test_remote_crew_execution.py`, `test/test_remote_crew_adopt.py` | Remote create, switch and adopt preserve the selected agent namespace across the gateway boundary and in mirrored history |
 | `test/test_open_slots_persistence.py` (`test_restore_carries_the_agent_selection_namespace`) | A template-picked slot restores as a template pick; an unknown persisted kind reads as name-only |
 | `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; an entry and a `route_crew` match or `unavailable` entry carry `display_name` only when it differs from the key; a named crew returns its bindings; an unknown name returns `error` plus `available`, each key followed by its differing label; the schema accepts spaces and dots in a crew name |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |

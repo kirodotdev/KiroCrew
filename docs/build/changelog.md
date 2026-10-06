@@ -21,10 +21,12 @@ shipped sections. The parser that renders it into the dashboard is
   that then has to be untangled at release time. The commit subject is the record
   until a bump names it.
 - **There is no `## [Unreleased]` section, and the gate refuses one.** To see what is
-  pending, read `git log --oneline <last-tag>..HEAD`. With shipped sections frozen,
-  that leaves exactly one legal shape for a changelog diff — prepend one new section —
-  because there is nowhere to append a per-PR line to.
-- **Never delete or edit a shipped section.** A release PR prepends one section and
+  pending, read `git log --oneline <last-tag>..HEAD`. With shipped sections frozen, a
+  changelog diff adds exactly one new section, because there is nowhere to append a
+  per-PR line to. A release on the newest line prepends it. A patch release on an
+  older line is mirrored to `main` in version order: its section sits below the newer
+  line's section, byte-identical to the one on its release branch.
+- **Never delete or edit a shipped section.** A release PR adds one section and
   leaves every earlier one byte-identical. This has already gone wrong once: a section
   was *replaced* rather than prepended and 322 lines of released history went with it,
   which no test caught and a user reported as an empty Releases page.
@@ -33,7 +35,8 @@ shipped sections. The parser that renders it into the dashboard is
 
 **One section per release, newest first**, headed exactly `## [X.Y.Z] - YYYY-MM-DD`
 with a plain hyphen. The parser also accepts the em and en dashes older sections
-carry, but new sections do not use them.
+carry, but new sections do not use them. The date is the day the section is written,
+at the release-candidate cut, and is not rewritten when the stable tag is cut.
 
 Never a prerelease spelling: `0.3.0-insider.9` and `0.3.0-rc.2` are drafts of `0.3.0`,
 are folded onto it by the parser, and must not get their own heading. The gate refuses

@@ -370,13 +370,17 @@ class TestPortAllocator:
     def test_is_port_free_detects_live_listener_even_with_reuseaddr(self):
         """A genuinely LISTENing port is still reported in-use.
 
-        Regression guard for the disconnect->reconnect fix: `_is_port_free`
-        now sets SO_REUSEADDR (so a just-freed port lingering in TIME_WAIT is
-        not a false positive, matching ssh's own `-L` listener bind). This must
-        NOT relax detection of a real, live listener — a true two-instance port
-        collision still has to be caught. SO_REUSEADDR exempts TIME_WAIT only,
-        never an active LISTEN, so the probe (also SO_REUSEADDR) must still fail
-        to bind against a LISTENing socket that itself set SO_REUSEADDR.
+        Regression guard for the disconnect->reconnect fix: on POSIX
+        `_is_port_free` sets SO_REUSEADDR (so a just-freed port lingering in
+        TIME_WAIT is not a false positive, matching ssh's own `-L` listener
+        bind). This must NOT relax detection of a real, live listener — a true
+        two-instance port collision still has to be caught. SO_REUSEADDR
+        exempts TIME_WAIT only, never an active LISTEN, so the probe must still
+        fail to bind against a LISTENing socket that itself set SO_REUSEADDR.
+
+        On Windows the same occupier is the port-squat shape: two SO_REUSEADDR
+        sockets can both listen there, so the probe uses SO_EXCLUSIVEADDRUSE
+        and this test runs unchanged on the Windows matrix as the live proof.
         """
         from kiro_crew.instances.port_allocator import _is_port_free
 
@@ -391,6 +395,100 @@ class TestPortAllocator:
             assert _is_port_free(port) is False
         finally:
             s.close()
+
+    class _ProbeSocket:
+        """Socket double that records the options the probe sets."""
+
+        def __init__(self, calls, bind_error=None):
+            self._calls = calls
+            self._bind_error = bind_error
+
+        def setsockopt(self, level, name, value):
+            self._calls.append(("setsockopt", level, name, value))
+
+        def bind(self, addr):
+            self._calls.append(("bind", addr))
+            if self._bind_error is not None:
+                raise self._bind_error
+
+        def close(self):
+            self._calls.append(("close",))
+
+    def _fake_socket_module(self, calls, *, exclusive=True, bind_error=None):
+        import types
+
+        ns = types.SimpleNamespace(
+            AF_INET=socket.AF_INET,
+            AF_INET6=socket.AF_INET6,
+            SOCK_STREAM=socket.SOCK_STREAM,
+            SOL_SOCKET=socket.SOL_SOCKET,
+            SO_REUSEADDR=socket.SO_REUSEADDR,
+            socket=lambda family, kind: self._ProbeSocket(calls, bind_error),
+        )
+        if exclusive:
+            # Winsock's value (~SO_REUSEADDR); any int distinct from SO_REUSEADDR works.
+            ns.SO_EXCLUSIVEADDRUSE = -5
+        return ns
+
+    def test_windows_probe_sets_exclusiveaddruse_and_never_reuseaddr(self, monkeypatch):
+        """Windows probe: SO_EXCLUSIVEADDRUSE only.
+
+        With SO_REUSEADDR, a Windows probe binds next to a live listener that set
+        it too (OpenSSH's -L listener does), reads the port as free, and the
+        forward becomes a second listener that never gets the traffic.
+        """
+        import kiro_crew.instances.port_allocator as pa
+        from kiro_crew import platform_compat as pc
+
+        calls: list = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pa, "socket", self._fake_socket_module(calls))
+
+        assert pa._is_addr_free(7778, "127.0.0.1") is True
+
+        opts = [c for c in calls if c[0] == "setsockopt"]
+        assert opts == [("setsockopt", socket.SOL_SOCKET, -5, 1)]
+        assert calls[-2:] == [("bind", ("127.0.0.1", 7778)), ("close",)]
+
+    def test_windows_probe_reads_exclusive_bind_refusal_as_in_use(self, monkeypatch):
+        import kiro_crew.instances.port_allocator as pa
+        from kiro_crew import platform_compat as pc
+
+        calls: list = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pa,
+            "socket",
+            self._fake_socket_module(calls, bind_error=OSError(errno.EADDRINUSE, "in use")),
+        )
+
+        assert pa._is_addr_free(7778, "127.0.0.1") is False
+        assert pa._is_port_free(7778) is False
+
+    def test_windows_probe_without_the_constant_sets_no_reuse_option(self, monkeypatch):
+        """No SO_EXCLUSIVEADDRUSE in this build: plain bind, never SO_REUSEADDR."""
+        import kiro_crew.instances.port_allocator as pa
+        from kiro_crew import platform_compat as pc
+
+        calls: list = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pa, "socket", self._fake_socket_module(calls, exclusive=False))
+
+        assert pa._is_addr_free(7778, "::1") is True
+        assert [c for c in calls if c[0] == "setsockopt"] == []
+
+    def test_posix_probe_still_sets_reuseaddr_only(self, monkeypatch):
+        """POSIX probe unchanged: SO_REUSEADDR, so TIME_WAIT is not a false positive."""
+        import kiro_crew.instances.port_allocator as pa
+        from kiro_crew import platform_compat as pc
+
+        calls: list = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pa, "socket", self._fake_socket_module(calls))
+
+        assert pa._is_addr_free(7778, "127.0.0.1") is True
+        opts = [c for c in calls if c[0] == "setsockopt"]
+        assert opts == [("setsockopt", socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
 
     def test_is_port_free_true_for_unbound_port(self):
         from kiro_crew.instances.port_allocator import _is_port_free
@@ -7963,6 +8061,106 @@ class TestForwarderPidHints:
         assert recovered_kwargs["forwarder_sig"] != ""
 
 
+def _route_pinned_kill_to_kill_pid(monkeypatch):
+    """Send the Windows pinned kill through the test's ``kill_pid`` double.
+
+    The real ``kill_pid_pinned`` opens a handle to the (fake) pid on Windows and
+    refuses, so the signal-sequence tests below would see no signal there.
+    """
+    from kiro_crew import platform_compat as pc
+
+    monkeypatch.setattr(pc, "kill_pid_pinned", lambda pid, start, sig: pc.kill_pid(pid, sig))
+
+
+class TestForwarderOrphanState:
+    """``_forwarder_orphan_state``: POSIX keeps ``ppid == 1``; Windows asks
+    whether the recorded parent is gone or was replaced by a later process."""
+
+    FWD = 4242
+    PARENT = 777
+    START = "1000"
+
+    def _patch(self, monkeypatch, *, windows, ppid, parent_start=None, parent_exists=True):
+        from kiro_crew import platform_compat as pc
+
+        seen: list = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", windows)
+        monkeypatch.setattr(pc, "get_ppid", lambda pid: ppid if pid == self.FWD else -1)
+
+        def start_time(pid):
+            seen.append(("start", pid))
+            return parent_start
+
+        def exists(pid):
+            seen.append(("exists", pid))
+            return parent_exists
+
+        monkeypatch.setattr(pc, "process_start_time", start_time)
+        monkeypatch.setattr(pc, "pid_exists", exists)
+        return seen
+
+    @pytest.mark.parametrize(("ppid", "orphaned"), [(1, True), (777, False), (-1, False)])
+    def test_posix_is_exactly_reparented_to_init(self, monkeypatch, ppid, orphaned):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        seen = self._patch(
+            monkeypatch, windows=False, ppid=ppid, parent_start="1", parent_exists=False
+        )
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (orphaned, ppid)
+        # POSIX never consults the parent's liveness or start time.
+        assert seen == []
+
+    def test_windows_parent_gone_is_orphaned(self, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        self._patch(
+            monkeypatch, windows=True, ppid=self.PARENT, parent_start=None, parent_exists=False
+        )
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (True, self.PARENT)
+
+    def test_windows_parent_alive_and_older_is_refused(self, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        self._patch(monkeypatch, windows=True, ppid=self.PARENT, parent_start="999")
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (False, self.PARENT)
+
+    def test_windows_parent_pid_reused_by_later_process_is_orphaned(self, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        self._patch(monkeypatch, windows=True, ppid=self.PARENT, parent_start="1001")
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (True, self.PARENT)
+
+    @pytest.mark.parametrize("parent_start", ["1000", "garbage", "Mon Oct  5 05:56:00 2026"])
+    def test_windows_unsettled_order_is_refused(self, monkeypatch, parent_start):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        self._patch(monkeypatch, windows=True, ppid=self.PARENT, parent_start=parent_start)
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (False, self.PARENT)
+
+    def test_windows_parent_exists_but_unreadable_is_refused(self, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        self._patch(
+            monkeypatch, windows=True, ppid=self.PARENT, parent_start=None, parent_exists=True
+        )
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (False, self.PARENT)
+
+    @pytest.mark.parametrize("ppid", [-1, 0])
+    def test_windows_unreadable_parent_pid_is_refused(self, monkeypatch, ppid):
+        from kiro_crew.instances.ssh_tunnel_manager import _forwarder_orphan_state
+
+        seen = self._patch(monkeypatch, windows=True, ppid=ppid, parent_exists=False)
+
+        assert _forwarder_orphan_state(self.FWD, self.START) == (False, ppid)
+        assert seen == []
+
+
 class TestOrphanForwarderReclaim:
     """End-to-end reclaim behavior against REAL processes holding REAL ports.
 
@@ -8420,6 +8618,237 @@ class TestOrphanForwarderReclaim:
         finally:
             self._cleanup(proc)
 
+    # A pid no test host runs: stands in for the recorded spawning gateway.
+    _FAKE_PARENT_PID = 3_999_991
+
+    @pytest.mark.parametrize("tree", [False, True])
+    @pytest.mark.parametrize("windows", [True, False])
+    def test_windows_kill_is_pinned_to_the_recorded_start_time(self, monkeypatch, windows, tree):
+        """Every pid signal goes through ``kill_pid_pinned`` with the recorded start
+        (on POSIX that delegates straight to ``kill_pid``). A Windows SSM forwarder
+        is not signalled at all: the group signal there is an unpinned
+        ``taskkill /T``, and ending the wrapper alone strands its plugin child."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        pinned: list = []
+        bare: list = []
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: "S1")
+        monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: True)
+        monkeypatch.setattr(pc, "pid_exists", lambda pid: not (pinned or bare))
+        monkeypatch.setattr(stm, "_is_addr_free", lambda port, host: bool(pinned or bare))
+        monkeypatch.setattr(
+            pc, "kill_pid_pinned", lambda pid, start, sig: pinned.append((pid, start, sig)) or True
+        )
+        monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: bare.append((pid, sig)) or True)
+        monkeypatch.setattr(
+            stm._SshTunnel,
+            "_signal_group",
+            staticmethod(lambda pid, sig: bare.append(("tree", pid, sig)) or True),
+        )
+        monkeypatch.setattr(pc, "pgroup_exists", lambda pgid: not (pinned or bare))
+        monkeypatch.setattr(stm, "_RECLAIM_POLL_INTERVAL_SECS", 0.001)
+        monkeypatch.setattr(pc, "IS_WINDOWS", windows)
+
+        outcome = stm._verify_and_reclaim_forwarder(4242, "S1", ["ssh", "h"], 7778, tree, "t")
+
+        if tree and windows:
+            assert outcome == "windows_group_unsupported"
+            assert pinned == [] and bare == [], "a Windows SSM forwarder was signalled"
+        elif tree:
+            assert outcome == "reclaimed"
+            assert pinned == []
+            assert bare == [("tree", 4242, pc.SIGTERM)]
+        else:
+            assert outcome == "reclaimed"
+            assert pinned == [(4242, "S1", pc.SIGTERM)]
+            assert bare == []
+
+    def _windows_orphan_gate(self, monkeypatch, *, parent):
+        """Run the REAL orphan test on its Windows branch, for that call only.
+
+        *parent* is the state of the forwarder's recorded parent pid:
+        ``"gone"`` (nothing there), ``"older"`` (alive, started before the
+        forwarder) or ``"later"`` (pid reused by a process started after it).
+        Only the parent's facts are faked, as Windows creation FILETIMEs ordered
+        around a fixed forwarder token, so the order is settled the same way on
+        every host whatever its native start-token format. The recorded identity
+        and argv stay real, so every gate behind this one runs for real.
+        ``IS_WINDOWS`` is flipped only inside the wrapped call, so nothing else
+        in ``connect`` takes a Windows code path on a POSIX host.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        real_state = stm._forwarder_orphan_state
+        fake_ppid = self._FAKE_PARENT_PID
+
+        forwarder_filetime = "133000000000000000"
+        parent_filetime = {
+            "gone": None,
+            "older": "132999999999999999",
+            "later": "133000000000000001",
+        }[parent]
+
+        def gate(pid, start):
+            real_start_time = pc.process_start_time
+            real_exists = pc.pid_exists
+            saved = (pc.IS_WINDOWS, pc.get_ppid, pc.process_start_time, pc.pid_exists)
+            pc.IS_WINDOWS = True
+            pc.get_ppid = lambda p: fake_ppid if p == pid else -1
+            pc.process_start_time = lambda p: (
+                parent_filetime if p == fake_ppid else real_start_time(p)
+            )
+            pc.pid_exists = lambda p: parent != "gone" if p == fake_ppid else real_exists(p)
+            try:
+                return real_state(pid, forwarder_filetime)
+            finally:
+                pc.IS_WINDOWS, pc.get_ppid, pc.process_start_time, pc.pid_exists = saved
+
+        monkeypatch.setattr(stm, "_forwarder_orphan_state", gate)
+
+    def _record(self, reg, *, port, pid, start, sig):
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        reg.update(
+            "cd-1",
+            local_port=port,
+            forwarder_pid=pid,
+            forwarder_start=start,
+            forwarder_sig=sig,
+            was_connected=True,
+        )
+
+    @pytest.mark.parametrize("parent", ["gone", "later"])
+    @pytest.mark.asyncio
+    async def test_windows_orphan_with_dead_or_reused_parent_is_reclaimed(
+        self, tmp_path, monkeypatch, parent
+    ):
+        """Windows never re-parents to pid 1. A forwarder whose recorded parent
+        is gone, or whose parent pid now names a LATER process, is a leak: the
+        reclaim gets past the orphan test and hands the verify-and-kill worker
+        the recorded pid, start time and the forward argv.
+
+        The worker itself is replaced by a recorder, so this runs on every
+        platform: the kill and the exact-argv read are pinned by their own tests
+        (``_verify_and_reclaim_forwarder`` and ``TestProcessArgvMatchesExact``)."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, argv = self._spawn_port_holder()
+        try:
+            monkeypatch.setattr(
+                stm,
+                "_build_ssh_tunnel_argv",
+                lambda host, lp, rp, compression=True: list(argv),
+            )
+            self._windows_orphan_gate(monkeypatch, parent=parent)
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid)
+            assert start, "test needs a readable start-time identity"
+            reg, mgr = self._mgr(tmp_path, base_port=55100)
+            self._record(
+                reg, port=port, pid=proc.pid, start=start, sig=sign("cd-1", proc.pid, start, port)
+            )
+
+            reached: list = []
+            monkeypatch.setattr(
+                stm,
+                "_verify_and_reclaim_forwarder",
+                lambda pid, start, argv_, port_, tree, audit: reached.append(
+                    (pid, start, list(argv_), port_, tree)
+                )
+                or "identity_mismatch",
+            )
+
+            st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert reached, "the orphan test refused a dead or reused parent"
+            r_pid, r_start, r_argv, r_port, r_tree = reached[0]
+            assert (r_pid, r_start, r_port, r_tree) == (proc.pid, start, port, False)
+            assert r_argv == list(argv)
+        finally:
+            self._cleanup(proc)
+
+    @pytest.mark.asyncio
+    async def test_windows_forwarder_with_live_older_parent_is_refused_and_logged(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A parent that is alive and older is the forwarder's real spawner --
+        this gateway or a second one on the box. Refused, and the miss is logged."""
+        import logging
+
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, argv = self._spawn_port_holder()
+        try:
+            monkeypatch.setattr(
+                stm,
+                "_build_ssh_tunnel_argv",
+                lambda host, lp, rp, compression=True: list(argv),
+            )
+            self._windows_orphan_gate(monkeypatch, parent="older")
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid) or "x"
+            reg, mgr = self._mgr(tmp_path, base_port=55200)
+            self._record(
+                reg, port=port, pid=proc.pid, start=start, sig=sign("cd-1", proc.pid, start, port)
+            )
+
+            with caplog.at_level(logging.INFO, logger=stm.logger.name):
+                st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert proc.poll() is None, "a live-parented forwarder was signalled"
+            assert any(
+                "Not reclaiming recorded" in r.getMessage()
+                and f"parent pid {self._FAKE_PARENT_PID}" in r.getMessage()
+                for r in caplog.records
+            )
+        finally:
+            self._cleanup(proc)
+
+    @pytest.mark.parametrize("orphan_test", ["posix", "windows"])
+    @pytest.mark.parametrize("mismatch", ["sig", "start", "argv"])
+    @pytest.mark.asyncio
+    async def test_identity_mismatch_is_refused_behind_either_orphan_test(
+        self, tmp_path, monkeypatch, orphan_test, mismatch
+    ):
+        """With the orphan gate OPEN on either platform's test, a forged MAC, a
+        start-time mismatch or a foreign argv still signals nothing."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, argv = self._spawn_port_holder()
+        try:
+            if mismatch != "argv":
+                monkeypatch.setattr(
+                    stm,
+                    "_build_ssh_tunnel_argv",
+                    lambda host, lp, rp, compression=True: list(argv),
+                )
+            if orphan_test == "posix":
+                self._fake_orphan(monkeypatch)
+            else:
+                self._windows_orphan_gate(monkeypatch, parent="gone")
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid) or "x"
+            recorded = "not-the-recorded-identity" if mismatch == "start" else start
+            sig = "deadbeef" * 8 if mismatch == "sig" else sign("cd-1", proc.pid, recorded, port)
+            reg, mgr = self._mgr(tmp_path, base_port=55300)
+            self._record(reg, port=port, pid=proc.pid, start=recorded, sig=sig)
+
+            st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert proc.poll() is None, f"a {mismatch}-mismatched forwarder was signalled"
+        finally:
+            self._cleanup(proc)
+
     @pytest.mark.asyncio
     async def test_unrecorded_port_holder_is_never_signalled(self, tmp_path):
         """No recorded identity -> no candidate: the reclaim never scans the
@@ -8515,6 +8944,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: True)
         monkeypatch.setattr(pc, "pid_exists", lambda pid: False)  # child already exited
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: True)
+        _route_pinned_kill_to_kill_pid(monkeypatch)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 
         try:
@@ -8543,6 +8973,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: True)
         monkeypatch.setattr(pc, "pid_exists", lambda pid: True)
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
+        _route_pinned_kill_to_kill_pid(monkeypatch)
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 
@@ -8564,12 +8995,16 @@ class TestOrphanForwarderReclaim:
 
         delivered: list[int] = []
         starts = iter(["identity-A", None])  # pre-TERM ok; re-check: pid gone
+        # The POSIX group-signal path: a Windows SSM forwarder is never signalled
+        # (test_windows_kill_is_pinned_to_the_recorded_start_time[windows-tree]).
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
 
         monkeypatch.setattr(pc, "process_start_time", lambda pid: next(starts))
         monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: True)
         monkeypatch.setattr(pc, "pid_exists", lambda pid: False)
         monkeypatch.setattr(pc, "pgroup_exists", lambda pgid: True)  # plugin lingers
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
+        _route_pinned_kill_to_kill_pid(monkeypatch)
         monkeypatch.setattr(
             stm._SshTunnel,
             "_signal_group",
@@ -8600,6 +9035,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: next(argv_answers))
         monkeypatch.setattr(pc, "pid_exists", lambda pid: True)
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
+        _route_pinned_kill_to_kill_pid(monkeypatch)
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 
@@ -9746,6 +10182,307 @@ class TestProxyHandlerPolicy:
         assert _body(await api_instances_proxy(req))["code"] == "proxy_method_not_allowed"
         req = self._req(tmp_path, monkeypatch, path="api/chat/slots", manager=None)
         assert _body(await api_instances_proxy(req))["code"] == "instances_manager_unavailable"
+
+
+class TestProxyRedactsPeerReplies:
+    """The window renders peer text straight from the proxy, so the proxy is
+    the read-path redaction point: a credential the peer emits never reaches
+    the browser, in a JSON body or in an SSE frame."""
+
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+
+    def _req(self, tmp_path, monkeypatch, *, path, chunks, content_type):
+        _enable(tmp_path, monkeypatch)
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: True)
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        async def _iter():
+            for c in chunks:
+                yield c
+
+        class _Mgr:
+            @contextlib.asynccontextmanager
+            async def proxy_request(self, iid, method, path, **kwargs):
+                yield types.SimpleNamespace(
+                    status=200,
+                    headers={"Content-Type": content_type},
+                    content=types.SimpleNamespace(iter_any=_iter),
+                )
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        req = _FakeReq(_State(reg, _Mgr()), match={"id": "cd-1", "path": path})
+        req.method = "GET"
+        req.body_exists = False
+        return req
+
+    def test_every_forwarded_content_type_has_a_redaction_path(self):
+        """The proxy redacts JSON and SSE only, so it may forward nothing else:
+        a third allowed type would reach the window unredacted."""
+        from kiro_crew.dashboard.handlers_instances import _PROXY_RESP_ALLOW_CONTENT_TYPES
+
+        assert _PROXY_RESP_ALLOW_CONTENT_TYPES == frozenset(
+            {"application/json", "text/event-stream"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_json_body_strings_are_redacted(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        doc = {"messages": [{"role": "assistant", "content": f"key {self.SECRET} here"}]}
+        raw = json.dumps(doc).encode()
+        # Split mid-secret: the proxy must redact the whole document, not chunks.
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[raw[:20], raw[20:]],
+            content_type="application/json",
+        )
+        resp = await api_instances_proxy(req)
+        assert resp.status == 200
+        assert self.SECRET not in resp.body.decode()
+        assert _body(resp)["messages"][0]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_json_escape_cannot_hide_a_secret(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        hidden = '{"content": "\\u0041' + self.SECRET[1:] + '"}'
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[hidden.encode()],
+            content_type="application/json",
+        )
+        resp = await api_instances_proxy(req)
+        assert self.SECRET not in json.dumps(_body(resp))
+
+    @pytest.mark.asyncio
+    async def test_too_deeply_nested_json_is_refused_not_forwarded(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        deep = (b"[" * 200_000) + b'"' + self.SECRET.encode() + b'"' + (b"]" * 200_000)
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[deep],
+            content_type="application/json",
+        )
+        resp = await api_instances_proxy(req)
+        assert resp.status == 502
+        assert _body(resp)["code"] == "proxy_reply_unredactable"
+
+    @pytest.mark.asyncio
+    async def test_a_leading_bom_cannot_hide_an_escaped_secret(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        body = '\ufeff{"content": "\\u0041' + self.SECRET[1:] + '"}'
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[body.encode()],
+            content_type="application/json",
+        )
+        resp = await api_instances_proxy(req)
+        assert self.SECRET not in json.dumps(_body(resp))
+
+    @pytest.mark.asyncio
+    async def test_json_python_cannot_decode_is_refused_not_forwarded(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        body = '{"n": ' + "9" * 5000 + ', "content": "\\u0041' + self.SECRET[1:] + '"}'
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[body.encode()],
+            content_type="application/json",
+        )
+        resp = await api_instances_proxy(req)
+        assert resp.status == 502
+        assert _body(resp)["code"] == "proxy_reply_unredactable"
+
+    @pytest.mark.asyncio
+    async def test_oversized_json_is_refused_not_forwarded(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        monkeypatch.setattr(hi, "PROXY_REDACT_BUFFER_MAX_BYTES", 16)
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/chat/slots/s1",
+            chunks=[b'{"content": "' + self.SECRET.encode() + b'"}'],
+            content_type="application/json",
+        )
+        resp = await hi.api_instances_proxy(req)
+        assert resp.status == 502
+        assert _body(resp)["code"] == "proxy_reply_too_large"
+
+    @pytest.mark.asyncio
+    async def test_sse_frames_are_redacted_across_chunk_splits(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        writes: list[bytes] = []
+
+        class _Resp:
+            def __init__(self):
+                self.headers: dict = {}
+
+            async def prepare(self, request):
+                return None
+
+            async def write(self, chunk):
+                writes.append(bytes(chunk))
+
+            async def write_eof(self):
+                return None
+
+        frame = json.dumps({"slot": "s1", "content": f"token {self.SECRET}"})
+        stream = f"event: chat_message\ndata: {frame}\n\nevent: dashboard\ndata: {{}}\n\n".encode()
+        cut = stream.index(self.SECRET.encode()) + 4
+        req = self._req(
+            tmp_path,
+            monkeypatch,
+            path="api/stream",
+            chunks=[stream[:cut], stream[cut:]],
+            content_type="text/event-stream",
+        )
+        monkeypatch.setattr(hi.web, "StreamResponse", lambda **kw: _Resp())
+        await hi.api_instances_proxy(req)
+        out = b"".join(writes).decode()
+        assert self.SECRET not in out
+        # Framing survives: both events, each still a parseable data line.
+        events = [e for e in out.split("\n\n") if e]
+        assert [e.splitlines()[0] for e in events] == ["event: chat_message", "event: dashboard"]
+        assert json.loads(events[0].splitlines()[1][len("data: ") :])["slot"] == "s1"
+
+
+class TestRedactSseEvent:
+    """The browser joins an event's data lines before parsing, so redaction
+    must see the joined payload, whatever the line ending."""
+
+    SECRET = "AKIA" + "IOSFODNN7EXAMPLE"
+
+    def test_secret_split_over_data_lines_behind_an_escape_is_redacted(self):
+        from kiro_crew.dashboard.handlers_instances import _redact_sse_event
+
+        event = (
+            'event: chat_message\ndata: {"slot": "s1",\ndata: "content": "\\u0041'
+            + self.SECRET[1:]
+            + '"}'
+        ).encode()
+        out = _redact_sse_event(event).decode()
+        payload = "\n".join(
+            line[len("data: ") :] for line in out.split("\n") if line.startswith("data:")
+        )
+        assert self.SECRET not in json.dumps(json.loads(payload))
+        assert json.loads(payload)["slot"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_a_bom_split_across_chunks_is_stripped(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        writes: list[bytes] = []
+
+        class _Resp:
+            def __init__(self):
+                self.headers: dict = {}
+
+            async def prepare(self, request):
+                return None
+
+            async def write(self, chunk):
+                writes.append(bytes(chunk))
+
+            async def write_eof(self):
+                return None
+
+        payload = ('data: {"c": "\\u0041' + self.SECRET[1:] + '"}\n\n').encode()
+        stream = b"\xef\xbb\xbf" + payload
+        req = TestProxyRedactsPeerReplies()._req(
+            tmp_path,
+            monkeypatch,
+            path="api/stream",
+            chunks=[stream[:1], stream[1:2], stream[2:]],
+            content_type="text/event-stream",
+        )
+        monkeypatch.setattr(hi.web, "StreamResponse", lambda **kw: _Resp())
+        await hi.api_instances_proxy(req)
+        out = b"".join(writes).decode()
+        data = [line[len("data: ") :] for line in out.split("\n") if line.startswith("data:")]
+        assert self.SECRET not in json.dumps(json.loads("\n".join(data)))
+
+    @pytest.mark.asyncio
+    async def test_cr_line_ends_are_framed_before_redaction(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        writes: list[bytes] = []
+
+        class _Resp:
+            def __init__(self):
+                self.headers: dict = {}
+
+            async def prepare(self, request):
+                return None
+
+            async def write(self, chunk):
+                writes.append(bytes(chunk))
+
+            async def write_eof(self):
+                return None
+
+        stream = ('data: {"a":\rdata: "\\u0041' + self.SECRET[1:] + '"}\r\r').encode()
+        req = TestProxyRedactsPeerReplies()._req(
+            tmp_path,
+            monkeypatch,
+            path="api/stream",
+            chunks=[stream[:14], stream[14:]],
+            content_type="text/event-stream",
+        )
+        monkeypatch.setattr(hi.web, "StreamResponse", lambda **kw: _Resp())
+        await hi.api_instances_proxy(req)
+        out = b"".join(writes).decode()
+        data = [line[len("data: ") :] for line in out.split("\n") if line.startswith("data:")]
+        assert self.SECRET not in json.dumps(json.loads("\n".join(data)))
+
+    @pytest.mark.asyncio
+    async def test_a_completed_event_over_the_cap_is_dropped(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        writes: list[bytes] = []
+
+        class _Resp:
+            def __init__(self):
+                self.headers: dict = {}
+
+            async def prepare(self, request):
+                return None
+
+            async def write(self, chunk):
+                writes.append(bytes(chunk))
+
+            async def write_eof(self):
+                return None
+
+        monkeypatch.setattr(hi, "PROXY_REDACT_BUFFER_MAX_BYTES", 32)
+        big = ('data: "' + "x" * 64 + '"\n\n').encode()
+        req = TestProxyRedactsPeerReplies()._req(
+            tmp_path,
+            monkeypatch,
+            path="api/stream",
+            chunks=[b'data: "ok"\n\n' + big],
+            content_type="text/event-stream",
+        )
+        monkeypatch.setattr(hi.web, "StreamResponse", lambda **kw: _Resp())
+        await hi.api_instances_proxy(req)
+        out = b"".join(writes).decode()
+        assert '"ok"' in out
+        assert "x" * 64 not in out
 
 
 # ── _slugify hash fallback ─────────────────────────────────────────

@@ -46,7 +46,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _context_clone_sandbox_mode,
     _effective_registries,
     _install_coordinates,
-    _registry_trust_tier,
+    _registry_trust_tier_of,
     _sel_credential_decision,
     _sel_fn,
 )
@@ -119,15 +119,25 @@ async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
         return False
 
     registry_name = str(registry_name)
-    if await asyncio.to_thread(_registry_trust_tier, registry_name) != _TRUST_OWNER:
-        return False
-
+    # Resolve trust AND the fresh-index coordinates from ONE immutable snapshot.
+    # config.json and the index cache are both agent-writable, so resolving the
+    # tier from one load (a bare `_registry_trust_tier(name)`) and the fetch
+    # coordinates from a second, independent `_effective_registries()` load left a
+    # window: a row could be swapped between the two reads, the tier passing on row
+    # A while the fresh fetch ran against row B's coordinates and B's index
+    # confirmed — B getting owner credentials it was never granted. Loading the
+    # snapshot once and reading both the tier and the repo/branch off the SAME row
+    # object closes that window.
+    snapshot = await asyncio.to_thread(_effective_registries)
     reg = None
-    for candidate in await asyncio.to_thread(_effective_registries):
+    for candidate in snapshot:
         if _public_registry_name(candidate) == registry_name:
             reg = candidate
             break
     if reg is None:
+        return False
+
+    if await asyncio.to_thread(_registry_trust_tier_of, reg) != _TRUST_OWNER:
         return False
 
     try:

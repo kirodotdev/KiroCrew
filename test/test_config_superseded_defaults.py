@@ -1044,6 +1044,7 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "watchdog.tool_stall_suspect_secs",
         "watchdog.tool_stall_hard_cap_secs",
         "watchdog.model_silent_probe_secs",
+        "agent.session_start_concurrency",
     }
 
 

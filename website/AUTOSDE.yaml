@@ -733,3 +733,82 @@ custom-rules:
           must not offer a navigation that discards it. */}
       <ErrorNotice message={loadErr} />
       ```
+
+  - id: frontend-tests-are-deterministic
+    blocking: true
+    file-patterns:
+      - "src/**/*.test.ts"
+      - "src/**/*.test.tsx"
+      - "src/**/test/**/*.ts"
+      - "src/**/test/**/*.tsx"
+      - "integration/**"
+      - "playwright/**"
+      - "electron/**/test/**"
+    rule: |
+      A frontend test must give the same verdict on every run. The vitest shard
+      runs several forks under coverage on a loaded runner, and the Playwright
+      suite runs against a real gateway, so a test that is only usually right
+      reds unrelated pull requests. The rules and their measured history are in
+      `docs/testing.md` § Determinism.
+
+      FLAG, on added or changed lines:
+      - `await new Promise(r => setTimeout(r, N))` with N > 0 (any spelling of
+        a promise-sleep) used as a barrier before an assertion. Wait for the
+        state the assertion reads: `findBy*`, `waitFor`, an awaited mock call.
+        A sleep before an ABSENCE assertion is a barrier too unless a positive
+        signal first proved the other side reached the point where it would
+        act (a request issued, the product's own counter reached N). A forced delay used to REPRODUCE a race is fine only while
+        verifying and is removed before the change lands.
+      - `page.waitForTimeout(...)` in a Playwright spec, on the same terms. Use
+        a web-first assertion, `expect.poll` for backend state, or
+        `waitForResponse`.
+      - `Date.now()` or `new Date()` feeding an expectation without a pinned
+        clock: `vi.setSystemTime` in vitest, `mock.timers.enable({ apis:
+        ['Date'] })` in an Electron `node:test` file, or a fixed instant
+        passed in. A `toLocale*String()` in an expectation also names its
+        locale (vitest pins `TZ=UTC` but not the locale), and in an Electron
+        file its zone too, since that suite pins neither.
+      - `Math.random()` or `crypto.randomUUID()` in a fixture whose output is
+        asserted, without a stub.
+      - An UPPER bound on an absolute elapsed time (`performance.now()` or
+        `Date.now()` deltas against a literal): coverage instrumentation and
+        host load move it. Assert the work instead. A lower bound proving a
+        delay was honoured is not flagged.
+      - `await screen.findBy*(A)` or `await waitFor(A)` followed by a
+        synchronous `getBy*(B)` whose content comes from a DIFFERENT async
+        source than A's (another API query, an effect, a timer or a fetch):
+        proving A rendered does not prove B settled. Wait for B as well. A
+        query that reads from the element A resolved, or content the same
+        response rendered in the same commit, is fine.
+      - A `findBy*` or `waitFor` behind a lazy boundary (`React.lazy`, a
+        dynamic import, a chained query) with no explicit timeout (a named
+        constant, or a literal such as `{ timeout: 5000 }`), or with no comment
+        naming the chain it waits for.
+      - `if (await locator.isVisible())` (or `isVisible({ timeout })`, whose
+        timeout is ignored) as a branch in a Playwright spec: it samples once
+        and lets the spec pass either way.
+      - A one-shot mock (`mockResolvedValueOnce`, `mockRejectedValueOnce`)
+        armed AFTER the action that starts the timer or request it is meant
+        to answer.
+      - `vi.useFakeTimers()` or `vi.setSystemTime()` with no
+        `vi.useRealTimers()` that still runs when the test times out: an
+        `afterEach` or `onTestFinished`. A `finally` around the faked section
+        counts only when that section awaits nothing a fake clock can stall
+        (no `waitFor` or `findBy*`): a timed-out test never reaches its
+        `finally`. The same holds for an Electron top-level
+        `mock.timers.enable(...)` (imported from `node:test`) and its
+        `mock.timers.reset()`. A test-context `t.mock.timers` is reset by the
+        runner when the test ends, so do not flag that.
+
+      Allowed (do NOT flag):
+      - a line carrying `// flake-ok: <reason>` with a concrete reason;
+      - a timer the component under test owns, advanced with
+        `vi.advanceTimersByTimeAsync` under fake timers;
+      - a zero-delay `setTimeout(r, 0)` flush of work that is already queued;
+      - `Date.now()`, `crypto.randomUUID()` or `Math.random()` used only to
+        make a unique name for a resource the spec creates, including when the
+        spec then locates or asserts that resource by it (no assertion depends
+        on the particular value);
+      - a delay inside a stub that simulates slow work while the test waits
+        on a signal, and the interval of a bounded poll that throws at its
+        deadline.

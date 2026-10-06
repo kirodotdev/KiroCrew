@@ -90,6 +90,43 @@ def _body(resp) -> object:
     return json.loads(resp.body)
 
 
+#: Lost-run ceiling for the released fetch, not a race to tune. Once the gate is
+#: set the shared fetch lands in milliseconds, and in about a second with every
+#: executor job started late. 30 s is far past that and a quarter of the suite's
+#: 120 s ``--timeout``, so a fetch that never lands fails here by name instead of
+#: killing the Windows xdist worker.
+_LOST_RUN_CEILING_SECS = 30.0
+
+
+async def _await_landed(task: "asyncio.Task[list[dict]]") -> list[dict]:
+    """Await the released shared fetch under the lost-run ceiling, by name."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        return await asyncio.wait_for(task, _LOST_RUN_CEILING_SECS)
+    except asyncio.TimeoutError:
+        raise AssertionError(
+            "the shared catalog fetch never landed after the gate opened "
+            f"(waited {loop.time() - started:.1f}s)"
+        ) from None
+
+
+def _spawning(proc: "_GatedProc", spawned: list[int] | None = None):
+    """A stand-in for the handler's own ``spawn_supervised_oneshot`` binding.
+
+    The seam's contract: a coroutine function that returns the process. Patched on
+    ``agents``, never on stdlib ``asyncio``, so no platform's supervisor, spawn-shim
+    or no-shim branch runs and no other code in the process sees the stand-in.
+    """
+
+    async def _spawn(*a: Any, **k: Any) -> "_GatedProc":
+        if spawned is not None:
+            spawned.append(1)
+        return proc
+
+    return _spawn
+
+
 class _GatedProc:
     """A spawn whose ``communicate()`` blocks until released.
 
@@ -133,7 +170,7 @@ def test_slow_cold_start_503s_once_then_serves_the_cache(tmp_path):
         gate = asyncio.Event()
         proc = _GatedProc(payload, gate)
         ctxs = _base_patches()
-        ctxs.append(patch.object(agents.asyncio, "create_subprocess_exec", return_value=proc))
+        ctxs.append(patch.object(agents, "spawn_supervised_oneshot", _spawning(proc)))
         for c in ctxs:
             c.start()
         try:
@@ -147,7 +184,7 @@ def test_slow_cold_start_503s_once_then_serves_the_cache(tmp_path):
             task = agents._catalog_cache.task
             assert task is not None, "the fetch was killed with the request"
             gate.set()
-            await task
+            await _await_landed(task)
 
             # The next poll is served from the warmed cache — no new spawn needed.
             second = await agents.api_models(_kiro_request(tmp_path))
@@ -164,20 +201,13 @@ def test_concurrent_polls_share_one_spawn(tmp_path):
     """The self-heal loop fires every 8s while degraded; those polls must share
     one cold start, not each launch their own."""
     payload = json.dumps({"models": [{"model_name": "auto"}]}).encode()
-    spawns = 0
-    proc: _GatedProc | None = None
-
-    def _count_spawn(*a, **k):
-        nonlocal spawns
-        spawns += 1
-        return proc
+    spawns: list[int] = []
 
     async def _drive():
-        nonlocal proc
         gate = asyncio.Event()
         proc = _GatedProc(payload, gate)
         ctxs = _base_patches()
-        ctxs.append(patch.object(agents.asyncio, "create_subprocess_exec", _count_spawn))
+        ctxs.append(patch.object(agents, "spawn_supervised_oneshot", _spawning(proc, spawns)))
         for c in ctxs:
             c.start()
         try:
@@ -187,12 +217,17 @@ def test_concurrent_polls_share_one_spawn(tmp_path):
                     agents.api_models(_kiro_request(tmp_path)),
                     agents.api_models(_kiro_request(tmp_path)),
                 )
-            assert {a.status, b.status, c2.status} == {503}
+            # The spawn is gated, so all three are the request-bound 503, not a
+            # fetch that already failed, and the shared fetch is still in flight.
+            assert [(r.status, _body(r)) for r in (a, b, c2)] == [
+                (503, {"error": "model list timed out"})
+            ] * 3
+            task = agents._catalog_cache.task
+            assert task is not None, "the shared fetch ended with the requests"
             gate.set()
-            if agents._catalog_cache.task is not None:
-                await agents._catalog_cache.task
+            assert await _await_landed(task) == [{"model_name": "auto"}]
             # Three concurrent degraded polls, one spawn.
-            assert spawns == 1, spawns
+            assert len(spawns) == 1, spawns
         finally:
             for c in ctxs:
                 c.stop()
@@ -206,7 +241,7 @@ def test_fresh_cache_is_served_without_a_spawn(tmp_path):
     agents._catalog_cache.fetched_at = agents.time.monotonic()
 
     def _boom(*a, **k):
-        raise AssertionError("a cold spawn was started despite a fresh cache")
+        raise AssertionError("a catalog fetch was started despite a fresh cache")
 
     async def _drive():
         with (
@@ -214,7 +249,10 @@ def test_fresh_cache_is_served_without_a_spawn(tmp_path):
             patch(
                 "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
             ),
-            patch.object(agents.asyncio, "create_subprocess_exec", _boom),
+            # The handler's own single-flight entry, which it calls synchronously:
+            # any fetch started on a fresh cache, in the request or behind it,
+            # raises here and turns the reply into a 503.
+            patch.object(agents, "_shared_catalog_fetch", _boom),
         ):
             return await agents.api_models(_kiro_request(tmp_path))
 

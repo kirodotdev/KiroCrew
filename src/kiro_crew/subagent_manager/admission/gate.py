@@ -13,18 +13,18 @@ if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
     from ...subagent import (
         _PRESSURE_EPISODE_MAX_GAP_SECS,
-        _PRESSURE_HOLD_MAX_WAIT_SECS,
-        _PRESSURE_HOLD_PRUNE_SECS,
+        _PRESSURE_HOLD_PRUNE_FACTOR,
         AGENT_NOT_AVAILABLE_CODE,
+        DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
         MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
         MEMORY_CAUSE_READ_UNANSWERED,
         MEMORY_PRESSURE_DETAIL,
         MEMORY_PRESSURE_NEVER_STARTED,
         MEMORY_PRESSURE_RECHECK_SECS,
-        QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
         QUEUED_REASON_MEMORY_PRESSURE,
+        QUEUED_WAIT_EXPIRED_TEXT,
         SEL_MEMORY_PRESSURE_NEVER_STARTED,
         AgentCheck,
         KiroCrewConfig,
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
         _validate_app_agent_ownership,
         _vet_parent_available_agents,
         _vet_spawn_governance,
-        adaptive_pause_text,
         asyncio,
         check_memory_available,
         logger,
@@ -239,7 +238,6 @@ class _GateMixin(ManagerComponent):
         target_member: str | None = None,
         delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
-        _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
         _recovering_row: bool = False,
@@ -672,7 +670,6 @@ class _GateMixin(ManagerComponent):
             # in the ordinary case, and a full parse only when the memo
             # declines to pin.
             "crew": crew,
-            "_stage_boundary_owner": _stage_boundary_owner,
             "_memory_mode": _memory_mode,
             # Same rule for the asking turn: `spawn_async` re-enters from this
             # dict (prepare -> write -> re-enter), so a follow-up whose asking
@@ -1098,6 +1095,49 @@ class _GateMixin(ManagerComponent):
                 # leaves it to this gate, floor first. A refusal below forgets it.
                 self._manager._floor_deferred_ids.add(agent_id)
                 return _defer_or_refuse(memory_detail, info, wait=memory_wait)
+            # No durable row, so the store sweep cannot bound this wait: the
+            # time it has spent PARKED on the floor is kept here (closed parks,
+            # each cut at its planned end, so a later wait for a slot is not
+            # counted) and checked as it is parked again, under the same live
+            # ``agent.subagent_queue_max_wait_secs`` (0 is no bound). Kept in
+            # integer nanoseconds: a park adds exactly its planned span, so a
+            # bound that is a whole number of admit waits ends the row on the
+            # re-park that reaches it. Float seconds would add ``(t + 30) - t``
+            # per park, which can fall an ulp short of the bound and keep the
+            # row for one more admit wait.
+            floor_now = time.monotonic_ns()
+            floor_parked, park_from, park_end = self._manager._floor_waits.get(
+                agent_id, (0, floor_now, floor_now)
+            )
+            floor_parked += max(0, min(park_end, floor_now) - park_from)
+            bound = self._manager._admission.taskq_memory_wait_bound_secs()
+            if bound > 0 and floor_parked >= round(bound * 1e9):
+                logger.warning(
+                    "Subagent %s waited for memory longer than %.0fs; ending it (%s)",
+                    agent_id,
+                    bound,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
+                self._manager._forget_pending_start(agent_id)
+                ended = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    memory_mode=_memory_mode,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=QUEUED_WAIT_EXPIRED_TEXT,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                self._manager._agents.setdefault(agent_id, ended)
+                self._manager._emit_queue_depth(parent_session_key, batch_id)
+                return self._manager._announce_rejection(ended)
+            self._manager._floor_waits[agent_id] = (
+                floor_parked,
+                floor_now,
+                floor_now + round(self._manager._admission.taskq_admit_wait_secs() * 1e9),
+            )
         if (
             mem_ok
             and avail_gb < 0
@@ -1257,32 +1297,19 @@ class _GateMixin(ManagerComponent):
                 self._manager._startup_population(),
                 self._manager._startup_cap(),
             )
-            # Which wait this is. A cap the adaptive controller has squeezed to 0
-            # is the one capacity queue "behind the concurrency limit" misreads:
-            # nothing runs, the configured cap still reads N, and the row waits
-            # for the controller's probe, not for a slot. The stagger tick and a
-            # genuinely full cap both clear on their own and keep the default.
-            # The paused kind is answered to callers as a DEFERRAL, so it carries
-            # the same human sentence the memory kinds do; the ordinary kind is
-            # never surfaced as prose and stays bare.
-            # A memory wait keeps its own label and sentence, the same ones a
-            # durable deferral carries.
-            adaptive_paused = self._manager._max_concurrent <= 0
+            # Which wait this is. A memory wait keeps its own label and sentence,
+            # the same ones a durable deferral carries; otherwise the stagger
+            # tick or a full cap, which both clear on their own and are never
+            # surfaced as prose. The execution cap is never paused (the adaptive
+            # controller does not read memory or loop lag), so a capacity wait
+            # is always this ordinary kind.
             capacity_wait: dict[str, Any] = memory_wait or {
-                "reason": (
-                    QUEUED_REASON_ADAPTIVE_CAP_ZERO
-                    if adaptive_paused
-                    else QUEUED_REASON_CONCURRENCY_LIMIT
-                )
+                "reason": QUEUED_REASON_CONCURRENCY_LIMIT
             }
-            capacity_detail = memory_detail or (
-                adaptive_pause_text(self._manager._user_max_concurrent) if adaptive_paused else ""
-            )
-            if pressure_level is not None and not adaptive_paused:
+            capacity_detail = memory_detail or ""
+            if pressure_level is not None:
                 # No GB figures: the figure cleared the floor, so any "N GB free,
-                # needs M GB" pair would contradict the verdict. A paused cap
-                # keeps its own label: nothing starts before the controller's
-                # probe recovers, whatever the kernel says.
+                # needs M GB" pair would contradict the verdict.
                 capacity_wait = {"reason": QUEUED_REASON_MEMORY_PRESSURE}
                 capacity_detail = MEMORY_PRESSURE_DETAIL
             # Advisory UI signal: tell the chip how many agents are now waiting
@@ -1355,7 +1382,7 @@ class _GateMixin(ManagerComponent):
                     # Charged at its checked price while the claim is pending,
                     # and carried to the re-entry that registers it.
                     self._manager._claim_prices[agent_id] = (candidate_price, priced_shared)
-                return ClaimPoint(agent_id, parent_session_key, _stage_boundary_owner)
+                return ClaimPoint(agent_id, parent_session_key)
             taskq_generation, proceed, claim_reason = self._manager._admission.taskq_claim(agent_id)
         if not proceed and claim_reason in (self.CLAIM_UNAVAILABLE, self.CLAIM_RETAINED):
             # A pre-claim outage leaves the row QUEUED and needs an ordinary
@@ -1586,9 +1613,11 @@ class _GateMixin(ManagerComponent):
         hold applies, one timer re-pumps every ``MEMORY_PRESSURE_RECHECK_SECS``.
         When it stops applying, the WARNING latch resets and a parent still
         labelled with the pressure reason is relabelled as a capacity wait. A
-        hold that has applied without a break for ``_PRESSURE_HOLD_MAX_WAIT_SECS``
-        marks its episode spent (``_pressure_episode_spent``) until it stops
-        applying, and every row the hold would keep then expires at once.
+        hold that has applied without a break for the live
+        ``agent.subagent_queue_max_wait_secs`` (``taskq_memory_wait_bound_secs``;
+        0 is no bound) marks its episode spent (``_pressure_episode_spent``)
+        until it stops applying, and every row the hold would keep then expires
+        at once.
         """
         mgr = self._manager
         level: int | None = None
@@ -1606,19 +1635,25 @@ class _GateMixin(ManagerComponent):
             # longer than a few recheck intervals is a break nobody observed, so
             # the episode restarts rather than being assumed continuous across it.
             now = time.monotonic()
+            bound = mgr._admission.taskq_memory_wait_bound_secs()
             unobserved = now - mgr._pressure_episode_read_at > _PRESSURE_EPISODE_MAX_GAP_SECS
             mgr._pressure_episode_read_at = now
             since = mgr._pressure_episode_since
             if level is None or unobserved or since is None:
                 mgr._pressure_episode_since = now if level is not None else None
                 mgr._pressure_episode_spent = False
-            elif not mgr._pressure_episode_spent and now - since >= _PRESSURE_HOLD_MAX_WAIT_SECS:
-                mgr._pressure_episode_spent = True
-                logger.warning(
-                    "macOS memory pressure has held subagent starts for %.0fs; root "
-                    "starts it would hold are ended, never started, until it eases",
-                    now - since,
-                )
+            elif bound > 0 and now - since >= bound:
+                if not mgr._pressure_episode_spent:
+                    mgr._pressure_episode_spent = True
+                    logger.warning(
+                        "macOS memory pressure has held subagent starts for %.0fs; root "
+                        "starts it would hold are ended, never started, until it eases",
+                        now - since,
+                    )
+            else:
+                # The bound is live: one raised past the episode, or set to 0 (no
+                # bound), un-spends an episode spent under the earlier value.
+                mgr._pressure_episode_spent = False
         except Exception:
             logger.debug("Subagent memory-pressure hold: reading failed", exc_info=True)
             level = None
@@ -1626,20 +1661,21 @@ class _GateMixin(ManagerComponent):
             mgr._pressure_hold_level = None
             if mgr._pressure_hold_on:
                 mgr._pressure_hold_on = False
-                capacity = (
-                    QUEUED_REASON_ADAPTIVE_CAP_ZERO
-                    if mgr._max_concurrent <= 0
-                    else QUEUED_REASON_CONCURRENCY_LIMIT
-                )
                 for parent, wait in list(mgr._queue_wait.items()):
                     if wait.get("reason") == QUEUED_REASON_MEMORY_PRESSURE:
-                        mgr._emit_queue_depth(parent, wait={"reason": capacity})
+                        mgr._emit_queue_depth(
+                            parent, wait={"reason": QUEUED_REASON_CONCURRENCY_LIMIT}
+                        )
             # A row's clock outlives a pause in the hold (our last runtime ending
             # between two of its starts), so only clocks far past any wait are
             # dropped here: rows that left without a registration or a refusal.
             now = time.monotonic()
+            prune_after = _PRESSURE_HOLD_PRUNE_FACTOR * max(
+                mgr._admission.taskq_memory_wait_bound_secs(),
+                float(DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS),
+            )
             for agent_id, since in list(mgr._pressure_holds.items()):
-                if now - since >= _PRESSURE_HOLD_PRUNE_SECS:
+                if now - since >= prune_after:
                     del mgr._pressure_holds[agent_id]
                     mgr._pressure_hold_expired.discard(agent_id)
             return None
@@ -1679,7 +1715,8 @@ class _GateMixin(ManagerComponent):
         """What the hold, applying at *level*, does with root start *agent_id*.
 
         ``"held"`` while it waits; ``"expired"`` once its own wait has run out
-        (``_PRESSURE_HOLD_MAX_WAIT_SECS`` from its first hold) or the episode has
+        (``agent.subagent_queue_max_wait_secs`` from its first hold, read live;
+        0 is no bound) or the episode has
         outlived that bound (``_pressure_episode_spent``): the caller ends it,
         never started (``MEMORY_PRESSURE_NEVER_STARTED``). *available_gb* is the
         floor's figure when the caller read one (negative: unreadable), None
@@ -1694,7 +1731,8 @@ class _GateMixin(ManagerComponent):
         first = agent_id not in mgr._pressure_holds
         since = mgr._pressure_holds.setdefault(agent_id, now)
         name = platform_compat.memory_pressure_name(level)
-        own_wait_ran_out = now - since >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        bound = mgr._admission.taskq_memory_wait_bound_secs()
+        own_wait_ran_out = bound > 0 and now - since >= bound
         if own_wait_ran_out or mgr._pressure_episode_spent:
             if commit_expiry and agent_id not in mgr._pressure_hold_expired:
                 mgr._pressure_hold_expired.add(agent_id)
@@ -1723,7 +1761,7 @@ class _GateMixin(ManagerComponent):
                         agent_id,
                         name,
                         episode_secs or 0.0,
-                        int(_PRESSURE_HOLD_MAX_WAIT_SECS),
+                        int(bound),
                     )
                 expiry: dict[str, Any] = {
                     "memory_pressure_level": level,
@@ -1928,9 +1966,11 @@ class _GateMixin(ManagerComponent):
         """Write *info*'s spawn prompt as an ``approval/requested`` entry.
 
         Returns the parent session and asking turn the entry was filed under, so
-        the decision is recorded beside its own request. An empty session id means
-        nothing was written and the caller's decision write is a no-op too -- the
-        pair is all-or-nothing by construction rather than by two separate checks.
+        the decision is recorded beside its own request -- hand it to
+        :meth:`ManagerComponent._record_crew_log_approval_decided`, the shared
+        closer. An empty session id means nothing was written and that closer is
+        a no-op too, so the pair is all-or-nothing by construction rather than by
+        two separate checks.
 
         The origin comes from the pin, read through ``dispatch_origin`` because the
         prompt happens BEFORE the opener: the dispatch has been accepted and the
@@ -1961,46 +2001,6 @@ class _GateMixin(ManagerComponent):
         except Exception:
             _logger.debug("crew log: recording a spawn approval request failed", exc_info=True)
             return ("", 0)
-
-    def _record_crew_log_spawn_approval_decided(
-        self,
-        origin: "tuple[str, int]",
-        *,
-        approval_id: str,
-        decision: str,
-        by: str = "",
-        cause: str = "",
-    ) -> None:
-        """Write how *approval_id* resolved, under the request's own origin.
-
-        *origin* is what ``_record_crew_log_spawn_approval_requested`` returned, so
-        a request that was not written answers itself with nothing and a written one
-        is always answered. Reading the pin again here would not do: a decline and
-        an undeliverable prompt both drop the pin on their way out, and an approved
-        spawn's pin is opened by the start that follows.
-
-        ``by`` and ``cause`` carry the host's own attribution and reason code when
-        the host decided without a human; a person's answer arrives through the
-        approval future from a surface this site cannot name, so both are omitted
-        for it.
-        """
-        from kiro_crew.crew_log import emit as crew_log_emit
-        from kiro_crew.subagent import logger as _logger
-
-        sid, asked_turn = origin
-        if not sid:
-            return
-        try:
-            crew_log_emit.on_approval_decided(
-                sid,
-                asked_turn,
-                approval_id=approval_id,
-                decision=decision,
-                by=by,
-                cause=cause,
-            )
-        except Exception:
-            _logger.debug("crew log: recording a spawn approval decision failed", exc_info=True)
 
     def _announce_rejection_impl(self, info: SubagentInfo) -> SubagentInfo:
         """Route a terminal spawn rejection through the done callback.

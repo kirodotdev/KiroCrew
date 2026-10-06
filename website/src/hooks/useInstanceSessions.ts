@@ -1,15 +1,22 @@
 /**
- * Live sessions from every CONNECTED remote instance, shaped as ordinary
- * Sessions-list rows so they can be MERGED into the local list rather than
- * grouped into a region of their own.
+ * Live sessions from every remote instance the sidebar can list, shaped as
+ * ordinary Sessions-list rows, plus the per-crew groups the sidebar files them
+ * under (`crewGroupsFor`).
  *
- * WHY MERGED AND NOT SECTIONED: the sidebar already treats origin as a PROPERTY
- * OF A ROW rather than a bucket a row lives in — federated search stamps the
- * peer that answered onto each history row, and the live list already renders a
- * per-row instance badge and a remote activation path. So the honest shape for
- * "see every session together" is one recency-ordered list with the badge doing
- * the distinguishing. A per-instance section would have added a second grammar
- * for something the row model already expresses.
+ * WHY GROUPED AND NOT MERGED: a session on a crew is OWNED by that crew, so
+ * origin is a container, not a row property. The sidebar renders `Local` first
+ * and then one collapsible group per crew, each headed by a status badge read
+ * from the tunnel state. A local slot whose turns run on a crew
+ * (`executor: 'remote'`) is filed in that crew's group too, because the crew is
+ * where the conversation lives. With no crew group there is no group header at
+ * all, so a single-machine sidebar is unchanged. Federated Older Sessions search
+ * stays one rank-interleaved list: search is a query across machines.
+ *
+ * CACHED WHILE DISCONNECTED: every listable crew keeps its query observer, and
+ * only the FETCH is gated on `connected`. A crew whose tunnel drops therefore
+ * keeps its last answer in the query cache (memory only, so a reload clears it),
+ * and the sidebar renders those rows dimmed. A crew that never answered has no
+ * cache and contributes nothing.
  *
  * WHY `peer_id` AND NOT `instance_id`: a live `Slot` already declares
  * `instance_id`, and it means the OPPOSITE direction of travel — a LOCAL session
@@ -206,11 +213,68 @@ const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false }
  *  means the chain never sees it and the next VALID rung wins. */
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 
+const isConnected = (inst: InstanceView): boolean => inst.status?.state === 'connected'
+
 /** Crews whose chat slots can be listed: connected, and running a dashboard
  *  behind the forward. A fargate crew is connected without one, so asking it
  *  for slots would only ever report it as unreachable. */
 function listsSessions(inst: InstanceView): boolean {
-  return inst.status?.state === 'connected' && hasDashboardPane(inst)
+  return isConnected(inst) && hasDashboardPane(inst)
+}
+
+/** The badge a crew group header shows, from `TunnelStatus.state`. There is
+ *  no "needs auth" badge: an auth failure diagnoses the same as an unreachable
+ *  host today. `disconnected` and `stopped` both read as offline. */
+export type CrewBadge = 'online' | 'reconnecting' | 'error' | 'offline'
+
+export function crewBadge(state: string | undefined): CrewBadge | null {
+  if (state === 'connected') return 'online'
+  if (state === 'connecting') return 'reconnecting'
+  if (state === 'error') return 'error'
+  if (state === 'disconnected' || state === 'stopped') return 'offline'
+  return null
+}
+
+/** One crew group in the sidebar. `offline` is true whenever the tunnel is not
+ *  `connected`: its rows are the last cached answer, rendered dimmed. */
+export interface CrewGroup {
+  id: string
+  name: string
+  badge: CrewBadge | null
+  offline: boolean
+  /** `TunnelStatus.error`, shown as the badge's tooltip. */
+  error?: string
+}
+
+/** The crew a sidebar row belongs to: the peer that owns it, or the crew a
+ *  local slot's turns run on. `undefined` for an ordinary local row. */
+export function crewOf(row: { peer_id?: string; executor?: string; instance_id?: string }): string | undefined {
+  if (row.peer_id) return row.peer_id
+  return row.executor === 'remote' && row.instance_id ? row.instance_id : undefined
+}
+
+/** The crew groups to render, in the instance list's order. A crew gets a group
+ *  when it can be listed right now, or when some row belongs to it (cached peer
+ *  rows, or a local slot running there). Crews with neither get no group, so
+ *  with nothing connected and nothing bound the sidebar has no groups at all. */
+export function crewGroupsFor(
+  instances: readonly InstanceView[],
+  rows: readonly { peer_id?: string; executor?: string; instance_id?: string }[],
+): CrewGroup[] {
+  const owned = new Set<string>()
+  for (const r of rows) {
+    const id = crewOf(r)
+    if (id) owned.add(id)
+  }
+  return instances
+    .filter(inst => listsSessions(inst) || owned.has(inst.id))
+    .map(inst => ({
+      id: inst.id,
+      name: inst.name || inst.id,
+      badge: crewBadge(inst.status?.state),
+      offline: !isConnected(inst),
+      ...(inst.status?.error ? { error: inst.status.error } : {}),
+    }))
 }
 
 /**
@@ -236,8 +300,10 @@ export function useInstanceSessions(
   instances: readonly InstanceView[] = [],
   instancesUnanswered = false,
 ): InstanceSessions {
-  const connected = useMemo(
-    () => (enabled ? instances.filter(listsSessions) : []),
+  // Every crew that runs a dashboard, connected or not: the observer is what keeps
+  // a disconnected crew's last answer in the cache. Only connected ones FETCH.
+  const listed = useMemo(
+    () => (enabled ? instances.filter(hasDashboardPane) : []),
     [enabled, instances],
   )
 
@@ -248,10 +314,13 @@ export function useInstanceSessions(
     let loading = false
 
     results.forEach((r, i) => {
-      const inst = connected[i]
+      const inst = listed[i]
       if (!inst) return
       const name = inst.name || inst.id
-      if (r.isError) {
+      // A disconnected crew contributes only its cached rows: its last error and
+      // its never-started first fetch say nothing about the crew right now.
+      const live = isConnected(inst)
+      if (live && r.isError) {
         failed.push(name)
         // `??=` so the FIRST failure wins, matching `failed[0]`. Guarded on
         // `Error` rather than cast: react-query types `error` as `Error | null`,
@@ -261,7 +330,7 @@ export function useInstanceSessions(
         if (r.error instanceof Error && r.error.message) failure ??= r.error.message
         return
       }
-      if (r.isLoading) { loading = true; return }
+      if (live && r.isLoading) { loading = true; return }
       if (!Array.isArray(r.data)) return
       for (const s of r.data) {
         if (!s || typeof s.key !== 'string') continue
@@ -287,11 +356,13 @@ export function useInstanceSessions(
           last_ts: str(s.last_ts),
           created: str(s.created),
           agent: str(s.agent),
-          running: s.running === true,
+          // An offline crew's row is a cached answer: its last `running` and
+          // `pending_approval` are not true now, so they are dropped.
+          running: live && s.running === true,
           messages: 0,
           // Normalized like `running`: a truthy non-boolean from a peer would
           // otherwise raise a pending-approval badge the peer never claimed.
-          pending_approval: s.pending_approval === true,
+          pending_approval: live && s.pending_approval === true,
           peer_id: inst.id,
           peer_name: name,
           row_identity: str(s.row_identity),
@@ -300,17 +371,17 @@ export function useInstanceSessions(
     })
 
     return { rows, failed, failure, loading }
-  }, [connected])
+  }, [listed])
 
   // `combine` structurally shares its result while the underlying query results
   // are unchanged. Without it, useQueries returns a fresh array on every render,
   // which rebuilt `rows` and forced the entire Sessions list to filter and sort
   // again after unrelated sidebar state changes.
   const combined = useQueries({
-    queries: connected.map(inst => ({
+    queries: listed.map(inst => ({
       queryKey: ['instance-slots', inst.id],
       queryFn: () => api.instanceChatSlots(inst.id) as Promise<PeerSlot[]>,
-      enabled,
+      enabled: enabled && isConnected(inst),
       refetchInterval: REFRESH_MS,
       retry: false,
     })),

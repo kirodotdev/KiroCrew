@@ -1,15 +1,7 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
-
-from kiro_crew.dashboard import channel_slots, chat_regenerate, session_health
-from kiro_crew.dashboard.slot_registry import SlotRegistry
-from kiro_crew.dashboard.state import StageBoundary, _ChatSlot, stage_boundary_for
 
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
@@ -32,103 +24,8 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
 }
 
 
-def test_stage_boundary_for_reraises_real_slot_assignment_failure(monkeypatch) -> None:
-    """A production slot cannot hide a missing writable boundary field."""
-    import kiro_crew.dashboard.state as state_module
-
-    slot = _ChatSlot("miswired-boundary")
-    slot.stage_boundary = None  # type: ignore[assignment]
-    real_setattr = setattr
-
-    def _reject_boundary(target, name, value) -> None:
-        if target is slot and name == "stage_boundary":
-            raise AttributeError("miswired stage boundary")
-        real_setattr(target, name, value)
-
-    monkeypatch.setattr(state_module, "setattr", _reject_boundary, raising=False)
-    with pytest.raises(AttributeError, match="miswired stage boundary"):
-        stage_boundary_for(slot)
-
-
-def test_stage_boundary_for_tolerates_frozen_minimal_test_double(caplog) -> None:
-    """A slots-only test double gets an observable ephemeral boundary."""
-
-    class _MinimalSlot:
-        __slots__ = ()
-
-    slot = _MinimalSlot()
-    caplog.set_level("WARNING", logger="kiro_crew.dashboard.state")
-
-    boundary = stage_boundary_for(slot)
-
-    assert isinstance(boundary, StageBoundary)
-    assert not hasattr(slot, "stage_boundary")
-    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
-    assert len(warnings) == 1
-    assert "_MinimalSlot" in warnings[0].getMessage()
-
-
-def _paused_slot(name: str) -> _ChatSlot:
-    slot = _ChatSlot(name)
-    slot.stage_boundary.arm(1, consumed=True)
-    assert slot.running is True
-    assert slot.turn_running is False
-    return slot
-
-
-def test_slot_projection_distinguishes_paused_boundary_from_running_turn() -> None:
-    slot = _paused_slot("projection-paused")
-    slot.append("assistant", "Authentication paused this plan.")
-
-    payload = slot.to_dict()
-
-    assert payload["running"] is False
-    assert payload["waiting_for_input"] is True
-
-
-def test_session_health_ignores_a_paused_boundary_without_a_turn() -> None:
-    slot = _paused_slot("health-paused")
-
-    snapshot = session_health.snapshot_slot(slot, mono_now=1.0)
-
-    assert snapshot.running is False
-    monitor = session_health.SessionHealthMonitor(include_log_scan=False)
-    assert monitor.classify_slot(snapshot, mono_now=1.0) is None
-
-
-def test_channel_window_refresh_allows_a_paused_boundary() -> None:
-    slot = _paused_slot("channel-paused")
-    slot.linked_session_key = "slack:1712345678.901"
-    slot._dirty = False
-
-    assert channel_slots._window_refresh_is_safe(slot) is True
-
-
-def test_slot_registry_excludes_a_paused_boundary_from_running_sessions() -> None:
-    slot = _paused_slot("registry-paused")
-    slot.linked_session_key = "slack:1712345678.902"
-    owner = SimpleNamespace(_slots={slot.key: slot})
-
-    running = SlotRegistry.running_session_keys(owner, lambda item: item.linked_session_key)
-
-    assert running == frozenset()
-
-
-def test_pending_boundary_refuses_destructive_history_edits() -> None:
-    """Regenerate, variant switch, and edit-resend preserve reservations."""
-    slot = _paused_slot("destructive-history-paused")
-
-    response = chat_regenerate._destructive_history_busy(slot)
-
-    assert response is not None
-    assert response.status == 409
-    assert json.loads(response.body) == {"error": "slot is busy", "code": "slot_busy"}
-
-
-def test_running_guarded_task_loads_null_check_task_for_pending_boundaries() -> None:
-    slot = _paused_slot("taskless-boundary")
-    assert slot.task is None
-
+def test_running_guarded_task_loads_null_check_task() -> None:
+    """Every ``x.task`` read under an ``x.running`` guard also checks it is set."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
     guarded_task_loads: list[tuple[str, int]] = []
     for path in dashboard.rglob("*.py"):
@@ -255,8 +152,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control.py", "create_session"),
                 # The roster verb. Reservation state, like `read_messages` beside
                 # it and for the same reason: it reports whether a session is
-                # working so a patrol knows whether to wait, and a slot between a
-                # plan's stages is still working even though no task is assigned.
+                # working so a patrol knows whether to wait.
                 ("session_control.py", "created_session_status"),
                 ("session_control.py", "read_messages"),
                 # The summary verb reports liveness beside the digest for the

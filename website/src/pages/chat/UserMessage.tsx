@@ -432,16 +432,20 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const canCopyLink = !!(messageTs && slotKey)
   const canPin = !!(messageTs && onTogglePin)
   const canEditResend = !!(canEdit && onEditResend)
-  // Row shape with Quote offered: Quote + More (the max-two-buttons rule). A
-  // surface that also offers Reply in thread keeps Reply in the row instead
-  // and Quote joins the menu — the thread is the one action that surface
-  // exists for.
+  // Row shape with Quote offered: seat + Copy + More. The seat is Quote, or
+  // Reply in thread on a surface that offers it (Quote then joins the menu).
+  // Copy always follows the seat and never moves into More: one control over
+  // the max-two-buttons rule, a deliberate product ruling, because Copy is the
+  // most-used action.
   // A message that is ONLY a carried quote has no body of its own to quote:
   // `quoteFromMessage` refuses empty text, so the action would be a silent
   // no-op. Withheld from the row and both menus instead (fork Opus review).
   const quoteOffered = !!onQuoteMessage && quotableContent.trim().length > 0
   const quoteInRow = quoteOffered && !onReplyInThread
   const compactRow = !!onQuoteMessage
+  // Copy is a row button, so a message with nothing else to offer (a bare
+  // carried quote on a surface without link, pin or edit) shows no empty More.
+  const moreHasItems = quoteOffered || canCopyLink || canPin || (canEditResend && !standIn)
   const menuItems: MessageMenuItem[] = onQuoteMessage ? [
     ...(quoteOffered ? [{ id: 'quote', label: i18nT('pages.chat.userMessage.quote_message'), icon: <Quote size={14} />, onSelect: quoteShown }] : []),
     // "Copy text", the words the reply's menus use, so the same action reads
@@ -626,11 +630,19 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             <Quote size={14} />
           </button>
         )}
-        {compactRow && (
-          /* Everything the row used to show inline, one menu deep. Copy
-             outcome keeps flashing on the item so the person can still tell
-             whether the write happened; `preventDefault` on select holds the
-             menu open long enough to read it. */
+        <button
+          onClick={copyMessage}
+          className="text-muted hover:text-text p-0.5 rounded transition-colors"
+          title={i18nT('pages.chat.userMessage.copy')}
+          aria-label={copyOutcomeLabel(copied, i18nT('pages.chat.userMessage.copy'))}
+        >
+          {copyOutcomeIcon(copied, <Copy size={14} />)}
+        </button>
+        {compactRow && moreHasItems && (
+          /* Everything but Copy the row used to show inline, one menu deep.
+             A copy outcome keeps flashing on its item so the person can still
+             tell whether the write happened; `preventDefault` on select holds
+             the menu open long enough to read it. */
           <DropdownMenu open={moreOpen} onOpenChange={open => { readStandIn(open); setMoreOpen(open) }}>
             <DropdownMenuTrigger asChild>
               <button
@@ -644,9 +656,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[210px]">
               {/* Quote is listed here too, even when it has the row seat: the
-                  bubble's right-click menu leads with it, and two look-alike
-                  menus on one message must not disagree about what it can do
-                  (UX review). */}
+                  bubble's right-click menu leads with it, so the two
+                  look-alike menus on one message agree. */}
               {quoteOffered && (
                 <DropdownMenuItem data-testid="quote-message-menu-item" onSelect={quoteShown}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
@@ -655,12 +666,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                   </span>
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem data-testid="copy-message-menu-item" onSelect={e => { e.preventDefault(); copyMessage() }}>
-                {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
-                <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
-                  {copyOutcomeIcon(copied, <Copy className="lucide-inline shrink-0" />)}<span>{copyOutcomeLabel(copied, i18nT('pages.chat.assistantMessage.copy_text'))}</span>
-                </span>
-              </DropdownMenuItem>
               {canCopyLink && (
                 <DropdownMenuItem data-testid="copy-link-menu-item" onSelect={e => { e.preventDefault(); copyLink() }}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
@@ -687,16 +692,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               )}
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
-        {!compactRow && (
-        <button
-          onClick={copyMessage}
-          className="text-muted hover:text-text p-0.5 rounded transition-colors"
-          title={i18nT('pages.chat.userMessage.copy')}
-          aria-label={copyOutcomeLabel(copied, i18nT('pages.chat.userMessage.copy'))}
-        >
-          {copyOutcomeIcon(copied, <Copy size={14} />)}
-        </button>
         )}
         {!compactRow && messageTs && slotKey && (
           <button

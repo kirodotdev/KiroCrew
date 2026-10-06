@@ -645,8 +645,8 @@ def _not_comparable(k: int, reason: str) -> str:
 def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
     """Diff two saved JSON reports, refusing the comparisons that are invalid.
 
-    Corpus fingerprint, ingest config, retrieval config and search backend must all
-    match. If they do not, the delta is not attributable to the code change — it
+    Corpus fingerprint, ingest config, retrieval config, search backend, embedder
+    and environment must all be present and match. If they do not, the delta is not attributable to the code change — it
     could be a different corpus slice, a different ingest granularity, or a host
     where faiss happened to be importable. Saying so is more useful than printing a
     number.

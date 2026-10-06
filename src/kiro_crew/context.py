@@ -2176,13 +2176,16 @@ class ContextBuilder:
     def _live_cap_figure() -> str:
         """The concurrent sub-agent cap in force, as a prompt spells it.
 
-        ``agent.max_subagents`` is a ceiling the adaptive controller may be
-        dispatching 1 at a time under, so the figure is the cap IN FORCE -- a
-        registry read (``resource_status.adaptive_exec_cap``) this
-        gateway-process path can afford. When no controller runs here (the CLI,
-        tests) the configured ceiling is used and labelled as one. Both readings
-        are derived from live host conditions, which is why a session holds one
-        of them: see :meth:`_session_cap_figure`.
+        ``agent.max_subagents`` (or ``agent.subagent_auto_max`` when it is 0) is
+        a ceiling the adaptive controller may have cut after admitted work kept
+        failing, so the figure is the cap IN FORCE -- a registry read
+        (``resource_status.adaptive_exec_cap``) this gateway-process path can
+        afford. When no controller runs here (the CLI, tests) the configured
+        ceiling is used and labelled as one. ``resolve_max_subagents`` never
+        answers 0, so a figure is always defined; "several" is left only for a
+        config that cannot be read. The live reading moves with the
+        controller, which is why a session holds one: see
+        :meth:`_session_cap_figure`.
         """
         cap = resource_status.adaptive_exec_cap()
         if cap > 0:
@@ -3036,6 +3039,7 @@ class ContextBuilder:
         execution_context: Any = None,
         context_provider: "ContextPromptProvider | None" = None,
         steering_dirs: tuple[str, ...] = (),
+        skill_bodies_session: str | None = None,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -3063,6 +3067,12 @@ class ContextBuilder:
         pre-transform lengths. An out-parameter keeps the 2-tuple return that
         every existing caller unpacks; the list is caller-owned, so concurrent
         turns cannot interfere.
+
+        Pass *skill_bodies_session* when the turn runs on a provider session but
+        is built without that session's *session_key*: the record of skill
+        bodies the session already holds is kept under it, and nothing else in
+        the prompt changes. The heartbeat does this, because a session key would
+        also change the rest of its prompt. It defaults to *session_key*.
 
         Returns:
             (full_message, hook_result) — hook_result may be a reply/modify/inject.
@@ -3529,21 +3539,23 @@ class ContextBuilder:
         # rebuilt window never received. Clearing the record here, under the
         # same lock, keeps that impossible.
         #
-        # SOFT FAILURE (known, bounded): the flag is armed only by Kiro Crew's own
-        # session_compaction (needs_reinjection) and by a fresh session
-        # (is_new_session). It is NOT armed when the BACKEND trims or
-        # auto-compacts its own window out of band (kiro-cli's
-        # _kiro.dev/compaction completing, the claude/codex twins) — those reset
-        # the backend window without touching this flag. When that happens the
-        # record still names bodies the rebuilt backend window does not hold,
-        # so the next match of such a skill demotes it to its POINTER line, not
-        # to silence: the agent still learns the skill applies and can re-read
-        # it, it just does not get the body re-pasted that turn. Long monitor
-        # loops are where backend self-compaction is most likely. Hooking the
-        # three backend compaction chokepoints to arm this flag is a correctness
-        # refinement, not a safety fix, and is deliberately out of scope here.
-        if session_key and (is_new_session or needs_reinjection):
-            self._dedup_triggered_bodies(session_key, agent, reset=True, candidates=[])
+        # SOFT FAILURE (known, bounded): the flag is armed by a fresh session
+        # (is_new_session), by Kiro Crew's own session_compaction, and by the
+        # dashboard runner and the heartbeat when the backend reports a
+        # completed compaction to them (needs_reinjection). Other turn loops do
+        # not watch for that report, so when the BACKEND trims or auto-compacts
+        # its own window under them (kiro-cli's _kiro.dev/compaction
+        # completing, the claude/codex twins) the record still names bodies the
+        # rebuilt backend window does not hold, and the next match of such a
+        # skill demotes it to its POINTER line, not to silence: the agent still
+        # learns the skill applies and can re-read it, it just does not get the
+        # body re-pasted that turn. Long monitor loops are where backend
+        # self-compaction is most likely. Hooking the three backend compaction
+        # chokepoints to arm this flag is a correctness refinement, not a
+        # safety fix, and is deliberately out of scope here.
+        skill_bodies_session = skill_bodies_session or session_key
+        if skill_bodies_session and (is_new_session or needs_reinjection):
+            self._dedup_triggered_bodies(skill_bodies_session, agent, reset=True, candidates=[])
 
         # Triggered skills (on-demand, any message) — skip for custom agents.
         # A match injects the skill's full body by DEFAULT, unchanged. A skill
@@ -3660,7 +3672,7 @@ class ContextBuilder:
                     [name for name, _stripped, _digest in loadable], project
                 )
                 demote = self._dedup_triggered_bodies(
-                    session_key,
+                    skill_bodies_session,
                     agent,
                     reset=is_new_session or needs_reinjection,
                     candidates=[

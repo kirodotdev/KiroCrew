@@ -28,7 +28,7 @@ describe('editModel round-trip', () => {
         seed.root.children.map((c) => (c.node.kind === 'cell' ? c.node.element : c.node.kind)),
       )
       const chat = back.root.children.find((c) => c.node.kind === 'cell' && c.node.element === 'chat')
-      expect(chat && chat.node.kind === 'cell' && chat.node.config?.busyMode).toBe('steer-only')
+      expect(chat && chat.node.kind === 'cell' && chat.node.config?.agentLocked).toBe(true)
     }
   })
 

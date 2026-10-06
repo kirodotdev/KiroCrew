@@ -189,6 +189,50 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual([])
     })
   })
+
+  it('leaves a tag filter in place when the reveal target is a pinned row the filter exempts', async () => {
+    await withScrollStub(async () => {
+      // `k-beta` is pinned and carries no `t1`: it is on screen only because
+      // the pinned exemption passes it. The tag `hides` predicate does not go
+      // through `excluded`, so it must restate the exemption, or this reveal
+      // would clear a filter that was never hiding the row.
+      localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t1']))
+      const utils = renderSidebar([
+        SLOTS[0],
+        { ...SLOTS[1], pinned: true } as unknown as ChatSlot,
+      ])
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+
+      utils.store.dispatch(requestSlotReveal('k-beta'))
+
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+      expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual(['t1'])
+    })
+  })
+
+  it('leaves a status chip in place when the reveal target is a pinned row the search dropped', async () => {
+    await withScrollStub(async () => {
+      // `k-beta` is pinned and not running, so the Running chip exempts it; the
+      // search is what hides it. `excluded` is list membership, so a status
+      // `hides` that did not restate the exemption would read the row as
+      // hidden by the chip and clear it. Only the search must clear.
+      localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+      const utils = renderSidebar([
+        SLOTS[0],
+        { ...SLOTS[1], pinned: true } as unknown as ChatSlot,
+      ])
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+      const search = utils.getByPlaceholderText('Search sessions…')
+      fireEvent.change(search, { target: { value: 'alpha' } })
+      await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
+
+      utils.store.dispatch(requestSlotReveal('k-beta'))
+
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+      expect(search).toHaveValue('')
+      expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('1')
+    })
+  })
 })
 
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')

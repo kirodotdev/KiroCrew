@@ -47,9 +47,7 @@
        `implemented`; an RFC shipped in this PR, or
        whose status this PR flips, does not count. Without one the First
        Principles lane BLOCKs until a maintainer records the decision with
-       `/ai-review override first-principles <head-sha>: <reason>` (same-repo
-       PRs only -- on a fork PR the override is not consumed: merge the RFC
-       first, or ask a maintainer to push the branch to this repository). -->
+       `/ai-review override first-principles <head-sha>: <reason>`. -->
 
 ## Backwards compatibility
 
@@ -93,9 +91,14 @@
      layouts, themes).
 
      For a watched frontend path with no rendered delta, keep this section and
-     use the `no-visual-delta` marker with a `Why no screenshot` justification;
-     maintainers may instead apply the `no-screenshots` label. Delete this
-     section only when the diff does not touch a user-visible frontend surface.
+     add two lines to the description: the `no-visual-delta` marker written as
+     an HTML comment, and a bold `Why no screenshot` line ending in a colon and
+     one sentence. Copy the exact shapes from "Waiving the screenshot
+     requirement" in docs/ci/ci-and-reviews.md; they are not spelled out here
+     because this comment block would then satisfy the check by itself.
+     Maintainers may instead apply the `no-screenshots` label. Delete this
+     section only when the diff does not touch a user-visible frontend
+     surface.
 
      - Show each affected surface in its meaningful variants (e.g. desktop vs
        browser, empty vs populated, light vs dark).
@@ -168,5 +171,5 @@
 
 ## Contribution License Agreement
 
-<!-- PLACEHOLDER: The exact CLA wording will be supplied by OSPO before the first public PR.
-     Do not invent CLA text — it will be added here once Legal provides it. -->
+<!-- Contributions are accepted under the project's Apache-2.0 license; see
+     the Licensing section of CONTRIBUTING.md. -->

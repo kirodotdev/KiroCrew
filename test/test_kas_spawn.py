@@ -355,6 +355,11 @@ def send(obj):
 HOST_OWNED = "--auth-method" not in sys.argv[1:]
 CAPTURE = os.environ.get("KIROCREW_TEST_KAS_AUTH_CAPTURE")
 INIT_CAPTURE = os.environ.get("KIROCREW_TEST_KAS_INIT_CAPTURE")
+# Records what the relay would authenticate with from its own environment.
+KEY_CAPTURE = os.environ.get("KIROCREW_TEST_KAS_KEY_CAPTURE")
+if KEY_CAPTURE:
+    with open(KEY_CAPTURE, "w") as fh:
+        json.dump({"KIRO_API_KEY": os.environ.get("KIRO_API_KEY")}, fh)
 
 def ask_host_for_credential(stdin):
     send({"jsonrpc": "2.0", "id": 0, "method": "_kiro/auth/getAccessToken", "params": {}})
@@ -680,6 +685,50 @@ class TestKasInvocation:
             finally:
                 await runtime.kill()
         assert not capture.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("vault_identity", "expected_key"),
+        [(False, "ksk-operator-key"), (True, None)],
+        ids=["cli-owned-keeps-key", "crew-owned-strips-key"],
+    )
+    async def test_api_key_reaches_only_a_cli_owned_relay(
+        self, kas_stub, tmp_path, monkeypatch, vault_identity, expected_key
+    ):
+        """End-to-end through the real spawn path: the child's own environment.
+
+        kiro-cli keeps no stored record of an API-key sign-in -- ``KIRO_API_KEY``
+        is the whole login -- so a cli-owned relay stripped of it dies at the
+        launcher's "You are not logged in" on an API-key-only host. A Crew-owned
+        relay must still lose it: the engine prefers an environment key over the
+        vault callback, which would outlive a dashboard sign-out.
+        """
+        capture = tmp_path / "key.json"
+        monkeypatch.setenv("KIROCREW_TEST_KAS_KEY_CAPTURE", str(capture))
+        monkeypatch.setenv("KIRO_API_KEY", "ksk-operator-key")
+
+        async def vault():
+            return vault_identity
+
+        async def fake_answer():
+            return {"accessToken": "t", "expiresAt": "2099-01-01T00:00:00+00:00"}
+
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws-key",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        with (
+            patch("kiro_crew.acp.harness.kas.vault_holds_identity_off_loop", side_effect=vault),
+            patch("kiro_crew.acp.harness.kas.answer_get_access_token", side_effect=fake_answer),
+        ):
+            try:
+                await runtime.spawn()
+                assert runtime.is_alive()
+                assert runtime._kas_host_auth is vault_identity
+            finally:
+                await runtime.kill()
+        assert json.loads(capture.read_text()) == {"KIRO_API_KEY": expected_key}
 
     @pytest.mark.asyncio
     async def test_spawn_argv_is_the_relay_invocation(self, kas_stub, tmp_path):

@@ -135,6 +135,7 @@ custom-rules:
       - "src/kiro_crew/slack/gateway.py"
       - "src/kiro_crew/slack/gateway_runtime/**/*.py"
       - "src/kiro_crew/dashboard/server.py"
+      - "src/kiro_crew/dashboard/server_runtime/**/*.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
       - "src/kiro_crew/dashboard/messaging_api/**/*.py"
       - "src/kiro_crew/dashboard/file_api/**/*.py"
@@ -202,6 +203,9 @@ custom-rules:
       - "test/**/*.py"
       - "tests/**/*.py"
       - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/*_tests/**/*.py"
+      - "conftest.py"
+      - "**/conftest.py"
     rule: |
       A test must have no side effects outside its own tmp dir. Never register a
       real cron job, write into the operator's real ~/.kiro/crew or HOME, start
@@ -279,10 +283,12 @@ custom-rules:
         session-wide, redirects `tempfile`'s base with residue reported, and
         fails the run on residue at the repository root.
       - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
-        `test/`. Tests under `src/kiro_crew/apps/builtins/*/tests/` see the
+        `test/`. Tests under `src/kiro_crew/apps/builtins/**/tests/` see the
         rootdir conftest plus that app's own
         `tests/conftest.py` where one exists (`auto_improvement`,
-        `code_review_sage`, `spec_builder` have one; the other five apps do not).
+        `code_review_sage`, `spec_builder` have one; the other apps do not), and
+        `aws_control/crew/runtime/container_tests/` sees the rootdir conftest
+        plus its own.
         So a test there gets the host floor -- which now includes the data home,
         the import-time `~/.kiro` bindings, the SEL dir, the subagent registry,
         the model-download block and the agent-state sidecar -- but NOT the
@@ -304,7 +310,11 @@ custom-rules:
       Assert against the tmp dir, not the real one, and clean up anything you
       create. If a test genuinely needs a host-level effect, it must be opt-in
       and named in the corresponding conftest allowlist with a comment saying
-      why.
+      why. One scoped exception: the rootdir `conftest.py` keeps two per-user
+      caches across runs on purpose, the hypothesis example database
+      (`~/.cache/kirocrew/hypothesis`) and the bytecode mirror
+      (`~/.cache/kirocrew/pycache`), both under `$XDG_CACHE_HOME` when set. Those
+      two are not a test's side effect; nothing else in a conftest is exempt.
 
       NEVER use bare `tempfile.mkdtemp()` or `tempfile.TemporaryDirectory()`
       without cleanup. These create directories that survive the test run and
@@ -328,6 +338,119 @@ custom-rules:
       use `_REPO_ROOT / "src/kiro_crew/..."`. This pattern is already
       established in test_builtin_app_assets.py, test_platform_compat.py, and
       test_skill_home_paths.py.
+
+  - id: tests-are-deterministic
+    blocking: true
+    file-patterns:
+      - "test/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/*_tests/**/*.py"
+      - "conftest.py"
+      - "**/conftest.py"
+    rule: |
+      A test must give the same verdict on every run, on every platform, in any
+      order and beside any neighbour. The suite runs `-n auto --dist loadgroup`
+      on Linux, macOS and Windows runners under load, so a test that is only
+      usually right reds unrelated pull requests. The contract is
+      `docs/system-specs/common/testing-conventions.md` § Determinism contract
+      (D1-D12, named on each item below); each shape below has burned this
+      repository before.
+
+      FLAG, on added or changed test lines:
+      1. (D1) A fixed sleep (`time.sleep(N)` / `await asyncio.sleep(N)` with
+         N > 0) used as a barrier before an assertion: "long enough for the
+         other side to get there". Wait on the state, event or future the
+         assertion reads, under a bounded deadline that raises naming what it
+         last saw. A sleep before an ABSENCE assertion is a barrier too unless
+         a positive signal first proved the other side reached the point where
+         it would act (the waiter registered, the product's own tick counter
+         reached N): without one the negative passes for the trivial reason.
+      2. (D3) A sleep that exists to make two timestamps differ, or an ORDER
+         assertion between records whose order comes from a stamp read off a
+         clock the test did not set. Windows' `time.time()` ticks ~15.6 ms
+         through Python 3.12 and some filesystems store mtimes in whole
+         seconds, so the stamps can tie. Set the stamps, assert the order
+         strictly (an exact list or `<`, not `>=`, which also accepts the
+         tie), and pin a time-sorted output's tie-break with an equal-stamp
+         pair. Do not flag a `<=` / `>=` on an invariant a tie satisfies
+         (start <= finish), or an order of stamps the product mints strictly
+         increasing.
+      3. (D2) A clock read at module level (`NOW = time.time()`) compared with
+         a value production derives from its own live clock. Either both sides
+         read one clock or neither does.
+      4. (D5) A `datetime.now()`, `date.today()` or `time.localtime()` read at
+         test time in an expectation, when the product stamps in another zone
+         or the two reads can straddle a midnight the test does not control.
+         Read the zone the product reads, and freeze the instant. A
+         `time.localtime(<fixed instant>)` that mirrors a product defined in
+         local time is correct; do not flag it.
+      5. (D7) An UPPER bound on a measured wall or CPU duration, a rate or a
+         sample count (`assert elapsed < 0.5`, "about 125 samples"). Assert the
+         work, the schedule or the order. Do not flag: a LOWER bound that proves
+         a deadline or backoff was honoured ("did not fire early") with a margin
+         of at least one clock tick; a bound relative to a span the test
+         measured itself; an existing complexity guard's thread-CPU budget kept
+         at its original constant.
+      6. (D8) An await, `join` or `communicate` the test itself must unblock,
+         with no timeout. On Windows a hang kills the xdist worker and aborts
+         the run; bound it so a miss fails by name at that line. A literal bound
+         on a condition wait (`wait_for`, `join`, `communicate`, a poll
+         deadline) is NOT flagged when its expiry fails the test loudly. Flag a
+         timeout only when the diff RAISES a literal, raises a named ceiling
+         without a cited measurement, or makes the pass depend on time elapsing
+         (a sleep standing in for a sync).
+      7. (D4) Sequence equality over a `set`, a dict built from one, `listdir` /
+         `iterdir` / `glob`, `as_completed` iteration, or side effects appended
+         in completion order, without `sorted()` or a `set` / `Counter`
+         comparison. `gather`'s return list is in argument order; do not flag
+         it.
+      8. (D6) `os.urandom` or the module-level `random.*` feeding an assertion,
+         instead of `random.Random(SEED)`.
+      9. (D9) A literal TCP port passed to a real bind or listen, or a
+         bind-close-return port handed to a listener that could bind port 0 and
+         report the port it got. A port number used only as data (a config
+         value, a fake socket's address, a URL under test) is not flagged.
+      10. (D10) A non-loopback network call that is not stubbed at the seam
+          the product calls.
+      11. (D2, D11) `setattr` or `patch` that rebinds a stdlib clock or sleep
+          for the whole worker (`time.time`, `time.monotonic`,
+          `time.perf_counter`, `time.sleep`), including through an alias such
+          as `"<mod>.time.monotonic"`, where `<mod>.time` is the stdlib module
+          itself: every event loop and thread in the worker reads it. Replace
+          the module-under-test's own `time` binding with a namespace that
+          delegates every other name to the real module. Also any in-process
+          `importlib.reload` of a shared module (load a private copy with
+          `importlib.util.spec_from_file_location` under a unique name,
+          registered under that name in `sys.modules` before `exec_module`,
+          never under the real name), and a
+          `sys.modules` eviction without restoring both the entry and the
+          parent package's attribute in the same scope.
+      12. (D11) A NEWLY ADDED autouse fixture that requests the shared
+          `monkeypatch` (use `_floor_monkeypatch`), or a bare
+          `monkeypatch.undo()` in a test body (scope the patch with
+          `monkeypatch.context()`).
+
+      Allowed (do NOT flag):
+      - a sleep inside a stub that simulates slow work while the test waits
+        on a signal;
+      - the interval of a bounded poll that re-reads the asserted state and
+        raises at its deadline (D1);
+      - a sleep that IS the subject, with the schedule asserted;
+      - a sleep inside a string literal: a spawned stand-in's keep-alive
+        payload (`"import time; time.sleep(120)"`) or source text fed to a
+        scanner;
+      - a named `UPPER_CASE` lost-run ceiling as testing-conventions defines
+        it (sized from a cited measurement, at most half the module's
+        `pytest.mark.timeout`, which the file may raise with its derivation);
+      - a line carrying `# flake-ok: <reason>` with a concrete reason.
+
+      A fix to a flaky test is held to the same bar. A retry, a rerun marker, a
+      skip, an xfail, a longer sleep, a raised timeout or a weakened assertion is
+      never the fix, except a module `pytest.mark.timeout` raised with its
+      derivation so a measured lost-run ceiling fits, or a too-tight bound
+      replaced by a NAMED lost-run ceiling sized from a cited measurement. FLAG
+      the rest on every path this rule covers (`a-ratchet-may-only-tighten`
+      covers the same loosening under `test/`).
 
   - id: top-level-imports
     blocking: false
@@ -355,7 +478,9 @@ custom-rules:
       - "src/kiro_crew/session.py"
       - "src/kiro_crew/subagent.py"
       - "src/kiro_crew/sandbox.py"
+      - "src/kiro_crew/sandbox_plan.py"
       - "src/kiro_crew/sandbox_launcher.py"
+      - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
     rule: |
       Kiro Crew drives ONE first-class agent harness — kiro-cli
@@ -829,7 +954,9 @@ custom-rules:
     blocking: true
     file-patterns:
       - "src/kiro_crew/sandbox.py"
+      - "src/kiro_crew/sandbox_plan.py"
       - "src/kiro_crew/sandbox_launcher.py"
+      - "src/kiro_crew/sandbox_launcher_program.py"
       - "src/kiro_crew/sandbox_seatbelt.py"
       - "src/kiro_crew/sandbox_mount_sweep.py"
       - "src/kiro_crew/security.py"

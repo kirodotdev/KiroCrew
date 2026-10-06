@@ -1,6 +1,6 @@
 import { i18nT } from '../i18n/t'
 import { ApiError } from './apiError'
-import type { AcpBackendProbe } from './client'
+import type { AcpBackendProbe } from './client/config'
 
 /**
  * Which agent harness the gateway runs, read off `agent.acp_backend` in the
@@ -81,4 +81,63 @@ export function setupMarkerErrorMessage(error: unknown): string | null {
  */
 export function agentChoiceSaved(error: unknown): boolean {
   return setupMarkerErrorBody(error)?.config_saved === true
+}
+
+/**
+ * What ONE `GET /api/acp-backends` row says about starting its harness, on its
+ * own — no host, sandbox or setup facts.
+ *
+ * First-run setup and Settings > Agent Harness both decide from this, so the two
+ * cannot drift on what a probe row means (#14517). Each keeps the checks only it
+ * owns: the setup gate adds the host sandbox, `independent_setup` and KAS's
+ * prerequisites; Settings adds the config schema's selectable set.
+ *
+ * - `unprobed`: no row (query in flight, 403/404, or the payload omits it).
+ * - `unselectable`: this build or policy refuses it; a switch would be rejected.
+ * - `missing`: its components are not installed on this machine.
+ * - `restart_required`: installed, but this gateway cached its absence, so a
+ *   session started now still fails until the cache is dropped.
+ * - `unknown`: the install check itself failed. NOT `missing`.
+ * - `installed`: confirmed installed and spawnable.
+ *
+ * The order is the precedence: the first reason that applies wins. The gateway
+ * only sets `restart_required` on an installed verdict, and the same rule gates
+ * the durable setup marker (`kiro_prerequisite.py`: `installed != INSTALLED or
+ * restart_required`).
+ */
+export type AcpProbeState =
+  | 'unprobed'
+  | 'unselectable'
+  | 'missing'
+  | 'restart_required'
+  | 'unknown'
+  | 'installed'
+
+export function acpProbeState(probe: AcpBackendProbe | undefined): AcpProbeState {
+  if (!probe) return 'unprobed'
+  if (probe.selectable === false) return 'unselectable'
+  if (probe.installed === 'missing') return 'missing'
+  if (probe.restart_required) return 'restart_required'
+  if (probe.installed === 'unknown') return 'unknown'
+  return 'installed'
+}
+
+/**
+ * The row KNOWS the harness cannot start a session now. Settings disables Use on
+ * exactly these. `unknown` and `unprobed` are deliberately not blocks: a failed
+ * or absent check is not evidence of absence, and disabling on a guess costs the
+ * user a switch that would have worked.
+ */
+export function acpProbeBlocksUse(probe: AcpBackendProbe | undefined): boolean {
+  const state = acpProbeState(probe)
+  return state === 'unselectable' || state === 'missing' || state === 'restart_required'
+}
+
+/**
+ * The row POSITIVELY confirms the harness can start. First-run setup requires
+ * this before it lets anyone past, because finishing setup is durable: it needs
+ * proof, not the absence of a known block, so `unknown` and `unprobed` fail.
+ */
+export function acpProbeConfirmsUse(probe: AcpBackendProbe | undefined): boolean {
+  return acpProbeState(probe) === 'installed'
 }

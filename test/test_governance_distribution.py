@@ -3062,6 +3062,15 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
     short-circuits inside the harness and never reaches Kiro Crew's own PreToolUse gate.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_hold_carried_in(self, monkeypatch):
+        """``prime_ceiling_projection`` seeds nothing while the last real rebuild left a
+        conductor spec unwritten; these tests pin the seeded baseline, so a hold a test
+        elsewhere in this process left behind must not reach them."""
+        from kiro_crew import agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
+
     @staticmethod
     def _hook(monkeypatch):
         from kiro_crew import agent as agent_mod
@@ -4219,10 +4228,10 @@ class TestAnExposedCacheIsStillReadOnly:
     def _pinned_ssh_probe(self, monkeypatch):
         """Answer the launcher's ``ssh -V`` probe in-process.
 
-        ``_build_launcher_script`` consults ``_ssh_supports_accept_new`` for the
+        A namespace plan consults ``_ssh_supports_accept_new`` for the
         ``StrictHostKeyChecking`` flag, and the real probe spawns the host's
         ``ssh``. It is memoised, so it fires in whichever test on the worker
-        first builds a launcher — these tests read the mount lists, not the ssh
+        first builds a plan — these tests read the mount lists, not the ssh
         flag, so the seam is pinned rather than left to find the host binary.
         """
         from kiro_crew import sandbox
@@ -4239,31 +4248,52 @@ class TestAnExposedCacheIsStillReadOnly:
         from kiro_crew import sandbox
 
         cache = self._cache_path()
-        script = sandbox._build_launcher_script("standard", extra_visible_dirs=(cache,))
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        hidden = json.loads(script.split("SENSITIVE_DIRS = ", 1)[1].split("\n", 1)[0])
+        plan = sandbox._spawn_plan("namespace", "standard", extra_visible_dirs=(cache,))
 
-        assert cache in readonly, "an exposed cache must be bound read-only, not merely unhidden"
-        assert cache not in hidden, "it also has to be READABLE — that is why it was exposed"
+        assert (
+            cache in plan.readonly
+        ), "an exposed cache must be bound read-only, not merely unhidden"
+        assert (
+            cache not in plan.sensitive_dirs
+        ), "it also has to be READABLE — that is why it was exposed"
 
-    def test_the_seal_is_a_remount_because_ms_rdonly_is_ignored_on_a_bind(self):
-        """Both mount calls are load-bearing: the bind alone grants write."""
-        from kiro_crew import sandbox
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+    )
+    def test_the_seal_is_a_remount_because_ms_rdonly_is_ignored_on_a_bind(self, tmp_path):
+        """Both mount calls are load-bearing: the bind alone grants write.
 
-        script = sandbox._build_launcher_script(
-            "standard", extra_visible_dirs=(self._cache_path(),)
-        )
-        loop = script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
+        The launcher program's seal stage runs over a read-only entry with a stand-in
+        libc: it binds the path over itself, then remounts that bind ``MS_RDONLY``,
+        and a refusal of EITHER mount refuses the spawn rather than running unsealed.
+        """
+        from test_sandbox_launcher_program import RecordingLibc, launch, payload, refusal
 
-        assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
-        assert loop.count("_mount_or_die(") == 2
+        from kiro_crew import sandbox_launcher_program as program
+
+        cache = tmp_path / pd.CACHE_DIR_LEAF
+        cache.mkdir()
+        libc = RecordingLibc()
+        program.seal_readonly(launch(tmp_path, payload(readonly_dirs=[str(cache)]), libc=libc))
+
+        assert [call.target_path for call in libc.calls] == [str(cache), str(cache)]
+        bind, remount = (call.flags for call in libc.calls)
+        assert bind == program._MS_BIND
+        sealed = program._MS_REMOUNT | program._MS_BIND | program._MS_RDONLY
+        assert remount & sealed == sealed
+
+        for fail_at, step in ((1, "exposing"), (2, "sealing")):
+            failing = RecordingLibc(fail_at=fail_at)
+            run = launch(tmp_path, payload(readonly_dirs=[str(cache)]), libc=failing)
+            message = refusal(program.seal_readonly, run)
+            assert message is not None, f"a refused {step} mount let the spawn run"
+            assert message.startswith(f"sandbox: BLOCKED -- {step} read-only path {cache} failed")
 
     def test_an_unexposed_cache_gets_no_read_only_rule(self):
         """The ordinary spawn hides it; only the protected runtime parent is read-only."""
         from kiro_crew import sandbox
 
-        script = sandbox._build_launcher_script("standard")
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
+        readonly = sandbox._spawn_plan("namespace", "standard").readonly
         assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
         assert self._cache_path() not in readonly
 
@@ -4288,8 +4318,7 @@ class TestAnExposedCacheIsStillReadOnly:
         profile = sandbox._build_seatbelt_profile("strict", extra_visible_dirs=(aws,))
         assert f'(deny file-write* (subpath "{aws}"))' not in profile
 
-        script = sandbox._build_launcher_script("strict", extra_visible_dirs=(aws,))
-        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
+        readonly = sandbox._spawn_plan("namespace", "strict", extra_visible_dirs=(aws,)).readonly
         assert set(readonly) >= set(sandbox._voice_runtime_parent_paths())
         assert aws not in readonly
 

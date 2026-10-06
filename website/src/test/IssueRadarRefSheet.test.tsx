@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -201,6 +201,52 @@ describe('RefLink hover preview', () => {
     await waitFor(() => screen.getByRole('tooltip'), { timeout: 3000 })
     await userEvent.unhover(link)
     await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  })
+})
+
+/** One finger tap, in the order a browser sends it: the touch pointer's own
+ *  events, then the mouse events it replays once the finger lifts, then the
+ *  click. Between the replayed mouseenter and the click, WebKit waits out any
+ *  timer of 400ms or less to see whether the enter reveals content; `onReplay`
+ *  runs at that point, which is where a revealed card would cost the click. */
+function tap(el: HTMLElement, onReplay: () => void) {
+  fireEvent.pointerEnter(el, { pointerType: 'touch' })
+  fireEvent.pointerDown(el, { pointerType: 'touch' })
+  fireEvent.pointerUp(el, { pointerType: 'touch' })
+  fireEvent.mouseEnter(el)
+  act(() => { vi.advanceTimersByTime(400) })
+  onReplay()
+  fireEvent.mouseDown(el)
+  fireEvent.focus(el)
+  fireEvent.mouseUp(el)
+  fireEvent.click(el, { button: 0 })
+}
+
+// iOS drops the click of a tap whose replayed mouseenter shows new content
+// within 400ms, and the card's 320ms open timer is inside that window.
+describe('RefLink on touch', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('a touch tap opens the reference and never mounts the hover card', () => {
+    const v = setCtx()
+    renderWithQc(<RefMarkdown content={`https://github.com/${OWNER}/${REPO}/issues/533`} />)
+    tap(screen.getByRole('link'), () => { expect(screen.queryByRole('tooltip')).toBeNull() })
+    expect(v.openRef).toHaveBeenCalledWith({ kind: 'issue', number: 533 })
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(api.refSummary).not.toHaveBeenCalled()
+  })
+
+  it('a mouse on a touch device still opens the card after the hover delay', () => {
+    setCtx()
+    renderWithQc(<RefMarkdown content={`https://github.com/${OWNER}/${REPO}/issues/533`} />)
+    const link = screen.getByRole('link')
+    fireEvent.pointerEnter(link, { pointerType: 'mouse' })
+    fireEvent.mouseEnter(link)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => { vi.advanceTimersByTime(320) })
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
   })
 })
 

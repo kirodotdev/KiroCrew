@@ -9132,31 +9132,6 @@ async def test_task_final_snapshot_serializes_delete_reservation(tmp_path, monke
     assert order == ["dispatch-task", "reserve-delete"]
 
 
-@pytest.mark.asyncio
-async def test_task_run_refuses_between_orchestration_stages(tmp_path, monkeypatch):
-    """A staged plan owns the slot even when no individual turn task is live."""
-    client = _make_client(monkeypatch, tmp_path)
-    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
-    state, slots = _state_for("live")
-    slots[routes._slot_key("live")]._in_stage_execution = True
-    sent: list[str] = []
-    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: sent.append("sent"))
-
-    client.app["state"] = state
-    await client.start_server()
-    try:
-        resp = await client.post(
-            f"{_BASE}/specs/live/task",
-            json={**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")},
-        )
-        body = await resp.json()
-    finally:
-        await client.close()
-
-    assert resp.status == 409 and body["code"] == "agent_running"
-    assert sent == []
-
-
 async def _always_executing(name, meta, slot):
     return "executing"
 

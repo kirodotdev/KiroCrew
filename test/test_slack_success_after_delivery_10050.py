@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,9 +22,6 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.slack import transport_dispatch
 
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
 _golden = importlib.import_module("test_slack_golden_transcript")
 
 FakeSessions = _golden.FakeSessions
@@ -533,6 +528,24 @@ def test_native_options_fallback_is_redacted(monkeypatch):
     assert secret not in slack.fallback_text, "credential rendered raw into the OPTIONS fallback"
 
 
+class _HandlerAsyncio:
+    """``asyncio`` as the handler's namespace sees it, with *overrides* swapped in.
+
+    ``_h.asyncio`` IS the stdlib module, so ``monkeypatch.setattr(_h.asyncio,
+    "sleep", ...)`` replaced ``asyncio.sleep`` for every coroutine and thread in
+    the worker, and a sleep(0) anywhere else could take the one-shot trip meant
+    for the handler's yield. The handler and its composed owners read
+    ``asyncio`` from the handler's globals, so rebinding that NAME reaches
+    exactly the yields the turn makes.
+    """
+
+    def __init__(self, **overrides):
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
 # ── F1: a cancellation at the pre-delivery yield must release the permit ──
 # (the finally must not read a local bound only after that yield)
 
@@ -551,7 +564,7 @@ def test_native_cancel_at_predelivery_yield_releases_permit(monkeypatch):
             raise asyncio.CancelledError()
         return await real_sleep(delay, *a, **k)
 
-    monkeypatch.setattr(_h.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(_h, "asyncio", _HandlerAsyncio(sleep=_sleep))
 
     slack = MockSlackClient()
     provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
@@ -992,7 +1005,7 @@ def test_native_cancel_at_sleep0_after_stream_delivered_books_success(monkeypatc
         return await _orig_append(channel, ts, text)
 
     slack.append_stream = _append  # type: ignore[method-assign]
-    monkeypatch.setattr(_h.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(_h, "asyncio", _HandlerAsyncio(sleep=_sleep))
 
     try:
         asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))

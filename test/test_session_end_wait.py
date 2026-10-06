@@ -206,23 +206,20 @@ class TestTheRoute:
 
 
 class TestMcpDispatch:
-    @pytest.fixture(autouse=True)
-    def _verified_caller(self):
-        with patch(
-            "kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"
-        ):
-            yield
-
     def _call(self, reply: dict):
-        from kiro_crew.mcp_dashboard import _call_tool_inner
+        from kiro_crew.mcp_dashboard import TABLE
+        from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+        from kiro_crew.mcp_tools.table import Caller, ToolContext
 
-        with patch("kiro_crew.mcp_dashboard._post", return_value=reply) as post:
-            out = _call_tool_inner("session_end_wait", {"target": "chat-2"})
-        return out, post
+        dash = InMemoryDashboardClient({"POST /api/session-control/end-wait": reply})
+        ctx = ToolContext(dash, Caller.strict("dashboard:chat-1"))
+        out = TABLE.call("session_end_wait", {"target": "chat-2"}, ctx)
+        return out, dash.requests
 
     def test_posts_the_target_to_the_route(self):
-        out, post = self._call({"ok": True, "target": "chat-2", "ended": True, "wait_id": "w"})
-        assert post.call_args.args == ("/api/session-control/end-wait", {"target": "chat-2"})
+        out, (post,) = self._call({"ok": True, "target": "chat-2", "ended": True, "wait_id": "w"})
+        assert (post.path, post.body) == ("/api/session-control/end-wait", {"target": "chat-2"})
+        assert post.session_key == "dashboard:chat-1"
         assert "End-wait sent to `chat-2`" in out
 
     def test_a_target_not_waiting_reads_as_nothing_to_end(self):

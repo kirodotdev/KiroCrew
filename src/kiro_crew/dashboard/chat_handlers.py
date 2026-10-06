@@ -150,6 +150,7 @@ from kiro_crew.dashboard.chat_runner import (
     _sync_served_model,
     context_entry_expired,
     schedule_eager_spawn,
+    subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_slack import maybe_auto_link_slack, slot_is_live
 from kiro_crew.dashboard.chat_summary import generate_session_summary, read_cached_intent_summary
@@ -200,8 +201,10 @@ from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.handlers._shared import (
+    _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
     cron_creator_refusal,
+    cron_mode_refusal,
     cron_slot_creator,
     read_bounded_json,
 )
@@ -276,7 +279,6 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     parse_cls_meta,
     request_slot_origin,
     row_mid,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -345,13 +347,6 @@ _SESSION_RELOAD_NOTICE = (
     "Reloading session: relaunching the agent process with a freshly loaded "
     "agent spec, environment, and MCP servers. The conversation is preserved."
 )
-
-
-# Approval modes that grant auto-approval to the SLOT they name, as opposed to
-# the process-global YOLO grant. A tuple, not a set: membership is tested against
-# a request-supplied value, and tuple `in` compares by equality rather than
-# hashing, so a non-string body value answers False instead of raising.
-_SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads")
 
 
 def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
@@ -1169,13 +1164,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    _pending_stage_boundary = stage_boundary_for(slot).stage is not None
-    if (
-        slot.turn_running
-        or slot._turn_admission_reserved
-        or slot._in_stage_execution
-        or _pending_stage_boundary
-    ):
+    if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -1187,12 +1176,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # client / unsupported backend / RPC error), fall through to the queue
         # path so the user's text is NEVER silently dropped.
         #
-        # ``slot._in_stage_execution`` extends this to autopilot: during a multi-stage
-        # plan ``slot.running`` briefly reads False between stages (each stage's
-        # _run_chat closes its own turn), so a mid-plan message would otherwise
-        # start a concurrent turn. The orchestrating flag keeps it on the queue
-        # path (steer is unavailable between stages, so it falls through to the
-        # queue below and is held until the plan ends).
         # `steer: "auto"` is the composer's third mode: the sender asked Jev which
         # of the two shipped paths this message takes. Decided HERE, above both
         # branches, because the answer chooses between them -- and only here, where
@@ -1346,11 +1329,18 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
     # An app on a session it does not own has no opt-out (`steer` is None there).
-    if (
-        not steer
+    _sub_key = effective_session_key(slot)
+    _held = subagents_hold_user_messages(state, _sub_key)
+    # Messages parked while a child was live stay parked once it is flagged
+    # stalled (nothing starts a drain then). A send behind them joins the queue
+    # and drains it, so it is answered after them rather than ahead of them.
+    _behind_parked = bool(
+        not _held
+        and slot._queue
         and state.subagents is not None
-        and state.subagents.running_agents_for(effective_session_key(slot))
-    ):
+        and state.subagents.running_agents_for(_sub_key)
+    )
+    if not steer and (_held or _behind_parked):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1396,6 +1386,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _hold_meta.get("quote"):
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         state.broadcast_ws("queue_push", _hold_push)
+        if _behind_parked:
+            await _start_next_queued_turn(state, slot)
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds
         # the sender's pre-send composer state to this exact entry. An entry the
         # durable bounds refuse is reported in the log by the call above, not on
@@ -1729,7 +1721,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     finally:
         if _reserve_turn_admission:
             slot._turn_admission_reserved = False
-    stage_boundary_for(slot).recovery_retrigger_count = 0
+    slot.recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:
@@ -2349,6 +2341,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # surrounding resolve/normalize steps are skipped for every peer-bound
         # create precisely because they answer from THIS machine's roster.
         agent = peer_meta.get("agent", "")
+        agent_kind = peer_meta.get("agent_kind", "")
         # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
         # happens outside the `suspend_slots_push` block below. That suspension is
         # process-wide: holding it across a transcript read would defer every other
@@ -2376,6 +2369,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 state,
                 instance_id,
                 agent=agent,
+                agent_kind=agent_kind,
                 model=model,
                 memory_mode=memory_mode,
             )
@@ -2669,6 +2663,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+            slot.agent_kind = agent_kind
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -4021,7 +4016,7 @@ async def _settle_discarded_stage_deliveries(
     slot: "_ChatSlot",
     contents: list[str],
 ) -> None:
-    """Settle queued completion and boundary report debt through one seam."""
+    """Settle the queued completion debt a discarded queue owed."""
     manager = getattr(state, "subagents", None)
     if manager is None:
         return
@@ -4037,13 +4032,6 @@ async def _settle_discarded_stage_deliveries(
                 slot.key,
                 exc_info=True,
             )
-    boundary = stage_boundary_for(slot)
-    owner = boundary.owner or boundary.generation
-    parents = tuple(boundary.parent_session_keys) or (effective_session_key(slot),)
-    discard_failures = getattr(manager, "discard_report_failures", None)
-    if owner and callable(discard_failures):
-        for parent in parents:
-            discard_failures(parent, owner)
 
 
 async def stop_slot_turn(
@@ -4163,7 +4151,6 @@ async def stop_slot_turn(
     # timeout retry. A withheld escalation falls into the no-op branch below.
     if escalate and slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
-        stage_boundary_for(slot).preserve_stop_generation = -1
         # A decline settled its own card and left no open one; the hard kill
         # that follows needs a row of its own, or the last stop row the user
         # sees still reads "nothing was stopped" for a session that was reset.
@@ -4325,7 +4312,6 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
-    stage_boundary_for(slot).preserve_stop_generation = slot._stop_generation
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -4489,17 +4475,12 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
+        # Same-name registration can change while the lock or child probe waits.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_continue"):
+            return _slot_not_found()
         if slot.running:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
-            )
-        if slot._in_stage_execution:
-            # An autopilot plan reads `running` False BETWEEN stages while it is
-            # still mid-plan, so `running` alone would let a Continue dispatch
-            # concurrently with the next stage — two turns interleaving tool calls
-            # and repository writes on one slot.
-            return web.json_response(
-                {"error": "slot is orchestrating", "code": "slot_orchestrating"}, status=409
             )
         if slot._stopping or slot._stop_state != "idle":
             return web.json_response(
@@ -4540,6 +4521,8 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         denied_409 = await _subagents_attached_response(
             state, slot, effective_session_key(slot), "continue"
         )
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_continue"):
+            return _slot_not_found()
         if denied_409 is not None:
             return denied_409
         if not _has_conversation(slot):
@@ -4834,11 +4817,6 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             if slot.running:
                 return web.json_response(
                     {"error": "slot started running", "code": "slot_running"}, status=409
-                )
-            if slot._in_stage_execution:
-                return web.json_response(
-                    {"error": "slot is orchestrating", "code": "slot_orchestrating"},
-                    status=409,
                 )
             if slot._stopping or slot._stop_state != "idle":
                 return web.json_response(
@@ -5358,6 +5336,14 @@ async def _apply_remote_pick_locked(
             # the header and PERSISTED to history below, so an unscrubbed
             # credential here outlives the session.
             slot.workspace = redact_peer_text(peer_workspace)
+        accepted_kind = accepted.get("agent_kind")
+        requested_kind = body.get("agent_kind")
+        if accepted_kind in ("member", "template"):
+            slot.agent_kind = accepted_kind
+        elif requested_kind in ("member", "template"):
+            slot.agent_kind = requested_kind
+        else:
+            slot.agent_kind = ""
     if control == "model":
         # Same reason the local path bumps it: an explicit pick has to outrank
         # the model-fallback restore probe.
@@ -5386,6 +5372,9 @@ async def _apply_remote_pick_locked(
         # agent is, so it goes in the same write — persisting one without the
         # other would restore the pair inconsistent after a restart.
         persisted["workspace"] = slot.workspace
+    if control == "agent":
+        persisted["agent_kind"] = slot.agent_kind
+    local_persistence_pending = False
     conversation_log = state.conversation_log
     if conversation_log and not slot.is_restricted:
         try:
@@ -5412,19 +5401,26 @@ async def _apply_remote_pick_locked(
             # turns run; reporting failure would roll the header back to a value
             # the peer no longer holds.
             slot._dirty = True
+            local_persistence_pending = True
             logger.warning(
                 "Failed to persist remote %s pick for slot %s", control, slot.key, exc_info=True
             )
     logger.info("Remote slot %s %s set to %r on %s", slot.key, control, value, slot.instance_id)
     state.push_slots_update()
-    return web.json_response(
-        {
-            "ok": True,
-            control: value,
-            "remote": True,
-            **({"model": normalized_model} if normalized_model else {}),
-        }
-    )
+    response: dict[str, Any] = {
+        "ok": True,
+        control: value,
+        "remote": True,
+        **({"model": normalized_model} if normalized_model else {}),
+    }
+    if control == "agent":
+        response["agent_kind"] = slot.agent_kind
+    if local_persistence_pending:
+        response["local_persistence"] = "pending"
+        response["warning"] = (
+            "The remote selection was applied, but its local restart record is still pending."
+        )
+    return web.json_response(response)
 
 
 async def _record_explicit_agent_selection(
@@ -5736,7 +5732,13 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # A bound session has no local ACP session to reset — the whole
         # transaction below would resolve a crew on the wrong machine. The pick
         # travels instead, and the slot is mirrored only after the peer took it.
-        return await _apply_remote_pick(request, state, slot, "agent", {"agent": agent_name})
+        return await _apply_remote_pick(
+            request,
+            state,
+            slot,
+            "agent",
+            {"agent": agent_name, "agent_kind": agent_kind},
+        )
 
     # The whole resolve -> reset -> commit section runs under the slot's
     # lock: the awaits yield the event loop, and an interleaved second switch
@@ -5862,6 +5864,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # otherwise deliberately not rolled back on a failing reset (see the
         # teardown_incomplete comment), so this is the ONE case that unwinds.
         prior_agent = slot.agent
+        prior_agent_kind = slot.agent_kind
         # Stored verbatim — never rewritten to whatever currently answers. See
         # the same reasoning in api_chat_slot_create.
         new_workspace = slot.workspace
@@ -5877,37 +5880,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         pre_await_project = slot.project
         pre_await_memory_store = slot.memory_store
 
-        # Commit the agent BEFORE any await in this section: a message send
-        # landing while the resolution warm-up or the reset await is in
-        # flight creates a fresh session from the slot's CURRENT bindings,
-        # so the new agent must already be visible or that session
-        # cold-starts on the old binding and stays stale after the switch
-        # reports success. NO rollback on a POST-POP teardown failure: the
-        # reset pops the session from the map before shutting the process
-        # down, so once the pop has happened the old binding's session no
-        # longer exists — every future send cold-starts on the NEW binding,
-        # and a replacement session created by a concurrent send mid-reset
-        # already runs it. Restoring the old label would advertise a binding
-        # nothing runs (and tear against that replacement). That the pop
-        # happened is VERIFIED, not assumed: the reset below routes through
-        # _reset_slot_session_or_warn, which propagates a pre-pop raise —
-        # and THAT path does roll back (see the except below), because the
-        # probe has proven the opposite premise: the old session survives on
-        # this old binding.
-        slot.agent = _CommitToken(agent_name)
-        # Ownership token for the rollback paths below: the committed value is
-        # a str SUBCLASS instance whose identity only this request holds — it
-        # compares, hashes, serializes and persists exactly like the plain
-        # string, but `slot.agent is <token>` proves no other writer has
-        # touched the field since this commit. Any concurrent write — the
-        # unlocked openai_compat / members / in-turn directive writers
-        # included, and a SAME-VALUE write especially — replaces the object,
-        # so the rollback stands down. A value compare-and-set cannot tell
-        # "still my write" from "their equal write", and rolling back over a
-        # concurrent same-agent dispatch would restore the old agent under a
-        # turn already running the new one.
-        committed_agent = slot.agent
-
         # Resolve workspace from agent bindings. The response value is seeded
         # from the slot's CURRENT workspace, not a "default" literal: if
         # resolution below fails, the response still names this value, and
@@ -5917,6 +5889,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # which is exactly when the optimistic write is load-bearing).
         workspace = slot.workspace or "default"
         assignment_resolved = False
+        new_agent_kind = ""
+        committed_agent: str | None = None
+        committed_agent_kind: str | None = None
         try:
             cfg = KiroCrewConfig.load()
             # Resolve by the name being STORED, which is exactly the name dispatch
@@ -5955,12 +5930,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
                     # derived fields, reset or history write has committed yet.
-                    if slot.agent is committed_agent:
-                        slot.agent = prior_agent
                     denied = await require_owner_dashboard_request(request, "chat.slot_agent")
                     if denied is not None:
                         return denied
             assignment_resolved = bindings.requested_resolved
+            new_agent_kind = bindings.selection_kind if assignment_resolved else ""
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             new_workspace = ws_name
             workspace = ws_name
@@ -6063,16 +6037,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     # user chose and runs the next turn's tools elsewhere.
                     new_project = default_project_dir(workspace)
         except asyncio.CancelledError:
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             raise
         except Exception:
             logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
 
         if agent_kind and not assignment_resolved:
             # A stated namespace never falls back to whoever answers by default.
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             return web.json_response(
                 {
                     "error": "the selected agent choice is not available",
@@ -6084,14 +6054,45 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         if not assignment_resolved and prior_selection is not None:
             # A failed lookup cannot commit a name while retaining a different
             # protected selection. Leave the established conversation usable.
-            if slot.agent is committed_agent:
-                slot.agent = prior_agent
             from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
             from kiro_crew.memory_stores import UnknownMemoryStore
 
             return _store_unavailable_response(
                 slot.memory_store, UnknownMemoryStore("Conversation agent selection is unavailable")
             )
+
+        # Publish the selected name and its resolved namespace together in one
+        # no-await section. Resolution may yield while discovering project
+        # agents, so publishing the name before it finishes lets a sender see a
+        # new name beside the previous namespace. A sender during resolution
+        # instead keeps using the complete old selection; the busy re-probe and
+        # reset below either refuse that overlap or retire its old session.
+        #
+        # The two tokens also form one rollback ownership claim. Any concurrent
+        # writer replaces at least the field it owns, including a same-value
+        # write, so rollback never erases that later selection.
+        #
+        # Compare-and-set against the pre-resolution baseline BEFORE the commit,
+        # the same guard the derived fields below apply to their pre_await_*
+        # snapshots. The resolution awaits above yield the event loop, and the
+        # unlocked `/v1/chat` openai_compat path (and the in-turn directive
+        # writers) can set `slot.agent`/`slot.agent_kind` and dispatch a turn in
+        # that window. Committing the tokens here would overwrite that accepted
+        # selection, and because no await separates the commit from the
+        # `slot.agent is not committed_agent` rebind check below, that check can
+        # never see the overwrite — the busy re-probe would then roll back to
+        # `prior_agent`, erasing a binding a running turn already chose. Refuse
+        # instead, leaving the concurrent selection in place (the pre-move
+        # behaviour, which committed before resolving and so returned 409 here).
+        if slot.agent is not prior_agent or slot.agent_kind is not prior_agent_kind:
+            return web.json_response(
+                {"error": "slot changed during agent resolution", "code": "session_rebound"},
+                status=409,
+            )
+        slot.agent = _CommitToken(agent_name)
+        slot.agent_kind = _CommitToken(new_agent_kind)
+        committed_agent = slot.agent
+        committed_agent_kind = slot.agent_kind
 
         # Derived fields commit BEFORE the reset too, compare-and-set against
         # the pre-await baseline: a send landing during the reset teardown
@@ -6143,8 +6144,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             this commit's; a field this request never committed (the
             write-side CAS lost) has a None token and is never touched.
             """
-            if slot.agent is committed_agent:
+            if slot.agent is committed_agent and slot.agent_kind is committed_agent_kind:
                 slot.agent = prior_agent
+                slot.agent_kind = prior_agent_kind
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
@@ -6305,7 +6307,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                     )
                 except Exception:
                     logger.warning(
@@ -6322,7 +6324,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 await drained_to_thread(
                     conversation_log.update_metadata,
                     _history_key_for(name),
-                    {"agent": agent_name},
+                    {"agent": agent_name, "agent_kind": new_agent_kind},
                 )
             except asyncio.CancelledError:
                 # Drain the writer before restoring history, and retain both
@@ -6358,7 +6360,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                     )
                 except Exception:
                     logger.warning(
@@ -6386,7 +6388,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                         await drained_to_thread(
                             state.conversation_log.update_metadata,
                             _history_key_for(name),
-                            {"agent": str(slot.agent)},
+                            {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
                         )
 
             try:
@@ -6569,8 +6571,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
-    if slot.agent is committed_agent:
-        slot.agent_kind = bindings.selection_kind if assignment_resolved else ""
     schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     state.push_slots_update()
     resp_body: dict = {
@@ -8832,6 +8832,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
+    if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+        return _slot_not_found()
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
@@ -8869,6 +8871,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # choice, with the same actionable message. Off-loop: the check primes
         # the runtime path cache (mkdir/realpath) on first use.
         conflict = await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         if conflict is not None:
             sel().log_api_access(
                 caller=request.get("user", "dashboard"),
@@ -8892,6 +8896,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # reset is awaited while holding the lock beyond what the other switch
     # handlers already hold.
     async with slot._lock:
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         # The session the deferred reset will address — ``effective_session_key``,
         # never ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
@@ -8932,6 +8938,11 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 await asyncio.to_thread(_save_recent_project, project)
             except Exception:
                 logger.warning("Failed to save recent project", exc_info=True)
+            # A detached slot cannot arm a reset for its same-name successor.
+            if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+                if slot.project is committed_project:
+                    slot.project = old_project
+                return _slot_not_found()
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
         # Only on an actual change — avoids a needless cold start on a no-op set.
@@ -9019,9 +9030,9 @@ def deny_non_owner_remote_operation(
 
     Why the existing guards are not enough. ``deny_app_slot_access``
     returns ``None`` for any caller with an empty ``request["app"]`` — that is
-    its whole contract, "dashboard users pass". But ``send_dashboard_link``
-    mints ``generate_token(user_id, …)`` with ``app=""``, so a Slack-allowlisted
-    NON-owner holds exactly that shape: empty app, ``request["user"]`` different
+    its whole contract, "dashboard users pass". But the Telegram, Teams and
+    Webex dashboard commands mint a token with ``app=""`` for any allowlist
+    user, so a NON-owner holds exactly that shape: empty app, ``request["user"]`` different
     from ``owner_id``. Against a local slot that is only the access the link
     grants by design. Against a peer-bound slot it is the owner's SSH tunnel and
     the owner's connected machine, which is the harm the create/capabilities
@@ -9420,24 +9431,48 @@ async def api_chat_mode(request: web.Request) -> web.Response:
 
     Unlike the per-tool approve endpoint, this doesn't require a
     pending approval — it preemptively sets the mode for future tools.
+
+    A caller that presents an attested ``cron:<job id>`` key, which is what
+    ``ScriptContext.set_session_mode`` does, is held to ``trust`` and
+    ``trust_reads`` on one named slot that same cron created: the switch mirror
+    in ``private_chat_route_refusal`` answers first while session control is
+    off, ``cron_mode_refusal`` refuses every other mode and an unnamed slot, and
+    ``cron_creator_refusal`` refuses a slot another creator made. An admitted
+    call is recorded as ``mode_change:<mode>`` under the cron's own key. Each
+    refusal is recorded by ``_audit_cron_chat_denial`` as a ``chat.control``
+    denial attributed to ``internal``, naming the route, the slot and the mode,
+    the shape every cron-gate refusal on the chat routes shares.
     """
     state: DashboardState = request.app["state"]
     denied = await deny_session_approval_caller(request, "chat_mode")
     if denied is not None:
         return denied
     request_app = str(request.get("app") or "")
+    # The attested ``cron:<job id>`` key of a script cron, or ``""``. A cron sets
+    # one slot-scoped posture on a session it created and nothing else; the three
+    # checks below are the cron gate the other two chat routes already apply, and
+    # like those they key on the attested key the caller presents.
+    cron_creator = await cron_slot_creator(request)
 
     def audit_caller(dashboard_label: str) -> str:
-        """App tokens are attributed to the app; dashboard callers keep their
-        original per-site labels (slot, background, mode) so SEL history stays
-        comparable across releases."""
-        return f"app:{request_app}" if request_app else dashboard_label
+        """App tokens are attributed to the app, a cron to its own key; dashboard
+        callers keep their original per-site labels (slot, background, mode) so
+        SEL history stays comparable across releases."""
+        if request_app:
+            return f"app:{request_app}"
+        return cron_creator or dashboard_label
 
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     mode = body.get("mode", "normal")
+    # A cron is held to ``trust`` / ``trust_reads`` on one named slot, before the
+    # mode reaches governance or the override: its ``yolo`` is refused as a cron's,
+    # whatever the policy says, and its unnamed slot is never the all-slots request.
+    cron_refused = await cron_mode_refusal(request, cron_creator, mode, body.get("slot"))
+    if cron_refused is not None:
+        return cron_refused
     # The grant is per-slot: Normal, Reads and Trust on ONE named user session.
     # YOLO is process-global and stays dashboard-only.
     if request_app and mode == "yolo":
@@ -9514,6 +9549,17 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         # cannot tell it which session names are live.
         return slot_not_found() if request_app else denied
 
+    if cron_creator:
+        # The mode rule above refused an unnamed slot and the resolution above
+        # refused a dead one, so a cron reaches here with ONE live slot. Judge
+        # its creator now, with no await between that resolution and this read,
+        # so the fence judges the same slot object every branch below writes
+        # through. A slot the cron did not create answers 403 ``not_creator``.
+        assert slot is not None  # a cron names a slot, and it resolved above
+        fenced = await cron_creator_refusal(request, state, slot_key, cron_creator)
+        if fenced is not None:
+            return fenced
+
     if request_app:
         assert slot is not None  # app requests require and resolve a slot above
         # A FRESH grant read: the body upload and the governance check above
@@ -9543,9 +9589,16 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     #
     # An app token never touches the global override: its ``normal`` on one
     # slot must not end the operator's YOLO grant on every other slot.
+    #
+    # Nor does a ``cron:`` caller. The mode rule above already holds it to a
+    # slot-scoped ``trust`` or ``trust_reads``, and ``set_session_mode`` promises
+    # that both leave the global override alone, declared or not: a scheduled run
+    # asking for auto-approval on the one session it opened is never the
+    # documented action that ends the operator's grant everywhere else.
     slot_scoped_trust = slot_key is not None and mode in _SLOT_SCOPED_TRUST_MODES
     if (
         not request_app
+        and not cron_creator
         and mode != "yolo"
         and (not slot_scoped_trust or safety_override().is_declared)
     ):
@@ -9626,7 +9679,13 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     _sharing._trust = True
             state.sessions.set_approval_policy(_granted_key, "auto")
             linked_ch = getattr(slot, "_slack_channel", None)
-            if not request_app and mgr and linked_ch and linked_ch in mgr._channels:
+            if (
+                not request_app
+                and not cron_creator
+                and mgr
+                and linked_ch
+                and linked_ch in mgr._channels
+            ):
                 mgr._channels[linked_ch].trusted = True
                 mgr._channels[linked_ch]._save()
         else:
@@ -9639,7 +9698,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     ch._save()
         _trusted_chs = (
             [cid for cid, ch in mgr._channels.items() if ch.trusted]
-            if mgr and not request_app
+            if mgr and not request_app and not cron_creator
             else []
         )
         try:
@@ -10951,7 +11010,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # written at the turn's end, which is why `appended` is reported separately.
     # This is decided BEFORE either write: a note rejected for a full hold must
     # not leave its context half behind to reach the next turn anyway.
-    deferred = slot.running or slot._in_stage_execution
+    deferred = slot.running
     if deferred and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
         return web.json_response(
             {

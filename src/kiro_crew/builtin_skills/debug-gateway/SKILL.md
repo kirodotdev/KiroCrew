@@ -45,7 +45,10 @@ unmeasured and say so, rather than concluding the gateway is current.
 beside it. A real fingerprint that differs means the daemon is serving backends built
 from another checkout, and a directive tool can report success against one.
 `unknown (pre-fingerprint build)` means the daemon cannot be compared at all, which is
-unmeasured rather than stale. `null` means no daemon was described.
+unmeasured rather than stale. A null `matches_this_install` has two causes, told apart
+by `running` beside it: `running: false` is a measured absence (no daemon), while
+`running: null` is a FAILED probe — the daemon could not be described — which is
+unmeasured, not a confirmed absence. Do not read a failed probe as "no daemon".
 `recorder.available` false means the build carries no diagnostics package, which is
 also why three of the five tools cannot answer on it.
 
@@ -118,6 +121,7 @@ you a `cursor`.
 | 403 | `forbidden` | Several refusals share this code, so read the message. It covers a caller class that holds no host-wide view, a session the gateway cannot name at all, a request from another component, and a named session outside your scope | Never retry and never look for another route. Only for the host-wide-view refusal do the owner's own tab and `session=self` help; an unnameable session reads nothing, including its own rows, and an out-of-scope session key is refused however it is asked |
 | 501 | `diag_unavailable` | The build carries no `kiro_crew.diag`, so threads, processes and snapshots cannot answer. Relayed verbatim so it cannot be mistaken for an empty answer | Report the build. `debug_gateway` and `debug_refusals` still work; do not synthesize the missing reading |
 | 404 | `dump_missing` | A dump named by an earlier listing rotated away before this read | Re-list and read a current name |
+| 503 | `dump_unreadable` | A dump named by an earlier listing is still present but could not be read (an `OSError` opening it) | Re-list; if it persists the dump is damaged, so pick another name |
 | 400 | `bad_range` | An argument is malformed: an unparsable `around`, a `radius` like `5x`, a non-integer `last` | Fix the argument and call again |
 
 Three more codes appear. `recorder_off` (422) means the recorder is not running, so

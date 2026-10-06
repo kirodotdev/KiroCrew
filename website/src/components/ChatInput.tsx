@@ -32,7 +32,7 @@ import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-import { useComposerDraftText, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
+import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
@@ -198,8 +198,8 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
-  pasteBlocks = [],
-  onPasteBlocksChange,
+  pasteBlocks: pasteBlocksProp = [],
+  onPasteBlocksChange: onPasteBlocksChangeProp,
   showFullPastes = false,
   lexicalComposer = false,
   knowledgeChip,
@@ -216,6 +216,12 @@ function ChatInput({
   // subscribed HERE, so a keystroke re-renders this composer and not its host.
   const draftText = useComposerDraftText()
   const value = draftText ?? valueProp ?? ''
+  // Under a `<Composer pastes>` root the collapsed paste blocks arrive the same
+  // way (the Paste atom, `composerPastes.ts`), and the root wins over the two
+  // paste props as `draft` wins over `value`. Without one, the props.
+  const pasteSlice = useComposerPasteSlice()
+  const pasteBlocks = pasteSlice ? pasteSlice.blocks : pasteBlocksProp
+  const onPasteBlocksChange = pasteSlice ? pasteSlice.set : onPasteBlocksChangeProp
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -392,6 +398,11 @@ function ChatInput({
     }
     sendFollowUp(text, sourceKeyAtClick)
   }, [terminal.active, fireComposer, sendFollowUp])
+  // A quick-send click sends from the host's own handler; it gets the same send
+  // the ↑ segment uses, so an instant click takes the composer's busy decision.
+  const selectFollowUp = useCallback((option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => {
+    onFollowUpSelect?.(option, event, sourceKeyAtClick, (text: string) => fireFollowUp(text, sourceKeyAtClick))
+  }, [onFollowUpSelect, fireFollowUp])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const directFilePicker = isMobile || isTouchDevice()
@@ -609,7 +620,7 @@ function ChatInput({
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={fireFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

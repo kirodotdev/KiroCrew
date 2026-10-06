@@ -153,4 +153,64 @@ function isPathFallback(bin) {
   return bin === PATH_FALLBACK || bin === PATH_FALLBACK_WINDOWS;
 }
 
-module.exports = { findKirocrewBin, isPathFallback };
+// Root-owned directories an ssh client may be taken from. Mirrors
+// `platform_compat._TRUSTED_SYSTEM_BIN_DIRS`: PATH can lead with agent-writable
+// directories (`~/.local/bin`, a worktree venv), and this binary runs in the
+// un-sandboxed main process with the remote command and returns the token.
+const TRUSTED_POSIX_SSH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"];
+
+// The kernel's own `\SystemRoot` object link, reached through the global object
+// namespace. Only the kernel sets it, so it names the running Windows directory
+// whatever the environment says. `%SystemRoot%` is not usable:
+// `HKCU\Environment` is writable without elevation, so a restarted app would
+// inherit a root naming a planted `ssh.exe` (`platform_compat._windows_system_dirs`
+// records this as measured). A fixed `C:\Windows` is not usable either: on a
+// Windows installed off `C:` it is an ordinary directory any user can create.
+const KERNEL_SYSTEM_ROOT = "\\\\?\\GLOBALROOT\\SystemRoot";
+
+// The in-box Windows OpenSSH client under the kernel's Windows directory, or
+// null when that directory does not resolve to a plain `X:\Windows`. Null
+// refuses the fetch: no guessed path is safer than the one the kernel names.
+function windowsSshBin(fs, path) {
+  let root;
+  try {
+    root = fs.realpathSync.native(KERNEL_SYSTEM_ROOT);
+  } catch {
+    return null;
+  }
+  root = String(root).replace(/^\\\\\?\\/, "");
+  if (!/^[A-Za-z]:\\Windows$/i.test(root)) return null;
+  return path.win32.join(root, "System32", "OpenSSH", "ssh.exe");
+}
+
+/**
+ * Resolve the local OpenSSH client for an `execFile` call from trusted,
+ * non-user-writable locations only: never PATH, never the environment.
+ *
+ * POSIX takes the first executable `ssh` in the trusted system directories
+ * (NixOS included), falling back to `/usr/bin/ssh` so a miss surfaces as a
+ * spawn ENOENT naming that path. Windows takes the in-box client under the
+ * Windows directory the kernel names, or null when that cannot be proven.
+ *
+ * @param {typeof import("fs")} fs - Node fs module (needs `accessSync`,
+ *        `constants.X_OK`, and on Windows `realpathSync.native`)
+ * @param {typeof import("path")} path - Node path module
+ * @param {boolean} [isWindows] - whether the host is Windows
+ * @returns {string|null} Absolute path to the ssh client; null on Windows when
+ *          the system directory does not resolve
+ */
+function findSshBin(fs, path, isWindows = process.platform === "win32") {
+  if (isWindows) return windowsSshBin(fs, path);
+  for (const dir of TRUSTED_POSIX_SSH_DIRS) {
+    const bin = path.join(dir, "ssh");
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+      return bin;
+    } catch {
+      // not here; try the next trusted directory
+    }
+  }
+  return "/usr/bin/ssh";
+}
+
+module.exports = { findKirocrewBin, isPathFallback, findSshBin };

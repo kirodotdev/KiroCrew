@@ -32,7 +32,7 @@ export function makeMembersFloorSeed(): LayoutTree {
             kind: 'cell',
             id: 'thread',
             element: 'chat',
-            config: { agentLocked: true, frameless: true, followContentWidth: true, busyMode: 'steer-only' },
+            config: { agentLocked: true, frameless: true, followContentWidth: true },
           },
         },
         { x: 1, y: 0, w: 1, h: 1, node: { kind: 'cell', id: 'panel', element: 'sidePanel' } },

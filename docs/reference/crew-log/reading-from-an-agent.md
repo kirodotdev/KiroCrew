@@ -63,6 +63,7 @@ Every failure is a typed code, never a traceback.
 | `unknown_unit` | No session log for that unit. |
 | `unresolvable_key` | The key names no live ACP session, so no unit is receiving its work right now. |
 | `unknown_projection` | Not one of the six folds. |
+| `slot_projection` | HTTP 400: that projection is keyed by slot, not by session, so a per-unit read refuses it. |
 | `bad_range` | The requested seq range is not readable as one. |
 | `forbidden` | The caller may not read that unit. See below. |
 | `unavailable` | Nothing answered — the gateway is not reachable. |
@@ -93,10 +94,9 @@ One rule: **a valid strict session identity, and then a scope.** A session may r
   earlier. The transitive walk is the same fold the Sessions page's tree uses, so
   the two cannot disagree about who dispatched whom;
 - **any unit at all**, if it is the owner at a dashboard tab whose own caller class
-  also allows it. Reading every unit is the case the routes shipped with; the class
-  condition is not, and it is there because a dashboard session MIRRORED to a
-  channel republishes every turn, so that tab would otherwise be the one caller that
-  could read every log and publish it. A mirrored owner tab is held to its own unit
+  also allows it. The class condition is there because a dashboard session
+  MIRRORED to a channel republishes every turn, so that tab would otherwise be the
+  one caller that could read every log and publish it. A mirrored owner tab is held to its own unit
   like any other excluded caller.
 
 `crew_log_list` carries the same scope as a filter rather than as a verdict: a
@@ -107,7 +107,7 @@ host, which is the one thing a per-unit gate cannot refuse after the fact.
 A conductor reading the crew logs of the sub-sessions it dispatched is the ordinary
 shape of the work, not a special case, and the lineage record already says which
 session created which — so the entitlement is derived from a recorded fact rather
-than asserted. Issues #11963 and #12025 were closed as not planned for that reason.
+than asserted.
 
 It is a dispatch fence rather than an operator fence, and the difference is about
 surfaces rather than trust. The wider premise — that sessions on one gateway belong
@@ -247,7 +247,8 @@ fall-through. So the handler refuses any caller arriving without the secret,
 naming the browser's own route, and that refusal is what keeps the owner test
 above from becoming a second way in from an authenticated page.
 
-The browser's own `GET /api/sessions/{id}/crew-log` pair is unchanged and stays
-cookie-only. The split is the authorization model, not the data: both doors call
+The browser's own door is three cookie-only routes:
+`GET /api/sessions/{id}/crew-log`, `/api/sessions/{id}/crew-log/projections` and
+`/api/sessions/{id}/crew-log/projection/{name}`. The split is the authorization model, not the data: both doors call
 the same page reader (`crew_log/read.py::read_page`) and the same fold, so they
 cannot answer differently.

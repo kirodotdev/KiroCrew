@@ -341,8 +341,8 @@ describe('TasksCapacityCard', () => {
     // has no number to sit beside and the row is where it belongs.
     const copy: Record<string, string> = {
       adaptive_decrease: 'Concurrency lowered under load',
-      adaptive_pause: 'New runs paused until the host recovers',
-      adaptive_probe: 'Testing one run before resuming',
+      adaptive_pause: 'Backend starts held to the minimum until this computer frees up memory or load eases',
+      adaptive_probe: 'Backend starts: testing one before raising the limit',
     }
     for (const [token, text] of Object.entries(copy)) {
       tasksSummary.mockReset()

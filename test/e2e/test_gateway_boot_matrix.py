@@ -67,21 +67,22 @@ pytestmark = pytest.mark.skipif(
     reason="Cross-OS gateway boot matrix. Set KIROCREW_E2E=1 to run.",
 )
 
+# Kiro Crew's own default when ``agent.sandbox`` is absent: what the config
+# loader resolves the missing key to, and so what ``GET /api/config/kirocrew``
+# reports for it. Restated rather than imported so a change to that default
+# surfaces here as a named mismatch.
+_DEFAULT_SANDBOX_MODE = "auto"
+
 # The sandbox tier each seed fixture puts in the config the gateway BOOTS with.
 # ``agent.sandbox`` is read at boot (the gateway threads ``cfg.agent.sandbox``
 # into the ACP client), so the tier cannot be changed after READY -- which is why
 # the matrix is expressed as fixtures rather than as a post-boot config write.
 # ``minimal`` states ``"off"``; ``rich`` omits the key, so it resolves to the
 # shipped default, which is the tier a FRESH INSTALL runs and the one a settings-probe
-# broke. ``_seeded_sandbox_mode`` asserts the fixture still says so, so an edit
-# to either fixture fails here instead of quietly collapsing this matrix to one
-# tier tested twice.
-_SEED_SANDBOX_MODES: dict[str, str] = {"minimal": "off", "rich": "auto"}
-
-# Kiro Crew's own default when ``agent.sandbox`` is absent
-# (``sandbox._SANDBOX_MODE_FALLBACK``). Restated rather than imported so a change
-# to that constant surfaces here as a named mismatch.
-_DEFAULT_SANDBOX_MODE = "auto"
+# broke. The test asserts the tier the gateway resolved, so an edit to either
+# fixture fails here instead of quietly collapsing this matrix to one tier
+# tested twice.
+_SEED_SANDBOX_MODES: dict[str, str] = {"minimal": "off", "rich": _DEFAULT_SANDBOX_MODE}
 
 # The provider the ``KIROCREW_KIRO_BIN`` seam requires. The fake backend is only
 # reached when the resolved provider is ``acp``; asserting it up front turns a
@@ -245,18 +246,25 @@ def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
                 os.environ["KIROCREW_KIRO_BIN"] = previous
 
 
-def _config(home: Path) -> dict[str, Any]:
-    """The config the gateway booted with, as it exists in the seeded home."""
-    path = home / "config.json"
-    if not path.is_file():
-        return {}
-    return dict(json.loads(path.read_text(encoding="utf-8")))
+def _resolved_agent_setting(client: _Client, key: str) -> str:
+    """``agent.<key>`` as the running gateway resolved it, read over its API.
 
-
-def _seeded_sandbox_mode(home: Path) -> str:
-    """``agent.sandbox`` as the gateway resolved it, absent meaning the default."""
-    agent = _config(home).get("agent") or {}
-    return str(agent.get("sandbox", _DEFAULT_SANDBOX_MODE))
+    Never from ``<home>/config.json``: the gateway rewrites that file itself
+    while it serves (a temp file plus ``os.replace``, for the boot's write-back
+    migration and the post-bind meta-stamp refresh), and on Windows an open from
+    this process that lands inside the replace fails ``PermissionError``. The
+    route serializes a freshly loaded config, so every field is present -- the
+    fixture's value or the loader's default -- and an absent one is a named
+    failure, not a silent default.
+    """
+    body = client.get("/api/config/kirocrew")
+    agent = body.get("agent")
+    assert isinstance(agent, dict), (
+        f"GET /api/config/kirocrew carried no agent object: {sorted(body)!r}\n"
+        f"{client.diagnostics()}"
+    )
+    assert key in agent, f"GET /api/config/kirocrew carried no agent.{key}: {sorted(agent)!r}"
+    return str(agent[key])
 
 
 def _health(port: int) -> tuple[int, bytes]:
@@ -348,12 +356,10 @@ def test_resolved_provider_is_acp() -> None:
     than a reply that never arrives. That the acp path actually RAN is proved by
     the turn tests below, not by this one.
     """
-    with _booted("minimal") as (handle, _client):
-        provider = str(
-            (_config(handle.home).get("agent") or {}).get("provider", _EXPECTED_PROVIDER)
-        )
+    with _booted("minimal") as (_handle, client):
+        provider = _resolved_agent_setting(client, "provider")
         assert provider == _EXPECTED_PROVIDER, (
-            "the KIROCREW_KIRO_BIN seam needs the acp provider; the seeded home "
+            "the KIROCREW_KIRO_BIN seam needs the acp provider; the gateway "
             f"resolved provider={provider!r}"
         )
 
@@ -416,10 +422,10 @@ def test_seeded_sandbox_mode_boots_and_runs_a_turn(fixture: str) -> None:
     expected_mode = _SEED_SANDBOX_MODES[fixture]
 
     with _booted(fixture) as (handle, client):
-        seeded = _seeded_sandbox_mode(handle.home)
+        seeded = _resolved_agent_setting(client, "sandbox")
         assert seeded == expected_mode, (
             f"fixture {fixture!r} was expected to boot the gateway with "
-            f"agent.sandbox={expected_mode!r} but the seeded home says {seeded!r}; "
+            f"agent.sandbox={expected_mode!r} but the gateway resolved {seeded!r}; "
             "update _SEED_SANDBOX_MODES so this matrix still covers both tiers"
         )
 

@@ -1,10 +1,11 @@
-"""The compaction wait budget is a single shared constant.
+"""The compaction wait budget is one budget, shared by every caller.
 
 Manual (/compact, !compact, channel commands) and automatic
 (context-threshold) compaction perform the identical operation, so they share
-one wait budget: ``kiro_crew.constants.COMPACT_WAIT_TIMEOUT_SECS``. A shorter
-manual budget reports "Compaction timed out." on work that is still running
-and subsequently succeeds — the budget expires, not the work.
+one wait budget: ``kiro_crew.constants.COMPACT_WAIT_TIMEOUT_SECS``, raised for
+all of them by ``session.compact_wait_secs``. A shorter manual budget reports
+"Compaction timed out." on work that is still running and subsequently
+succeeds — the budget expires, not the work.
 
 These tests assert against the shared constant, never a literal value, so
 they keep holding if the budget is later tuned.
@@ -251,9 +252,9 @@ def test_load_clamps_an_out_of_range_budget(tmp_path, monkeypatch):
 def test_no_call_site_pins_a_shorter_wait():
     """Regression guard: no production call site may pass an
     explicit numeric-literal timeout below the shared budget — keyword or
-    positional, int or float. Call sites inherit the
-    shared default instead of restating the budget. Non-literal arguments
-    (e.g. session.py's remaining-budget variable) are intentionally exempt:
+    positional, int or float. Call sites pass the resolved budget instead of
+    restating it. Non-literal arguments (``sessions.compact_wait_budget_secs()``,
+    session.py's remaining-budget variable) are intentionally exempt:
     they are derived from the shared budget and covered by the tests above.
     """
     offenders: list[str] = []
@@ -284,9 +285,153 @@ def test_no_call_site_pins_a_shorter_wait():
                         f" (timeout={value})"
                     )
     assert not offenders, (
-        "Compaction wait shorter than the shared budget reintroduced (delete "
-        f"the timeout argument so the shared default applies): {offenders}"
+        "Compaction wait shorter than the shared budget reintroduced (pass "
+        f"timeout=sessions.compact_wait_budget_secs() instead of a literal): {offenders}"
     )
+
+
+# ── Every call site honours the configured budget ─────────────
+#
+# One resolver: ``SessionManager.compact_wait_budget_secs()``. The automatic
+# coordinator, the task runner's context-overflow compaction, the dashboard
+# /compact and every chat channel's compact command and near-limit compaction
+# all hold the session manager and read the budget there, so no caller can
+# resolve ``session.compact_wait_secs`` differently (a second, live-snapshot
+# resolver fell back to the built-in budget wherever no watcher was armed). A
+# call site that leans on the provider's default instead waits the built-in
+# budget whatever the operator set.
+
+
+def test_there_is_one_budget_resolver():
+    """No module-level resolver sits beside the manager's: a second one is
+    the drift the single method exists to prevent."""
+    import kiro_crew.session as session_mod
+
+    assert not hasattr(session_mod, "compact_wait_budget_secs")
+    assert callable(session_mod.SessionManager.compact_wait_budget_secs)
+
+
+#: Variables a production call may pass that already hold a resolved budget:
+#: the coordinator's remaining slice of its own resolved budget
+#: (``session_compaction.py``).
+_RESOLVED_BUDGET_NAMES = frozenset({"result_wait_used"})
+
+
+def _call_name(func: ast.expr) -> str | None:
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+
+
+def _sanctioned_budget(arg: ast.expr, enclosing: str | None) -> bool:
+    """Whether *arg* is a budget that sees ``session.compact_wait_secs``.
+
+    An allowlist, not a denylist of the built-in constant: a literal, the
+    constant itself (``COMPACT_WAIT_TIMEOUT_SECS``) and any other expression all
+    restate a fixed budget that never sees the key.
+    """
+    if (
+        isinstance(arg, ast.Call)
+        and isinstance(arg.func, ast.Attribute)
+        and arg.func.attr == "compact_wait_budget_secs"
+    ):
+        return True  # the SessionManager method, the one resolver
+    if isinstance(arg, ast.Name):
+        # A delegating implementation forwards its own ``timeout`` parameter.
+        if arg.id == "timeout" and enclosing == "wait_for_compaction":
+            return True
+        return arg.id in _RESOLVED_BUDGET_NAMES
+    return False
+
+
+def test_every_call_site_passes_a_configurable_budget():
+    """Regression guard: every production ``wait_for_compaction`` call passes a
+    budget derived from ``session.compact_wait_secs``. Relying on the provider
+    default, or passing ``COMPACT_WAIT_TIMEOUT_SECS`` or any literal explicitly,
+    waits the built-in budget whatever the operator set. Every caller holds the
+    session manager and passes ``sessions.compact_wait_budget_secs()`` (a bare
+    module-level resolver is refused), and the coordinator passes its own
+    resolved budget."""
+    offenders: list[str] = []
+    root = src_root()
+    for path, _text, tree in parsed_candidates(
+        require_all=("wait_for_compaction",), skip_syntax_errors=False
+    ):
+        enclosing: dict[ast.AST, str] = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(fn):
+                    enclosing[child] = fn.name  # innermost def wins (walked later)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _call_name(node.func) != "wait_for_compaction":
+                continue
+            args = list(node.args[:1]) + [kw.value for kw in node.keywords if kw.arg == "timeout"]
+            where = f"src/kiro_crew/{path.relative_to(root).as_posix()}:{node.lineno}"
+            if not args:
+                offenders.append(f"{where} (no budget)")
+            for arg in args:
+                if not _sanctioned_budget(arg, enclosing.get(node)):
+                    offenders.append(f"{where} (timeout={ast.unparse(arg)})")
+    assert not offenders, (
+        "wait_for_compaction() called with a budget that ignores "
+        "session.compact_wait_secs; pass the session manager's "
+        f"timeout=sessions.compact_wait_budget_secs(): {offenders}"
+    )
+
+
+def test_guard_rejects_the_built_in_constant_and_literals():
+    """The guard above is only as good as what it refuses: the built-in
+    constant and a literal must both fail it, a forwarded ``timeout`` outside an
+    implementation must fail it, and the sanctioned forms must pass."""
+
+    def arg(src: str) -> ast.expr:
+        return ast.parse(src, mode="eval").body
+
+    assert not _sanctioned_budget(arg("COMPACT_WAIT_TIMEOUT_SECS"), "handler")
+    assert not _sanctioned_budget(arg("constants.COMPACT_WAIT_TIMEOUT_SECS"), "handler")
+    assert not _sanctioned_budget(arg("900.0"), "handler")
+    assert not _sanctioned_budget(arg("timeout"), "handler")
+    assert not _sanctioned_budget(arg("compact_wait_budget_secs()"), "handler")
+    assert _sanctioned_budget(arg("timeout"), "wait_for_compaction")
+    assert _sanctioned_budget(arg("self.sessions.compact_wait_budget_secs()"), "handler")
+    assert _sanctioned_budget(arg("sessions.compact_wait_budget_secs()"), "handler")
+
+
+def test_manager_budget_follows_its_config():
+    """``SessionManager.compact_wait_budget_secs()`` resolves the manager's own
+    config, and the automatic coordinator reads the same method, so the two
+    cannot drift apart."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.session import SessionManager
+
+    cfg = KiroCrewConfig()
+    mgr = SessionManager(cfg)
+    assert mgr.compact_wait_budget_secs() == COMPACT_WAIT_TIMEOUT_SECS
+
+    cfg.session.compact_wait_secs = 900.0
+    assert mgr.compact_wait_budget_secs() == 900.0
+    assert mgr._compaction._deps.compact_wait_timeout_secs() == 900.0
+
+
+def test_task_runner_overflow_compaction_uses_the_manager_budget():
+    """The task runner's context-overflow compaction waits the session
+    manager's budget, which holds in a standalone ``kirocrew run`` too: that
+    process arms no live-config watcher, so a snapshot-based budget would wait
+    the
+    built-in budget there whatever the config file says."""
+    import kiro_crew.task_executor as task_executor_mod
+
+    tree = ast.parse(inspect.getsource(task_executor_mod))
+    budgets = [
+        kw.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _call_name(node.func) == "wait_for_compaction"
+        for kw in node.keywords
+        if kw.arg == "timeout"
+    ]
+    assert len(budgets) == 1
+    (budget,) = budgets
+    assert isinstance(budget, ast.Call) and isinstance(budget.func, ast.Attribute)
+    assert budget.func.attr == "compact_wait_budget_secs"
+    assert isinstance(budget.func.value, ast.Name) and budget.func.value.id == "sessions"
 
 
 # ── Post-failure turn budget ──────────────────────────────────

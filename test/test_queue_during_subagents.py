@@ -16,6 +16,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.dashboard.chat_runner import subagents_hold_user_messages
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -91,57 +92,11 @@ class TestDequeueNextSystemMessage:
         assert [q["content"] for q in slot._queue] == ["user follow-up"]
 
 
-class TestDequeueExcludeCron:
-    """`exclude_cron=True` holds cron notifications while a multi-stage plan runs.
+class TestDequeueCron:
+    """A cron notification is a system injection, so it drains past held users."""
 
-    Each stage is its own ``_run_chat`` whose tail-drain fires while
-    ``_in_stage_execution`` is still set (chat_runner ``_start_next_queued_turn``
-    passes ``exclude_cron=in_stage``). A cron queued mid-plan must NOT be pulled
-    between stages; sub-agent completions and recovery still flow.
-    """
-
-    def test_holds_cron_when_only_cron_queued(self):
-        """A lone cron notification is held (drains nothing) under exclude_cron."""
-        cron = f"{CRON_NOTIFY_PREFIX}daily]: run report"
-        slot = _ChatSlot("s1")
-        slot._queue = [{"id": "a", "content": cron, "kind": CRON_NOTIFICATION_KIND}]
-
-        next_msg, consumed = _dequeue_next_system_message(slot, exclude_cron=True)
-
-        assert next_msg is None
-        assert consumed == []
-        # Cron stays queued for the end-of-plan drain.
-        assert [q["content"] for q in slot._queue] == [cron]
-
-    def test_still_drains_subagent_completion(self):
-        """A sub-agent completion still flows even with exclude_cron=True."""
-        sa = f"{SUBAGENT_COMPLETION_PREFIX}\nAgent `a1` completed ✅\nResult"
-        slot = _ChatSlot("s1")
-        slot._queue = [{"id": "a", "content": sa, "kind": SUBAGENT_COMPLETION_KIND}]
-
-        next_msg, consumed = _dequeue_next_system_message(slot, exclude_cron=True)
-
-        assert next_msg == sa
-        assert slot._queue == []
-
-    def test_skips_cron_drains_later_subagent(self):
-        """Cron ahead of a sub-agent completion is skipped; the completion drains."""
-        cron = f"{CRON_NOTIFY_PREFIX}daily]: run report"
-        sa = f"{SUBAGENT_COMPLETION_PREFIX}\nAgent `a1` completed ✅\nResult"
-        slot = _ChatSlot("s1")
-        slot._queue = [
-            {"id": "a", "content": cron, "kind": CRON_NOTIFICATION_KIND},
-            {"id": "b", "content": sa, "kind": SUBAGENT_COMPLETION_KIND},
-        ]
-
-        next_msg, consumed = _dequeue_next_system_message(slot, exclude_cron=True)
-
-        assert next_msg == sa
-        # The cron is left queued; only the completion was consumed.
-        assert [q["content"] for q in slot._queue] == [cron]
-
-    def test_default_still_drains_cron(self):
-        """Default (exclude_cron=False) keeps the pre-fix behavior: cron drains."""
+    def test_cron_drains(self):
+        """A lone cron notification drains."""
         cron = f"{CRON_NOTIFY_PREFIX}daily]: run report"
         slot = _ChatSlot("s1")
         slot._queue = [{"id": "a", "content": cron, "kind": CRON_NOTIFICATION_KIND}]
@@ -205,6 +160,109 @@ class TestApiChatSubagentQueueGate:
 
         assert data.get("queued") is not True  # not held → normal dispatch
         assert slot.queue_depth == 0
+
+    async def test_stalled_child_does_not_hold_the_message(self, tmp_path, monkeypatch):
+        """A child the reaper flagged stalled must not park the user's send."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        ran = {"called": False}
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            ran["called"] = True
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "hello?", "slot": "s1"})
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data.get("queued") is not True
+        assert slot.queue_depth == 0
+
+    async def test_send_behind_parked_message_keeps_order(self, tmp_path, monkeypatch):
+        """A message parked while the child was live is answered before a later send."""
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        direct = []
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            direct.append(msg)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        drained = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(chat_runner, "_run_chat", drained)
+        monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: None)
+        load = MagicMock()
+        load.return_value.dashboard.merge_queued_messages = False
+        monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", load)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+        slot.queue_append("first, parked while the child was live")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "second", "slot": "s1"})
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data.get("queued") is True
+        assert direct == []  # did not jump the parked message
+        assert drained.call_args.args[2] == "first, parked while the child was live"
+        assert [item["content"] for item in slot._queue] == ["second"]
+
+
+class TestSubagentsHoldUserMessages:
+    """Only a child that is not flagged stalled holds user messages."""
+
+    def _state(self, agents):
+        state = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=agents)
+        return state
+
+    def test_fresh_child_holds(self):
+        state = self._state([{"id": "a1", "stalled": False}])
+        assert subagents_hold_user_messages(state, "dashboard:s1") is True
+        state.subagents.running_agents_for.assert_called_once_with("dashboard:s1")
+
+    def test_stalled_child_does_not_hold(self):
+        state = self._state([{"id": "a1", "stalled": True}])
+        assert subagents_hold_user_messages(state, "dashboard:s1") is False
+
+    def test_one_fresh_sibling_still_holds(self):
+        state = self._state([{"id": "a1", "stalled": True}, {"id": "a2", "stalled": False}])
+        assert subagents_hold_user_messages(state, "dashboard:s1") is True
+
+    def test_no_children_or_no_registry(self):
+        assert subagents_hold_user_messages(self._state([]), "k") is False
+        state = MagicMock()
+        state.subagents = None
+        assert subagents_hold_user_messages(state, "k") is False
+
+
+@pytest.mark.asyncio
+async def test_drain_releases_user_message_when_only_child_is_stalled(tmp_path, monkeypatch):
+    """The drain-side hold uses the same rule: a stalled child lets users drain."""
+    from kiro_crew.dashboard import chat_runner
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    subs = MagicMock()
+    subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
+    state = _make_state(tmp_path, subagents=subs)
+    slot = state.get_or_create_slot("s1")
+    slot.queue_append("waiting user message")
+    spawned = []
+    monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: spawned.append(a))
+    monkeypatch.setattr(chat_runner, "_run_chat", MagicMock(return_value=MagicMock()))
+
+    assert await chat_runner._start_next_queued_turn(state, slot) is True
+    assert len(spawned) == 1
+    assert slot.queue_depth == 0
 
 
 # ── API test: api_chat busy-slot queue branch (receipt honesty) ──

@@ -1275,7 +1275,11 @@ def test_every_route_is_registered_lazily_on_the_app():
 
     from kiro_crew.dashboard import server
 
-    src = inspect.getsource(server)
+    # server.py and the server_runtime owners it composes; the MCP route table
+    # lives in one of them.
+    owners = sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    assert owners, "expected the server_runtime owners beside server.py"
+    src = inspect.getsource(server) + "".join(p.read_text(encoding="utf-8") for p in owners)
     for method, path, handler in (
         ("add_get", "/api/work-ledger", "api_work_ledger_get"),
         ("add_post", "/api/work-ledger/record", "api_work_ledger_record"),

@@ -34,7 +34,12 @@ import pytest
 from kiro_crew import session_directive
 from kiro_crew import subagent as _sa
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
-from kiro_crew.autonudge import MANUAL_STOP_REASON, AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import (
+    MANUAL_STOP_REASON,
+    MONITOR_TERMINAL_REASON,
+    AutoNudgeService,
+    NudgeLoop,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -46,6 +51,36 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.session import SessionBusyError, SessionClosingError
 from kiro_crew.slack import gateway as gw
+
+#: Lost-run ceiling for a wait the test itself must end (a turn it parks, a
+#: replay it releases). A nudge turn's pre-turn chain makes real executor hops
+#: (governance, store, embed pool). Timed wait by wait: at most 0.03 s at ``-n 4``
+#: on a loaded 32-CPU host, and at most 4.8 s with every executor hop delayed by
+#: 1.2 s (a starved-runner model). 60 s is over ten times that and half the
+#: module's ``--timeout=120``, so only a run that never gets there reaches it.
+_LOST_RUN_SECS = 60.0
+
+
+async def _within_lost_run(awaitable, what: str):
+    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+
+    A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
+    finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
+    raises on its own, before the ceiling, propagates unchanged.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
+        if elapsed < _LOST_RUN_SECS - 1.0:
+            raise
+        pytest.fail(
+            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"({elapsed:.1f}s elapsed)"
+        )
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -648,7 +683,10 @@ class TestFireSlackNudgeGuards:
         monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
         monkeypatch.setattr(gw, "_persist_turn_row", persist)
 
-        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+        # Bounded: only the patched 0.01 s turn bound ends the stalled authorization.
+        result = await _within_lost_run(
+            orch._fire_slack_nudge(loop, "[Monitor wake]"), "the nudge with a stalled authorization"
+        )
 
         assert result is monitor_models.MonitorDispatchResult.BUSY
         service.monitor_dispatch_is_authorized.assert_awaited_once_with(loop.id, "failure-a")
@@ -840,8 +878,9 @@ class TestFireSlackNudgeGuards:
         if times_out:
             monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
 
+        # Bounded: with times_out only the patched 0.01 s turn bound ends the stream.
         with pytest.raises(asyncio.CancelledError):
-            await orch._fire_slack_nudge(loop)
+            await _within_lost_run(orch._fire_slack_nudge(loop), "the nudge turn")
 
         assert order == ["completion", "persist"]
 
@@ -881,11 +920,13 @@ class TestFireSlackNudgeGuards:
             return_value=(_CompletedThenBlockedProvider(), False, False)
         )
         task = asyncio.create_task(orch._fire_slack_nudge(loop, "[Monitor wake]"))
-        await asyncio.wait_for(completed.wait(), timeout=1)
-
-        task.cancel()
+        try:
+            # The pre-turn chain makes real executor hops before the stream starts.
+            await _within_lost_run(completed.wait(), "the nudge turn's completion")
+        finally:
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await _within_lost_run(task, "the cancelled nudge")
 
         service.record_monitor_turn_completion.assert_awaited_once()
         completion = _awaited(service.record_monitor_turn_completion).args[0]
@@ -1174,6 +1215,8 @@ class TestAutonudgeRouterAndObserver:
         _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
         assert payload["loop"]["stopped_reason"] == ""
         assert payload["loop"]["next_due_ts"] == 1_800_000_300.0
+        assert payload["loop"]["monitor_outcome"] == ""
+        assert payload["loop"]["monitor_kind"] == ""
 
         paused = _loop("chat-1-1721", active=False, stopped_reason=MANUAL_STOP_REASON)
         observer("updated", paused)
@@ -1182,6 +1225,91 @@ class TestAutonudgeRouterAndObserver:
         assert payload["loop"]["stopped_reason"] == MANUAL_STOP_REASON
         assert payload["loop"]["next_due_ts"] == 0.0
         assert "monitor" not in payload["loop"]
+
+        # A GATED prompt loop whose watch finished: the popover words Done by the
+        # settled outcome, so that one scalar rides the frame while the monitor
+        # record -- which names the subject -- stays withheld from this ungated
+        # broadcast.
+        finished = _loop(
+            "chat-1-1721", active=False, stopped_reason=MONITOR_TERMINAL_REASON, gate=True
+        )
+        finished.monitor = MonitorState(
+            kind="gh-pr",
+            target="acme/widgets#7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.BLOCKED,
+        )
+        observer("expired", finished)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_reason"] == MONITOR_TERMINAL_REASON
+        assert payload["loop"]["monitor_outcome"] == "blocked"
+        assert payload["loop"]["monitor_kind"] == "gh-pr"
+        assert "monitor" not in payload["loop"]
+
+    @pytest.mark.asyncio
+    async def test_observer_frame_redacts_the_watch_kind_it_broadcasts(self, monkeypatch):
+        """The kind is a stored string a hand-edited state file reads back as
+        written, and this frame reaches every dashboard socket, so the scalar
+        goes through the redaction the structured record goes through."""
+        from kiro_crew.slack import gateway as gateway_module
+
+        seen: list[object] = []
+
+        def _redactor(value):
+            seen.append(value)
+            return "[redacted]" if value == "ghp_not-a-registry-kind" else value
+
+        monkeypatch.setattr(gateway_module, "_redact_monitor_value", _redactor)
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        finished = _loop(
+            "chat-1-1721", active=False, stopped_reason=MONITOR_TERMINAL_REASON, gate=True
+        )
+        finished.monitor = MonitorState(
+            kind="ghp_not-a-registry-kind",
+            target="acme/widgets#7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.SUCCESS,
+        )
+        observer("expired", finished)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert "ghp_not-a-registry-kind" in seen
+        assert payload["loop"]["monitor_kind"] == "[redacted]"
+        assert payload["loop"]["monitor_outcome"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_observer_logs_a_member_patrol_finished_by_its_stop_file_as_stopped(self):
+        """A finish by the stop file arrives as an ``updated`` frame on a kept,
+        inactive row, and the member event log has to record it as a patrol stop
+        -- a plain pause is not one -- or the drawer reads ``armed`` for good,
+        since the boot closer closes only a log whose row is gone."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        appended: list[tuple[str, str, dict]] = []
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(
+                eventlog_hooks,
+                "emit",
+                lambda slug, _actor, etype, data: (appended.append((slug, etype, data)), True)[1],
+            ),
+        ):
+            paused = _loop("member-crew-x", active=False, stopped_reason=MANUAL_STOP_REASON)
+            observer("updated", paused)
+            assert appended == [], "a pause is not a patrol stop"
+            finished = _loop("member-crew-x", active=False, stopped_reason="stop_sentinel")
+            observer("updated", finished)
+        assert appended == [
+            ("crew-x", PATROL_STOPPED, {"slot_key": "member-crew-x", "reason": "stop_sentinel"})
+        ]
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):
@@ -1335,12 +1463,18 @@ class TestAutonudgeRouterAndObserver:
         )
 
         startup = asyncio.create_task(self._wire(orch, existing_loops=[loop]))
-        await notification_started.wait()
+        try:
+            await _within_lost_run(
+                notification_started.wait(), "startup's replay of the terminal notice"
+            )
+        finally:
+            if not notification_started.is_set():
+                startup.cancel()
         await asyncio.sleep(0)
         startup_blocked = not startup.done()
 
         persisted.set_result(True)
-        _on_fire, observer, inst = await startup
+        _on_fire, observer, inst = await _within_lost_run(startup, "startup after the persist")
         await asyncio.sleep(0)
 
         observer("updated", loop)
@@ -2137,9 +2271,6 @@ class TestFireDashboardNudgeDispatch:
         ds = _mock_dashboard_state()
         slot = MagicMock()
         slot.running = False
-        # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy
-        # Mock and would make the nudge defer on the busy guard.
-        slot._in_stage_execution = False
         slot.key = "chat-1"
         ds.get_slot.return_value = slot
         orch.dashboard_state = ds
@@ -2168,7 +2299,7 @@ class TestFireDashboardNudgeDispatch:
     async def test_structured_delivery_distinguishes_busy_and_unavailable(self, monkeypatch):
         busy = _make_orchestrator()
         busy_state = _mock_dashboard_state()
-        busy_slot = MagicMock(running=True, _in_stage_execution=False)
+        busy_slot = MagicMock(running=True)
         busy_state.get_slot.return_value = busy_slot
         busy.dashboard_state = busy_state
         unavailable = _make_orchestrator()
@@ -2197,7 +2328,6 @@ class TestFireDashboardNudgeDispatch:
 
         restored = MagicMock()
         restored.running = False
-        restored._in_stage_execution = False
         restored.key = "chat-9"
 
         async def _rehydrate(_state, _key, *, adopt_closed=False):

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state, move_transcript_past
@@ -22,7 +22,9 @@ from kiro_crew.dashboard import chat_summary
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
-from kiro_crew.mcp_dashboard import _call_tool_inner, _render_session_summary
+from kiro_crew.mcp_dashboard import TABLE, _render_session_summary
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 
 _VERIFIED = "dashboard:chat-verified"
 
@@ -262,35 +264,32 @@ def test_the_tool_sends_the_verified_key_to_the_summary_route():
             }
         ],
     }
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_VERIFIED),
-        patch("kiro_crew.mcp_dashboard._get", return_value=body) as get,
-    ):
-        out = _call_tool_inner("session_summary", {"target": "chat-2"})
-    path, key = get.call_args.args
-    assert path == "/api/session-control/summary?target=chat-2"
-    assert key == _VERIFIED
+    dash = InMemoryDashboardClient({"GET /api/session-control/summary": body})
+    out = TABLE.call(
+        "session_summary", {"target": "chat-2"}, ToolContext(dash, Caller.strict(_VERIFIED))
+    )
+    (get,) = dash.requests
+    assert get.path == "/api/session-control/summary?target=chat-2"
+    assert get.session_key == _VERIFIED
     assert "still working" in out
     assert "[in-progress] get the build green" in out
     assert "next: fix the snapshot tests" in out
 
 
 def test_the_tool_refuses_an_unverifiable_caller():
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
-        patch("kiro_crew.mcp_dashboard._get") as get,
-    ):
-        out = _call_tool_inner("session_summary", {"target": "chat-2"})
+    dash = InMemoryDashboardClient({"GET /api/session-control/summary": {}})
+    out = TABLE.call(
+        "session_summary", {"target": "chat-2"}, ToolContext(dash, Caller.unverified(_VERIFIED))
+    )
     assert out.startswith("Error")
-    get.assert_not_called()
+    assert dash.requests == []
 
 
 def test_the_tool_reports_a_refusal_as_an_error():
-    with (
-        patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_VERIFIED),
-        patch("kiro_crew.mcp_dashboard._get", return_value={"error": "not yours"}),
-    ):
-        out = _call_tool_inner("session_summary", {"target": "chat-2"})
+    dash = InMemoryDashboardClient({"GET /api/session-control/summary": {"error": "not yours"}})
+    out = TABLE.call(
+        "session_summary", {"target": "chat-2"}, ToolContext(dash, Caller.strict(_VERIFIED))
+    )
     assert out == "Error: could not read that session's summary: not yours"
 
 

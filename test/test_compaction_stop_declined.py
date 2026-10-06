@@ -1066,7 +1066,9 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
         assert key not in sl._parked_queue
     finally:
         mgr.release(key)
-    # And a fresh registration adopts too: no session under the key at all.
+    # And a fresh registration adopts too: no session under the key at all. The
+    # adopted entry is dropped first, or the reset would park it and respawn.
+    mgr._sessions[key].queue.clear()
     await mgr.reset(KEY)
     await _settle()
     assert key not in mgr._sessions
@@ -1076,6 +1078,100 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
         assert [e[0] for e in mgr._sessions[key].queue] == ["ts-b"]
     finally:
         mgr.release(key)
+    await mgr.close_all()
+
+
+async def _until_registered(mgr, key, old) -> object:
+    for _ in range(200):
+        current = mgr._sessions.get(key)
+        if current is not None and current is not old:
+            return current
+        await asyncio.sleep(0.01)
+    raise AssertionError("no successor registered under the key")
+
+
+@pytest.mark.asyncio
+async def test_a_failure_path_reset_carries_queued_follow_ups_to_a_successor(tmp_path):
+    """A turn fails (``AcpPromptBusy``) while follow-ups wait on its queue; the
+    handler's plain ``reset`` pops the session. The follow-ups and their staged
+    files must reach a successor started for them, ahead of nothing, in order;
+    an entry a mid-turn cancel marked is still dropped and its file unlinked."""
+    from kiro_crew import session_lifecycle as sl
+
+    mgr, key, compact, order, notices = await _setup()
+    files = {name: tmp_path / f"{name}.png" for name in ("m2", "gone", "m3")}
+    for path in files.values():
+        path.write_bytes(b"x")
+    for ts, name in (("ts-2", "m2"), ("ts-gone", "gone"), ("ts-3", "m3")):
+        assert mgr.enqueue(key, ts, name, force=True, image_temp_paths=[str(files[name])])
+    old = mgr._sessions[key]
+    old.cancelled.add("ts-gone")
+
+    assert await mgr.reset(KEY) is True
+
+    new = await _until_registered(mgr, key, old)
+    assert [e[0] for e in new.queue] == ["ts-2", "ts-3"], "the follow-ups reached the successor"
+    assert files["m2"].exists() and files["m3"].exists(), "their staged files were kept"
+    assert not files["gone"].exists(), "the cancelled entry's file was unlinked"
+    assert key not in sl._parked_queue
+    await _settle()
+    assert not new.semaphore.locked(), "the respawn released its lease for the drain"
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_the_reset_successor_keeps_the_popped_sessions_identity():
+    """A later claim takes a live session as-is, so a successor the reset started
+    under default arguments would answer the follow-ups -- and every message after
+    them -- as the default agent. It must start as the session it replaces."""
+    order: list[str] = []
+    calls: list[dict] = []
+    inner = _factory(_Compact(), order)
+
+    def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        calls.append({"agent": agent, "channel_id": channel_id, **kwargs})
+        return inner(session_key=session_key, agent=agent, channel_id=channel_id, **kwargs)
+
+    mgr = SessionManager(KiroCrewConfig(), provider_factory=factory)
+    await mgr.get_or_create(KEY, agent="research-agent", approval_policy="auto")
+    key = mgr._fold_key(KEY)
+    mgr.release(key)
+    await mgr.set_channel(key, "C-team")
+    assert mgr.enqueue(key, "ts-2", "m2", force=True)
+    old = mgr._sessions[key]
+
+    assert await mgr.reset(KEY) is True
+
+    new = await _until_registered(mgr, key, old)
+    assert new.agent == "research-agent"
+    assert new.approval_policy == "auto"
+    assert calls[-1]["agent"] == "research-agent"
+    assert calls[-1]["channel_id"] == "C-team"
+    assert [e[0] for e in new.queue] == ["ts-2"]
+    await _settle()
+    # The first queued turn, not the respawn, owns the first-turn observation:
+    # without it a failed native resume would answer the follow-up with no history.
+    _provider, is_new, resumed = await mgr.get_or_create(KEY)
+    mgr.release(key)
+    assert (is_new, resumed) == (True, False), "the queued turn sees a fresh start"
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_ending_reset_still_drops_the_queue(tmp_path):
+    from kiro_crew import session_lifecycle as sl
+
+    mgr, key, compact, order, notices = await _setup()
+    staged = tmp_path / "m2.png"
+    staged.write_bytes(b"x")
+    assert mgr.enqueue(key, "ts-2", "m2", force=True, image_temp_paths=[str(staged)])
+
+    assert await mgr.reset(KEY, ends_conversation=True) is True
+    await _settle()
+
+    assert key not in mgr._sessions, "an ending reset starts no successor"
+    assert key not in sl._parked_queue
+    assert not staged.exists()
     await mgr.close_all()
 
 
@@ -1456,6 +1552,13 @@ def _slack_orch():
     return orch, task
 
 
+def _callers(ts):
+    """A queue entry the presser of ``_run_slack_stop`` queued, tagged as Slack tags it."""
+    from kiro_crew.slack import events as ev
+
+    return (ts, "text", {"paths": [], **ev._queue_tags("U_OWNER", "D1")})
+
+
 def _run_slack_stop(orch):
     from unittest.mock import patch
 
@@ -1528,12 +1631,13 @@ def test_slack_stop_detaches_at_the_press_and_drops_only_that():
     """What was queued at the press is taken out of the live queue BEFORE the first
     await (so the cancelled turn's drain cannot start it), then dropped once the
     stop went through. A message admitted mid-stop is newer intent and stays."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     orch, task = _slack_orch()
     orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = ("q-at-press",)
+    at_press = (_callers("q-at-press"),)
     orch.sessions.detach_queue = MagicMock(return_value=at_press)
+    orch._pending_queue = {"100.0": [_callers("ts")]}
     late = ("ts-late", "sent during the stop", {"paths": []})
 
     async def _stop(*_a, **_k):
@@ -1543,11 +1647,14 @@ def test_slack_stop_detaches_at_the_press_and_drops_only_that():
         return "soft"
 
     orch.sessions.stop_turn = AsyncMock(side_effect=_stop)
-    unlink = _run_slack_stop(orch)
+    dispatched = AsyncMock()
+    with patch("kiro_crew.slack.events._dispatch_queued", new=dispatched):
+        unlink = _run_slack_stop(orch)
     orch.sessions.detach_queue.assert_called_once_with("100.0")
     orch.sessions.clear_queue.assert_called_once_with("100.0", only=at_press)
     orch.sessions.restore_queue.assert_not_called()
-    assert orch._pending_queue["100.0"] == [late]
+    # Kept, and the next thing dispatched once the stop is done.
+    assert [call.args[2] for call in dispatched.await_args_list] == ["ts-late"]
     assert unlink.call_count == 1  # the press-time pending entry's files
 
 
@@ -1559,7 +1666,7 @@ def test_slack_stop_tells_stop_turn_to_keep_the_queue_it_did_not_detach():
 
     orch, task = _slack_orch()
     orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = ("q-at-press",)
+    at_press = (_callers("q-at-press"),)
     orch.sessions.detach_queue = MagicMock(return_value=at_press)
     orch.sessions.stop_turn = AsyncMock(return_value="soft")
     _run_slack_stop(orch)
@@ -1897,9 +2004,10 @@ def test_slack_stop_hands_the_detached_queue_on_when_the_raising_stop_already_po
 
 
 def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor():
-    """A Slack entry does not say who sent it, so on the forced repeat (hard reset)
-    everything detached at the press goes to the successor instead of being
-    dropped: the Stop was aimed at the compaction, not at the shared queue."""
+    """On the forced repeat (hard reset) everything detached at the press goes to
+    the successor instead of being dropped, the presser's own included: the Stop
+    was aimed at the compaction, not at the shared queue. The pending stash goes
+    back too, and is the next thing the stop's drain dispatches."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from kiro_crew.session_lifecycle import note_stop_declined
@@ -1911,13 +2019,15 @@ def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor():
     pending_at_press = list(orch._pending_queue["100.0"])
     orch.sessions.stop_turn = AsyncMock(return_value="hard")
     note_stop_declined("100.0", "U_OWNER")  # the first press was declined
+    dispatched = AsyncMock()
     with patch("kiro_crew.slack.events.hand_queue_to_successor", new=AsyncMock()) as hand:
-        unlink = _run_slack_stop(orch)
+        with patch("kiro_crew.slack.events._dispatch_queued", new=dispatched):
+            unlink = _run_slack_stop(orch)
     assert orch.sessions.stop_turn.await_args.kwargs["force"] is True
     hand.assert_awaited_once_with(orch.sessions, "100.0", at_press)
     orch.sessions.clear_queue.assert_not_called()
     unlink.assert_not_called()
-    assert orch._pending_queue["100.0"] == pending_at_press
+    assert [call.args[2:] for call in dispatched.await_args_list] == [tuple(pending_at_press[0])]
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,8 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
 import { consumeSideChatSeed, readSideChatDraft, restoreSideChatDraft, writeSideChatDraft, writeSideChatPastes, useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
-import { type PasteBlock, expandAll as expandPasteTokens, pruneBlocks } from '../../utils/pasteTokens'
+import type { PasteBlock } from '../../utils/pasteTokens'
+import { buildOutgoingTurn, isEmptyTurn } from '../../chat-core/composer/outgoingTurn'
 import { mergeIntoDraft as appendToDraft } from '../../utils/chatDrafts'
 import type { SideMessage, SideQueueEntry } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
@@ -585,14 +586,14 @@ export default function SideChat({ slot }: { slot: string }) {
    *  arrive here as the override. */
   const send = useCallback((override?: string, steerRequested = false) => {
     const typed = (override ?? draft).trim()
-    if (!typed || sendMutation.isPending || !slot) return
+    if (isEmptyTurn({ text: typed }) || sendMutation.isPending || !slot) return
     // Collapsed pastes expand for the model here, on both the send and the
-    // steer branch (one path). The side transcript carries no per-message
-    // meta, so the bubble shows the expanded text as well — what the server
-    // stores and re-serves. Only a composer submit owns the composer's blocks:
-    // an override (a follow-up chip) supplies its own text and has none.
-    const blocks = override != null ? [] : pruneBlocks(typed, pasteBlocks)
-    const q = blocks.length ? expandPasteTokens(typed, blocks) : typed
+    // steer branch (one path): the side chat is the text-only channel of
+    // `buildOutgoingTurn`. The side transcript carries no per-message meta, so
+    // the bubble shows the expanded text as well — what the server stores and
+    // re-serves. Only a composer submit owns the composer's blocks: an
+    // override (a follow-up chip) supplies its own text and has none.
+    const { wire: q, pastes: blocks } = buildOutgoingTurn({ text: typed, pastes: override != null ? [] : pasteBlocks }, 'steer')
     if (exceedsByteLimit(q)) {
       // The limit is enforced in UTF-8 bytes (server contract), but a byte count is
       // not actionable to the user — report a character target instead, derived

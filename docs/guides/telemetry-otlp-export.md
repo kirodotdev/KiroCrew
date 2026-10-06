@@ -121,11 +121,13 @@ setting is in full control:
 # Cumulative — the OpenTelemetry default. CloudWatch, Prometheus-style backends.
 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=CUMULATIVE
 
-# Delta — what Datadog and most product-analytics ingests expect. Also the
-# default when the variable is unset, so setting it changes nothing.
+# Delta — what Datadog and most product-analytics ingests expect. Equivalent
+# to the unset default for every instrument Kiro Crew currently emits (the
+# unset default also maps up-down counters to delta; this value keeps them
+# cumulative, and Kiro Crew emits none).
 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=DELTA
 
-# Delta for counters, cumulative for up-down counters.
+# Delta for counters and histograms, cumulative for up-down counters.
 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=LOWMEMORY
 ```
 
@@ -146,8 +148,8 @@ Two things are unaffected by this setting, and knowing that saves debugging time
 
 ### If you already export these metrics
 
-Five instruments used to be exported as monotonic cumulative sums and are now
-gauges, under unchanged names:
+These five instruments are gauges that hold lifetime totals, under these
+names:
 
 - `kirocrew.process.cpu.seconds`
 - `kirocrew.process.gc.collections`
@@ -155,13 +157,10 @@ gauges, under unchanged names:
 - `kirocrew.process.gc.uncollectable`
 - `kirocrew.inventory.probe.failures`
 
-The reading did not change — each is still the total since the exporting process
-started — but the wire type did, so a backend that was applying a counter
-function (`rate()`, `increase()`, delta-from-cumulative) to them will need
-re-pointing: take the difference between consecutive samples instead. A backend
-that rejects a type change on an existing series may also need the old series
-dropped before the new shape lands, and during a staged rollout one backend can
-receive both shapes from different hosts.
+Each reading is the total since the exporting process started, carried as a
+gauge rather than a monotonic sum. Do not apply a counter function (`rate()`,
+`increase()`, delta-from-cumulative) to them: take the difference between
+consecutive samples instead.
 
 Handle a restart the way you would for any gauge you difference: **clamp negative
 increments to zero**. `service.instance.id` identifies the INSTALL, not the
@@ -290,11 +289,16 @@ collector at all rather than pointing the gateway straight at a vendor.
 
 ## What gets exported
 
-Two families of instruments, all under the `kirocrew.` namespace:
+The OTLP reader shares one meter provider with the local JSONL sink, so every
+`kirocrew.*` instrument the process records is exported — counters, histograms
+and gauges alike. The full roster lives under "Instrumented signals" in
+[`../system-specs/modules/metrics.md`](../system-specs/modules/metrics.md). The
+gauge families are these two:
 
 - **`kirocrew.process.*`** — this process's own resource behavior: Python and OS
   thread counts, open file descriptors, current and peak RSS, cumulative CPU
-  seconds, and per-generation GC counters.
+  seconds, and per-generation GC counters. This family also carries histograms
+  (sampled RSS and CPU utilization).
 - **`kirocrew.inventory.*`** — what this install has configured: active cron jobs,
   armed monitor loops, installed skills, whether memory has been migrated,
   knowledge-source and lesson counts, MCP server counts by class, and a
@@ -405,7 +409,8 @@ service:
 
 Then start the gateway with `otlp_endpoint` set to that collector, wait one export
 interval, and read what arrived. Expect the `kirocrew.process.*` and
-`kirocrew.inventory.*` families and the resource attributes described above.
+`kirocrew.inventory.*` gauges, any other `kirocrew.*` instruments the process has
+recorded since start, and the resource attributes described above.
 
 Some instruments are legitimately absent and their silence is not a failure: the
 Linux-only thread and file-descriptor gauges on macOS, and the knowledge, MCP, and

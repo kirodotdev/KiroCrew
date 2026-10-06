@@ -41,7 +41,7 @@ A goal loop is the one feature a person leaves running unattended. Its controls 
 
 ## Non-goals
 
-- A "Done" state for a loop whose stop file was created or whose watched pull request merged. Follow-up.
+- Restarting a finished goal from Done, and what the agent's own `autonudge_stop` call does to a loop. The Done state itself is in scope (see *Done*), added by the follow-up PR.
 - A separate save-without-firing control: the fire control applies pending edits.
 - Any change to how the stop file, the cycle cap or the runtime budget END a running loop. Only resume changes.
 - Any change to the structured-monitor view of the same popover.
@@ -55,7 +55,7 @@ A goal loop is the one feature a person leaves running unattended. Its controls 
 | No goal | `Set a goal` | none | Play alone: creates and starts the loop from the form, no fire |
 | Running | `Goal active (cycle N/M)` | the countdown (`Next cycle in …` / `Next cycle due, fires after the current turn` / `Next cycle not yet scheduled`), boxed in the ok tone | Pause · Lightning (`Nudge now`, or `Save edits and nudge now` when the form is dirty) |
 | Paused | `Paused` | `Paused · <why>`, boxed in the warn tone | Pause (disabled) · Play (`Resume loop and nudge now`, or `Save edits, resume loop and nudge now`), and `Clear stopped goal` as a text link at the left of the same row |
-| Done | — | — | follow-up (see Non-goals) |
+| Done | `Done` | `Done · <how it finished>`, boxed in the info tone, with a check-mark glyph before the text when the goal was reached or the pull request merged | Pause and Play, both disabled, with the Paused-state glyphs; `Clear finished goal` as a text link at the left of the same row |
 
 The paused reason comes from the persisted `stopped_reason`: `manual` → you paused it; `autonudge_stop` → the agent stopped it; `cycle_cap` → cycle limit reached (N of M), Play resumes it with a fresh budget; `runtime_budget` → time limit reached, same clause; `approval_stalled` → waiting for your approval; `structural_terminal` and `session_start_failures` → the last cycle could not run; anything else → bare `Paused`. A limit stop therefore reads `Paused`, never `Stopped`: it is resumable in place, and the word `Stopped` leaves the surface.
 
@@ -68,6 +68,10 @@ The capability note of a crew or member session (writes unavailable) and the Cle
 - Play while paused resumes and fires, saving pending edits first — one request path (`PATCH {…edited fields, active: true}` then `POST …/fire`). The user never has to raise `Max cycles` first.
 - `Clear stopped goal` is the only delete. It is a text link, not a button, at the left of the same row (the two-buttons-per-row rule counts the two icons; this placement is the product owner's call). Its confirm replaces the row with an accented box: the question in the primary text colour, a filled danger `Clear`, a plain `Cancel`; the status line stays above it so the confirm never reads as the loop's state.
 - A running loop cannot be deleted directly: pause first, then clear.
+
+### Done
+
+A loop whose goal is reached is finished, not paused, and the surface says so. Two stops are finishes: the agent created the loop's stop file (`stopped_reason: stop_sentinel`, which now keeps the record instead of removing it — a removed row left the popover on its empty form with nothing saying the goal was met), and the watched pull request merged or closed (`monitor_terminal`). The title reads `Done`; the status line is boxed in the info tone and reads, by case, `Done · the agent created the stop file`, `Done · the watched pull request merged` or `Done · the watched pull request was closed without merging`, with a check-mark glyph before the first two and none before the third, which ended on a question rather than a success. Merged versus closed is read off the settled watch outcome the `autonudge_state` frame carries (`monitor_outcome`) — and, on a cold read after a reload, off the nested monitor record the REST row of a gated loop ships, which the dashboard now reads as the goal loop it is rather than as a bounded monitor — never off prose, and the pull-request wording applies only to a pull or merge request (`monitor_kind`): a finished watch of any other kind — a conductor's work ledger, which reaches the same reason when its board closes — reads `Done · the watched subject finished` with the glyph when it finished well, and `Done · the watched subject ended without finishing` without it otherwise: two sentences, not one sentence and a glyph, because a screen reader hears the sentence. The goal text and the two number fields stay visible, read-only and dimmed. The row keeps its shape — Pause and Play at the right, both disabled, with the Paused-state glyphs — and `Clear finished goal` replaces `Clear stopped goal` at the left, behind the same confirm. Done is a dead end: no Play, no edits; the service refuses to revive a finished loop whoever asks (the popover's Play, `monitor_update`, an app reconciler). To run again the person clears the goal and sets a new one. One exception lives below the popover: Issue Radar and Research Lab arm the same stop file as an operator's kill switch on a crew or campaign, so a loop its stop file finished may be re-armed by its reconciler once the file is gone — deleting the file is the operator saying run again. The popover never deletes the file, so a goal's Done keeps its shape and its Play stays disabled.
 
 ### Resume resets only the counter behind a spent bound
 
@@ -107,5 +111,5 @@ None new. The popover's writes go through the existing authorized `PATCH` / `POS
 
 ## Open questions
 
-- A "Done" state for a loop whose stop file was created or whose watched pull request merged: a follow-up decision, not this one.
+- Whether a finished goal should be restartable from Done (today: clear it and set a new goal), and whether the stop file should be removed once the finish is recorded (today it is left where the agent wrote it and unlinked before the next arm).
 - Whether the Clear link's placement in the icon row stands against the `max-two-buttons-per-row` lane reading is the product owner's override to record on the PR, not a change to this document.

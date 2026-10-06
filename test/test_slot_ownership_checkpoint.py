@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app, _make_state
+from chat_test_helpers import _make_app, _make_state, close_before_resume
 
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.slot_ownership import (
@@ -182,9 +182,15 @@ class TestEveryPerSlotRouteIsDecided:
         """A chain without it would serve every per-slot route undecided."""
         import kiro_crew.dashboard.server as server_mod
 
-        tree = ast.parse(Path(server_mod.__file__).read_text(encoding="utf-8"))
+        # Both chains are installed by a server_runtime owner server.py composes.
+        owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
+        assert owners, "expected the server_runtime owners beside server.py"
+        trees = [
+            ast.parse(path.read_text(encoding="utf-8"))
+            for path in (Path(server_mod.__file__), *owners)
+        ]
         chains = []
-        for node in ast.walk(tree):
+        for node in (node for tree in trees for node in ast.walk(tree)):
             if (
                 isinstance(node, ast.Assign)
                 and isinstance(node.targets[0], ast.Subscript)
@@ -788,6 +794,8 @@ async def _persist_and_close(state, slot: _ChatSlot) -> None:
     await _persist(state, slot)
     await close_slot(state, slot, slot.key)
     assert slot.key not in state._slots
+    # Closed BEFORE any resume the test then runs, whatever the clock's resolution.
+    close_before_resume(state.conversation_log, f"dashboard:{slot.key}")
 
 
 @pytest.fixture
@@ -851,7 +859,8 @@ class TestTranscriptOwnershipWithoutALiveSlot:
 
         async def create_and_close_destination():
             assert "b1" not in state._slots_under_construction
-            assert not (await asyncio.to_thread(log.get_metadata, source_key)).get("closed")
+            # The reopen write runs after construction, so the source is still closed.
+            assert (await asyncio.to_thread(log.get_metadata, source_key)).get("closed")
             await _persist_and_close(state, state.get_or_create_slot("b1", origin=SlotOrigin.USER))
             before["meta"] = await asyncio.to_thread(log.get_metadata, destination_key)
             before["rows"] = await asyncio.to_thread(log.read_messages, destination_key)
@@ -943,6 +952,55 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert "b1" not in state._slots_under_construction
 
     @pytest.mark.asyncio
+    async def test_resume_rechecks_app_ownership_after_the_reopen_write(
+        self, state, monkeypatch
+    ) -> None:
+        """A transcript replaced under another app inside the reopen window never publishes.
+
+        A closed session's resume clears ``closed`` after construction, in an
+        awaited worker call. The fixture's line carries no ``created_at`` (the
+        legacy shape), so the identity arm cannot see a delete and same-key
+        recreate there; ownership is what tells the two transcripts apart. The
+        clear is parked, the session is deleted and recreated as another app's,
+        and the resume must refuse with the app's uniform 404, publish nothing,
+        and leave the other app's transcript as that app wrote it.
+        """
+        log = state.conversation_log
+        key = "dashboard:a1"
+
+        def write_legacy_line(fields: dict) -> None:
+            # Written by hand: every store writer stamps ``created_at``.
+            path = log._path(key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"_type": "metadata", **fields}) + "\n", encoding="utf-8")
+
+        await asyncio.to_thread(write_legacy_line, {"app": APP, "closed": True, "closed_at": 1.0})
+        assert "created_at" not in await asyncio.to_thread(log.get_metadata, key)
+        original_clear = log.clear_closed
+        replaced = []
+
+        def replace_then_clear(*args, **kwargs):
+            assert log.delete_session(key), "the fixture did not delete the source"
+            write_legacy_line({"app": "other-app"})
+            replaced.append(True)
+            return original_clear(*args, **kwargs)
+
+        monkeypatch.setattr(log, "clear_closed", replace_then_clear)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={"key": key})
+            body = await resp.json()
+        assert replaced, "the resume never reached its reopen write"
+        assert (resp.status, body) == (404, _NOT_FOUND), (
+            f"an app resume published a transcript another app recreated during the "
+            f"reopen write (status {resp.status})"
+        )
+        assert "a1" not in state._slots
+        assert "a1" not in state._slots_under_construction
+        meta = await asyncio.to_thread(log.get_metadata, key)
+        assert meta.get("app") == "other-app"
+        assert "closed" not in meta, "the rollback closed another app's transcript"
+
+    @pytest.mark.asyncio
     async def test_resume_dedups_a_session_published_during_the_destination_read(
         self, state, monkeypatch
     ) -> None:
@@ -995,11 +1053,132 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert state._slots["a1"]._app == APP
 
     @pytest.mark.asyncio
-    async def test_a_late_refusal_puts_the_closed_marker_back(self, state, monkeypatch) -> None:
-        """Refused after the eager clear, the transcript must not be left reopened."""
+    @pytest.mark.parametrize("clears", [True, False], ids=["transient-clears", "persistent-locks"])
+    async def test_a_sharing_violation_on_the_final_reread_retries_then_decides(
+        self, state, monkeypatch, clears
+    ) -> None:
+        """The identity re-reads survive a transient file lock on the resume's own line.
+
+        A just-rewritten session file is briefly unopenable while an indexer or AV
+        scanner holds it on Windows (ERROR_SHARING_VIOLATION). The off-loop read's
+        bounded retries ride over a lock that clears within the budget, so the
+        resume publishes; a lock that outlasts every attempt refuses and publishes
+        nothing. Count-based rather than clock-based so it is deterministic on a
+        loaded runner.
+        """
+        import builtins
+        import threading
+
+        from kiro_crew.history import _METADATA_READ_ATTEMPTS
+
+        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
+        log = state.conversation_log
+        target = str(log._path("dashboard:a1"))
+        loop_thread = threading.get_ident()
+        real_open = builtins.open
+        real_clear = log.clear_closed
+        real_status = log.get_metadata_status
+        armed = {"on": False}
+        reread_threads: list[int] = []
+        # A clearing lock faults every attempt but the last within one read's
+        # budget; a persistent lock faults every attempt of every read.
+        fail_budget = {"n": (_METADATA_READ_ATTEMPTS - 1) if clears else 10_000_000}
+
+        def clear_closed(key, **kw):
+            out = real_clear(key, **kw)
+            # Model the just-rewritten file being briefly unopenable: arm only
+            # for the re-reads after the reopen write.
+            armed["on"] = True
+            return out
+
+        def status(key):
+            if armed["on"]:
+                reread_threads.append(threading.get_ident())
+            return real_status(key)
+
+        def flaky_open(file, *args, **kwargs):
+            if armed["on"] and str(file) == target and fail_budget["n"] > 0:
+                fail_budget["n"] -= 1
+                raise PermissionError("ERROR_SHARING_VIOLATION (simulated)")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(log, "clear_closed", clear_closed)
+        monkeypatch.setattr(log, "get_metadata_status", status)
+        monkeypatch.setattr(builtins, "open", flaky_open)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
+            body = await resp.text()
+        if clears:
+            assert resp.status == 200, body
+            assert state._slots["a1"]._app == APP
+            # An identity re-read runs off the loop, so its paused retries outlast
+            # the hold the on-loop reads cannot.
+            assert any(t != loop_thread for t in reread_threads)
+        else:
+            assert resp.status != 200, body
+            assert "a1" not in state._slots
+            assert "a1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
+    async def test_a_delete_finishing_inside_the_final_offloop_read_refuses(
+        self, state, monkeypatch
+    ) -> None:
+        """A delete that begins and ends during the off-loop final read is caught.
+
+        The final identity re-read is off the loop, so a whole process-local
+        delete can run and release inside it: its in-flight marker clears before
+        ``_identity_refusal`` reads it. The invalidation generation outlives the
+        marker — every delete bumps it — so the synchronous generation re-check
+        before the publish refuses, and no slot is published over the deleted
+        session.
+        """
+        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
+        log = state.conversation_log
+        real_status = log.get_metadata_status
+        real_clear = log.clear_closed
+        fired = {"on": False}
+        state_box = {"after_reopen": False, "rereads": 0}
+
+        def arm(key, **kw):
+            state_box["after_reopen"] = True
+            return real_clear(key, **kw)
+
+        def status(key):
+            # The final re-read is the second re-read after the reopen write
+            # (the clear's own verification read is the first). The generation is
+            # snapshotted just before that final read, so model the delete
+            # landing THERE: it bumps the generation and clears its in-flight
+            # marker inside the off-loop window.
+            if state_box["after_reopen"]:
+                state_box["rereads"] += 1
+                if state_box["rereads"] == 2 and not fired["on"]:
+                    fired["on"] = True
+                    log._invalidate_cache("dashboard:a1")
+            return real_status(key)
+
+        monkeypatch.setattr(log, "clear_closed", arm)
+        monkeypatch.setattr(log, "get_metadata_status", status)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
+            payload = await resp.json()
+        assert fired["on"], "the modelled delete did not land in the read window"
+        assert (resp.status, payload["code"]) == (409, "resume_conflict")
+        assert "a1" not in state._slots
+        assert "a1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
+    async def test_a_late_refusal_leaves_the_closed_marker_untouched(
+        self, state, monkeypatch
+    ) -> None:
+        """Refused at the late ownership barrier, the transcript is left closed.
+
+        The reopen write runs only after construction, so the late barrier refuses
+        before any durable write: the clear is never attempted.
+        """
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         log = state.conversation_log
         cleared: list[str] = []
+        reads: list[str] = []
         real_clear, real_get = log.clear_closed, log.get_metadata
 
         def clear_closed(key, **kw):
@@ -1007,17 +1186,21 @@ class TestTranscriptOwnershipWithoutALiveSlot:
             return real_clear(key, **kw)
 
         def get_metadata(key):
+            reads.append(key)
             meta = real_get(key)
-            # After the clear, the post-read snapshot records no app.
-            return {k: v for k, v in meta.items() if k != "app"} if cleared else meta
+            # Every snapshot after the first records no app: the post-read
+            # snapshot is not the app's.
+            return {k: v for k, v in meta.items() if k != "app"} if len(reads) > 1 else meta
 
         monkeypatch.setattr(log, "clear_closed", clear_closed)
         monkeypatch.setattr(log, "get_metadata", get_metadata)
         async with _client(state, APP) as client:
             resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
             assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        assert cleared == ["dashboard:a1"]
+        assert len(reads) > 1, "the late barrier's re-read did not happen"
+        assert cleared == []
         assert "a1" not in state._slots
+        assert "a1" not in state._slots_under_construction
         meta, readable = log.get_metadata_status("dashboard:a1")
         assert readable and meta.get("closed")
 
@@ -1536,22 +1719,33 @@ class TestResumeAnswersAnAppLikeEveryOtherRoute:
             assert (await resp.json())["code"] == "resume_in_progress"
 
     @pytest.mark.asyncio
-    async def test_construction_starting_after_the_clear_restores_the_marker(
+    async def test_construction_starting_during_the_reads_leaves_the_marker(
         self, state, sel_spy, monkeypatch
     ) -> None:
+        """Another build of the key starting inside the reads refuses with no write."""
+        from kiro_crew.dashboard import chat_handlers
+
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         log = state.conversation_log
+        cleared: list[str] = []
         real_clear = log.clear_closed
+        load_cfg = chat_handlers._load_restore_cfg
 
-        def clear_then_construct(key, **kw):
-            result = real_clear(key, **kw)
+        def clear_closed(key, **kw):
+            cleared.append(key)
+            return real_clear(key, **kw)
+
+        def construct_then_load():
             state._slots_under_construction.add("a1")
-            return result
+            return load_cfg()
 
-        monkeypatch.setattr(log, "clear_closed", clear_then_construct)
+        monkeypatch.setattr(log, "clear_closed", clear_closed)
+        monkeypatch.setattr(chat_handlers, "_load_restore_cfg", construct_then_load)
         async with _client(state, APP) as client:
             resp = await client.post("/api/chat/slots/a1/resume", json={})
             assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
+        state._slots_under_construction.discard("a1")
+        assert cleared == []
         meta, readable = log.get_metadata_status("dashboard:a1")
         assert readable and meta.get("closed")
         assert "a1" not in state._slots

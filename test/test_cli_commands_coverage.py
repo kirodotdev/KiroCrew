@@ -2650,6 +2650,27 @@ class TestMemoryCli:
         assert "Semantic: 3 active, 1 deleted" in out
         assert "Embedded: 7/7" in out
         assert "FAISS accelerator: 10 vectors indexed" in out
+        assert "re-embed sweep" not in out
+
+    def test_stats_names_what_fills_unembedded_rows(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A bare 0/185 after an import must not read as a broken store."""
+        with _MemHarness() as h:
+            h.store.memory_stats.return_value = {
+                "semantic_active": 384,
+                "semantic_deleted": 0,
+                "episodic_active": 185,
+                "episodic_deleted": 0,
+                "faiss_index_size": 0,
+                "events_count": 0,
+                "embedded_count": 0,
+                "faiss_available": True,
+            }
+            cc._memory_cmd(_ns(mem_action="stats"))
+        out = capsys.readouterr().out
+        assert "Embedded: 0/185" in out
+        assert "185 row(s) wait for the gateway's background re-embed sweep" in out
 
     def test_stats_reports_read_volume_labelled_as_this_process(
         self, capsys: pytest.CaptureFixture[str]
@@ -2759,6 +2780,31 @@ class TestMemoryCli:
             cc._memory_cmd(_ns(mem_action="import", file=str(src)))
         h.store.import_memory.assert_called_once_with({"semantic": []})
         assert "Import complete" in capsys.readouterr().out
+
+    def test_import_names_pending_embeddings(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Imported episodes land without vectors; the summary must say so."""
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"episodic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {"semantic": 0, "episodic": 185, "skipped": 0}
+            h.store.has_pending_embeddings.return_value = True
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "embedding vectors are not built by this command" in out
+        assert "keyword-searchable only" in out
+
+    def test_import_omits_embedding_note_when_nothing_pending(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"episodic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {"semantic": 0, "episodic": 3, "skipped": 0}
+            h.store.has_pending_embeddings.return_value = False
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        assert "embedding vectors are not built" not in capsys.readouterr().out
 
     def test_unknown_action_prints_usage_and_closes(
         self, capsys: pytest.CaptureFixture[str]

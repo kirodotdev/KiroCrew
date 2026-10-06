@@ -1,7 +1,7 @@
 /**
- * Quote a whole reply: the row seat Quote takes (and what moves into More to
- * pay for it), the crewmate-chat case beside Reply, and the bubble's
- * right-click / long-press menu.
+ * Quote a whole reply: the row reads seat + Copy + More on every reply shape
+ * (the seat is Quote, or Regenerate / Fork / Reply in thread when one holds
+ * it), and the bubble's right-click / long-press menu.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
@@ -23,48 +23,60 @@ const LONG = 'A completed reply that is comfortably longer than twenty character
 const openMore = () => fireEvent.pointerDown(screen.getByTestId('assistant-more-actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
 
 describe('AssistantMessage row with Quote offered', () => {
-  it('seats Quote in the row and moves Copy + the raw toggle into More, so the row does not grow', () => {
+  const rowLabels = () => Array.from(screen.getByTestId('assistant-more-actions').parentElement!.querySelectorAll(':scope > button')).map(b => b.getAttribute('aria-label'))
+
+  it('seats Quote, keeps Copy right after it, and folds Link, Pin and Raw into More', () => {
     const onQuote = vi.fn()
     const { rerender } = render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} />)
     const before = screen.getAllByRole('button').length
     rerender(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={onQuote} />)
-    // Quote in, Copy + raw toggle out, More in: one fewer peer control than before.
     expect(screen.getAllByRole('button').length).toBeLessThanOrEqual(before)
-    expect(screen.getByTestId('quote-message')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Copy')).not.toBeInTheDocument()
+    // The everyday row is exactly Quote + Copy + More.
+    expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     expect(screen.queryByTestId('toggle-raw-view')).not.toBeInTheDocument()
-    // The everyday row is exactly Quote + More.
-    const row = screen.getByTestId('quote-message').parentElement!
-    expect(Array.from(row.querySelectorAll(':scope > button')).map(b => b.getAttribute('aria-label'))).toEqual(['Quote message', 'More actions'])
-    fireEvent.click(screen.getByTestId('quote-message'))
-    expect(onQuote).toHaveBeenCalledTimes(1)
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    expect(onQuote).toHaveBeenCalledTimes(1)
   })
 
-  it('on the main chat with Fork wired (the old menu context) Copy still folds into More beside Quote', () => {
+  it('on the main chat with Fork wired (the old menu context) Copy stays in the row after the Quote seat', () => {
     render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" onQuoteMessage={() => {}} />)
-    expect(screen.getByTestId('quote-message')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Copy')).not.toBeInTheDocument()
-    fireEvent.pointerDown(screen.getByTestId('assistant-more-actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toContain('Copy text')
+    expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
+    openMore()
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).not.toContain('Copy text')
   })
 
-  it('beside Regenerate (the newest reply) Quote joins More, so the row keeps two controls', () => {
+  it('on the newest reply Regenerate takes the seat and Copy is still a visible row button right after it', () => {
     const onQuote = vi.fn()
-    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onRegenerate={() => {}} onQuoteMessage={onQuote} />)
+    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onSpeak={() => {}} onRegenerate={() => {}} onQuoteMessage={onQuote} />)
+    expect(rowLabels()).toEqual(['Regenerate response', 'Copy', 'More actions'])
     expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Regenerate response')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Copy link to message')).not.toBeInTheDocument()
-    fireEvent.pointerDown(screen.getByTestId('assistant-more-actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    fireEvent.click(screen.getByLabelText('Copy'))
+    expect(copyToClipboard).toHaveBeenCalledWith('Reply text long enough for the raw toggle.')
+    openMore()
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown', 'Read aloud'])
   })
 
-  it('beside Reply in thread (a crewmate chat) Quote joins More instead of taking a third seat', () => {
+  it('in a loaded window Fork takes the seat and Copy follows it', () => {
+    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} onSpeak={() => {}} onFork={() => {}} forkIndex={1} onQuoteMessage={() => {}} />)
+    const row = Array.from(screen.getByTestId('assistant-more-actions').parentElement!.querySelectorAll(':scope > button'))
+    expect(row[0]).toBe(screen.getByTestId('fork-from-here'))
+    expect(rowLabels().slice(1)).toEqual(['Copy', 'More actions'])
+  })
+
+  it('on the newest reply of a loaded window Regenerate holds the seat, Copy is second, Fork follows', () => {
+    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} onRegenerate={() => {}} onFork={() => {}} forkIndex={1} onQuoteMessage={() => {}} />)
+    const row = Array.from(screen.getByTestId('assistant-more-actions').parentElement!.querySelectorAll(':scope > button'))
+    expect(rowLabels().slice(0, 2)).toEqual(['Regenerate response', 'Copy'])
+    expect(row[2]).toBe(screen.getByTestId('fork-from-here'))
+    expect(rowLabels()[3]).toBe('More actions')
+  })
+
+  it('beside Reply in thread (a crewmate chat) the row is Reply, Copy, More and Quote is in More', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} onReplyInThread={() => {}} onQuoteMessage={onQuote} />)
-    expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()
-    expect(screen.getByTestId('reply-in-thread')).toBeInTheDocument()
+    expect(rowLabels()).toEqual(['Reply in thread', 'Copy', 'More actions'])
     openMore()
     expect(screen.getAllByRole('menuitem')[0]).toHaveTextContent('Quote message')
     fireEvent.click(screen.getByTestId('quote-message-menu-item'))
@@ -100,7 +112,8 @@ describe('AssistantMessage quotes what the reader sees', () => {
     render(<AssistantMessage content="second answer, also long enough" isStreaming={false} slotRunning={false} variants={variants} variantIdx={1} onQuoteMessage={onQuote} />)
     // Browse locally (no onSwitchVariant) back to the first variant.
     fireEvent.click(screen.getByLabelText('Previous version'))
-    fireEvent.click(screen.getByTestId('quote-message'))
+    openMore()
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
     expect(onQuote).toHaveBeenCalledWith('first answer, long enough to keep')
   })
 
@@ -115,14 +128,16 @@ describe('AssistantMessage quotes what the reader sees', () => {
   it('strips the keep-visible marker from the quoted text, as Copy does', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={'Shown reply.\n\n<!-- keep-visible -->'} isStreaming={false} onQuoteMessage={onQuote} />)
-    fireEvent.click(screen.getByTestId('quote-message'))
+    openMore()
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
     expect(onQuote).toHaveBeenCalledWith('Shown reply.')
   })
 
   it('strips the steer ack marker from the quoted text', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={'[STEERING steer-1: noted]\nThe real answer that is long enough.'} isStreaming={false} slotRunning={false} onQuoteMessage={onQuote} />)
-    fireEvent.click(screen.getByTestId('quote-message'))
+    openMore()
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
     expect(onQuote.mock.calls[0][0]).not.toContain('STEERING')
     expect(onQuote.mock.calls[0][0]).toContain('The real answer')
   })

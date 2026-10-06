@@ -2158,9 +2158,10 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # ``_load_existing_config`` path takes entries from an on-disk spec that
     # never comes through here; for that caller this filter is idempotent (the
     # predicate is pure, so filtering twice equals filtering once). A caller
-    # that replaces ``allowedTools`` wholesale (``_install_conductor_agent``)
-    # is unaffected. The SEL audit inside is best-effort and never raises, so
-    # the purity note above still holds for config/managed-state.
+    # that builds its own ``allowedTools`` from a grant tuple plus the entries on
+    # its installed spec (``conductor_agents._governed_grants``) is unaffected:
+    # it filters that list itself. The SEL audit inside is best-effort and never
+    # raises, so the purity note above still holds for config/managed-state.
     auto_approve._apply_allowed_tools_ceiling(config, source="build_agent_config")
     return config
 
@@ -2618,18 +2619,40 @@ def _spec_path_is_safe(path: Path, agents_dir: Path) -> bool:
     Also refuses a resolved path that leaves the agents directory, and any
     sensitive path, which is the same fence this module already applies before
     touching a resolved path elsewhere.
+
+    A metadata probe that itself fails (``OSError``) is refused too: for a
+    caller about to rewrite in place, not knowing the shape is the same as a
+    bad one. A caller that must tell the two apart -- the conductor installer,
+    which leaves a spec alone rather than lose its entries over a probe that may
+    succeed next time -- asks :func:`_spec_path_shape_refusal` directly.
     """
     try:
-        if path.is_symlink():
-            return False
-        resolved = path.resolve()
-        if resolved.parent != agents_dir.resolve():
-            return False
-        if is_sensitive_path(str(resolved)):
-            return False
+        return _spec_path_shape_refusal(path, agents_dir) is None
     except OSError:
         return False
-    return True
+
+
+def _spec_path_shape_refusal(path: Path, agents_dir: Path) -> str | None:
+    """Why *path* is not a plain spec file inside *agents_dir*, or ``None`` when it is.
+
+    The one implementation of :func:`_spec_path_is_safe`'s fence, kept apart so
+    its two outcomes stay distinct: a SHAPE that is refused for good (a link at
+    the spec's name, a path that resolves outside the agents directory or onto a
+    sensitive target) comes back as the reason, while a probe that failed to read
+    the metadata at all -- a stale NFS handle, an I/O error on the directory --
+    raises the ``OSError`` for the caller to classify. Collapsing both to "unsafe"
+    is right for a caller that only needs permission to rewrite; it is wrong for
+    one that would REPLACE the file on that answer, because then a transient error
+    on the probe would destroy a spec that was intact.
+    """
+    if path.is_symlink():
+        return "a link stands at the spec's name"
+    resolved = path.resolve()
+    if resolved.parent != agents_dir.resolve():
+        return "the path resolves outside the agents directory"
+    if is_sensitive_path(str(resolved)):
+        return "the path resolves to a sensitive target"
+    return None
 
 
 def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None:
@@ -3107,7 +3130,7 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
                 "Refusing to rewrite the shared agent home %s from a non-default "
                 "data home (KIROCREW_HOME=%s%s): the specs would pin this "
                 "instance's home into every managed MCP server entry and break "
-                "strict session identity for the default-home gateway (#9690). "
+                "strict session identity for the default-home gateway. "
                 "This instance will use the existing specs instead. If no "
                 "default-home install exists anymore (the data home was "
                 "permanently relocated), the existing specs are stale leftovers: "
@@ -3134,9 +3157,9 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # Ephemerality must be POSITIVE evidence that this instance is throwaway.
     # "Has an isolated KIROCREW_HOME" is NOT that: a CI test gateway and a user
     # who permanently relocated their data home both look identical under that
-    # rule, and neither should be stopped from writing its own specs (an earlier
-    # revision used it and broke the offline E2E gateway, which boots on a tmp data
-    # home and then found no agents). A pod needs no arm here: ``build_pod_env``
+    # rule, and neither should be stopped from writing its own specs: the offline
+    # E2E gateway boots on a tmp data home and must still write its agent specs,
+    # or it finds no agents. A pod needs no arm here: ``build_pod_env``
     # gives it its own ``KIRO_HOME``, so its target is its own dedicated directory
     # and the private-target exemption above already lets it through.
     #
@@ -3247,6 +3270,20 @@ _projected_ceiling_generation: int | None = None
 #: on every confirming poll.
 _pending_projection_warned_generation: int | None = None
 
+#: Whether the LAST ``rebuild_agent_config`` left a conductor spec on disk unwritten
+#: (the verdict its ``_held_out`` out-parameter hands the caller that ran it). Kept
+#: here for the two readers that did not run the rebuild they have to know about:
+#: :func:`prime_ceiling_projection` seeds the ceiling baseline AFTER the boot rebuild,
+#: and a baseline seeded over a held spec would mark the current generation
+#: projected onto an ``allowedTools`` list that was never re-derived -- with no poll
+#: ever retrying it, because the hook skips an unchanged generation; and
+#: :func:`retry_held_conductor_specs`, the gateway's hourly maintenance wake, which
+#: is the only retry a host WITHOUT central distribution has -- there the hook has no
+#: poll to run on at all. Written by every rebuild where its installers' verdicts are
+#: settled, so a hold raised by any rebuild that ran before the baseline is seeded
+#: reaches it, not only the first, and a retry that rewrites every spec clears it.
+_conductor_spec_held: bool = False
+
 
 def prime_ceiling_projection() -> None:
     """Record the ceiling generation boot projected the agent config under.
@@ -3256,11 +3293,78 @@ def prime_ceiling_projection() -> None:
     changed since boot" and "nothing has changed since the first poll" — and the first poll
     can install a new ceiling, so the latter would record that generation and skip the very
     rebuild it needed.
+
+    Seeds nothing while the last rebuild left a conductor spec unwritten
+    (``_conductor_spec_held``): that spec's ``allowedTools`` still reflect whatever ceiling
+    wrote them, so the current generation is NOT projected, and a seeded baseline would
+    have the hook skip every poll until the ceiling moved again -- the one retry lost for
+    the process lifetime. An unseeded baseline is the documented safe direction: the first
+    poll rebuilds, that rebuild reports its own hold through ``_held_out``, and the memo
+    advances only once every spec is rewritten. A host without central distribution has
+    no poll; there :func:`retry_held_conductor_specs` is the retry.
     """
     global _projected_ceiling_generation
     from kiro_crew.platform.context import governance_generation
 
+    if _conductor_spec_held:
+        _projected_ceiling_generation = None
+        logger.warning(
+            "a conductor spec was left unwritten by the boot rebuild (it could not be "
+            "read or written), so the ceiling baseline stays unseeded: the first "
+            "distribution poll, or the hourly maintenance wake where no distribution "
+            "is configured, retries the rebuild, and on-disk auto-approvals reflect "
+            "the previous ceiling until it lands"
+        )
+        return
     _projected_ceiling_generation = governance_generation()
+
+
+def retry_held_conductor_specs() -> bool:
+    """Rewrite the conductor specs the last rebuild left unwritten, if there are any.
+
+    The gateway's hourly maintenance wake calls this (``_run_agent_scratch_sweep``),
+    and it is the retry a host WITHOUT central distribution otherwise has none of:
+    :func:`reproject_for_ceiling_change` runs only as a post-install hook of the
+    distribution poller, and ``policy_distribution.start_refresher`` starts no poller
+    unless the active policy names a source and a refresh interval. The ceiling itself
+    changes on such a host at boot alone (``set_context`` is called by the platform
+    bootstrap and by ``apply_ceiling``, nothing watches the policy file), so a
+    tightening takes effect at the next boot -- and if THAT boot's rebuild held a
+    conductor spec (its read failed past the bounded retry, or its write raised), the
+    spec kept the ``allowedTools`` the previous boot's ceiling wrote, kiro-cli kept
+    loading them, and nothing in the process was ever going to re-derive them. The
+    boot warning and the installer's own name the hold; this closes it.
+
+    The hold is the rebuild's own verdict (``_conductor_spec_held``), so this is a
+    no-op on every wake of a healthy host. When a spec IS held, one reporting rebuild
+    runs: the memo is rewritten where the four conductor installers' verdicts settle,
+    so it clears exactly when every spec was written and stays while any one is not,
+    and the next wake retries again. The ceiling baseline is left as it stands: a
+    standalone host never reads it, and on a distributed one an unseeded baseline has
+    the next confirming poll rebuild once more -- the documented safe direction --
+    rather than this path seeding a generation whose ceiling may have moved since the
+    rebuild it ran.
+
+    Returns whether every conductor spec is written now.
+    """
+    if not _conductor_spec_held:
+        return True
+    logger.info("retrying the conductor specs the last agent-config rebuild left unwritten")
+    held_out: list[bool] = []
+    _path, wrote = rebuild_agent_config_reporting(_held_out=held_out)
+    if wrote and not (held_out and held_out[0]):
+        logger.info(
+            "the conductor specs an earlier rebuild left unwritten are rewritten under "
+            "the current governance ceiling"
+        )
+        return True
+    logger.warning(
+        "a conductor spec is still unwritten after the retry (it could not be read or "
+        "written); its on-disk auto-approvals reflect the previous ceiling until the next "
+        "maintenance wake rewrites it -- repair it, or run "
+        "`kirocrew setup --agent-only --clean` to rebuild it"
+    )
+    return False
 
 
 def reproject_for_ceiling_change() -> None:
@@ -3302,37 +3406,43 @@ def reproject_for_ceiling_change() -> None:
     generation = governance_generation()
     if _projected_ceiling_generation == generation:
         return
-    _path, wrote = rebuild_agent_config_reporting()
-    if not wrote:
-        # The shared specs are not this instance's to rewrite, so the moved
-        # ceiling CANNOT be projected from here — and the memo must say so.
-        # The refusal verdict comes from the SAME evaluation that gated the
-        # write, inside the rebuild itself: probing the guard first and then
-        # rebuilding leaves a window where a concurrent default-home boot
-        # rewrites the specs between the two reads, the rebuild refuses, and
-        # a memo advanced on the stale probe marks the generation
-        # synchronised while the on-disk ``allowedTools`` were never narrowed
-        # — silently auto-approving tools the ceiling now forbids (the
-        # harness short-circuits them before PreToolUse). Leaving the memo
-        # behind keeps the advance-only-after-success rule literal for
-        # refusals: every later poll retries, and the pending generation is
-        # projected the moment the refusal clears instead of being lost for
-        # the process lifetime.
+    held_out: list[bool] = []
+    _path, wrote = rebuild_agent_config_reporting(_held_out=held_out)
+    if not wrote or bool(held_out and held_out[0]):
+        # Either the shared specs are not this instance's to rewrite, or a
+        # conductor spec on disk was left unwritten -- it could not be read, or
+        # its installer raised on the write (``conductor_agents._governed_grants``,
+        # ``rebuild_agent_config``) -- in both cases the moved
+        # ceiling was NOT projected onto every ``allowedTools`` list on disk,
+        # and the memo must say so. The refusal verdict comes from the SAME
+        # evaluation that gated the write, inside the rebuild itself: probing
+        # the guard first and then rebuilding leaves a window where a
+        # concurrent default-home boot rewrites the specs between the two
+        # reads, the rebuild refuses, and a memo advanced on the stale probe
+        # marks the generation synchronised while the on-disk ``allowedTools``
+        # were never narrowed -- silently auto-approving tools the ceiling now
+        # forbids (the harness short-circuits them before PreToolUse). Leaving
+        # the memo behind keeps the advance-only-after-success rule literal
+        # for refusals: every later poll retries, and the pending generation
+        # is projected the moment the refusal clears instead of being lost
+        # for the process lifetime.
         #
         # The pending state is the security-relevant half of the refusal, so
-        # it logs at WARNING — the same tier as the decline itself — but once
+        # it logs at WARNING -- the same tier as the decline itself -- but once
         # per generation rather than per confirming poll, which fires every
         # refresh interval. The decline arm's own refusal warning and SEL
-        # event fire per attempt, which is the audit posture every other
-        # caller of the rebuild already has.
+        # event, and the installer's warning naming the spec it left alone,
+        # fire per attempt, which is the audit posture every other caller of
+        # the rebuild already has.
         global _pending_projection_warned_generation
         if _pending_projection_warned_generation != generation:
             _pending_projection_warned_generation = generation
             logger.warning(
                 "ceiling generation %s is pending: this instance may not rewrite "
-                "the shared agent home, so its on-disk auto-approvals still "
-                "reflect the previous ceiling until the owning instance projects "
-                "the new one (or this instance's refusal clears)",
+                "the shared agent home, or a conductor spec on disk could not be "
+                "read or written and was left unchanged, so on-disk auto-approvals "
+                "still reflect the previous ceiling until the owning instance "
+                "projects the new one (or this instance's refusal clears)",
                 generation,
             )
         return
@@ -3345,6 +3455,7 @@ def rebuild_agent_config(
     clean: bool = False,
     refresh_forks: bool | Literal["defer"] = True,
     _wrote_out: list[bool] | None = None,
+    _held_out: list[bool] | None = None,
 ) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
@@ -3373,7 +3484,12 @@ def rebuild_agent_config(
     the private *_wrote_out* out-parameter — the verdict comes from the SAME
     single evaluation of :func:`_decline_shared_agent_home` that gates the
     write below, never from a separate probe a concurrent default-home boot
-    could race.
+    could race. The conductor installers' own reports of whether they wrote
+    travel separately, through *_held_out*, because the two verdicts have
+    different readers: a refusal means ``kirocrew.json`` was NOT rewritten
+    (the dashboard's default-model applier reads that as "the change did not
+    land"), while a conductor spec held on disk leaves ``kirocrew.json``
+    written and only the ceiling memo with something left to do.
 
     Args:
         clean: If True, ignore existing config and regenerate from defaults.
@@ -3381,11 +3497,22 @@ def rebuild_agent_config(
             the write landed and the whole function returned, ``False`` when
             the shared-home guard refused. Pass a FRESH empty list: the
             reader consumes the first element, so a reused list misreports.
+        _held_out: private — when given, receives one bool: ``True`` when a
+            conductor installer left its spec on disk unwritten — because the
+            file could not be read for a reason that may clear on retry
+            (``conductor_agents._governed_grants``), or because the installer
+            raised and the failure was logged rather than propagated — so an
+            ``allowedTools`` list on disk was NOT re-derived and a moved
+            ceiling must stay pending rather than be marked projected.
+            ``False`` otherwise, including when the guard refused (nothing
+            ran). Same fresh-list rule as *_wrote_out*.
     """
     declined = _decline_shared_agent_home()
     if declined is not None:
         if _wrote_out is not None:
             _wrote_out.append(False)
+        if _held_out is not None:
+            _held_out.append(False)
         return declined
 
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
@@ -3558,16 +3685,28 @@ def rebuild_agent_config(
     except Exception:
         logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
 
-    # Install kirocrew-conductor agent (goal decomposition + session-control dispatch)
+    # Install kirocrew-conductor agent (goal decomposition + session-control dispatch).
+    # ``clean`` is passed through: the conductor installers carry the user's own
+    # ``allowedTools`` entries forward across a rebuild, and a clean rebuild is the
+    # explicit reset that drops them, as it drops every customization above. Each
+    # reports whether it wrote: a spec left on disk because it could not be read
+    # is a list this rebuild did NOT re-derive, and so is one whose installer
+    # raised -- a failed write (a read-only file, a refused ``os.replace``) leaves
+    # the previous list on disk exactly as a refused read does -- and ``_held_out``
+    # must say so in both cases, or a moved ceiling is marked projected onto a
+    # list that still carries the old grants.
+    conductor_held = False
     try:
-        conductor_agents._install_conductor_agent()
+        conductor_held |= not conductor_agents._install_conductor_agent(clean=clean)
     except Exception:
+        conductor_held = True
         logger.debug("kirocrew-conductor agent install failed", exc_info=True)
 
     # Install kirocrew-pipeline-conductor agent (repository pipeline fleet supervision)
     try:
-        conductor_agents._install_pipeline_conductor_agent()
+        conductor_held |= not conductor_agents._install_pipeline_conductor_agent(clean=clean)
     except Exception:
+        conductor_held = True
         logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
 
     # Install the deprecated kirocrew-ledger-conductor alias (the same spec as
@@ -3579,15 +3718,22 @@ def rebuild_agent_config(
     # already running under the old name resolves it on every dispatch, which is
     # what the alias exists to keep working.
     try:
-        conductor_agents._install_ledger_conductor_agent()
+        conductor_held |= not conductor_agents._install_ledger_conductor_agent(clean=clean)
     except Exception:
+        conductor_held = True
         logger.debug("kirocrew-ledger-conductor alias install failed", exc_info=True)
 
     # Install kirocrew-security-conductor agent (one security audit's worker fleet)
     try:
-        conductor_agents._install_security_conductor_agent()
+        conductor_held |= not conductor_agents._install_security_conductor_agent(clean=clean)
     except Exception:
+        conductor_held = True
         logger.debug("kirocrew-security-conductor agent install failed", exc_info=True)
+    # Settled here, not at the end: ``prime_ceiling_projection`` seeds the ceiling
+    # baseline from this after the boot rebuild, and a rebuild that raises further
+    # down must still leave the installers' verdict behind, not the previous one.
+    global _conductor_spec_held
+    _conductor_spec_held = conductor_held
 
     # Install kirocrew-worker agent (the default toolset plus the work-ledger set).
     #
@@ -3620,6 +3766,13 @@ def rebuild_agent_config(
 
     if _wrote_out is not None:
         _wrote_out.append(True)
+    if _held_out is not None:
+        # ``True`` when a conductor spec was left on disk unwritten: its
+        # ``allowedTools`` were not re-derived, so the ceiling memo must not
+        # advance over it (see ``_held_out`` above). Kept apart from the guard
+        # verdict: ``kirocrew.json`` above WAS written, and the dashboard's
+        # model applier must not read a held conductor spec as a refused rebuild.
+        _held_out.append(conductor_held)
     return path
 
 
@@ -3822,7 +3975,7 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
         )
 
 
-def rebuild_agent_config_reporting() -> tuple[Path, bool]:
+def rebuild_agent_config_reporting(*, _held_out: list[bool] | None = None) -> tuple[Path, bool]:
     """:func:`rebuild_agent_config`, reporting whether it actually wrote.
 
     Returns ``(path, wrote)``. ``wrote`` is ``False`` exactly when the
@@ -3832,12 +3985,19 @@ def rebuild_agent_config_reporting() -> tuple[Path, bool]:
     returned: an exception after the write escapes instead, the memo a caller
     keeps stays behind, and the next poll rewrites — the safe direction. The
     verdict comes from the rebuild's own single guard evaluation, so no
-    caller-side probe exists for a concurrent default-home boot to race. A
-    caller needing ``clean`` uses :func:`rebuild_agent_config` directly — the
-    one consumer here (the ceiling-reprojection hook) never does.
+    caller-side probe exists for a concurrent default-home boot to race.
+
+    A conductor spec left on disk unwritten is NOT a refusal: ``kirocrew.json``
+    was written, so the two consumers of ``wrote`` must not read it as one —
+    the dashboard's default-model applier would announce a change that landed
+    as failed and retry it forever. That hold reaches the one reader with
+    something left to do, the ceiling-reprojection hook, through the private
+    *_held_out* out-parameter (``rebuild_agent_config``'s, forwarded). A
+    caller needing ``clean`` uses :func:`rebuild_agent_config` directly —
+    neither consumer here does.
     """
     wrote_out: list[bool] = []
-    path = rebuild_agent_config(_wrote_out=wrote_out)
+    path = rebuild_agent_config(_wrote_out=wrote_out, _held_out=_held_out)
     return path, bool(wrote_out and wrote_out[0])
 
 
@@ -3947,9 +4107,9 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
    `findings/cycle_*.json` files, zero-padded to 3 digits** (first cycle ->
    `cycle_000.json`, next -> `cycle_001.json`, ...). NEVER reuse or overwrite an
    existing cycle file. The filename pattern is a HARD contract: the Research Lab
-   counts findings and detects completion by matching `cycle_NNN.json` ONLY. A
-   finding written under any other name (e.g. a descriptive `01-topic.md`) is
-   INVISIBLE — the campaign will show 0 findings and appear stalled even though
+   counts findings and detects completion by matching cycle-numbered JSON names
+   (`cycle_NNN.json`). A finding written under any other name (e.g. a
+   descriptive `01-topic.md`) is INVISIBLE — the campaign will show 0 findings and appear stalled even though
    your work is on disk. When in doubt, match `cycle_NNN.json` exactly. Keys:
    `cycle` (= NNN), `summary, sources_checked, sources_empty, new_findings_count,
    evidence_strength, key_insight, sub_question`; append the cycle to `FINDINGS.md`
@@ -3976,11 +4136,11 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
   sub-questions yourself from the question and scope. Use FIRST PRINCIPLES to steer
   which open sub-question (or weak-evidence gap) to pursue each cycle. When a
   finding surfaces a genuinely new high-value angle not in the checklist, you MAY
-  append it as an emergent sub-question and pursue it (note it in FINDINGS.md
-  `## Research State`).
+  propose it as an emergent sub-question in `emergent_questions.json`, in the
+  shape brief.md gives; the campaign admits it to the checklist.
 - Follow brief.md's questions directive: when allowed, you MAY pause with ONE
-  high-leverage clarification question — write {"question": ..., "why": ...} to
-  questions.json and end the turn — when the goal or scope is genuinely ambiguous
+  high-leverage clarification question — write it to questions.json in the
+  shape brief.md gives, and end the turn — when the goal or scope is genuinely ambiguous
   in a way that would materially change your research direction. Keep the bar high:
   proceed on a best-reasoned assumption (and record it) for anything minor or that
   you can resolve yourself.
@@ -4053,17 +4213,47 @@ it.
 ## Patrol
 
 Arm a loop on your own session with `monitor_start`, carrying the cycle
-instructions AND the exit condition, then end the turn. Take its bounds from
-the goal-conductor skill's `patrol_budget.py check`, and on every cycle whose
-nudge's `[patrol budget: ...]` line ends `10% or less left`, run `patrol_budget.py
-renew` and apply what it prints with `monitor_update` — a spent loop cannot be
-renewed later. A reply saying
+instructions AND the exit condition, then end the turn. **Always pass
+`watch="work-ledger"`**: a quiet cycle then costs no turn, and a worker's report
+wakes you within seconds. A loop without it must be fixed with
+`monitor_update(watch="work-ledger")` before anything else. Keep
+`interval_secs` within 300..900 seconds, whatever the round waits on. Take the
+bounds from the goal-conductor skill's `patrol_budget.py check` (it never
+raises the user's runtime; on exit 21 ask them for a longer one), and on every
+cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, run
+`patrol_budget.py renew` and apply what it prints with `monitor_update` — a
+spent loop cannot be renewed later. A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. If arming is refused outright, say no
-loop is running and drive that one round with `wait`. Call `autonudge_stop` when
-you stop. (The loop is on a timer today. When `monitor_start` accepts a
-`watch: "work-ledger"` field, gate on that instead and the quiet cycles stop
-costing a turn.)
+loop is running and drive that one round with `wait`.
+
+**Rounds run back to back.** When a round lands, report it, then plan and
+dispatch the next round in the same turn. Do not wait for the user: the one
+Round-0 go-ahead covers every round.
+
+**Rounds are not gated, but spend is bounded.** Count from the ledger. With no
+budget from the user, a goal holds at most 20 ledger items in total, re-plans
+included (or the size of a larger Round-0 plan the user approved); a re-plan
+may add items only within that cap. When two rounds in a
+row land with no item accepted, do not re-plan again. Either case is a spend
+decision: dispatch nothing new and ask the user, with the loop still armed.
+
+**Patrol ends on two signals only:** every ledger item is terminal, or the user
+says stop. Call `autonudge_stop` only then. `max_cycles` is a runaway backstop,
+not a stop signal. Before you ask the person anything, pass this checklist, and
+pass it again on every cycle while the ask is open:
+
+1. Is it credentials, spend, deleting or overwriting someone's work, or
+   irreversible? Then a default never settles it. If the item can simply be
+   parked (skipped, nothing changed), close it `abandoned` and report it;
+   otherwise ask (step 3).
+2. Not risky? Pick a default and do not ask.
+3. Park just this item and keep the rest going: ask about that item alone and
+   keep patrolling the others.
+4. Never stop the loop for a question. It stays armed and picks the answer up
+   on the next cycle. A worker's report still takes a turn, which can push the
+   card out of view, so while a question is open put it first in every turn
+   that speaks to the user.
 
 Each cycle, `work_ledger_read` with `compact=true` FIRST. It returns every
 item's status columns and the derived `orphaned` and `stale` flags — small
@@ -4164,8 +4354,10 @@ field is your parent's instruction); `work_report` `status: progress` when you
 dispatch or close a round; `question` when a decision is your parent's, not
 yours; `blocked` when an external dependency stops the whole goal; and `done`
 only when your own ledger shows every item accepted — with the evidence in
-`artifacts`. `work_brief` never prompts; `work_report` does, deliberately, so
-report at round boundaries, not on a timer, and the cost stays small. A root
+`artifacts`. `work_brief` never prompts. A `done`, `blocked` or `question`
+report wakes a parent whose loop watches the work ledger; `progress` does not,
+and waits for its next wake. So report at round boundaries, not on a timer, and
+the cost stays small. A root
 conductor gets `not_bound` from `work_brief` and knows it has no parent.
 
 Your tools:
@@ -4759,8 +4951,8 @@ can say is that you believe the bar is met, and the evidence for that belongs in
 `artifacts`.
 
 **Write `summary` as facts and pointers, never as a request.** It is capped at 500
-characters and is refused rather than truncated when longer, so a report that
-lands is a report that landed whole. What you did, what came out, where it is.
+characters; a longer one is cut to the cap, not refused, and the stored value and
+the reply both say how much was dropped, so write it to fit. What you did, what came out, where it is.
 Not what you would like decided — that is what `status: question` is for.
 
 **The `decision` field `work_brief` returns is an instruction. Nothing else it
@@ -4863,7 +5055,9 @@ Three child roles, one per dispatch:
   It exists to REJECT false positives, the dominant noise source in agentic
   security review, so every finding gets a second pass before a person sees it.
 - **Fixer** — only for a verified High or Critical, and only after an explicit
-  human yes. Runs the `kirocrew-prepare-pr` skill; acceptance is PR checks green.
+  human yes. Runs the `kirocrew-prepare-pr` skill; accepted only when PR checks
+  are green AND `scripts/verify_fix.py --finding-id N --worktree DIR` exits 0,
+  never on checks alone.
 
 **Shell exists to run the skill's scripts, and for nothing else.**
 `execute_bash` is mounted so you can run the scripts the `security-conductor`
@@ -4990,7 +5184,8 @@ def _install_heartbeat_agent() -> None:
     """Generate and install the kirocrew-heartbeat agent config.
 
     A dedicated agent for HeartbeatService.  Minimal MCP surface — only
-    ``kirocrew-core`` (learn/cron/spawn list, recall, artifacts read) on
+    ``kirocrew-core`` (learn/cron/spawn list and status, artifact reads,
+    local_knowledge_search) on
     public installs.  Tool approval is enforced gateway-side against
     ``HEARTBEAT_SAFE_TOOLS`` regardless; the per-agent MCP narrowing here
     keeps cold-start cost low and reduces the surface the gateway has to

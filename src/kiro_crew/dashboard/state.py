@@ -19,7 +19,6 @@ import uuid
 import weakref
 from collections.abc import Coroutine, Iterable, Iterator
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
@@ -56,6 +55,7 @@ from kiro_crew.dashboard.interaction_coordinator import (
     QuestionCoordinator,
 )
 from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
+from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.remote_mirror import mirror_frame as _mirror_relay_frame
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
@@ -460,6 +460,29 @@ def _new_card_store(state: Any) -> Any:
 
         state._dynamic_cards = CardLifecycle(state)
     return state._dynamic_cards
+
+
+def _published_queued_by_slot(subs: "SubagentManager | None") -> dict[str, int]:
+    """Each slot's ``subagents_queued``: the manager's last published depths, by tab.
+
+    Routed exactly as the ``subagent_queued`` frames are (``subagent_event_slot`` of
+    the frame's parent), so a row reports what the frame stream told that tab. The
+    two keys differ for a cron tab: a stateless or agent-sequence run publishes
+    under ``cron:<job>:<run>`` while the tab's own key is ``cron:<job>``, and
+    several runs of one job sum on the job's tab.
+    """
+    if not subs:
+        return {}
+    table = subs.published_queued_depths()
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    by_slot: dict[str, int] = {}
+    for parent, depth in table.items():
+        if depth > 0:
+            slot = subagent_event_slot(parent)
+            by_slot[slot] = by_slot.get(slot, 0) + depth
+    return by_slot
 
 
 def _attach_slot_parents(
@@ -902,6 +925,34 @@ def _delivery_key(content: str) -> str:
 # Slot-list broadcast coalescing window. The sub-agent slots debouncer in
 # slack/gateway.py hardcodes the same value independently; the two are not shared.
 _SLOTS_BROADCAST_INTERVAL_S: float = 0.2
+# The window above is a FLOOR. Every broadcast re-sends the whole list (~1.5 KB a
+# slot), so with a fixed window the bytes each dashboard socket receives grow with
+# both the list size and the push rate. After each broadcast the next window is
+# stretched to ``frame bytes / budget`` so a sustained burst costs each socket about
+# this many bytes a second, whatever the list size. A small list stays on the floor
+# (a 25-slot frame is ~38 KB, 0.15 s at this budget); the ceiling bounds how stale
+# the sidebar may run at the slot cap. The leading edge after an idle window is
+# still immediate, and the trailing flush still re-serializes at delivery time.
+_SLOTS_BROADCAST_BYTES_PER_S: int = 256 * 1024
+_SLOTS_BROADCAST_MAX_INTERVAL_S: float = 2.0
+
+
+def _slots_broadcast_interval_for(frame_bytes: int) -> float:
+    """Coalescing window that keeps one socket's slot-list bytes near the budget."""
+    stretched = frame_bytes / _SLOTS_BROADCAST_BYTES_PER_S
+    return min(_SLOTS_BROADCAST_MAX_INTERVAL_S, max(_SLOTS_BROADCAST_INTERVAL_S, stretched))
+
+
+def _slots_broadcast_clock() -> float:
+    """The one clock the slots coalescing window is measured on.
+
+    Every read that stamps or measures the window goes through here, so a test
+    can drive the window on a fake clock without replacing ``time.monotonic``
+    for the event loop and every other caller in the process.
+    """
+    return time.monotonic()
+
+
 # A successful plain persistent-memory create hands its full-list publication past
 # the HTTP response by this fixed interval. Callers may name the operation only.
 _DEFERRED_SLOTS_FLUSH_DELAY_S: float = 0.01
@@ -2328,6 +2379,19 @@ def _ascii_slot_key(name: str) -> str:
 # ``_safe_key`` produces byte-for-byte.
 _SLOT_KEY_FILENAME_UNSAFE_RE = re.compile(r"[^\w\-.]", flags=re.ASCII)
 
+# Longest slot key kept verbatim. A transcript is ``<stem>.jsonl`` -- the stem
+# is ``dashboard_<key>`` for a dashboard slot and the key itself for a channel
+# slot -- and filesystems refuse a name over 255 bytes (ENAMETOOLONG). So a key
+# longer than this could never have had a transcript of either kind; only such
+# a key is shortened, and a key whose transcript may already exist keeps its
+# spelling so a restart still finds it. A longer key keeps its first
+# ``_SLOT_KEY_KEEP_CHARS`` characters plus ``-`` and a short sha256 of the whole
+# folded key: a valid filename stem, stable across calls, distinct per name, and
+# short enough to stay unchanged when folded again.
+_SLOT_KEY_MAX_CHARS = 255 - len(".jsonl")
+_SLOT_KEY_KEEP_CHARS = 180
+_SLOT_KEY_HASH_CHARS = 12
+
 
 def _normalize_slot_key(name: str) -> str:
     """Return *name* folded to the exact charset of a persisted session filename.
@@ -2352,13 +2416,19 @@ def _normalize_slot_key(name: str) -> str:
     the dedup guards compare mismatched strings, so the user sees two
     identical sidebar sessions backed by one transcript, and the next
     ``_persist_open_slots`` flush cements both keys. Idempotent;
-    auto-generated ``chat-N-<ts>`` keys are returned unchanged.
+    auto-generated ``chat-N-<ts>`` keys are returned unchanged. A key longer
+    than ``_SLOT_KEY_MAX_CHARS`` is shortened (see the constant) so its
+    transcript filename stays under the filesystem's name limit.
     """
     if name.startswith("dashboard:"):
         name = name[len("dashboard:") :]
     while name.startswith("dashboard_"):
         name = name[len("dashboard_") :]
-    return _SLOT_KEY_FILENAME_UNSAFE_RE.sub("_", _ascii_slot_key(name))
+    key = _SLOT_KEY_FILENAME_UNSAFE_RE.sub("_", _ascii_slot_key(name))
+    if len(key) > _SLOT_KEY_MAX_CHARS:
+        digest = hashlib.sha256(key.encode("ascii")).hexdigest()[:_SLOT_KEY_HASH_CHARS]
+        key = f"{key[:_SLOT_KEY_KEEP_CHARS]}-{digest}"
+    return key
 
 
 # Tag revisions are totally ordered across gateway restarts. Each process claims
@@ -2545,112 +2615,6 @@ def request_slot_origin(app: str, *, cron_creator: str = "") -> str:
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 
-STAGE_BOUNDARY_OWNER_META_KEY = "stageBoundaryOwner"
-
-
-@dataclass
-class StageBoundary:
-    """One stage's delivery, recovery, and cancellation ownership."""
-
-    stage: int | None = None
-    consumed: bool = True
-    retry_queue_id: str = ""
-    continuation_required: bool = False
-    preserve_stop_generation: int = -1
-    parent_session_keys: set[str] = dataclass_field(default_factory=set)
-    synthetic_recovery_inflight: int = 0
-    recovery_retrigger_count: int = 0
-    report_retention_refused: str | None = None
-    cancellation_hold_refused: str | None = None
-    generation: str = ""
-    armed_at: int = 0
-
-    @property
-    def owner(self) -> str | None:
-        """The current queue-ownership token, if a boundary is armed."""
-        return self.generation if self.stage is not None and self.generation else None
-
-    def arm(self, stage: int, *, consumed: bool = False) -> None:
-        """Start a new stage boundary and mint its queue ownership token."""
-        new_boundary = self.stage != stage or self.owner is None
-        if new_boundary:
-            self.generation = uuid.uuid4().hex
-            self.report_retention_refused = None
-            self.cancellation_hold_refused = None
-        self.stage = stage
-        self.armed_at = time.monotonic_ns()
-        self.consumed = consumed
-        self.retry_queue_id = ""
-        self.continuation_required = False
-        self.preserve_stop_generation = -1
-        self.parent_session_keys.clear()
-        self.synthetic_recovery_inflight = 0
-
-    def preserve(self, stage: int, *, consumed: bool) -> None:
-        """Keep an interrupted stage armed until a later guarded Go."""
-        if self.stage != stage:
-            self.arm(stage, consumed=consumed)
-        else:
-            self.consumed = consumed
-        self.continuation_required = consumed
-
-    def mark_consumed(self, consumed: bool) -> None:
-        """Record provider consumption and retire an obsolete exact retry."""
-        self.consumed = consumed
-        if consumed:
-            self.retry_queue_id = ""
-
-    def clear(self) -> None:
-        """Atomically release every live field owned by the current boundary."""
-        self.stage = None
-        self.armed_at = 0
-        self.consumed = True
-        self.retry_queue_id = ""
-        self.continuation_required = False
-        self.preserve_stop_generation = -1
-        self.parent_session_keys.clear()
-        self.synthetic_recovery_inflight = 0
-        self.report_retention_refused = None
-        self.cancellation_hold_refused = None
-
-    def tag_meta(self, meta: dict | None = None, *, owner: str | None = None) -> dict:
-        """Copy *meta* and tag it with an explicit or current owner token."""
-        tagged = dict(meta or {})
-        actual_owner = self.owner if owner is None else owner
-        if actual_owner:
-            tagged[STAGE_BOUNDARY_OWNER_META_KEY] = actual_owner
-        return tagged
-
-    def owns_entry(self, entry: dict, *, owner: str | None = None) -> bool:
-        """Whether a queue entry belongs to the selected boundary token."""
-        meta = entry.get("meta")
-        actual_owner = self.owner if owner is None else owner
-        return bool(
-            actual_owner
-            and isinstance(meta, dict)
-            and meta.get(STAGE_BOUNDARY_OWNER_META_KEY) == actual_owner
-        )
-
-
-def stage_boundary_for(slot: object) -> StageBoundary:
-    """Return *slot*'s boundary; a minimal test double starts unarmed."""
-    boundary: StageBoundary | None = getattr(slot, "stage_boundary", None)
-    if boundary is not None:
-        return boundary
-    boundary = StageBoundary()
-    try:
-        setattr(slot, "stage_boundary", boundary)
-    except (AttributeError, TypeError):
-        if isinstance(slot, _ChatSlot):
-            raise
-        logger.warning(
-            "stage_boundary_for could not attach a boundary to non-slot object "
-            "of type %s; using an ephemeral boundary",
-            type(slot).__qualname__,
-        )
-    return boundary
-
-
 def _todo_canonical_text(text: Any) -> str:
     """The one-line form of a task text that the checklist prompt blocks emit.
 
@@ -2717,6 +2681,7 @@ class _ChatSlot:
         "_crew_log_previous_undecided",
         "_crew_log_previous_from_mapping",
         "_crew_log_opened_sid",
+        "_crew_log_pending_channel",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2800,8 +2765,7 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "_in_stage_execution",
-        "stage_boundary",
+        "recovery_retrigger_count",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
         "_recovery_chat_triggered",
@@ -2821,6 +2785,7 @@ class _ChatSlot:
         "_synthesis_inflight",
         "_synthesis_recheck",
         "_synthesis_rechecks",
+        "_synthesis_completion_turns",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -2843,22 +2808,11 @@ class _ChatSlot:
         "_refusal_fallback_primary",
         "_refusal_fallback_candidate",
         "_refusal_fallback_session_key",
-        "_refusal_retry_text",
         "_refusal_fallback_attempted",
         "_refusal_pick_gen",
         "_refusal_client_pick_epoch",
-        "_refusal_replay_queue_id",
-        "_refusal_replay_stop_gen",
-        "_refusal_replay_session_stop_gen",
+        "replays",
         "_model_access_fallback_used",
-        "_model_access_recovery_stop_gen",
-        "_model_access_recovery_session_stop_gen",
-        "_model_access_recovery_session_key",
-        "_model_access_recovery_queue_id",
-        "_image_recovery_queue_id",
-        "_image_recovery_stop_gen",
-        "_image_recovery_session_stop_gen",
-        "_image_recovery_session_key",
         "_posttoken_retry_used",
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
@@ -2866,17 +2820,10 @@ class _ChatSlot:
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
         "_session_not_found_retry_used",
-        "_session_not_found_queue_id",
-        "_session_not_found_stop_gen",
-        "_session_not_found_session_stop_gen",
-        "_session_not_found_session_key",
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
         "_promise_only_retries",
-        "_promise_only_stop_gen",
-        "_promise_only_session_stop_gen",
-        "_promise_only_session_key",
         "_compaction_continue_retries",
         "_batch_rejected",
         "_batch_rejected_cause",
@@ -3041,6 +2988,11 @@ class _ChatSlot:
         # are written by a background writer that may not have run yet. "" = this
         # process has not opened a crew log for this slot.
         self._crew_log_opened_sid: str = ""
+        # Whether the crew-log class recorder has recorded this slot as published to
+        # a channel. `chat_runner._crew_log_class` folds it into the class (the name is
+        # `chat_runner.PENDING_CHANNEL_ATTR`), so a log opened after the link is gone
+        # still records the restriction. Never cleared.
+        self._crew_log_pending_channel: bool = False
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -3496,25 +3448,9 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
-        # True only while _stage_loop is driving a stage-execution turn. Gates
-        # the end-of-turn plan detector so a stage turn whose output happens to
-        # contain plan-like text cannot re-arm / re-count the plan (which
-        # corrupted the stage total and produced "Stage N of M" over-runs).
-        # It ALSO gates mid-plan message handling: while set, api_chat queues a
-        # user message (chip card) even when slot.task is momentarily idle between
-        # stages, and _start_next_queued_turn HOLDS user messages (recovery/system
-        # still drain) until the plan ends — so autopilot reuses the normal-chat
-        # queue/chip path. After the controller exits, an uncancelled pending
-        # boundary keeps ``running`` true until guarded Go settles or reruns it.
-        self._in_stage_execution: bool = False
-        # Atomic owner of the active stage's delivery, recovery, parent-session,
-        # and cancellation state. Compatibility properties below expose the old
-        # names to focused tests, but production paths mutate this object.
-        self.stage_boundary = StageBoundary()
-        # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
-        # the orchestrator _stage_loop can mirror the "hold the queue for
-        # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
-        # must not pop the held follow-up into another auth failure).
+        # Set by _run_chat's teardown to that turn's ACP auth-required outcome.
+        # The completion-sound gate reads it: a queue held for post-login resume
+        # does not count as the session continuing.
         self._last_turn_auth_required: bool = False
         # Whether a turn of the current queue cycle reached a provider (it opened
         # its stream). Set by each turn's tail, read and cleared where the cycle
@@ -3523,6 +3459,9 @@ class _ChatSlot:
         # also ran.
         self._cycle_reached_provider: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
+        # Consecutive recovery re-triggers since the last user send. The Slack
+        # gateway's ``_retrigger_recovery`` caps it; ``api_chat`` resets it.
+        self.recovery_retrigger_count: int = 0
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
@@ -3553,6 +3492,15 @@ class _ChatSlot:
         # its pending timer, cancelled by begin_close, and how many it ran.
         self._synthesis_recheck: asyncio.TimerHandle | None = None
         self._synthesis_rechecks: int = 0
+        # Sub-agent completion turns handed to this slot: one per completion
+        # the gateway queues or launches (a wave digest is one). Zeroed when
+        # the synthesis runs or is dropped, and when a user message drained at
+        # a turn's end disarms it after the fire gate answered clear
+        # (`_hand_off_queue` reads; the drain itself does not); other disarms
+        # keep the count. Exactly 1 means one turn already reported every
+        # result, so the turn-end fire gate drops the arm instead of running a
+        # synthesis that restates it.
+        self._synthesis_completion_turns: int = 0
         # Fix 2 (B1) race guard: number of sub-agent completion deliveries
         # currently in flight for this slot (incremented in gateway._subagent_done
         # from entry until the completion is queued/launched). The synthesis
@@ -3646,21 +3594,17 @@ class _ChatSlot:
         # to restore/verify at the start of the NEXT genuine turn after a
         # refusal retry swapped the live session (single-message semantics —
         # unlike the throttle fallback above, this swap never sticks).
-        # _refusal_retry_text is the replayed message queued by the swap; the
-        # runner matches it at dispatch to tell the retry turn apart from a
-        # genuine new message (and to drop a record whose replay a Stop
-        # purged). _refusal_fallback_attempted is the one-attempt-per-user-
-        # message guard: a refusal from the fallback too is terminal.
+        # _refusal_fallback_attempted is the one-attempt-per-user-message
+        # guard: a refusal from the fallback too is terminal.
         self._refusal_fallback_primary: str = ""
         self._refusal_fallback_candidate: str = ""
         # The session binding the refusal swap ran under, captured ONCE at
         # swap time. The restore locks on THIS key (not a re-derived one) so
-        # both seams always share one lock domain, and the drain purges the
-        # replay when the live binding differs — a cron result binding an
-        # unbound slot mid-turn must not route the replay onto the newly
-        # bound session.
+        # both seams always share one lock domain, and the retry replay is
+        # recorded under it, so the drain purges the replay when the live
+        # binding differs — a cron result binding an unbound slot mid-turn must
+        # not route the replay onto the newly bound session.
         self._refusal_fallback_session_key: str = ""
-        self._refusal_retry_text: str = ""
         self._refusal_fallback_attempted: bool = False
         # _model_pick_gen snapshot taken at refusal-swap time: a gen that moved
         # means an explicit user pick landed after the swap, and the restore
@@ -3671,15 +3615,13 @@ class _ChatSlot:
         # time: a pick through a session alias moves the client epoch without
         # touching this slot's generation, and the restore must see it.
         self._refusal_client_pick_epoch: int = 0
-        # The refusal replay's queue entry id plus stop-generation snapshots
-        # (slot + session) taken at ENQUEUE. The drain compares the live
-        # counters against these: any increment means a Stop landed while the
-        # replay waited, and a pending steer / user-queued follow-up means the
-        # replay was superseded — either way the drain purges the entry instead
-        # of dispatching superseded work ahead of the user's correction.
-        self._refusal_replay_queue_id: str = ""
-        self._refusal_replay_stop_gen: int = 0
-        self._refusal_replay_session_stop_gen: int = 0
+        #: The recovery replays this slot queued for itself -- the model-access
+        #: swap, the lost-session reconnect, the image-history recovery, the
+        #: content-filter retry and the auto-continuations -- each with the queue
+        #: entry it is, the Stop counts and the session binding it was queued
+        #: under. The drain and the turn's consume seam re-check them; see
+        #: ``dashboard/recovery_replays.py``.
+        self.replays: RecoveryReplays = RecoveryReplays()
         # One-shot guard for the reactive model-access-denial fallback: a new
         # conversation whose configured model (commonly the "auto" sentinel) is
         # refused for entitlement, not throttled, is re-prompted at most ONCE on
@@ -3687,60 +3629,10 @@ class _ChatSlot:
         # the first reply. One attempt only, so an account entitled to nothing
         # falls through to the terminal entitlement error naming what was tried
         # instead of looping. Refreshed at the start of a genuine user turn but
-        # NOT when the incoming turn is the swap's own replay (the drain names it
-        # by the queue id below, as ``_run_chat(..., _model_access_replay=True)``),
-        # so a still-unentitled candidate cannot trigger a second swap.
+        # NOT when the incoming turn is the swap's own replay (the drain claims
+        # it by its queue id in ``replays``), so a still-unentitled candidate
+        # cannot trigger a second swap.
         self._model_access_fallback_used: bool = False
-        # _stop_generation snapshotted when that recovery is enqueued. A soft Stop
-        # (first press) does NOT clear the queue and the drain's continuation
-        # purge does not cover a message replay, so the drain compares this
-        # snapshot against the live counter at dequeue: any increment (or a
-        # pending steer / user follow-up) means the user cancelled or superseded
-        # the turn while the recovery waited, and the replay is dropped instead of
-        # dispatched.
-        self._model_access_recovery_stop_gen: int = 0
-        # Session-scoped counterpart of the snapshot above. A Stop issued on a
-        # linked channel surface advances only the session-scoped counter, not
-        # the slot one, so the dequeue drain compares this too — without it a
-        # linked-channel Stop with nothing queued would leave the cancelled
-        # replay in the queue head to dispatch.
-        self._model_access_recovery_session_stop_gen: int = 0
-        #: The session binding the model-access recovery replay's swap ran under,
-        #: captured at enqueue. The drain and consume seam compare the live key
-        #: against it and drop the replay when they differ, so a cron result
-        #: binding an unbound slot mid-episode cannot replay the original prompt
-        #: into the newly bound session.
-        self._model_access_recovery_session_key: str = ""
-        #: The queue id of the model-access recovery replay, recorded at enqueue.
-        #: It is the replay's identity: non-empty is the family's "pending"
-        #: signal, the drain matches it to name the replay turn, and the drain
-        #: abort removes only THIS entry. SYNTHETIC_RECOVERY_KIND is shared
-        #: across recovery paths, so a blanket removal by kind would destroy
-        #: co-queued unrelated recoveries.
-        self._model_access_recovery_queue_id: str = ""
-        #: The queue id of the unsupported-history-image recovery turn, recorded
-        #: at enqueue so the drain abort removes only THIS entry. Non-empty is
-        #: the family's "pending" signal, the same shape the refusal replay uses;
-        #: SYNTHETIC_RECOVERY_KIND is shared across recovery paths, so a blanket
-        #: removal by kind would destroy co-queued unrelated recoveries.
-        self._image_recovery_queue_id: str = ""
-        #: ``_stop_generation`` snapshotted when that recovery is enqueued. The
-        #: enqueue is followed by real awaits (the conversation discard and the
-        #: pending-reset consume) before the drain dispatches, and a soft Stop
-        #: landing in that window does NOT clear the queue, so the drain compares
-        #: this snapshot against the live counter and drops the recovery rather
-        #: than running a cancelled turn's tools on the fresh conversation.
-        self._image_recovery_stop_gen: int = 0
-        #: Session-scoped counterpart of the snapshot above. A Stop issued on a
-        #: linked channel surface advances only the session-scoped counter, so
-        #: without this a linked-channel Stop would leave the cancelled recovery
-        #: in the queue head to dispatch.
-        self._image_recovery_session_stop_gen: int = 0
-        #: The session binding the image recovery was enqueued under. A live key
-        #: that differs means the slot was rebound mid-episode (a cron result
-        #: binding an unbound slot), so the recovery belongs to the OLD session
-        #: and must not dispatch onto the newly bound one.
-        self._image_recovery_session_key: str = ""
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
@@ -3784,14 +3676,6 @@ class _ChatSlot:
         # mapped id and one retry of the turn. Re-armed only by a LANDED turn,
         # so a backend that keeps losing the session ends on a clear error.
         self._session_not_found_retry_used: bool = False
-        # The queued replay of that recovery, and the Stop counters and session
-        # binding it was enqueued under. The reset between enqueue and dispatch
-        # is awaited, so a soft Stop can land there with the queue preserved;
-        # the drain and the consume seam compare these to veto the replay.
-        self._session_not_found_queue_id: str = ""
-        self._session_not_found_stop_gen: int = 0
-        self._session_not_found_session_stop_gen: int = 0
-        self._session_not_found_session_key: str = ""
         self._empty_response_retries: int = 0
         # True once any turn of the CURRENT empty-turn episode was productive.
         self._empty_episode_productive: bool = False
@@ -3802,19 +3686,6 @@ class _ChatSlot:
         # final message (announced an immediate action, then yielded with no tool
         # call). Reset like the other per-turn retry budgets on a landed turn.
         self._promise_only_retries: int = 0
-        # Monotonic _stop_generation snapshot taken when a promise-only continuation
-        # is enqueued; the dispatch-point purge compares against it to catch a Stop
-        # that pressed AND resolved to idle while the continuation waited.
-        self._promise_only_stop_gen: int = 0
-        # Its session-scoped twin: the session manager's stop count for the
-        # slot's session key at enqueue, so the same purge also sees a stop
-        # issued on a linked channel surface while the continuation waited.
-        self._promise_only_session_stop_gen: int = 0
-        # The effective session binding at enqueue. A cron injection can rebind
-        # an idle slot while the queued continuation waits; the dispatch-point
-        # purge compares against this snapshot and drops the replay rather than
-        # draining it into the new session's context. Empty = never enqueued.
-        self._promise_only_session_key: str = ""
         # One bounded synthetic continuation when the BACKEND compacted the
         # conversation mid-turn and then ended the turn without finishing the
         # work (see COMPACTION_RECOVERY_PREFIX). Bounded separately from the
@@ -4178,6 +4049,17 @@ class _ChatSlot:
         #
         # TURN-SCOPED: the turn's teardown empties it, so one turn's withheld reply
         # never silences the next, whose authorization is its own.
+        #
+        # A second writer records the same shape for the opposite direction:
+        # ``session_control.record_audience_admission`` stamps the CALLER's own
+        # containment here from the caller-side admission gates (every
+        # session-control verb's, and the work ledger's), because what a verb
+        # returns becomes part of this slot's reply and the same publisher resolves
+        # the mirror live at delivery -- a mirror gained or retargeted between the
+        # admission and the reply would publish a peer's transcript or a ledger to an
+        # audience the admission never saw. One entry per distinct audience per turn,
+        # keyed by the snapshot under ``AUDIENCE_ADMISSION_KEY_PREFIX`` so polling
+        # does not grow it. One record, one publisher check, both directions.
         self._steer_audience_fences: dict[str, dict] = {}
         # How many channel steers hold each AUDIENCE-keyed fence above. A channel
         # hand-off records one fence per distinct containment snapshot per turn
@@ -5268,11 +5150,7 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(
-            self.turn_running
-            or self._turn_admission_reserved
-            or self.stage_boundary.stage is not None
-        )
+        return bool(self.turn_running or self._turn_admission_reserved)
 
     @property
     def queue_depth(self) -> int:
@@ -5553,30 +5431,12 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
-        Busy is ``running or _in_stage_execution``, not ``running`` alone. A
-        multi-stage plan closes each stage's own turn before opening the next, so
-        ``self.task`` is None and ``running`` reads False in the gap between
-        stages while the plan is still live. Gating on ``running`` alone admits a
-        prompt there and starts a SECOND turn alongside the plan, with no
-        recovery once two turns own one slot. ``_in_stage_execution`` is held for
-        the whole loop (set by ``_stage_loop``, cleared in its ``finally``) and is
-        the predicate every other producer that must not stack a turn already
-        reads -- the composer and cron injection (``chat_handlers``), the nudge arm
-        (``handlers/autonudge``), channel messaging (``handlers/messaging``),
-        regenerate (``chat_regenerate``) and the transfer gate. This method was the
-        one admission point that did not, which is what left the Slack heartbeat
-        (``slack/gateway.py``), the workflow auto-turn (``dashboard/server.py``) and
-        the Issue Radar crew dispatch (``issue_radar`` ``crew_runtime``) able to
-        start a mid-plan turn while recording no intent to interrupt a plan.
-        Nothing is dropped: ``_stage_loop``'s ``finally`` hands the queue off once
-        the flag clears, so a prompt held here is delivered after the plan.
-
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running or self._in_stage_execution:
+        if self.running:
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
@@ -5837,6 +5697,9 @@ class DashboardState:
     _slots_broadcast_lock: "threading.Lock | None" = None
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
     _slots_broadcast_last: float = 0.0
+    # Current coalescing window, sized from the last broadcast's frame (see
+    # ``_slots_broadcast_interval_for``). Written and read under the lock.
+    _slots_broadcast_interval: float = _SLOTS_BROADCAST_INTERVAL_S
     # Who the next coalesced slots broadcast is owed to, written under
     # ``_slots_broadcast_lock``. A ``push_slots_update(legacy_only=True)`` owes
     # the full list only to consumers that cannot apply a ``slot_patch`` frame;
@@ -9305,7 +9168,8 @@ class DashboardState:
     ) -> list:
         """Serialize slots, optionally including owner-only provider status.
 
-        ``subagents_running`` remains available to every authenticated caller.
+        ``subagents_running`` and ``subagents_queued`` remain available to every
+        authenticated caller.
         Credential-backed ``ci`` and ``state`` fields are omitted unless an
         authenticated owner boundary explicitly opts in — EXCEPT a link whose
         repository is known public, which any authenticated dashboard user
@@ -9329,6 +9193,7 @@ class DashboardState:
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
         under_construction = getattr(self, "_slots_under_construction", None) or ()
+        queued_by_slot = _published_queued_by_slot(subs)
         for s in self._slots.values():
             if s.key in under_construction:
                 continue
@@ -9341,6 +9206,7 @@ class DashboardState:
             d["subagents_running"] = bool(
                 subs and subs.running_agents_for(effective_session_key(s))
             )
+            d["subagents_queued"] = queued_by_slot.get(s.key, 0)
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same
         # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
@@ -9556,7 +9422,7 @@ class DashboardState:
                     if self._slots_broadcast_timer is not None:
                         self._slots_broadcast_timer.cancel()
                         self._slots_broadcast_timer = None
-                    self._slots_broadcast_last = time.monotonic()
+                    self._slots_broadcast_last = _slots_broadcast_clock()
             self._do_slots_broadcast()
             return
         except Exception:
@@ -9603,6 +9469,11 @@ class DashboardState:
         what the user sees as one change. The trailing flush re-serializes at
         delivery time, so a coalesced frame is never a stale frame.
 
+        The window is 200 ms for a small list and stretches with the size of the
+        last frame (see ``_SLOTS_BROADCAST_BYTES_PER_S``), so a busy fleet of a
+        hundred agents is paced at roughly a fixed byte rate per socket instead of
+        five full lists a second.
+
         ``legacy_only`` owes the full list only to consumers that cannot apply a
         ``slot_patch`` frame (SSE readers, app tokens, a tab whose bundle
         predates the frame). :meth:`push_slot_patch` and
@@ -9624,7 +9495,7 @@ class DashboardState:
             self._slots_push_pending = True
             return
 
-        now = time.monotonic()
+        now = _slots_broadcast_clock()
         broadcast_now = False
         if lock is None:
             # Partially-constructed state (built via __new__): no coalescing.
@@ -9635,9 +9506,10 @@ class DashboardState:
             # Resolved once here, at the top of the lock, so the timer branch
             # below and any later cross-thread caller agree on one loop.
             serving = self.serving_loop
+            interval = self._slots_broadcast_interval
 
             elapsed = now - self._slots_broadcast_last
-            if elapsed >= _SLOTS_BROADCAST_INTERVAL_S:
+            if elapsed >= interval:
                 self._slots_broadcast_last = now
                 if self._slots_broadcast_timer is not None:
                     self._slots_broadcast_timer.cancel()
@@ -9647,7 +9519,7 @@ class DashboardState:
                 # Scheduling onto the serving loop is preferred over broadcasting
                 # from a foreign thread; a closed loop falls back to an immediate send.
                 loop = serving
-                remaining = _SLOTS_BROADCAST_INTERVAL_S - elapsed
+                remaining = interval - elapsed
                 try:
                     if loop is None:
                         self._slots_broadcast_last = now
@@ -9727,7 +9599,7 @@ class DashboardState:
         if lock is not None:
             with lock:
                 self._slots_broadcast_timer = None
-                self._slots_broadcast_last = time.monotonic()
+                self._slots_broadcast_last = _slots_broadcast_clock()
         self._do_slots_broadcast()
 
     def _take_slots_audience(self) -> bool:
@@ -9813,6 +9685,14 @@ class DashboardState:
         except (TypeError, ValueError) as exc:
             exc.add_note(_slots_serialization_note(slots_data))
             raise
+        # Size the NEXT coalescing window from this frame, so a burst over a long
+        # list is paced by bytes rather than by the fixed floor. The generic list
+        # stands in for every audience's copy; they differ only in per-slot
+        # enrichment. Character count, not encoded bytes: close enough for pacing.
+        lock = self._slots_broadcast_lock
+        if lock is not None:
+            with lock:
+                self._slots_broadcast_interval = _slots_broadcast_interval_for(len(slots_json))
         mgr = getattr(self, "channel_manager", None)
         ch_trusted = bool(mgr and any(ch.trusted for ch in mgr._channels.values()))
         # ONE read, shared by the generic and owner frames below. Two independent

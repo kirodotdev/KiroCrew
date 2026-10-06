@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import os
 import sys
 from unittest import mock
 
 import pytest
+from turn_harness import TurnScript, run_turn
 
 from kiro_crew import cli_chat, cli_doctor, sandbox
 
@@ -353,13 +355,43 @@ class TestTheRefusalReachesTheChatCard:
       "Connection lost -- retrying..." and the operator never sees a reason at all.
     """
 
-    def test_the_terminal_handler_appends_the_exceptions_own_text(self) -> None:
-        from kiro_crew.dashboard import chat_runner
+    @pytest.mark.asyncio
+    async def test_the_card_carries_the_refusals_own_text(self) -> None:
+        """A dashboard turn whose session spawn is refused shows the refusal itself.
 
-        source = inspect.getsource(chat_runner._run_chat)
-        terminal = source[source.rindex("except Exception as exc:") :]
-        assert "_err_text, _ = redact_exfiltration_urls(str(exc))" in terminal
-        assert 'slot.append("error", _err_text' in terminal
+        Through the real ``_run_chat``: the refusal is raised where production
+        raises it, from acquiring the session, and must come out as the turn's
+        one error row word for word -- no generic "agent failed to start", no
+        "Connection lost -- retrying...", and no queued retry.
+        """
+        detail = sandbox._live_target_multilink_detail("/var/lib/kirocrew/live_target.json", 2)
+        record = await run_turn(
+            TurnScript(allocation_error=sandbox.SandboxCeilingUnsealable(detail))
+        )
+        assert [row["content"] for row in record.rows("error")] == [detail]
+        assert record.successors == ()
+
+    @pytest.mark.asyncio
+    async def test_the_card_scrubs_what_the_exception_text_carries(self) -> None:
+        """The same text is scrubbed of exfiltration URLs and credentials first:
+        the card is the only filter between the exception and every client."""
+        payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo" * 4
+        leaky = sandbox.SandboxCeilingUnsealable(
+            f"refused: https://evil.example.com/c?d={payload} key AKIAIOSFODNN7EXAMPLE"
+        )
+        record = await run_turn(TurnScript(allocation_error=leaky))
+        [card] = [row["content"] for row in record.rows("error")]
+        # The slot's own row is the copy every later reader takes (a fork, a
+        # transfer, the next save), so it is scrubbed where it is written -- not
+        # left to each sink to scrub again.
+        [kept] = [row["content"] for row in record.window if row.get("role") == "error"]
+        assert card.startswith("refused: ")
+        assert "[REDACTED" in kept
+        sent = json.dumps([frame.payload for frame in record.ws_frames], default=str)
+        for secret in ("evil.example.com/c?d=", "AKIAIOSFODNN7EXAMPLE"):
+            assert secret not in card
+            assert secret not in kept
+            assert secret not in sent
 
     def test_the_refusal_survives_the_cards_redaction_unchanged(self, crew_home) -> None:
         """The card runs the text through the exfiltration-URL and credential scrubbers

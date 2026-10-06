@@ -289,7 +289,8 @@ pre-authorizes `@kirocrew-cron/cron_remove_all` and `@kirocrew-core` wholesale.
 So every side session runs as `<agent>--readonly`: the resolved agent's spec
 with every backend-side grant emptied (`allowedTools: []`, no
 `mcpServers.*.autoApprove`, no `toolsSettings.*.allowed*`/`trusted*`/`auto*`
-— `shell.autoAllowReadonly` included — `includeMcpJson: false`,
+— `shell.autoAllowReadonly` included — `includeMcpJson: false` with its
+`useLegacyMcpJson` alias removed,
 `autoAllowReadonly: false`, an empty KAS `permissions`) and the lifecycle
 `hooks` removed (`agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/
 `stop` are shell commands the backend runs unprompted, some fed model-controlled
@@ -329,7 +330,9 @@ native read runs outside the gate, and the guarantee holds because it is a
 read. FAIL CLOSED: a turn whose spec cannot be derived or published is refused
 with a coded error (`ReadOnlySpecError.code`: `unsafe_name`,
 `base_spec_missing`, `base_spec_unreadable`, `derived_name_shadowed`,
-`derived_path_foreign`, `spec_write_failed`), logged and shown in the panel; it
+`derived_path_foreign`, `spec_write_failed`, `base_spec_malformed` — a
+`mcpServers`/`toolsSettings` value or entry that is neither an object nor
+`null`), logged and shown in the panel; it
 never runs under the base agent.
 
 **The allowance is a harness capability, granted by positive membership.**

@@ -2625,7 +2625,12 @@ class TestUntaggedOriginIsNotUser:
         src = _chat_handler_source()
         creates = src.count("state.get_or_create_slot(")
         from_request = src.count("origin=request_slot_origin(")
-        from_persisted = src.count('origin=str(meta.get("origin", ""))')
+        # A resume constructs from the metadata codec's keywords, whose ``origin``
+        # is the persisted conversation's (pinned behaviourally below, by
+        # ``test_every_restore_path_keeps_the_persisted_origin``).
+        from_persisted = src.count('origin=str(meta.get("origin", ""))') + src.count(
+            "**metadata_codec.slot_args("
+        )
         assert creates >= 3, f"the scan found only {creates} slot creations"
         assert creates == from_request + from_persisted, (
             f"{creates} slot creations but only {from_request} declare a "
@@ -2640,11 +2645,11 @@ class TestUntaggedOriginIsNotUser:
         USER, and `slots:user` then hands its replayed content to any app holding
         that scope. Resume creates its slot by calling
         ``_materialise_slot_from_history`` (which owns the ``get_or_create_slot``
-        and passes ``origin=str(meta.get("origin", ""))``), so the invariant is
-        that resume reads ``get_metadata`` before that call. Anchoring on the
-        call site rather than the ``origin=`` string keeps this correct now that
-        the creation lives in the shared helper: the persisted-origin declaration
-        is separately pinned by ``test_every_handler_slot_creation_declares_an_origin``.
+        and takes the persisted origin through ``metadata_codec.slot_args``), so
+        the invariant is that resume reads ``get_metadata`` before that call.
+        Anchoring on the call site rather than the origin spelling keeps this
+        correct while the creation lives in the shared helper: the persisted
+        origin itself is pinned by ``test_every_restore_path_keeps_the_persisted_origin``.
         """
         src = _chat_handler_source()
         # Search from the resume handler's definition so the helper (defined
@@ -2667,12 +2672,45 @@ class TestUntaggedOriginIsNotUser:
             "a cron result is the job's output, never something the user typed"
         )
 
-    def test_rehydrate_restores_the_persisted_origin(self):
-        """Re-deriving on restart would relabel a cron slot USER (leak) and a
-        real user slot untagged (dropping a grant an app legitimately holds)."""
-        import kiro_crew.dashboard.chat_persistence as _cp
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", [SlotOrigin.CRON, SlotOrigin.USER, ""])
+    async def test_every_restore_path_keeps_the_persisted_origin(
+        self, stored, tmp_path, monkeypatch
+    ):
+        """Re-deriving on restart or resume would relabel a cron slot USER (leak) and
+        a real user slot untagged (dropping a grant an app legitimately holds)."""
+        from chat_test_helpers import _make_state
 
-        assert 'origin=str(meta.get("origin", ""))' in Path(_cp.__file__).read_text(encoding="utf-8")
+        from kiro_crew.dashboard import chat_handlers as ch
+        from kiro_crew.dashboard import chat_persistence as cp
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        meta = {"created_at": "2026-01-01T00:00:00", "origin": stored}
+        rows = [{"role": "user", "content": "hi", "ts": "2026-01-01T00:00:01"}]
+        for name in ("open-tab", "resumed"):
+            lines = [{"_type": "metadata", **meta}, *rows]
+            (tmp_path / f"dashboard_{name}.jsonl").write_text(
+                "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8"
+            )
+        restored = cp._rehydrate_slot_from_history(state, "open-tab")
+        cp._apply_recent_session(
+            state,
+            "dashboard_recent",
+            "recent",
+            {"title": "t"},
+            dict(meta),
+            list(rows),
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=None,
+        )
+        outcome = await ch.resume_slot_from_history(
+            state, name="resumed", history_key="dashboard:resumed"
+        )
+        assert outcome.refusal is None
+        origins = [restored._origin, state._slots["recent"]._origin, outcome.slot._origin]
+        assert origins == [stored] * 3
 
 
 # ---------------------------------------------------------------------------

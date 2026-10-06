@@ -7,25 +7,41 @@ import logging as _logging
 import secrets as _secrets
 import time as _time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from ..constants import DENY_CAUSE_SURFACE_POLICY
+from ..hooks import permission_pre_tool_block
+from ..metrics import events as metric_events
 from ..subagent_persistence import (
     publish_live_cleanup_identity,
     remember_live_cleanup_identity,
     write_run_agent,
 )
+from ..tool_permission import (
+    GATE_GRANT,
+    Ask,
+    CallbackResponder,
+    ChildRule,
+    HookGate,
+    Narrator,
+    ParentPolicyAuto,
+    Policy,
+    Refusal,
+    SelAudit,
+    SpecHooks,
+    SubagentRows,
+)
 from ._component import ManagerComponent
 from .admission.types import WINDOW_ENTRY_RECOVERING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
+    from ..name_grant import Refusal as NameRefusal
     from ..subagent import (
         _CANCEL_RESUME_PREFIX,
         _DEDICATED_TOPUP_POLL_SECS,
         _DEDICATED_TOPUP_WAIT_SECS,
-        _HEADLESS_DENY_REASON,
-        _LOW_FIDELITY_DENY_REASON,
         _ON_DONE_TIMEOUT,
         _RECOVERY_SLOT_WAIT_SECS,
         _RESET_TIMEOUT,
@@ -33,8 +49,6 @@ if TYPE_CHECKING:
         _SYSTEM_PREFIX,
         _TRANSIENT_CONTINUE_MSG,
         _TURN_LIMIT,
-        DENY_CAUSE_POLICY,
-        DENY_CAUSE_SURFACE_POLICY,
         EVENT_AGENT_SWITCHED,
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
@@ -48,8 +62,6 @@ if TYPE_CHECKING:
         MEMORY_CAUSE_READ_UNANSWERED,
         STOP_CLASS_CANCELLED,
         STOP_RECOVERY_MAX_RETRIES,
-        TOOL_AUTO_APPROVE,
-        TOOL_DENY,
         TRANSIENT_RETRIES,
         AcpRuntime,
         AcpSessionProvider,
@@ -60,6 +72,7 @@ if TYPE_CHECKING:
         LLMProvider,
         Stats,
         SubagentInfo,
+        ToolApprovalCallback,
         _context_groups_of,
         _cost_bucket,
         _dedicated_start_price_gb,
@@ -90,15 +103,12 @@ if TYPE_CHECKING:
         failure_name,
         fire_tool_hooks,
         hook_gate_kwargs,
-        identity_grant_covers_child,
         invalidate_stale_kas_session,
         is_registered_agent_name,
         is_runtime_death,
         join_failures,
         kill_set,
         logger,
-        name_grant,
-        permission_pre_tool_block,
         platform_compat,
         process_survived_async,
         provider_fallback_active,
@@ -142,13 +152,17 @@ class _PendingDepthEmit:
 
     ``again`` is set by a request the burst's current read does not answer;
     ``batch_ids`` collects the waves those requests named; ``attempt`` is the
-    retry budget already spent on an unreadable store; ``task`` runs the burst
-    (set right after construction, so it is left out of the repr).
+    retry budget already spent on an unreadable store; ``must_publish`` is
+    False only while every such request is a heal (a lifecycle edge re-deriving
+    a held published depth), which publishes a read only when it differs from
+    that depth; ``task`` runs the burst (set right after construction, so it is
+    left out of the repr).
     """
 
     batch_ids: set[str]
     attempt: int
     again: bool = False
+    must_publish: bool = True
     task: asyncio.Task[None] = field(init=False, repr=False)
 
 
@@ -159,6 +173,100 @@ class _PendingDepthRetry:
     handle: asyncio.TimerHandle
     attempt: int
     batch_ids: set[str]
+
+
+def _unverified_title(title: str) -> str:
+    """The title a human is asked under for a child request with no security context.
+
+    The structured params the policy gates would verify are absent, so the
+    displayed text is agent-authored and unverifiable; the prompt says so, so the
+    approval is an informed judgment rather than a title-only rubber stamp.
+    """
+    return (
+        "⚠️ UNVERIFIED child request (security context "
+        f"missing — title is agent-authored): {title or '<unknown tool>'}"
+    )
+
+
+class _ApprovalPrompt:
+    """A running child's tool prompt to a human: the wait flag and the crew-log pair.
+
+    ``_awaiting_approval`` marks the wait, or the reaper reads a healthy approval
+    wait as a stalled subagent after the idle threshold. The crew-log pair is the
+    only record of the wait a fold can read -- the SEL audit says how the call
+    ended, not that anyone was asked -- so the request is written BEFORE the wait
+    (a fold read while the prompt is open shows it pending) and after the title
+    was rewritten (a reader sees what the human saw), and the decision is written
+    on every exit: a user Stop or a reap cancels the wait, and an approver that
+    raised leaves no answer, so either closes as a host decline rather than a
+    pending row nothing ever closes.
+    """
+
+    def __init__(self, run: RunEventCoordinator, info: SubagentInfo) -> None:
+        self._run = run
+        self._info = info
+
+    def opened(self, ask: Ask) -> tuple[str, tuple[str, int]]:
+        info = self._info
+        info._awaiting_approval = True
+        approval_id = self._run._crew_log_approval_id(info, ask.request_id)
+        origin = self._run._record_crew_log_tool_approval_requested(
+            info,
+            approval_id=approval_id,
+            tool=ask.event.tool_name or "",
+            reason=ask.event.title or "",
+        )
+        return approval_id, origin
+
+    def closed(self, token: object, decision: str, by: str) -> None:
+        approval_id, origin = cast("tuple[str, tuple[str, int]]", token)
+        self._info._awaiting_approval = False
+        self._info.last_activity = _time.time()
+        self._run._record_crew_log_approval_decided(
+            origin, approval_id=approval_id, decision=decision, by=by
+        )
+
+
+class _SubagentNarrator(Narrator):
+    """The subagent's bookkeeping around an answer: its log lines, the child-denial
+    counter and ``tool_count``."""
+
+    def __init__(self, info: SubagentInfo, rows: SubagentRows, log: _logging.Logger) -> None:
+        self._info = info
+        self._rows = rows
+        self._log = log
+
+    def refusing(self, ask: Ask, refusal: Refusal) -> None:
+        if refusal.rung == "spec_hook":
+            self._log.warning(
+                "Subagent %s PreToolUse hook blocked a tool: %s", self._info.id, refusal.reason
+            )
+        # getattr: production LLMEvents always carry sub_session_id, but the
+        # ladder is also driven with lightweight test doubles.
+        if getattr(ask.event, "sub_session_id", ""):
+            # Hang-resilience series: backend-child denials on the headless
+            # subagent surface. ``reason`` is a closed enum.
+            metric_events.emit_counter(
+                metric_events.CHILD_PERMISSION_DENIED,
+                {"surface": "subagent", "reason": self._rows.error(refusal) or "rejected"},
+            )
+
+    def declined(self, ask: Ask, refusal: NameRefusal) -> None:
+        self._log.warning(
+            "declining a hook auto-approve: %s; the request falls "
+            "through to the subagent's normal approval path",
+            refusal.log_text,
+        )
+
+    def allowed(self, ask: Ask, sent: bool) -> None:
+        # An APPROVED child-origin escalation is side-effect activity: count it
+        # in tool_count so the transient-retry / cancel-respawn replay gates see
+        # it (an approved child mutation must never be replayed by a bare
+        # original prompt). Counted on the approval, not at receipt: a purely
+        # rejected escalation executed nothing and must not permanently disable
+        # the run's replay budget.
+        if sent and ask.event.sub_session_id:
+            self._info.tool_count += 1
 
 
 class RunEventCoordinator(ManagerComponent):
@@ -1151,11 +1259,29 @@ class RunEventCoordinator(ManagerComponent):
     async def _fire_event_impl(
         self, etype: str, info: SubagentInfo, extra: dict | None = None
     ) -> None:
+        # Recorded before the frame goes out, so a slots push serialized after
+        # this frame can never carry an older depth than the frame did.
+        if etype == "subagent_queued":
+            self._manager._published_depths.record(
+                info.parent_session_key, (extra or {}).get("queued")
+            )
         if self._manager._on_event:
             try:
                 await self._manager._on_event(etype, info, extra or {})
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
+        # A child started or ended while its parent still advertises waiting rows:
+        # re-derive the depth from state, and publish it only if it changed. A path
+        # that pops or ends a row without its own emit would otherwise leave the
+        # table (and every slots push, including a reload's first) holding a count
+        # nothing will clear; a path that did emit already published this count, so
+        # a heal that agrees with it sends nothing. One read per lifecycle edge, and
+        # only for a parent with a non-zero entry.
+        if (
+            etype in ("subagent_spawn", "subagent_done")
+            and self._manager._published_depths.get(info.parent_session_key) > 0
+        ):
+            self._request_queue_depth(info.parent_session_key, set(), heal=True)
 
     def _queued_depth_impl(self, parent_session_key: str) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
@@ -1343,9 +1469,15 @@ class RunEventCoordinator(ManagerComponent):
         return emit if emit is not None and not emit.task.done() else None
 
     def _request_queue_depth(
-        self, parent_session_key: str, batch_ids: set[str], attempt: int = 0
+        self,
+        parent_session_key: str,
+        batch_ids: set[str],
+        attempt: int = 0,
+        *,
+        heal: bool = False,
     ) -> None:
-        """Join the parent's burst, or start one."""
+        """Join the parent's burst, or start one. A *heal* request publishes only
+        a depth that differs from the one last published for the parent."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1357,8 +1489,10 @@ class RunEventCoordinator(ManagerComponent):
             emit.batch_ids |= batch_ids
             # A fresh request restores the retry budget a failing burst spent.
             emit.attempt = min(emit.attempt, attempt)
+            if not heal:
+                emit.must_publish = True
             return
-        emit = _PendingDepthEmit(set(batch_ids), attempt)
+        emit = _PendingDepthEmit(set(batch_ids), attempt, must_publish=not heal)
         emit.task = loop.create_task(self._queue_depth_burst(parent_session_key, emit))
         manager._queue_depth_emits[parent_session_key] = emit
 
@@ -1385,23 +1519,37 @@ class RunEventCoordinator(ManagerComponent):
         while True:
             emit.again = False
             answering, emit.batch_ids = emit.batch_ids, set()
+            must_publish, emit.must_publish = emit.must_publish, False
             depth = await self._read_queue_depth(parent_session_key)
             if emit.again and _queue_depth_clock() - since < _QUEUE_DEPTH_MAX_WITHHOLD_SECS:
                 emit.batch_ids |= answering
+                emit.must_publish |= must_publish
                 continue
             overlapped = emit.again
             if depth is None:
                 self._arm_queue_depth_retry(parent_session_key, emit.attempt, answering)
             else:
+                # This read answers the parent's armed re-read, so it owes that
+                # re-read's frame: a heal that only disarmed it dropped a frame
+                # still due (a new wait label at an unchanged count).
+                retry = self._manager._queue_depth_retries.get(parent_session_key)
+                if retry is not None:
+                    answering |= retry.batch_ids
+                    must_publish = True
                 self._disarm_queue_depth_retry(parent_session_key)
-                await self._publish_queue_depth(
-                    parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
-                )
+                if must_publish or depth != self._published_depth(parent_session_key):
+                    await self._publish_queue_depth(
+                        parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
+                    )
             if not emit.again:
                 return
             # Asked during the read (past the withhold cap) or while the frame
             # was being sent: not answered yet.
             since = _queue_depth_clock()
+
+    def _published_depth(self, parent_session_key: str) -> int:
+        """The depth last published for the parent, 0 when none is held."""
+        return self._manager._published_depths.get(parent_session_key)
 
     async def _publish_queue_depth(
         self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool
@@ -1589,6 +1737,187 @@ class RunEventCoordinator(ManagerComponent):
             "person authorizes it, so a single retry of that one is reasonable. "
             "Either way, say in your result which servers were unavailable and "
             "continue with the tools you do have.\n\n"
+        )
+
+    def _crew_log_approval_id(self, info: SubagentInfo, request_id: object) -> str:
+        """The id a child's tool prompt is recorded under, scoped to that child.
+
+        ``request_id`` is the JSON-RPC message id of the child's OWN ACP
+        connection, which each backend process counts up from zero on its own.
+        It identifies a request on that connection and nowhere else, while the
+        crew log's pending map is keyed by this id across one PARENT session --
+        and a parent's own prompts share that map. Two children awaiting
+        approval at the same time, an ordinary situation for a fan-out, would
+        both raise id ``0``: the second request would overwrite the first, the
+        first answer would clear the row while the other child is still parked,
+        and the decision would be paired with the wrong tool.
+
+        Prefixing with the child's id makes the recorded id unique per child,
+        which is all the map needs. The transport id is untouched -- it is what
+        answers the call on the wire, and only the log's own key changes.
+        """
+        return f"{info.id}:{request_id}"
+
+    def _record_crew_log_tool_approval_requested(
+        self, info: SubagentInfo, *, approval_id: str, tool: str, reason: str
+    ) -> "tuple[str, int]":
+        """Write a running child's tool prompt as an ``approval/requested`` entry.
+
+        Returns the parent session and asking turn the entry was filed under, so
+        the decision is recorded beside its own request -- hand it to
+        :meth:`ManagerComponent._record_crew_log_approval_decided`, the closer
+        the spawn gate shares. An empty session id means nothing was written and
+        that closer is a no-op too, so the pair is all-or-nothing by
+        construction rather than by two separate checks.
+
+        The entry goes in the PARENT's log, under the turn that asked for the
+        child. A subagent opens no crew log of its own, so that is the only unit
+        that can carry it, and the asking turn comes from the dispatch pin rather
+        than the parent's live turn: a person can take an unbounded time to
+        answer, by which point the parent is very likely on an unrelated turn.
+
+        The origin comes through ``child_origin``, the gated reader, not the
+        ``dispatch_origin`` the spawn gate uses. A prompt raised mid-run happens
+        after the child's ``subagent/spawned`` opener exists, which is the state
+        the gated reader is for; the spawn gate needs the ungated one precisely
+        because its prompt precedes that opener.
+
+        ``approval_id`` is the child-scoped id from
+        :meth:`_crew_log_approval_id`, never the bare transport request id.
+        ``tool`` and ``reason`` are the child's own tool name and the text the
+        human is shown. Both are passed through as the event carries them and the
+        emitter omits an empty one rather than recording that the tool was the
+        empty string.
+
+        Every name is imported inside the body on purpose. This method does NOT
+        end in ``_impl``, so ``bind_component_globals`` leaves it running on this
+        module's own globals -- where the facade's imports, ``logger`` included,
+        exist only under ``TYPE_CHECKING``.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            if not crew_log_emit.enabled():
+                return ("", 0)
+            sid, asked_turn = crew_log_emit.child_origin(info.id)
+            if not sid:
+                return ("", 0)
+            crew_log_emit.on_approval_requested(
+                sid,
+                asked_turn,
+                approval_id=approval_id,
+                tool=tool,
+                reason=reason,
+            )
+            return (sid, asked_turn)
+        except Exception:
+            _logger.debug("crew log: recording a child approval request failed", exc_info=True)
+            return ("", 0)
+
+    def _permission_policy(
+        self,
+        info: SubagentInfo,
+        *,
+        spec: Any,
+        parent_policy: str,
+        consult: Callable[[LLMEvent], object],
+        sel: Callable[[], Any],
+        log: _logging.Logger,
+    ) -> Policy:
+        """The subagent surface's permission ladder for one run and its current agent.
+
+        In order: the agent spec's PreToolUse hooks; the hook gate (*consult*);
+        ``parent_policy=auto`` (BEFORE the gate's grant for a low-fidelity child,
+        AFTER it otherwise); then the per-subagent approval factory, the gateway's
+        approver, and with neither the headless refusal. A low-fidelity child
+        request -- a backend child whose security context is absent, so any
+        auto-approve would rest on the agent-authored title alone -- honours only
+        an unconditional grant it is eligible for and the identity-keyed hook
+        grant, and is handed to an attached approver under an UNVERIFIED title; an
+        approver that raises there counts as a rejection. Only a truly headless run
+        refuses it outright. A refusal row the audit cannot write is logged and the
+        request still answered. *sel* and *log* are the facade's own bindings, so
+        its audit and log seams see every row and line.
+
+        The facade's deny reasons are imported inside the body on purpose. This
+        method does NOT end in ``_impl``, so it keeps this module's own globals.
+        """
+        from kiro_crew.subagent import (  # circular import: the facade imports this module
+            _HEADLESS_DENY_REASON,
+            _LOW_FIDELITY_DENY_REASON,
+        )
+
+        manager = self._manager
+        rows = SubagentRows(info.id)
+        prompt = _ApprovalPrompt(self, info)
+
+        # Each approver is asked only while its responder reports it attached.
+        def _factory_approver() -> Callable[[LLMEvent], Awaitable[object]]:
+            factory = cast(
+                "Callable[[SubagentInfo], Callable[[LLMEvent], Awaitable[bool]]]",
+                manager._on_tool_approval_factory,
+            )
+            return factory(info)
+
+        def _ask_parent(event: LLMEvent) -> Awaitable[object]:
+            approve = cast("ToolApprovalCallback", manager._on_tool_approval)
+            return approve(event, info.parent_session_key)
+
+        def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
+            if manager._on_tool_approval_factory:
+                return _factory_approver()(event)
+            return _ask_parent(event)
+
+        return Policy(
+            gate=HookGate(consult),
+            audit=SelAudit(rows, on_refusal_failure="answer", sel=sel, log=log),
+            otherwise=Refusal.host("headless", _HEADLESS_DENY_REASON, DENY_CAUSE_SURFACE_POLICY),
+            floors=(
+                SpecHooks(
+                    spec,
+                    store=lambda: manager.hook_store,
+                    # Read per request, as the task runner's ladder reads its own.
+                    pre_tool=lambda *a, **kw: permission_pre_tool_block(*a, **kw),
+                    subagent_id=info.id,
+                    parent_session_key=info.parent_session_key or None,
+                    agent_role=info.agent or None,
+                ),
+            ),
+            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy)),
+            responders=(
+                CallbackResponder(
+                    _factory_approver,
+                    attended=lambda: bool(manager._on_tool_approval_factory),
+                    name="factory",
+                    watch=prompt,
+                ),
+                CallbackResponder(
+                    lambda: _ask_parent,
+                    attended=lambda: bool(manager._on_tool_approval),
+                    name="callback",
+                    watch=prompt,
+                ),
+            ),
+            child=ChildRule.enforce(
+                # For such a child the unconditional grant is tried BEFORE the
+                # gate's (identity-keyed) one.
+                grants=(ParentPolicyAuto(parent_policy), GATE_GRANT),
+                unattended=Refusal.host(
+                    "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
+                ),
+                responder=CallbackResponder(
+                    lambda: _ask_for_child,
+                    attended=lambda: bool(
+                        manager._on_tool_approval_factory or manager._on_tool_approval is not None
+                    ),
+                    name="child",
+                    watch=prompt,
+                    on_error=lambda: log.exception("child approval callback failed"),
+                ),
+                annotate=_unverified_title,
+            ),
+            narrator=_SubagentNarrator(info, rows, log),
         )
 
     async def _run_inner_impl(
@@ -2290,6 +2619,37 @@ class RunEventCoordinator(ManagerComponent):
         # On such a backend PreToolUse hooks gate each permission request below;
         # the KAS projection turns every call they cover into one.
         _spec = await turn_spec_hooks(client, agent)
+        # The run's permission ladder. Imported here because this body runs on
+        # the facade's globals (bind_component_globals), not this module's.
+        from kiro_crew import tool_permission
+
+        # The gate consult stays here, at the surface: it is this run's own
+        # attribution of the caller (the spawning app's profile keeps
+        # constraining the child's ongoing tool calls). Bound to a name because
+        # test_hooks' extraction scan recognises the assignment shape.
+        def _consult_gate(event: LLMEvent) -> object:
+            verdict = self._manager._ctx_builder.hooks.on_tool_call(
+                event.title,
+                session_key=session_key,
+                agent=info.agent or "",
+                app=info.app or "",
+                **hook_gate_kwargs(event),
+            )
+            return verdict
+
+        def _policy_for(spec: Any) -> tool_permission.Policy:
+            # ``sel`` is read per row, as the facade's audit seam expects.
+            return self._permission_policy(
+                info,
+                spec=spec,
+                parent_policy=parent_policy,
+                consult=_consult_gate,
+                sel=lambda: sel(),
+                log=logger,
+            )
+
+        _wire = tool_permission.AcpWire(client)
+        _policy = _policy_for(_spec)
         # Set when the stream ends on a generate failure after real output.
         _kept_after_generate_failure = False
 
@@ -2326,6 +2686,10 @@ class RunEventCoordinator(ManagerComponent):
             msg = full_message
             while True:
                 usage.begin(client)
+                # A new prompt starts with nothing in flight. A call the last
+                # attempt or turn never closed would otherwise wait in the
+                # in-flight set and be handed the slot when a later call returns.
+                self._manager._clear_tool_dispatch(info)
                 try:
                     if not use_session_sharing:
                         # Publish the live dedicated PID before every prompt,
@@ -2643,9 +3007,9 @@ class RunEventCoordinator(ManagerComponent):
                 await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 # Both kiro-cli and claude-agent-acp surface tool calls via
-                # session/request_permission. Run them through the same hook
-                # → parent_policy → interactive callback pipeline so the
-                # approve / reads / trust / yolo protocol applies uniformly.
+                # session/request_permission. Every one is settled by the run's
+                # permission ladder (``_permission_policy``), the limit bails
+                # below included.
                 #
                 # Child-origin escalations (runtime-routed backend subagents)
                 # do NOT consume the parent's turn budget: a child asking for
@@ -2656,13 +3020,14 @@ class RunEventCoordinator(ManagerComponent):
                 # child could generate unbounded approval prompts until the
                 # wall-clock reaper fires. Generous multiple of the parent's
                 # limit: legitimate crews fan many small child tool calls.
+                _ask = tool_permission.Ask(event, _wire, session_key)
                 if not event.sub_session_id:
                     turns += 1
                     info.turns = turns
                 else:
                     # Child escalation: counted toward its own volume bound
                     # here; side-effect activity (tool_count) is counted at
-                    # APPROVAL in _approve_and_log — a purely rejected
+                    # APPROVAL by the ladder's narrator — a purely rejected
                     # escalation executed nothing and must not consume the
                     # run's replay budget (tool_count gates prompt replay
                     # and cancel-respawn).
@@ -2672,22 +3037,9 @@ class RunEventCoordinator(ManagerComponent):
                         # event is already dequeued, so returning without a
                         # response would strand the child's oneshot — under
                         # session sharing the runtime outlives this subagent
-                        # and nothing else tears the connection down. The
-                        # "requests are answered on every queue path"
-                        # contract this PR establishes applies to limit
-                        # bails too.
-                        # Not a verdict on the call: the run bails here and its
-                        # turn ends, so there is no continuing turn for a deny
-                        # notice to correct.
+                        # and nothing else tears the connection down.
                         try:
-                            await self._manager._reject_and_log(
-                                client,
-                                event.request_id,
-                                session_key,
-                                event,
-                                cause=None,
-                                error="child_escalation_limit",
-                            )
+                            await tool_permission.bail(_ask, _policy, "child_escalation_limit")
                         except Exception:
                             logger.exception("failed to reject escalation-limit trigger request")
                         info.result = result_text or "_Partial output._"
@@ -2732,17 +3084,8 @@ class RunEventCoordinator(ManagerComponent):
                     # Same contract as the child_escalation_limit bail: the
                     # triggering request is already dequeued and must be
                     # answered before this loop exits, or its oneshot strands.
-                    # Not a verdict on the call: the run bails here (no
-                    # continuing turn for a notice to correct).
                     try:
-                        await self._manager._reject_and_log(
-                            client,
-                            event.request_id,
-                            session_key,
-                            event,
-                            cause=None,
-                            error="turn_limit",
-                        )
+                        await tool_permission.bail(_ask, _policy, "turn_limit")
                     except Exception:
                         logger.exception("failed to reject turn-limit trigger request")
                     info.result = result_text or "_Partial output._"
@@ -2753,318 +3096,13 @@ class RunEventCoordinator(ManagerComponent):
                     usage.settle()
                     self._manager._write_tombstone(info, "turn_limit")
                     return
-                _spec_block = None
-                if _spec.gated:
-                    _spec_block = (
-                        "the agent spec's hooks could not be read"
-                        if _spec.unreadable
-                        else await permission_pre_tool_block(
-                            self._manager.hook_store,
-                            _spec.hooks,
-                            _spec.cwd,
-                            event.title,
-                            event.tool_input,
-                            tool_identity=event.tool_name,
-                            mcp_server=event.mcp_server_name,
-                            harness_tool_id=event.harness_tool_id,
-                            subagent_id=info.id,
-                            parent_session_key=info.parent_session_key or None,
-                            agent_role=info.agent or None,
-                        )
-                    )
-                if _spec_block is not None:
-                    logger.warning(
-                        "Subagent %s PreToolUse hook blocked a tool: %s", info.id, _spec_block
-                    )
-                    # A PreToolUse gate verdict on the call itself (a delivered
-                    # deny, or a gate with no verdict, which blocks): the policy
-                    # cause, with the gate's own reason.
-                    await self._manager._reject_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        cause=DENY_CAUSE_POLICY,
-                        reason=_spec_block,
-                        error="hook_deny",
-                        metadata={"subagent_id": info.id, "reason": "spec_hook"},
-                    )
-                    continue
-                tool_result = self._manager._ctx_builder.hooks.on_tool_call(
-                    event.title,
-                    session_key=session_key,
-                    agent=info.agent or "",
-                    app=info.app or "",
-                    **hook_gate_kwargs(event),
-                )
-                if tool_result.action == TOOL_DENY:
-                    # The hook judged the call itself: a policy verdict, with
-                    # the hook's own reason so the class remediation can key
-                    # off it.
-                    await self._manager._reject_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        cause=DENY_CAUSE_POLICY,
-                        reason=tool_result.reason or "",
-                        error="hook_deny",
-                    )
-                    continue
-                if event.child_low_fidelity:
-                    # UNCONDITIONAL parent grant: parent_policy=auto approves
-                    # regardless of event content, so it may honor a request
-                    # that is grant-eligible (see
-                    # AcpEvent.child_unconditional_grant_eligible — inside
-                    # this low-fidelity branch that means the canonical MCP
-                    # identity is verified and only the ARGUMENTS are
-                    # unverified, which this grant never reads). Honor the
-                    # grant instead of stalling a trusted fan-out on an
-                    # interactive card per call.
-                    if parent_policy == "auto" and event.child_unconditional_grant_eligible:
-                        await self._manager._approve_and_log(
-                            client,
-                            event.request_id,
-                            session_key,
-                            event,
-                            metadata={
-                                "subagent_id": info.id,
-                                "reason": "parent_policy_auto",
-                                "child_mcp_identity": (
-                                    f"{event.mcp_server_name}/{event.tool_name}"
-                                ),
-                                "child_args_unverified": True,
-                            },
-                            info=info,
-                        )
-                        continue
-                    # IDENTITY-KEYED hook grant: the app-own-server grant, or an
-                    # ``auto_approve_tools`` pattern matched against
-                    # ``@server/tool`` from ``_meta.kiro``
-                    # (ToolHookResult.identity_grant). Its matched input is the
-                    # same identity ``child_mcp_identity_trusted`` verified, so a
-                    # forged title cannot reach it, and it is the user's own
-                    # NARROW grant where parent_policy=auto is the broad one.
-                    # Every other hook auto-approve (title, payload kind, command)
-                    # stays fail-closed below for a low-fidelity child.
-                    if identity_grant_covers_child(tool_result, event):
-                        await self._manager._approve_and_log(
-                            client,
-                            event.request_id,
-                            session_key,
-                            event,
-                            metadata={
-                                "subagent_id": info.id,
-                                "reason": "hook_identity_auto_approve",
-                                "child_mcp_identity": (
-                                    f"{event.mcp_server_name}/{event.tool_name}"
-                                ),
-                                "child_args_unverified": True,
-                            },
-                            info=info,
-                        )
-                        continue
-                    # Backend-internal child origin whose SECURITY context is
-                    # absent (structured params missing, unresolved shell
-                    # classification, or shell without a recoverable command —
-                    # AcpEvent.child_low_fidelity): any AUTO-approve would
-                    # rest on the LLM-authored title alone, so skip the hook
-                    # auto-approve and parent_policy=auto branches. When an
-                    # interactive approver IS configured — the per-subagent
-                    # factory, or the gateway-level _on_tool_approval
-                    # fallback the non-child path below also uses — hand the
-                    # decision to it: that is a human/host judgment, the same
-                    # downgrade the dashboard's card provides. Only a truly
-                    # headless consumer fails closed.
-                    _child_fallback = self._manager._on_tool_approval
-                    if self._manager._on_tool_approval_factory or _child_fallback is not None:
-                        # The human must know the title is ALL there is: the
-                        # structured params the policy gates would verify are
-                        # absent, so the displayed text is agent-authored and
-                        # unverifiable. Annotate the prompt so the approval
-                        # is an informed judgment, not a title-only rubber
-                        # stamp.
-                        event.title = (
-                            "⚠️ UNVERIFIED child request (security context "
-                            f"missing — title is agent-authored): {event.title or '<unknown tool>'}"
-                        )
-                        approved = False
-                        # Same human-wait lifecycle as the ordinary callback
-                        # branches below: without _awaiting_approval the
-                        # reaper reads a healthy approval wait as a stalled
-                        # subagent after the idle threshold.
-                        info._awaiting_approval = True
-                        try:
-                            if self._manager._on_tool_approval_factory:
-                                approve_cb = self._manager._on_tool_approval_factory(info)
-                                approved = bool(await approve_cb(event))
-                            elif _child_fallback is not None:
-                                approved = bool(
-                                    await _child_fallback(event, info.parent_session_key)
-                                )
-                        except Exception:
-                            logger.exception("child approval callback failed")
-                        finally:
-                            info._awaiting_approval = False
-                            info.last_activity = time.time()
-                        if approved:
-                            await self._manager._approve_and_log(
-                                client,
-                                event.request_id,
-                                session_key,
-                                event,
-                                metadata={
-                                    "subagent_id": info.id,
-                                    "reason": "child_interactive_approved",
-                                },
-                                info=info,
-                            )
-                        else:
-                            # The approver said no: kiro-cli's "user denied"
-                            # is the truth here, so no notice.
-                            await self._manager._reject_and_log(
-                                client,
-                                event.request_id,
-                                session_key,
-                                event,
-                                cause=None,
-                                error="child_interactive_rejected",
-                            )
-                        continue
-                    # The SURFACE fails closed: nothing here can judge a
-                    # request with no security context and no approver is
-                    # attached to ask, so the notice says what this run can
-                    # and cannot do rather than offer a sanctioned alternative.
-                    await self._manager._reject_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        cause=DENY_CAUSE_SURFACE_POLICY,
-                        reason=_LOW_FIDELITY_DENY_REASON,
-                        error="child_origin_no_command_context",
-                    )
-                    continue
-                if tool_result.action == TOOL_AUTO_APPROVE:
-                    # The hook granted this by NAME (its `auto_approve_tools`
-                    # globs, or the read-only allowlist). Honour it only while
-                    # each program name in the command still resolves to the
-                    # program it appears to name; a shadowed, agent-tree or
-                    # unidentified resolution DOWNGRADES to the remaining rungs
-                    # below (parent policy, the interactive factory, the
-                    # gateway fallback, or the headless fail-closed reject) —
-                    # never a hard block. This surface runs unattended, which
-                    # makes an unverified name the cheaper attack path here,
-                    # not the rarer one.
-                    _ng_refusal = await name_grant.refusal_for_event(event)
-                    if _ng_refusal is None:
-                        await self._manager._approve_and_log(
-                            client,
-                            event.request_id,
-                            session_key,
-                            event,
-                            metadata={"subagent_id": info.id, "reason": "hook_auto_approve"},
-                            info=info,
-                        )
-                        continue
-                    logger.warning(
-                        "declining a hook auto-approve: %s; the request falls "
-                        "through to the subagent's normal approval path",
-                        _ng_refusal.log_text,
-                    )
-                    name_grant.log_decline(
-                        source="subagent",
-                        session_key=session_key,
-                        event=event,
-                        refusal=_ng_refusal,
-                        tier="hook_auto_approve",
-                        metadata={"subagent_id": info.id},
-                        sel_factory=sel,
-                    )
-                if parent_policy == "auto":
-                    await self._manager._approve_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        metadata={"subagent_id": info.id, "reason": "parent_policy_auto"},
-                        info=info,
-                    )
-                    continue
-                if self._manager._on_tool_approval_factory:
-                    approve_cb = self._manager._on_tool_approval_factory(info)
-                    info._awaiting_approval = True
-                    try:
-                        approved = await approve_cb(event)
-                    finally:
-                        info._awaiting_approval = False
-                        info.last_activity = time.time()
-                    if not approved:
-                        # The per-subagent approver said no: kiro-cli's "user
-                        # denied" is the truth here, so no notice.
-                        await self._manager._reject_and_log(
-                            client,
-                            event.request_id,
-                            session_key,
-                            event,
-                            cause=None,
-                            metadata={"subagent_id": info.id, "reason": "factory_rejected"},
-                        )
-                        continue
-                    await self._manager._approve_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        metadata={"subagent_id": info.id},
-                        info=info,
-                    )
-                elif self._manager._on_tool_approval:
-                    info._awaiting_approval = True
-                    try:
-                        approved = await self._manager._on_tool_approval(
-                            event, info.parent_session_key
-                        )
-                    finally:
-                        info._awaiting_approval = False
-                        info.last_activity = time.time()
-                    if not approved:
-                        # The gateway-level approver said no: kiro-cli's "user
-                        # denied" is the truth here, so no notice --
-                        # interactive_rejected.
-                        await self._manager._reject_and_log(
-                            client, event.request_id, session_key, event, cause=None
-                        )
-                        continue
-                    await self._manager._approve_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        metadata={"subagent_id": info.id},
-                        info=info,
-                    )
-                else:
-                    # No callback, no auto policy — deny by default. The
-                    # SURFACE refuses the call, not a rule about the call
-                    # itself: nothing here can approve it, so the notice names
-                    # what this run permits instead of a sanctioned alternative
-                    # the model should run.
-                    await self._manager._reject_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        cause=DENY_CAUSE_SURFACE_POLICY,
-                        reason=_HEADLESS_DENY_REASON,
-                        metadata={"subagent_id": info.id, "reason": "no_policy_deny_default"},
-                    )
-                    continue
+                await tool_permission.settle(_ask, _policy)
             elif event.kind == EVENT_AGENT_SWITCHED:
                 # A mid-run mode switch runs a different agent, so ITS spec hooks gate
                 # the permission requests that follow, not the previous agent's. An
                 # unnamed switch falls back to the agent the session recorded for it.
                 _spec = await turn_spec_hooks(client, event.text or "")
+                _policy = _policy_for(_spec)
                 await refuse_stale_switch(client, event.text or "")
             elif event.kind == EVENT_TOOL_CALL:
                 # Auto-allowed (kiro-internal) tools surface here as informational

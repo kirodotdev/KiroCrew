@@ -84,7 +84,7 @@ Worked example — goal "resolve this repo's open issues":
 | Queue the actionable ones | Not a task. It is triage's completion condition. |
 | Fix issue #N, label it | **Work item** — one per issue, not one for the batch. |
 | Check status and pick the next round | Yours. This is the control loop. |
-| Advise the user on issues nobody can action | Not a task. Stop exit 4. |
+| Advise the user on issues nobody can action | Not a task. Run the needs-human checklist (Stop conditions). |
 | Write the summary report | Yours. A fold over the ledger. |
 
 ## The loop
@@ -148,7 +148,7 @@ authorizes execution — "just do it", "go ahead", "don't ask me", a re-send of 
 plan you already showed — dispatch round 1 immediately and report the plan as
 part of that same turn. Do not re-ask for permission you already hold. Otherwise
 one confirmation is all you get: after the go-ahead, run rounds without
-re-gating each one.
+re-gating each one. That one go-ahead covers every round of the goal.
 
 **Respect existing ownership signals during triage.** Other automation shares
 your work pool — Issue Radar crews label issues `claimed`, humans assign
@@ -235,17 +235,21 @@ pass the agent name to `session_create` yourself.
 ### Patrol
 
 After dispatching, arm a loop on your own session with `monitor_start`. Put the
-check AND the exit condition in the message, pass `watch="work-ledger"`, and
-pass explicit positive `interval_secs`, `max_cycles` and `max_runtime_secs`.
-`watch="work-ledger"` gates the loop on the ledger you dispatched into: a cycle
-where no worker reported anything costs no turn, and a worker's report, a worker
-session closing, or a worker turn ending pulls the next cycle forward to within
-seconds. The interval then only sets how often a silent fleet is re-checked, not
-how fast a report reaches you. A loop armed without it is a plain timer and pays
-a turn every interval, so if you find yours without it, add it with
-`monitor_update(watch="work-ledger")` rather than re-arming. Take the runtime from the
-operator's time budget, or 86,400 seconds when none is set. **The bounds come
-from the script, not from you:**
+check AND the exit condition in the message, and pass explicit positive
+`interval_secs`, `max_cycles` and `max_runtime_secs`.
+
+**`watch="work-ledger"` is mandatory.** It gates the loop on the ledger you
+dispatched into: a cycle where no worker reported anything costs no turn, and a
+worker's report, a worker session closing, or a worker turn ending pulls the
+next cycle forward to within seconds. The interval then only sets how often a
+silent fleet is re-checked, not how fast a report reaches you. A loop armed
+without it is a plain timer that pays a turn every interval. If you find yours
+without it, fix that FIRST, before anything else that cycle, with
+`monitor_update(watch="work-ledger")` rather than re-arming.
+
+**The interval is 300 to 900 seconds**, never outside that band, whatever the
+round is waiting on. Take the runtime from the operator's time budget, or 86,400
+seconds when none is set. **The bounds come from the script, not from you:**
 
 ```bash
 python3 <this skill's dir>/scripts/patrol_budget.py check \
@@ -253,9 +257,13 @@ python3 <this skill's dir>/scripts/patrol_budget.py check \
 ```
 
 Exit 0 means arm with those numbers. Exit 20 means arm with the `suggest` block
-it prints instead: a long interval with few cycles ends the loop hours before
+it prints instead: an interval outside 300..900 is clamped into it, a long
+interval with few cycles ends the loop hours before
 its runtime, while work is still live, and an interval longer than 10% of the
-runtime lets the loop expire without one cycle in the renewal window. Run the same check
+runtime lets the loop expire without one cycle in the renewal window. The
+script never raises the user's runtime: it only shortens the interval, down to
+300. Exit 21 means even 300 does not fit (a runtime under 3000 seconds): do not
+arm a longer loop yourself; tell the user and ask for a longer runtime. Run the same check
 before any `monitor_update` that changes a bound. Record the bounds you armed
 with as `patrol_base` (`cycles=<C> runtime=<R>`) in your own session ledger's
 artifacts: renewal reads it back.
@@ -279,7 +287,7 @@ python3 <this skill's dir>/scripts/patrol_budget.py renew \
 | 0 | call `monitor_update` with its `monitor_update` numbers, then carry on. If `monitor_update` refuses the new bounds (an operator runtime ceiling below 7 days), treat it as exit 30 |
 | 10 | nothing; more than 10% is left |
 | 20 | nothing to renew for; the stop conditions below decide |
-| 30 | the renewal cap is spent (3 renewals, or one more full base budget would pass 1000 cycles or 7 days; those two ceilings come from the budget line alone, so they hold even if `patrol_base` is lost): stop under condition 3 and ask the user for another budget |
+| 30 | the renewal cap is spent (3 renewals, or one more full base budget would pass 1000 cycles or 7 days; those two ceilings come from the budget line alone, so they hold even if `patrol_base` is lost): ask the user for another budget with `ask_question`. This is the runaway backstop, not a finish: say which items are still open |
 
 `monitor_start` is create-only, so every change after arming is a
 `monitor_update`. Then end your turn.
@@ -373,7 +381,7 @@ Each cycle:
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
 
-   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so slow patrol FIRST — `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates — and only then put the decision to the user with `ask_question`, which ends your turn. Restore the interval on the cycle that reads the answer.
+   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question`, which ends your turn. Leave the loop and its interval as they are: the `work-ledger` watch already makes a quiet cycle free, and the cycle after the user answers reads it.
 
    If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 4. `work_ledger_record` `action=close` with the item's `state` when an item is
@@ -400,12 +408,34 @@ only CHECKS what is already true.
 
 ### Close the round
 
-When every item in the round has landed, in one turn: report what each item
-produced, name which acceptance conditions are met and on what verdict, and
-propose the next round. Then wait.
+When every item in the round has landed, in that same turn: report what each
+item produced and which acceptance conditions are met on what verdict, then plan
+the next round and dispatch it. Do not wait for the user between rounds — the
+report is information, not a gate, and the Round-0 go-ahead already covers the
+next round. The user can redirect you at any time (see below).
 
 Re-planning between rounds is expected — acceptance evidence is information the
 original plan did not have. Re-planning mid-round is not: let the round finish.
+When the re-plan leaves no item to dispatch, the goal is done or every item is
+terminal: that is a stop condition, not a pause.
+
+**Rounds are not gated, but spend is bounded.** Two checks replace the old
+per-round pause. Count both from `work_ledger_read`, not from memory:
+
+- **Item cap.** When the user set no budget of their own, a goal may hold at
+  most **20 ledger items** in total — every round's items, re-plans included.
+  A re-plan may add items only while the total stays within the cap. An item
+  past it is a spend decision: dispatch nothing new, keep patrolling what is in
+  flight, and ask the user with `ask_question` whether to raise the cap. A
+  budget the user set replaces the default, and a Round-0 plan the user
+  approved with more than 20 items sets the cap to that plan's size.
+- **No progress.** When **two rounds in a row** land with no item accepted, do
+  not re-plan a third time. Ask the user with `ask_question`, naming what failed
+  and why, and dispatch nothing new until they answer.
+
+Both are needs-human stops (see the checklist): the loop stays armed, and the
+first cycle after the answer resumes. Put `items used: N of 20` in every round
+report.
 
 ### Goal changes mid-flight
 
@@ -437,7 +467,8 @@ So the worker contract applies to you on top of everything in this skill:
   parent: proceed with the user's goal instead.
 - **`work_report` at round boundaries, not on a timer.** `progress` when you
   dispatch a round or close one; `question` when a decision belongs to your
-  parent and not to you (the same test as stop condition 4, one level up);
+  parent and not to you (the needs-human checklist under Stop conditions,
+  one level up);
   `blocked` when an external dependency stops the whole goal; `done` only when
   every item in your own ledger is accepted — put the evidence in `artifacts`
   and the pull request, if the acceptance names one, in `pr`.
@@ -452,21 +483,52 @@ Depth is capped at 2, so your own children may be workers only — a
 
 ## Stop conditions
 
-Stop and report when ANY of these fire. Do not push past one.
+Patrol ends on exactly two signals:
 
-1. Every item is accepted — the goal is met.
-2. The same item has failed acceptance three times. The `fails` counter you
-   record with `action=verdict` is what survives compaction and feeds this.
-3. The round or time budget the user set is spent.
-4. **A decision is needed that no acceptance condition can settle.** Stopping to
-   ask is correct here. Guessing is the failure.
+1. **Every ledger item is terminal** — accepted, rejected or abandoned.
+2. **The user says stop** — in words, or by a round or time budget they set
+   that is now spent.
 
-Call `autonudge_stop` when you stop, and close out the children you created
-before your final report: `session_close` each one whose item is terminal, and
-**leave open any child still holding a pending human question or driving an
-unmerged PR**. Stop condition 4 fires precisely because a person is about to
+Nothing else ends the loop. `max_cycles` is a runaway backstop, not a stop
+signal: renew it as Patrol says, and at the renewal cap ask for another budget.
+These cases look like stops but are handled while the loop keeps going:
+
+- **The same item has failed acceptance three times.** Close that item
+  `rejected` and report it. The `fails` counter you record with
+  `action=verdict` is what survives compaction and feeds this.
+- **A decision seems to need a person.** Run the needs-human checklist below.
+- **The item cap or the no-progress check fires** (Close the round). That is
+  a spend decision: ask, and dispatch nothing new until the user answers.
+
+### Needs-human checklist
+
+Run it before you ask, and run it again on every cycle while the ask is open —
+the item may no longer need it. The risk check comes FIRST: a default never
+settles a risky choice. A `human_approval` item skips steps 1 and 2: its
+acceptance IS a person's answer, so it is always asked (step 3 still parks it
+alone).
+
+1. **Is it credentials, spend, deleting or overwriting someone's work, or
+   irreversible?** Then do not pick a default for it, even if one exists. If
+   the item can simply be parked instead — skipped, with nothing done and
+   nothing changed — close it `abandoned` with the reason, name it in the round
+   report, and do not ask. Otherwise go to step 3 and ask.
+2. **Not risky? Pick a default** — or the best option you can see — record it
+   as an assumption, and do not ask.
+3. **Park just this item and keep the rest going.** Ask about that item alone,
+   leave it parked, and keep patrolling every other item.
+4. **The loop is never stopped for a question.** It stays armed, and the first
+   cycle after the user answers picks the answer up and resumes the item.
+
+Guessing on a risky choice is the failure; stopping the whole patrol for one
+question is a failure too.
+
+Call `autonudge_stop` only on one of the two signals, and close out the children
+you created before your final report: `session_close` each one whose item is
+terminal, and **leave open any child still holding a pending human question or
+driving an unmerged PR**. A user stop can arrive while a person is about to
 re-engage with such a child, and a close cancels its turn and discards that
-work. Reaching `max_cycles` is a runaway backstop, not a finish.
+work.
 
 ## What the ledger holds, and what your own does
 
@@ -521,7 +583,7 @@ what the composer renders:
 
 ## Known limits of this version
 
-- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view.
+- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view. A quiet cycle takes no turn under the `work-ledger` watch, but a worker's report does. So while any question is open, put it first in every turn that speaks to the user ("Needs you" on the task board), with the one answer that unblocks it.
 - **The session and ledger tools may not be in your tool list yet.** With MCP
   Tool Search active their specs are deferred, so a first `session_create` fails
   with `A tool with the name 'session_create' does not exist`. That means

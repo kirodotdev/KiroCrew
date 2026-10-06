@@ -422,12 +422,11 @@ describe('RegistryManager', () => {
     })
 
     it('does not invent a trust tier for an operator row on a replace-all PUT', async () => {
-      // The backend resolves the trusted tier only from what the build supplies,
-      // because config.json is agent-writable — so an operator row always reads
-      // `index` and there is no tier for this round-trip to preserve. What must
-      // hold is that adding a row does not invent one.
+      // The GET reports the tier IN FORCE (here an operator grant, `owner`), but
+      // config.json never stores one, so the PUT carries only each row's
+      // coordinates: no tier is invented and none is echoed back.
       mockListRegistries.mockResolvedValue({
-        registries: [{ name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main', trust: 'index' }],
+        registries: [{ name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main', trust: 'owner' }],
       })
       mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [], newlyTrustedHosts: [] })
       render(<RegistryManager />, { wrapper: Wrapper })
@@ -440,7 +439,7 @@ describe('RegistryManager', () => {
       fireEvent.click(buttons[buttons.length - 1])
       await waitFor(() => {
         expect(mockUpdateRegistries).toHaveBeenCalledWith([
-          { name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main', trust: 'index' },
+          { name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main' },
           { name: '', repo: 'https://forge.example.com/org/second.git', branch: '' },
         ])
       })

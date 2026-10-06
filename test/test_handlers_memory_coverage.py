@@ -273,6 +273,36 @@ class TestPreferencesProjectsHistory:
         mem.write_projects.assert_called_once_with("## New", expected_baseline="## Before")
 
     @pytest.mark.asyncio
+    async def test_projects_put_over_the_startup_cap_says_so(self) -> None:
+        """The file keeps every byte, but sessions load only the head: tell the user."""
+        from kiro_crew.context_assembly.budget import _MEMORY_PROJECTS_CAP
+
+        mem = MagicMock()
+        mem.read_projects.return_value = "## Before"
+        mem.write_projects.return_value = True
+        state = _make_state(memory=mem)
+        content = "# Active Projects\n" + "p" * _MEMORY_PROJECTS_CAP
+        req = _make_request(
+            state, method="PUT", json_body={"content": content}, session_key="dashboard:ui"
+        )
+        resp = await mem_mod.api_memory_projects(req)
+        body = _body(resp)
+        assert resp.status == 200 and body["ok"] is True
+        assert body["overflow_chars"] == len(content) + 1 - _MEMORY_PROJECTS_CAP
+        assert f"{body['overflow_chars']} chars" in body["warning"]
+
+    @pytest.mark.asyncio
+    async def test_projects_put_within_the_cap_has_no_warning(self) -> None:
+        mem = MagicMock()
+        mem.read_projects.return_value = "## Before"
+        mem.write_projects.return_value = True
+        state = _make_state(memory=mem)
+        req = _make_request(
+            state, method="PUT", json_body={"content": "## New"}, session_key="dashboard:ui"
+        )
+        assert _body(await mem_mod.api_memory_projects(req)) == {"ok": True}
+
+    @pytest.mark.asyncio
     async def test_projects_put_rejects_invalid_json(self) -> None:
         mem = MagicMock()
         state = _make_state(memory=mem)
@@ -1706,6 +1736,7 @@ class TestSubagentMemorySessionRecognition:
 def _consolidator() -> Any:
     c = MagicMock()
     c._running = set()
+    c._busy = lambda key: key in c._running
     c._tasks = set()
     c._consolidate = AsyncMock(return_value=None)
     return c

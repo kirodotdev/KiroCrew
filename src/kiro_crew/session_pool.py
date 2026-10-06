@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
 if TYPE_CHECKING:
@@ -34,6 +35,28 @@ else:
 
 ProviderFactory = Callable[..., LLMProvider]
 KillProvider = Callable[[LLMProvider], None]
+
+
+def pool_kiro_agent(cfg: Any) -> str:
+    """The kiro agent the warm pool prewarms and claims for, as a session names it.
+
+    ``session.pool_agent`` (else ``agent.default_agent``) may be blank, a config
+    alias such as ``default``, or a kiro agent name, while a session asks the pool
+    for the RESOLVED kiro agent (``kirocrew`` for the default). A blank name or a
+    config alias is resolved here, through the same in-memory resolver a session's
+    bindings use, so the pool spawns that agent and matches that name. Any other
+    name is already a kiro agent and is kept as written: the resolver would map
+    one it cannot see (a project-scoped agent) to the default. A config the
+    resolver cannot read keeps the configured name too.
+    """
+    name = cfg.session.pool_agent or getattr(cfg.agent, "default_agent", "")
+    if name and name not in cfg.agents:
+        return name
+    try:
+        return resolve_agent_identity(cfg, name or None)[1] or name
+    except Exception:
+        logging.getLogger(__name__).debug("warm pool agent did not resolve", exc_info=True)
+        return name
 
 
 class _SessionMapPort(Protocol):
@@ -151,7 +174,7 @@ class WarmSessionPool:
             )
         return WarmPoolState(
             size=size,
-            agent=cfg.session.pool_agent or getattr(cfg.agent, "default_agent", ""),
+            agent=pool_kiro_agent(cfg),
             ttl_secs=max(0, cfg.session.pool_ttl_secs),
             cwd=self._deps.default_project_dir(),
         )

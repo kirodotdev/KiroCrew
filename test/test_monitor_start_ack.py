@@ -40,16 +40,19 @@ def test_a_gated_loop_says_so_in_its_ack(bound_session):
 
 
 def test_the_gated_ack_names_what_actually_raises_a_wake(bound_session):
-    """A gated ack must spell out the wake set, not say "when it changes".
+    """A gated ack must name what DECIDES a wake, not promise a wake on "any change".
 
-    Every lane of a settling pull request going green IS the subject changing, and
-    raises no wake at all: the probe reports a red outside the known-inherited
-    list, a fully settled green board, a conflict, a comment, or a review.
-    An ack that promises a wake on any change invites the caller to measure a
-    per-lane cadence that was never offered, and read the gap as a defect.
+    There is no fixed wake set any more: every tick is read against the loop's own
+    wake criteria, or the shipped default brief when it named none, so the ack has to
+    describe the SCREEN rather than list signals. Every lane of a settling pull
+    request going green IS the subject changing yet asks nothing per-lane, so an ack
+    promising a wake on any change invites the caller to measure a per-lane cadence
+    that was never offered and read the gap as a defect.
 
-    The members come from the probe's own wake-source map, so a probe that grows
-    a source reddens here instead of leaving this ack quietly incomplete.
+    The clauses come from the screen's own contract -- the criteria a loop names or the
+    shipped default, that a screened-quiet tick costs no turn, that the screen is not
+    always available, and what is still free when it is not -- so the ack tracks the
+    behaviour the judge actually has instead of a retired probe's fixed set.
     """
     out = _ack("Watch https://github.com/acme/widgets/pull/42 and report failures")
     assert "wake criteria" in out, "the ack must name what decides a wake"

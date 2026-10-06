@@ -275,7 +275,7 @@ def test_opus_profile_model_matches_the_ci_workflow():
 
 
 def test_charter_budgets_match_the_ci_workflows():
-    """The budget numbers restated in SKILL.md must match the workflows.
+    """The budget numbers restated in the fallback charters must match the workflows.
 
     The charter hand-copies CI's budgets. That copy is exactly what drifted
     before -- the skill still claimed ≤2 BLOCKING long after CI moved to 5 --
@@ -284,7 +284,7 @@ def test_charter_budgets_match_the_ci_workflows():
     numeric cap encouraged staging discoveries across review rounds), so its
     charter must NOT restate a numeric cap.
     """
-    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    skill = (SKILL_DIR / "references" / "fallback-charters.md").read_text(encoding="utf-8")
 
     # The Opus lane's budgets live with the contract that applies them -- the
     # validation prompt -- not in the workflow that merely invokes it.

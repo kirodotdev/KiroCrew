@@ -35,6 +35,7 @@ class FakeProvider:
         self.steered: list[str] = []
         self._active = active
         self.compacted = 0
+        self.wait_timeouts: list[float] = []
         self.compact_result: dict[str, str] = {"type": "completed", "summary": ""}
 
     def has_active_turn(self) -> bool:
@@ -47,7 +48,8 @@ class FakeProvider:
     async def compact(self) -> None:
         self.compacted += 1
 
-    async def wait_for_compaction(self) -> dict[str, str]:
+    async def wait_for_compaction(self, timeout: float = 300.0) -> dict[str, str]:
+        self.wait_timeouts.append(timeout)
         return self.compact_result
 
 
@@ -65,6 +67,11 @@ class FakeSessions:
         self.acquire_ok = True
         self.usage_pct = 0.0
         self.reserved_generations: list[str] = []
+        self.compact_wait_secs = 300.0
+
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs``."""
+        return self.compact_wait_secs
 
     def is_busy(self, key: str) -> bool:
         return key in self.busy
@@ -215,6 +222,19 @@ class TestCompact:
         assert provider.compacted == 1
         assert sessions.released == [key]
         assert "compacted" in client.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_compact_waits_the_configured_budget(self) -> None:
+        # A manual /compact waits the session manager's resolved
+        # ``session.compact_wait_secs``, not the provider's built-in default.
+        dispatcher, _client, sessions = _dispatcher()
+        sessions.compact_wait_secs = 900.0
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        sessions.providers[key] = provider
+        sessions.sessions.add(key)
+        await dispatcher.handle_message(_inbound("/compact"))
+        assert provider.wait_timeouts == [900.0]
 
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:

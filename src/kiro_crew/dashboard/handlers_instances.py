@@ -59,6 +59,7 @@ from kiro_crew.history import SEARCH_MIN_CHARS
 from kiro_crew.instances.constants import (
     PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
+    PROXY_REDACT_BUFFER_MAX_BYTES,
     PROXY_REQUEST_BODY_MAX_BYTES,
 )
 from kiro_crew.instances.registry import (
@@ -2403,6 +2404,84 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
     return web.json_response(shaped)
 
 
+class ProxyReplyUnredactable(Exception):
+    """A peer reply the redactor cannot walk (nested past the recursion limit)."""
+
+
+def _redact_peer_value(value: object) -> object:
+    """Redact every string in a decoded peer JSON value, keys included."""
+    from kiro_crew.dashboard.remote_relay import redact_peer_text
+
+    if isinstance(value, str):
+        return redact_peer_text(value)
+    if isinstance(value, list):
+        return [_redact_peer_value(v) for v in value]
+    if isinstance(value, dict):
+        return {redact_peer_text(str(k)): _redact_peer_value(v) for k, v in value.items()}
+    return value
+
+
+def _redact_peer_payload(text: str) -> str:
+    """Redact one peer JSON document, or the raw text when it is not JSON.
+
+    Redacting the decoded strings rather than the serialized text keeps a
+    credential split by a JSON escape (``\\u0041KIA…``) visible to the
+    redactor, and keeps the output valid JSON.
+    """
+    # A leading BOM: the browser's JSON parser skips it, Python's refuses it,
+    # and a raw-text fallback would miss an escaped credential behind it.
+    text = text.removeprefix("\ufeff")
+    try:
+        decoded = json.loads(text)
+        return json.dumps(_redact_peer_value(decoded))
+    except RecursionError:
+        # Too deeply nested to walk: refuse rather than forward it unredacted.
+        raise ProxyReplyUnredactable() from None
+    except json.JSONDecodeError:
+        # Not JSON at all (a plain SSE data line): redact it as text.
+        from kiro_crew.dashboard.remote_relay import redact_peer_text
+
+        return redact_peer_text(text)
+    except ValueError:
+        # Valid JSON Python will not decode (an integer past the digit limit):
+        # the browser parses it, so a raw-text pass could miss an escaped
+        # credential. Refuse it.
+        raise ProxyReplyUnredactable() from None
+
+
+def _redact_sse_event(event: bytes) -> bytes:
+    """Redact one SSE event block (no trailing blank line, ``\\n`` line ends).
+
+    The browser joins an event's ``data:`` lines into ONE payload before it
+    parses it, so the payload is joined and redacted the same way here: a
+    credential split across two lines, or behind a JSON escape, is caught. It
+    is re-emitted as one ``data:`` line (a JSON re-serialization has no raw
+    newline). Every other line (``event:``, ``id:``, comments) is peer text
+    as well and runs the same chain as plain text.
+    """
+    from kiro_crew.dashboard.remote_relay import redact_peer_text
+
+    out: list[str] = []
+    data: list[str] = []
+    for line in event.decode("utf-8", "replace").split("\n"):
+        if line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+        else:
+            out.append(redact_peer_text(line))
+    if data:
+        clean = _redact_peer_payload("\n".join(data))
+        out.extend("data: " + part for part in clean.split("\n"))
+    return "\n".join(out).encode()
+
+
+async def _redact_sse_event_async(event: bytes) -> bytes:
+    """`_redact_sse_event`, off the loop for a large event (a peer `slots`
+    broadcast can run to megabytes)."""
+    if len(event) > 65536:
+        return await asyncio.to_thread(_redact_sse_event, event)
+    return _redact_sse_event(event)
+
+
 async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     """ANY /api/instances/{id}/proxy/{path} — forward to a connected peer.
 
@@ -2413,6 +2492,10 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     token never reaches the browser, no browser Origin or cookies are forwarded
     to the peer (the hub presents as a same-origin loopback client), and the
     peer's Set-Cookie never reaches the hub origin.
+
+    Every reply is redacted with the relay's peer-text chain before the
+    browser sees it, because the window renders peer text directly: a JSON
+    body as one document, an SSE stream one event at a time.
     """
     denied = _guard(request, "proxy")
     if denied is not None:
@@ -2508,6 +2591,38 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                     },
                     status=502,
                 )
+            if upstream_ct.lower() == "application/json":
+                # Buffered whole: a JSON body redacts as one document, and it
+                # must not reach the browser before it is redacted.
+                raw = bytearray()
+                async for chunk in upstream.content.iter_any():
+                    raw += chunk
+                    if len(raw) > PROXY_REDACT_BUFFER_MAX_BYTES:
+                        _audit("proxy", "denied", request_id=instance_id, error="reply too large")
+                        return web.json_response(
+                            {"error": "peer reply too large", "code": "proxy_reply_too_large"},
+                            status=502,
+                        )
+                try:
+                    text = await asyncio.to_thread(
+                        _redact_peer_payload, raw.decode("utf-8", "replace")
+                    )
+                except ProxyReplyUnredactable:
+                    _audit("proxy", "denied", request_id=instance_id, error="reply unredactable")
+                    return web.json_response(
+                        {
+                            "error": "peer reply could not be redacted",
+                            "code": "proxy_reply_unredactable",
+                        },
+                        status=502,
+                    )
+                _audit("proxy", "success", request_id=instance_id)
+                return web.Response(
+                    status=upstream.status,
+                    body=text.encode(),
+                    content_type="application/json",
+                    headers={"X-Content-Type-Options": "nosniff"},
+                )
             resp = web.StreamResponse(status=upstream.status)
             for key, value in upstream.headers.items():
                 if key.lower() in _PROXY_RESP_ALLOW_HEADERS:
@@ -2515,8 +2630,56 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
             resp.headers["X-Content-Type-Options"] = "nosniff"
             await resp.prepare(request)
             try:
+                pending = b""
+                first = True
                 async for chunk in upstream.content.iter_any():
-                    await resp.write(chunk)
+                    # SSE allows CR and CRLF line ends; the browser honours
+                    # them, so framing is normalised before events are cut.
+                    # A CR at a chunk edge waits one chunk for its LF.
+                    pending += chunk
+                    if first:
+                        # The stream's BOM, likewise, before fields are read;
+                        # a BOM split across chunks waits for its last byte.
+                        if len(pending) < 3 and b"\xef\xbb\xbf".startswith(pending):
+                            continue
+                        pending = pending.removeprefix(b"\xef\xbb\xbf")
+                        first = False
+                    hold = pending.endswith(b"\r")
+                    if hold:
+                        pending = pending[:-1]
+                    pending = pending.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    *events, pending = pending.split(b"\n\n")
+                    if hold:
+                        pending += b"\r"
+                    for event in events:
+                        if len(event) > PROXY_REDACT_BUFFER_MAX_BYTES:
+                            pending = event
+                            break
+                        try:
+                            clean = await _redact_sse_event_async(event)
+                        except ProxyReplyUnredactable:
+                            _audit(
+                                "proxy",
+                                "partial",
+                                request_id=instance_id,
+                                error="event unredactable",
+                            )
+                            return resp
+                        await resp.write(clean + b"\n\n")
+                    if len(pending) > PROXY_REDACT_BUFFER_MAX_BYTES:
+                        # Fail closed: an event too large to redact is dropped
+                        # with the rest of the stream, never forwarded raw.
+                        _audit("proxy", "partial", request_id=instance_id, error="event too large")
+                        return resp
+                if pending:
+                    tail = pending.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    try:
+                        await resp.write(await _redact_sse_event_async(tail))
+                    except ProxyReplyUnredactable:
+                        _audit(
+                            "proxy", "partial", request_id=instance_id, error="event unredactable"
+                        )
+                        return resp
             except ConnectionResetError:
                 # Browser went away mid-stream; the peer finishes its turn on
                 # its own (its transcript is authoritative — see design doc).

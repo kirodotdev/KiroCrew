@@ -400,6 +400,7 @@ already-running app record -- restart it.
 | `kirocrew bench fetch CORPUS` | Download a corpus into the local cache and verify its checksum |
 | `kirocrew bench retrieval` | Measure retrieval recall/nDCG against a corpus (deterministic) |
 | `kirocrew bench kb-retrieval` | Measure Knowledge Library recall/MRR/nDCG against a golden set (deterministic) |
+| `kirocrew bench lesson-recall` | Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic) |
 | `kirocrew bench compare A B` | Diff two saved JSON reports; refuses to attribute a delta when the runs disagree on corpus |
 
 ## Governance Policy

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useImeGuard } from '../hooks/useImeGuard'
+import { useImeGuard, createImeLatch } from '../hooks/useImeGuard'
 
 // Minimal KeyboardEvent shape the hook reads.
 const key = (opts: { isComposing?: boolean; keyCode?: number } = {}) =>
@@ -37,6 +37,20 @@ describe('useImeGuard', () => {
       expect(result.current.isComposing(key())).toBe(false)
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('a Hangul commit opens no post-composition window; Kana and Hanja still do', () => {
+    // The native latch is what the rich-text composer feeds with the event data.
+    const latch = createImeLatch()
+    latch.onCompositionStart()
+    latch.onCompositionEnd('한')
+    expect(latch.isLatched()).toBe(false)
+    for (const data of ['にほん', '韓', undefined]) {
+      latch.onCompositionStart()
+      latch.onCompositionEnd(data)
+      expect(latch.isLatched()).toBe(true)
+      latch.reset()
     }
   })
 

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 
-import { extractFromSource, EXTRACTABLE_PRIMITIVE_TAGS, PANEL_TAB_MAP } from '../../scripts/settingsExtract'
+import { extractAll, extractFromSource, EXTRACTABLE_PRIMITIVE_TAGS, PANEL_TAB_MAP, panelRoots, rootFiles } from '../../scripts/settingsExtract'
 import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
 
 /**
@@ -36,18 +37,23 @@ import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
  * it to BARE_CONTROL_TAGS. When introducing a shared labeled control, do both.
  */
 
-const SETTINGS_DIR = path.resolve(__dirname, '../pages/settings')
+const SRC_DIR = path.resolve(__dirname, '..')
+const SETTINGS_DIR = path.join(SRC_DIR, 'pages', 'settings')
+
+/** Panel basename -> full path, over every root the extractor scans. */
+const PANEL_PATHS = new Map(
+  rootFiles(panelRoots(SRC_DIR))
+    .filter(f => !f.includes('.test.'))
+    .map(f => [path.basename(f), f] as const),
+)
 
 /** Panel sources (tests excluded), sorted for stable failure output. */
 function panelFiles(): string[] {
-  return fs
-    .readdirSync(SETTINGS_DIR)
-    .filter(f => f.endsWith('.tsx') && !f.includes('.test.'))
-    .sort()
+  return [...PANEL_PATHS.keys()].sort()
 }
 
 function readPanel(file: string): string {
-  return fs.readFileSync(path.join(SETTINGS_DIR, file), 'utf-8')
+  return fs.readFileSync(PANEL_PATHS.get(file) ?? path.join(SETTINGS_DIR, file), 'utf-8')
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -102,7 +108,7 @@ describe('settings coverage gate — PANEL_TAB_MAP completeness', () => {
     // graduate into PANEL_TAB_MAP.
     const offenders: string[] = []
     for (const file of Object.keys(UNMAPPED_PANELS)) {
-      if (!fs.existsSync(path.join(SETTINGS_DIR, file))) continue
+      if (!PANEL_PATHS.has(file)) continue
       const source = readPanel(file)
       for (const tag of EXTRACTABLE_PRIMITIVE_TAGS) {
         if (new RegExp(`<${tag}\\b`).test(source)) offenders.push(`${file}: <${tag}>`)
@@ -132,6 +138,43 @@ describe('settings coverage gate — PANEL_TAB_MAP completeness', () => {
       Object.keys(UNMAPPED_PANELS).filter(f => f in PANEL_TAB_MAP),
       'A panel is both mapped and waived — remove it from UNMAPPED_PANELS.',
     ).toEqual([])
+  })
+
+  it('every component a panel mounts from another pages/ directory is scanned', () => {
+    // An import like `../overview/PortabilityTab` puts that file's controls on
+    // a Settings tab, but the extractor reads only its roots. One that renders
+    // an extractable primitive must be a root, and so mapped.
+    const missing: string[] = []
+    for (const file of fs.readdirSync(SETTINGS_DIR).filter(f => f.endsWith('.tsx') && !f.includes('.test.'))) {
+      for (const m of readPanel(file).matchAll(/^import [^'\n]+ from '(\.\.\/[\w/-]+)'/gm)) {
+        const target = path.resolve(SETTINGS_DIR, `${m[1]}.tsx`)
+        if (!fs.existsSync(target)) continue
+        const source = fs.readFileSync(target, 'utf-8')
+        if (!EXTRACTABLE_PRIMITIVE_TAGS.some(tag => new RegExp(`<${tag}\\b`).test(source))) continue
+        const name = path.basename(target)
+        if (PANEL_PATHS.get(name) !== target || !(name in PANEL_TAB_MAP)) missing.push(`${file} -> ${name}`)
+      }
+    }
+    expect(
+      missing,
+      'A settings panel mounts a component from outside pages/settings that renders ' +
+      'Settings* primitives, but the extractor never reads it. Add it to panelRoots ' +
+      'and PANEL_TAB_MAP in scripts/settingsExtract.ts.',
+    ).toEqual([])
+  })
+
+  it('a primitive in an extra root reaches the registry on its tab', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-root-'))
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'PortabilityTab.tsx'),
+        '<SettingsToggle label="Restore on start" checked={on} onChange={setOn} />',
+      )
+      const { entries } = extractAll([{ dir, file: 'PortabilityTab.tsx' }])
+      expect(entries.filter(e => e.label === 'Restore on start').map(e => e.tab)).toEqual(['imports'])
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
   })
 })
 
@@ -203,6 +246,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'per-channel mute Toggle + priority Select render runtime-fetched rows ' +
       '(manual: notifications.sources); the volume range input has no slider ' +
       'primitive (manual: notifications.volume)',
+  },
+  'PortabilityTab.tsx': {
+    counts: { input: 1, SimpleSelect: 1 },
+    reason: 'backup-restore form: the export zip file picker and the merge/replace mode for that one import — per-import arguments, not persistent settings',
   },
   'RemoteCrewPanel.tsx': {
     counts: { input: 7 },

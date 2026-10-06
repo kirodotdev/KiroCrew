@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import json  # noqa: F401 - read by the owners
 import logging
-import os
+import os  # noqa: F401 - read by the owners
 import re
 import time
-import uuid
+import uuid  # noqa: F401 - read by the owners
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +50,7 @@ from kiro_crew.agent_discovery import (
     read_agent_spec_strict,
 )
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
-from kiro_crew.config.loader import (
+from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     ConfigReadError,
     KiroCrewConfig,
@@ -59,7 +59,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
-from kiro_crew.constants import (
+from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
     STEER_NOTICE_BOUND_SECS,
@@ -74,7 +74,7 @@ from kiro_crew.context import (
     window_for_provider_client,
 )
 from kiro_crew.cron import CronService
-from kiro_crew.dashboard.chat_utils import (
+from kiro_crew.dashboard.chat_utils import (  # noqa: F401 - read by the owners
     effective_session_key,
     expire_slack_options,
     mint_options_token,
@@ -82,10 +82,14 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     run_config_write,
 )
-from kiro_crew.dashboard.state import append_and_surface
+from kiro_crew.dashboard.state import append_and_surface  # noqa: F401 - read by the owners
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.history import HUMAN_TURN_META_KEY, ConversationLog, HistoryConsolidator
+from kiro_crew.history import (  # noqa: F401 - read by the owners
+    HUMAN_TURN_META_KEY,
+    ConversationLog,
+    HistoryConsolidator,
+)
 from kiro_crew.hooks import (
     HOOK_REPLY,
     TOOL_AUTO_APPROVE,
@@ -100,7 +104,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
-from kiro_crew.messaging.commands import (
+from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     compact_unsupported_backend,
     compact_unsupported_reply,
     cron_command_reply,
@@ -123,8 +127,13 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
-from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
-from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
+from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
+    add_trusted_session as _add_trusted_session,
+)
+from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
+    clear_trusted_sessions,
+    is_session_trusted,
+)
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -137,7 +146,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
-from kiro_crew.safety_override import (
+from kiro_crew.safety_override import (  # noqa: F401 - read by the owners
     SafetyOverride,
     apply_config_duration,
     describe_grant_lifetime,
@@ -146,7 +155,7 @@ from kiro_crew.safety_override import (
     safety_override,
     yolo_policy_permits,
 )
-from kiro_crew.security import (
+from kiro_crew.security import (  # noqa: F401 - read by the owners
     StreamRedactor,
     is_sensitive_path,
     redact,
@@ -155,16 +164,24 @@ from kiro_crew.security import (
     redact_local_paths,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session import _CIRCUIT_BREAKER_THRESHOLD, SessionClosingError, SessionManager
-from kiro_crew.session_lifecycle import (
+from kiro_crew.session import (
+    _CIRCUIT_BREAKER_THRESHOLD,
+    SessionClosingError,
+    SessionManager,
+)
+from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     STOP_DECLINED_COMPACTING_TEXT,
     compaction_in_flight,
     consume_stop_declined,
     decline_stop,
 )
-from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
+from kiro_crew.slack import handler_runtime as _handler_runtime
+from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
+    build_working_blocks,
+    deprecation_warning_block,
+)
 from kiro_crew.slack.client import SlackClientOps
-from kiro_crew.slack.format import (
+from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
     _convert_tables,
@@ -174,22 +191,139 @@ from kiro_crew.slack.format import (
     split_message,
     strip_thinking_tags,
 )
+from kiro_crew.slack.handler_runtime import access as _owner_access
+from kiro_crew.slack.handler_runtime import approvals as _owner_approvals
+from kiro_crew.slack.handler_runtime import commands as _owner_commands
+from kiro_crew.slack.handler_runtime import finalize as _owner_finalize
+from kiro_crew.slack.handler_runtime import inbound as _owner_inbound
+from kiro_crew.slack.handler_runtime import reactions as _owner_reactions
+from kiro_crew.slack.handler_runtime import stream as _owner_stream
+from kiro_crew.slack.handler_runtime import turn_context as _owner_turn_context
+from kiro_crew.slack.handler_runtime import voice as _owner_voice
+from kiro_crew.slack.handler_runtime.access import (  # noqa: F401
+    _reload_orch_cfg,
+    add_trusted_session,
+    adopt_slack_config,
+    cancel_background_tasks,
+    copy_slack_fields,
+    disable_yolo,
+    enable_yolo_with_ttl,
+    get_dashboard_state,
+    get_orch_cfg,
+    is_allowed_user,
+    is_open_channel,
+    is_owner,
+    is_slack_session_trusted,
+    is_tracked_channel,
+    is_yolo_mode,
+    set_allowed_users,
+    set_dashboard_state,
+    set_open_channels,
+    set_orch_cfg,
+    set_owner_id,
+    set_tracking_channels,
+    set_yolo_mode,
+    slack_cfg,
+    track_background_task,
+)
+from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
+    _build_approval_blocks,
+    _grant_late_trust,
+    _grant_linked_trust,
+    _linked_slots_for,
+    _linked_trust_grantable,
+    _LinkedApproval,
+    _LinkedApprovalEvent,
+    _PendingApproval,
+    _resolve_linked_click,
+    post_linked_approval,
+    resolve_linked_approval,
+)
+from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
+    _bang_agent,
+    _bang_allowlist,
+    _bang_channel,
+    _bang_dashboard,
+    _bang_link_to_dashboard,
+    _bang_project,
+    _bang_stop,
+    _bang_thread_agent,
+    _bang_title,
+    _bang_voice,
+    _bang_yolo,
+    _handle_compact_command,
+    _handle_cron_command,
+    _handle_run_command,
+    _handle_slash_command,
+    _handle_spawn_command,
+    _is_sessions_keyword,
+    _route_bang_command,
+)
+from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
+    _append_footer_actions,
+    _maybe_auto_title_slack,
+    _mirror_to_dashboard,
+    _post_review_draft,
+    _review_drafts_get,
+    _review_drafts_pop,
+    _review_drafts_set,
+    build_timing_footer,
+)
+from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
+    _apply_privacy_mode,
+    _get_agent_for_session,
+    _get_default_agent,
+    _hydrate_conv_flags,
+    _hydrate_thread_overrides,
+    _is_slack_restricted,
+    _persist_channel_config,
+    _read_thread_overrides,
+    _set_default_agent,
+    maybe_apply_privacy_modifiers,
+    maybe_route_linked_thread,
+)
+from kiro_crew.slack.handler_runtime.reactions import (  # noqa: F401
+    StatusReactionController,
+    _add_phase_reaction,
+    _tool_to_phase,
+    phase_emojis,
+    refresh_phase_emojis,
+)
+from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
+    _AnswerStream,
+    _at_tag_line_start,
+    _comment_hold_is_protocol,
+    _filter_options_brackets,
+    _resolve_comment_hold,
+    _safe_final_update,
+    _safe_update,
+)
+from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
+    _thread_context,
+    _thread_meta_fallback,
+)
+from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _reply_by_voice,
+    _safe_voice_reply,
+    _str_or_default,
+    load_voice_reply_config,
+)
 from kiro_crew.slack.outbound import PostedOptions
-from kiro_crew.slack.sessions_view import (
+from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
     SESSIONS_INCLUDE_ENDED_ARGS,
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
     _message_surface_limit,
     sessions_include_ended,
 )
-from kiro_crew.slack.thread_parent import (
+from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
     has_prior_turns,
     is_slack_born,
     parent_prompt_text,
     record_thread_parent,
 )
-from kiro_crew.slack.thread_replies import (
+from kiro_crew.slack.thread_replies import (  # noqa: F401 - read by the owners
     ThreadReplies,
     has_noted_turn,
     note_turn,
@@ -200,20 +334,22 @@ from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.task import Task
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.voice_reply import (
+from kiro_crew.voice_reply import (  # noqa: F401 - read by the owners
     DEFAULT_PROVIDER,
     PROVIDER_PIPER,
     PROVIDER_SYSTEM,
 )
-from kiro_crew.voice_reply import is_available as _tts_available
-from kiro_crew.voice_reply import (
+from kiro_crew.voice_reply import is_available as _tts_available  # noqa: F401 - read by the owners
+from kiro_crew.voice_reply import (  # noqa: F401 - read by the owners
     resolve_configured_provider,
 )
-from kiro_crew.voice_reply import validate_length_scale as _validate_length_scale
-from kiro_crew.voice_reply import (
+from kiro_crew.voice_reply import (  # noqa: F401 - read by the owners
+    validate_length_scale as _validate_length_scale,
+)
+from kiro_crew.voice_reply import (  # noqa: F401 - read by the owners
     validated_config_string,
 )
-from kiro_crew.voice_reply import voice_reply as _voice_reply_fn
+from kiro_crew.voice_reply import voice_reply as _voice_reply_fn  # noqa: F401 - read by the owners
 
 logger = logging.getLogger(__name__)
 
@@ -289,12 +425,12 @@ _THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
-#: First chunk of a REPLACEMENT stream opened by ``_rotate_stream``. A rotation
-#: abandons the message the reader is already watching and continues the same
-#: answer in a new one, so without this the thread reads as a stalled reply
-#: followed by an unexplained second reply. Slack appends stream chunks and
-#: never replaces them, so the text already shown stays in the abandoned
-#: message — this line is what tells the reader the two belong together.
+#: First chunk of a REPLACEMENT stream opened by ``_AnswerStream.rotate``
+#: (``handler_runtime/stream.py``). A rotation abandons the message the reader is
+#: already watching and continues the same answer in a new one, so without this the
+#: thread reads as a stalled reply followed by an unexplained second reply. Slack
+#: appends stream chunks and never replaces them, so the text already shown stays in the
+#: abandoned message — this line is what tells the reader the two belong together.
 _STREAM_CONTINUED = "_(continued)_\n\n"
 
 #: Appended to a stream that lost real answer text Slack would not accept. A
@@ -417,45 +553,6 @@ if _unknown_phases:
 del _unknown_phases
 
 
-def phase_emojis() -> dict[str, str | None]:
-    """The phase -> emoji table currently in force (follows ``slack.reactions``).
-
-    The one read path for every reaction site. Returns the live table object,
-    which :func:`refresh_phase_emojis` rebuilds in place when the config changes
-    -- so a caller that resolves a phase now sees the operator's latest
-    overrides, not the ones captured when this module was imported.
-    """
-    return _PHASE_EMOJIS
-
-
-def refresh_phase_emojis(overrides: dict[str, str | None] | None) -> list[str]:
-    """Rebuild the live phase-emoji table from *overrides*, in place.
-
-    Called by the gateway's Slack config applier with the reloaded
-    ``slack.reactions``. In place, because ``StatusReactionController``
-    instances and the reaction sites hold the table object, not a copy. Returns
-    the unknown keys so the caller can warn about them, as the import-time build
-    does.
-    """
-    built, unknown = _build_phase_emojis(overrides or {})
-    _PHASE_EMOJIS.clear()
-    _PHASE_EMOJIS.update(built)
-    return unknown
-
-
-async def _add_phase_reaction(slack: SlackClientOps, channel: str, ts: str, phase: str) -> None:
-    """Add the reaction for *phase* if the user hasn't suppressed it.
-
-    Used by one-shot emoji-ack sites outside ``StatusReactionController``
-    (e.g. ``!command`` handlers).  Honours ``slack.reactions`` ``null``
-    suppression sentinels.
-    """
-    emoji = phase_emojis().get(phase)
-    if emoji is None:
-        return
-    await slack.add_reaction(channel, ts, emoji)
-
-
 _STALL_EMOJI_SOFT = "yawning_face"
 _STALL_EMOJI_HARD = "fearful"
 
@@ -473,200 +570,6 @@ _WEB_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch", "Browser"})
 
 _CODING_KINDS: frozenset[str] = frozenset(t.lower() for t in _CODING_TOOLS)
 _WEB_KINDS: frozenset[str] = frozenset(t.lower() for t in _WEB_TOOLS)
-
-
-def _tool_to_phase(tool_name: str, tool_kind: str = "") -> str:
-    """Map a tool name/kind to a reaction phase."""
-    kind_lower = tool_kind.lower()
-    if kind_lower:
-        if kind_lower in _CODING_KINDS:
-            return "coding"
-        if kind_lower in _WEB_KINDS:
-            return "browsing"
-    # Extract base tool name for MCP tools (mcp__example-mcp__Bash → Bash)
-    base = tool_name.split("__")[-1] if "__" in tool_name else tool_name
-    if base in _CODING_TOOLS:
-        return "coding"
-    if base in _WEB_TOOLS:
-        return "browsing"
-    return "tool"
-
-
-class StatusReactionController:
-    """Phase-aware Slack reaction controller with debounce and stall detection.
-
-    Provides richer emoji feedback than the old binary eyes/lobster pair.
-    Intermediate phases are debounced so rapid tool transitions don't spam
-    the Slack API.  A stall watchdog adds yawning/fearful reactions when
-    the agent appears stuck.
-    """
-
-    def __init__(
-        self, slack: SlackClientOps, channel: str, ts: str, *, enabled: bool = True
-    ) -> None:
-        self._enabled = enabled
-        self._slack = slack
-        self._channel = channel
-        self._ts = ts
-        self._loop = asyncio.get_running_loop()
-
-        self._current_emoji: str | None = None
-        self._pending_phase: str | None = None
-        self._debounce_handle: asyncio.TimerHandle | None = None
-        self._stall_soft_handle: asyncio.TimerHandle | None = None
-        self._stall_hard_handle: asyncio.TimerHandle | None = None
-        self._stall_emoji: str | None = None
-        self._stall_paused = False
-        self._finalized = False
-
-    # ── public API ──────────────────────────────────────────────────
-
-    def set_phase(self, phase: str) -> None:
-        """Request a phase transition (may be debounced)."""
-        if self._finalized or not self._enabled:
-            return
-
-        if phase in _TERMINAL_PHASES:
-            self.finalize(error=(phase == "error"))
-            return
-
-        if phase in _IMMEDIATE_PHASES:
-            self._cancel_debounce()
-            emoji = phase_emojis().get(phase, phase)
-            asyncio.ensure_future(self._swap_emoji(emoji))
-            self._reset_stall_watchdog()
-            return
-
-        # Intermediate phase — debounce
-        self._pending_phase = phase
-        self._cancel_debounce()
-        self._debounce_handle = self._loop.call_later(_PHASE_DEBOUNCE_SECS, self._fire_debounce)
-
-    def on_progress(self) -> None:
-        """Reset stall watchdog — call on any LLM/tool activity."""
-        if not self._finalized and not self._stall_paused and self._enabled:
-            self._reset_stall_watchdog()
-
-    def pause_stall_watchdog(self) -> None:
-        """Pause stall detection (e.g. waiting for user approval)."""
-        self._stall_paused = True
-        self._cancel_stall_timers()
-
-    def resume_stall_watchdog(self) -> None:
-        """Resume stall detection after a pause."""
-        self._stall_paused = False
-        if not self._finalized and self._enabled:
-            self._reset_stall_watchdog()
-
-    def finalize(self, error: bool = False) -> None:
-        """Swap to terminal emoji. Idempotent."""
-        if self._finalized or not self._enabled:
-            return
-        self._finalized = True
-        self._cancel_debounce()
-        self._cancel_stall_timers()
-        # Clean up stall emoji before setting terminal
-        asyncio.ensure_future(self._do_finalize(error))
-
-    # ── internal ────────────────────────────────────────────────────
-
-    async def _do_finalize(self, error: bool) -> None:
-        if self._stall_emoji:
-            try:
-                await self._slack.remove_reaction(self._channel, self._ts, self._stall_emoji)
-            except Exception:
-                pass
-            self._stall_emoji = None
-        terminal = phase_emojis()["error" if error else "done"]
-        await self._swap_emoji(terminal)
-
-    def _fire_debounce(self) -> None:
-        """Timer callback — bridge to async."""
-        asyncio.ensure_future(self._apply_pending())
-
-    async def _apply_pending(self) -> None:
-        if self._finalized or self._pending_phase is None:
-            return
-        emoji = phase_emojis().get(self._pending_phase, self._pending_phase)
-        self._pending_phase = None
-        await self._swap_emoji(emoji)
-        self._reset_stall_watchdog()
-
-    async def _swap_emoji(self, new_emoji: str | None) -> None:
-        """Remove old reaction and add new one (skip if same).
-
-        ``new_emoji=None`` means the phase is suppressed by config: remove
-        any previously-applied reaction but do not add a replacement.
-        """
-        if new_emoji == self._current_emoji:
-            return
-        old = self._current_emoji
-        self._current_emoji = new_emoji
-        if old:
-            try:
-                await self._slack.remove_reaction(self._channel, self._ts, old)
-            except Exception:
-                pass
-        if new_emoji is None:
-            return
-        try:
-            await self._slack.add_reaction(self._channel, self._ts, new_emoji)
-        except Exception:
-            pass
-
-    def _cancel_debounce(self) -> None:
-        if self._debounce_handle is not None:
-            self._debounce_handle.cancel()
-            self._debounce_handle = None
-
-    def _cancel_stall_timers(self) -> None:
-        if self._stall_soft_handle is not None:
-            self._stall_soft_handle.cancel()
-            self._stall_soft_handle = None
-        if self._stall_hard_handle is not None:
-            self._stall_hard_handle.cancel()
-            self._stall_hard_handle = None
-
-    def _reset_stall_watchdog(self) -> None:
-        if not self._enabled:
-            return
-        self._cancel_stall_timers()
-        # Remove existing stall emoji
-        if self._stall_emoji:
-            emoji_to_remove = self._stall_emoji
-            self._stall_emoji = None
-            asyncio.ensure_future(self._remove_stall_emoji(emoji_to_remove))
-        if self._stall_paused or self._finalized:
-            return
-        self._stall_soft_handle = self._loop.call_later(_STALL_SOFT_SECS, self._on_stall_soft)
-        self._stall_hard_handle = self._loop.call_later(_STALL_HARD_SECS, self._on_stall_hard)
-
-    async def _remove_stall_emoji(self, emoji: str) -> None:
-        try:
-            await self._slack.remove_reaction(self._channel, self._ts, emoji)
-        except Exception:
-            pass
-
-    def _on_stall_soft(self) -> None:
-        asyncio.ensure_future(self._add_stall_emoji(_STALL_EMOJI_SOFT))
-
-    def _on_stall_hard(self) -> None:
-        asyncio.ensure_future(self._add_stall_emoji(_STALL_EMOJI_HARD))
-
-    async def _add_stall_emoji(self, emoji: str) -> None:
-        if self._finalized:
-            return
-        # Remove previous stall emoji if upgrading
-        if self._stall_emoji and self._stall_emoji != emoji:
-            try:
-                await self._slack.remove_reaction(self._channel, self._ts, self._stall_emoji)
-            except Exception:
-                pass
-        self._stall_emoji = emoji
-        try:
-            await self._slack.add_reaction(self._channel, self._ts, emoji)
-        except Exception:
-            pass
 
 
 # Trust/YOLO state
@@ -821,132 +724,6 @@ _INCOGNITO_TOKEN_RE = privacy_mode.INCOGNITO_TOKEN_RE
 _TEMPORARY_TOKEN_RE = privacy_mode.TEMPORARY_TOKEN_RE
 
 
-def _is_slack_restricted(session_key: str) -> bool:
-    """Return True if this Slack session should skip memory writes.
-
-    The predicate itself is namespace-agnostic (see
-    :func:`kiro_crew.messaging.privacy_mode.is_restricted`); the Slack spelling
-    survives because this package's enforcement sites are named for it.
-    """
-    return privacy_mode.is_restricted(session_key)
-
-
-def _hydrate_conv_flags(sessions: object, session_key: str) -> None:
-    """Restore persisted temporary/incognito flags into the in-memory caches.
-
-    Called once per session in ``handle_message`` so a thread marked temporary
-    or incognito stays so across a gateway restart (the in-memory LRU is rebuilt
-    from the durable ``SessionMap`` entry).
-    """
-    privacy_mode.hydrate(sessions, session_key)
-
-
-async def _apply_privacy_mode(
-    mode: str,
-    session_key: str,
-    user_id: str,
-    channel: str,
-    slack: SlackClientOps,
-    sessions: SessionManager,
-    reply_ts: str,
-    link_thread: bool = True,
-) -> None:
-    """Mark a session as *mode* and notify the user (idempotent).
-
-    Everything platform-shaped is a callback into this module, which is what lets
-    the shared applier own the ordering (``privacy_mode._commit_mode``, whose
-    docstring is the one statement of it: the durable records first, awaited,
-    then the publication -- or a refusal that publishes nothing).
-    """
-
-    async def _notify(message: str) -> None:
-        await slack.post_message(channel, message, reply_ts or None)
-
-    async def _on_applied(_mode: str) -> None:
-        # Register thread so follow-up messages pass the in_active_thread
-        # gate in mention/observe channels without needing another @mention.
-        # reply_ts is the bare Slack thread_ts; session_key may be namespaced.
-        # Skipped when there is no thread, and when the caller says this session
-        # is not thread-scoped at all (``link_thread=False`` -- a flat 1:1 DM,
-        # whose session is keyed by the channel): claiming a thread there would
-        # hand the dashboard mirror one branch to post into. Posting is a
-        # separate decision, so the confirmation still lands where the modifier
-        # was typed.
-        if reply_ts and link_thread:
-            sessions.set_slack_link(session_key, reply_ts, channel)
-
-    await privacy_mode.apply_mode(
-        mode,
-        session_key,
-        source="slack",
-        caller=user_id,
-        resources=f"{channel}:{session_key}",
-        sessions=sessions,
-        notify=_notify,
-        on_applied=_on_applied,
-    )
-
-
-async def maybe_apply_privacy_modifiers(
-    text: str,
-    cmd_text: str,
-    session_key: str,
-    user_id: str,
-    channel: str,
-    slack: SlackClientOps,
-    sessions: SessionManager,
-    reply_ts: str,
-    link_thread: bool = True,
-) -> tuple[str, str, bool]:
-    """Strip and apply the ``!temporary`` / ``!incognito`` privacy modifiers.
-
-    Shared by the native ``handle_message`` path and the messaging-transport
-    ``handle_message_transport`` path so the privacy controls behave identically
-    on both (and the modifier token never leaks into the LLM prompt).
-
-    Returns ``(text, cmd_text, only_modifier)``:
-    - *text* — the LLM-facing message with the modifier token(s) removed.
-    - *cmd_text* — the mention-stripped command text with the token removed
-      (the native path reuses it for its subsequent ``!compact``/``!bang``
-      checks; the transport path ignores it).
-    - *only_modifier* — True when there is nothing left to run: the message was
-      nothing but the modifier(s), OR the modifier was REFUSED (the gateway's
-      private-conversation limit, or an over-long key -- ``apply_mode`` has
-      already audited the denial and told the user the message was not
-      processed). The caller MUST then return without starting an LLM turn:
-      running the message with the mode silently dropped would be the leak the
-      modifier exists to prevent.
-
-    Slack's TWO texts are why this drives ``privacy_mode``'s primitives rather
-    than its single-text ``strip_and_apply``: only *cmd_text* decides whether the
-    message was nothing BUT a modifier, while *text* is what reaches the model.
-    Ordering (temporary, then incognito) and the early return as soon as nothing
-    remains match the shipped behaviour.
-    """
-    for mode, pattern in (
-        (privacy_mode.MODE_TEMPORARY, _TEMPORARY_TOKEN_RE),
-        (privacy_mode.MODE_INCOGNITO, _INCOGNITO_TOKEN_RE),
-    ):
-        cmd_stripped, had_mode = privacy_mode.strip_token(cmd_text, mode)
-        if not had_mode:
-            continue
-        try:
-            await _apply_privacy_mode(
-                mode, session_key, user_id, channel, slack, sessions, reply_ts, link_thread
-            )
-        except privacy_mode.PrivacyModeRefused:
-            # Audited and announced by apply_mode; nothing is left to run.
-            return text, cmd_stripped, True
-        cmd_text = cmd_stripped
-        text = pattern.sub("", text)
-        text = " ".join(text.split()) or text  # collapse whitespace
-        if not cmd_text:
-            # Message was *only* the modifier(s), with no remaining content.
-            return text, cmd_text, True
-
-    return text, cmd_text, False
-
-
 # Auto-titling lives in ``messaging.auto_title`` so both Slack paths and a second
 # channel share ONE claim tracker: two turns that resolved to the same session key
 # cannot then title it twice. The names below are the Slack-facing spellings this
@@ -960,25 +737,6 @@ _mark_titled = auto_title.mark_titled
 _background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
 
 
-def cancel_background_tasks() -> None:
-    """Cancel pending background tasks during gateway shutdown."""
-    for t in _background_tasks:
-        t.cancel()
-    _background_tasks.clear()
-
-
-def track_background_task(task: "asyncio.Task[Any]") -> None:
-    """Hold a strong reference to *task* until it finishes.
-
-    Both halves matter: without the reference the loop may collect a running task
-    mid-flight, and without the registration :func:`cancel_background_tasks`
-    cannot stop it at shutdown. The transport dispatcher shares this set so a
-    fire-and-forget turn it starts is torn down with the gateway too.
-    """
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
 # Review mode: stores draft text keyed by "channel|thread_ts|uuid" for button/modal
 # handlers. Each entry includes the *requester* user_id so handlers can authorize the
 # requester (in addition to bot owner) to act on their own drafts.
@@ -988,110 +746,6 @@ _REVIEW_DRAFT_TTL = 3600  # 1 hour
 _REVIEW_DRAFT_MAX = 1024
 # key → (draft, requester_user_id, timestamp)
 _review_drafts: dict[str, tuple[str, str, float]] = {}
-
-
-def _review_drafts_get(key: str) -> tuple[str, str]:
-    """Get (draft, requester_user_id), returning ("","") if missing or expired."""
-    entry = _review_drafts.get(key)
-    if entry is None:
-        return "", ""
-    draft, requester, ts = entry
-    if time.monotonic() - ts > _REVIEW_DRAFT_TTL:
-        _review_drafts.pop(key, None)
-        return "", ""
-    return draft, requester
-
-
-def _review_drafts_set(key: str, draft: str, requester_user_id: str) -> None:
-    """Store a draft with TTL + requester id, evicting oldest if at capacity."""
-    now = time.monotonic()
-    # Evict expired entries
-    expired = [k for k, (_, _, ts) in _review_drafts.items() if now - ts > _REVIEW_DRAFT_TTL]
-    for k in expired:
-        _review_drafts.pop(k, None)
-    # Evict oldest if still at capacity
-    if len(_review_drafts) >= _REVIEW_DRAFT_MAX:
-        oldest_key = min(_review_drafts, key=lambda k: _review_drafts[k][2])
-        _review_drafts.pop(oldest_key, None)
-    _review_drafts[key] = (draft, requester_user_id, now)
-
-
-def _review_drafts_pop(key: str) -> tuple[str, str]:
-    """Pop (draft, requester_user_id), returning ("","") if missing or expired."""
-    entry = _review_drafts.pop(key, None)
-    if entry is None:
-        return "", ""
-    draft, requester, ts = entry
-    if time.monotonic() - ts > _REVIEW_DRAFT_TTL:
-        return "", ""
-    return draft, requester
-
-
-def _get_default_agent() -> str:
-    """Read persisted default agent, cached to avoid disk I/O on every message."""
-    global _cached_default_agent
-    if _cached_default_agent is None:
-        _cached_default_agent = KiroCrewConfig.load().agent.default_agent
-    return _cached_default_agent
-
-
-def _read_thread_overrides(
-    session_key: str, conversation_log: ConversationLog | None
-) -> tuple[str, str]:
-    """Read and resolve persisted overrides without mutating the live maps."""
-    if not conversation_log:
-        return "", ""
-    try:
-        meta = conversation_log.get_metadata(session_key)
-    except Exception:
-        logger.debug("Failed to hydrate thread overrides for %s", session_key, exc_info=True)
-        return "", ""
-    from kiro_crew.messaging.session_resume import session_agent_from_metadata
-
-    resolved_agent = session_agent_from_metadata(meta) or meta.get("agent") or ""
-    project = ""
-    if meta.get("project"):
-        # Defense-in-depth: re-validate the persisted path at this input
-        # boundary. Conversation-log metadata is normally written through the
-        # guarded !project handler, but if it is ever corrupted or tampered
-        # with, a sensitive credential path (~/.aws, ~/.ssh, …) must never be
-        # loaded into the in-memory cache.
-        if not is_sensitive_path(meta["project"]):
-            project = meta["project"]
-        else:
-            logger.warning(
-                "Ignoring sensitive project path from thread metadata for %s",
-                session_key,
-            )
-    return resolved_agent, project
-
-
-async def _hydrate_thread_overrides(
-    session_key: str, conversation_log: ConversationLog | None
-) -> None:
-    """Resolve private identity off-loop, then preserve any newer live selections."""
-    if session_key in _hydrated_sessions:
-        return
-    if not conversation_log:
-        _hydrated_sessions.add(session_key)
-        return
-    agent_before = _thread_agents.get(session_key)
-    project_before = _thread_projects.get(session_key)
-    agent, project = await asyncio.to_thread(_read_thread_overrides, session_key, conversation_log)
-    # A concurrent hydration/command may have settled this session while the
-    # worker read it. Never publish a stale result over that live selection.
-    if session_key in _hydrated_sessions:
-        return
-    _hydrated_sessions.add(session_key)
-    if agent and _thread_agents.get(session_key) == agent_before:
-        _thread_agents[session_key] = agent
-    if project and _thread_projects.get(session_key) == project_before:
-        _thread_projects[session_key] = project
-
-
-def _get_agent_for_session(session_key: str) -> str:
-    """Return agent for a session: thread override first, then global default."""
-    return _thread_agents.get(session_key) or _get_default_agent()
 
 
 def _discover_project_agents(
@@ -1247,105 +901,6 @@ def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     return ", ".join(names) if names else "(none found)"
 
 
-def _set_default_agent(name: str) -> None:
-    """Persist default agent to config (shared with dashboard)."""
-    global _cached_default_agent
-    path = config_path()
-    if is_sensitive_path(str(path)):
-        raise ValueError(f"Refusing to write to sensitive path: {path}")
-
-    def _apply(data: dict) -> dict:
-        data.setdefault("agent", {})["default_agent"] = name
-        return data
-
-    try:
-        # Locked read-modify-write: holds the sidecar advisory lock so a
-        # concurrent config writer (dashboard PATCH, CLI, the boot-time meta
-        # refresh) cannot land between this read and write and get reverted.
-        update_config_locked(path, mutate=_apply)
-    except ConfigReadError as e:
-        # Fail closed: writing back a {} baseline would drop every other setting.
-        raise ValueError(f"Failed to read config: {e}") from e
-    except OSError as e:
-        raise ValueError(f"Failed to write config: {e}") from e
-    _cached_default_agent = name
-
-
-def _persist_channel_config(
-    channel_id: str,
-    activation: str | None = None,
-    agent: str | None = None,
-) -> None:
-    """Update a single channel's config in config.json (merge, not overwrite)."""
-    path = config_path()
-    if is_sensitive_path(str(path)):
-        raise ValueError(f"Refusing to write to sensitive path: {path}")
-
-    def _apply(data: dict) -> dict:
-        slack_data = data.setdefault("slack", {})
-        channels = slack_data.setdefault("channels", {})
-        ch = channels.setdefault(channel_id, {})
-        if activation is not None:
-            ch["activation"] = activation
-        if agent is not None:
-            ch["agent"] = agent
-        return data
-
-    try:
-        # Locked read-modify-write (see _set_default_agent): without the
-        # sidecar lock, a `!channel always` racing any other config writer
-        # could be silently reverted by the loser's stale snapshot.
-        update_config_locked(path, mutate=_apply)
-    except ConfigReadError as e:
-        # Fail closed: writing back a {} baseline would drop every other setting.
-        raise ValueError(f"Failed to read config: {e}") from e
-    except OSError as e:
-        raise ValueError(f"Failed to write config: {e}") from e
-
-
-class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
-
-    def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
-        self.provider = provider
-        self.request_id = request_id
-        self.session_key = session_key
-        self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-
-
-class _LinkedApproval:
-    """A tool-approval prompt posted to Slack on behalf of a *linked dashboard
-    slot*.
-
-    Unlike :class:`_PendingApproval`, this entry does NOT own the ACP backend
-    answer. For a Slack-linked dashboard session the consumer that actually
-    calls ``approve_tool`` / ``reject_tool`` is the dashboard's ``_run_chat``
-    loop, which is parked on the slot's approval *future*. A Slack button click
-    here must therefore ONLY resolve that future (via
-    ``state.resolve_approval``); the dashboard loop then answers the backend
-    exactly once. Calling ``approve_tool`` from here too would answer the
-    JSON-RPC request twice.
-
-    ``trust_grantable`` carries the server-side durable-grant proof that was true
-    of the dashboard card when the prompt was mirrored (see
-    :func:`_linked_trust_grantable`). It defaults to False so an entry built
-    without it -- and therefore every path that never established the proof --
-    cannot grant Trust.
-    """
-
-    __slots__ = ("request_id", "session_key", "trust_grantable")
-
-    def __init__(
-        self,
-        request_id: str | int,
-        session_key: str,
-        trust_grantable: bool = False,
-    ) -> None:
-        self.request_id = request_id
-        self.session_key = session_key
-        self.trust_grantable = trust_grantable
-
-
 # Linked-slot approvals: keyed by f"{channel}:{approval_msg_ts}", parallel to
 # _pending_approvals. Kept separate so the click handler can tell a Slack-native
 # approval (answer the backend) from a dashboard-linked one (resolve the slot
@@ -1362,163 +917,6 @@ _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
 
 
-def set_allowed_users(user_ids: set[str]) -> None:
-    """Set the allowed user IDs for Slack access (called by gateway)."""
-    global _allowed_users
-    _allowed_users = user_ids
-
-
-def set_owner_id(owner_id: str) -> None:
-    """Set the primary owner ID for owner-only commands (called by gateway)."""
-    global _owner_id
-    _owner_id = owner_id
-
-
-def set_yolo_mode(enabled: bool) -> None:
-    """Set YOLO mode at startup from config (called by gateway).
-
-    ``dangerouslySkipPermissions`` is a standing instruction, so the grant does not
-    expire — see ``safety_override.grant_declared_yolo``. A headless
-    ``--slack-only`` gateway never runs the dashboard startup path, so the same
-    helper is called here or YOLO would still lapse for exactly the users
-    driving the agent from another channel.
-    """
-    apply_config_duration()
-    if enabled:
-        grant_declared_yolo()
-
-
-def set_orch_cfg(cfg: KiroCrewConfig) -> None:
-    """Store a live reference to the orchestrator's config (called by events.py)."""
-    global _orch_cfg
-    _orch_cfg = cfg
-    load_voice_reply_config(cfg)
-
-
-def _str_or_default(value: object, default: str = "") -> str:
-    """Return *value* stripped when it is a string, else *default*.
-
-    The tolerant READ half of :func:`validated_config_string`, which is the strict
-    WRITE half. The asymmetry is deliberate: the dashboard PUT rejects a
-    wrong-typed field with 400 because a caller can still fix it, whereas this
-    runs at boot against whatever is already on disk, where refusing would mean
-    failing to start over a hand-edited typo. So the boundary rejects and the
-    loader falls back.
-
-    Every string field in the ``voice_reply`` block is hand-editable JSON, so a
-    dict, list or number can arrive where a string is expected, and all of them
-    reach the dashboard's config GET where a non-string crashes the React panel
-    that renders it. Falling back beats ``str(value)``, which would keep ``"{}"``
-    as a voice name or a binary path and push the failure into synthesis.
-
-    *default* is per-field on purpose: an unset voice or engine has a real
-    fallback, whereas an unset profile or path means "not configured". Coercing
-    ``rate``/``pitch`` here as well as in their synthesis-time validators is not
-    redundant — the validators protect synthesis, this protects the GET.
-    """
-    validated = validated_config_string(value)
-    return default if validated is None else validated
-
-
-def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
-    """Populate the live voice state (``_vc``) from config's ``voice_reply``.
-
-    Callable without a Slack orchestrator: ``set_orch_cfg`` runs only on the
-    Slack startup path, so the dashboard app builders call this directly at
-    boot. Without that call a dashboard-only gateway (no Slack tokens) never
-    restores persisted voice settings — every restart silently resets TTS to
-    disabled while the dashboard's settings PUT keeps reporting success.
-    """
-    # Load voice_reply defaults from config
-    _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
-    if not _vr:
-        try:
-            _vr = json.loads(read_config_text(config_path())).get("voice_reply", {})
-        except Exception:
-            _vr = {}
-    if not isinstance(_vr, dict):
-        _vr = {}
-    _enabled = bool(_vr.get("enabled", False))
-    if _enabled:
-        _vc.global_enabled = True
-    _vc.auto_speak = bool(_vr.get("auto_speak", False))
-    # All ten string reads in this block go through the same coercion: each is
-    # hand-editable JSON that reaches the dashboard's config GET verbatim.
-    _vc.default_voice = _str_or_default(_vr.get("voice_id"), "Ruth")
-    _vc.default_engine = _str_or_default(_vr.get("engine"), "generative")
-    _vc.default_rate = _str_or_default(_vr.get("rate"), "100%")
-    _vc.default_pitch = _str_or_default(_vr.get("pitch"), "+0%")
-    _vc.aws_profile = _str_or_default(_vr.get("aws_profile"))
-    _vc.region = _str_or_default(_vr.get("region"))
-    # ``auto_reply_to_voice`` defaults to ``enabled``'s value: users with
-    # explicit ``enabled=false`` keep the existing zero-voice behavior, and
-    # users who turn voice on globally also get symmetric voice-in/voice-out
-    # without needing to set a second flag.
-    _vc.auto_reply_to_voice = bool(_vr.get("auto_reply_to_voice", _enabled))
-    # Resolution rules (validate-or-default, and keep an existing Piper install)
-    # live in one shared resolver so this loader, the Telegram settings path, and
-    # the dashboard cannot drift apart on them.
-    _vc.provider = resolve_configured_provider(_vr)
-    _vc.piper_binary = _str_or_default(_vr.get("piper_binary"))
-    _vc.piper_model = _str_or_default(_vr.get("piper_model"))
-    _vc.piper_model_config = _str_or_default(_vr.get("piper_model_config"))
-    _vc.system_voice = _str_or_default(_vr.get("system_voice"))
-    # Coerce to finite/positive — a config.json with inf/NaN (JSON accepts both)
-    # would otherwise reach synthesis and be re-serialized as non-RFC JSON,
-    # breaking the dashboard's config GET.
-    _vc.piper_length_scale = _validate_length_scale(_vr.get("piper_length_scale", 1.0))
-
-
-def set_dashboard_state(state: object) -> None:
-    """Store dashboard state reference for push_refresh (called by gateway)."""
-    global _dashboard_state
-    _dashboard_state = state
-
-
-def get_dashboard_state() -> object | None:
-    """The live dashboard state, or None when running without a dashboard.
-
-    An accessor rather than a direct read of the global: the gateway installs
-    the state AFTER import, so a caller that imported the name would capture
-    None forever.
-    """
-    return _dashboard_state
-
-
-def get_orch_cfg() -> "KiroCrewConfig | None":
-    """The orchestrator's live config, or None before the gateway installs it.
-
-    Same reason as :func:`get_dashboard_state` -- the value is set post-import.
-    """
-    return _orch_cfg
-
-
-def slack_cfg(orch: object | None = None) -> KiroCrewConfig:
-    """The config every Slack read consults -- one object, whichever door you enter by.
-
-    ``orch._cfg``, this module's ``_orch_cfg`` and every dispatcher's captured
-    ``cfg`` are the SAME object in a running gateway: :func:`set_orch_cfg`
-    installs the orchestrator's own config, and nothing rebinds it any more --
-    the ``!channel`` path and the config applier both mutate it IN PLACE
-    (:func:`_reload_orch_cfg`, :func:`adopt_slack_config`). That is what closes
-    the divergence a rebind would otherwise open, and it is why reading through the
-    caller's *orch* is safe rather than a second view.
-
-    Resolution order: the caller's orchestrator, then the installed global, then
-    the config watcher's snapshot, then a load. So a Slack read reaches the same
-    object whether it holds the orchestrator or not, and a process with no
-    orchestrator at all (a dashboard-only gateway) still reads live config.
-    """
-    cfg = getattr(orch, "_cfg", None)
-    if cfg is not None:
-        return cfg  # type: ignore[return-value]
-    if _orch_cfg is not None:
-        return _orch_cfg
-    from kiro_crew.config import live
-
-    return live.snapshot() or KiroCrewConfig.load()
-
-
 #: The Slack-owned attributes of :class:`KiroCrewConfig` that a reload copies
 #: onto the shared config object. Sections are replaced whole (the dataclass
 #: instance from the new load), so a read of ``slack_cfg().slack.<field>`` sees
@@ -1533,140 +931,6 @@ _SLACK_OWNED_FIELDS: tuple[str, ...] = (
     "observe_max_messages",
     "observe_ttl_hours",
 )
-
-
-def copy_slack_fields(source: KiroCrewConfig, target: KiroCrewConfig) -> None:
-    """Copy the Slack-owned fields of *source* onto *target* in place."""
-    for name in _SLACK_OWNED_FIELDS:
-        if hasattr(source, name):
-            setattr(target, name, getattr(source, name))
-
-
-def adopt_slack_config(fresh: KiroCrewConfig) -> None:
-    """Bring the shared config object up to date with *fresh*, in place.
-
-    In place and never rebound: the object installed by :func:`set_orch_cfg` is
-    the same one the orchestrator and every dispatcher hold, so replacing the
-    binding here would leave those holders on the old object. Called by the
-    gateway's config applier with the reloaded config; a no-op before the
-    orchestrator has installed one.
-    """
-    if _orch_cfg is not None and _orch_cfg is not fresh:
-        copy_slack_fields(fresh, _orch_cfg)
-
-
-def _reload_orch_cfg(fresh: "KiroCrewConfig | None" = None) -> None:
-    """Refresh channel activations on the shared config object after a ``!channel`` write.
-
-    Synchronous on purpose: the write just landed and the next inbound message
-    may arrive before the config watcher's poll, so the caller must not wait for
-    it. The watcher applies the same two fields again when it sees the write,
-    which is idempotent. *fresh* lets a caller that already holds the reloaded
-    config skip the load.
-    """
-    if _orch_cfg is not None:
-        if fresh is None:
-            fresh = KiroCrewConfig.load()
-        _orch_cfg.slack_channels = fresh.slack_channels
-        _orch_cfg.slack_dm_activation = fresh.slack_dm_activation
-
-
-def is_owner(user_id: str) -> bool:
-    """Check if *user_id* is the primary owner (with W/U prefix cross-match)."""
-    if not _owner_id or not user_id:
-        return False
-    if user_id == _owner_id:
-        return True
-    return user_id.replace("W", "U", 1) == _owner_id or user_id.replace("U", "W", 1) == _owner_id
-
-
-def disable_yolo() -> None:
-    """Disable YOLO mode (global auto-approve).
-
-    Gated on ``has_grant()``, NOT ``is_active()``. The latter is policy-filtered and
-    reports False while the governance verdict is momentarily unknown, so gating an
-    explicit off on it skipped the teardown and let the grant resume once the refresh
-    settled -- the operator's revocation silently undone.
-    """
-    if not safety_override().has_grant():
-        return
-    safety_override().deactivate("slack")
-    # Through the shared revoke, which undoes BOTH halves of each grant. Dropping
-    # only the in-memory mapping leaves every granted session's approval_policy at
-    # "auto", and a subagent reads that policy rather than the mapping, so a later
-    # spawn would inherit a trust this call just revoked.
-    clear_trusted_sessions()
-    logger.info("YOLO mode OFF")
-
-
-def enable_yolo_with_ttl(ttl_secs: int) -> None:
-    """Enable YOLO mode with a specific TTL."""
-    safety_override().activate("slack", ttl=ttl_secs)
-    logger.info("YOLO mode ON (expires in %ds)", ttl_secs)
-
-
-def is_yolo_mode() -> bool:
-    """Return whether YOLO mode is currently active."""
-    return safety_override().is_active()
-
-
-def is_slack_session_trusted(session_key: str) -> bool:
-    """Return whether *session_key* has been granted per-session Trust.
-
-    Per-session trust auto-approves all subsequent tools for THIS session only
-    (distinct from global YOLO). Populated by the Trust button on both the
-    native and messaging-transport approval prompts.
-    """
-    return is_session_trusted(session_key)
-
-
-def add_trusted_session(
-    session_key: str, sessions: "SessionManager | None" = None, strict: bool = False
-) -> None:
-    """Grant per-session Trust for *session_key* (mirrors native trust_tool).
-
-    Adds the session to the in-memory trust set and, when a SessionManager is
-    supplied, sets its approval policy to ``auto`` so spawned subagents inherit
-    the trust (they read the parent's approval policy, not the in-memory set).
-
-    ``strict=True`` propagates a failing policy write (after undoing the in-memory
-    half) rather than logging it, for a caller that has to report the grant back to
-    the clicker and must not call a partial grant a grant.
-    """
-    _add_trusted_session(session_key, sessions, strict=strict)
-
-
-def is_allowed_user(user_id: str) -> bool:
-    """Check if user_id is the owner.
-
-    Multi-user access is disabled for security — only the owner
-    (KIROCREW_OWNER_ID) is authorized to interact via Slack.
-    """
-    if not user_id:
-        return False
-    return is_owner(user_id)
-
-
-def set_tracking_channels(channel_ids: set[str]) -> None:
-    """Set the tracked channel IDs (called by gateway/interactions)."""
-    global _tracking_channels
-    _tracking_channels = channel_ids
-
-
-def set_open_channels(channel_ids: set[str]) -> None:
-    """Set channel IDs where all users are authorized (no allowlist needed)."""
-    global _open_channels
-    _open_channels = channel_ids
-
-
-def is_open_channel(channel_id: str) -> bool:
-    """Open channels are disabled — multi-user access is blocked for security."""
-    return False
-
-
-def is_tracked_channel(channel_id: str) -> bool:
-    """Check if *channel_id* is in the tracking set."""
-    return bool(channel_id and channel_id in _tracking_channels)
 
 
 @dataclass
@@ -1686,836 +950,6 @@ class MessageContext:
     task_runner: TaskRunner | None = None
 
 
-async def _safe_voice_reply(
-    slack: SlackClientOps,
-    channel: str,
-    thread_ts: str,
-    text: str,
-    voice_id: str = "Ruth",
-    engine: str = "generative",
-    rate: str = "100%",
-    pitch: str = "+0%",
-) -> None:
-    """Fire-and-forget voice reply.  Never raises."""
-    try:
-        await _voice_reply_fn(
-            slack,
-            channel,
-            thread_ts,
-            text,
-            provider=_vc.provider,
-            voice_id=voice_id,
-            engine=engine,
-            rate=rate,
-            pitch=pitch,
-            aws_profile=_vc.aws_profile,
-            region=_vc.region,
-            piper_binary=_vc.piper_binary,
-            piper_model=_vc.piper_model,
-            piper_model_config=_vc.piper_model_config,
-            length_scale=_vc.piper_length_scale,
-            system_voice=_vc.system_voice,
-        )
-    except Exception:
-        logger.debug("Voice reply failed", exc_info=True)
-
-
-async def _handle_slash_command(
-    cmd_text: str,
-    slack: SlackClientOps,
-    sessions: SessionManager,
-    channel: str,
-    reply_ts: str,
-    msg_ts: str,
-    session_key: str,
-    user_id: str,
-    conversation_log: ConversationLog | None = None,
-) -> str | None:
-    """Dispatch owner-only ``!commands``.  Returns a string (even empty) if handled, None if not."""
-
-    cmd = cmd_text.split()[0].lower()
-
-    # ── Deprecation warning for all bang commands ──
-    slash_equiv = _BANG_TO_SLASH.get(cmd)
-    if slash_equiv:
-        logger.warning("Deprecated bang command %s used — suggest %s", cmd, slash_equiv)
-        warn_block = deprecation_warning_block(cmd, slash_equiv)
-        await slack.post_blocks(channel, [warn_block], f"{cmd} is deprecated", reply_ts)
-
-    # ── !yolo on / !yolo off / !yolo renew ──
-    if cmd == "!yolo":
-        parts = cmd_text.split()
-        yolo_active = is_yolo_mode()
-        if len(parts) >= 2 and parts[1].lower() == "off":
-            # ``has_grant()``, NOT ``yolo_active``. The two ask different questions
-            # and only one of them belongs here: ``is_yolo_mode`` is policy-filtered
-            # ("may a tool be auto-approved"), while an explicit off asks "is there
-            # something to tear down". While the governance verdict is momentarily
-            # unknown the filtered answer is False, so this branch reported "already
-            # off" and never called ``disable_yolo()`` -- and the retained grant then
-            # resumed once the refresh settled, silently undoing the operator's
-            # revocation. ``disable_yolo`` was already corrected to read
-            # ``has_grant``; this is its CALLER, which was still gating it out.
-            if safety_override().has_grant():
-                disable_yolo()
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.yolo_mode",
-                    outcome="allowed",
-                    source="slack",
-                    resources="yolo_off",
-                )
-                await slack.post_message(channel, "🔒 YOLO mode disabled.", reply_ts)
-            else:
-                await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
-        elif len(parts) >= 2 and parts[1].lower() == "on":
-            if not yolo_active:
-                # Off-loop like the sibling renew() below: activate() writes a
-                # SEL event, and that filesystem I/O must not run on the loop.
-                _result = await asyncio.to_thread(safety_override().activate, "slack")
-                if not _result.active:
-                    # Arming can now be REFUSED -- an ``approval_modes`` deny of
-                    # ``yolo`` turns the mode off entirely. Reporting "enabled" over
-                    # a refused arm would tell the operator auto-approve is on while
-                    # every tool still stops to ask, and would audit it as allowed.
-                    #
-                    # NAME THE ACTUAL CAUSE. ``activate`` refuses for two different
-                    # reasons and they send the operator to two different places, so a
-                    # single message is wrong for one of them:
-                    #
-                    # | verdict   | why the arm failed          | where to look     |
-                    # |-----------|-----------------------------|-------------------|
-                    # | denied    | an admin's policy forbids   | the org's policy  |
-                    # | permitted | the fail-closed SEL audit   | the audit system  |
-                    #
-                    # Posting the policy line unconditionally would tell a solo
-                    # operator with no policy at all that a phantom organization had
-                    # blocked them, sending them hunting a file that does not exist
-                    # while the real fault went unnamed. The verdict is a memory read
-                    # (pushed when the ceiling was installed), so no thread.
-                    if not yolo_policy_permits():
-                        _outcome, _error = "approval_mode_denied_by_policy", (
-                            "mode_disabled_by_policy"
-                        )
-                        _msg = "🔒 YOLO mode is disabled by your organization's policy."
-                    else:
-                        _outcome, _error = "activation_failed", "audit_unavailable"
-                        _msg = "❌ Failed to activate YOLO mode (audit system unavailable)."
-                    sel().log_api_access(
-                        caller=user_id,
-                        operation="slack.yolo_mode",
-                        outcome=_outcome,
-                        source="slack",
-                        resources="yolo_on",
-                        error=_error,
-                    )
-                    await slack.post_message(channel, _msg, reply_ts)
-                else:
-                    sel().log_api_access(
-                        caller=user_id,
-                        operation="slack.yolo_mode",
-                        outcome="allowed",
-                        source="slack",
-                        resources="yolo_on",
-                    )
-                    await slack.post_message(
-                        channel,
-                        f"🔓 YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
-                        reply_ts,
-                    )
-            else:
-                await slack.post_message(
-                    channel, f"YOLO mode is already on ({describe_grant_lifetime()}).", reply_ts
-                )
-        elif len(parts) >= 2 and parts[1].lower() == "renew":
-            # renew() audits fail-closed with a synchronous SEL write; keep
-            # that filesystem I/O off the event loop.
-            result = await asyncio.to_thread(safety_override().renew, "slack")
-            if result.renewed:
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.yolo_mode",
-                    outcome="renewed",
-                    source="slack",
-                    resources="yolo_renew",
-                )
-                await slack.post_message(
-                    channel,
-                    f"🔓 YOLO mode renewed (auto-expires in {result.ttl // 60}min).",
-                    reply_ts,
-                )
-            else:
-                await slack.post_message(
-                    channel, "YOLO mode is not active. Use `!yolo on` to activate.", reply_ts
-                )
-        else:
-            if yolo_active:
-                status = f"ON 🔓 ({describe_grant_lifetime()})"
-            else:
-                status = "OFF 🔒"
-            await slack.post_message(
-                channel,
-                f"YOLO mode: *{status}*. Use `!yolo on` / `!yolo off` / `!yolo renew`.",
-                reply_ts,
-            )
-        return ""
-
-    # ── !stop — defensive fallback (normally intercepted in events.py
-    #    _route_message before handle_message is called) ──
-    if cmd == "!stop":
-        # Recorded BEFORE the liveness check: a turn between its abandoned
-        # attempt and its compaction replay has no session at this moment, and
-        # the replay reads this record to stay dropped (``note_user_stop``).
-        # Against the thread's OWNING session -- a linked thread's turns run
-        # under the dashboard session that owns it, and that is the key the
-        # replay reads -- resolved the way the OPTIONS expiry below resolves it.
-        force_stop = False
-        if compaction_in_flight(sessions, session_key):
-            force_stop = consume_stop_declined(session_key, user_id)
-        if compaction_in_flight(sessions, session_key) and not force_stop:
-            # Declined before the Stop is recorded: see slack/events.py. A repeat
-            # within the window by the SAME presser is the second press and forces.
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!stop",
-                tool_kind="command",
-                outcome="compacting",
-                metadata={"user": user_id, "channel": channel},
-            )
-            # Posted before the marker is armed: an undelivered warning plus an
-            # armed escalation is a retry that hard-resets the session with this
-            # user never told that it would. The post hands back the ts of what
-            # landed, so a falsy one is a reply the user never saw.
-
-            async def _say_declined() -> bool:
-                return bool(
-                    await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
-                )
-
-            await decline_stop(session_key, user_id, _say_declined)
-            return ""
-        note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
-        has_session = sessions.has_session(session_key)
-        if not has_session:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!stop",
-                tool_kind="command",
-                outcome="no_session",
-                metadata={"user": user_id, "channel": channel},
-            )
-            await slack.post_message(channel, "Nothing running.", reply_ts)
-            return ""
-
-        # Post ephemeral "Stopping…" block with Kill Now button
-        from kiro_crew.slack.blocks import build_stopping_blocks
-
-        await slack.post_ephemeral(
-            channel,
-            user_id,
-            "Stopping…",
-            blocks=build_stopping_blocks(session_key),
-            thread_ts=reply_ts,
-        )
-
-        async def _on_soft() -> None:
-            await slack.post_message(channel, "⏹ Execution stopped.", reply_ts)
-
-        async def _on_hard() -> None:
-            await slack.post_message(channel, "⛔ Execution stopped — session reset.", reply_ts)
-
-        # ``preserve_queue`` with the force: the hard reset pops the session and
-        # its queue, which in a shared thread holds co-tenants' messages;
-        # ``stop_turn`` parks them for the successor instead.
-        _kw = {"force": True, "preserve_queue": True} if force_stop else {}
-        outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
-        # If stop_turn returned "idle" (no active turn), neither callback
-        # fired — dismiss the stale "Stopping…" ephemeral explicitly.
-        if outcome == "idle":
-            await slack.post_message(channel, "Nothing running.", reply_ts)
-        elif outcome == "compacting":
-            # The race decline arms the marker too: the reply promises that a
-            # repeat forces, so the repeat must find one -- after the reply
-            # landed, never before it, and only when the post returns the ts of
-            # a message that really landed.
-
-            async def _say_declined_race() -> bool:
-                return bool(
-                    await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
-                )
-
-            await decline_stop(session_key, user_id, _say_declined_race)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="!stop",
-            tool_kind="command",
-            outcome=outcome,
-            metadata={"user": user_id, "channel": channel},
-        )
-        return ""
-
-    # ── !voice on/off/global/<name> | engine/speed/pitch controls ──
-    if cmd == "!voice":
-        from kiro_crew.voice_reply import VALID_ENGINES, _validate_pitch, _validate_rate
-
-        parts = cmd_text.split()
-        arg = parts[1].lower() if len(parts) >= 2 else ""
-        val = parts[2] if len(parts) >= 3 else ""
-        if arg == "on":
-            _vc.sessions.add(session_key)
-            v = _vc.voices.get(session_key, _vc.default_voice)
-            e = _vc.engines.get(session_key, _vc.default_engine)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!voice",
-                tool_kind="command",
-                outcome="voice_on",
-                metadata={"user": user_id, "channel": channel},
-            )
-            await slack.post_message(channel, f"\U0001f50a Voice ON — *{v}* ({e})", reply_ts)
-        elif arg == "off":
-            _vc.sessions.discard(session_key)
-            for d in (_vc.voices, _vc.engines, _vc.rates, _vc.pitches):
-                d.pop(session_key, None)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!voice",
-                tool_kind="command",
-                outcome="voice_off",
-                metadata={"user": user_id, "channel": channel},
-            )
-            await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
-        elif arg == "global":
-            _vc.global_enabled = not _vc.global_enabled
-            state = "ON \U0001f50a" if _vc.global_enabled else "OFF \U0001f507"
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!voice",
-                tool_kind="command",
-                outcome="voice_global_" + ("on" if _vc.global_enabled else "off"),
-                metadata={"user": user_id, "channel": channel},
-            )
-            await slack.post_message(channel, f"Voice global: *{state}*", reply_ts)
-        elif arg == "engine" and val:
-            eng = val.lower()
-            if eng not in VALID_ENGINES:
-                await slack.post_message(
-                    channel,
-                    f"\u274c Invalid engine. Use: {', '.join(sorted(VALID_ENGINES))}",
-                    reply_ts,
-                )
-            else:
-                _vc.engines[session_key] = eng
-                _vc.sessions.add(session_key)
-                await slack.post_message(channel, f"\U0001f50a Engine set to *{eng}*.", reply_ts)
-        elif arg == "speed" and val:
-            validated = _validate_rate(val)
-            _vc.rates[session_key] = validated
-            _vc.sessions.add(session_key)
-            await slack.post_message(channel, f"\U0001f50a Speed set to *{validated}*.", reply_ts)
-        elif arg == "pitch" and val:
-            validated = _validate_pitch(val)
-            _vc.pitches[session_key] = validated
-            _vc.sessions.add(session_key)
-            await slack.post_message(channel, f"\U0001f50a Pitch set to *{validated}*.", reply_ts)
-        elif arg and arg not in ("engine", "speed", "pitch"):
-            voice_name = parts[1]  # preserve original case
-            _vc.sessions.add(session_key)
-            _vc.voices[session_key] = voice_name
-            await slack.post_message(channel, f"\U0001f50a Voice set to *{voice_name}*.", reply_ts)
-        else:
-            on = session_key in _vc.sessions or _vc.global_enabled
-            v = _vc.voices.get(session_key, _vc.default_voice)
-            e = _vc.engines.get(session_key, _vc.default_engine)
-            r = _vc.rates.get(session_key, _vc.default_rate)
-            p = _vc.pitches.get(session_key, _vc.default_pitch)
-            await slack.post_message(
-                channel,
-                f"\U0001f50a Voice: *{'ON' if on else 'OFF'}*\n"
-                f"\u2022 Voice: *{v}* | Engine: *{e}*\n"
-                f"\u2022 Speed: *{r}* | Pitch: *{p}*\n"
-                "`!voice <name>` `!voice engine <neural|generative|long-form>` "
-                "`!voice speed <80%>` `!voice pitch <+10%>`",
-                reply_ts,
-            )
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
-        return ""
-
-    # ── !agent <name> / !agent off — always global ──
-    if cmd == "!agent":
-        parts = cmd_text.split()
-        if len(parts) == 1:
-            name = _get_default_agent() or "kirocrew"
-            await slack.post_message(
-                channel,
-                f"Current agent: *{name}*. Usage: `!agent <name>` or `!agent off`",
-                reply_ts,
-            )
-            return ""
-        if len(parts) != 2:
-            await slack.post_message(channel, "Usage: `!agent <name>` or `!agent off`", reply_ts)
-            return ""
-        agent_name = parts[1]
-        if agent_name.lower() in ("default", "off"):
-            try:
-                await run_config_write(_set_default_agent, "")
-            except ValueError as e:
-                await slack.post_message(channel, f"❌ {e}", reply_ts)
-                return ""
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!agent",
-                tool_kind="command",
-                outcome="agent_reset",
-                metadata={"user": user_id, "channel": channel},
-            )
-            await sessions.remove(session_key)
-            await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
-            return ""
-        resolved = await asyncio.to_thread(
-            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-        )
-        if not resolved:
-            names = await asyncio.to_thread(_list_all_agent_names)
-            await slack.post_message(
-                channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
-            )
-            return ""
-        try:
-            await run_config_write(_set_default_agent, resolved)
-        except ValueError as e:
-            await slack.post_message(channel, f"❌ {e}", reply_ts)
-            return ""
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="!agent",
-            tool_kind="command",
-            outcome="agent_switch",
-            metadata={"agent": resolved, "user": user_id, "channel": channel},
-        )
-        await sessions.remove(session_key)
-        await slack.post_message(channel, f"🔄 Switched to agent: *{resolved}*", reply_ts)
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
-        return ""
-
-    # ── !dashboard [duration] ──
-    if cmd == "!dashboard":
-        from kiro_crew.dashboard.token_auth import parse_duration
-        from kiro_crew.slack.allowlist import send_dashboard_link
-
-        parts = cmd_text.split()
-        ttl = 3600
-        if len(parts) >= 2:
-            parsed = parse_duration(parts[1])
-            if parsed is None:
-                await slack.post_message(
-                    channel,
-                    "Usage: `!dashboard [<N>h|<N>m]` — e.g. `!dashboard 2h`, `!dashboard 30m`",
-                    reply_ts,
-                )
-                return ""
-            ttl = parsed
-
-        url = await send_dashboard_link(slack, user_id, ttl)
-        if url:
-            await slack.post_message(channel, "🔗 Dashboard link sent via DM.", reply_ts)
-        else:
-            await slack.post_message(channel, "❌ Failed to send dashboard link.", reply_ts)
-        return ""
-
-    # ── !link-to-dashboard -- import Slack thread into dashboard ──
-    if cmd == "!link-to-dashboard":
-        if not is_allowed_user(user_id):
-            sel().log_tool_invocation(
-                session_key="",
-                agent="kirocrew",
-                source="slack",
-                tool_name="link_to_dashboard",
-                tool_kind="command",
-                outcome="denied",
-                metadata={"user_id": user_id, "channel": channel, "reason": "not_allowed_user"},
-            )
-            await slack.post_message(channel, "Not authorized.", reply_ts)
-            return ""
-        if not _dashboard_state or not hasattr(_dashboard_state, "get_or_create_slot"):
-            sel().log_tool_invocation(
-                session_key="",
-                agent="kirocrew",
-                source="slack",
-                tool_name="link_to_dashboard",
-                tool_kind="command",
-                outcome="failure",
-                metadata={"user_id": user_id, "channel": channel, "reason": "no_dashboard"},
-            )
-            await slack.post_message(channel, "Dashboard not available.", reply_ts)
-            return ""
-        if reply_ts == msg_ts:
-            sel().log_tool_invocation(
-                session_key="",
-                agent="kirocrew",
-                source="slack",
-                tool_name="link_to_dashboard",
-                tool_kind="command",
-                outcome="failure",
-                metadata={"user_id": user_id, "channel": channel, "reason": "not_in_thread"},
-            )
-            await slack.post_message(
-                channel, "Use this command inside a thread to import it.", reply_ts
-            )
-            return ""
-        # Fetch thread history and import to dashboard
-        from kiro_crew.slack.interactions import _import_thread_to_slot
-
-        slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
-        if not slot:
-            sel().log_tool_invocation(
-                session_key="",
-                agent="kirocrew",
-                source="slack",
-                tool_name="link_to_dashboard",
-                tool_kind="command",
-                outcome="failure",
-                metadata={"channel": channel, "thread_ts": reply_ts, "reason": "empty_thread"},
-            )
-            await slack.post_message(channel, "Could not fetch thread history.", reply_ts)
-            return ""
-        sel().log_tool_invocation(
-            session_key=slot.key,
-            agent="kirocrew",
-            source="slack",
-            tool_name="link_to_dashboard",
-            tool_kind="command",
-            outcome="success",
-            metadata={
-                "slot": slot.key,
-                "channel": channel,
-                "thread_ts": reply_ts,
-                "msg_count": len(slot.messages),
-            },
-        )
-        await slack.post_message(
-            channel,
-            f"Imported {len(slot.messages)} messages to dashboard session *{slot.key}*. Thread is now linked.",
-            reply_ts,
-        )
-        return ""
-
-    # ── !ta <name> / !ta off — thread-scoped agent ──
-    if cmd == "!ta":
-        parts = cmd_text.split()
-        if len(parts) < 2:
-            current = _thread_agents.get(session_key, "")
-            if current:
-                await slack.post_message(
-                    channel,
-                    f"Thread agent: *{current}*. `!ta off` to reset.",
-                    reply_ts,
-                )
-            else:
-                await slack.post_message(
-                    channel,
-                    "No thread agent set. Usage: `!ta <name>` or `!ta off`",
-                    reply_ts,
-                )
-            return ""
-        agent_name = parts[1]
-        if agent_name.lower() in ("default", "off"):
-            _thread_agents.pop(session_key, None)
-            if conversation_log:
-                try:
-                    await asyncio.to_thread(
-                        conversation_log.update_metadata, session_key, {"agent": ""}
-                    )
-                except Exception:
-                    logger.debug("Failed to clear agent in conversation log", exc_info=True)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!ta",
-                tool_kind="command",
-                outcome="agent_reset",
-                metadata={"user": user_id, "channel": channel, "scope": "thread"},
-            )
-            await sessions.remove(session_key)
-            await slack.post_message(channel, "🔄 Thread agent reset.", reply_ts)
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
-            return ""
-        resolved = await asyncio.to_thread(
-            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-        )
-        if not resolved:
-            names = await asyncio.to_thread(_list_all_agent_names)
-            await slack.post_message(
-                channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
-            )
-            return ""
-        _thread_agents[session_key] = resolved
-        if conversation_log:
-            try:
-                await asyncio.to_thread(
-                    conversation_log.update_metadata, session_key, {"agent": resolved}
-                )
-            except Exception:
-                logger.debug("Failed to persist agent to conversation log", exc_info=True)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="!ta",
-            tool_kind="command",
-            outcome="agent_switch",
-            metadata={"agent": resolved, "user": user_id, "channel": channel, "scope": "thread"},
-        )
-        await sessions.remove(session_key)
-        await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
-        return ""
-
-    # ── !project <path> / !project off — thread-scoped agent-discovery dir ──
-    # NOTE: this only scopes which project-local .kiro agents are discoverable
-    # for !ta in this thread; it does NOT change the agent's working directory
-    # (cwd). Provider cwd plumbing is out of scope for this CR.
-    if cmd == "!project":
-        parts = cmd_text.split(maxsplit=1)
-        if len(parts) < 2:
-            current = _thread_projects.get(session_key, "")
-            msg = (
-                f"Thread agent-discovery project: `{current}`"
-                if current
-                else "No project set. Usage: `!project <path>` or `!project off`\n"
-                "Scopes which project-local `.kiro` agents `!ta` can find — "
-                "does not change the working directory."
-            )
-            await slack.post_message(channel, msg, reply_ts)
-            return ""
-        raw_path = parts[1].strip()
-        if raw_path.lower() in ("off", "clear", "reset"):
-            _thread_projects.pop(session_key, None)
-            if conversation_log:
-                try:
-                    await asyncio.to_thread(
-                        conversation_log.update_metadata, session_key, {"project": ""}
-                    )
-                except Exception:
-                    logger.debug("Failed to clear project in conversation log", exc_info=True)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!project",
-                tool_kind="command",
-                outcome="project_cleared",
-                metadata={"user": user_id, "channel": channel},
-            )
-            await sessions.remove(session_key)
-            await slack.post_message(channel, "Thread project cleared.", reply_ts)
-            return ""
-        resolved = os.path.realpath(os.path.expanduser(raw_path))
-        if is_sensitive_path(resolved):
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!project",
-                tool_kind="command",
-                outcome="project_denied_sensitive",
-                metadata={"user": user_id, "channel": channel, "project": resolved},
-            )
-            await slack.post_message(
-                channel, "Cannot use sensitive path as project directory.", reply_ts
-            )
-            return ""
-        if not os.path.isdir(resolved):
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="!project",
-                tool_kind="command",
-                outcome="project_denied_invalid",
-                metadata={"user": user_id, "channel": channel, "project": resolved},
-            )
-            await slack.post_message(channel, f"Not a directory: `{resolved}`", reply_ts)
-            return ""
-        _thread_projects[session_key] = resolved
-        if conversation_log:
-            try:
-                await asyncio.to_thread(
-                    conversation_log.update_metadata, session_key, {"project": resolved}
-                )
-            except Exception:
-                logger.debug("Failed to persist project to conversation log", exc_info=True)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="!project",
-            tool_kind="command",
-            outcome="project_set",
-            metadata={"user": user_id, "channel": channel, "project": resolved},
-        )
-        await sessions.remove(session_key)
-        # Discover project-local agents: a directory listing of the checkout,
-        # so off the loop like the metadata write above.
-        project_agents = await asyncio.to_thread(
-            _discover_project_agents, resolved, operation="slack_list_agents"
-        )
-        agent_info = ""
-        if project_agents:
-            names = ", ".join(
-                f"`{s.stem.replace('.agent-spec', '') if '.agent-spec' in s.name else s.stem}`"
-                for s in project_agents
-            )
-            agent_info = f"\nAgents found: {names} — use `!ta <name>` to switch"
-        await slack.post_message(
-            channel,
-            f"Thread agent-discovery project: `{resolved}` "
-            f"(scopes `!ta` agent lookup, not the working directory){agent_info}",
-            reply_ts,
-        )
-        return ""
-
-    # ── !allowlist — multi-user access disabled ──
-    if cmd == "!allowlist":
-        await slack.post_message(
-            channel,
-            "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack.",
-            reply_ts,
-        )
-        return ""
-
-    # ── !channel always|mention|observe|off / !channel agent <name> (owner-only) ──
-    if cmd == "!channel":
-        if not is_owner(user_id):
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.channel_config",
-                outcome="denied",
-                source="slack",
-                resources=channel,
-                error="not owner",
-            )
-            await slack.post_message(channel, "⛔ Only the bot owner can use `!channel`.", reply_ts)
-            return ""
-        from kiro_crew.config.loader import _VALID_ACTIVATIONS
-
-        parts = cmd_text.split()
-        if len(parts) == 1:
-            cfg = KiroCrewConfig.load()
-            ch_cfg = cfg.channel_config(channel)
-            agent_info = f", agent=*{ch_cfg.agent}*" if ch_cfg.agent else ""
-            await slack.post_message(
-                channel,
-                f"Channel `{channel}` activation: *{ch_cfg.activation}*{agent_info}\n"
-                f"Usage: `!channel always|mention|observe|off` or `!channel agent <name|off>`",
-                reply_ts,
-            )
-            return ""
-
-        subcmd = parts[1].lower()
-
-        # !channel agent <name|off>
-        if subcmd == "agent":
-            if len(parts) < 3:
-                await slack.post_message(
-                    channel, "Usage: `!channel agent <name>` or `!channel agent off`", reply_ts
-                )
-                return ""
-            agent_name = parts[2]
-            if agent_name.lower() == "off":
-                agent_name = ""
-            else:
-                resolved = await asyncio.to_thread(
-                    _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-                )
-                if not resolved:
-                    names = await asyncio.to_thread(_list_all_agent_names)
-                    await slack.post_message(
-                        channel,
-                        f"Unknown agent `{agent_name}`. Available: {names}",
-                        reply_ts,
-                    )
-                    return ""
-                agent_name = resolved
-            await run_config_write(_persist_channel_config, channel, agent=agent_name)
-            _reload_orch_cfg()
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.channel_agent",
-                outcome="allowed",
-                source="slack",
-                resources=f"{channel}:{agent_name or 'default'}",
-            )
-            label = f"*{agent_name}*" if agent_name else "default"
-            await slack.post_message(channel, f"Agent for this channel: {label}", reply_ts)
-            return ""
-
-        # !channel always|mention|observe|off
-        if subcmd not in _VALID_ACTIVATIONS:
-            await slack.post_message(
-                channel,
-                f"Invalid mode `{subcmd}`. Use: `always`, `mention`, `observe`, or `off`.",
-                reply_ts,
-            )
-            return ""
-
-        await run_config_write(_persist_channel_config, channel, activation=subcmd)
-        _reload_orch_cfg()
-        sel().log_api_access(
-            caller=user_id,
-            operation="slack.channel_activation",
-            outcome="allowed",
-            source="slack",
-            resources=f"{channel}:{subcmd}",
-        )
-        await slack.post_message(channel, f"Channel activation set to *{subcmd}*.", reply_ts)
-        return ""
-
-    # ── !title — set/generate Slack thread title ──
-    if cmd == "!title":
-        parts = cmd_text.split()
-        title_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
-        if title_text:
-            title_text, _ = redact_exfiltration_urls(title_text)
-            title_text, _ = redact_credentials(title_text)
-            await slack.set_thread_title(channel, session_key, title_text[:80])
-            _mark_titled(session_key, "manual")
-            if conversation_log and not _is_slack_restricted(session_key):
-                try:
-                    await asyncio.to_thread(
-                        conversation_log.set_title, session_key, title_text[:80]
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed to set conversation log title for %s", session_key, exc_info=True
-                    )
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.thread_title",
-                outcome="allowed",
-                source="slack",
-                resources=f"{channel}:{session_key}",
-            )
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
-        else:
-            await slack.post_message(
-                channel, "Usage: `!title <text>` — set a title for this thread.", reply_ts
-            )
-        return ""
-
-    # Catch-all: unrecognized ! command — post error instead of falling through to LLM
-    await slack.post_message(
-        channel,
-        f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
-        reply_ts,
-    )
-    return ""
-
-
 #: Longest span the comment hold keeps before giving up on it. Sized for the
 #: three tag families stacked once each at the grammar's own bounds (each
 #: line: opener, 16 whitespace, 256 body, closer, 16 trailing whitespace and
@@ -2525,359 +959,6 @@ async def _handle_slash_command(
 #: one anchored pass over the hold, so this cap is what keeps a stream of
 #: nothing but tags linear.
 _COMMENT_HOLD_MAX = 1024
-
-
-def _at_tag_line_start(stream_buffer: str) -> bool:
-    """Whether the next character lands where a control-tag LINE may begin.
-
-    The tag grammar is line-leading with at most three characters of indent
-    (CommonMark: four is an indented code block). The current line is whatever
-    follows the buffer's last newline; an EMPTY buffer is admitted too, because
-    the buffer is cleared at every flush and the hold cannot see what was
-    already appended. That over-approximates once per flush boundary -- a
-    quoted tag whose ``<`` is the first byte after a flush is judged as if
-    line-leading -- and costs at most a hold that the tail rule below releases
-    the moment content follows it; an ordinary comment or prose is released
-    either way.
-    """
-    line = stream_buffer[stream_buffer.rfind("\n") + 1 :]
-    return len(line) <= 3 and line.strip(" \t") == ""
-
-
-def _comment_hold_is_protocol(hold: str) -> bool:
-    """Whether the held span, from its line-leading ``<``, is so far NOTHING
-    BUT a control-tag tail: complete recognized tag lines (stacked, with their
-    bounded trailing whitespace) and at most one still-arriving tag prefix.
-
-    Decided by the ONE backend grammar (``constants.is_control_tag_tail``,
-    the anchored form of the streaming strip). Any other byte -- a diverging
-    opener (``<div``), an ordinary comment body (``<!-- ordin``), a line break
-    inside a tag, or CONTENT after a complete tag -- makes the span text, and
-    the caller releases it verbatim.
-    """
-    return len(hold) <= _COMMENT_HOLD_MAX and is_control_tag_tail(hold)
-
-
-def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -> tuple[str, str]:
-    """Filter ``[OPTIONS: ...]`` tags and control-tag comments from streaming
-    text character-by-character.
-
-    Returns the updated *(bracket_hold, stream_buffer)* tuple. The hold is one
-    string and its first character says what it holds: ``[`` opens the OPTIONS
-    bracket-hold, a line-leading ``<`` opens the comment hold.
-
-    Slack streams by APPENDING and appended text is final (``chat.stopStream``
-    does not replace it), so a control tag can only be kept off the stream by
-    holding the bytes that might be one until the stream can tell. The comment
-    hold is the bracket-hold's twin for ``<!-- keep-visible -->`` and its
-    siblings, with one difference that matters: a recognized tag is NOT
-    dropped when its ``-->`` arrives. Control tags are TAIL-anchored -- the
-    same tag quoted mid-message (a fenced example, a line of prose after it)
-    is visible content -- and an append-only stream learns which one it has
-    only from what follows. So a complete tag stays held while it is still a
-    possible tail (``_comment_hold_is_protocol``), is released verbatim the
-    moment any content follows it, and is settled at the end of the turn by
-    ``_resolve_comment_hold`` against the whole reply. Only what the tail
-    grammar recognizes can ever be withheld: every other comment, a hold that
-    diverges from ``<!--``, or one that spans a line break is released as soon
-    as the diverging byte arrives -- and that byte is then processed on its
-    own, so a ``[`` that ends a hold still opens the bracket-hold.
-    """
-    for ch in text:
-        if bracket_hold and bracket_hold[0] == "<":
-            if _comment_hold_is_protocol(bracket_hold + ch):
-                bracket_hold += ch
-                continue
-            # The held span is content. It goes out as written, and the byte
-            # that proved it falls through to be judged on its own.
-            stream_buffer += bracket_hold
-            bracket_hold = ""
-        if bracket_hold:
-            bracket_hold += ch
-            if ch == "]":
-                if bracket_hold.startswith("[OPTIONS:"):
-                    bracket_hold = ""
-                else:
-                    stream_buffer += bracket_hold
-                    bracket_hold = ""
-        elif ch == "[":
-            bracket_hold = ch
-        elif ch == "<" and _at_tag_line_start(stream_buffer):
-            bracket_hold = ch
-        else:
-            stream_buffer += ch
-    return bracket_hold, stream_buffer
-
-
-def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str]:
-    """Settle a comment hold when the stream ENDS; returns *(hold, release)*.
-
-    The stream is over, so the held span is the reply's tail, and the tail
-    grammar can now be asked directly on the whole reply -- fence parity and
-    all: when ``strip_control_comments`` removes something from *accumulated*,
-    the held tail IS the control tag and is dropped; when it removes nothing
-    (an unterminated fence swallows the tail, a tag prefix that never
-    completed, a body over the bound) the span is content and is released for
-    one last append. A ``[`` hold is not this function's: it keeps the
-    bracket-hold's own end-of-turn outcome.
-    """
-    if not bracket_hold or bracket_hold[0] != "<":
-        return bracket_hold, ""
-    if strip_control_comments(accumulated) != accumulated:
-        return "", ""
-    return "", bracket_hold
-
-
-def build_timing_footer(
-    elapsed: float,
-    client: LLMProvider | None = None,
-) -> tuple[list[dict], str]:
-    """Build the timing/context footer blocks for a Slack response.
-
-    Returns ``(blocks, fallback_text)`` suitable for ``post_blocks``.
-    """
-    if elapsed < 60:
-        duration = f"{int(elapsed)}s"
-    else:
-        mins, secs = divmod(int(elapsed), 60)
-        duration = f"{mins}m {secs}s"
-    footer_text = f"Finished in {duration}"
-    if client is not None:
-        try:
-            ctx_pct = round(client.context_usage_pct())
-            if ctx_pct >= 70:
-                ctx_icon = "🔴"
-            elif ctx_pct >= 50:
-                ctx_icon = "🟠"
-            elif ctx_pct >= 30:
-                ctx_icon = "🟡"
-            else:
-                ctx_icon = "🟢"
-            footer_text = f"Finished in {duration} · {ctx_icon} ctx {ctx_pct}%"
-        except Exception:
-            logger.debug("Failed to retrieve context usage", exc_info=True)
-    blocks: list[dict] = [
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": footer_text}]}
-    ]
-    return blocks, footer_text
-
-
-def _append_footer_actions(
-    footer_blocks: list[dict],
-    options: list[str] | None,
-    thread_ts: str | None,
-    linked_session_key: str | None,
-    dashboard_state: object | None,
-    staleness_token: str | None = None,
-) -> list[dict]:
-    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks.
-
-    *staleness_token* must be minted by the caller, which is async and can do the
-    transcript read off the event loop. Absent it the control posts untokened and
-    clicks on it are honoured unconditionally.
-    """
-    if options:
-        from kiro_crew.slack.format import build_options_blocks
-
-        footer_blocks.extend(build_options_blocks(options, staleness_token=staleness_token))
-    if thread_ts and not linked_session_key and dashboard_state:
-        from kiro_crew.slack.format import build_link_dashboard_button
-
-        if footer_blocks and footer_blocks[-1].get("type") == "actions":
-            footer_blocks[-1]["elements"].append(build_link_dashboard_button())
-        else:
-            footer_blocks.append({"type": "actions", "elements": [build_link_dashboard_button()]})
-    return footer_blocks
-
-
-async def _handle_compact_command(
-    slack: SlackClientOps,
-    sessions: SessionManager,
-    channel: str,
-    reply_ts: str,
-    msg_ts: str,
-    session_key: str,
-) -> None:
-    """Trigger in-place ACP ``/compact`` on the current thread's session."""
-    # Atomically take the turn semaphore for the WHOLE compaction, or refuse.
-    # Slack dispatches each message as its own task (asyncio.create_task), so a
-    # bare get_provider() + compact() would race a normal turn that holds the
-    # session and interleave two prompts on one stdio channel — corrupting
-    # session state (the reason Discord/Telegram guard the same way). Because
-    # /compact routes through session/prompt, that collision surfaces
-    # as "turn already active" and the except path would destroy a healthy
-    # session; try_acquire() serializes against the in-flight turn and the
-    # finally always releases.
-    if not await sessions.try_acquire(session_key):
-        if sessions.has_session(session_key):
-            await slack.post_message(
-                channel,
-                "⏳ Still working on your last message — try `!compact` once it finishes.",
-                reply_ts,
-            )
-        else:
-            await slack.post_message(channel, "No active session to compact.", reply_ts)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome="no_session",
-            )
-        return
-    try:
-        provider = sessions.get_provider(session_key)
-        if not provider:
-            await slack.post_message(channel, "No active session to compact.", reply_ts)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome="no_session",
-            )
-            return
-
-        # Capability gate, mirroring the dashboard's own gate: a
-        # backend that cannot serve a manual /compact treats the prompt as
-        # ordinary text and never answers, so dispatching would strand the
-        # 120s wait below. Informational, never an error.
-        unsupported = compact_unsupported_backend(provider)
-        if unsupported:
-            await slack.post_message(channel, compact_unsupported_reply(unsupported), reply_ts)
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome="auto_managed_backend",
-                metadata={"backend": unsupported},
-            )
-            return
-
-        _t0 = time.monotonic()
-
-        # --- Phase 1: Pre-compaction UI (cosmetic — log failures, don't abort) ---
-        try:
-            await slack.add_reaction(channel, msg_ts, "recycle")
-            await slack.post_message(channel, "🔄 Compacting context…", reply_ts)
-        except Exception:
-            logger.debug("Pre-compact UI failed for %s", session_key, exc_info=True)
-
-        # --- Phase 2: Actual compaction (failures warrant error + session teardown) ---
-        result_text: str | None = None
-        outcome = "unknown"
-        try:
-            # Compaction runs over the prompt transport:
-            # provider.compact() drives /compact via session/prompt (the
-            # commands/execute path does NOT run compaction — it returns with
-            # no status). Bound compact()'s prompt turn here,
-            # then let wait_for_compaction() own its OWN deadline for a status
-            # emitted async after end_turn — it must NOT be nested inside
-            # another timeout, or the graceful "timed out" branch is
-            # unreachable and a slow-but-healthy session gets destroyed.
-            await asyncio.wait_for(provider.compact(), timeout=120)
-            cr = await provider.wait_for_compaction()
-            if cr["type"] == "completed":
-                # ``summary`` is model-facing compacted context, not a
-                # user-facing receipt. Never publish its orchestration text.
-                result_text = "✅ Context compacted."
-                outcome = "completed"
-            elif cr["type"] == "failed":
-                error = cr.get("summary", "")
-                result_text = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
-                outcome = "failed"
-            else:
-                result_text = "⚠️ Compaction timed out."
-                outcome = "timeout"
-        except Exception:
-            logger.warning("Compact command failed for %s", session_key, exc_info=True)
-            try:
-                await slack.post_message(channel, "❌ Compaction failed unexpectedly.", reply_ts)
-            except Exception:
-                logger.debug("Failed to post compact error for %s", session_key, exc_info=True)
-            # Drop the wedged native conversation, NOT the session's channel
-            # identity: the map entry carries the thread linkage that
-            # ``get_session_for_thread`` routes every later reply through, so a
-            # full ``destroy`` would fork this thread into a fresh session with
-            # none of its context. Housekeeping never unlinks (see
-            # ``SessionMap.prune`` and ``SessionManager._recycle_held``).
-            try:
-                await sessions.discard_conversation(session_key)
-            except Exception:
-                logger.warning(
-                    "Failed to discard conversation %s after compact failure",
-                    session_key,
-                    exc_info=True,
-                )
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome="failed",
-                error="exception",
-            )
-            try:
-                await slack.remove_reaction(channel, msg_ts, "recycle")
-                await _add_phase_reaction(slack, channel, msg_ts, "done")
-            except Exception:
-                pass
-            return
-
-        # --- Phase 3: Post-compaction reporting (log failures, don't mislead) ---
-        try:
-            result_text, _ = redact_exfiltration_urls(result_text)
-            result_text, _ = redact_credentials(result_text)
-            await slack.post_message(channel, result_text, reply_ts)
-
-            elapsed = time.monotonic() - _t0
-            footer_blocks, footer_text = build_timing_footer(elapsed)
-            await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
-        except Exception:
-            logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
-
-        try:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome=outcome,
-            )
-        except Exception:
-            logger.debug("Failed to log compact outcome for %s", session_key, exc_info=True)
-        try:
-            await slack.remove_reaction(channel, msg_ts, "recycle")
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
-        except Exception:
-            pass
-    finally:
-        sessions.release(session_key)
-
-
-def _is_sessions_keyword(text: str) -> bool:
-    """True when the whole stripped, lower-cased message is the ``sessions``
-    keyword, on its own or with its one argument.
-
-    The ONE predicate shared by the native ``handle_message`` branch, the
-    transport ``maybe_handle_keyword_command`` branch, and the linked-thread
-    fall-through in ``maybe_route_linked_thread`` — keeping all three sites on
-    one helper guarantees the intercept matches exactly what the keyword
-    branches match, so the keyword cannot be swallowed by a linked thread.
-
-    The argument is matched here as well as in
-    :func:`kiro_crew.slack.sessions_view.sessions_include_ended`, and it has to
-    be: a message this predicate rejects is never routed to the sessions
-    handler at all, so ``sessions all`` would reach the agent as ordinary chat
-    and the opt-in would have no way to be typed.
-    """
-    words = text.strip().lower().split()
-    if not words or words[0] != "sessions":
-        return False
-    if len(words) == 1:
-        return True
-    return len(words) == 2 and words[1] in SESSIONS_INCLUDE_ENDED_ARGS
 
 
 async def maybe_handle_keyword_command(
@@ -3017,134 +1098,6 @@ async def maybe_handle_keyword_command(
             return True
 
     return False
-
-
-async def maybe_route_linked_thread(
-    text: str,
-    session_key: str,
-    user_id: str,
-    channel: str,
-    slack: SlackClientOps,
-    reply_ts: str,
-    target_slot: Any | None = None,
-    route_pinned: bool = False,
-) -> bool:
-    """Route a Slack message to a linked dashboard slot, if one is linked.
-
-    Shared by the native ``handle_message`` path and the messaging-transport
-    ``handle_message_transport`` path so a thread linked via
-    ``/kirocrew link-to-dashboard`` behaves identically on both.
-
-    Returns ``True`` when the caller MUST return without further handling —
-    either the message was routed into the linked dashboard slot, or an
-    unauthorized user was denied. Returns ``False`` when normal routing should
-    continue: no dashboard state, no linked slot, a ``!``-bang command, or the
-    bare ``sessions`` keyword (both intentionally allowed to fall through to
-    normal handling, so control commands stay reachable in a linked thread).
-
-    *route_pinned* makes *target_slot* authoritative instead of resolving the
-    thread's CURRENT owner. An OPTIONS answer is accepted against the
-    conversation that asked the question, but the dispatch runs as a separate
-    task -- so re-resolving here would let a link, relink or unlink landing in
-    between deliver that answer into a different conversation. Pinning is
-    tri-state on purpose: a pinned ``None`` means "this answer belongs to no
-    slot", so a thread linked AFTER acceptance cannot capture a native answer
-    either.
-    """
-    if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
-        return False
-    if route_pinned:
-        _linked_slot = target_slot
-    else:
-        # The dashboard _slack_to_slot map is keyed by the bare Slack thread_ts
-        # (reply_ts), NOT the namespaced session key — look up with reply_ts so
-        # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
-        # is kept for the SEL logging below.
-        _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
-    if not _linked_slot:
-        return False
-
-    # Auth check FIRST — deny all messages from unauthorized users.
-    if not is_allowed_user(user_id):
-        logger.warning("Unauthorized user %s in linked thread %s", user_id, session_key)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            agent="kirocrew",
-            source="slack",
-            tool_name="linked_thread_intercept",
-            tool_kind="permission",
-            outcome="denied",
-            metadata={"user_id": user_id, "reason": "not_allowed_user"},
-        )
-        await slack.post_message(channel, "Not authorized.", reply_ts)
-        return True
-
-    # Let bang commands and the bare ``sessions`` keyword fall through to
-    # normal handling. The predicate matches the keyword branches exactly
-    # (whole stripped, lower-cased message), so "sessions please" still routes
-    # to the linked slot. Other keywords (status, spawn, cron, ...) remain
-    # link-routed on purpose. A pinned OPTIONS answer is exempt: its text is a
-    # selected label being DELIVERED to the conversation that asked, and
-    # dropping it into the picker would strand that conversation forever.
-    _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-    if _first_word in _BANG_TO_SLASH:
-        return False
-    if not route_pinned and _is_sessions_keyword(text):
-        return False
-
-    _linked_slot_key = _linked_slot.key
-    # Redact for UI display only — LLM receives original text so it can process
-    # user intent fully (redaction strips URLs/creds that may be relevant
-    # context). The LLM's own output is redacted before display.
-    _safe_text, _ = redact_exfiltration_urls(text)
-    _safe_text, _ = redact_credentials(_safe_text)
-    # Nothing rendered this Slack-typed row optimistically in the dashboard, so
-    # broadcast_user=True: append delivers the ONE identity-carrying frame
-    # (a frame without ``meta.mid`` lets a client receiving the row through a
-    # second door render it a second time as a duplicate).
-    append_and_surface(
-        _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
-    )
-    if not _linked_slot.running:
-        from kiro_crew.dashboard.chat import _run_chat
-
-        _chat_task = asyncio.create_task(
-            _run_chat(
-                _dashboard_state,  # type: ignore[arg-type]
-                _linked_slot,
-                text,
-                _directive_user_origin=True,
-                _directive_channel_origin=True,
-            )
-        )
-        _linked_slot.task = _chat_task
-        _dashboard_state._background_tasks.add(_chat_task)  # type: ignore[attr-defined]
-        _chat_task.add_done_callback(_dashboard_state._background_tasks.discard)  # type: ignore[attr-defined]
-    else:
-        # circular import: session_control pulls in dashboard modules at module level.
-        from kiro_crew.dashboard.session_control import containment_meta
-
-        # Stamp the admission-time containment. A linked slot records
-        # linked=True here, so its own channel's queued messages keep draining;
-        # only a constraint that appears AFTER this enqueue drops the entry.
-        _linked_slot.queue_append(
-            text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
-            directive_user_origin=True,
-            directive_channel_origin=True,
-        )
-    _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
-    sel().log_tool_invocation(
-        session_key=session_key,
-        agent="kirocrew",
-        source="slack",
-        tool_name="linked_thread_intercept",
-        tool_kind="permission",
-        outcome="allowed",
-        metadata={"user_id": user_id, "slot": _linked_slot_key},
-    )
-    logger.info("Routed linked Slack message to dashboard slot %s", _linked_slot_key)
-    return True
 
 
 async def handle_message(
@@ -3340,8 +1293,9 @@ async def handle_message(
             await slack.post_message(channel, "_Permission denied._", reply_ts)
         return
 
-    # ── Compact keyword: trigger in-place context compaction ──
-
+    # Strip leading bot mention from app_mention events so the ! prefix is exposed.
+    # DM:       "!agent foo"                    → "!agent foo"       (no-op)
+    # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
@@ -3351,88 +1305,21 @@ async def handle_message(
     if _only_modifier:
         return
 
-    if _cmd_text.strip().lower() == "!compact":
-        if is_owner(user_id) or is_allowed_user(user_id):
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.compact_command",
-                outcome="allowed",
-                source="slack",
-                resources=channel,
-            )
-            await _handle_compact_command(slack, sessions, channel, reply_ts, msg_ts, session_key)
-            return
-        else:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                source="slack",
-                tool_name="compact",
-                tool_kind="command",
-                outcome="denied",
-                error=f"unauthorized user {user_id}",
-            )
-            await slack.post_message(channel, "⛔ Not authorized to compact.", reply_ts)
-            return  # deny-by-default: do not fall through
-
-    # ── Owner commands: all "!" prefixed messages are reserved for owner ──
-    # Strip leading bot mention from app_mention events so the ! prefix is exposed.
-    # DM:       "!agent foo"                    → "!agent foo"       (no-op)
-    # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
-    if _cmd_text.startswith("!"):
-        # !dashboard and !stop are available to any allowed user
-        _cmd_word = _cmd_text.split()[0]
-        if _cmd_word in ("!dashboard", "!stop", "!title"):
-            if is_owner(user_id) or is_allowed_user(user_id):
-                reply = await _handle_slash_command(
-                    _cmd_text,
-                    slack,
-                    sessions,
-                    channel,
-                    reply_ts,
-                    msg_ts,
-                    session_key,
-                    user_id,
-                    conversation_log=conversation_log,
-                )
-                if reply is not None:
-                    return
-            else:
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.allowed_command",
-                    outcome="denied",
-                    source="slack",
-                    resources=_cmd_word,
-                    error="unauthorized sender",
-                )
-                await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
-                return
-        # All other ! commands are owner-only
-        elif not is_owner(user_id):
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.owner_command",
-                outcome="denied",
-                source="slack",
-                resources=_cmd_word,
-                error="unauthorized sender",
-            )
-            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
-            return
-        else:
-            reply = await _handle_slash_command(
-                _cmd_text,
-                slack,
-                sessions,
-                channel,
-                reply_ts,
-                msg_ts,
-                session_key,
-                user_id,
-                conversation_log=conversation_log,
-            )
-            if reply is not None:
-                return
+    # ── !compact and the owner / allowed-user ``!`` commands ──
+    # The routing lives in handler_runtime/commands.py (``_route_bang_command``); a
+    # message it answers (run, denied, or replied to) never reaches the model.
+    if await _route_bang_command(
+        _cmd_text,
+        slack,
+        sessions,
+        channel,
+        reply_ts,
+        msg_ts,
+        session_key,
+        user_id,
+        conversation_log,
+    ):
+        return
 
     # ── Path-independent keyword commands: spawn/run/cron ──
     # ``sessions`` is deliberately excluded here (handle_sessions=False): the
@@ -3520,322 +1407,18 @@ async def handle_message(
             channel, build_working_blocks(session_key), "Working…", reply_ts
         )
 
-    use_slack_stream = False
-    stream_ts: str | None = None
-    thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
-    _show_thinking = KiroCrewConfig.load().slack.show_thinking
-    _stream_had_redaction = False  # True when per-chunk redaction modified a streamed chunk
-    _stream_delivered = False  # True once ANY real-text append is confirmed on the stream
-    # Delivery debt: real answer text Slack refused for good — the append failed
-    # AND its post-rotation retry failed, so those characters are on no message.
-    #
-    # Never cleared, including at a wait boundary. That boundary discards
-    # ``accumulated`` and abandons the message, so text lost before it can no
-    # longer be restated from anything the turn still holds — which is exactly why
-    # the debt has to outlive it and be disclosed at the end.
-    #
-    # Only the streaming finalize reads it. A refused append always attempts a
-    # rotation, so a for-good loss leaves the turn in one of two states: the
-    # rotation succeeded and the answer now spans two messages, where the loss is
-    # disclosed because restating the whole text in the message the reader is
-    # watching would repeat the abandoned one; or the rotation failed and the
-    # stream was demoted, where the end-of-turn ``chat.update`` already re-sends
-    # that segment's complete text and there is nothing left to disclose.
-    _stream_debt = False
-    # Rolling-buffer redactor for the live Slack wire: withholds the trailing
-    # credential-class run so a credential split across streaming chunks can't
-    # reach Slack unredacted (issue 3). The final message is posted from the
-    # complete, fully-redacted `accumulated`, so the held tail is superseded at
-    # stop_stream — no data loss.
-    _sred = StreamRedactor()
-    accumulated = ""
-    thinking_accumulated = ""
-    stream_buffer = ""  # unsent chunks for streaming API (buffered between rate-limited appends)
-    bracket_hold = ""  # text held back from '[' until ']' to filter [OPTIONS: ...]
-    last_edit = 0.0
-    _task_counter = 0  # incrementing task ID for task cards
-    _active_task_id = ""  # current in-progress task
-    _active_task_title = ""  # display title (purpose or tool name)
-    _tool_start_time = 0.0  # monotonic time when current tool started
-    _tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
-    _status_dirty = False  # True when status needs reset to base on next text chunk
-    _tool_gap = False
-
-    async def _rotate_stream() -> str | None:
-        """Stop the dead stream and start a fresh one. Returns new ts or None.
-
-        Best-effort: MUST NOT raise. The
-        real ``SlackClient`` swallows its own API errors, but a client or
-        transport that does not would send the exception up into the streaming
-        loop, where the typed ``except`` arms are all ``kiro_crew.acp.client``
-        errors — it reaches the generic ``except Exception`` catch-all, renders
-        the terminal "🔧 Something went wrong" message, and records a session
-        failure on a turn that is still live. A failed rotation is the existing,
-        handled outcome (``new_ts`` None → demote to chat.update), so map a
-        raise onto it.
-        """
-        nonlocal stream_ts, use_slack_stream
-        if stream_ts:
-            try:
-                await slack.stop_stream(channel, stream_ts)
-            except Exception:
-                logger.warning(
-                    "Slack stop_stream failed during rotation — abandoning old stream",
-                    exc_info=True,
-                )
-        try:
-            new_ts = await slack.start_stream(
-                channel,
-                reply_ts,
-                initial_text=_STREAM_CONTINUED,
-                team_id=team_id or None,
-                user_id=user_id or None,
-            )
-        except Exception:
-            logger.warning("Slack start_stream failed during rotation", exc_info=True)
-            new_ts = None
-        if new_ts:
-            stream_ts = new_ts
-            logger.info("Stream rotated: new ts=%s", new_ts)
-        else:
-            use_slack_stream = False
-            logger.warning("Stream rotation failed — falling back to chat.update")
-        return new_ts
-
-    async def _append_stream(text: str) -> bool:
-        """Append text to stream, rotating on failure.
-
-        Streams through the rolling redactor (``_sred``) so a credential split
-        across streaming chunks can't reach Slack unredacted (issue 3): only the
-        confirmed-safe prefix is sent now; the trailing (possible-partial-
-        credential) run is withheld until the next append. The final message is
-        posted from the complete, fully-redacted ``accumulated`` at stop_stream,
-        so the withheld tail is superseded — never lost.
-        """
-        nonlocal _stream_had_redaction, _stream_delivered, _stream_debt
-        if not stream_ts:
-            return True
-        if channel_activation == ACTIVATION_REVIEW:
-            return True  # Suppress streaming text in review mode
-        safe = _sred.feed(text)  # redacts the confirmed-safe prefix internally
-        if not safe:
-            return True  # whole delta withheld (partial credential) — nothing to send yet
-        if "[REDACTED" in safe:
-            _stream_had_redaction = True
-        # Best-effort: MUST NOT raise. A raising append is the same event as a
-        # refused append — the text is not on the stream — and the refusal path
-        # below (rotate, then retry once) already handles it. Letting it raise
-        # would escape into the generic catch-all below the loop and fake a
-        # terminal error on a live turn.
-        try:
-            ok = await slack.append_stream(channel, stream_ts, safe)
-        except Exception:
-            logger.warning("Slack append_stream failed — attempting rotation", exc_info=True)
-            ok = False
-        if not ok and use_slack_stream:
-            if await _rotate_stream():
-                assert stream_ts is not None
-                try:
-                    ok = await slack.append_stream(channel, stream_ts, safe)
-                except Exception:
-                    logger.warning("Slack append_stream failed after rotation", exc_info=True)
-                    ok = False
-        # A delta that failed both the append and the post-rotation retry is on no
-        # message. Record the debt rather than dropping it silently, so finalize
-        # can tell the reader. The early returns above are not deliveries and never
-        # reach here, so a withheld partial-credential run and a review-mode
-        # suppression do not count as lost text.
-        #
-        # Record whether this real-text delivery was CONFIRMED. The finalize path
-        # reads it to tell a used stream (answer reached, refused remainder is
-        # delivery debt) from a stream that delivered NOTHING (every append
-        # refused -- the reader got no answer, which is a failed turn).
-        if ok:
-            _stream_delivered = True
-        else:
-            _stream_debt = True
-        return ok
-
-    async def _settle_stream_debt(ts: str) -> None:
-        """Disclose answer text Slack refused for good, on the message that lost it.
-
-        Called at every point a stream is abandoned, so the notice goes out while
-        an append can still reach the message the hole is in. Clearing the debt is
-        part of settling it: a second notice on a later message would report a gap
-        the reader has already been shown.
-
-        Sent directly rather than through ``_append_stream``: the notice is not
-        answer text, so it must not raise ``_stream_delivered`` and make a stream
-        that delivered no answer look like one that did.
-
-        ``append_stream`` reports a refusal by RETURNING False -- the client turns
-        every exception into that return -- so the return value is the whole
-        signal, and leaving it unread hides the very loss this notice exists to
-        disclose. The two refusals that takes fall inside one Slack rate-limit or
-        outage window, so they are correlated rather than independent. On refusal
-        post a separate message, which does not depend on the stream that just
-        refused.
-        """
-        nonlocal _stream_debt
-        if not _stream_debt:
-            return
-        _stream_debt = False
-        _notice_ok = False
-        try:
-            _notice_ok = await slack.append_stream(channel, ts, DELIVERY_DEBT_NOTICE)
-        except Exception:
-            logger.warning("Slack: appending the delivery-debt notice failed")
-        if not _notice_ok:
-            try:
-                await slack.post_message(channel, DELIVERY_DEBT_NOTICE, reply_ts)
-            except Exception:
-                logger.warning(
-                    "Slack: the delivery-debt notice reached neither the "
-                    "stream nor a separate message"
-                )
-
-    async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append task card to stream. Never rotates — see below.
-
-        A task card is progress decoration: the tool's name, its state, and the
-        elapsed-time refresh ``_tool_elapsed_updater`` fires every 30s for as
-        long as a tool runs. During a several-minute tool phase it is the ONLY
-        thing appending to the stream, which makes it by far the likeliest call
-        to meet a rate limit or a stream Slack has already closed.
-
-        Rotating on that failure costs the reader their in-progress message and
-        moves the rest of the answer into a new one, so a transient refusal on a
-        decorative refresh renders as a failed reply plus a second reply minutes
-        later. Skipping the card costs nothing: no answer text is withheld, and
-        ``_append_stream`` still rotates when there is real text to deliver and
-        the stream refuses it, which is the moment a rotation is worth its price.
-        """
-        if not stream_ts:
-            return False
-        if channel_activation == ACTIVATION_REVIEW:
-            return True  # Suppress task cards in review mode
-        # Best-effort, and it MUST NOT raise. ``SlackClient.append_task`` swallows
-        # its own API errors and returns False, but a client that does not (or a
-        # transport that raises before that guard) would send the exception up
-        # into the streaming loop, where nothing catches a non-ACP error: the
-        # typed ``except`` arms below the loop are all ``kiro_crew.acp.client``
-        # errors, so it reaches the generic ``except Exception`` catch-all, which
-        # renders the terminal "🔧 Something went wrong" message and records a
-        # session failure — on a turn that is still live and will finish. The
-        # card is decorative (no answer text is withheld), so swallow the failure
-        # here, logging the traceback at WARNING for diagnosis.
-        try:
-            return await slack.append_task(
-                channel, stream_ts, task_id, title, status, details=details
-            )
-        except Exception:
-            logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
-            return False
-
-    async def _tool_elapsed_updater() -> None:
-        """Periodically update the active task card with elapsed time (every 30s)."""
-        # reads _active_task_id/_active_task_title/_tool_start_time from the
-        # enclosing scope (no rebind here, so no nonlocal needed)
-        while True:
-            await asyncio.sleep(30)
-            if _active_task_id and _tool_start_time and use_slack_stream:
-                elapsed = time.monotonic() - _tool_start_time
-                mins, secs = divmod(int(elapsed), 60)
-                time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
-                # Elapsed goes in the TITLE (Slack replaces title on same
-                # task_id) — NOT details, which Slack APPENDS, causing the
-                # "⏱ 30s ⏱ 1m 0s ⏱ 1m 30s" accumulation bug.
-                await _append_task(
-                    _active_task_id,
-                    f"{_active_task_title}  ⏱ {time_str}",
-                    "in_progress",
-                )
-
-    def _start_tool_timer() -> None:
-        """Start the 30s elapsed-time updater for the current tool."""
-        nonlocal _tool_timer_task, _tool_start_time
-        _cancel_tool_timer()
-        _tool_start_time = time.monotonic()
-        _tool_timer_task = asyncio.ensure_future(_tool_elapsed_updater())
-
-    def _cancel_tool_timer() -> None:
-        """Cancel the tool elapsed-time updater."""
-        nonlocal _tool_timer_task
-        if _tool_timer_task and not _tool_timer_task.done():
-            _tool_timer_task.cancel()
-        _tool_timer_task = None
-
-    def _tool_elapsed_str() -> str:
-        """Return formatted elapsed time for the current tool, or empty string."""
-        if not _tool_start_time:
-            return ""
-        elapsed = time.monotonic() - _tool_start_time
-        if elapsed < 1:
-            return ""
-        mins, secs = divmod(elapsed, 60)
-        if mins:
-            return f"⏱ {int(mins)}m {secs:.1f}s"
-        return f"⏱ {secs:.1f}s"
-
-    async def _ensure_stream_started() -> None:
-        """Lazy-start the stream on first event. Falls back to chat.update."""
-        nonlocal stream_ts, use_slack_stream, thinking_ts
-        if stream_ts is not None:
-            return
-        if channel_activation == ACTIVATION_REVIEW:
-            # No visible message — only thread status indicator is shown
-            stream_ts = _REVIEW_PLACEHOLDER_TS
-            use_slack_stream = False
-            return
-        # Reserve the 💭 reasoning slot ABOVE the answer *before* the response
-        # message is created. This must run regardless of which
-        # event arrived first: if a text/tool event precedes the first
-        # reasoning chunk, posting the placeholder here is the only way to keep
-        # reasoning above the answer (the reasoning-chunk branch never got the
-        # chance). Guarded on thinking_ts is None so we never double-post when
-        # the reasoning branch already claimed the slot. An empty placeholder
-        # (no reasoning this turn) is cleaned up at end of turn.
-        if _show_thinking and thinking_ts is None:
-            try:
-                thinking_ts = await slack.post_message(channel, _THINKING_PLACEHOLDER, reply_ts)
-            except Exception:
-                logger.debug("Failed to reserve thinking slot", exc_info=True)
-        # Best-effort: MUST NOT raise. The real ``SlackClient.start_stream``
-        # swallows its own errors and returns None, but a client or transport
-        # that raises instead would escape into the loop's generic catch-all
-        # from the first TEXT_CHUNK or TOOL_CALL event. A raise is the same
-        # event as a None return — streaming is unavailable — so map it onto
-        # the existing demotion path below.
-        try:
-            stream_ts = await slack.start_stream(
-                channel, reply_ts, team_id=team_id or None, user_id=user_id or None
-            )
-        except Exception:
-            logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
-            stream_ts = None
-        use_slack_stream = stream_ts is not None
-        if not use_slack_stream:
-            # ``SlackClient.start_stream`` swallows its own errors and returns
-            # None, but the ``chat.update`` fallback below goes through the base
-            # ``post_message``, which raises (``resp["ts"]``) on a Slack refusal.
-            # A raise here escapes the streaming loop while the ACP turn is still
-            # live and reaches the generic ``except Exception`` catch-all below
-            # the loop (the typed arms are all ``kiro_crew.acp.client`` errors),
-            # rendering the terminal "🔧 Something went wrong" message on a run
-            # that is still succeeding. Keep it best-effort. On failure leave
-            # ``stream_ts`` as ``None``: there is no placeholder to update, and
-            # every downstream reader treats falsy as "no placeholder"
-            # (``_append_stream`` returns early; the end-of-turn delivery takes
-            # its ``else`` branch and posts the final answer with a fresh
-            # ``post_message`` rather than editing a ts that does not exist). Do
-            # NOT substitute a truthy sentinel here — that routes end of turn into
-            # the placeholder-edit branch against a non-existent message and loses
-            # a single-part reply silently.
-            try:
-                stream_ts = await slack.post_message(channel, _THINKING, reply_ts)
-            except Exception:
-                logger.warning("Failed to post chat.update placeholder", exc_info=True)
-                stream_ts = None
+    # The Slack wire this turn's answer streams to, and every flag the end of the turn
+    # reads off it (``handler_runtime/stream.py``).
+    answer = _AnswerStream(
+        slack,
+        channel,
+        reply_ts,
+        team_id=team_id,
+        user_id=user_id,
+        channel_activation=channel_activation,
+        show_thinking=KiroCrewConfig.load().slack.show_thinking,
+        status=status_ctrl,
+    )
 
     task = Task(id=msg_ts)
     _acquired = False
@@ -4020,94 +1603,36 @@ async def handle_message(
                 _user_text_range = (offset, offset + len(text))
                 text = _preamble + "\n\n" + text
 
-        # Fetch thread parent message when starting a new session in an
-        # existing thread (e.g. replying to a cron thread).  Gives the LLM
-        # context about what started the thread without requiring manual
-        # batch_get_thread_replies. This path persists the user's row only
-        # after the turn, so ``compressed`` is non-empty only when earlier
-        # turns exist. A Slack-born session also records the parent as the
-        # transcript's first row (see ``slack/thread_parent.py``).
-        thread_parent_text: str | None = None
-        # One transcript read serves the parent and the thread-replies checks.
-        _prior: bool | None = None
-        if is_new and not resumed and thread_ts and context_builder:
-            if not compressed:
-                _record_parent = bool(
-                    conversation_log
-                    and thread_ts != msg_ts
-                    and is_slack_born(session_key)
-                    and not _is_slack_restricted(session_key)
-                    and not (_prior := await has_prior_turns(conversation_log, session_key))
-                )
-                _thread_parent = await fetch_thread_parent(
-                    slack, channel, thread_ts, with_author=_record_parent
-                )
-                if _thread_parent is not None:
-                    thread_parent_text = parent_prompt_text(_thread_parent)
-                    if _record_parent:
-                        assert conversation_log is not None
-                        await record_thread_parent(
-                            conversation_log, session_key, _thread_parent, agent=_agent
-                        )
-
-        # Thread replies since this conversation's last turn in the thread
-        # (``slack/thread_replies.py``). Context only: who gets answered was
-        # decided before this point.
-        if context_builder and thread_ts and thread_ts != msg_ts:
-            if _prior is None and not has_noted_turn(session_key, thread_ts):
-                _prior = await has_prior_turns(conversation_log, session_key)
-            _first_turn = not has_noted_turn(session_key, thread_ts) and not _prior
-            _thread_replies = await replies_since_last_turn(
-                slack,
-                channel,
-                thread_ts,
-                msg_ts,
-                session_key=session_key,
-                first_turn=_first_turn,
-            )
+        # The thread's first message for a fresh session, and the replies since this
+        # conversation's last turn (``handler_runtime/turn_context.py``).
+        thread_parent_text, _thread_replies = await _thread_context(
+            slack,
+            channel,
+            thread_ts,
+            msg_ts,
+            session_key,
+            is_new=is_new,
+            resumed=resumed,
+            compressed=compressed,
+            context_builder=context_builder,
+            conversation_log=conversation_log,
+            agent=_agent,
+        )
 
         if context_builder:
             # Thread-scoped temporary mode: blocks memory reads.
             _slack_blocks_reads = is_thread_temporary(session_key)
 
-            # Fallback thread metadata: when thread_parent_text is unavailable
-            # (e.g. fetch_message failed), try conversations.replies to get parent info.
-            # Note: requires channels:history (public) or groups:history (private). Both
-            # ship in the manifest, but installs created before groups:history was added
-            # need a reinstall to gain it. Gracefully degrades — if scope is missing,
-            # thread context is simply skipped.
-            _thread_meta: str | None = None
-            if (
-                is_new
-                and not resumed
-                and thread_ts
-                and not thread_parent_text
-                and not compressed
-                and context_builder
-            ):
-                replies = await slack.fetch_thread_replies(
-                    channel, thread_ts, limit=1, warn_on_pagination=False
-                )
-                if replies:
-                    parent = replies[0]
-                    reply_count = parent.get("reply_count", 0)
-                    parent_text = redact(parent.get("text", ""))
-                    if parent_text:
-                        if len(parent_text) > 500:
-                            parent_text = parent_text[:500] + "…[truncated]"
-                        if reply_count > 0:
-                            _thread_meta = (
-                                f'[Thread has {reply_count} replies. Parent message: "{parent_text}"]\n'
-                                "Use batch_get_thread_replies to read the full thread if needed.\n"
-                            )
-                        else:
-                            _thread_meta = f'[Parent message: "{parent_text}"]\n'
-                else:
-                    logger.info(
-                        "Thread fallback returned no replies for %s/%s (missing scope?)",
-                        channel,
-                        thread_ts,
-                    )
+            _thread_meta = await _thread_meta_fallback(
+                slack,
+                channel,
+                thread_ts,
+                is_new=is_new,
+                resumed=resumed,
+                thread_parent_text=thread_parent_text,
+                compressed=compressed,
+                context_builder=context_builder,
+            )
 
             # This conversation's own silo, resolved from the session's RECORDED
             # binding and never from ``_agent`` -- on Slack that value is a kiro
@@ -4214,92 +1739,13 @@ async def handle_message(
 
         async for event in client.stream(full_message):
             if event.kind == EVENT_TEXT_CHUNK:
-                if _tool_gap and accumulated and accumulated[-1:] not in ("\n", " "):
-                    first = event.text[:1]
-                    if first and first not in ("\n", " "):
-                        event.text = "\n\n" + event.text
-                event.text, _exfil_w = redact_exfiltration_urls(event.text)
-                event.text, _cred_w = redact_credentials(event.text)
-                if _exfil_w or _cred_w:
-                    _stream_had_redaction = True
-
-                if event.text:
-                    _tool_gap = False
-                status_ctrl.set_phase("thinking")
-                status_ctrl.on_progress()
-                accumulated += event.text
-
-                if _status_dirty and use_slack_stream:
-                    # Best-effort: MUST NOT raise. The thread
-                    # status is decoration, and a raise here escapes into the
-                    # generic ``except Exception`` catch-all below the loop,
-                    # faking a terminal error on a live turn.
-                    try:
-                        await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
-                    except Exception:
-                        logger.warning(
-                            "Slack set_thread_status failed — skipping status refresh",
-                            exc_info=True,
-                        )
-                    _status_dirty = False
-
-                # ── Bracket hold-back: filter [OPTIONS: ...] from stream ──
-                # When inside a bracket, accumulate into bracket_hold.
-                # On ']', release if not OPTIONS, suppress if it is.
-                if use_slack_stream:
-                    bracket_hold, stream_buffer = _filter_options_brackets(
-                        event.text, bracket_hold, stream_buffer
-                    )
-                else:
-                    stream_buffer += event.text
-
-                await _ensure_stream_started()
-
-                now = time.monotonic()
-                if now - last_edit >= _EDIT_INTERVAL:
-                    if use_slack_stream:
-                        if stream_buffer:
-                            stream_buffer, _ = strip_thinking_tags(
-                                stream_buffer, strip_whitespace=False
-                            )
-                            await _append_stream(stream_buffer)
-                            stream_buffer = ""
-                    else:
-                        # ``stream_ts`` may be None: the chat.update fallback in
-                        # ``_ensure_stream_started`` failed, so there is no
-                        # placeholder to edit. Skip the cursor edit — the final
-                        # answer is posted at end of turn from ``accumulated``.
-                        if stream_ts and channel_activation != ACTIVATION_REVIEW:
-                            await _safe_update(
-                                slack, channel, stream_ts, redact(accumulated) + _CURSOR
-                            )
-                    last_edit = now
+                await answer.on_text(event)
 
             elif event.kind == EVENT_THINKING_CHUNK:
-                status_ctrl.set_phase("thinking")
-                status_ctrl.on_progress()
-                thinking_accumulated += event.text
-                # Claim the 💭 slot as soon as reasoning starts so it appears
-                # promptly during a long thinking phase (early feedback). This
-                # is an optimization for the common reasoning-first case; the
-                # ordering guarantee itself lives in _ensure_stream_started,
-                # which reserves the slot before the answer message whenever it
-                # hasn't been claimed yet (handles text/tool-first turns).
-                if (
-                    _show_thinking
-                    and thinking_ts is None
-                    and stream_ts is None
-                    and channel_activation != ACTIVATION_REVIEW
-                ):
-                    try:
-                        thinking_ts = await slack.post_message(
-                            channel, _THINKING_PLACEHOLDER, reply_ts
-                        )
-                    except Exception:
-                        logger.debug("Failed to post thinking placeholder", exc_info=True)
+                await answer.on_thinking(event)
 
             elif event.kind == EVENT_TOOL_CALL:
-                _tool_gap = True
+                answer.tool_gap = True
                 # Check tool hooks. NOTE: EVENT_TOOL_CALL is informational —
                 # the tool has already been auto-approved by the provider and
                 # is executing; this branch cannot reject_tool(). The real
@@ -4331,7 +1777,7 @@ async def handle_message(
                         # the model's description) — never post it to Slack raw.
                         _flagged_title, _ = redact_exfiltration_urls(event.title)
                         _flagged_title, _ = redact_credentials(_flagged_title)
-                        accumulated += (
+                        answer.accumulated += (
                             f"\n⚠️ _Tool `{_flagged_title}` flagged by security "
                             f"hooks (already executing; cannot be stopped here)._"
                         )
@@ -4352,114 +1798,7 @@ async def handle_message(
                     tool_kind=event.tool_kind,
                     outcome="invoked",
                 )
-
-                tool_name = event.title.removeprefix("Running: ")
-                tool_name, _ = redact_exfiltration_urls(tool_name)
-                tool_name, _ = redact_credentials(tool_name)
-                tool_kind = event.tool_kind or ""
-                status_ctrl.set_phase(_tool_to_phase(tool_name, tool_kind))
-                status_ctrl.on_progress()
-                tool_detail = event.tool_purpose or tool_kind
-                tool_status = f"\n🫆 `{tool_name}`\n"
-                await _ensure_stream_started()
-                if use_slack_stream:
-                    # Best-effort: MUST NOT raise. Decoration
-                    # only — a raise escapes to the catch-all and fakes a
-                    # terminal error on a live turn.
-                    try:
-                        await slack.set_thread_status(channel, reply_ts, f"is using {tool_name}")
-                    except Exception:
-                        logger.warning(
-                            "Slack set_thread_status failed — skipping tool status",
-                            exc_info=True,
-                        )
-                    _status_dirty = True
-                if use_slack_stream:
-                    # Flush any buffered text before the tool status
-                    if stream_buffer:
-                        stream_buffer, _ = strip_thinking_tags(
-                            stream_buffer, strip_whitespace=False
-                        )
-                        await _append_stream(stream_buffer)
-                        stream_buffer = ""
-                    # Mark previous task complete, start new one
-                    if _active_task_id:
-                        _elapsed = _tool_elapsed_str()
-                        _cancel_tool_timer()
-                        _ct = (
-                            f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
-                        )
-                        await _append_task(_active_task_id, _ct, "complete")
-                    _task_counter += 1
-                    _active_task_id = f"tool_{_task_counter}"
-                    _active_task_title = event.tool_purpose or tool_name
-                    _active_task_title, _ = redact_exfiltration_urls(_active_task_title)
-                    _active_task_title, _ = redact_credentials(_active_task_title)
-                    await _append_task(
-                        _active_task_id,
-                        title=_active_task_title,
-                        status="in_progress",
-                        details=tool_name if tool_detail else "",
-                    )
-                    _start_tool_timer()
-                else:
-                    accumulated += tool_status
-                    # ``stream_ts`` may be None here: ``_ensure_stream_started``
-                    # demoted (``use_slack_stream`` False) AND its chat.update
-                    # fallback post failed, so there is no placeholder to edit.
-                    # Skip the cursor edit — the final answer is posted by the
-                    # end-of-turn ``else`` branch with a fresh ``post_message``.
-                    if stream_ts and channel_activation != ACTIVATION_REVIEW:
-                        await _safe_update(slack, channel, stream_ts, redact(accumulated) + _CURSOR)
-                last_edit = time.monotonic()
-
-                # wait tool blocks MCP for up to 30min — finalize the
-                # streaming message now so Slack doesn't show an error.
-                # _ensure_stream_started() will open a new message when
-                # the next text chunk arrives after wait returns.
-                # Keyed on the tool's programmatic identity when the transport
-                # sent one (same rule as SlackRenderer); the title compare is the
-                # fallback for a frame without ``_meta.kiro``.
-                _is_wait = (
-                    is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
-                )
-                if _is_wait and use_slack_stream and stream_ts:
-                    if _active_task_id:
-                        _elapsed = _tool_elapsed_str()
-                        _cancel_tool_timer()
-                        _ct = (
-                            f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
-                        )
-                        await _append_task(_active_task_id, _ct, "complete")
-                        _active_task_id = ""
-                    # Best-effort: MUST NOT raise. The stream is being
-                    # abandoned either way (``stream_ts`` is cleared just
-                    # below, and ``_ensure_stream_started`` opens a fresh
-                    # message after wait returns), so a raising ``stop_stream``
-                    # changes nothing except — unguarded — faking a terminal
-                    # error on a live turn via the catch-all.
-                    # This message ends here: a held comment is its tail, so
-                    # settle it against the source before that is discarded.
-                    bracket_hold, _released = _resolve_comment_hold(bracket_hold, accumulated)
-                    if _released:
-                        await _append_stream(_released)
-                    # Last chance to tell the reader: the seal below drops
-                    # ``stream_ts`` and ``accumulated``, so a turn that ends with
-                    # no post-wait text opens no further stream and reaches no
-                    # other disclosure point, while the lost characters are gone
-                    # from the text a later message could restate. Settling here
-                    # also puts the notice on the message the gap is in. Ordered
-                    # after the tail append so a refusal of that tail counts.
-                    await _settle_stream_debt(stream_ts)
-                    try:
-                        await slack.stop_stream(channel, stream_ts)
-                    except Exception:
-                        logger.warning(
-                            "Slack stop_stream failed at wait finalize — abandoning stream",
-                            exc_info=True,
-                        )
-                    stream_ts = None
-                    accumulated = ""
+                await answer.on_tool_call(event)
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 # Check tool hooks for auto-approve
@@ -4547,7 +1886,7 @@ async def handle_message(
                         # event.title is LLM-authored — redact before posting.
                         _blocked_title, _ = redact_exfiltration_urls(event.title)
                         _blocked_title, _ = redact_credentials(_blocked_title)
-                        accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+                        answer.accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
                         continue
 
                 # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
@@ -4639,17 +1978,7 @@ async def handle_message(
                 # subprocess would wedge — reject it before propagating so the
                 # turn unblocks. _request_approval guards its own post failure.
                 try:
-                    await _ensure_stream_started()
-                    if use_slack_stream:
-                        await slack.set_thread_status(channel, reply_ts, "Waiting for approval…")
-                        _status_dirty = True
-                        # Flush buffered text before approval pause
-                        if stream_buffer:
-                            stream_buffer, _ = strip_thinking_tags(
-                                stream_buffer, strip_whitespace=False
-                            )
-                            await _append_stream(stream_buffer)
-                            stream_buffer = ""
+                    await answer.prepare_for_approval()
                 except Exception:
                     await _reject_orphaned_tool(client, event.request_id)
                     raise
@@ -4675,13 +2004,7 @@ async def handle_message(
                     metadata={"reason": "interactive"},
                 )
                 if outcome == _OUTCOME_REJECTED:
-                    if use_slack_stream and _active_task_id:
-                        _cancel_tool_timer()
-                        assert stream_ts is not None
-                        await _append_task(_active_task_id, _active_task_title, "error")
-                        _active_task_id = ""
-                    if not use_slack_stream:
-                        accumulated += "\n🚫 _Tool use rejected._"
+                    await answer.on_tool_rejected()
                     break
 
             elif event.kind == EVENT_COMPLETE:
@@ -4768,8 +2091,8 @@ async def handle_message(
                 # thread — text or a tool card. Once output or a tool call has
                 # landed, re-sending could repeat a side effect, so an emitted
                 # turn keeps the give-up behaviour.
-                and not accumulated
-                and _task_counter == 0
+                and not answer.accumulated
+                and answer.task_counter == 0
                 and _attempt < _COMPACTION_FAILED_RETRIES
             ):
                 logger.info(
@@ -4804,14 +2127,14 @@ async def handle_message(
                 # above where the answer would have gone. The nested call posts
                 # its own.
                 status_ctrl.finalize(error=False)
-                for _ts in (_working_ts, thinking_ts):
+                for _ts in (_working_ts, answer.thinking_ts):
                     if _ts:
                         try:
                             await slack.delete_message(channel, _ts)
                         except Exception:
                             pass
                 _working_ts = None
-                thinking_ts = None
+                answer.thinking_ts = None
                 # Visible, not persisted: the abandoned attempt records nothing,
                 # so the conversation log carries this message exactly once,
                 # with the reply the replay produces.
@@ -4879,14 +2202,14 @@ async def handle_message(
 
     except AcpTimeoutError as e:
         _had_error = True
-        accumulated = e.partial_output or "⏱️ Request timed out. Please try again."
+        answer.accumulated = e.partial_output or "⏱️ Request timed out. Please try again."
         task.fail("timeout")
         await sessions.record_failure(session_key)
         Stats().inc_timeout()
         Stats().inc_message_failed()
     except AcpProcessDied:
         _had_error = True
-        accumulated = accumulated or "💀 Agent process died. Please try again."
+        answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."
         task.fail("process_died")
         # The circuit breaker counts a session's OWN consecutive failures, and
         # trips into a reset. A process this session was sharing dying is not
@@ -4953,25 +2276,25 @@ async def handle_message(
             await sessions.reset(session_key)
         except Exception:
             logger.debug("Failed to reset session %s after prompt-busy", session_key, exc_info=True)
-        accumulated = f"❌ {e}"
+        answer.accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
     except AcpError as e:
         _had_error = True
-        accumulated = f"❌ {e}"
+        answer.accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
     except UnknownMemoryStore as exc:
         _had_error = True
-        accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
+        answer.accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
         task.fail("memory_unavailable")
         Stats().inc_message_failed()
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
-        accumulated = accumulated or "🔧 Something went wrong. Please try again."
+        answer.accumulated = answer.accumulated or "🔧 Something went wrong. Please try again."
         task.fail("unexpected")
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
@@ -5116,14 +2439,14 @@ async def handle_message(
             if _turn_completed_ok:
                 _book_success()
             await slack.set_thread_status(channel, reply_ts, "")
-            if stream_ts:
+            if answer.stream_ts:
                 try:
-                    await slack.delete_message(channel, stream_ts)
+                    await slack.delete_message(channel, answer.stream_ts)
                 except Exception:
                     logger.debug("Failed to delete cancelled stream", exc_info=True)
-            if thinking_ts:
+            if answer.thinking_ts:
                 try:
-                    await slack.delete_message(channel, thinking_ts)
+                    await slack.delete_message(channel, answer.thinking_ts)
                 except Exception:
                     logger.debug("Failed to delete thinking placeholder", exc_info=True)
             if _working_ts:
@@ -5148,9 +2471,9 @@ async def handle_message(
         # Suppress error replies for trusted bot messages to prevent echo loops
         if from_trusted_bot and _had_error:
             logger.info("Suppressing error reply to trusted bot message to prevent echo loop")
-            if thinking_ts:
+            if answer.thinking_ts:
                 try:
-                    await slack.delete_message(channel, thinking_ts)
+                    await slack.delete_message(channel, answer.thinking_ts)
                 except Exception:
                     logger.debug("Failed to delete thinking placeholder", exc_info=True)
             if conversation_log and not _is_slack_restricted(session_key):
@@ -5168,17 +2491,19 @@ async def handle_message(
 
         # Strip any inline <thinking> tags that leaked into the text
         _untrimmed = ""
-        if accumulated:
-            accumulated, inline_thinking = strip_thinking_tags(accumulated)
+        if answer.accumulated:
+            answer.accumulated, inline_thinking = strip_thinking_tags(answer.accumulated)
             # Trailing control-tag lines are peeled BEFORE the whitespace trim: the
             # trim would erase the indentation that marks a quoted, 4-space-indented
             # tag as code, and the tail grammar would then read it as protocol.
-            _untrimmed = strip_control_comments(accumulated)
-            accumulated = _untrimmed.strip()
+            _untrimmed = strip_control_comments(answer.accumulated)
+            answer.accumulated = _untrimmed.strip()
             if inline_thinking:
-                thinking_accumulated += ("\n\n" if thinking_accumulated else "") + inline_thinking
+                answer.thinking_accumulated += (
+                    "\n\n" if answer.thinking_accumulated else ""
+                ) + inline_thinking
 
-        actually_streamed = use_slack_stream and bool(stream_ts)
+        actually_streamed = answer.use_slack_stream and bool(answer.stream_ts)
         # render_one_for_slack normalises ANSI and redacts BEFORE converting, then
         # again after. Converting first (as this did) let to_slack_mrkdwn's ANSI strip
         # reassemble a credential the escapes had broken up, and let its 39,000-char
@@ -5192,7 +2517,7 @@ async def handle_message(
         # final-update condition below. The outer passes cannot supply that signal
         # any more, because by the time they run the render has already cleaned the
         # text and they find nothing left to redact.
-        # Extract the OPTIONS tag from the RAW accumulated text, BEFORE rendering.
+        # Extract the OPTIONS tag from the RAW answer.accumulated text, BEFORE rendering.
         # It is a plain-text marker at the very end of the turn, so rendering first
         # makes the controls hostage to the render's size ceiling: a >39,000-char
         # answer ending in [OPTIONS: ...] is truncated, the tag goes with the tail,
@@ -5200,7 +2525,7 @@ async def handle_message(
         # cron, subagent-completion and dashboard-mirror paths.
         # From the UNTRIMMED text, for the same reason as above: a tag line that sat
         # before the OPTIONS trailer is protocol only with its own indent in view.
-        _body_text, options = extract_options(_untrimmed) if accumulated else ("", [])
+        _body_text, options = extract_options(_untrimmed) if answer.accumulated else ("", [])
         _body_text = strip_control_comments(_body_text).strip()
         _options_present = bool(options)
 
@@ -5280,44 +2605,13 @@ async def handle_message(
 
         # ── Review mode: ephemeral draft instead of public post ──
         if channel_activation == ACTIVATION_REVIEW:
-            from kiro_crew.slack.blocks import review_draft_blocks
-
-            # Stop streaming, delete placeholder, set status indicator
-            if stream_ts and stream_ts != _REVIEW_PLACEHOLDER_TS:
-                if use_slack_stream:
-                    try:
-                        await slack.stop_stream(channel, stream_ts)
-                    except Exception:
-                        pass
-                try:
-                    await slack.delete_message(channel, stream_ts)
-                except Exception:
-                    logger.debug("Failed to delete stream msg in review mode", exc_info=True)
-            await slack.set_thread_status(channel, reply_ts, "Awaiting review…")
-            # Post ephemeral draft with approve/edit/cancel buttons. This is the
-            # review path's answer-carrying delivery: its failure means the reader
-            # got no draft, so it books a failure rather than leaving the breaker
-            # with no verdict at all.
-            draft = clean_text or _NO_RESPONSE
-            draft_key = f"{channel}|{reply_ts}|{uuid.uuid4().hex[:8]}"
-            blocks = review_draft_blocks(draft, draft_key)
-            try:
-                await slack.post_ephemeral(
-                    channel,
-                    user_id,
-                    draft,
-                    blocks=blocks,
-                    thread_ts=reply_ts if thread_ts else None,
-                )
-            except Exception:
-                logger.exception("Slack review-draft post failed for %s", session_key)
+            if not await _post_review_draft(
+                answer, slack, channel, reply_ts, thread_ts, user_id, session_key, clean_text
+            ):
                 if _turn_completed_ok:
                     await _book_failure()
                 _release_permit()
                 return
-            # Store draft for button handlers (requester can act on their own draft)
-            _review_drafts_set(draft_key, draft, user_id)
-            logger.info("Review mode: ephemeral draft sent to %s in %s", user_id, channel)
             # Persist conversation (draft counts as a turn). Best-effort: the draft
             # already reached the reader, so a persistence failure must not turn a
             # delivered draft into a failed turn — book success first, then persist.
@@ -5329,7 +2623,7 @@ async def handle_message(
                         conversation_log,
                         session_key,
                         text,
-                        accumulated,
+                        answer.accumulated,
                         source_thread=session_key,
                         source_user=user_id,
                         agent=_agent,
@@ -5386,21 +2680,8 @@ async def handle_message(
         _answer_reached = not _answer_text_to_send
 
         try:
-            if use_slack_stream and stream_ts:
-                # Mark last task complete
-                if _active_task_id:
-                    _elapsed = _tool_elapsed_str()
-                    _cancel_tool_timer()
-                    _ct = f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
-                    await _append_task(_active_task_id, _ct, "complete")
-                # Flush remaining buffer. A ``[`` hold is excluded — it's either a
-                # suppressed OPTIONS tag or an unclosed bracket we drop; a comment hold
-                # is settled against the whole reply and released when it is content.
-                bracket_hold, _released = _resolve_comment_hold(bracket_hold, _untrimmed)
-                stream_buffer += _released
-                if stream_buffer:
-                    stream_buffer, _ = strip_thinking_tags(stream_buffer, strip_whitespace=False)
-                    await _append_stream(stream_buffer)
+            if answer.use_slack_stream and answer.stream_ts:
+                await answer.finish(_untrimmed)
                 # On the streaming path the answer is delivered incrementally as
                 # it arrives, and a refused append on a stream that DID land text
                 # is recoverable delivery-debt (a designed follow-up), NOT a turn
@@ -5410,46 +2691,22 @@ async def handle_message(
                 # append was refused (a Slack outage for the whole turn) delivered
                 # nothing to the reader, and booking that as a success would count
                 # an answer that never arrived -- exactly the before-delivery
-                # accounting this change exists to remove. ``_stream_delivered``
+                # accounting this change exists to remove. ``answer.delivered``
                 # rises only on a confirmed real-text append, so it separates the
                 # two: used stream -> reached, wholly-refused stream -> failure.
                 # A turn with no answer text to send (``_answer_text_to_send``
                 # False: empty body or the ``_NO_RESPONSE`` placeholder) opened the
                 # stream for reasoning/tools but has nothing to deliver, so no
-                # append lands and ``_stream_delivered`` is legitimately False;
+                # append lands and ``answer.delivered`` is legitimately False;
                 # clobbering ``_answer_reached`` to False there would book an
                 # ordinary reasoning/tool-only turn a failure. Only apply the
                 # wholly-refused-stream predicate when there WAS answer text.
                 if _answer_text_to_send:
-                    _answer_reached = _stream_delivered
-                # Disclose real answer text Slack refused for good, while the
-                # stream is still open (an append after the seal is refused).
-                #
-                # Reaching here with debt means a rotation succeeded, because a
-                # refused append always attempts one and a failed rotation demotes
-                # the stream out of this branch. So the answer spans the abandoned
-                # message and this one: restating the whole text here would repeat
-                # what the reader already has above, and the characters lost before
-                # a wait boundary are absent from ``clean_text`` to restate at all.
-                # Saying so is what a reader can act on -- they can ask again --
-                # where a complete-looking answer with a hole in it gives them
-                # nothing to notice.
-                if _stream_debt:
-                    await _settle_stream_debt(stream_ts)
-                # The seal is decoration: the answer is already on screen, so a
-                # failed stop_stream does not un-deliver it.
-                try:
-                    await slack.stop_stream(channel, stream_ts, clean_text or _NO_RESPONSE)
-                except Exception:
-                    logger.warning("Slack stop_stream failed at finalize", exc_info=True)
-                # Redaction overwrite is decoration on an already-delivered stream:
-                # it corrects the visible copy, it does not deliver the answer.
-                if _stream_had_redaction or _render_redacted or exfil_warnings or cred_warnings:
-                    fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
-                    await _safe_final_update(
-                        slack, channel, stream_ts, fallback_text or _NO_RESPONSE, reply_ts
-                    )
-            elif stream_ts:
+                    _answer_reached = answer.delivered
+                await answer.seal(
+                    clean_text, redacted=bool(_render_redacted or exfil_warnings or cred_warnings)
+                )
+            elif answer.stream_ts:
                 # Legacy fallback (chat.startStream unavailable): the "Thinking…"
                 # placeholder is replaced with the clean text. Answer-carrying —
                 # nothing streamed — so a primary-send failure raises and books a
@@ -5458,7 +2715,7 @@ async def handle_message(
                 await _safe_final_update(
                     slack,
                     channel,
-                    stream_ts,
+                    answer.stream_ts,
                     final_text or _NO_RESPONSE,
                     reply_ts,
                     raise_on_primary_failure=True,
@@ -5538,8 +2795,8 @@ async def handle_message(
         # delivery succeeded. Book the decided success so that window is not a
         # verdict hole (a missing success-reset that leaves the consecutive-
         # failure counter stale). The delivered signal is ``_answer_reached OR
-        # _stream_delivered``: ``_answer_reached`` is recomputed only at the
-        # delivery step (past ``sleep(0)``), but ``_stream_delivered`` rises at the
+        # answer.delivered``: ``_answer_reached`` is recomputed only at the
+        # delivery step (past ``sleep(0)``), but ``answer.delivered`` rises at the
         # first confirmed real-text append — before that first await — so it makes
         # a fully-streamed turn cancelled at the ``sleep(0)`` yield book its
         # success too, closing the whole cancellation-at-any-await class rather
@@ -5547,7 +2804,7 @@ async def handle_message(
         # ``not _options_present`` because on an OPTIONS turn the choices ride only
         # in the footer whose verdict is owned by the footer site, so a
         # cancellation before the footer delivers must NOT book success here.
-        if (_answer_reached or _stream_delivered) and not _verdict_booked and not _options_present:
+        if (_answer_reached or answer.delivered) and not _verdict_booked and not _options_present:
             _book_success()
         # Structural release for every non-deferred exit. When the OPTIONS verdict
         # is deferred the permit is intentionally still held here and released at
@@ -5566,11 +2823,11 @@ async def handle_message(
         # placeholder was posted above the answer, update it in place so the thread
         # reads reasoning → answer. Otherwise (the stream started before any
         # reasoning arrived) fall back to a post after the answer.
-        if thinking_accumulated and _show_thinking:
-            # thinking_accumulated is built from raw event text and, unlike the answer
+        if answer.thinking_accumulated and answer.show_thinking:
+            # answer.thinking_accumulated is built from raw event text and, unlike the answer
             # stream, has no StreamRedactor upstream -- so this render is its ONLY
             # redaction. Ordering matters most here for that reason.
-            thinking_mrkdwn = render_one_for_slack(thinking_accumulated).text
+            thinking_mrkdwn = render_one_for_slack(answer.thinking_accumulated).text
             thinking_mrkdwn, exfil_warnings = redact_exfiltration_urls(thinking_mrkdwn)
             for w in exfil_warnings:
                 logger.warning("Exfiltration URL redacted in thinking: %s", w)
@@ -5586,9 +2843,9 @@ async def handle_message(
             _cred_redactions += _thinking_creds
             _url_redactions += _thinking_urls
             thinking_block = _condense_thinking(thinking_mrkdwn)
-            if thinking_ts:
+            if answer.thinking_ts:
                 try:
-                    await slack.update_message(channel, thinking_ts, thinking_block)
+                    await slack.update_message(channel, answer.thinking_ts, thinking_block)
                 except Exception:
                     logger.warning("Failed to update thinking message", exc_info=True)
             else:
@@ -5597,11 +2854,11 @@ async def handle_message(
                         await slack.post_message(channel, part, reply_ts)
                     except Exception:
                         logger.warning("Failed to post thinking message", exc_info=True)
-        elif thinking_ts:
+        elif answer.thinking_ts:
             # Placeholder was posted but no reasoning was captured — remove it so
             # the thread isn't left with a dangling "💭 Thinking…".
             try:
-                await slack.delete_message(channel, thinking_ts)
+                await slack.delete_message(channel, answer.thinking_ts)
             except Exception:
                 logger.debug("Failed to delete empty thinking placeholder", exc_info=True)
 
@@ -5637,7 +2894,7 @@ async def handle_message(
                 conversation_log,
                 session_key,
                 text,
-                accumulated,
+                answer.accumulated,
                 source_thread=session_key,
                 source_user=user_id,
                 agent=_agent,
@@ -5787,79 +3044,16 @@ async def handle_message(
                     )
 
         # ── Voice reply (fire-and-forget, non-blocking) ──
-        # Triggers when: (a) user has opted in globally or per-thread via !voice,
-        # or (b) this message carried transcribed voice input and
-        # auto_reply_to_voice is enabled (symmetric voice conversation).
-        #
-        # ``auto_reply_to_voice`` defaults to ``enabled``'s value at config load
-        # (see ``set_orch_cfg``) so users with explicit ``enabled=false`` retain
-        # zero-voice behavior, and globally-enabled users automatically get
-        # symmetric voice-in/voice-out. Users who want voice ONLY in response to
-        # voice memos can set ``auto_reply_to_voice=true`` while leaving
-        # ``enabled=false``. See docs/reference/kiro-cli/chat/voice.md.
-        voice_auto_reply = had_voice_input and _vc.auto_reply_to_voice
-        if _vc.global_enabled or session_key in _vc.sessions or voice_auto_reply:
-            if len(accumulated) >= 50:
-                # Off the loop: the probe stats fixed directories (and, for Polly,
-                # searches PATH). A stat is unbounded — one on a stalled network or
-                # fuse mount would freeze every session and heartbeat sharing this
-                # loop — and the same rule governs ``resolve_system_tts_async``,
-                # which this reaches for the built-in provider.
-                _tts_ok = await asyncio.to_thread(
-                    _tts_available,
-                    provider=_vc.provider,
-                    piper_binary=_vc.piper_binary,
-                    piper_model=_vc.piper_model,
-                )
-                if not _tts_ok:
-                    # Voice reply requested via any opt-in path (global, per-thread,
-                    # or voice-auto-reply) but the configured TTS backend isn't
-                    # available. Post a one-shot ephemeral so the user knows the
-                    # response fell back to text only — silent fallback is worse
-                    # UX for users who explicitly opted in.
-                    if _vc.provider == PROVIDER_SYSTEM:
-                        # Only reachable on a host whose built-in engine is absent,
-                        # which in practice means a Linux box without espeak-ng.
-                        hint = (
-                            "Install the host speech engine (`espeak-ng`) or pick "
-                            "another provider in Voice settings."
-                        )
-                    elif _vc.provider == PROVIDER_PIPER:
-                        hint = (
-                            "Install piper (`pip install piper-tts`) and set "
-                            "`voice_reply.piper_model` to your voice .onnx file."
-                        )
-                    else:
-                        hint = "Run `ada credentials update` and ensure `aws` CLI " "is on PATH."
-                    if voice_auto_reply:
-                        intro = "🔇 Received your voice memo. Replying as text — "
-                    else:
-                        intro = "🔇 Voice reply requested but "
-                    try:
-                        await slack.post_ephemeral(
-                            channel,
-                            user_id,
-                            f"{intro}TTS (provider={_vc.provider}) isn't " f"configured. {hint}",
-                        )
-                    except Exception:
-                        logger.debug("Failed to post TTS-unavailable ephemeral", exc_info=True)
-                else:
-                    _vid = _vc.voices.get(session_key, _vc.default_voice)
-                    _eng = _vc.engines.get(session_key, _vc.default_engine)
-                    _rate = _vc.rates.get(session_key, _vc.default_rate)
-                    _pitch = _vc.pitches.get(session_key, _vc.default_pitch)
-                    asyncio.create_task(
-                        _safe_voice_reply(
-                            slack,
-                            channel,
-                            reply_ts,
-                            final_text,
-                            voice_id=_vid,
-                            engine=_eng,
-                            rate=_rate,
-                            pitch=_pitch,
-                        )
-                    )
+        await _reply_by_voice(
+            slack,
+            channel,
+            reply_ts,
+            user_id,
+            session_key,
+            answer.accumulated,
+            final_text,
+            had_voice_input,
+        )
 
         # ── Update task banner with final state ──
         # History was persisted earlier, above the OPTIONS control, so that the
@@ -5869,28 +3063,8 @@ async def handle_message(
                 consolidator.maybe_consolidate(session_key)
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
-        if linked_session_key and _dashboard_state and accumulated and not _skip_writes:
-            try:
-                ds = _dashboard_state
-                slot_name = linked_session_key.removeprefix("dashboard:")
-                slot = getattr(ds, "_slots", {}).get(slot_name)
-                if slot:
-                    # The person typed this in Slack; mirroring it into the
-                    # linked slot keeps it a human turn (see
-                    # history.HUMAN_TURN_META_KEY).
-                    slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
-                    slot.append("assistant", accumulated, "msg msg-a")
-                    if slot._on_message:
-                        slot._on_message(
-                            slot.key, {"role": "user", "content": text, "cls": "msg msg-u"}
-                        )
-                        slot._on_message(
-                            slot.key,
-                            {"role": "assistant", "content": accumulated, "cls": "msg msg-a"},
-                        )
-                    ds.push_slots_update()  # type: ignore[attr-defined]
-            except Exception:
-                logger.debug("Failed to mirror Slack message to dashboard", exc_info=True)
+        if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
+            _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
         # ── Auto-title Slack thread (fire-and-forget) ──
         # Claim-early-unclaim-on-failure pattern: ``try_claim`` checks and marks in one
         # synchronous step, so concurrent messages (and the transport path, which
@@ -5933,7 +3107,7 @@ async def handle_message(
                             session_key,
                             conversation_log,
                             text,
-                            accumulated,
+                            answer.accumulated,
                             pin=_title_pin,
                         )
                     )
@@ -5956,39 +3130,6 @@ async def handle_message(
 
 _get_auto_title_lock = auto_title.get_lock
 _build_title_prompt = auto_title.build_title_prompt
-
-
-async def _maybe_auto_title_slack(
-    slack: SlackClientOps,
-    sessions: SessionManager,
-    channel: str,
-    session_key: str,
-    conversation_log: ConversationLog | None,
-    user_text: str,
-    assistant_text: str,
-    *,
-    pin: auto_title.RecordPin,
-) -> None:
-    """Generate and set a Slack thread title after the first response.
-
-    ``pin`` is captured by the CALLER before this task is scheduled, and is
-    required rather than defaulted -- see ``auto_title.pin_record``.
-    """
-
-    async def _set_thread_title(title: str) -> None:
-        await slack.set_thread_title(channel, session_key, title)
-
-    await auto_title.maybe_auto_title(
-        sessions,
-        conversation_log,
-        session_key,
-        user_text,
-        assistant_text,
-        pin=pin,
-        source="slack",
-        resources=f"{channel}:{session_key}",
-        set_channel_title=_set_thread_title,
-    )
 
 
 async def _reject_orphaned_tool(
@@ -6088,201 +3229,6 @@ async def _steer_host_deny(
             if await asyncio.shield(reject):
                 Stats().inc_tool_denial()
         raise
-
-
-class _LinkedApprovalEvent:
-    """Minimal event shim for :func:`_build_approval_blocks`.
-
-    The dashboard's permission event (``AcpEvent``) and the Slack-native
-    ``LLMEvent`` have different shapes, so adapt the few fields the block
-    builder reads: ``request_id``, ``title``, ``tool_input``, ``tool_purpose``.
-    """
-
-    __slots__ = ("request_id", "title", "tool_input", "tool_purpose")
-
-    def __init__(self, request_id: str | int, title: str, tool_input: str = "") -> None:
-        self.request_id = request_id
-        self.title = title
-        self.tool_input = tool_input
-        self.tool_purpose = ""
-
-
-def _linked_slots_for(session_key: str) -> list[Any]:
-    """Every live dashboard slot whose turns run on *session_key*.
-
-    Keyed by the slot's EFFECTIVE session key, the one derivation the dashboard's
-    own trust resolver uses: a linked cron/workflow or channel-surfaced slot runs
-    under its ``linked_session_key``, not under ``dashboard:{key}``, so matching on
-    the raw slot key would miss exactly the slots this Slack mirror serves.
-
-    Empty when there is no dashboard state, no slots, or no match — every caller
-    treats that as "cannot act on this session".
-    """
-    slots = getattr(_dashboard_state, "_slots", None) if _dashboard_state is not None else None
-    if not slots:
-        return []
-    return [slot for slot in list(slots.values()) if effective_session_key(slot) == session_key]
-
-
-def _linked_trust_grantable(session_key: str, request_id: str | int) -> bool:
-    """Whether the dashboard card behind a linked approval may grant durable Trust.
-
-    ``chat_runner`` stamps ``trust_grantable`` onto a pending permission card only
-    when the call is unredacted and its grant scope is fully derivable, precisely so
-    an alternate approval surface cannot offer a durable grant merely because it
-    received a pending card; the dashboard resolver refuses a grant whose card lacks
-    the bit (``pattern_underivable``). This Slack mirror IS such a surface, so it
-    re-derives the same server-side proof from the owning slot's card rather than
-    treating the click as authority.
-
-    Fail-closed: no dashboard state, no owning slot, no card, or any raise -> no
-    Trust, leaving the prompt allow-once/reject exactly as before.
-    """
-    try:
-        # Reuse the dashboard resolver's own card reader, so the two surfaces cannot
-        # disagree about what a card says. Imported at call time: chat_handlers ->
-        # chat_runner -> this module, so a module-level import would close a cycle
-        # (same reason as ``_run_chat`` below).
-        from kiro_crew.dashboard.chat_handlers import _get_pattern_from_pending
-
-        for slot in _linked_slots_for(session_key):
-            if _get_pattern_from_pending(slot, str(request_id), "trust_grantable") == "1":
-                return True
-    except Exception:
-        logger.warning(
-            "Could not derive linked trust proof (session=%s req=%s); withholding Trust",
-            session_key,
-            request_id,
-            exc_info=True,
-        )
-    return False
-
-
-def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager | None) -> bool:
-    """Grant durable session Trust for a linked slot. True only on a REAL grant.
-
-    All three halves, or none. A linked slot's own tool approvals are re-decided per
-    event by ``chat_runner._slot_is_trusted``, which reads ``slot._trust``; the
-    session ``approval_policy`` is the half a spawned subagent inherits, and
-    ``chat_runner`` rewrites it from ``_persistable_session_policy(slot, ...)`` on
-    every session create/resume — so a policy-only write would be erased at the next
-    turn and a ``_trust``-only write would never reach subagents. The third is the
-    shared ``messaging.session_trust`` mapping, which the channel ``TurnDriver``
-    reads: a channel-born slot's own Slack thread is driven by
-    ``slack/transport_dispatch``, not by the dashboard chat runner, so without it a
-    Slack-typed follow-up re-prompts for every tool. Written under the slot's
-    EFFECTIVE session key, the same key the dashboard resolver grants under.
-
-    Fail-closed, and deliberately in the opposite order to the dashboard resolver
-    (which writes ``_trust`` first and lets a raise become a 500): the fallible
-    policy write goes FIRST — via the shared grant's ``strict`` mode, which undoes
-    its own in-memory half and re-raises — so a failure leaves no slot silently
-    trusted while the caller reports the click as denied. Returns False — no grant
-    at all — when the card carries no durable-grant proof, when there is no session
-    manager to hold the subagent half, when no live slot owns the session, or on any
-    raise.
-    """
-    if not linked_entry.trust_grantable or sessions is None:
-        return False
-    try:
-        slots = _linked_slots_for(linked_entry.session_key)
-        if not slots:
-            return False
-        # Through the shared channel-neutral grant, which owns BOTH the mapping the
-        # channel driver reads and the parent approval_policy a subagent reads --
-        # the same seam every other trust path in this module goes through, rather
-        # than poking `set_approval_policy` here. The mapping half is not optional:
-        # a CHANNEL-BORN slot's turns run on the channel's own session key, and its
-        # thread is deliberately absent from ``_slack_to_slot`` (see
-        # ``state.get_or_create_slot``), so a Slack-typed follow-up is driven by
-        # ``slack/transport_dispatch`` -- whose TurnDriver gates auto-approval on
-        # ``is_session_trusted``, never on the session policy. Without it the user
-        # is re-prompted for every tool on the very thread they granted Trust from.
-        #
-        # ``strict`` is what keeps this fail-closed: the policy write is the
-        # fallible half, and the default grant swallows its failure, which would
-        # report a partial grant to the clicker as "Trusted".
-        add_trusted_session(linked_entry.session_key, sessions, strict=True)
-        for slot in slots:
-            slot._trust = True
-    except Exception:
-        logger.warning(
-            "Failed to grant linked session trust (session=%s)",
-            linked_entry.session_key,
-            exc_info=True,
-        )
-        return False
-    return True
-
-
-async def post_linked_approval(
-    slack: SlackClientOps,
-    channel: str,
-    thread_ts: str,
-    request_id: str | int,
-    session_key: str,
-    title: str,
-    tool_input: str = "",
-) -> str | None:
-    """Mirror a dashboard tool-approval prompt into a linked Slack thread.
-
-    Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
-    :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
-    the dashboard slot's approval future (see :func:`handle_interaction`).
-
-    Returns the Slack message ts on success, or ``None`` if the post failed.
-    The caller (dashboard ``_run_chat``) treats ``None`` as "delivery failed"
-    and surfaces it rather than silently parking on an unanswerable prompt.
-
-    Trust ("Trust session") is offered only when BOTH hold:
-
-    * the mirror target is a DM (``channel`` starts with ``D``) — the native path's
-      blast-radius rule, since trust escalates the whole session; and
-    * the dashboard card carries the server's durable-grant proof
-      (:func:`_linked_trust_grantable`).
-
-    Without both, the prompt stays Approve / Reject, which is still enough to
-    guarantee it is answerable from Slack.
-
-    The verdict is recorded on the registry entry and re-consulted at click time
-    (:func:`_grant_linked_trust`), so the grant rests on what this process derived
-    when it rendered the prompt — never on the ``action_id`` the Slack payload
-    carries, which a rendered button does not make authoritative.
-    """
-    # title / tool_input are LLM-generated (the tool-use request). Slack is an
-    # external surface, so scrub them the same way every other outbound LLM
-    # string is scrubbed before posting — the dashboard path already redacts
-    # these via perm_meta, but this Slack mirror must do its own redaction.
-    title, _ = redact_exfiltration_urls(title)
-    title, _ = redact_credentials(title)
-    tool_input, _ = redact_exfiltration_urls(tool_input)
-    tool_input, _ = redact_credentials(tool_input)
-    event = _LinkedApprovalEvent(request_id, title, tool_input)
-    trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
-    # _build_approval_blocks is typed for AcpEvent but only reads the four
-    # attributes the shim provides (request_id/title/tool_input/tool_purpose).
-    blocks = _build_approval_blocks(event, is_dm=trust_grantable)  # type: ignore[arg-type]
-    try:
-        approval_ts = await slack.post_blocks(
-            channel, blocks, "Manual approval required", thread_ts
-        )
-    except Exception:
-        logger.warning(
-            "Failed to post linked approval prompt to Slack (session=%s req=%s)",
-            session_key,
-            request_id,
-            exc_info=True,
-        )
-        return None
-    _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable
-    )
-    return approval_ts
-
-
-def resolve_linked_approval(channel: str, approval_ts: str) -> None:
-    """Drop a linked-approval registry entry (after the dashboard resolved it)."""
-    _linked_approvals.pop(f"{channel}:{approval_ts}", None)
 
 
 async def _request_approval(
@@ -6434,57 +3380,7 @@ async def handle_interaction(
     # session, and only a widening that actually took counts as an approval.
     linked_entry = _linked_approvals.get(key)
     if linked_entry is not None:
-        approved = action_id != _ACTION_REJECT
-        trusted = False
-        if action_id == _ACTION_TRUST:
-            trusted = _grant_linked_trust(linked_entry, sessions)
-            # A Trust click that could not grant must NOT be quietly downgraded to
-            # a one-shot approve and labelled "Trusted": that reports a security
-            # state the session does not have. Deny instead, so the user sees the
-            # escalation fail and retries.
-            approved = trusted
-            if trusted:
-                logger.info("Trust mode ON (linked) for session %s", linked_entry.session_key)
-            else:
-                logger.warning(
-                    "Refusing linked trust click for session %s", linked_entry.session_key
-                )
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.interactive.trust_linked",
-                outcome="allowed" if trusted else "denied",
-                source="slack",
-                resources=linked_entry.session_key,
-                error="" if trusted else "trust_grant_unavailable",
-            )
-        resolved = False
-        if _dashboard_state is not None and hasattr(_dashboard_state, "resolve_approval"):
-            try:
-                resolved = bool(
-                    _dashboard_state.resolve_approval(str(linked_entry.request_id), approved)  # type: ignore[attr-defined]
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to resolve linked approval (req=%s)",
-                    linked_entry.request_id,
-                    exc_info=True,
-                )
-        _linked_approvals.pop(key, None)
-        sel().log_api_access(
-            caller=user_id,
-            operation="slack.interactive.approval_linked",
-            outcome="allowed" if approved else "denied",
-            source="slack",
-            resources=linked_entry.session_key,
-            error="" if resolved else "future_not_found",
-        )
-        if approved:
-            Stats().inc_tool_approval()
-        else:
-            Stats().inc_tool_denial()
-        if trusted:
-            return _ACTION_TRUST
-        return _ACTION_APPROVE if approved else _ACTION_REJECT
+        return _resolve_linked_click(linked_entry, key, action_id, user_id, sessions)
 
     # Claim-before-await, symmetric with the timeout arm: popping here (not
     # at the end) means a timeout firing while this click awaits the wire
@@ -6500,91 +3396,7 @@ async def handle_interaction(
         # Replicate session_key derivation from handle_message: thread_ts,
         # then check for linked dashboard session override.
         if action_id == _ACTION_TRUST and thread_ts:
-            if not is_allowed_user(user_id):
-                logger.warning("Rejecting late trust click from non-allowed user %s", user_id)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="unauthorized user",
-                )
-                return None
-            # Verify clicking user owns this thread (prevents privilege escalation)
-            if not slack:
-                logger.warning(
-                    "Rejecting late trust click: cannot verify thread ownership (no slack client)"
-                )
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="no_slack_client",
-                )
-                return None
-            try:
-                msgs = await slack.fetch_thread_replies(channel, thread_ts, limit=1)
-                thread_owner = msgs[0].get("user", "") if msgs else ""
-            except Exception:
-                logger.warning("Failed to verify thread ownership for %s", thread_ts, exc_info=True)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="thread_ownership_check_failed",
-                )
-                return None
-            if not thread_owner or thread_owner != user_id:
-                logger.warning("Rejecting late trust click: user %s is not thread owner", user_id)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="not_thread_owner",
-                )
-                return None
-            # Imported at call time on purpose: tests patch
-            # ``kiro_crew.session.SessionMap`` to drive the fail-closed path, and
-            # only a call-time rebind observes that patch.
-            from kiro_crew.session import SessionMap
-
-            session_key = thread_ts
-            try:
-                linked = SessionMap().get_session_for_thread(thread_ts)
-                if linked:
-                    session_key = linked
-            except Exception:
-                logger.warning(
-                    "SessionMap lookup failed for thread %s; refusing to grant trust",
-                    thread_ts,
-                    exc_info=True,
-                )
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="session_map_lookup_failed",
-                )
-                return None
-            # Through the shared grant, which owns BOTH halves: the in-memory
-            # mapping the driver reads and the parent approval_policy a subagent
-            # reads (see subagent.py). Poking the container directly would let a
-            # revoke clear one half and leave the other, so the two are not
-            # separable at a call site.
-            add_trusted_session(session_key, sessions)
-            logger.info("Trust mode ON (late click) for session %s", session_key)
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.interactive.trust_late",
-                outcome="allowed",
-                source="slack",
-                resources=session_key,
-            )
-            return _ACTION_TRUST
+            return await _grant_late_trust(channel, thread_ts, user_id, slack, sessions)
         else:
             logger.warning("No pending approval for %s", key)
             sel().log_api_access(
@@ -6684,156 +3496,6 @@ async def handle_interaction(
     return _ACTION_REJECT if floor_refused else action_id
 
 
-def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
-    """Build Block Kit blocks for tool approval prompt.
-
-    Args:
-        event: The permission-request event from the LLM provider.
-        is_dm: True when posting to a DM (adds Trust button).
-        source: Optional label for background agents (e.g. "subagent",
-            "cron").  Prefixed to the header so users can tell main-agent
-            approvals apart from background ones.
-
-    Shows the full command text (from tool_input) in a code block so users
-    can see exactly what will run before approving.  Falls back to the
-    truncated title when tool_input is unavailable.
-
-    In DMs: Approve / Trust / Reject
-    In group channels: Approve / Reject only (Trust excluded
-    to limit blast radius — it escalates permissions for the session).
-    YOLO is owner-only via ``!yolo on`` command — no button.
-    """
-    # Slack Block Kit requires button `value` to be a string. ACP backends
-    # (e.g. claude-agent-acp) issue integer JSON-RPC request ids, so coerce —
-    # an int value makes Slack reject the whole post with `invalid_blocks`.
-    # The interactive handler matches on channel:msg_ts and acts on the stored
-    # `_PendingApproval.request_id`, so the button value itself is display-only.
-    req_value = str(event.request_id)
-    buttons: list[dict] = [
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Approve"},
-            "style": "primary",
-            "action_id": _ACTION_APPROVE,
-            "value": req_value,
-        },
-    ]
-    if is_dm:
-        buttons.append(
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Trust session"},
-                "action_id": _ACTION_TRUST,
-                "value": req_value,
-            },
-        )
-    buttons.append(
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Reject"},
-            "style": "danger",
-            "action_id": _ACTION_REJECT,
-            "value": req_value,
-        },
-    )
-
-    blocks: list[dict] = []
-
-    tag = f"[{source}] " if source else ""
-    title_safe, _ = redact_exfiltration_urls(event.title)
-    title_safe, _ = redact_credentials(title_safe)
-    footer = f":lock: {tag}*{title_safe}*"
-    if event.tool_purpose:
-        purpose, _ = redact_exfiltration_urls(event.tool_purpose)
-        purpose, _ = redact_credentials(purpose)
-        footer += f" — {purpose}"
-
-    # When full tool_input is available, show a simple header and the
-    # complete command in a code block below.
-    # When tool_input is missing, fall back to the truncated title.
-    if event.tool_input:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"🔐 *{tag}Tool approval requested:*"},
-            },
-        )
-        # Security: scan for exfiltration URLs and credentials before posting
-        sanitized, _ = redact_exfiltration_urls(event.tool_input)
-        sanitized, _ = redact_credentials(sanitized)
-        # Truncate with marker if exceeds Slack limit
-        if len(sanitized) > _SLACK_SECTION_TEXT_LIMIT:
-            detail = (
-                sanitized[: _SLACK_SECTION_TEXT_LIMIT - len(_TRUNCATION_MARKER)]
-                + _TRUNCATION_MARKER
-            )
-        else:
-            detail = sanitized
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"```{detail}```"},
-            },
-        )
-
-    blocks.append({"type": "actions", "elements": buttons})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
-    return blocks
-
-
-async def _handle_spawn_command(
-    text: str, manager: SubagentManager, session_key: str = ""
-) -> str | None:
-    """Intercept spawn/bg keyword commands. Returns reply or None.
-
-    Async so the accept runs through ``spawn_async`` on the task store's writer
-    thread instead of taking ``BEGIN IMMEDIATE`` on the Slack gateway's loop.
-    """
-    return await spawn_command_reply(text, manager, session_key)
-
-
-async def _handle_cron_command(
-    text: str, cron_service: CronService, channel: str, thread_ts: str, user_id: str = ""
-) -> str | None:
-    """Handle cron keyword commands. Returns reply or None.
-
-    Async so the store mutators (remove/pause/resume) run through the
-    event-loop-safe ``*_async`` variants instead of parking the Slack gateway
-    loop on the store lock; a contended store yields a "busy, retry" reply
-    rather than a stall.
-
-    ``user_id`` is the Slack caller, threaded through so the destructive
-    branches can attribute their SEL audit events to the human who issued
-    the command (per-caller identity, matching the dashboard/MCP/CLI paths).
-    """
-    # ``source``/``caller`` carry that attribution into the shared remove-all
-    # audit, which is where the event is emitted.
-    return await cron_command_reply(text, cron_service, source="slack", caller=user_id)
-
-
-async def _handle_run_command(
-    text: str,
-    runner: TaskRunner,
-    slack: SlackClientOps,
-    channel: str,
-    thread_ts: str,
-    *,
-    session_key: str = "",
-) -> str | None:
-    """Intercept 'run <path>' keyword commands. Returns reply or None.
-
-    ``slack`` / ``channel`` / ``thread_ts`` are unused and were already unused
-    before the reply text was hoisted; they stay because this is the positional
-    shape ``maybe_handle_keyword_command`` and several suites call.
-
-    ``session_key`` is what lets a task that later blocks on an approval report back
-    to the conversation the operator is watching, instead of only to the owner DM.
-    Keyword-only with a default so the ~25 existing positional call sites are
-    unchanged; omitting it reproduces the old owner-DM-only behaviour exactly.
-    """
-    return await task_command_reply(text, runner, session_key=session_key)
-
-
 async def _handle_sessions_command(
     cmd_text: str,
     slack: SlackClientOps,
@@ -6900,54 +3562,20 @@ async def _handle_sessions_command(
     await slack.post_blocks(channel, blocks, "Recent sessions:", reply_ts)
 
 
-async def _safe_update(slack: SlackClientOps, channel: str, ts: str, text: str) -> None:
-    """Update a Slack message, truncating if too long.
-
-    Used for progressive streaming edits — truncation is fine here since
-    the final message uses _safe_final_update which splits instead.
-    """
-    text, _ = redact_exfiltration_urls(text)
-    if len(text) > SLACK_MSG_LIMIT:
-        text = text[:SLACK_MSG_LIMIT] + TRUNCATION_NOTICE
-    try:
-        await slack.update_message(channel, ts, text)
-    except Exception:
-        logger.debug("Failed to update message %s", ts, exc_info=True)
-
-
-async def _safe_final_update(
-    slack: SlackClientOps,
-    channel: str,
-    ts: str,
-    text: str,
-    thread_ts: str | None = None,
-    *,
-    raise_on_primary_failure: bool = False,
-) -> None:
-    """Final message update — splits into multiple messages if too long.
-
-    ``raise_on_primary_failure`` controls the FIRST (answer-carrying) part only.
-    Left False (the default) the primary send is best-effort — the caller uses
-    this when the answer is already on screen and this call is a redaction
-    overwrite, so a failed overwrite must not fail an already-delivered turn. Set
-    True on the no-stream path where this call is the ONLY delivery of the answer:
-    a failed primary send then propagates so the caller can book a failure rather
-    than a success for a reader who received nothing. Overflow continuations are
-    best-effort regardless (a dropped tail is a truncated answer, not a missing
-    one), matching the streaming path's overflow handling.
-    """
-    text, _ = redact_exfiltration_urls(text)
-    parts = split_message(text)
-    # First part updates the existing streaming message
-    try:
-        await slack.update_message(channel, ts, parts[0])
-    except Exception:
-        logger.debug("Failed to update message %s", ts, exc_info=True)
-        if raise_on_primary_failure:
-            raise
-    # Overflow parts posted as follow-up messages in the same thread
-    for part in parts[1:]:
-        try:
-            await slack.post_message(channel, part, thread_ts)
-        except Exception:
-            logger.debug("Failed to post continuation message", exc_info=True)
+# Every function the owners define runs on this module's globals, so a patch of
+# ``kiro_crew.slack.handler.<name>`` reaches it wherever it lives; see
+# :mod:`kiro_crew.slack.handler_runtime`. Run once, after this body has bound every name.
+_handler_runtime.compose(
+    globals(),
+    (
+        _owner_access,
+        _owner_approvals,
+        _owner_commands,
+        _owner_finalize,
+        _owner_inbound,
+        _owner_reactions,
+        _owner_stream,
+        _owner_turn_context,
+        _owner_voice,
+    ),
+)

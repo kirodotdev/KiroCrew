@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import threading
 import time
 import unittest.mock
@@ -27,8 +28,13 @@ from overload_fakes import wait_taskq_open
 
 from kiro_crew import resource_status as rs
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
 from kiro_crew.cron import CronService
 from kiro_crew.subagent import _UNLEARNED_DEDICATED_START_GB
+
+#: The macOS pressure hold's bound under the default config: the
+#: ``agent.subagent_queue_max_wait_secs`` default, which a fresh manager boots on.
+_HOLD_BOUND_SECS = float(DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS)
 
 
 def _cfg(pressure: float = 4.0, critical: float = 2.0, gate: bool = True) -> SimpleNamespace:
@@ -88,6 +94,23 @@ async def _wait_for(predicate, timeout=5.0, interval=0.05, message="predicate"):
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError(f"Timed out after {timeout}s waiting for {message}")
         await asyncio.sleep(interval)
+
+
+async def _retire_real_timer(svc: CronService) -> None:
+    """Make the test's own ``await svc._on_timer()`` calls the only ticks.
+
+    ``start()``, every ``add_job`` and every run completion arm a REAL ``_tick``.
+    With a cron-expression job its delay is the next minute boundary (capped at the
+    30 s poll), so a test that starts just before a boundary gets a real tick after
+    its ``patch(...)`` window has closed, and that tick dispatches on the host's real
+    admission verdict. Call it before the first ``add_job``.
+    """
+    svc._arm_timer = lambda: None  # type: ignore[method-assign]
+    task, svc._timer_task = svc._timer_task, None
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 # ── admission_check ──────────────────────────────────────────────────────────
@@ -799,12 +822,11 @@ class TestSpawnAdmissionGate:
     def test_a_held_start_expires_once_its_wait_runs_out(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
 
         mgr = self._mgr()
         with patch("kiro_crew.subagent.sel") as mock_sel:
             assert mgr._memory_pressure_holds("r1", 2, parent_session_key="sess-1") == "held"
-            mgr._pressure_holds["r1"] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_holds["r1"] = time.monotonic() - _HOLD_BOUND_SECS - 1
             with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
                 assert mgr._memory_pressure_holds("r1", 2, parent_session_key="sess-1") == "expired"
             # Stays expired, and is said once.
@@ -812,7 +834,7 @@ class TestSpawnAdmissionGate:
         expired = self._sel_call(mock_sel, "never_started_memory_pressure")
         assert expired["metadata"]["subagent_id"] == "r1"
         assert expired["metadata"]["expired_by"] == "wait"
-        assert expired["metadata"]["waited_secs"] >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        assert expired["metadata"]["waited_secs"] >= _HOLD_BOUND_SECS
         assert self._outcomes(mock_sel).count("never_started_memory_pressure") == 1
         assert any("for its whole wait" in r.getMessage() for r in caplog.records)
 
@@ -822,7 +844,6 @@ class TestSpawnAdmissionGate:
         """Past its bound a held row does not proceed into the pressure it waited
         on: the next pump pass ends it, never started, its row failed and its
         parent's depth back to 0."""
-        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
         from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
 
         mgr = self._mgr()
@@ -830,7 +851,7 @@ class TestSpawnAdmissionGate:
         self._level(monkeypatch, 2)
         info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "memory_pressure"
-        mgr._pressure_holds[info.id] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+        mgr._pressure_holds[info.id] = time.monotonic() - _HOLD_BOUND_SECS - 1
         mgr._spawn_stagger_secs = 0.0
         with self._gate_patches():
             mgr._drain_queue()
@@ -848,7 +869,7 @@ class TestSpawnAdmissionGate:
     def test_an_approved_start_past_its_bound_is_ended_never_started(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS, SubagentInfo
+        from kiro_crew.subagent import SubagentInfo
 
         mgr = self._mgr()
         self._busy(mgr)
@@ -865,7 +886,7 @@ class TestSpawnAdmissionGate:
                     "parent_session_key": info.parent_session_key,
                 }
             )
-            mgr._pressure_holds[info.id] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_holds[info.id] = time.monotonic() - _HOLD_BOUND_SECS - 1
             with self._gate_patches():
                 outcome = mgr._admission._release_admitted_start_impl()
             return outcome, info._start_release
@@ -921,7 +942,6 @@ class TestSpawnAdmissionGate:
         start pay the bound in turn, and does not let them into the pressure
         either: each start the hold would keep is ended at once, never started.
         Once the level eases, the next episode holds again."""
-        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
         from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
 
         mgr = self._mgr()
@@ -929,7 +949,7 @@ class TestSpawnAdmissionGate:
         self._level(monkeypatch, 2)
         with self._gate_patches(), caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
             assert mgr._memory_pressure_hold() == 2
-            mgr._pressure_episode_since = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_episode_since = time.monotonic() - _HOLD_BOUND_SECS - 1
             assert mgr._memory_pressure_hold() == 2
             assert mgr._memory_pressure_hold() == 2
             said = [r for r in caplog.records if "until it eases" in r.getMessage()]
@@ -943,7 +963,7 @@ class TestSpawnAdmissionGate:
         expired = self._sel_call(sel_mock, "never_started_memory_pressure")
         assert expired["metadata"]["expired_by"] == "episode"
         assert expired["metadata"]["waited_secs"] < 1
-        assert expired["metadata"]["episode_secs"] >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        assert expired["metadata"]["episode_secs"] >= _HOLD_BOUND_SECS
         assert not any("for its whole wait" in r.getMessage() for r in caplog.records)
         assert any("ended without waiting" in r.getMessage() for r in caplog.records)
         with self._gate_patches():
@@ -972,7 +992,7 @@ class TestSpawnAdmissionGate:
         """Reads are sampled; a gap longer than a few recheck intervals is a break
         nobody saw, so the next read starts a fresh episode instead of finding a
         spent one and ending a start that never waited."""
-        from kiro_crew.subagent import _PRESSURE_EPISODE_MAX_GAP_SECS, _PRESSURE_HOLD_MAX_WAIT_SECS
+        from kiro_crew.subagent import _PRESSURE_EPISODE_MAX_GAP_SECS
 
         mgr = self._mgr()
         self._busy(mgr)
@@ -980,7 +1000,7 @@ class TestSpawnAdmissionGate:
         with self._gate_patches():
             assert mgr._memory_pressure_hold() == 2
             now = time.monotonic()
-            mgr._pressure_episode_since = now - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_episode_since = now - _HOLD_BOUND_SECS - 1
             mgr._pressure_episode_read_at = now - _PRESSURE_EPISODE_MAX_GAP_SECS - 1
             assert mgr._memory_pressure_hold() == 2
             assert mgr._pressure_episode_spent is False
@@ -991,15 +1011,87 @@ class TestSpawnAdmissionGate:
     ) -> None:
         """An expired row is handed to the gate's re-check; if the level eased in
         between it starts, so the pick must not have audited it as never started."""
-        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
 
         mgr = self._mgr()
         with patch("kiro_crew.subagent.sel") as mock_sel:
-            mgr._pressure_holds["r1"] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_holds["r1"] = time.monotonic() - _HOLD_BOUND_SECS - 1
             verdict = mgr._memory_pressure_holds("r1", 2, commit_expiry=False)
         assert verdict == "expired"
         assert "never_started_memory_pressure" not in self._outcomes(mock_sel)
         assert "r1" not in mgr._pressure_hold_expired
+
+    @staticmethod
+    def _reload_max_wait(mgr, secs: int) -> None:
+        """A live rewrite of ``agent.subagent_queue_max_wait_secs``, adopted the
+        way the config watcher adopts it (``apply_limits``), with no restart."""
+        cfg = KiroCrewConfig()
+        cfg.agent.subagent_queue_max_wait_secs = secs
+        mgr.apply_limits(cfg, max_concurrent=3)
+        assert mgr._subagent_queue_max_wait_secs == secs
+
+    def test_the_hold_is_bounded_by_the_live_queue_max_wait_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-start bound is ``agent.subagent_queue_max_wait_secs``, read at
+        each check: a start held 61 s is still waiting under the default, ends
+        once the key is reloaded to 60, and 0 lifts the bound again."""
+        mgr = self._mgr()
+        assert mgr._subagent_queue_max_wait_secs == DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
+        with patch("kiro_crew.subagent.sel"):
+            mgr._pressure_holds["r1"] = time.monotonic() - 61
+            assert mgr._memory_pressure_holds("r1", 2, commit_expiry=False) == "held"
+            self._reload_max_wait(mgr, 60)
+            assert mgr._memory_pressure_holds("r1", 2) == "expired"
+            self._reload_max_wait(mgr, 0)
+            mgr._pressure_holds["r2"] = time.monotonic() - 10 * _HOLD_BOUND_SECS
+            assert mgr._memory_pressure_holds("r2", 2) == "held"
+
+    def test_a_live_bound_spends_and_unspends_the_episode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The episode bound is the same live key: an episode 61 s old is spent
+        once the key is 60, and a reload to 0 (no bound) or past the episode's
+        length un-spends it, so new starts are held again rather than ended."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() == 2
+            mgr._pressure_episode_since = time.monotonic() - 61
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is False
+            self._reload_max_wait(mgr, 60)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is True
+            assert mgr._memory_pressure_holds("ended", 2) == "expired"
+            self._reload_max_wait(mgr, 0)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is False
+            assert mgr._memory_pressure_holds("fresh", 2) == "held"
+            self._reload_max_wait(mgr, 60)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is True
+            self._reload_max_wait(mgr, 3600)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is False
+
+    def test_a_raised_bound_keeps_a_paused_rows_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A row's clock survives a pause in the hold for a few bounds, and the
+        bound is the live key: raised to 20000 s, a clock 10000 s old is kept
+        across the pause (it would be dropped under the default), while one
+        older than four bounds is still dropped."""
+        mgr = self._mgr()
+        self._reload_max_wait(mgr, 20000)
+        now = time.monotonic()
+        mgr._pressure_holds["paused"] = now - 10000
+        mgr._pressure_holds["gone"] = now - 4 * 20000 - 1
+        self._level(monkeypatch, 1)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() is None
+        assert "paused" in mgr._pressure_holds
+        assert "gone" not in mgr._pressure_holds
 
     def test_the_held_wave_starts_as_soon_as_our_runtime_ends(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1163,25 +1255,26 @@ class TestSpawnAdmissionGate:
         info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "memory_pressure"
 
-    def test_a_paused_cap_keeps_its_own_label_under_pressure(
+    def test_a_zero_cap_has_no_pause_label_under_pressure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """With the adaptive cap at 0 nothing starts before the controller's probe
-        recovers, so the row keeps ``adaptive_cap_zero`` (and its detail), and the
-        end of the hold relabels to it rather than to the bare capacity kind."""
+        """There is no pause kind: the adaptive controller never takes the
+        execution cap to 0 (it reads no memory or loop lag). A cap a caller
+        pinned to 0 is an ordinary capacity wait, so the kernel's pressure
+        verdict labels the row, and the end of the hold relabels to the bare
+        capacity kind."""
         mgr = self._mgr()
         self._busy(mgr)
         mgr._max_concurrent = 0
         self._level(monkeypatch, 2)
         info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
-        assert info is not None and info.queued_reason == "adaptive_cap_zero"
-        assert "effective cap 0" in info.queued_reason_detail
+        assert info is not None and info.queued_reason == "memory_pressure"
         mgr._queue_wait["sess-1"] = {"reason": "memory_pressure"}
         mgr._pressure_hold_on = True
         self._level(monkeypatch, 1)
         with self._gate_patches():
             assert mgr._memory_pressure_hold() is None
-        assert mgr._queue_wait["sess-1"] == {"reason": "adaptive_cap_zero"}
+        assert mgr._queue_wait["sess-1"] == {"reason": "concurrency_limit"}
 
     def test_a_held_root_release_does_not_block_a_child_behind_it(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1542,10 +1635,14 @@ class TestCachedAdmissionCheck:
         rs._cached_at = time.monotonic()
         probes: list[int] = []
         monkeypatch.setattr(rs, "admission_check", lambda cfg=None: probes.append(1))
+        # The module's own binding: a refresh is a thread the call would construct
+        # here, so "none was started" is read off the call, not off a sleep.
+        threads = MagicMock()
+        monkeypatch.setattr(rs, "threading", SimpleNamespace(Thread=threads))
         try:
             assert rs.cached_admission_check() is verdict
-            time.sleep(0.05)
-            assert probes == []  # fresh cache => no background refresh either
+            threads.assert_not_called()  # fresh cache => no background refresh either
+            assert probes == []
         finally:
             self._reset()
 
@@ -1574,12 +1671,17 @@ class TestCronExprPassthrough:
         job = svc._jobs[0]
         job.last_run_ts = time.time() - 120
 
+        manual: list[Any] = []
+
         def claiming_check(cfg: object | None = None):
-            svc._claim_run(job.id, "manual")  # simulate a manual run claiming it
+            manual.append(svc._claim_run(job.id, "manual"))  # a manual run claims it
             return _admitted()
 
         with patch("kiro_crew.cron.admission_check", side_effect=claiming_check):
             await svc._on_timer()
+        # The scan claims what it dispatches before it returns, so a duplicate
+        # would already have replaced the manual claim.
+        assert svc._claims.get(job.id) is manual[0], "a duplicate run claimed the job"
         assert executed == []  # revalidated away, no duplicate
         svc._claims.pop(job.id, None)
         await svc.stop()
@@ -1609,7 +1711,9 @@ class TestCronExprPassthrough:
 
         with patch("kiro_crew.cron.admission_check", side_effect=completing_check):
             await svc._on_timer()
-        await asyncio.sleep(0.05)
+        # The scan claims what it dispatches before it returns, and a run releases
+        # its claim only after its callback ran: one of the two shows a re-fire.
+        assert job.id not in svc._claims, "the tick dispatched the completed job"
         assert executed == []  # not re-fired against the stale snapshot
         await svc.stop()
 
@@ -1650,6 +1754,7 @@ class TestCronExprPassthrough:
 
         svc = CronService(base_dir=tmp_path, on_job=callback)
         await svc.start()
+        await _retire_real_timer(svc)
         svc.add_job("expr-job", "msg", cron_expr="* * * * *")
 
         with (
@@ -1671,6 +1776,9 @@ class TestCronExprPassthrough:
 
         svc = CronService(base_dir=tmp_path, on_job=callback)
         await svc.start()
+        # add_job("expr") arms a real tick for the next minute boundary; one that
+        # lands after the patch window below runs on the host's real verdict.
+        await _retire_real_timer(svc)
         svc.add_job("interval", "msg", every_secs=60)
         svc.add_job("expr", "msg", cron_expr="* * * * *")
         interval_job = next(j for j in svc._jobs if j.name == "interval")
@@ -1681,6 +1789,8 @@ class TestCronExprPassthrough:
             patch("kiro_crew.cron.cron_expr_matches", return_value=True),
         ):
             await svc._on_timer()
+        # The tick claims what it dispatches before it returns.
+        assert interval_job.id not in svc._claims, "the interval job was dispatched"
         await _wait_for(lambda: "expr" in executed)
         assert executed == ["expr"]  # interval deferred, not fired
         assert interval_job.last_status is None  # untouched: still due
@@ -1833,17 +1943,20 @@ class TestCronExprPassthrough:
 
         with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
             await svc._on_timer()
-        await asyncio.sleep(0.1)
+        # The recovery tick claims what it dispatches before it returns.
+        assert job.id not in svc._claims, "the recovery tick replayed the job"
         assert executed == ["interval"]  # no replay
         await svc.stop()
 
     def test_refresh_thread_start_failure_fails_open(self, monkeypatch) -> None:
         rs._cached_decision = None
         rs._cached_at = 0.0
+        # The module's own binding, not the stdlib class every thread in the
+        # worker constructs through.
         monkeypatch.setattr(
-            rs.threading,
-            "Thread",
-            MagicMock(side_effect=RuntimeError("can't start new thread")),
+            rs,
+            "threading",
+            SimpleNamespace(Thread=MagicMock(side_effect=RuntimeError("can't start new thread"))),
         )
         verdict = rs.cached_admission_check()  # must not raise
         assert verdict.admitted  # fail-open
@@ -2025,23 +2138,39 @@ def test_a_queued_stop_drops_what_the_process_kept_for_the_start() -> None:
 
 def test_the_user_docs_state_the_hold_bounds_the_code_uses() -> None:
     """``subagents.md`` names the recheck interval and the per-start bound in
-    words; they must be the constants the gate runs on."""
-    from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+    words; they must be what the gate runs on. The bound is
+    ``agent.subagent_queue_max_wait_secs``, so the docs name that key and its
+    default, and the config field and its configuration.md row carry the same
+    default."""
+    from kiro_crew.config.sections import AgentConfig
     from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_RECHECK_SECS
 
-    doc = (Path(__file__).resolve().parents[1] / "src/kiro_crew/docs/subagents.md").read_text(
-        encoding="utf-8"
-    )
+    root = Path(__file__).resolve().parents[1]
+    minutes = DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS // 60
+    assert AgentConfig().subagent_queue_max_wait_secs == DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
+    doc = (root / "src/kiro_crew/docs/subagents.md").read_text(encoding="utf-8")
     assert f"every {MEMORY_PRESSURE_RECHECK_SECS} seconds" in doc
-    assert f"after {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes" in doc
-    # The chip sentence names the same bound.
-    catalog = (Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.json").read_text(
-        encoding="utf-8"
+    hold = next(line for line in doc.splitlines() if line.startswith("- **macOS memory pressure**"))
+    assert f"after `agent.subagent_queue_max_wait_secs` ({minutes} minutes by default)" in hold
+    reference = (root / "src/kiro_crew/docs/configuration.md").read_text(encoding="utf-8")
+    row = next(
+        line
+        for line in reference.splitlines()
+        if line.startswith("| `agent.subagent_queue_max_wait_secs` |")
     )
-    assert (
-        f"give up once the pressure has lasted {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes"
-        in catalog
-    )
+    assert "macOS memory-pressure hold" in row
+    assert row.endswith(f"| `{DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS}` ({minutes} min) |")
+    # The chip is static copy and the gateway sends it no figure, while the key
+    # moves the bound live, so no catalog may name a number: one would be wrong
+    # on every install that set the key.
+    catalogs = sorted((root / "website/src/i18n/locales").glob("*.json"))
+    # en.manual.json holds only hand-authored keys with no source literal.
+    for path in (p for p in catalogs if p.name != "en.manual.json"):
+        chip = json.loads(path.read_text(encoding="utf-8"))["pages"]["chat"]["subagentQueued"]
+        assert not re.search(r"\d", chip["memory_pressure"]), path.name
+    english = json.loads((root / "website/src/i18n/locales/en.json").read_text(encoding="utf-8"))
+    chip_en = english["pages"]["chat"]["subagentQueued"]["memory_pressure"]
+    assert chip_en.endswith("give up once the pressure outlasts the wait limit")
 
 
 def test_the_card_and_the_gate_agree_on_the_never_started_prefix() -> None:

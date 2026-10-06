@@ -43,7 +43,7 @@ def _req(method: str, body: dict | None = None):
 @pytest.fixture(autouse=True)
 def _stub_probes(monkeypatch):
     monkeypatch.setattr(core, "_stt_prereq_commands", lambda provider: {})
-    monkeypatch.setattr(core, "is_available", lambda stt: False)
+    monkeypatch.setattr(core, "availability_detail", lambda stt: core.stt.Availability(False))
 
 
 # ── Config + API ────────────────────────────────────────────────────────────

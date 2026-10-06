@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createRef, forwardRef, useImperativeHandle, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
@@ -93,7 +94,7 @@ const { api } = await import('../api/client')
 const { fetchFileRead } = await import('../utils/fileReadQuery')
 const { copyToClipboard } = await import('../utils/clipboard')
 const { i18nT } = await import('../i18n/t')
-const { default: MarkdownPanel } = await import('../components/MarkdownPanel')
+const { default: MarkdownPanel, MISSING_FILE_RETRY_MS, MISSING_FILE_RETRY_MAX_MS } = await import('../components/MarkdownPanel')
 
 /** Reads of `path` that went through `fetchFileRead` -- fresh fetches of the
  *  disk, as opposed to `readsOf`, which counts what the network saw. The two
@@ -118,6 +119,29 @@ const openStreams = () => StubEventSource.instances.filter(s => !s.closed)
 const watchedPath = (s: StubEventSource) =>
   decodeURIComponent(new URL(s.url, 'http://gateway').searchParams.get('path') ?? '')
 
+/** Ceiling for the gone-file retry, on the REAL clock, to find a file that is
+ *  back (cases that can hold the 404 step the retry on a fake clock instead:
+ *  `mountGoneUnderFakeRetry`). The retry asks MISSING_FILE_RETRY_MS after the
+ *  404 and doubles the wait each time, so its first three ticks land 1, 3 and 7
+ *  intervals after it was armed; a restore made before the third is found by
+ *  then, with half an interval for the read and the commit, and the ceiling
+ *  stays under half the 15 s test timeout. */
+const GONE_FILE_RETRY_READY = namedCeiling('GONE_FILE_RETRY_READY', 7.5 * MISSING_FILE_RETRY_MS)
+
+/**
+ * Wait until a gone file's tab has adopted it again AND re-armed for it. The
+ * commit that drops the banner is not enough: the panel's document keydown
+ * listener (Escape) closes over "the file is gone", and it is re-registered in
+ * the passive-effect flush after that commit, which can run a scheduler task
+ * later. A key sent in between reaches the stale guard. useFileWatch re-opens
+ * the stream in that same flush, so an open stream proves the listener a key
+ * now reaches is the fresh one.
+ */
+async function waitForFileBack() {
+  await waitFor(() => expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull(), GONE_FILE_RETRY_READY)
+  await waitFor(() => expect(openStreams()).toHaveLength(1))
+}
+
 // ── fetch router: `/api/file-read` answers from `disk`, keyed by path, and every
 // such read is counted per path. A path in `held` does not answer until its
 // release runs -- the window in which the user can act on a tab whose catch-up
@@ -138,6 +162,28 @@ function holdReads(path: string) {
   held.set(path, [])
   return () => { for (const answer of held.get(path) ?? []) answer(); held.delete(path) }
 }
+
+/**
+ * Mount `ui` on a file that is gone, with the gone-file retry on a FAKE clock.
+ * The retry's first timer is armed in the passive effect of the 404 landing, on
+ * whatever setTimeout is global then, so the mount read is held until fake
+ * timers are on: a timer armed on the real clock would fire by itself. Only
+ * setTimeout/clearTimeout are faked; React's scheduler and act run on
+ * setImmediate. Until the afterEach puts real timers back, step with
+ * `advanceRetry`, never waitFor/findBy: Testing Library's waits do not advance
+ * vitest's fake clock.
+ */
+async function mountGoneUnderFakeRetry(ui: React.ReactElement, path = '/tmp/b.md') {
+  unreadable.add(path)
+  const land = holdReads(path)
+  render(ui, { wrapper })
+  expect(readsOf(path)).toBe(1)
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  await act(async () => { land(); await vi.advanceTimersByTimeAsync(0) })
+  expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy()
+}
+/** Move the fake retry clock on by `ms`, letting every read it starts land. */
+const advanceRetry = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 function installFetch() {
   vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
     const url = String(input)
@@ -236,6 +282,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.style.overflow = ''
@@ -243,6 +290,10 @@ afterEach(() => {
 
 /** Let every effect and settled promise land. */
 const settle = () => new Promise(resolve => setTimeout(resolve, 30))
+
+/** Ceiling for the banner's "Copied" label to revert to "Copy content": the
+ *  panel resets it on a 1500 ms timer after a successful copy. */
+const COPIED_LABEL_RESETS = namedCeiling('COPIED_LABEL_RESETS', 3000)
 
 describe('MarkdownPanel — the file watch follows the visible tab', () => {
   it('holds exactly one stream for six mounted tabs, and it is the visible tab\'s', async () => {
@@ -485,15 +536,21 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     await waitFor(() => expect(openStreams()).toHaveLength(1))
 
     unreadable.add('/tmp/b.md')
-    rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
-    await waitFor(() => expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy())
-    await settle()
+    // The 404 arms the gone-file retry; on a fake clock it cannot add a read
+    // before the count below, however slow this run is.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await act(async () => {
+      rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
+      await vi.advanceTimersByTimeAsync(0)
+    })
     expect(screen.getByTestId('markdown-panel-missing-file').textContent).toMatch(/file not found on disk.*nothing else holds/i)
     // The document is still rendered: the last copy's heading is on screen.
     expect(screen.getByRole('heading', { name: '/tmp/b.md' })).toBeTruthy()
     expect(onDiskContent).not.toHaveBeenCalled()
     expect(screen.queryByText(/cannot read file/i)).toBeNull()
     expect(readsOf('/tmp/b.md')).toBe(1)
+    // The return below reads through the activation catch-up, on the real clock.
+    vi.useRealTimers()
 
     // The file is back (restored, or the move undone): the next return reads it
     // and the banner goes; the buffer, still the file's content, stays.
@@ -757,10 +814,7 @@ describe('MarkdownPanel — every catch-up read is a fresh fetch', () => {
     // stale copy. The mount reads the disk and finds the deletion.
     const onDiskContent = vi.fn()
     qc.setQueryData(['file-read', '/tmp/c.md'], { text: bodyOf('/tmp/c.md'), ok: true, status: 200, binary: false })
-    unreadable.add('/tmp/c.md')
-    render(<SixTabs activePath="/tmp/c.md" onDiskContent={onDiskContent} />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy())
-    await settle()
+    await mountGoneUnderFakeRetry(<SixTabs activePath="/tmp/c.md" onDiskContent={onDiskContent} />, '/tmp/c.md')
     expect(freshReadsOf('/tmp/c.md')).toBe(1)
     expect(readsOf('/tmp/c.md')).toBe(1)
     expect(onDiskContent).not.toHaveBeenCalled()
@@ -914,8 +968,11 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     expect(screen.queryByText(/cannot read file/i)).toBeNull()
     unmount()
 
+    // Relative: the first panel's gone-file retry may have read once more
+    // before the unmount on a slow run.
+    const base = readsOf('/tmp/b.md')
     render(<LastCopyTab content="" binary />, { wrapper })
-    await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(2))
+    await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(base + 1))
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
   })
@@ -977,14 +1034,12 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // tab re-reads on a cadence instead, and the read that finds the file
     // clears the banner and arms the stream again.
     const onDiskContent = vi.fn()
-    unreadable.add('/tmp/b.md')
-    render(
+    await mountGoneUnderFakeRetry(
       <MarkdownPanel
         embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')}
         onContentChange={() => {}} onDiskContent={(t, b) => onDiskContent('/tmp/b.md', t, b)} onSave={async () => {}} onClose={() => {}}
-      />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy())
-    await settle()
+      />)
+    // The stream closed in the passive cleanup after the banner's commit.
     expect(openStreams()).toHaveLength(0)
     const readsWhileGone = readsOf('/tmp/b.md')
 
@@ -992,11 +1047,13 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // no user action.
     unreadable.delete('/tmp/b.md')
     disk.set('/tmp/b.md', '# /tmp/b.md\n\nrecreated\n')
-    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('/tmp/b.md', '# /tmp/b.md\n\nrecreated\n', false), { timeout: 8000 })
-    await waitFor(() => expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull())
-    await waitFor(() => expect(openStreams()).toHaveLength(1))
+    await advanceRetry(MISSING_FILE_RETRY_MS)
+    expect(onDiskContent).toHaveBeenCalledWith('/tmp/b.md', '# /tmp/b.md\n\nrecreated\n', false)
+    expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
+    expect(openStreams()).toHaveLength(1)
     expect(watchedPath(openStreams()[0])).toBe('/tmp/b.md')
-    expect(readsOf('/tmp/b.md')).toBeGreaterThan(readsWhileGone)
+    // The retry's first tick is the read that found it.
+    expect(readsOf('/tmp/b.md')).toBe(readsWhileGone + 1)
   })
 
   it('checks the disk once before closing a clean tab under a live stream, since a deletion under the stream is silent', async () => {
@@ -1025,7 +1082,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: i18nT('components.confirmDialog.cancel') }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     unreadable.delete('/tmp/b.md')
-    await waitFor(() => expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull(), { timeout: 8000 })
+    await waitForFileBack()
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -1180,28 +1237,31 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // the wait doubles from one second toward a ceiling, so a tab left on a
     // deleted file costs a GET (and a SEL not_found record) every 30 s, not
     // every second.
-    unreadable.add('/tmp/b.md')
-    render(<LastCopyTab content={bodyOf('/tmp/b.md')} />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy())
-    await settle()
-    const t0 = Date.now()
+    await mountGoneUnderFakeRetry(<LastCopyTab content={bodyOf('/tmp/b.md')} />)
     const n0 = readsOf('/tmp/b.md')
-    // Retry 1 at ~1 s, retry 2 at ~3 s (1 s + 2 s): by 4.6 s exactly two more.
-    await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(n0 + 2), { timeout: 4500 })
-    expect(Date.now() - t0).toBeGreaterThan(2500)
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    // Retry 1 one interval after the 404, retry 2 two intervals after that: the
+    // wait doubled. Each step lands exactly on its tick, never a moment early.
+    await advanceRetry(MISSING_FILE_RETRY_MS - 1)
+    expect(readsOf('/tmp/b.md')).toBe(n0)
+    await advanceRetry(1)
+    expect(readsOf('/tmp/b.md')).toBe(n0 + 1)
+    await advanceRetry(2 * MISSING_FILE_RETRY_MS - 1)
+    expect(readsOf('/tmp/b.md')).toBe(n0 + 1)
+    await advanceRetry(1)
+    expect(readsOf('/tmp/b.md')).toBe(n0 + 2)
+    // And doubled again: nothing more for the next four intervals bar one.
+    await advanceRetry(4 * MISSING_FILE_RETRY_MS - 1)
     expect(readsOf('/tmp/b.md')).toBe(n0 + 2)
 
-    // A read is out (Refresh's, held): the tick due meanwhile must not abort it
-    // -- no new read goes out until it has landed.
+    // A read is out (Refresh's, held): the ticks due meanwhile must not abort it
+    // -- no new read goes out until it has landed, however long that takes.
     const land = holdReads('/tmp/b.md')
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
     fireEvent.click(screen.getByRole('menuitem', { name: /refresh/i }))
-    await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(n0 + 3))
-    await new Promise(resolve => setTimeout(resolve, 4500))
     expect(readsOf('/tmp/b.md')).toBe(n0 + 3)
-    land()
-    await settle()
+    await advanceRetry(2 * MISSING_FILE_RETRY_MAX_MS)
+    expect(readsOf('/tmp/b.md')).toBe(n0 + 3)
+    await act(async () => { land(); await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy()
   })
 
@@ -1211,19 +1271,18 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // the user's first edit would then stop the retries for good. Each retry is
     // scheduled only once the previous read has settled.
     const onDiskContent = vi.fn()
-    unreadable.add('/tmp/b.md')
-    render(
+    await mountGoneUnderFakeRetry(
       <MarkdownPanel
         embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')}
         onContentChange={() => {}} onDiskContent={(t, b) => onDiskContent('/tmp/b.md', t, b)} onSave={async () => {}} onClose={() => {}}
-      />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('markdown-panel-missing-file')).toBeTruthy())
-    await settle()
+      />)
     const land = holdReads('/tmp/b.md')
     const before = readsOf('/tmp/b.md')
-    // The first retry goes out and hangs; a second tick must NOT follow it.
-    await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(before + 1), { timeout: 3000 })
-    await new Promise(resolve => setTimeout(resolve, 2500))
+    // The first retry goes out and hangs; no second tick follows it, however
+    // long it hangs.
+    await advanceRetry(MISSING_FILE_RETRY_MS)
+    expect(readsOf('/tmp/b.md')).toBe(before + 1)
+    await advanceRetry(2 * MISSING_FILE_RETRY_MAX_MS)
     expect(readsOf('/tmp/b.md')).toBe(before + 1)
     // The file is back while that slow read is still out (the stub answers a
     // held read with the file as it was when the request went out, so this one
@@ -1231,9 +1290,9 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // not a successor that aborted it -- and it is what clears the banner and
     // arms the stream; no further read went out meanwhile.
     unreadable.delete('/tmp/b.md')
-    land()
-    await waitFor(() => expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull(), { timeout: 5000 })
-    await waitFor(() => expect(openStreams()).toHaveLength(1))
+    await act(async () => { land(); await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
+    expect(openStreams()).toHaveLength(1)
     expect(readsOf('/tmp/b.md')).toBe(before + 1)
   })
 
@@ -1355,17 +1414,24 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     await waitFor(() => expect(openStreams()).toHaveLength(1))
 
     // Deleted; the stream's next frame is the change that triggers the read.
+    // That 404 is held until the retry is on a fake clock, as in
+    // `mountGoneUnderFakeRetry`: it arms the retry's first timer as it lands.
     unreadable.add('/tmp/b.md')
+    const land = holdReads('/tmp/b.md')
     act(() => { openStreams()[0].onmessage?.({ data: JSON.stringify({ content: 'x' }) }) })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(2))
-    await waitFor(() => expect(openStreams()).toHaveLength(0))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await act(async () => { land(); await vi.advanceTimersByTimeAsync(0) })
+    expect(openStreams()).toHaveLength(0)
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
 
     // Recreated with content: the retry finds it, applies it, re-arms the stream.
     unreadable.delete('/tmp/b.md')
     disk.set('/tmp/b.md', '# back\n')
-    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('/tmp/b.md', '# back\n', false), { timeout: 8000 })
-    await waitFor(() => expect(openStreams()).toHaveLength(1))
+    await advanceRetry(MISSING_FILE_RETRY_MS)
+    expect(onDiskContent).toHaveBeenCalledWith('/tmp/b.md', '# back\n', false)
+    expect(openStreams()).toHaveLength(1)
+    expect(readsOf('/tmp/b.md')).toBe(3)
   })
 
   it('offers Download inside the last-copy dialog, and it saves the buffer without closing the dialog', async () => {
@@ -1481,7 +1547,8 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       // A refused copy is not silent: it lands in the panel's action notice,
       // right where the user is about to be invited to discard the only copy.
       vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
-      await waitFor(() => expect(within(banner).getByRole('button', { name: i18nT('components.markdownPanel.copy_content') })).toBeTruthy(), { timeout: 3000 })
+      // The Copied label reverts on the panel's 1.5 s timer; twice that is the ceiling.
+      await waitFor(() => expect(within(banner).getByRole('button', { name: i18nT('components.markdownPanel.copy_content') })).toBeTruthy(), COPIED_LABEL_RESETS)
       fireEvent.click(within(banner).getByRole('button', { name: i18nT('components.markdownPanel.copy_content') }))
       await waitFor(() => expect(screen.getByTestId('markdown-panel-action-error').textContent).toMatch(/couldn.t copy/i))
       expect(within(banner).queryByRole('button', { name: i18nT('components.markdownPanel.copied') })).toBeNull()

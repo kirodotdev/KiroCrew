@@ -59,10 +59,11 @@ kiro-cli login
 
 If `kiro-cli` is not on `PATH`, spawning a session fails with
 `kiro-cli not found in PATH`. On the first dashboard launch the **Set up Kiro**
-page detects the missing prerequisite, links to the official Kiro CLI setup
-guide, and shows the login commands to run yourself. Kiro Crew does not download
-the CLI or start its login flow. `kirocrew doctor` reports both the binary and
-the login state.
+page detects the missing prerequisite, shows copyable installer commands for the
+host's platform and the login commands to run yourself, and offers a **Use other
+coding agents** picker so another configured harness can finish setup instead.
+Kiro Crew does not run the install or the login itself. `kirocrew doctor`
+reports both the binary and the login state.
 
 ### Embeddings: nothing to install
 
@@ -241,10 +242,11 @@ release tree and `UV_PYTHON_INSTALL_MIRROR` at a mirror of the interpreter
 archives — the pinned SHA-256 digests are enforced either way. The signed
 installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
-wheel itself. On a terminal the slow steps (wheel download, venv creation,
-pip) draw a single live progress line; `KIROCREW_INSTALL_PLAIN=1` turns that
-off and prints one line per step instead, which is also what a piped or
-logged run gets. When it finishes it prints the next step: `kirocrew gateway` to
+wheel itself. On a terminal the wheel download draws curl's progress bar and
+the slow steps (venv creation, pip) draw a single live progress line.
+`KIROCREW_INSTALL_PLAIN=1` turns that off, which is also what a piped or logged
+run gets: the download is silent, a slow step prints a `still running` line
+every 30 seconds, and each step ends with one `done` line. When it finishes it prints the next step: `kirocrew gateway` to
 start now, or `kirocrew service install` to run it as a service.
 
 Dependencies are installed from **prebuilt wheels only** (`pip
@@ -561,13 +563,17 @@ app" interstitial.
 
 ## First run
 
-After installing by any path:
-
-Install Kiro CLI from <https://kiro.dev/cli/> and sign in for the default agent:
+After a source, one-line, wheel or Docker install, install Kiro CLI from
+<https://kiro.dev/cli/> and sign in for the default agent:
 
 ```bash
 kiro-cli login
 ```
+
+The desktop app bundles its own kiro-cli by default (`BUNDLE_KIRO_CLI=1` at
+build time). That copy is not on your shell `PATH`, so the **Set up Kiro** page
+serves the login command with the bundled binary's absolute path; run that
+command instead of a bare `kiro-cli login`.
 
 Then start Kiro Crew:
 
@@ -777,6 +783,25 @@ login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account an
 install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
 install` (the official Docker image already runs as the `kirocrew` user).
 
+On Linux the agent runtimes run under the service account's own user manager,
+so enable linger for that account:
+
+```bash
+sudo loginctl enable-linger <user>
+```
+
+Without linger, systemd stops that manager at the account's last logout: running
+agent runtimes die, and later spawns start without their memory and fork-count
+ceilings. `kirocrew service install` prints a non-fatal warning naming this
+command when linger is off.
+
+When another gateway already serves the same data home, the unit exits 78 and
+goes `failed` once instead of restarting, because the unit's
+`RestartPreventExitStatus=` names that code. A unit file without that directive
+keeps relaunching against the refusal; re-run `kirocrew service install` to
+rewrite it. See [Service Management](../system-specs/modules/cli.md#service-management)
+in the CLI spec for the details.
+
 ### SELinux-enforcing hosts with kirocrew under `$HOME`
 
 On an SELinux-enforcing host whose kirocrew lives under `$HOME` — the default on
@@ -930,12 +955,10 @@ writes `/etc/apparmor.d/kirocrew-userns` and loads it. The profile grants
 exactly one permission (`userns`) and is **attached** to the resolved kirocrew
 launcher script (the same absolute path `service install` uses as `ExecStart`,
 typically something like `~/.kiro/crew-venv/bin/kirocrew`) — the same approach
-stock Ubuntu already uses for `chrome` and `brave`. An earlier version of this
-profile was named-but-unattached and applied purely via `AppArmorProfile=` in
-the unit; that shipped first (#1210) but was found not to actually confine the
-gateway's sandbox probe (#3463) — the directive labels only the unit's own
-top-level process, and the probe runs in a child reached through a fork the
-directive's labelling never reaches. The directive is no longer used.
+stock Ubuntu already uses for `chrome` and `brave`. The unit carries no
+`AppArmorProfile=` directive: that directive labels only the unit's own
+top-level process, and the gateway's sandbox probe runs in a child reached
+through a fork the directive's labelling never reaches.
 
 This uses the sudo prompt `service install` already needs for the unit file, so
 it costs no additional privilege, and it **cannot fail your install**: if the
@@ -1041,8 +1064,8 @@ attachment. Do not attach the profile to a shared interpreter such as
 `/usr/bin/python3`, because that would grant unprivileged user namespaces to
 every program on the host that runs it.
 
-> Earlier versions of this page suggested `aa-exec -p kirocrew-userns -- kirocrew
-> gateway`. That does not work and has been removed. Entering a **named** profile
+> Do not run `aa-exec -p kirocrew-userns -- kirocrew gateway`: it does not
+> apply the profile. Entering a **named** profile
 > requires `aa_change_onexec`, which an unprivileged unconfined process is not
 > permitted to do, and `aa-exec` does not fail loudly when it cannot transition —
 > it execs the command unconfined, so the gateway appears to start under the

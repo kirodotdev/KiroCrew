@@ -108,9 +108,9 @@ Two paths can emit stubs, and both apply the same explicit
   over the raw same-named global entry at ACP `session/new`
   (`session_servers.py`), which is what keeps a server from being wrapped twice
   under two identities; no settings overlay is written and the real settings
-  file is never modified (#8111). The injection previously applied only to
-  poolable servers, leaving everything else to merge raw with no stub and
-  therefore no callback address.
+  file is never modified (#8111). The roster, not poolability, decides the
+  injection: a rostered server that is not shared still gets a stub and a
+  callback address, and a server off the roster merges raw with no stub.
 
 ## The acquisition path
 
@@ -168,14 +168,13 @@ unrelated session.
 
 ## Session identity does not depend on the stub
 
-The stub used to be the only way one of Crew's own MCP servers could learn WHICH
-session was calling it, and that coupling is now gone. It came about honestly: the
-per-session token that names an ACP session was minted for gatewayd
-(`mcp_gateway/claim.py`, `mint_stub_session_token`), rode only stub entries, and had
-exactly one reader — the daemon, matching it against a claim frame. So a server with
-no stub, on an install with no daemon, had no per-session identity channel at all. It
-fell back to `KIROCREW_SESSION_KEY`, which is *wrong by construction* in the two
-topologies that matter most:
+One of Crew's own MCP servers learns WHICH session is calling it without needing a
+stub. The per-session token that names an ACP session is minted in
+`mcp_gateway/claim.py` (`mint_stub_session_token`). If the daemon, matching it
+against a claim frame, were its only reader, a server with no stub on an install
+with no daemon would have no per-session identity channel and would fall back to
+`KIROCREW_SESSION_KEY`, which is *wrong by construction* in the two topologies that
+matter most:
 
 - **warm-pool rekey.** A pooled process is re-keyed to a new session while the MCP
   children it already spawned keep the env they were spawned with, so their key names
@@ -184,7 +183,7 @@ topologies that matter most:
   process-keyed source — the env var, the `session_pid_<pid>` file, a `/proc` ancestor
   walk — answers with the PARENT's session for a subagent's server.
 
-The token now has a second reader that needs no daemon: the gateway publishes a
+The token has a second reader that needs no daemon: the gateway publishes a
 `token -> session_key` mapping to a MAC-signed file (`session_token_sig.py`) at
 `session/new` and again on every `rekey()`, and `session_token_sig.session_key_from_env_token`
 reads it directly. Every client-side resolver shares that one reader rather than
@@ -192,12 +191,11 @@ holding its own copy of the order: `mcp_core`'s strict and lenient paths, the
 client-side `mcp_caller.CallerContext.from_env` behind the stub's own caller block,
 and the managed-tool-policy lookup in `mcp_shared`. Two of those sit behind a cache,
 and the token is read ABOVE it in both — a memoised answer is the pre-rekey session,
-so a token read below a cache is inert on exactly the call it exists for. Three consequences worth
-stating because each one was previously false:
+so a token read below a cache is inert on exactly the call it exists for. Three consequences follow:
 
-- **The token is minted unconditionally.** It used to be gated on a reachable gatewayd
-  socket, on the correct reasoning that a token nothing reads is an inert value on
-  every `session/new`. There is now a reader, so the socket gates the CLAIM alone.
+- **The token is minted unconditionally.** A token nothing reads would be an inert
+  value on every `session/new`, but the signed mapping always has a reader, so a
+  reachable gatewayd socket gates the CLAIM alone, not the mint.
 - **It rides every control-plane element, not only stub entries** — through the one
   owner of that question (`providers/mirrors/identity.py`,
   `control_plane_identity_env`), plus the member-dispatch element and the kiro-cli
@@ -208,8 +206,8 @@ stating because each one was previously false:
   gateway-injected per-call caller context still outranks both, because it is stamped
   per CALL and cannot go stale at all.
 
-**No new config surface.** Nothing on the list at the top of this note changed, and
-pooling stays opt-in: a default install — no stub, no daemon, gateway off — is exactly
+**No extra config surface.** Session identity needs nothing beyond the list at the
+top of this note, and pooling stays opt-in: a default install — no stub, no daemon, gateway off — is exactly
 the install this closes the identity gap for.
 
 ### The trust boundary, plainly
@@ -251,16 +249,16 @@ requires the token that hashes to the name.
 
 ## Costs this accepts
 
-- **Process count.** Servers off the allowlist become one backend per ACP
-  connection instead of one shared. That is the no-gateway baseline, not a
-  regression, but it is a real change from today's collapsed count. `stats()`
+- **Process count.** A server on the `stub_servers` roster that is not shared runs
+  one backend per ACP connection instead of one shared. That is the no-gateway
+  baseline, not a regression, but it is more processes than a pooled count. `stats()`
   exposes the count; it is not otherwise capped, which is the deliberate
   consequence of the decision above.
 - **Head-of-line blocking gets more reachable.** More traffic crossing the stub
   seam means more traffic through a pooled backend's single-worker dispatch,
   where `ping` and `tools/list` bypass the queue and answer healthy while tool
   calls serialise. That defect is tracked separately and is not introduced here,
-  but this change widens the set of paths that can hit it.
+  but the separate stub decision widens the set of paths that can hit it.
 
 ## Out of scope
 

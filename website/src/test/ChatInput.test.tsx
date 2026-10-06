@@ -280,6 +280,37 @@ describe('ChatInput', () => {
       }
     })
 
+    // jsdom has no CompositionEvent, so carry the committed text the way a browser does.
+    const compositionEnd = (el: HTMLElement, data: string) => {
+      const event = new Event('compositionend', { bubbles: true })
+      Object.defineProperty(event, 'data', { value: data })
+      fireEvent(el, event)
+    }
+
+    it('sends on the first Enter after a Hangul commit (Korean has no candidate step)', () => {
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="안녕" onSend={onSend} sendOnEnter="enter" />)
+      const ta = screen.getByLabelText('Message input')
+      fireEvent.compositionStart(ta)
+      // The keydown that ends the composition is still flagged as composing.
+      fireEvent.keyDown(ta, { key: 'Enter', isComposing: true })
+      compositionEnd(ta, '녕')
+      // The browser's follow-up Enter is the user's own and must send.
+      fireEvent.keyDown(ta, { key: 'Enter', isComposing: false })
+      expect(onSend).toHaveBeenCalledOnce()
+    })
+
+    it('still guards the Enter right after a Japanese commit', () => {
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="にほん" onSend={onSend} sendOnEnter="enter" />)
+      const ta = screen.getByLabelText('Message input')
+      fireEvent.compositionStart(ta)
+      fireEvent.keyDown(ta, { key: 'Enter', isComposing: true })
+      compositionEnd(ta, 'にほん')
+      fireEvent.keyDown(ta, { key: 'Enter', isComposing: false })
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
     it('consumes the swallowed Enter so no newline lands in the draft', () => {
       // The reported symptom: pick a candidate, press Enter to send, and the draft
       // gains a line break instead. The guard is allowed to decline the submit; it is
@@ -1371,7 +1402,8 @@ describe('ChatInput', () => {
       const onSelect = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} followUpOptions={['Go']} followUpPicked={new Set()} onFollowUpSelect={onSelect} quickSend={true} />)
       fireEvent.click(screen.getByRole('button', { name: 'Go' }))
-      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object))
+      // Fourth arg: the composer's chip send, which the host's quick-send uses.
+      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object), undefined, expect.any(Function))
     })
   })
 

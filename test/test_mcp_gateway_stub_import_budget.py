@@ -194,7 +194,7 @@ def test_label_names_every_field_it_is_missing():
     with pytest.raises(ValueError) as caught:
         format_pool_label({"agent_name": "a", "server_name": "s"})
     message = str(caught.value)
-    for field in ("os_uid", "sandbox_mode", "command_args_hash", "work_dir"):
+    for field in ("os_uid", "effective_env_hash", "command_args_hash", "work_dir"):
         assert field in message, (field, message)
 
 

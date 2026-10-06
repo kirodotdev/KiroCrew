@@ -492,14 +492,72 @@ class TestConductorInstaller:
         assert "`work_report` at round boundaries" in body
         assert "root conductor gets `not_bound`" in body
 
-    def test_prompt_notes_the_patrol_gate_is_still_a_timer(self, tmp_path, monkeypatch):
-        """``monitor_start`` gates on one pull-request URL and nothing else today, so
-        a cycle fires whether or not anything was reported. The prompt says so, and
-        says what to switch to, rather than implying a gate that does not exist.
+    def test_prompt_and_skill_require_the_ledger_watch_and_the_interval_band(
+        self, tmp_path, monkeypatch
+    ):
+        """A loop without ``watch="work-ledger"`` is a plain timer that pays a turn
+        every interval, and a 30-minute interval leaves a worker's report unread
+        for half an hour. Both the prompt and the skill must make the watch
+        mandatory and keep the interval inside the band ``patrol_budget.py``
+        enforces.
         """
-        prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        assert "monitor_start" in prompt
-        assert 'watch: "work-ledger"' in prompt
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert 'Always pass `watch="work-ledger"`' in prompt
+        assert '`watch="work-ledger"` is mandatory' in body
+        for text in (prompt, body):
+            assert 'monitor_update(watch="work-ledger")' in text
+            assert "300..900" in text
+            assert "interval_secs=1800" not in text
+            assert "on a timer today" not in text
+
+    def test_prompt_and_skill_run_rounds_back_to_back_and_stop_on_two_signals(
+        self, tmp_path, monkeypatch
+    ):
+        """A finished round must not wait on the user: the Round-0 go-ahead covers
+        every round. Patrol ends only when every item is terminal or the user
+        stops it, and a question parks one item instead of stopping the loop.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "Rounds run back to back" in prompt
+        assert "Do not wait for the user between rounds" in body
+        assert "propose the next round. Then wait." not in body
+        assert "Patrol ends on two signals only" in prompt
+        assert "Patrol ends on exactly two signals" in body
+        assert "Needs-human checklist" in body
+        for text in (prompt, body):
+            assert "Round-0 go-ahead" in text
+            assert "runaway backstop, not a stop signal" in text
+            assert "credentials, spend, deleting or overwriting someone's work" in text
+            assert "Park just this item" in text
+
+    def test_needs_human_checklist_puts_the_risk_check_before_the_default(
+        self, tmp_path, monkeypatch
+    ):
+        """A model stops at the first step that applies. If "pick a default"
+        came first, a spend, delete or force-overwrite choice with an obvious
+        default would be taken unattended, so the risk check must lead.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        for text in (prompt, body):
+            assert text.index("Is it credentials, spend") < text.index("Not risky? Pick a default")
+            assert "Can you pick a default?" not in text
+            assert "Can I pick a default?" not in text
+
+    def test_back_to_back_rounds_keep_a_spend_bound(self, tmp_path, monkeypatch):
+        """Without a pause between rounds, a default item cap and a no-progress
+        back-off are the only spend gates when the user set no budget.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        for text in (prompt, body):
+            assert "spend is bounded" in text
+            assert "two rounds in a row" in text
+            assert "re-plan may add items only" in text
+        assert "at most 20 ledger items" in prompt
+        assert "at most **20 ledger items**" in body
 
     def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
         """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a

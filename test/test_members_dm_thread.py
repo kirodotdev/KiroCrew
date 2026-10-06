@@ -3187,8 +3187,8 @@ class TestMemberBriefingEndpoint:
     async def test_non_owner_dashboard_caller_is_refused_before_any_read(self, tmp_path):
         """The briefing is the owner's to read, like the rules.
 
-        Any allowed Slack user can mint a dashboard session (``!dashboard``),
-        so the app-caller guard alone would hand a non-owner colleague the
+        A Telegram, Teams or Webex allowlist user can mint a dashboard
+        session, so the app-caller guard alone would hand a non-owner colleague the
         crewmate's private notes. The owner gate answers first, so the refusal
         costs no file IO -- the briefing on disk is never opened.
         """

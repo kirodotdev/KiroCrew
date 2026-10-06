@@ -537,6 +537,13 @@
       "description": "Kiro uses this description to adapt vocabulary and examples to your role."
     },
     {
+      "id": "chat.dim-inactive-panes",
+      "label": "Dim Inactive Panes",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.dim-inactive-panes",
+      "description": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one."
+    },
+    {
       "id": "chat.double-click-to-edit-your-messages",
       "label": "Double-click to edit your messages",
       "tab": "chat",
@@ -923,6 +930,14 @@
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.artifact-deploy",
       "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
+    },
+    {
+      "id": "developer.automatic-cards-for-all-sessions",
+      "label": "Automatic cards for all sessions",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=key%3Adashboard.dynamic_dashboard_cards",
+      "description": "Summaries of each session’s recent work and next steps.",
+      "configKey": "dashboard.dynamic_dashboard_cards"
     },
     {
       "id": "developer.chat-on-a-crew",

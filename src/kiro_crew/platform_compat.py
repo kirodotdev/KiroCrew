@@ -4576,11 +4576,18 @@ def descendant_termination_handles(
         raise
 
 
+#: How long :func:`terminate_process_handle` waits for a refused process object to
+#: signal when its exit code cannot settle the refusal: a process whose exit code is
+#: 259, or one that is genuinely refused. Off the event loop only. A wait that ends
+#: unsignalled keeps the refusal an error, which the drain retains and retries.
+_WINDOWS_TERMINATE_REFUSAL_WAIT_MS = 250
+
+
 def terminate_process_handle(handle: int) -> bool:
     """Terminate the exact Windows process object referenced by *handle*.
 
     Returns ``True`` when this call terminated a live process and ``False`` when
-    the process had already exited, including one that exits on its own between
+    the process had already exited, including one whose own exit begins between
     the liveness read and the terminate.
     """
 
@@ -4609,18 +4616,31 @@ def terminate_process_handle(handle: int) -> bool:
         return False
     if not kernel32.TerminateProcess(process_handle, 1):
         error = _windows_last_error()
-        # The kernel answers a terminate aimed at an already-exited process with
-        # ERROR_ACCESS_DENIED, the same code a genuine refusal carries. A process
-        # that exits on its own between the read above and the call lands here --
-        # a console host leaving once its last client is gone does this inside a
-        # drain. The object's signal state tells the two apart: a signalled
-        # process object has terminated, so there is nothing left to end. Any
-        # other refusal, or a handle that cannot be waited on, stays an error.
-        if (
-            error == error_access_denied
-            and int(kernel32.WaitForSingleObject(process_handle, 0)) == wait_object_0
-        ):
-            return False
+        # The kernel answers a terminate aimed at a process whose exit has begun
+        # with ERROR_ACCESS_DENIED, the same code a genuine refusal carries. A
+        # process that starts exiting between the read above and the call lands
+        # here -- a console host leaving once its last client is gone does this
+        # inside a drain. Its exit publishes the exit code, then runs the process
+        # down (from which point the terminate is refused), and only then signals
+        # the object, so the refusal can arrive while the object is unsignalled.
+        # An exit code other than STILL_ACTIVE proves the exit, since a running
+        # process always reads STILL_ACTIVE. While it still reads STILL_ACTIVE (a
+        # process whose exit code IS 259, or a live one), the signal decides,
+        # within a bounded wait -- a zero-time look on the event loop, which must
+        # never wait. A refusal the signal does not settle, including one on a
+        # handle that cannot be waited on, stays an error, as does any other
+        # error.
+        if error == error_access_denied:
+            if (
+                kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code))
+                and exit_code.value != still_active
+            ):
+                return False
+            wait_ms = (
+                0 if platform_lock_compat._on_event_loop() else _WINDOWS_TERMINATE_REFUSAL_WAIT_MS
+            )
+            if int(kernel32.WaitForSingleObject(process_handle, wait_ms)) == wait_object_0:
+                return False
         raise OSError(error, "TerminateProcess failed")
     return True
 
@@ -5325,14 +5345,30 @@ def process_argv_matches_exact(pid: int, expected_argv: Sequence[str]) -> bool:
     reports the argv space-joined, so the comparison is against
     ``" ".join(expected_argv)``; exact only when no expected element contains
     a space, which holds for the argv shapes this guards (option tokens and
-    validated host/target strings). Windows: always False — the raw
-    ``Win32_Process.CommandLine`` string (see :func:`process_command_line`)
-    carries shell quoting rather than an argv vector, so element-exact
-    equality is not verifiable there; the guard fails closed and callers must
-    not signal.
+    validated host/target strings).
+
+    Windows: a process has no argv vector, only the one command-line string
+    ``CreateProcess`` was given. ``subprocess`` builds that string from a list
+    with :func:`subprocess.list2cmdline`, so the check is that the live
+    ``Win32_Process.CommandLine`` (read by :func:`process_command_line`, whose
+    only interpolated value is the int pid) equals
+    ``list2cmdline(expected_argv)`` character for character. This proves the
+    string, not the vector: two argv lists that quote to the same string are
+    indistinguishable, and a process may rewrite its own command line after
+    start. An unreadable command line (access denied, process gone, WMI
+    failure) answers False. A target launched through a ``.cmd``/``.bat`` shim
+    runs under ``cmd.exe`` with a different command line, so it never matches
+    and is never signalled.
     """
     if type(pid) is not int or pid <= 1 or not expected_argv:
         return False
+    if IS_WINDOWS:
+        try:
+            expected = subprocess.list2cmdline([str(a) for a in expected_argv])
+            actual = process_command_line(pid)
+        except Exception:
+            return False
+        return bool(actual) and actual == expected
     try:
         if sys.platform == "linux":
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -8370,7 +8406,10 @@ def _linux_peak_rss_bytes() -> int | None:
     """
     global _LINUX_PEAK_RSS_FLOOR
     try:
-        peak = _peak_rss_from_status(_LINUX_STATUS_PATH.read_text(encoding="utf-8"))
+        # ``errors="replace"``: the ``Name:`` line is this process's raw comm.
+        peak = _peak_rss_from_status(
+            _LINUX_STATUS_PATH.read_text(encoding="utf-8", errors="replace")
+        )
     except (OSError, ValueError):
         return None
     if peak is None:
@@ -8843,8 +8882,7 @@ def _linux_proc_root(proc_root: "Path | None") -> "Path | None":
 def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | None":
     """*pid*'s ``/proc/<pid>/stat`` from ONE bytes read, or None. Linux only.
 
-    The stat reader new code uses; the text-mode readers that predate it are
-    being moved onto it. It never decodes ``comm`` (see :func:`_stat_tokens`): a
+    The stat reader new code uses. It never decodes ``comm`` (see :func:`_stat_tokens`): a
     text read raises ``UnicodeDecodeError`` on a process whose name is not
     UTF-8, which an ``except OSError`` does not catch. Every field comes from the
     same read, so a caller needing several never mixes two processes behind a

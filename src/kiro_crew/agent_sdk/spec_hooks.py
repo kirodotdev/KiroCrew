@@ -50,6 +50,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -91,6 +92,15 @@ _MAX_COMMAND_LEN = 4096
 #: cleared rather than grown once it reaches this.
 _CACHE_MAX = 64
 
+#: The ``@server/tool`` form an MCP tool is matched by on every backend Crew fires
+#: spec hooks for: ``hooks.pre_tool_match_names`` builds it from the trusted server
+#: name, the goose/opencode tables state it, and the KAS projection reads an ``@``
+#: matcher as MCP. The object form's character set has neither ``@`` nor ``/``, so
+#: on its own it drops the documented spelling of a guard Crew can serve. The server
+#: is one literal name, never a glob, which would widen the guard across servers; the
+#: tool keeps the object form's own set, ``*`` included (``@server/*``).
+_MCP_MATCHER_RE = re.compile(r"@[A-Za-z0-9_.\-]+/[A-Za-z0-9_.*\-]+")
+
 #: Per spec content: the hooks that run, and how many ``confirm: true`` documents
 #: were skipped (the session-start notice names the count).
 _cache: dict[tuple[str, str], tuple[tuple[ScriptHook, ...], int]] = {}
@@ -105,11 +115,22 @@ def _diagnostic(value: object) -> str:
 
 
 def _matcher_ok(matcher: object) -> bool:
-    """The object form's matcher rules: a string, length-capped, safe characters."""
-    # circular import: agent imports hooks, which this module imports at load time.
-    from kiro_crew.agent import _hook_matcher_ok
+    """The object form's matcher rules, plus an MCP tool's ``@server/tool`` form.
 
-    return _hook_matcher_ok(matcher)
+    Both are length-capped. The extra form is accepted here only: kiro-cli runs its
+    spec's ``hooks`` itself and never reaches this conversion, so the materialized
+    spec's rule stays as it is.
+    """
+    # circular import: agent imports hooks, which this module imports at load time.
+    from kiro_crew.agent import _MAX_MATCHER_LEN, _hook_matcher_ok
+
+    if _hook_matcher_ok(matcher):
+        return True
+    return (
+        isinstance(matcher, str)
+        and len(matcher) <= _MAX_MATCHER_LEN
+        and _MCP_MATCHER_RE.fullmatch(matcher) is not None
+    )
 
 
 def _matcher_names_a_kas_tool(matcher: str) -> bool:
@@ -121,7 +142,12 @@ def _matcher_names_a_kas_tool(matcher: str) -> bool:
     from kiro_crew.hooks import _tool_matches
 
     vocabulary = KAS_TOOL_MATCH_VOCABULARY | HARNESS_TOOL_MATCH_VOCABULARY
-    return matcher == "*" or any(_tool_matches(matcher, name) for name in vocabulary)
+    return (
+        matcher == "*"
+        # An MCP tool: the tables spell no MCP names, but the gate builds this form.
+        or _MCP_MATCHER_RE.fullmatch(matcher) is not None
+        or any(_tool_matches(matcher, name) for name in vocabulary)
+    )
 
 
 def spec_hook_tool_names(tool_id: str) -> tuple[str, ...] | None:

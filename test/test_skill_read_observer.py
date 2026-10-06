@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.acp.client import _mentions_skill_file
 from kiro_crew.skill_usage import (
     get_global_skill_read_observer,
+    names_skill_file,
     register_skill_read_observer,
     set_global_skill_read_observer,
 )
@@ -24,30 +24,43 @@ from kiro_crew.skill_usage import (
 
 class TestMentionsSkillFile:
     def test_shell_command_naming_a_skill(self):
-        assert _mentions_skill_file(None, "cat /x/skills/a/SKILL.md") is True
+        assert names_skill_file(None, "cat /x/skills/a/SKILL.md") is True
 
     def test_read_tool_path(self):
-        assert _mentions_skill_file({"path": "/x/skills/a/SKILL.md"}, None) is True
+        assert names_skill_file({"path": "/x/skills/a/SKILL.md"}, None) is True
 
     def test_list_valued_paths(self):
-        assert _mentions_skill_file({"paths": ["/a/SKILL.md"]}, None) is True
+        assert names_skill_file({"paths": ["/a/SKILL.md"]}, None) is True
+
+    def test_kiro_read_tool_batches_its_targets(self):
+        # kiro-cli's `read` nests every target inside `operations`, so a scan
+        # of top-level values alone sees none of its paths.
+        params = {"operations": [{"mode": "Line", "path": "/x/skills/a/SKILL.md"}]}
+        assert names_skill_file(params, None) is True
+        assert (
+            names_skill_file({"operations": [{"mode": "Line", "path": "/etc/hosts"}]}, None)
+            is False
+        )
+
+    def test_odd_shapes_inside_a_sequence_are_tolerated(self):
+        assert names_skill_file({"operations": [None, 1, {"path": 42}]}, None) is False
 
     def test_unrelated_call_is_gated_out(self):
-        assert _mentions_skill_file({"path": "/etc/hosts"}, None) is False
-        assert _mentions_skill_file(None, "ls -la") is False
-        assert _mentions_skill_file(None, None) is False
+        assert names_skill_file({"path": "/etc/hosts"}, None) is False
+        assert names_skill_file(None, "ls -la") is False
+        assert names_skill_file(None, None) is False
 
     def test_non_dict_and_odd_values_are_tolerated(self):
         # Tool arguments are model-authored and may hold any shape.
-        assert _mentions_skill_file("nope", None) is False  # type: ignore[arg-type]
-        assert _mentions_skill_file({"path": 42, "x": [None, 1]}, None) is False
+        assert names_skill_file("nope", None) is False  # type: ignore[arg-type]
+        assert names_skill_file({"path": 42, "x": [None, 1]}, None) is False
 
     def test_any_argument_name_counts(self):
         # The gate is deliberately name-agnostic: it decides only whether the
         # offloaded resolver is worth calling, and the resolver applies the
         # read-intent rules. Narrowing it here would let a differently-named
         # argument slip past observation entirely.
-        assert _mentions_skill_file({"whatever": "/a/SKILL.md"}, None) is True
+        assert names_skill_file({"whatever": "/a/SKILL.md"}, None) is True
 
 
 class _Observer:

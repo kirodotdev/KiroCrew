@@ -244,11 +244,15 @@ jobs:
       # verdict can only ever answer for the run this pull request created at
       # this attempt.
       #
-      # `details_url` carries this run's URL: a workflow_run-triggered run is
-      # keyed to the DEFAULT branch context, so this stamp is the only link
-      # from the PR head back to the lane run — the human-override handler
-      # reads it to re-run the lane, and a human clicking the check lands on
-      # the run logs instead of a bare check-run page.
+      # `output.text` carries this run's id as the lane-run marker
+      # (`<!-- ai-review-fork-lane run=<id> -->`), on this write and on every
+      # later write of this check-run. A workflow_run-triggered run is keyed to
+      # the DEFAULT branch context, so that marker is the only link from the PR
+      # head back to the lane run: the human-override handler reads it to re-run
+      # the lane, and its `Lane run:` line takes a human to the run logs.
+      # `details_url` cannot carry the link. GitHub stores an Actions-created
+      # check-run's details_url as the check-run's own page, whatever the POST
+      # passes.
       - name: Open check-run (in progress)
         id: check
         env:
@@ -264,8 +268,84 @@ jobs:
             -f name="Opus 5.5 Review" -f head_sha="$HEAD" -f status="in_progress" \
             -f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
             -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+            -f "output[title]=Opus 5.5 Review — in progress" \
+            -f "output[summary]=Fork review running for $HEAD." \
+            -f "output[text]=$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
+              "${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")" \
             --jq '.id')"
           echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      # The writer's accepted `/ai-review override` record for THIS lane at THIS
+      # head, read before anything calls the model. An accepted record skips the
+      # review, and the lane publishes the human decision instead -- a `success`
+      # check-run and the "human override accepted" slot note -- the same outcome
+      # the same-repo lane's override arm produces. Each condition fails closed:
+      # the comment must be authored by `github-actions[bot]` (the handler posts
+      # it only after checking the commenter's write permission), the marker must
+      # be its LEADING bytes, and it must name this lane (or `all`) and this exact
+      # head. A marker for another head or another lane, or one any other account
+      # wrote, is not a record. Neither is a comment feed this step could not
+      # read: the step warns and the lane reviews normally, so a read failure can
+      # cost a model call but never clears a block.
+      #
+      # It runs AFTER this lane's check-run is open. The handler posts the record
+      # and only then reads this lane's row, and this step opens the row and only
+      # then reads the record, so a record this read misses is one the handler
+      # finds a row for, and the handler cancels and re-runs that run.
+      - name: Resolve human override
+        id: human_override
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          HEAD: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -uo pipefail
+          exact="<!-- ai-review-human-override target=fable head=$HEAD "
+          all="<!-- ai-review-human-override target=all head=$HEAD "
+          active=false
+          actor=""
+          source=""
+          read_ok=""
+          if [[ ! "${HEAD:-}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${PR:-}" =~ ^[0-9]+$ ]]; then
+            echo "::warning::No resolved pull request and head to read an override record for; reviewing normally."
+          else
+            for attempt in 1 2 3; do
+              if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+                read_ok=1
+                break
+              fi
+              echo "Reading the PR comments failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            if [ -z "$read_ok" ]; then
+              echo "::warning::Could not read this PR's comments after 3 attempts, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
+            elif ! record="$(printf '%s' "$comments" \
+              | jq -sr --arg exact "$exact" --arg all "$all" \
+                'add // [] | [.[] | select(.user.login == "github-actions[bot]")
+                | select((.body | startswith($exact)) or (.body | startswith($all)))]
+                | (last.body // "")')"; then
+              echo "::warning::This PR's comments could not be parsed, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
+            else
+              actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+              source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+              if [ -n "$actor" ] && [ -n "$source" ]; then
+                active=true
+                echo "Human override by @$actor (comment $source) accepted for $HEAD."
+              fi
+            fi
+          fi
+          if [ "$active" != "true" ]; then
+            actor=""
+            source=""
+          fi
+          {
+            echo "active=$active"
+            echo "actor=$actor"
+            echo "source=$source"
+          } >> "$GITHUB_OUTPUT"
 
       # Trusted BASE tree for review CONTEXT only. NEVER the fork head.
       - name: Checkout base (trusted)
@@ -358,6 +438,7 @@ jobs:
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo Opus reviewer uses.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        if: steps.human_override.outputs.active != 'true'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -387,6 +468,7 @@ jobs:
           echo "truncated $n persisted set_env_* file(s)"
 
       - name: Opus 5.5 discovery
+        if: steps.human_override.outputs.active != 'true'
         id: discover
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
@@ -561,6 +643,7 @@ jobs:
       # mid-call on an expired security token, failing the gate closed with no
       # verdict. Keep in sync with claude-review.yml.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        if: steps.human_override.outputs.active != 'true'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -591,6 +674,7 @@ jobs:
           echo "truncated $n persisted set_env_* file(s)"
 
       - name: Opus 5.5 validation
+        if: steps.human_override.outputs.active != 'true'
         id: review
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
@@ -662,6 +746,9 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          OVERRIDE_SOURCE: ${{ steps.human_override.outputs.source }}
         run: |
           set -uo pipefail
           [ -z "${PR:-}" ] && { echo "no PR resolved; skipping comment"; exit 0; }
@@ -1369,6 +1456,25 @@ jobs:
               fi
             fi
           }
+          # An accepted human override replaces whatever body the review steps
+          # left (they were skipped for it) with the override note, through the
+          # same guarded upsert a verdict takes, so the note replaces a BLOCK this
+          # head already shows. The note carries no review stamp, because no model
+          # ran: `[OPUS-OVERRIDE] <head>` is what lets the upsert recognise its
+          # own write, and no freshness reader counts it as a review.
+          if [ "${HUMAN_OVERRIDE:-}" = "true" ]; then
+            {
+              echo "$MARKER"
+              echo "## Opus 5.5 Review (fork) — ✅ human override accepted"
+              echo
+              echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` ([the recorded decision](https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE), this commit only); the model review was skipped._"
+              echo
+              echo "[OPUS-OVERRIDE] $HEAD"
+            } > "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
+            echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
+            guarded_comment_upsert "$MARKER" "[OPUS-OVERRIDE]" "Fork Opus 5.5 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
+            exit 0
+          fi
           guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]" "Fork Opus 5.5 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
 
       # Fail-CLOSED finalize of the required "Opus 5.5 Review" check-run, keyed to
@@ -1424,8 +1530,12 @@ jobs:
           PR: ${{ steps.pr.outputs.pr }}
           WR_RUN_ID: ${{ github.event.workflow_run.id }}
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
           set -uo pipefail
+          lane_text="$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
+            "${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")"
           conclusion="failure"; title="review incomplete"
           if [ -s claude-review-output.md ] && grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
             if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
@@ -1435,6 +1545,14 @@ jobs:
             fi
           fi
           summary="Fork AI review for $HEAD. See the PR comment for details."
+          # An accepted human override is this run's verdict, whatever the review
+          # steps left behind: they were skipped for it. VERDICT is reassigned so
+          # no verdict-specific summary below applies to a review that never ran.
+          if [ "${HUMAN_OVERRIDE:-}" = "true" ]; then
+            VERDICT="OVERRIDE"
+            conclusion="success"; title="human override accepted"
+            summary="Human judgment by @${OVERRIDE_ACTOR:-} overrides this lane for $HEAD via \`/ai-review override\` (this commit only), so the model review was skipped."
+          fi
           # complete <check-run id> <conclusion> <title> — one retry, because a
           # single transient 5xx here is what strands the run: the check-run stays
           # `in_progress` forever, and pr-readiness counts ANY non-completed run of
@@ -1445,7 +1563,8 @@ jobs:
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
                 -f "output[title]=Opus 5.5 Review — $3" \
-                -f "output[summary]=$summary" >/dev/null; then
+                -f "output[summary]=$summary" \
+                -f "output[text]=$lane_text" >/dev/null; then
                 return 0
               fi
               sleep 5
@@ -1468,12 +1587,25 @@ jobs:
             if [ -n "${PR:-}" ]; then
               ext_args=(-f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")
             fi
+            # The conclusion THIS run's verdict earned, never a fixed one. This row
+            # is what PR Readiness reads, so a constant here publishes a verdict
+            # nobody reached whenever the opening POST was lost: a pass for a
+            # BLOCK, or a red for an accepted override. Only a run that reached no
+            # verdict keeps the could-not-run wording.
+            fb_title="$title"
+            fb_summary="$summary"
+            if [ "$title" = "review incomplete" ]; then
+              fb_title="could not run"
+              fb_summary="The fork Opus review job failed before producing a verdict; re-run it."
+            fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Opus 5.5 Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
+              -f status="completed" -f conclusion="$conclusion" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-              -f "output[title]=Opus 5.5 Review — could not run" \
-              -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
+              -f "output[title]=Opus 5.5 Review — $fb_title" \
+              -f "output[summary]=$fb_summary" \
+              -f "output[text]=$lane_text" >/dev/null \
+              || echo "::warning::could not post the Opus 5.5 Review check-run for $HEAD"
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
           # created (ours, if the PATCH above lost both attempts, or one stranded

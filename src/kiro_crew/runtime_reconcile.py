@@ -97,7 +97,12 @@ the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on its whole tree
 :func:`process_is_sandbox_tool` reads that back, which takes such a tree out of the
 candidate population on exec-time evidence -- paired with the managed-argv test,
 because the marker is inherited and a harness that ends up inside a tool tree must
-stay a candidate. An app backend's pid record is the other narrowing. Turning the
+stay a candidate. An app backend is claimed from the app backend's own in-process
+table, which names the root of each backend this process spawned and, where the
+gateway's own wrap inserted a forking sandbox launcher, that root's forked server
+child as well; an adopted backend, the processes a backend forks BELOW that server
+child, and a backend another process on this data home spawned are in no record,
+which is the remaining narrowing. Turning the
 budget to 0 is how an operator on a shared-data-home host takes the reading without
 the signal.
 
@@ -126,6 +131,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat, session_pid
+from kiro_crew.apps.backend import running_spawned_backend_pids
 from kiro_crew.config.paths import data_home
 from kiro_crew.mcp_gateway.daemon_control import configured_socket_path
 from kiro_crew.process_identity import audit_kill_decision
@@ -351,7 +357,7 @@ def _session_pid_entry_owners() -> dict[int, tuple[int, str | None, str]]:
         with session_pid._session_pid_file_lock():
             if not path.exists():
                 return owners
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
     except OSError:
         logger.warning("runtime_reconcile: could not read %s", path, exc_info=True)
         return owners
@@ -395,7 +401,7 @@ def _retract_session_rows(rows: Iterable[str]) -> None:
         with session_pid._session_pid_file_lock():
             if not path.exists():
                 return
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
             kept = [ln for ln in lines if ln.strip() and ln.strip() not in doomed]
             session_pid._rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
     except OSError:
@@ -434,7 +440,7 @@ def _descendant_pid_rows() -> dict[int, tuple[str, ...]]:
         with session_pid._pid_file_lock():
             if not path.exists():
                 return rows
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
     except OSError:
         logger.warning("runtime_reconcile: could not read %s", path, exc_info=True)
         return rows
@@ -477,7 +483,7 @@ def _retract_descendant_rows(rows: Iterable[str]) -> None:
         with session_pid._pid_file_lock():
             if not path.exists():
                 return
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
             kept = [ln for ln in lines if ln.strip() and ln.strip() not in doomed]
             session_pid._rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
     except OSError:
@@ -979,10 +985,11 @@ class RuntimeReconciler:
                     )
                 else:
                     # "not-mine": a row owned by another gateway, or a pid known only
-                    # to the MCP pidfile or the manager's in-memory union. There is no
-                    # row here to remove and there never will be, so this is a steady
-                    # state and not a fault -- at WARNING it would be one line per
-                    # stale pid per cleanup tick for as long as the gateway runs.
+                    # to the MCP pidfile, the app backend table or the manager's
+                    # in-memory union. There is no row here to remove and there never
+                    # will be, so this is a steady state and not a fault -- at WARNING
+                    # it would be one line per stale pid per cleanup tick for as long
+                    # as the gateway runs.
                     logger.debug(
                         "runtime_reconcile: the record for pid=%s is not ours to retract", pid
                     )
@@ -1451,6 +1458,22 @@ def build_reconciler(
         test (it is inherited), age past the floor, and be signalled -- the exact
         harm this module exists to prevent, delivered by it.
 
+        App backends run in the same slice and are in none of those records: a
+        backend is not a session, not a pooled MCP backend, and not tracked in
+        either pid file. They are claimed from the app backend's own process
+        table, through
+        :func:`~kiro_crew.apps.backend.running_spawned_backend_pids`, which names
+        the root of each backend this process spawned while it still holds that
+        child unreaped -- and, where this gateway's own wrap inserted a forking
+        sandbox launcher (the Linux namespace launcher, whose root is the launcher
+        parent and whose forked child is the real server), that root's direct
+        children too. The table is in-process memory, not
+        ``app_backends.pids.json``: that file is in the agent-writable data home,
+        so a row written into it would make any pid owned. An adopted backend, the
+        processes a backend forks BELOW the launcher's server child, and a backend
+        spawned by another process on this data home are not in the table, so those
+        stay unowned here.
+
         The session-file snapshot carries each row's OWNER and start identity: the
         identity is what the recycle check compares against, and the owner is what
         decides whether a retraction here can remove the row at all. The
@@ -1469,7 +1492,13 @@ def build_reconciler(
             # authorizing a kill on incomplete membership. The same completeness
             # requirement the scope reaper imposes on kill-authorizing callers.
             raise RuntimeError("the tracked-pid snapshot is incomplete")
-        return set(active_pids()) | _mcp_backend_pids() | tracked | set(snapshot)
+        return (
+            set(active_pids())
+            | _mcp_backend_pids()
+            | running_spawned_backend_pids()
+            | tracked
+            | set(snapshot)
+        )
 
     def was_recycled(pid: int) -> bool:
         """Whether every identity RECORDED for *pid*, in either file, disagrees with the live one.
@@ -1548,11 +1577,12 @@ def build_reconciler(
         predecessor gateway is a real dead record, but ``_untrack_session_pid``
         matches on the CALLING process's prefix and cannot remove anybody else's row
         -- those are the next gateway start's to clear, once its owner reads dead.
-        And a pid known only to the MCP backend pidfile or to the manager's
-        in-memory union has no row in either tracking file: the MCP sweep owns the
-        first and the manager owns the second. Both answer ``"not-mine"`` FOREVER, by
-        design, so folding them into the same ``False`` a real failure gets would
-        publish one WARNING per stale pid per cleanup tick for the gateway's life --
+        And a pid known only to the MCP backend pidfile, to the app backend table
+        or to the manager's in-memory union has no row in either tracking file: the
+        MCP sweep owns the first, the app backend's spawn and stop paths the second,
+        and the manager the third. They answer ``"not-mine"`` by design, so folding
+        them into the same ``False`` a real failure gets would publish one WARNING
+        per stale pid per cleanup tick for the gateway's life --
         a steady state reported as a fault. ``"failed"`` is reserved for a retraction
         that was this pass's to make and did not land, which is the only one worth
         waking anybody for.

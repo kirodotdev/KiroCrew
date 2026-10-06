@@ -808,9 +808,8 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
         ("messaging/driver.py", "run"): 3,
         ("slack/handler.py", "handle_interaction"): 1,
         ("slack/handler.py", "handle_message"): 4,
-        ("subagent.py", "_approve_and_log"): 1,
-        ("task_executor.py", "execute_task"): 1,
         ("task_planner.py", "decompose"): 1,
+        ("tool_permission.py", "allow"): 1,
     }
 )
 

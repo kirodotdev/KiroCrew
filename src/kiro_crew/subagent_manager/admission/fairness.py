@@ -370,9 +370,7 @@ class _FairnessMixin(ManagerComponent):
         if not view.any_slot:
             return None
         for idx, params in enumerate(queue):
-            if self.entry_is_resident_resume(
-                params
-            ) and not self._manager._boundary_cancellation_pending(params):
+            if self.entry_is_resident_resume(params):
                 return idx
         roots_ok = view.root_slot
         now = _time.monotonic()
@@ -384,7 +382,6 @@ class _FairnessMixin(ManagerComponent):
             return (
                 not params.get("_startup_release")
                 and float(params.get(MEMORY_WAIT_UNTIL_KEY) or 0.0) <= now
-                and not self._manager._boundary_cancellation_pending(params)
                 and (
                     self.entry_is_child(params)
                     or (

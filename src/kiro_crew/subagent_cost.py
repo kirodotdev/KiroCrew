@@ -1,9 +1,12 @@
 """Append-only learned per-agent cost store for dynamic sub-agent sizing.
 
 One JSONL line per completed run, written via atomic ``O_APPEND`` (race-free,
-no lock). The cap is computed at startup from ``read_learned_cost`` =
-``max(per-agent p90)`` over the last N samples; the log is FIFO-trimmed to the
-last N per agent both at startup and periodically.
+no lock). ``read_cap_costs`` feeds the memory-sized parallel count (the
+median across agents of each agent's p50 over its last N samples, less one
+reserve of ``max(per-agent p90)``): the TaskRunner's auto value always, and
+the subagent auto cap only when the spawn floor is disabled
+(``agent.spawn_min_memory_gb <= 0``). The log is FIFO-trimmed to the last N
+per agent both at startup and periodically.
 
 See ``dynamic-subagent-sizing.md`` §4.2 (storage) / §4.3 (aggregation).
 """
@@ -13,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import statistics
 import tempfile
 import time
 from collections import deque
@@ -73,7 +77,9 @@ def append_cost_sample(
     admission gate's dedicated start projection learns from
     (:func:`read_learned_costs_checked` on ``settled_gb``, dedicated only). Written only when measured, so
     a record without it contributes nothing there. ``mem_gb`` stays the
-    whole-run peak the auto cap reads.
+    whole-run peak :func:`read_cap_costs` reads for the memory-sized count: the
+    TaskRunner's auto value, and the subagent auto cap only when the spawn
+    floor is disabled.
     """
     if mem_gb <= 0 and cpu_cores <= 0 and settled_gb <= 0:
         return  # nothing was measured
@@ -254,22 +260,6 @@ def read_learned_costs_checked(
     return cap_buckets(out), status.complete
 
 
-def read_learned_costs(
-    key: str,
-    *,
-    window: int = _DEFAULT_WINDOW,
-    min_samples: int = _DEFAULT_MIN_SAMPLES,
-    percentile: float = _DEFAULT_PERCENTILE,
-) -> dict[str, float]:
-    """:func:`read_learned_costs_checked` without the completeness flag.
-
-    Feeds :func:`read_learned_cost`, which sizes the sub-agent cap.
-    """
-    return read_learned_costs_checked(
-        key, window=window, min_samples=min_samples, percentile=percentile
-    )[0]
-
-
 def learned_settled_for(costs: Mapping[str, float] | None, bucket: str) -> float | None:
     """The learned settled RSS (GiB) for ONE bucket, or None; never another's.
 
@@ -289,22 +279,33 @@ def cap_buckets(costs: Mapping[str, float]) -> dict[str, float]:
     return dict(heaviest)
 
 
-def read_learned_cost(
+def read_cap_costs(
     key: str,
     *,
     window: int = _DEFAULT_WINDOW,
     min_samples: int = _DEFAULT_MIN_SAMPLES,
-    percentile: float = _DEFAULT_PERCENTILE,
-) -> float | None:
-    """Return ``max(per-agent p90)`` for *key* (``mem_gb``/``cpu_cores``), or None.
+) -> tuple[float | None, float | None]:
+    """Return ``(typical, heavy_peak)`` for *key* from one pass over the log.
 
-    Per agent, take the p90 of the last ``window`` samples (only if it has at
-    least ``min_samples``), then the max across agents. Returns None when no
-    agent qualifies — the caller falls back to the configured first-boot cost.
-    A percentile is outlier-robust, so a single pathological run can't dominate.
+    Per agent, over the last ``window`` samples (only if it has at least
+    ``min_samples``): ``typical`` is the median across agents of each agent's
+    p50, and ``heavy_peak`` is the max across agents of each agent's p90.
+    Both are ``None`` when no agent
+    qualifies — the caller falls back to the configured first-boot cost.
+    Medians at both levels keep ``typical`` steady: an agent whose window holds
+    a few heavy build runs, or one heavy agent among light ones, does not move
+    it. Every qualifying agent counts, not only the heaviest buckets, and each
+    counts once however often it runs: weighting by run count would let the
+    busiest agent's mix set every slot's price again, which is the swing this
+    figure exists to remove; the ``heavy_peak`` reserve covers the heavy one.
     """
-    costs = read_learned_costs(key, window=window, min_samples=min_samples, percentile=percentile)
-    return max(costs.values()) if costs else None
+    by_agent = _group_by_agent(_iter_samples(_ReadStatus()), key, window=window)
+    qualifying = [vals for vals in by_agent.values() if len(vals) >= min_samples]
+    if not qualifying:
+        return None, None
+    typical = statistics.median(_percentile(vals, 0.5) for vals in qualifying)
+    heavy_peak = max(_percentile(vals, _DEFAULT_PERCENTILE) for vals in qualifying)
+    return typical, heavy_peak
 
 
 def compact_cost_log(window: int = _DEFAULT_WINDOW) -> None:

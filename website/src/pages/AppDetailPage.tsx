@@ -24,7 +24,7 @@ import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, useTrustGate,
 } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced, sanitizeStargazersCount, type RegistryApp } from '../components/appstore/types'
+import { isRegistrySourced, normalizeRegistryApp, type RegistryApp } from '../components/appstore/types'
 import AppSource from '../components/appstore/AppSource'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
@@ -133,6 +133,10 @@ interface RegistryEntry extends Partial<AppInfo> {
   name: string
   updateAvailable?: boolean
 }
+
+/** A registry entry after `normalizeRegistryApp`: its display fields are always
+ *  strings (fallbacks filled) and its star count is sanitized. */
+type NormalizedRegistryEntry = RegistryEntry & Pick<AppInfo, 'displayName' | 'description' | 'version' | 'author'>
 
 interface AppManifest {
   displayName?: string
@@ -731,11 +735,24 @@ export default function AppDetailPage() {
       // failure here is held rather than swallowed: an INSTALLED app can still
       // render from its manifest, but the reader is told the catalog was not
       // reachable; an app that is not installed cannot be resolved without it.
-      let registryList: RegistryEntry[] = []
+      //
+      // Rows are normalized ONCE here, at the fetch site, by the same
+      // `normalizeRegistryApp` the browse list uses -- so every branch below
+      // reads coerced display fields and a sanitized star count instead of
+      // re-defending them field by field. The RAW rows are kept beside them for
+      // one reader only: `mergeBuiltinRow` is row-first, and normalize fills a
+      // missing `displayName` with the slug, which would then beat the
+      // manifest's own name. The merge already accepts a loose row and fills
+      // its own gaps, so it is handed the row as the server sent it.
+      let rawRegistryList: RegistryEntry[] = []
+      let registryList: NormalizedRegistryEntry[] = []
       let sideFailure: unknown = null
       try {
         const registryData = await api.listRegistry()
-        registryList = (registryData.apps || []) as RegistryEntry[]
+        rawRegistryList = (registryData.apps || []) as RegistryEntry[]
+        registryList = rawRegistryList.map(
+          (r) => normalizeRegistryApp(r as RegistryApp) as NormalizedRegistryEntry,
+        )
       } catch (e: unknown) {
         sideFailure = e
       }
@@ -748,6 +765,7 @@ export default function AppDetailPage() {
         sideFailure ??= e
       }
       const registryEntry = registryList.find((r) => r.name === name)
+      const rawRegistryEntry = rawRegistryList.find((r) => r.name === name)
 
       if (installed) {
         const m = installed.manifest || {}
@@ -758,9 +776,9 @@ export default function AppDetailPage() {
         // "Kiro Crew · Developer Tools" in the list and "kirocrew · Productivity"
         // one click later. The catalog is the store's inventory on both surfaces
         // or on neither.
-        if (registryEntry && isBuiltinServerRow(registryEntry)) {
+        if (rawRegistryEntry && registryEntry && isBuiltinServerRow(registryEntry)) {
           setApp({
-            ...mergeBuiltinRow(registryEntry, { ...m, version: installed.version }),
+            ...mergeBuiltinRow(rawRegistryEntry, { ...m, version: installed.version }),
             name: installed.name,
             installed: true,
             installedVersion: installed.version,
@@ -885,7 +903,7 @@ export default function AppDetailPage() {
             // fallback identifier is a separate decision from resolving art.
             repo: registryEntry?.repo || '',
             trustRepository: installed.trustRepository,
-            stargazersCount: sanitizeStargazersCount(registryEntry?.stargazersCount),
+            stargazersCount: registryEntry?.stargazersCount,
             installed: true,
             installedVersion: installed.version,
             enabled: installed.enabled,
@@ -902,19 +920,9 @@ export default function AppDetailPage() {
         }
       } else if (registryEntry) {
         setApp({
+          // Already normalized at the fetch site: display fields are strings
+          // with their fallbacks filled and the star count is sanitized.
           ...registryEntry,
-          // Required AppInfo fields — registry entries normally carry these, but
-          // fall back so the object always satisfies AppInfo.
-          name: registryEntry.name,
-          displayName: registryEntry.displayName || registryEntry.name,
-          description: registryEntry.description || '',
-          version: registryEntry.version || '0.0.0',
-          author: registryEntry.author || '',
-          // The spread above copies the RAW listRegistry payload, which never
-          // went through normalizeRegistryApp — sanitize the display-only star
-          // count explicitly so a hostile/older gateway cannot render NaN/-1
-          // or a layout-breaking 1e308 here (the list path is already covered).
-          stargazersCount: sanitizeStargazersCount(registryEntry.stargazersCount),
           // Preserve install status from registry (set by detectInstalled)
           installed: registryEntry.installed ?? false,
           platform: registryEntry.platform,

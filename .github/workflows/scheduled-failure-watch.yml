@@ -81,6 +81,7 @@ on:
       - "Deferred Findings Audit"
       - "Fork PR Label"
       - "Memory Benchmark (nightly)"
+      - "Merge Queue Ruleset Audit"
       - "Nightly Build"
       - "OTA Update Test (macOS)"
       - "PR Merge-Conflict Label"

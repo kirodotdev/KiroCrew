@@ -1227,23 +1227,67 @@ class TestPartialRehydrateRollsBack:
             "dashboard:keeper" in state._restricted_keys
         ), "rollback discarded a restricted key it did not add"
 
-    def test_the_rollback_lives_in_the_callee_not_the_caller(self):
-        """Source guard: the rollback belongs at the creation site so EVERY caller
-        gets it. restore_open_slots must not carry its own copy, which would protect
-        only itself -- leaving the async twin with none. Asserts on the code, not comments."""
-        import inspect
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", ["open-tabs", "open-tabs-async", "direct", "direct-async"])
+    async def test_every_restore_driver_gets_the_callees_rollback(
+        self, driver, tmp_path, monkeypatch
+    ):
+        """The rollback lives at the creation site, so EVERY caller gets it.
 
+        The failure is raised once the metadata line is fully applied -- after the
+        ephemeral line has recorded its restricted key -- so the rollback has both
+        halves to undo. A failing tab must leave no slot and no restricted key
+        behind whichever driver restored it, while the healthy tab beside it still
+        restores. A rollback living only in one driver would leave the others
+        holding the partial slot.
+        """
         from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.slot_persistence import metadata_codec
 
-        callee = inspect.getsource(chat_persistence._rehydrate_slot_from_history)
-        assert "state._slots.pop(" in callee, "the callee no longer rolls back its own slot"
-        assert "_restricted_keys.discard(" in callee, "the callee no longer rolls back its key"
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state(tmp_path)
+        for name in ("healthy", "doomed"):
+            _write_session(
+                tmp_path,
+                f"dashboard_{name}",
+                [{"role": "user", "content": "hi"}],
+                meta={"title": name.title(), "memory_mode": "ephemeral"},
+            )
+        (tmp_path / "open_slots.json").write_text(
+            json.dumps({"keys": ["doomed", "healthy"], "ts": 0.0}), encoding="utf-8"
+        )
+        real = metadata_codec.apply
+        marked_when_raised: list[bool] = []
 
-        caller = inspect.getsource(chat_persistence.restore_open_slots)
-        body = caller.split('"""')[-1]
-        assert "state._slots.pop(" not in body, (
-            "restore_open_slots re-grew its own rollback: two copies of the same "
-            "undo will drift, and the callee's is the one every caller reaches"
+        def _apply_then_fail(state_, slot, meta, purpose):
+            applied = real(state_, slot, meta, purpose)
+            if slot.key == "doomed":
+                marked_when_raised.append("dashboard:doomed" in state_._restricted_keys)
+                raise RuntimeError("malformed persisted content")
+            return applied
+
+        monkeypatch.setattr(metadata_codec, "apply", _apply_then_fail)
+
+        if driver.startswith("open-tabs"):
+            if driver == "open-tabs":
+                restored = chat_persistence.restore_open_slots(state)
+            else:
+                restored = await chat_persistence.restore_open_slots_async(state)
+            assert restored == 1 and "healthy" in state._slots
+            assert "doomed" in state.unrestored_slot_keys
+        else:
+            with pytest.raises(RuntimeError):
+                if driver == "direct":
+                    chat_persistence._rehydrate_slot_from_history(state, "doomed")
+                else:
+                    await chat_persistence.rehydrate_slot_from_history_async(state, "doomed")
+        # Non-vacuous: the key was recorded before the failure, so its absence now
+        # is the rollback's doing.
+        assert marked_when_raised == [True]
+        assert "doomed" not in state._slots, "a partial slot was left registered"
+        assert "dashboard:doomed" not in state._restricted_keys, (
+            "restricted key left behind: a later persistent slot would inherit it "
+            "and silently lose consolidation + lessons"
         )
 
 

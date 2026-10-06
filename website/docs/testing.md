@@ -265,6 +265,54 @@ into a deterministic local failure. Keep the forced delay in place while you ver
 the fix, then remove it: a fix that only passes once the delay is gone has not been
 shown to fix anything.
 
+### Rules every test keeps
+
+The cases below are where these rules came from. Each one is a rule for every new or
+changed test, and `AUTOSDE.yaml`'s `frontend-tests-are-deterministic` holds review to
+them.
+
+- **Time.** A test whose output reads the clock pins it with `vi.setSystemTime(...)`,
+  set after the last real-timer wait (with fake timers, see the fake-timer rule below).
+  Restore it with `vi.useRealTimers()` where a timed-out test still reaches it: an
+  `afterEach` or `onTestFinished`, or a `finally` only when the pinned section awaits
+  nothing a fake clock can stall (no `waitFor` or `findBy*`), because a timed-out test
+  never reaches its `finally`. Without fake timers `setSystemTime` still mocks `Date`
+  for the rest of the file until that call. An Electron `node:test` file pins `Date`
+  with `mock.timers.enable({ apis: ['Date'] })` and resets a top-level `mock.timers` the
+  same way; a test-context `t.mock.timers` is reset by the runner. A relative age ("3
+  minutes ago") is computed from the pinned instant, never from the real `Date.now()`.
+- **Locale and zone.** An expectation built with `toLocale*String()` names its locale:
+  vitest pins `TZ=UTC` but not the locale, and the Electron suite pins neither, so an
+  Electron test names the zone too.
+- **Barriers.** No promise-sleep (`await new Promise(r => setTimeout(r, N))`, N > 0) as
+  a barrier before an assertion. Wait for the state with `findBy*`, `waitFor` or an
+  awaited mock call. The forced delay in *Reproduce before you fix* is a probe, removed
+  before the change lands.
+- **Randomness.** Stub `Math.random` and `crypto.randomUUID`
+  (`vi.spyOn(...).mockReturnValue(...)`) whenever the asserted output depends on them.
+- **A `findBy*` on one element does not settle a sibling query** whose content comes
+  from a different async source (another query, an effect, a timer or a fetch). Wait
+  for every such value the assertion reads, in the file's `…Ready()` helper.
+- **An `act()` warning is a finding.** "not wrapped in act(...)" means a state update
+  landed after the test's last barrier. Fix the barrier; never add the warning to a
+  filter. `vite.config.ts`'s `onConsoleLog` drops that line from the run log today, so
+  the shard will not show it to you.
+- **No absolute time budget under `--coverage`.** Instrumentation multiplies every
+  executed line, so `expect(elapsed).toBeLessThan(N)` measures the instrumentation and
+  the host. Assert the work (calls, items, frames) instead.
+- **Playwright.**
+  - Use web-first assertions (`await expect(locator).toBeVisible()`), `expect.poll` for
+    backend state and `waitForResponse` for a request; never a `page.waitForTimeout`
+    barrier.
+  - `locator.isVisible({ timeout })` ignores its timeout and samples once, so never
+    branch on it.
+  - Keep the count of flaky specs at zero. CI's `retries` let a flaky spec pass, and the
+    reports' `flaky` count is where that shows up; a spec that passes only on a retry is
+    broken and gets fixed, never given more retries
+    ([e2e-gate](../../docs/ci/e2e-gate.md)).
+  - A spec cleans up only the ids it created. A global reset races every other spec
+    sharing the gateway.
+
 ### What five full runs under load found
 
 Five back-to-back `vitest run --coverage` passes on a Windows host that was also

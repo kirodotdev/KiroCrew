@@ -215,20 +215,16 @@ async def test_unreadable_live_value_falls_back_to_the_config_read(monkeypatch):
     assert gate.limit == 5
 
 
-def test_gate_counts_outside_a_running_loop():
-    assert acp_runtime.session_start_gate_counts() == (0, 0)
-
-
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("gate_sized_two")
 async def test_gate_counts_track_the_current_loop_gate():
-    assert acp_runtime.session_start_gate_counts() == (0, 0)
     gate = await asyncio.wait_for(acp_runtime.session_start_gate(), timeout=_BACKSTOP)
     assert gate.limit == 2
+    assert (gate.active, gate.queued) == (0, 0)
     permit = await asyncio.wait_for(gate.acquire(), timeout=_BACKSTOP)
-    assert acp_runtime.session_start_gate_counts() == (1, 0)
+    assert permit.gate_counts() == (1, 0)
     permit.release()
-    assert acp_runtime.session_start_gate_counts() == (0, 0)
+    assert (gate.active, gate.queued) == (0, 0)
 
 
 @pytest.mark.asyncio

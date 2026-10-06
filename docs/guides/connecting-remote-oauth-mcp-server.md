@@ -245,10 +245,11 @@ code-owned — read its current contents from
 providers' MCP authorization servers plus the classic web-OAuth hosts.
 **Miro is in it** (`mcp.miro.com` + `/authorize`), so the public Miro MCP
 server needs no entry of your own; a host outside that set whose consent URL
-exceeds the query-length heuristic fails closed instead. The chat banner that
-reports the rejection (`dashboard/chat_runner.py`) names the remedy inline,
-because the fix is agent-fenced with no dashboard writer and that banner is the
-only place a user learns it exists.
+exceeds the query-length heuristic fails closed instead. The fix is
+agent-fenced with no dashboard writer, so two surfaces name it: the chat banner
+that reports the rejection (`dashboard/chat_runner.py`) names the remedy inline,
+and the Connections card names the refused endpoint, shows the remedy line and
+links to this section.
 
 The remedy is the operator keystone **`oauth_endpoints.json`**, which extends
 the recognized set without weakening the gate. Create or edit it in the Kiro
@@ -285,9 +286,10 @@ unconditionally.
 
 - **Fail-soft.** A missing, unreadable, corrupt, or non-object file yields the
   **empty** extension set. A mangled file never widens trust.
-- **Agent-fenced keystone.** The file sits on Kiro Crew's protected keystone
-  set: the agent can neither read nor write it, so a prompt-injected agent
-  cannot author its own trust widening. The operator **hand-edits it
+- **Agent-fenced keystone.** The file is an OS read-only keystone leaf: the
+  agent cannot write it in any sandbox mode, so a prompt-injected agent cannot
+  author its own trust widening. Kiro Crew's tool gate also refuses the agent's
+  reads of it; that read refusal rests on the tool gate, not on the OS layer. The operator **hand-edits it
   out-of-band** — there is deliberately no dashboard writer.
 - **No restart needed.** The loader is keyed on the file's stat (path, mtime,
   size), so a hand-edit takes effect on the **next check** with no gateway

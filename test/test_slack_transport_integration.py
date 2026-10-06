@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
@@ -20,10 +18,6 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.transport import SlackTransport
 
-# Import from sibling test file without triggering stdlib 'test' module collision.
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
 _golden = importlib.import_module("test_slack_golden_transcript")
 
 FakeSessions = _golden.FakeSessions

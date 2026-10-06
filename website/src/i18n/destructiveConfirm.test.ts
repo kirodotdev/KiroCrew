@@ -227,6 +227,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.overview.kiroCrewCfgTab.type_workspace_name_to_confirm', // quoted in all catalogs at introduction
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
+  'pages.settings.securityPanel.trustedRegistries.grant_confirm_title',
+  'pages.settings.securityPanel.trustedRegistries.grant_confirm_body',
 ]
 
 /**
@@ -299,6 +301,11 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
     + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '
     + 'next to it -- a brand name in glyph quotes would read as a user-supplied label',
+  'pages.settings.securityPanel.trustedRegistries.grant_confirm_repo':
+    'the {{repo}} operand is the credential-free clone URL the operator configured, '
+    + 'rendered on its own monospace line after a label, so the line already delimits '
+    + 'it and glyph quotes would double-decorate a URL whose own scheme and slashes are '
+    + 'the shape a reader checks',
 }
 
 function placeholdersIn(value: string): string[] {

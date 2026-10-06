@@ -543,6 +543,21 @@ describe('ChatPanel — Sessions', () => {
     await waitFor(() => expect(storedChat()[key]).toBe(expected))
   })
 
+  it('greys out Dim Inactive Panes until split view is on', async () => {
+    wrap('sessions')
+    await settledSwitch('Split View (Session Grid)')
+    expect(screen.getByRole('switch', { name: 'Dim Inactive Panes' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('stores Dim Inactive Panes locally once split view is on', async () => {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, session_grid: true }) as never
+    )
+    wrap('sessions')
+    fireEvent.click(await settledSwitch('Dim Inactive Panes'))
+    await waitFor(() => expect(storedChat().dimInactivePanes).toBe(false))
+  })
+
   it('hides the restore window until session restore is on', async () => {
     wrap('sessions')
     await settledSwitch('Restore Sessions')

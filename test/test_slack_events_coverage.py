@@ -103,6 +103,9 @@ def _make_orch(
     orch.sessions.get_session_for_thread = MagicMock(return_value=None)
     orch.sessions.dequeue = MagicMock(return_value=None)
     orch.sessions.clear_queue = MagicMock()
+    # Synchronous on the manager: a !stop partitions what these hand back.
+    orch.sessions.detach_queue = MagicMock(return_value=())
+    orch.sessions.restore_queue = MagicMock()
     orch.sessions.cancel_queued = MagicMock(return_value=False)
     orch.ctx_builder = None
     orch.cron_svc = None

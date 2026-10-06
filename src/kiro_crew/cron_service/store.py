@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -653,3 +654,63 @@ def decode_jobs(raw: bytes) -> list[CronJob] | None:
                 entry_exc,
             )
     return jobs
+
+
+#: Infix between the store's file name and the UTC stamp of a quarantine copy:
+#: ``crons.json.corrupt-20261005T071953Z``.
+_QUARANTINE_INFIX = ".corrupt-"
+
+
+def quarantine_dir(store: Path) -> Path:
+    """Where quarantine copies of *store* live: ``cron-history/quarantine``.
+
+    The copy holds every job's session key and command, the same data the
+    ``crons.json`` fence withholds. ``cron-history`` already sits behind the
+    agent's file-tool fence and the sandbox mask, so a copy there stays as
+    hidden as the store was, and an agent cannot plant a copy for doctor to
+    tell the user to restore.
+    """
+    return store.parent / "cron-history" / "quarantine"
+
+
+def quarantine_copies(store: Path) -> list[Path]:
+    """Every quarantine copy of *store* on disk, oldest first. NEVER raises."""
+    try:
+        return sorted(quarantine_dir(store).glob(f"{store.name}{_QUARANTINE_INFIX}*"))
+    except OSError:
+        return []
+
+
+def quarantine_unreadable_store(store: Path) -> Path | None:
+    """Rename an unparseable *store* to a timestamped copy and return the copy.
+
+    The caller holds the store lock. The file is renamed, never rewritten or
+    deleted, so the copy holds the exact bytes that failed to parse.
+
+    Returns None, moving nothing, when there is no file, when the bytes parse
+    now, or when the read itself fails: an ``OSError`` such as a permission
+    error says nothing about the bytes, so the file stays where it is.
+    """
+    try:
+        raw = store.read_bytes()
+    except OSError:
+        return None
+    try:
+        if decode_jobs(raw) is not None:
+            return None
+    except (ValueError, TypeError, RecursionError):
+        pass
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    folder = quarantine_dir(store)
+    target = folder / f"{store.name}{_QUARANTINE_INFIX}{stamp}"
+    suffix = 1
+    while target.exists() or target.is_symlink():
+        target = folder / f"{store.name}{_QUARANTINE_INFIX}{stamp}-{suffix}"
+        suffix += 1
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        os.rename(store, target)
+    except OSError:
+        logger.warning("Could not move the unreadable cron store aside", exc_info=True)
+        return None
+    return target

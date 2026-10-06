@@ -3731,9 +3731,11 @@ def _pin_lock_dir(path: Path) -> int | None:
     Returns ``None`` where the platform has no directory descriptors (Windows),
     which leaves the caller's junction probe as that platform's only screen --
     the same split :class:`_SegmentDirPin` already carries. Raises ``OSError``
-    on a refusal, so the caller routes it into the legacy-key fallback exactly
-    as it routes an uncreatable directory: refusing outright would drop every
-    best-effort audit on an install that is otherwise signing fine.
+    on a refusal, and the caller deliberately does NOT route it into the
+    legacy-key fallback: a refusal here means ``trust`` was replaced mid-acquire,
+    which can be true for one writer and false for the next, so it fails the
+    acquire and the audit-or-deny contract decides (see
+    :meth:`SecurityEventLog._chain_lock_target`).
     """
     if not _PIN_BY_FD_SUPPORTED:
         return None

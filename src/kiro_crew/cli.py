@@ -1644,9 +1644,10 @@ Examples:
         "add",
         help="Add a cron job",
         description="Add a cron job. The job is persisted in one locked write and its id is "
-        "printed on stdout; any refusal exits non-zero (2 for a flag-combination error, 1 for "
-        "a validation, security or store refusal), so an installer can register a job "
-        "headlessly and detect a refused one.",
+        "printed on stdout; any refusal exits non-zero (2 for an argparse usage error such "
+        "as two mutually exclusive flags, 1 for every refusal the command itself raises: "
+        "a missing schedule, a validation, security or store refusal), so an installer "
+        "can register a job headlessly and detect a refused one.",
         epilog="""
 Examples:
   kirocrew cron add "standup" "post the standup" --cron "0 9 * * MON-FRI" --timezone Europe/Paris
@@ -3170,7 +3171,8 @@ Examples:
   kirocrew config defaults --adopt      # Take the current defaults for all of them
   kirocrew config defaults --keep session.autocompact_pct   # Affirm one as intentional
 
-The dashboard port is set with the KIROCREW_PORT env var, not a config key.
+The dashboard port comes from the port in dashboard.url; the KIROCREW_PORT
+env var overrides it.
 """,
         formatter_class=_fmt,
     )

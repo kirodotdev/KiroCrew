@@ -612,19 +612,24 @@ results = await asyncio.gather(
 ```
 
 The limit is `self._max_parallel_steps`, computed in `__init__` as
-`min(taskrunner.max_parallel_steps, compute_max_subagents(cfg))` and re-derived
-at every run entry (see *Live config* below):
+`min(taskrunner.max_parallel_steps, compute_memory_sized_parallel_cap(cfg))` and
+re-derived at every run entry (see *Live config* below):
 
-- `compute_max_subagents` is the **host-safe ceiling**: available memory and the
-  learned/configured per-agent memory cost size the result, then
-  `agent.subagent_auto_max` caps it. CPU is deliberately not a sizing term; the
-  adaptive controller reacts to live pressure instead.
+- `compute_memory_sized_parallel_cap` is the **host-safe ceiling**: available
+  memory and the learned/configured per-agent memory cost size the result, then
+  `agent.subagent_auto_max` caps it, never below 3 (3 when memory cannot be
+  read), so the auto value is never 0. It keeps the memory arithmetic the
+  subagent cap dropped (`compute_max_subagents` is now the bare
+  `subagent_auto_max` ceiling, because memory bounds subagents per start)
+  because no per-start memory floor prices a TaskRunner step. CPU is
+  deliberately not a sizing term; the adaptive controller reacts to failing
+  work instead.
 - A positive `taskrunner.max_parallel_steps` may only **lower** it (intentional
   throttling for cost / rate limits). `0` or unset means "use the ceiling".
 - An explicit knob value can therefore never raise concurrency above the
   host-safe maximum. A test that asserts a specific concurrency **must** pin
-  `compute_max_subagents`, or it measures the runner's hardware rather than the
-  knob — a small CI runner computes 3.
+  `compute_memory_sized_parallel_cap`, or it measures the runner's hardware
+  rather than the knob — a small CI runner computes 3.
 
 ### Live config: `taskrunner.max_parallel_steps` / `taskrunner.workspace_dir`
 
@@ -888,10 +893,16 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 
 ## Tool Approval
 
-Two-layer approval during step execution:
+`task_executor.execute_task()` hands every permission request of a step turn to
+`tool_permission.settle` with the step's ladder (`_step_permission_policy`, rebuilt
+when a mode switch changes whose spec hooks gate the turn). In order:
 
-1. `task_executor.execute_task()` evaluates hook rules first; an explicit hook auto-approval remains eligible, while a deny remains a denial. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the interactive prompt (or the headless deny-by-default) and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
-2. When no hook grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
+1. The agent spec's PreToolUse hooks, on a backend that never receives them, may block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
+2. The run's own trust grant (below).
+3. The mid-stream context check, which runs even for a request a hook or the run's trust already granted: past `_MID_STREAM_COMPACT_PCT` the request is rejected bare and the turn re-run after compaction.
+4. When nothing grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
+
+The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
 ### Per-run auto-approve (trust) toggle
 
@@ -965,7 +976,7 @@ rule mandates, with no independent approval state living on the run:
 
 ### Scope limitation (cron / MCP unattended runs)
 
-Per-run trust is reachable only through the dashboard launch endpoints' `_gate_auto_approve()` check. `cli_server.py` does not request it when it constructs the standalone runner, so `kirocrew run TASK.md` cannot turn on run-scoped tool approval. With no `on_tool_approval` callback, `task_executor.execute_task()` rejects every tool request that lacks explicit hook approval; `test_taskrunner_autoapprove.py::test_headless_no_authorization_rejects` pins this fail-closed posture.
+Per-run trust is reachable only through the dashboard launch endpoints' `_gate_auto_approve()` check. `cli_server.py` does not request it when it constructs the standalone runner, so `kirocrew run TASK.md` cannot turn on run-scoped tool approval. With no `on_tool_approval` callback, the step's permission ladder rejects every tool request that lacks explicit hook approval; `test_taskrunner_autoapprove.py::test_headless_no_authorization_rejects` pins this fail-closed posture.
 
 This tool-authorization default does not convert `requires_approval` into an unattended task gate: `execute_single_task()` continues a `requires_approval` task when no `on_approval` callback exists. A spec that needs an attended task boundary uses `force_approval`; the standalone CLI then stops as failed rather than proceeding.
 

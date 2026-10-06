@@ -907,6 +907,20 @@ async def steer_into_running_turn(
 #: spelled in two places.
 TURN_ACTOR_META_KEY = "turnActor"
 
+#: Entry meta key marking a queued payload as turn CONTENT: the drain hands it to
+#: the model as literal text and never reads its first word as a dashboard command.
+#: Stamped by the channel hand-off (``channel_handoff._queue_arm``, and the requeue
+#: of a channel steer the turn never consumed): a channel's own queue already
+#: replays every entry with command interpretation off, because a queued ``/new``
+#: or ``/clear`` is the sender's words waiting for the turn, not an instruction to
+#: run when it ends. Without this mark the one path that crosses from a channel
+#: into the dashboard queue would be the one path where a queued ``/clear`` wiped
+#: the session. Deliberately a ``meta`` key, so the durable copy keeps it across a
+#: restart: the mark only ever REMOVES a capability, so a hand-edited line that
+#: carries it turns a command into prose and nothing more -- the opposite of the
+#: provenance flags, which grant authority and are therefore never persisted.
+COMMANDS_OFF_META_KEY = "commands_off"
+
 
 def queue_for_next_turn(
     state: "DashboardState",
@@ -921,11 +935,19 @@ def queue_for_next_turn(
     turn_actor: str = "",
     channel_recipient: dict[str, Any] | None = None,
     quote: dict[str, Any] | None = None,
+    commands_off: bool = False,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    *commands_off* stamps :data:`COMMANDS_OFF_META_KEY` on the entry: the drained
+    turn hands the text to the model as content and never runs its first word as a
+    dashboard command. Passed by the channel hand-off, whose text is a channel
+    human's words crossing into this queue; the composer leaves it False, because
+    a queued ``/clear`` typed into the session's own surface is that human's own
+    command to run.
 
     *channel_recipient* is the channel conversation the message came FROM -- the
     address ``session_control.channel_recipient_meta`` builds (channel type,
@@ -998,6 +1020,8 @@ def queue_for_next_turn(
         meta[QUOTE_META_KEY] = quote
     if decision_strip:
         meta["decisions_strip"] = decision_strip
+    if commands_off:
+        meta[COMMANDS_OFF_META_KEY] = True
     qid = slot.queue_append(
         message,
         meta=meta,

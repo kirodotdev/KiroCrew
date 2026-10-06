@@ -78,6 +78,15 @@ have a TEST connect their real workspace. ``integration_home`` deletes every
 recognised credential variable for the test's duration, so the boot always
 sees the no-channel configuration.
 
+The boot is kept out of the developer's home
+--------------------------------------------
+The gateway runs in this process, so it reads the home wherever production
+does: the onboarding import scan walks every foreign agent's home it finds, and
+a credit refresh reads kiro-cli's credential stores. ``integration_home`` calls
+``isolate_user_home``, whose docstring lists exactly what it moves, drops and
+stubs; ``test_boot_smoke.py::test_a_boot_reads_nothing_from_the_outer_home``
+boots under a stand-in home and fails on any read beneath it.
+
 One process, many homes: what a boot leaves behind, and who puts it back
 -------------------------------------------------------------------------
 The whole layer runs in one interpreter, and every boot is a fresh
@@ -143,6 +152,30 @@ cross-home flake three tests later.
      process", and a fresh process has none; a baseline carried across boots
      would let the second boot read the first one's counter climb as a live
      throttle episode.
+   * ``security.paths`` resolver bookkeeping (``_path_resolve_degraded``,
+     ``_path_resolve_load_probes``, ``_path_resolve_thread_waits``) -- the
+     per-prefix stall cooldowns and load-probe counts, and each calling
+     thread's cumulative wait allowance. A fresh process has none. Carried
+     into the next boot, a cooldown charged under the temp prefix every home
+     shares refuses that boot's own paths, and the event-loop thread (one
+     ident across boots) starts with the last boot's spend. A wait is
+     recorded only once it clears ``_PATH_RESOLVE_WAIT_FLOOR_SECS``, so how
+     many entries a boot leaves depends on how loaded the host is. The
+     rootdir conftest resets them per test; this resets them per boot.
+   * ``dashboard.status_counts`` cache -- the cron and lesson counts the
+     status snapshot serves for ``_WS_COUNTS_CACHE_TTL`` seconds after one
+     store read. Within that window the next boot would serve the previous
+     home's counts; past it, whether the next boot refreshes depends on how
+     long the boots took.
+   * ``metrics.inventory_gauges`` TTL cache, loader singletons and
+     install-reporter claim, through its own ``reset_for_testing()`` -- the
+     cached counts are the home's, and each boot claims the reporter role
+     itself, as a fresh process does.
+   * ``diag.threads._prev_reading`` -- the per-thread CPU sample the thread
+     ledger reports deltas against. The diag recorder takes one on every
+     sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
+     on request, so whether a boot leaves entries depends on how long it ran;
+     a fresh process has none.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -211,6 +244,7 @@ import os
 import re
 import secrets
 import signal
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -224,20 +258,34 @@ from kiro_crew import (
     autonudge,
     crash_guard,
     embeddings,
+    github_runner,
     memory_startup,
+    onboarding_sources,
     safety_override,
     sandbox,
     shutdown_event,
 )
+from kiro_crew.acp import client as acp_client
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.browser_cli import launch as browser_launch
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import CREDENTIAL_KEYS
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard import loop_watchdog, revocation_gen, token_auth, token_secret
+from kiro_crew.dashboard import (
+    loop_watchdog,
+    revocation_gen,
+    status_counts,
+    token_auth,
+    token_secret,
+)
+from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
+from kiro_crew.diag import threads as diag_threads
+from kiro_crew.metrics import inventory_gauges
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
+from kiro_crew.security import paths as security_paths
 from kiro_crew.testing import fake_acp_backend
 
 try:  # POSIX only; the layer is Linux-only in CI, but keep the import honest.
@@ -693,9 +741,10 @@ def _restore_environ(before: dict[str, str]) -> None:
 def _reset_home_bound_globals() -> None:
     """Forget every module global a boot derives from its home (docstring, item 1).
 
-    Mirrors what ``test/conftest.py`` and ``test/test_token_auth.py`` isolate
-    per test, gathered in one place because a ``restart()`` needs it BETWEEN
-    two boots inside one test, where no fixture boundary runs.
+    Mirrors what ``test/conftest.py``, ``test/test_token_auth.py`` and the
+    rootdir conftest's ``_reset_path_resolver_degradation`` isolate per test,
+    gathered in one place because a ``restart()`` needs it BETWEEN two boots
+    inside one test, where no fixture boundary runs.
     """
     # Platform context first: dropping it fires the ceiling-invalidation
     # callbacks, and safety_override's re-creates its singleton to answer
@@ -731,6 +780,21 @@ def _reset_home_bound_globals() -> None:
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
     browser_launch._warned_lifecycle_losses.clear()
+    # Cleared in place, never rebound: the security facade re-exports
+    # ``_path_resolve_degraded`` by identity, and the second-boot witness
+    # compares each container's identity.
+    with security_paths._path_resolve_lock:
+        security_paths._path_resolve_degraded.clear()
+        security_paths._path_resolve_load_probes.clear()
+        security_paths._path_resolve_thread_waits.clear()
+    status_counts._counts_cache = (None, None)
+    status_counts._counts_cache_ts = float("-inf")
+    status_counts._counts_cache_failures = 0
+    status_counts._counts_refresh_inflight = False
+    status_counts._last_counts_warn_monotonic = None
+    inventory_gauges.reset_for_testing()
+    with diag_threads._prev_lock:
+        diag_threads._prev_reading.clear()
     live_nudge = autonudge._INSTANCE
     if live_nudge is not None:
         with contextlib.suppress(Exception):
@@ -1025,19 +1089,142 @@ async def booted_gateway(
                 _put_back()
 
 
+#: Home-override variables production reads that neither the agent auth table
+#: nor the import sources declare: the OpenClaw adapter's config, workspace and
+#: profile selectors (``onboarding_sources/openclaw.py``) and mise's data root
+#: (``env.mise_data_dir``).
+_UNDECLARED_HOME_OVERRIDES = (
+    "OPENCLAW_CONFIG_PATH",
+    "OPENCLAW_WORKSPACE_DIR",
+    "OPENCLAW_PROFILE",
+    "MISE_DATA_DIR",
+)
+
+
+def isolate_user_home(monkeypatch: pytest.MonkeyPatch, user_home: Path) -> None:
+    """Point an in-process boot's view of the developer's home at ``user_home``.
+
+    What it covers, and nothing more:
+
+    * ``HOME`` and ``USERPROFILE`` (plus ``HOMEDRIVE``/``HOMEPATH`` on Windows),
+      ``APPDATA``/``LOCALAPPDATA`` and ``XDG_DATA_HOME``/``XDG_CACHE_HOME``/
+      ``XDG_STATE_HOME`` are set under ``user_home`` on every OS.
+    * Every home-override variable production declares is dropped: the agent
+      auth table's (``host_auth.home_override_env_vars()``), each builtin import
+      source's, and :data:`_UNDECLARED_HOME_OVERRIDES`. ``XDG_CONFIG_HOME`` is
+      kept: the rootdir conftest already points it at its own per-session (one
+      per xdist worker) tmp dir.
+    * ``PATH``, when one is inherited, leads with this interpreter's own
+      directory (an empty one stays empty). ``HOME`` and
+      ``PATH`` are a pair: a version-manager shim first on an inherited
+      ``PATH`` finds no tool state under the new home, and the fake backend's
+      ``#!/usr/bin/env python3`` would reach it.
+    * The usage reader, which takes kiro-cli's bearer token for the credit pill,
+      is stubbed to find no candidate (``kiro_usage_api._candidate_tokens``).
+      The store paths it reads were bound at import from the real home and are
+      a security anchor, so the reader is stubbed and the anchor left alone.
+
+    The other bindings production takes from the home at import time and writes
+    through are the rootdir conftest's ``_SHARED_KIRO_PATHS`` pin, per test.
+    """
+    pinned = {
+        "HOME": user_home,
+        "USERPROFILE": user_home,
+        "APPDATA": user_home / "AppData" / "Roaming",
+        "LOCALAPPDATA": user_home / "AppData" / "Local",
+        "XDG_DATA_HOME": user_home / ".local" / "share",
+        "XDG_CACHE_HOME": user_home / ".cache",
+        "XDG_STATE_HOME": user_home / ".local" / "state",
+    }
+    for key, value in pinned.items():
+        monkeypatch.setenv(key, str(value))
+    if os.name == "nt":
+        monkeypatch.setenv("HOMEDRIVE", user_home.drive)
+        monkeypatch.setenv("HOMEPATH", str(user_home)[len(user_home.drive) :])
+    overrides = {
+        *host_auth.home_override_env_vars(),
+        *(key for source in onboarding_sources._core_sources() for key in source.env_vars),
+        *_UNDECLARED_HOME_OVERRIDES,
+    }
+    for key in sorted(overrides - set(pinned) - {"XDG_CONFIG_HOME"}):
+        monkeypatch.delenv(key, raising=False)
+    inherited_path = os.environ.get("PATH", "")
+    if inherited_path:
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join([os.path.dirname(sys.executable), inherited_path])
+        )
+    monkeypatch.setattr(kiro_usage_api, "_candidate_tokens", lambda: [])
+
+
+#: AWS identity the environment can select or carry inline, besides the
+#: credential pointers ``acp.client.CREDENTIAL_POINTER_ENV_VARS`` declares.
+_AWS_IDENTITY_ENV = (
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_ROLE_ARN",
+)
+
+
+def isolate_credentials(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Keep the credentials the environment carries out of an in-process boot.
+
+    * Channel credentials (``CREDENTIAL_KEYS``) are dropped: the orchestrator
+      would open their transports (module docstring, "The boot reaches no real
+      channel").
+    * AWS: the cloud routes shell the real ``aws`` CLI, so a sweep that reaches
+      ``/api/cloud/preflight`` on a developer machine would exercise their
+      account. The CLI's two files point at paths that do not exist under
+      *home*; every other credential pointer
+      ``acp.client.CREDENTIAL_POINTER_ENV_VARS`` declares (the web-identity
+      token file, the container credential endpoint and its bearer) is
+      dropped, with the profile selectors, inline keys and ``AWS_ROLE_ARN``
+      (:data:`_AWS_IDENTITY_ENV`). Every ``aws`` call then fails to resolve
+      credentials before it reaches the network.
+    * GitHub: the ``GH_``/``GITHUB_`` names ``github_runner.GH_ENV_PASSTHROUGH``
+      forwards to ``gh`` (its tokens, host and ``GH_CONFIG_DIR``) are dropped.
+      ``gh``'s default login directory sits under ``XDG_CONFIG_HOME``, which
+      the rootdir conftest moves.
+    """
+    for key in CREDENTIAL_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    aws_files = {
+        "AWS_CONFIG_FILE": home / "no-aws" / "config",
+        "AWS_SHARED_CREDENTIALS_FILE": home / "no-aws" / "credentials",
+    }
+    github = {key for key in github_runner.GH_ENV_PASSTHROUGH if key.startswith(("GH_", "GITHUB_"))}
+    dropped = {*acp_client.CREDENTIAL_POINTER_ENV_VARS, *_AWS_IDENTITY_ENV, *github}
+    for key in sorted(dropped - set(aws_files)):
+        monkeypatch.delenv(key, raising=False)
+    for key, path in aws_files.items():
+        monkeypatch.setenv(key, str(path))
+
+
 @pytest.fixture
 def integration_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unpinned_agent_spec_home: Any
 ) -> Path:
     """A fresh, isolated ``KIROCREW_HOME`` with the fake model wired in.
 
-    Mirrors ``kiro_crew.testing.harness.spawn_feature_gateway``'s environment
-    so a test that passes here and fails in E2E differs only in the process
-    boundary, never in configuration.
+    Modelled on ``kiro_crew.testing.harness.spawn_feature_gateway``'s
+    environment, so a test that passes here and fails in E2E mostly differs in
+    the process boundary. This boot runs in the test process, though, so it also
+    keeps out what that subprocess gateway inherits from its caller: the
+    developer's home (``isolate_user_home``), channel credentials and the AWS
+    profile.
     """
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # The developer's own home stays out of the boot too (``isolate_user_home``
+    # lists what that covers): the gateway runs in this process, so without it
+    # the onboarding import scan walks their foreign agents' homes and the
+    # credit pill reads kiro-cli's credential store.
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    isolate_user_home(monkeypatch, user_home)
     # Isolate the agent-spec home too: boot rewrites managed MCP specs under
     # ``kiro_agents_dir()``, which must never be the operator's ``~/.kiro/agents``.
     monkeypatch.setenv("KIRO_HOME", str(home / "kiro"))
@@ -1072,27 +1259,8 @@ def integration_home(
     # raise instead of warn, the same discipline the other gateway-booting jobs
     # enforce.
     monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_PERSIST", "1")
-    # No channel credential may reach the boot (module docstring, "The boot
-    # reaches no real channel"): the orchestrator would open the transport.
-    for key in CREDENTIAL_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    # Nor the operator's AWS identity: the cloud routes shell the real ``aws``
-    # CLI, which reads ``~/.aws`` (env-var credentials are not supported there),
-    # so a sweep that reaches ``/api/cloud/preflight`` on a developer machine
-    # with a default profile would exercise their account. Both files the CLI
-    # reads are pointed at paths that do not exist under this home, and the
-    # profile selectors are dropped, so every ``aws`` call fails to resolve
-    # credentials before it reaches the network.
-    monkeypatch.setenv("AWS_CONFIG_FILE", str(home / "no-aws" / "config"))
-    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(home / "no-aws" / "credentials"))
-    for key in (
-        "AWS_PROFILE",
-        "AWS_DEFAULT_PROFILE",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    # Nor any credential the environment carries (``isolate_credentials``).
+    isolate_credentials(monkeypatch, home)
     return home
 
 

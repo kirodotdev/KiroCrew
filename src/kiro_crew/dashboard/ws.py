@@ -1041,15 +1041,20 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         # after the connect snapshot and before any later broadcast can reach
         # it -- so the client's held member_projection frames can be pruned
         # against a lastSeqs baseline it received first. Owner surface only:
-        # app tokens never receive member_projection / members_subscribed (both
-        # are classified owner-only in ws_event_scope), so skip them here too.
-        if is_dashboard_user:
+        # app tokens and non-owner dashboard sessions never receive
+        # member_projection / members_subscribed (the hub's per-socket gate refuses
+        # them), so the baseline goes to the owner's socket alone.
+        if owner_request:
+            # A direct send, so the grant is recorded here: the hub's per-socket
+            # gate, which audits broadcast frames, never sees it.
+            _audit_grant_quietly(_grant_auditee(ws, ws_app), "members_subscribed")
             # Isolated: a failure to send this baseline must not take the
             # provider refresh scheduling below down with it.
             try:
                 await state.send_members_subscribed(ws)
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
+        if is_dashboard_user:
             # The same shape for SLOT folds, and the same reason: a revision floor the
             # client holds BEFORE it issues a baseline read, so a read already on the
             # wire cannot resolve later and overwrite a newer pushed value. Isolated for

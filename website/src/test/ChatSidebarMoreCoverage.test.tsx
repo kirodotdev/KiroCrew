@@ -1049,6 +1049,8 @@ describe('ChatSidebar — board column drag targets', () => {
     const status = column('col-status')
     expect(fireEvent.dragOver(status, { dataTransfer: transfer(['text/plain']) })).toBe(false)
     expect(status.className).toContain('ring-accent')
+    // The refusal hint belongs to derived lanes only; a tag lane takes the card.
+    expect(screen.queryByTestId('column-derived-hint-col-status')).toBeNull()
 
     const plain = column('col-plain')
     // A plain label column cannot receive a card, so the drag is not accepted.

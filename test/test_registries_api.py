@@ -333,6 +333,33 @@ class TestPutRegistries:
             assert body["registries"][0]["trust"] == "index"
 
     @pytest.mark.asyncio
+    async def test_get_reports_owner_for_a_row_the_operator_granted(self, tmp_path, monkeypatch):
+        """The keystone grant is the one config-row path to `owner`, and GET shows it."""
+        from kiro_crew.apps.registry_pipeline import sources
+        from kiro_crew.config.loader import _invalidate_config_cache, registry_trust_path
+
+        home, cfg = _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(sources, "_pinned_registries", lambda: [])
+        repo = "https://git.example.test/team/apps-index.git"
+        cfg.write_text(
+            json.dumps({"registries": [{"name": "mine", "repo": repo, "branch": "main"}]}),
+            encoding="utf-8",
+        )
+        _invalidate_config_cache()
+        registry_trust_path().write_text(
+            json.dumps({"version": 1, "owner_trusted": [repo]}),
+            encoding="utf-8",
+        )
+        try:
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/apps/registries")
+                assert resp.status == 200
+                body = await resp.json()
+                assert body["registries"][0]["trust"] == "owner"
+        finally:
+            _invalidate_config_cache()
+
+    @pytest.mark.asyncio
     async def test_empty_list_clears_registries(self, tmp_path, monkeypatch):
         home, cfg = _setup_env(tmp_path, monkeypatch)
         cfg.write_text(

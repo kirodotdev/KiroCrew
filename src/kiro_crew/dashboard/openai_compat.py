@@ -382,8 +382,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # Busy check — prevent concurrent writes to the same slot. ``running``
-        # also covers a pending stage boundary while no turn occupies ``slot.task``.
+        # Busy check — prevent concurrent writes to the same slot.
         if slot.running is True:
             sel().log_api_access(
                 caller=request.remote or "",

@@ -327,7 +327,9 @@ def test_kiro_injects_the_api_key_and_kas_strips_it(monkeypatch):
     """Opposite actions on the same variable, which is why this is a seam.
 
     A harness that inherited the other's answer would either withhold the key
-    kiro-cli needs or hand KAS a credential of the wrong token type.
+    kiro-cli needs or let an ambient key override a Crew-owned KAS relay's
+    vault credential. A caller that does not name the auth owner gets the
+    Crew-owned strip.
     """
     from kiro_crew.config import loader as loader_mod
 
@@ -341,7 +343,37 @@ def test_kiro_injects_the_api_key_and_kas_strips_it(monkeypatch):
 
     harness_for(ACP_BACKEND_KIRO).apply_spawn_env({})
     harness_for(ACP_BACKEND_KAS).apply_spawn_env({})
-    assert calls == ["inject", "strip"]
+    harness_for(ACP_BACKEND_KAS).apply_spawn_env({}, cli_owned_auth=False)
+    assert calls == ["inject", "strip", "strip"]
+
+
+def test_cli_owned_kas_relay_is_handed_the_api_key(monkeypatch, tmp_path):
+    """A cli-owned relay authenticates itself, and the key IS a kiro-cli sign-in.
+
+    kiro-cli keeps no stored record of an API-key login -- the variable is the
+    whole login -- so stripping it leaves an API-key-only host's relay dying at
+    the launcher's "You are not logged in". Driven through the real loader, so
+    the inherited value and the data home's ``.env`` fallback are both covered.
+    """
+    from kiro_crew.config import loader as loader_mod
+
+    harness = harness_for(ACP_BACKEND_KAS)
+
+    inherited = {"KIRO_API_KEY": "inherited-key"}
+    harness.apply_spawn_env(inherited, cli_owned_auth=True)
+    assert inherited["KIRO_API_KEY"] == "inherited-key"
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("KIRO_API_KEY=file-key\n", encoding="utf-8")
+    monkeypatch.setattr(loader_mod, "env_path", lambda: env_file)
+    from_file: dict[str, str] = {}
+    harness.apply_spawn_env(from_file, cli_owned_auth=True)
+    assert from_file["KIRO_API_KEY"] == "file-key"
+
+    # The Crew-owned relay still loses it, inherited or not.
+    crew_owned = {"KIRO_API_KEY": "inherited-key"}
+    harness.apply_spawn_env(crew_owned, cli_owned_auth=False)
+    assert "KIRO_API_KEY" not in crew_owned
 
 
 # ── Seam 2: initialize ──

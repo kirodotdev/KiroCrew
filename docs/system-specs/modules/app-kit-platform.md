@@ -503,7 +503,7 @@ calls `_reset_all_sessions`, which drains every active session **and** the warm
 pool, so the next cold start reads the reverted row rather than the revert lying
 dormant. And the only writer that puts the live port back is
 `reconcile_enabled_app_resources`, whose single call site is the gateway boot path
-(`dashboard/server.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
+(`dashboard/server_runtime/app_platform.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
 on an UNRESOLVED agent binding, which a reverted port does not produce. So the
 self-heal is a restart, and nothing shorter. Both axes above plus this open cell
 are enumerated in one table by
@@ -719,7 +719,7 @@ URL deletes the whole class — neither piece exists any more. A duplicate check
 kept only as a cheap invariant: with distinct segments the filesystem cannot
 produce two identical routes, so a hit means the convention changed under us.
 
-Writer: `dashboard/server.py::discover_app_window_entries`
+Writer: `dashboard/server_runtime/static_assets.py::discover_app_window_entries`
 (`APP_WINDOW_URL_PREFIX = "app-windows"`);
 exclusion: `dashboard/token_auth.py::register_app_window_paths`.
 
@@ -2271,18 +2271,126 @@ that already agrees with it. `PUT /api/apps/registries` refuses to create a
 conflicting claim, so the case that reaches this rule is a `config.json` that
 predates the build pin.
 
-**Only the BUILD can grant `owner`.** `_registry_trust_tier` resolves the tier
-solely from `AppsLoader.default_registries()`; a row in `config.json` reads as
-`index` no matter what it declares. The reason is that `config.json` is
-agent-writable — `security.py` says so directly, with the check inline
-(`is_sensitive_bash_command("echo x > …/config.json")` is `None`) — so a tier read
-from there would not be an operator's assertion at all. A prompt-injected shell
-could mint `owner`, and the *same* write also adds its chosen host to
-`_configured_registry_hosts()` and lets it control the index that
+**`owner` has exactly two sources, and `config.json` is not one of them.**
+`_registry_trust_tier` resolves the tier from `AppsLoader.default_registries()`
+for a build-pinned row, and from the operator's keystone grant
+(`registry_trust.json`, `config.registry_trust_path`) for a hand-configured row;
+a row in `config.json` reads as `index` no matter what it declares. The reason
+is that `config.json` is agent-writable — `security.py` says so directly, with
+the check inline (`is_sensitive_bash_command("echo x > …/config.json")` is
+`None`) — so a tier read from there would not be an operator's assertion at all.
+A prompt-injected shell could mint `owner`, and the *same* write also adds its
+chosen host to `_configured_registry_hosts()` and lets it control the index that
 `_owner_tier_confirmed` re-fetches: every layer downstream of that decision would
 already be satisfied by the one write that started it. `default_registries()`
-ships in the wheel, so an `owner` tier is a claim the build makes and the agent
-cannot forge.
+ships in the wheel, so a pinned `owner` tier is a claim the build makes and the
+agent cannot forge.
+
+**The operator grant (`registry_trust.json`).** Settings > Security lists the
+operator's configured registries and lets the operator grant each one `owner`
+trust; the dashboard writes `POST /api/security/trusted-registries` (revoke:
+`…/trusted-registries/revoke`, snapshot: `GET …/trusted-registries`, handlers in
+`dashboard/handlers/security.py`). The grant is on the same read+write keystone
+floor as `denied_commands.json` — `security._CREW_SECRET_LEAVES` (the agent's
+file tools refuse it), `sandbox._CREW_READONLY_LEAVES` and
+`_CREW_CHILD_WITHHELD_LEAVES` (the OS sandbox mounts it read-only / withholds it
+from a child) — and the two write endpoints are owner-gated
+(`require_owner_dashboard_request`), so the agent can reach the grant through no
+leg; the snapshot read stays open to any authenticated dashboard caller, like
+every other read in the module. The keystone read is TOLERANT of the sandbox's
+own pre-creation: the sandbox materialises this leaf as an empty `{}` document
+(`sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES`), so the strict mutation read
+treats an empty object exactly like an absent file — the versioned-empty store —
+and the FIRST grant lands rather than being refused as a wrong-version document.
+A NON-empty document is held to the schema: only a version-1 document whose
+`owner_trusted` is a list parses; an unknown `version`, a dict-shaped
+`owner_trusted`, or any other shape is refused. The read/write core lives in
+`apps/registry_trust.py`, a leaf both `dashboard/handlers/security.py` and
+`apps/routes.py` import (`security.py` top-level imports `apps.routes`, so the
+writer cannot live there without a cycle). Properties that carry the design:
+
+- **Keyed by REPOSITORY, never by name.** `_granted_owner_repos` returns a
+  `frozenset` of credential-free repo URLs and `_operator_granted_owner` matches the
+  config row's `repo` with `_same_git_target`. A grant keyed by name could be
+  redirected at any index by rewriting the row's `repo` in agent-writable
+  `config.json`; keyed by the URL the operator saw when granting, a rewritten row
+  simply stops matching and is `index` again. Renaming the row keeps the grant,
+  and so does changing its branch: the grant covers every ref of the repository.
+  Keying on (repo, branch) would not narrow anything: whoever can create a branch
+  in the granted repository can rewrite the granted branch too, so the branch is
+  not a separate trust decision. The grant confirm says so, and
+  `TestTheGrantCoversEveryBranch` pins a branch rewrite as accepted.
+- **Configured rows only; pinned rows refused.** The grant endpoint accepts a
+  `repo` only when it is one of the operator's own `config.json` rows (a decision
+  about a registry the operator can see, never about an arbitrary URL) and
+  refuses a build-pinned registry's repository, whose tier is the build's to
+  state; the runtime reader ignores such a grant as well. Every malformed shape of
+  the file — not JSON, wrong `version`, a credentialed or unsupported key — reads
+  as no grants.
+- **A removed row's grant stays visible.** Removing a registry (in the editor or
+  by a direct `config.json` edit) does not touch the keystone. The snapshot lists
+  every stored grant whose repository matches no config row as its own
+  `served: false`, `not_served_reason: not_configured`, `granted: true` row with a
+  Revoke, so a dormant grant is never alive AND invisible. The grant endpoint holds
+  the shared config lock (`_get_config_lock`) across its config re-read and
+  keystone write, so a grant cannot validate against a row that is being removed.
+  Every keystone read runs off the event loop.
+- **A symlinked or hardlinked keystone confers no trust.** The sandbox's
+  read-only mount seals the one path the keystone was mounted on, not its inode,
+  so a keystone that is a symlink (its name lives in the writable data home) or a
+  regular file carrying a second hardlink (the alias is a different, unsealed
+  path) survives the seal while a sandboxed process can still rewrite the bytes a
+  grant is read from; `sandbox._warn_if_alias_backed` only warns. The alias
+  refusal (`registry_trust._refuse_keystone_alias`) opens through
+  `platform_compat.open_file_no_reparse` — which refuses a symlink or Windows
+  reparse point at the final component in the same operation that opens it — then
+  `fstat`s that descriptor and refuses `st_nlink > 1` or a non-regular file,
+  raising `RegistryTrustCorruptError`, WITHOUT reading any bytes. The decoding
+  reader (`registry_trust._read_keystone_text_no_alias`, reached by every strict
+  read and so by the grant and revoke writers, AND by the clone-time consumer
+  `sources._granted_owner_repos`, which treats the refusal as "no grants in
+  force") calls that alias check and then decodes UTF-8. So a linked keystone
+  reads as corrupt: the Security-page snapshot carries `corrupt`/`corrupt_detail`
+  and the writers refuse to mutate the aliased inode.
+- **Two config rows under one identity key are both served, each on its own
+  grant.** `config.json` is agent-writable, so two rows sharing one identity key
+  (`_registry_identity_key`, casefolded) can coexist; both stay listed as on a
+  build without grants. Every credential path reads the tier off the row object
+  whose index it fetches (`_owner_tier_confirmed`, the store-art prewarm, the
+  snapshot), never by re-resolving the name, so a sibling row cannot borrow
+  another repository's grant.
+
+A grant or revocation expires the registry's index cache (`_expire_cache_file`),
+so the next store listing re-reads the index under the new tier rather than
+waiting out the TTL. `GET /api/apps/registries` reports the tier in force, so a
+granted operator row shows `owner`; it carries no served-state fields. The `GET …/trusted-registries` snapshot
+reports per row `served` (whether the merge lists it) with a `not_served_reason`
+(`pinned_name` / `not_configured`) when it does not, `granted`
+(whether a stored grant names its repository, independent of `served`), and
+`trusted`; a stored grant whose repository matches no config row is surfaced as
+its own `served: false`, `not_served_reason: not_configured`, `granted: true` row
+so it can be revoked rather than re-arming. A top-level `corrupt` flag is set when
+the keystone will not parse.
+
+**On-disk shape: a version-1 list.** `owner_trusted` is a JSON LIST of
+credential-free repo URLs at `version` 1 (`_REGISTRY_TRUST_VERSION`); the grant
+is the entry itself, because SEL already timestamps each grant, so there is no
+per-repo record body for any reader to consume (`_granted_owner_repos` returns a
+`frozenset[str]`). Version 1 is the only shape a reader accepts: an unknown-version
+document, or one whose `owner_trusted` is a dict rather than a list, is corrupt
+and reads as no grants (the schema is validated in one place,
+`_owner_trusted_repos_from_record`, which the tolerant runtime read and the strict
+mutation read share). The blast radius is the pinned `owner` tier's: the registry's authors choose which of
+the operator's reachable private repositories are cloned with the machine's git
+identity, which is what the grant dialog says before it writes.
+
+**A corrupt keystone is visible.** When `registry_trust.json` will not parse (bad
+JSON, an unknown version, the wrong `owner_trusted` shape — the alias case too),
+the grant/revoke writers refuse to mutate it. `build_trusted_registries_snapshot`
+reads it strictly first and carries a top-level `corrupt`/`corrupt_detail` with
+every row `trusted: false`, and the Security page shows a notice. No product
+writer produces a corrupt file, so there is no in-app reset: the operator fixes or
+deletes the file, and the error messages say so.
 
 **Two axes, kept separate: `trust` and `review`.** `trust` answers "may this
 registry's apps clone with this machine's git credentials?"; `review` answers
@@ -2313,10 +2421,9 @@ Consequences worth stating, because they close off designs that look reasonable:
   reading the tier off the pinned list alone would keep granting `owner` for a
   registry whose apps are not being listed.
 - `PUT /api/apps/registries` **refuses** `trust: "owner"` rather than storing it,
-  and `GET` reports `index` for every operator row. Persisting or echoing a tier
-  the runtime ignores would report a grant that does not exist, which is worse
-  than declining it. There is correspondingly nothing to preserve across a
-  replace-all PUT: an operator row's tier is always `index`.
+  granted or not. `GET` reports the tier in force (an operator grant reads
+  `owner`), and the dashboard sends back only each row's name, repo and branch,
+  so nothing is echoed. A stored operator row's tier is always `index`.
 - No dashboard control writes the tier, and adding one would not help — the
   question is not how the value is typed but whether the file it lands in is
   agent-writable.
@@ -2504,7 +2611,7 @@ it because the `Content-Type` is derived from the EXTENSION, not the bytes — w
 art named `.png` whose content is markup could still be sniffed into a document.
 
 Set on the response rather than in the middleware because
-`dashboard/server.py`'s security-header middleware uses `setdefault` precisely so a
+`dashboard/server_runtime/security_headers.py`'s security-header policy uses `setdefault` precisely so a
 handler can tighten its own answer. Applied to EVERY art response, not only `.svg`: a
 per-extension shortcut is one `if` away from a gap, and a mutation that narrows it to
 `.svg` is one of the cases pinned.
@@ -2580,7 +2687,7 @@ enumerates the `/apps/` sub-namespaces that have real handlers. A verb missing
 from it is classified as a React Router navigation, so the middleware answers the
 SPA shell and an `<img>` receives HTML with a 200 and renders nothing — silent,
 because the handler is never the thing that fails. The pre-existing drift guard
-cannot catch this (it scans `server.py` only, and its `"{" in p` escape hatch
+cannot catch this (it scans `server.py` and its `server_runtime/` owners only, and its `"{" in p` escape hatch
 treats any pattern route as a real handler without consulting the regex), so
 `test_apps_routes_get_paths_are_matched_by_the_apps_spa_regex` instantiates each
 `/apps/` route literal in `apps/routes.py` and matches the concrete path.
@@ -3086,7 +3193,7 @@ change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `backend.py` | The facade: the only import path and patch surface, plus the spawn transaction (`start_app_backend`, `_start_app_backend`, `_clear_failed_spawn_state`, and `_start_app_backend_body` with the entry-point classification, child environment, sandbox wrap, and spawn and adoption records it builds) and `_pid_alive` |
-| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, and the table reads the proxy and routes use |
+| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, the table reads the proxy and routes use, and `running_spawned_backend_pids`, the read the runtime reconciler's membership uses |
 | `backend_runtime/probe.py` | The loopback health probe: the `healthCheck` path gate, `HealthProbeOutcome`, and the failure detail and hint the logs print |
 | `backend_runtime/pidfile.py` | `app_backends.pids.json`: the start-identity probe, the read and the atomic write, the record, the identity-conditional forget, and the strict Windows retirement writer |
 | `backend_runtime/ports.py` | Port reservation (`_find_free_port`, `_reserve_free_port`, `_claim_port`) and listener attribution (the survival check, the bounded ancestry walk, the adoption owner capture), plus the recorded and unstopped port reads uninstall uses |
@@ -3105,8 +3212,8 @@ facade imports every owner at its own import, so an owner's `from ... import`
 bindings are taken once, as the one-module backend took them. `backend.py`
 re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
 `hooks_integration.py`, `bridges.py`, `manager.py`, `interpreter.py`,
-`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py` and the dashboard
-server keep one import path.
+`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py`, `runtime_reconcile.py`
+and the dashboard server keep one import path.
 
 Every patch seam stays on the facade. A write to `backend.<name>` reaches every module
 that binds that name, and each owner reads its own bindings, so a

@@ -6,7 +6,7 @@ import { useAppSelector } from '../../store'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_INSTANCE_SESSIONS } from '../../utils/previewFlags'
 import { api } from '../../api/client'
-import { useInstanceSessions } from '../../hooks/useInstanceSessions'
+import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
 import { i18nT } from '../../i18n/t'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
 import { useDebouncedSessionSearch } from './search'
@@ -28,7 +28,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // partial stores omit the instances slice entirely (unlike the instances-own
   // components, which only ever mount with it).
   const hasWarmInstances = useAppSelector(s => Object.keys(s.instances?.warm ?? {}).length > 0)
-  // Live sessions on connected remote instances, merged into the list below.
+  // Live sessions on remote instances, grouped per crew by the sidebar.
   // The flag is read HERE and passed in, so a user who has not opted in issues no
   // per-instance request at all — this component mounts for every dashboard user,
   // so gating the render would gate the rows but not the wire.
@@ -154,6 +154,12 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // the conductor lane's missing creators -- and nowhere else: anything describing
   // what is ON SCREEN reads `allRows`.
   const allLiveSlots = useAppSelector(st => st.dashboard.slots)
+  // One sidebar group per crew, preview only. Read off `allRows` so a local slot
+  // whose turns run on a crew gives that crew a group even while it is offline.
+  const crewGroups = useMemo(
+    () => (instanceSessionsEnabled ? crewGroupsFor(instancesList, allRows) : []),
+    [instanceSessionsEnabled, instancesList, allRows],
+  )
   // `selectInstance` stays for the FEDERATED OLDER-SESSIONS rows the pane renders,
   // which genuinely have nowhere local to go: a history row names a closed
   // session on the peer, with no live peer slot to bind, so switching to that
@@ -162,6 +168,6 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   const { selectInstance } = useSelectInstance(instancesList)
   return {
     historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
-    selectInstance,
+    selectInstance, crewGroups,
   }
 }

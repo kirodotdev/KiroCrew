@@ -1,103 +1,138 @@
-import { test, expect } from '@playwright/test'
+import { test as base, expect, type APIRequestContext, type Page, type Response } from '@playwright/test'
+import { randomUUID } from 'crypto'
 import { pickFromDropdown } from './helpers/dropdown'
 
+interface HookRow {
+  id: string
+  name: string
+  event: string
+  command: string
+  enabled: boolean
+}
+
+/** Seeded and tracked hooks a test owns; teardown deletes exactly these ids. */
+interface OwnHooks {
+  seed(fields?: Partial<Omit<HookRow, 'id'>>): Promise<HookRow>
+  track(id: string): void
+  read(id: string): Promise<HookRow | undefined>
+}
+
+/** A name no other test, worker or repeat can collide with. */
+const uniqueName = (label: string) => `Playwright_${label}_${randomUUID().slice(0, 8)}`
+
+async function listHooks(request: APIRequestContext): Promise<HookRow[]> {
+  const res = await request.get('/api/hooks')
+  expect(res.status(), await res.text()).toBe(200)
+  return (await res.json()).hooks as HookRow[]
+}
+
+/**
+ * Every test owns the hooks it acts on. The page lists whatever the gateway
+ * holds, sorted by name, so acting on the first row would act on a hook another
+ * test, worker or person created. Teardown deletes ONLY the ids this test
+ * created, never a name sweep (the knowledge.spec.ts rule), so pointing the
+ * suite at a live gateway cannot touch anyone else's hooks.
+ */
+const test = base.extend<{ ownHooks: OwnHooks }>({
+  ownHooks: async ({ request }, use) => {
+    const ids = new Set<string>()
+    await use({
+      async seed(fields = {}) {
+        // Off by default: a seeded hook never fires on another spec's prompt,
+        // and Test runs a hook whether or not it is enabled.
+        const res = await request.post('/api/hooks', {
+          data: {
+            name: uniqueName('Seed'),
+            event: 'UserPromptSubmit',
+            command: 'echo "E2E test"',
+            enabled: false,
+            ...fields,
+          },
+        })
+        expect(res.status(), await res.text()).toBe(200)
+        const { hook } = await res.json()
+        ids.add(hook.id)
+        return hook as HookRow
+      },
+      track(id) {
+        ids.add(id)
+      },
+      async read(id) {
+        return (await listHooks(request)).find(h => h.id === id)
+      },
+    })
+    // Every id is attempted before anything is asserted, so one refused
+    // delete cannot leave the rest behind. 404: the test deleted its own hook.
+    const refused: string[] = []
+    for (const id of ids) {
+      const res = await request.delete(`/api/hooks/${encodeURIComponent(id)}`)
+      if (![200, 404].includes(res.status())) refused.push(`${id}: ${res.status()} ${await res.text()}`)
+    }
+    expect(refused, 'hooks this test created and could not delete').toEqual([])
+  },
+})
+
+/** The row whose Name cell is exactly *name* (a substring match could pick a sibling). */
+const rowFor = (page: Page, name: string) =>
+  page.getByRole('row').filter({ has: page.getByRole('cell', { name, exact: true }) })
+
+/** The response to *method* on exactly *pathname*, armed before the action that sends it. */
+const responseTo = (page: Page, method: string, pathname: string): Promise<Response> =>
+  page.waitForResponse(r => r.request().method() === method && new URL(r.url()).pathname === pathname)
+
+const newHookButton = (page: Page) => page.getByRole('button', { name: '+ New Hook', exact: true })
+
+/**
+ * Open the page and wait until its list has loaded: HooksPage renders only a
+ * loading line until GET /api/hooks settles, so the toolbar button is the ready
+ * signal. Seed BEFORE calling this, so that first GET already holds the row.
+ */
+async function gotoHooks(page: Page) {
+  await page.goto('/hooks', { waitUntil: 'domcontentloaded' })
+  await expect(newHookButton(page)).toBeVisible({ timeout: 10000 })
+}
+
 test.describe('Hooks Page E2E Tests', () => {
-  test.beforeEach(async ({ page }) => {
-    // Navigate directly to hooks page
-    await page.goto('/hooks', { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(500)
-  })
-
-  // Clean up test-created hooks after all tests
-  test.afterAll(async ({ browser }) => {
-    const page = await browser.newPage()
-    await page.goto('/hooks', { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(1000)
-
-    // Delete "Playwright_Test_Hook" if it exists
-    const testHooks = page.locator('div').filter({ hasText: /^Playwright_Test_Hook$/ })
-    const testHookCount = await testHooks.count()
-    
-    for (let i = 0; i < testHookCount; i++) {
-      // Row-scoped: a page-wide div filter resolves to the outermost match, so
-      // its first Delete button could belong to an unrelated hook's row.
-      const hookRow = page.getByRole('row').filter({ hasText: 'Playwright_Test_Hook' }).first()
-      const deleteButton = hookRow.getByRole('button', { name: /^delete$/i }).first()
-
-      if (await deleteButton.isVisible()) {
-        await deleteButton.click() // arms
-        const confirmButton = hookRow.getByRole('button', { name: /^delete\?$/i }).first()
-        await expect(confirmButton).toBeVisible({ timeout: 2000 })
-        await confirmButton.click()
-        await page.waitForTimeout(500)
-      }
-    }
-
-    // Delete "Playwright_Updated_Hook" if it exists (from edit test)
-    const updatedHooks = page.locator('div').filter({ hasText: /^Playwright_Updated_Hook$/ })
-    const updatedHookCount = await updatedHooks.count()
-    
-    for (let i = 0; i < updatedHookCount; i++) {
-      const hookRow = page.getByRole('row').filter({ hasText: 'Playwright_Updated_Hook' }).first()
-      const deleteButton = hookRow.getByRole('button', { name: /^delete$/i }).first()
-
-      if (await deleteButton.isVisible()) {
-        await deleteButton.click() // arms
-        const confirmButton = hookRow.getByRole('button', { name: /^delete\?$/i }).first()
-        await expect(confirmButton).toBeVisible({ timeout: 2000 })
-        await confirmButton.click()
-        await page.waitForTimeout(500)
-      }
-    }
-
-    await page.close()
-  })
-
   test('navigates to Hooks page and displays interface', async ({ page }) => {
-    // Should see hooks page
-    await expect(
-      page.getByRole('button', { name: /\+ new hook/i })
-    ).toBeVisible({ timeout: 10000 })
-
-    // Should see "+ New Hook" button
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible()
+    await gotoHooks(page)
   })
 
-  test('displays existing hooks', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
+  test('displays existing hooks', async ({ page, ownHooks }) => {
+    const hook = await ownHooks.seed({ name: uniqueName('Display'), command: 'echo "display test"' })
+    await gotoHooks(page)
 
-    // Wait for hooks to load
-    await page.waitForTimeout(1000)
-
-    // Should see hooks container
-    await expect(page.locator('body')).toContainText(/hooks/i)
+    const row = rowFor(page, hook.name)
+    await expect(row).toBeVisible()
+    await expect(row).toContainText('UserPromptSubmit')
+    await expect(row).toContainText('echo "display test"')
   })
 
-  test('creates a new hook', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
+  test('creates a new hook', async ({ page, ownHooks }) => {
+    await gotoHooks(page)
+    await newHookButton(page).click()
 
-    // Click "+ New Hook" button
-    await page.getByRole('button', { name: /\+ new hook/i }).click()
+    const nameInput = page.getByPlaceholder('Hook name', { exact: true })
+    await expect(nameInput).toBeVisible()
+    const name = uniqueName('Create')
+    await nameInput.fill(name)
+    await page.getByPlaceholder("echo 'hook fired'").fill('echo "E2E test"')
 
-    // Should show create form
-    await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
+    const created = responseTo(page, 'POST', '/api/hooks')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    const res = await created
+    expect(res.status(), await res.text()).toBe(200)
+    const { hook } = await res.json()
+    // Tracked before anything else can fail, so teardown still removes it.
+    ownHooks.track(hook.id)
+    expect(hook).toMatchObject({ name, command: 'echo "E2E test"' })
 
-    // Fill in hook details
-    await page.getByPlaceholder(/hook name/i).fill('Playwright_Test_Hook')
-    await page.getByPlaceholder(/echo 'hook fired'/i).fill('echo "E2E test"')
-
-    // Click save
-    await page.getByRole('button', { name: /^save$/i }).click()
-
-    // Form should close
-    await expect(page.getByPlaceholder(/hook name/i)).not.toBeVisible({ timeout: 5000 })
-
-    // Hook should appear in list - use first() in case it was created multiple times
-    await expect(page.getByText('Playwright_Test_Hook').first()).toBeVisible({ timeout: 3000 })
+    await expect(nameInput).toBeHidden()
+    await expect(rowFor(page, name)).toBeVisible()
   })
 
   test('cancels hook creation', async ({ page }) => {
-    await page.getByRole('button', { name: /\+ new hook/i }).click()
+    await gotoHooks(page)
+    await newHookButton(page).click()
 
     await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
 
@@ -106,106 +141,95 @@ test.describe('Hooks Page E2E Tests', () => {
 
     // Form should close
     await expect(page.getByPlaceholder(/hook name/i)).not.toBeVisible({ timeout: 3000 })
+    await expect(newHookButton(page)).toBeVisible()
   })
 
-  test('edits an existing hook', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
-
-    // Self-contained: create a hook with a known-valid event, then edit THAT
-    // row. Using getByRole('button',{name:/edit/i}).first() previously landed on
-    // whichever hook sorts first -- on the seeded fixture that is a legacy-event
-    // hook whose edit form the current UI does not open, so the assertion timed
-    // out. Editing a hook we create (valid event, unique name) is deterministic
-    // and row-scoped.
-    const hookName = `Playwright_Edit_${Date.now()}`
-    await page.getByRole('button', { name: /\+ new hook/i }).click()
-    await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
-    await page.getByPlaceholder(/hook name/i).fill(hookName)
-    await page.getByPlaceholder(/echo 'hook fired'/i).fill('echo "edit test"')
-    await page.getByRole('button', { name: /^save$/i }).click()
-    await expect(page.getByPlaceholder(/hook name/i)).not.toBeVisible({ timeout: 5000 })
-
-    const row = page.getByRole('row').filter({ hasText: hookName })
-    await expect(row).toBeVisible({ timeout: 3000 })
+  test('edits an existing hook', async ({ page, ownHooks }) => {
+    const hook = await ownHooks.seed({ name: uniqueName('Edit'), command: 'echo "edit test"' })
+    await gotoHooks(page)
 
     // Open the edit form for our row via the ⋯ overflow menu and save an update.
-    await row.getByRole('button', { name: /more actions/i }).click()
-    await page.getByRole('menuitem', { name: /^edit$/i }).click()
-    await expect(page.getByRole('button', { name: /^save$/i })).toBeVisible({ timeout: 3000 })
-    const updatedName = `${hookName}_upd`
-    await page.getByPlaceholder(/hook name/i).fill(updatedName)
-    await page.getByRole('button', { name: /^save$/i }).click()
-    await expect(page.getByPlaceholder(/hook name/i)).not.toBeVisible({ timeout: 5000 })
-    await expect(page.getByText(updatedName).first()).toBeVisible({ timeout: 3000 })
+    await rowFor(page, hook.name).getByRole('button', { name: 'More actions', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+    const nameInput = page.getByPlaceholder('Hook name', { exact: true })
+    // The form is OUR hook's, not whichever row the menu happened to open.
+    await expect(nameInput).toHaveValue(hook.name)
+    const updatedName = uniqueName('Edited')
+    await nameInput.fill(updatedName)
 
-    // Cleanup: delete the hook we created via the arm→Confirm flow (no dialog).
-    const cleanupRow = page.getByRole('row').filter({ hasText: updatedName })
-    await cleanupRow.getByRole('button', { name: /^delete$/i }).click()
-    await cleanupRow.getByRole('button', { name: /^delete\?$/i }).click()
-    await expect(cleanupRow).not.toBeVisible({ timeout: 5000 })
+    const updated = responseTo(page, 'PUT', `/api/hooks/${hook.id}`)
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    const res = await updated
+    expect(res.status(), await res.text()).toBe(200)
+
+    await expect(nameInput).toBeHidden()
+    await expect(rowFor(page, updatedName)).toBeVisible()
+    await expect(rowFor(page, hook.name)).toHaveCount(0)
+    expect((await ownHooks.read(hook.id))?.name).toBe(updatedName)
   })
 
-  test('toggles hook enabled state', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
+  test('toggles hook enabled state', async ({ page, ownHooks }) => {
+    const hook = await ownHooks.seed({ name: uniqueName('Toggle') })
+    await gotoHooks(page)
+    const row = rowFor(page, hook.name)
 
-    await page.waitForTimeout(1000)
+    // The switch's name flips only once the toggle succeeded and the list was
+    // refetched, so each label is the server-confirmed state, checked again
+    // through the API. Both directions, so the hook ends where it started.
+    await row.getByRole('button', { name: 'Enable hook', exact: true }).click()
+    await expect(row.getByRole('button', { name: 'Disable hook', exact: true })).toBeVisible()
+    expect((await ownHooks.read(hook.id))?.enabled).toBe(true)
 
-    // Find toggle switch
-    const toggleSwitch = page
-      .locator('button')
-      .filter({ has: page.locator('span[class*="rounded-full"]') })
-      .first()
-
-    if (await toggleSwitch.isVisible()) {
-      await toggleSwitch.click()
-      
-      // Wait for toggle to update
-      await page.waitForTimeout(500)
-    }
+    await row.getByRole('button', { name: 'Disable hook', exact: true }).click()
+    await expect(row.getByRole('button', { name: 'Enable hook', exact: true })).toBeVisible()
+    expect((await ownHooks.read(hook.id))?.enabled).toBe(false)
   })
 
-  test('tests hook execution', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
+  test('tests hook execution', async ({ page, ownHooks }) => {
+    const marker = `pw_hook_test_${randomUUID().slice(0, 8)}`
+    const hook = await ownHooks.seed({ name: uniqueName('Run'), command: `echo ${marker}` })
+    await gotoHooks(page)
 
-    await page.waitForTimeout(1000)
+    const ran = responseTo(page, 'POST', `/api/hooks/${hook.id}/test`)
+    await rowFor(page, hook.name).getByRole('button', { name: 'Test', exact: true }).click()
+    const res = await ran
+    expect(res.status(), await res.text()).toBe(200)
+    const { result } = await res.json()
+    expect(result.exit_code, JSON.stringify(result)).toBe(0)
+    expect(result.stdout).toContain(marker)
 
-    // Find first Test button
-    const testButton = page.getByRole('button', { name: /^test$/i }).first()
-    
-    if (await testButton.isVisible()) {
-      await testButton.click()
-
-      // Should show test results (looks for "Test Result" heading)
-      await expect(page.getByText(/test result/i)).toBeVisible({ timeout: 5000 })
-    }
+    // Should show test results for THIS hook, with its output.
+    await expect(page.getByText(`Test Result: ${hook.name}`, { exact: true })).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('pre').filter({ hasText: marker })).toBeVisible()
   })
 
-  test('deletes a hook', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
+  test('deletes a hook', async ({ page, ownHooks }) => {
+    const hook = await ownHooks.seed({ name: uniqueName('Delete') })
+    await gotoHooks(page)
+    const row = rowFor(page, hook.name)
 
-    await page.waitForTimeout(1000)
+    // Delete arms on the first click (the label becomes "Delete?") and
+    // deletes on the second, with no confirm dialog — fail the test if one
+    // opens.
+    let dialogOpened = false
+    page.on('dialog', dialog => { dialogOpened = true; void dialog.dismiss() })
 
-    // Find first Delete button
-    const deleteButton = page.getByRole('button', { name: /^delete$/i }).first()
+    await row.getByRole('button', { name: 'Delete', exact: true }).click()
+    const confirm = row.getByRole('button', { name: 'Delete?', exact: true })
+    await expect(confirm).toBeVisible()
+    const deleted = responseTo(page, 'DELETE', `/api/hooks/${hook.id}`)
+    await confirm.click()
+    const res = await deleted
+    expect(res.status(), await res.text()).toBe(200)
 
-    if (await deleteButton.isVisible()) {
-      // The arm→Confirm flow replaced window.confirm: first click arms the
-      // button (label becomes "Delete?"), second click deletes. No dialog
-      // may open — fail the test if one does.
-      let dialogOpened = false
-      page.on('dialog', dialog => { dialogOpened = true; void dialog.dismiss() })
-
-      await deleteButton.click()
-      await page.getByRole('button', { name: /^delete\?$/i }).click()
-
-      // Wait for deletion
-      await page.waitForTimeout(1000)
-      expect(dialogOpened).toBe(false)
-    }
+    await expect(row).toHaveCount(0)
+    expect(await ownHooks.read(hook.id)).toBeUndefined()
+    expect(dialogOpened).toBe(false)
   })
 
   test('changes event type', async ({ page }) => {
-    await page.getByRole('button', { name: /\+ new hook/i }).click()
+    await gotoHooks(page)
+    await newHookButton(page).click()
 
     await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
 
@@ -217,7 +241,8 @@ test.describe('Hooks Page E2E Tests', () => {
   })
 
   test('updates timeout value', async ({ page }) => {
-    await page.getByRole('button', { name: /\+ new hook/i }).click()
+    await gotoHooks(page)
+    await newHookButton(page).click()
 
     await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
 

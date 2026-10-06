@@ -98,6 +98,19 @@ class AppProcess:
     # app can write. False denies, so anything unclassified is judged third-party.
     # Deliberately absent from to_dict(): internal bookkeeping.
     admitted_builtin: bool = False
+    # True only when this gateway placed a FORKING sandbox launcher between its Popen
+    # handle and the real server: on Linux ``wrap_argv`` inserts the namespace launcher,
+    # whose ``sandbox_launcher_program.main`` does one ``os.fork()`` so the
+    # Popen root (the launcher parent) waits for the child's whole life while the child
+    # execs the real server. Both pids sit in the agent slice, but the handle names only
+    # the root, so the server stays unowned unless the root's DIRECT children are claimed
+    # too. Set by ``_start_app_backend_body`` from the wrap facts it already has (never
+    # from anything the app writes); False for an adopted record, the STARTING
+    # placeholder, a no-op wrap on an unconfined host, and the macOS seatbelt wrap, which
+    # execs without forking (there the root IS the server). Only
+    # ``running_spawned_backend_pids`` reads it, to widen ownership to the forked server.
+    # Deliberately absent from to_dict(): internal bookkeeping.
+    forking_sandbox_launcher: bool = False
 
     def is_running(self) -> bool:
         """Whether the tracked process is still alive.
@@ -241,6 +254,64 @@ def spawned_backend_names() -> list[str]:
     """
     with _lock:
         return sorted(name for name, ap in _processes.items() if ap.proc is not None)
+
+
+def running_spawned_backend_pids() -> set[int]:
+    """Pids of the backends THIS gateway spawned and still holds as running children.
+
+    The app-backend part of the runtime reconciler's membership read
+    (:mod:`kiro_crew.runtime_reconcile`). A backend is not a session, not a pooled
+    MCP backend and in neither tracked pid file, yet its spawn places it in the agent
+    slice that reconciler compares against, so without this answer it is unowned on
+    every pass.
+
+    Answered from this table, the gateway's own memory of what it launched, and never
+    from ``app_backends.pids.json``: that file lives in the agent-writable data home,
+    so a row written there would make any pid owned. A record qualifies only while its
+    ``Popen`` handle says the child is running. A child this process has not reaped
+    keeps its pid, so the number provably names the backend; one that has exited
+    leaves the answer at once rather than reading as a dead runtime on the next pass.
+    Adopted records (``proc is None``) are left out because the gateway launched
+    nothing there, and so is the STARTING placeholder, which has no process yet.
+
+    Each qualifying record contributes its Popen ROOT pid, and -- for a record whose
+    ``forking_sandbox_launcher`` is set -- that root's DIRECT children too. On Linux
+    the gateway's own wrap inserts the namespace launcher, whose
+    ``sandbox_launcher_program.main`` forks: the root this
+    handle names is the launcher parent, and the real server is its forked child,
+    sitting in the same agent slice yet claimed by nothing. Claiming the root's direct
+    children covers exactly that server. The scope is DIRECT children only: a process
+    the spawned backend itself later forks is a Not-a-goal (the launcher child is the
+    server, and anything below it is the app's own doing), so grandchildren are never
+    walked. When the bool is unset the root IS the server -- a no-op wrap on an
+    unconfined host, or the macOS seatbelt wrap, which execs without forking -- and no
+    children are claimed.
+
+    The handles are copied under ``_lock`` and polled after it is released, so the
+    table is held for the copy alone and not for one ``waitpid`` per child. The child
+    reader runs OUTSIDE ``_lock`` for the same reason: it reads ``/proc`` per root, and
+    the copy is all the registry state it needs. An OSError reading one root's children
+    leaves that root claimed on its own rather than dropping it.
+    """
+    with _lock:
+        spawned = [
+            (ap.proc, ap.forking_sandbox_launcher)
+            for ap in _processes.values()
+            if ap.proc is not None
+        ]
+    owned: set[int] = set()
+    for proc, forks in spawned:
+        if proc.poll() is not None:
+            continue
+        owned.add(proc.pid)
+        if forks:
+            try:
+                owned.update(platform_compat._proc_children(proc.pid))
+            except OSError:
+                # The root stays claimed on its own; its forked server is simply
+                # not added this pass rather than the whole record being dropped.
+                pass
+    return owned
 
 
 def get_app_backend_port(app_name: str) -> int | None:

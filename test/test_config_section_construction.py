@@ -31,8 +31,13 @@ def _write(path, sections):
 
 class TestSectionConstruction:
     def test_compound_sections_have_their_own_construction_frames(self):
-        """Large nested calls made every traced load costly, even on a cache hit."""
-        tree = ast.parse(textwrap.dedent(inspect.getsource(loader.KiroCrewConfig._load_resolved)))
+        """Large nested calls made every traced load costly, even on a cache hit.
+
+        Kept as a source pin: the property is the shape of one interpreter frame
+        under a tracer, and asserting it behaviourally would mean installing a
+        tracer under the suite's own coverage tracer.
+        """
+        tree = ast.parse(textwrap.dedent(inspect.getsource(loader.build_config)))
         assembly = next(
             node.value
             for node in tree.body[0].body
@@ -40,6 +45,10 @@ class TestSectionConstruction:
             and any(isinstance(target, ast.Name) and target.id == "cfg" for target in node.targets)
             and isinstance(node.value, ast.Call)
         )
+        # Non-vacuity: the statement found is the KiroCrewConfig assembly itself,
+        # not some smaller ``cfg = ...`` that happens to come first.
+        assert isinstance(assembly.func, ast.Name) and assembly.func.id == "config_cls"
+        assert len(assembly.keywords) >= 40, len(assembly.keywords)
         inline = [
             keyword.arg
             for keyword in assembly.keywords

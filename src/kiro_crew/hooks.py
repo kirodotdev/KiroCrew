@@ -1049,6 +1049,29 @@ class HookManager:
         security_targets = [normalized]
         if command and command not in security_targets:
             security_targets.append(command)
+        # A harness may stream its shell tool under a kind other than ``execute``
+        # (the DeepSeek harness sends ``bash`` as ``other``), so no shell command
+        # is recovered and every check below would see only the title. The tool's
+        # own ``command``/``cmd`` argument is then judged by the SHELL-class
+        # checks (scan ceiling, IMDS, env-credential, exfiltration) and the
+        # deny-rule catalog -- never by the path tier, which reads a value as a
+        # filename. Deny-only: allow paths and the shell exemption still key on
+        # ``is_shell``/``command``, so this can refuse a call but never grant
+        # one. A call that names its MCP server is left out: its
+        # ``command``-named arguments are not shell text, and it is governed by
+        # ``@server/tool`` rules. A harness that names no server for its MCP
+        # calls (claude-agent-acp, opencode, dsh, pi) cannot be told apart here,
+        # so such a call's ``command`` argument is checked too.
+        raw_shell_commands: list[str] = []
+        if not command and not mcp_server_name and isinstance(raw_params, dict):
+            for _key in ("command", "cmd"):
+                _raw_command = raw_params.get(_key)
+                if (
+                    isinstance(_raw_command, str)
+                    and _raw_command
+                    and _raw_command not in raw_shell_commands
+                ):
+                    raw_shell_commands.append(_raw_command)
 
         # Sensitive path protection (always enforced, before all other checks).
         # kiro-cli adds "Reading "/"Running: " display prefixes; the
@@ -1121,6 +1144,15 @@ class HookManager:
             # shell. Denied at the gate — against the raw command too, not just
             # the title.
             reason = audit_bash_exfiltration(target, enabled_ids=enabled_ids)
+            if reason:
+                return ToolHookResult.deny(reason)
+        for target in raw_shell_commands:
+            # Shell-class checks only, in the same order as above. The size
+            # ceiling is pass 0 of ``is_sensitive_bash_command``, so a value over
+            # it is refused before any regex below or in the deny catalog runs.
+            reason = is_sensitive_bash_command(
+                target, enabled_ids=enabled_ids
+            ) or audit_bash_exfiltration(target, enabled_ids=enabled_ids)
             if reason:
                 return ToolHookResult.deny(reason)
         # The display title is backend-variable and may NOT carry the path (an
@@ -1300,6 +1332,10 @@ class HookManager:
         governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
         if command:
             deny_targets.append(command)
+        for _raw_command in raw_shell_commands:
+            # Already past the scan ceiling above; see ``raw_shell_commands``.
+            if _raw_command not in deny_targets:
+                deny_targets.append(_raw_command)
         for target in deny_targets:
             reason = authority.is_denied(
                 target,
@@ -2500,7 +2536,9 @@ async def run_script_hook(
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
     # running script hooks for the active surface. Checked before the subprocess
     # spawns. The session key is carried on the hook_event when a caller threads
-    # it (parent_session_key); absent → policy-only resolution.
+    # it — ``parent_session_key`` for a subagent's event (the spawning session
+    # governs), else the firing session's own ``session_key``; absent →
+    # policy-only resolution.
     sk = ""
     if hook_event:
         sk = str(hook_event.get("parent_session_key") or hook_event.get("session_key") or "")
@@ -3034,6 +3072,7 @@ class ScriptHookStore:
         subagent_id: str | None = None,
         parent_session_key: str | None = None,
         agent_role: str | None = None,
+        session_key: str | None = None,
         hook_continuation_count: int = 0,
         extra_hooks: Sequence[ScriptHook] = (),
         extra_hooks_cwd: str | None = None,
@@ -3065,8 +3104,18 @@ class ScriptHookStore:
 
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
         emitted into the hook_event payload so hook scripts can attribute tool
-        calls to the specific agent/session that fired them. Parent contexts
-        (dashboard chat, generic LLM helpers) leave them as ``None``.
+        calls to the specific agent/session that fired them. They describe a
+        SPAWNED subagent: ``subagent_id`` is its id and ``parent_session_key`` is
+        the session that spawned it. Parent contexts (dashboard chat, generic LLM
+        helpers) leave them as ``None`` — a hook may read a present
+        ``parent_session_key`` as "this event came from a subagent".
+
+        ``session_key`` is the firing session's OWN key (``dashboard:<slot>``,
+        a channel session key, …), emitted as ``session_key`` whenever the caller
+        knows it, on top-level and subagent events alike. It is the field for
+        per-session attribution; before it existed the dashboard runner reused
+        ``parent_session_key`` for that, which made every composer turn look like
+        a subagent to a hook keyed on the field's documented meaning.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -3107,6 +3156,8 @@ class ScriptHookStore:
             hook_event["parent_session_key"] = parent_session_key
         if agent_role:
             hook_event["agent_role"] = agent_role
+        if session_key:
+            hook_event["session_key"] = session_key
 
         extra_ids = {id(h) for h in extra_hooks}
         # The extra hooks' own payload: their workspace as ``cwd``, and on a tool
@@ -3155,7 +3206,7 @@ class ScriptHookStore:
                 # Governance: skills-only hooks must respect the same capability
                 # gate as command hooks — a disabled capabilities.script_hooks
                 # must not be bypassable by omitting the command field.
-                sk = parent_session_key or ""
+                sk = parent_session_key or session_key or ""
                 # Off the loop, as in run_script_hook: the scope lookup can walk
                 # the governance profile store.
                 gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)

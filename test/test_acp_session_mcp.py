@@ -364,6 +364,10 @@ class TestMounting:
         project-only agent find nothing, so the ``tools`` allowlist never ran and the
         control plane mounted unrestricted -- a restriction the user declared, lost.
         Withholding what the spec does not name is the whole point of the allowlist.
+
+        The checkout's own ``mcpServers`` never reach a mirrored session (see
+        ``_project_mcp_trusted``), so ``proj`` is withheld too -- but the allowlist
+        still governs what is left, which is the restriction this pins.
         """
         _write_project_spec(
             tmp_path,
@@ -371,7 +375,7 @@ class TestMounting:
             tools=["@proj"],
         )
         names = _by_name(session_mcp.session_mcp_servers("kirocrew", work_dir=tmp_path))
-        assert "proj" in names
+        assert "proj" not in names
         # tools names only @proj, and the control plane is not exempt from it.
         assert "kirocrew-core" not in names
         assert "kirocrew-cron" not in names
@@ -389,8 +393,12 @@ class TestMounting:
         )
         assert "proj" not in _by_name(session_mcp.session_mcp_servers("kirocrew"))
 
-    def test_the_project_spec_wins_over_a_user_level_one(self, tmp_path, agents_dir):
-        """Project-nearest, the way a nearer config layer normally wins."""
+    def test_the_user_level_spec_wins_over_an_untrusted_project_one(self, tmp_path, agents_dir):
+        """A checkout cannot choose a mirrored session's servers, nor displace the user's.
+
+        The plain resolution is still project-nearest -- the unresolved-ref
+        diagnostic, which runs on kiro-cli's path too, reads the project spec.
+        """
         _write_spec(agents_dir, servers={"user": {"command": "/bin/user"}}, tools=["@user"])
         _write_project_spec(
             tmp_path,
@@ -398,11 +406,18 @@ class TestMounting:
             tools=["@proj"],
         )
         names = _by_name(session_mcp.session_mcp_servers("kirocrew", work_dir=tmp_path))
-        assert "proj" in names
-        assert "user" not in names
+        assert "proj" not in names
+        assert "user" in names
+        snapshot = session_mcp.agent_spec_snapshot("kirocrew", work_dir=tmp_path)
+        assert snapshot is not None
+        assert "proj" in snapshot["mcpServers"]
 
-    def test_a_project_only_agents_disabled_tools_reach_the_deny_rules(self, tmp_path, agents_dir):
-        """``disabledTools`` is a RESTRICTION, so the same resolution gap dropped it."""
+    def test_deny_rules_follow_the_same_resolution_as_the_array(self, tmp_path, agents_dir):
+        """Claude's deny rules and the array read ONE answer for a checkout's spec.
+
+        The project's servers never launch, but its ``disabledTools`` are a
+        restriction and survive; a user-level spec of the same name adds its own.
+        """
         _write_project_spec(
             tmp_path,
             servers={"proj": {"command": "/bin/proj", "disabledTools": ["danger"]}},
@@ -411,8 +426,15 @@ class TestMounting:
         assert session_mcp.session_mcp_deny_rules("kirocrew", work_dir=tmp_path) == [
             "mcp__proj__danger"
         ]
-        # And without the checkout it is silently lost -- the defect, pinned.
-        assert session_mcp.session_mcp_deny_rules("kirocrew") == []
+        _write_spec(
+            agents_dir,
+            servers={"user": {"command": "/bin/user", "disabledTools": ["risky"]}},
+            tools=["@user"],
+        )
+        assert session_mcp.session_mcp_deny_rules("kirocrew", work_dir=tmp_path) == [
+            "mcp__proj__danger",
+            "mcp__user__risky",
+        ]
 
     def test_disabled_tools_is_the_structured_form_and_exempts_no_server(self, agents_dir):
         """``(server, tool)`` pairs, the control plane included.
@@ -496,9 +518,9 @@ class TestMounting:
         reads: list[str] = []
         real = session_mcp._agent_spec_and_snapshot_for
 
-        def counting(agent, work_dir=None):
+        def counting(agent, work_dir=None, **kwargs):
             reads.append(agent)
-            return real(agent, work_dir)
+            return real(agent, work_dir, **kwargs)
 
         monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", counting)
         # Explicit None: no spec, nothing read, control plane only, nothing switched off.
@@ -521,9 +543,9 @@ class TestMounting:
         real = session_mcp._agent_spec_and_snapshot_for
         calls = {"n": 0}
 
-        def flapping(agent, work_dir=None):
+        def flapping(agent, work_dir=None, **kwargs):
             calls["n"] += 1
-            return (None, None) if calls["n"] == 1 else real(agent, work_dir)
+            return (None, None) if calls["n"] == 1 else real(agent, work_dir, **kwargs)
 
         monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", flapping)
         projection = session_mcp.session_mcp_projection("kirocrew")
@@ -587,6 +609,33 @@ class TestDenyRules:
         (agents_dir / "kirocrew.json").write_text("{not json", encoding="utf-8")
         assert session_mcp.session_mcp_deny_rules("kirocrew") == []
         assert session_mcp.session_mcp_deny_rules(None) == []
+
+
+class TestZeroTools:
+    """``SessionMcpProjection.zero_tools`` -- an explicit empty ``tools`` list,
+    not a missing key, which means "no restriction stated" and must NOT trip
+    ``AcpClient._deny_zero_tools``."""
+
+    def test_an_explicit_empty_list_is_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={}, tools=[])
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is True
+
+    def test_a_missing_tools_key_is_not_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={}, tools=None)
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
+
+    def test_a_populated_tools_list_is_not_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={"srv": {"command": "/s"}}, tools=["@srv"])
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
+
+    def test_no_agent_is_not_zero_tools(self):
+        assert session_mcp.session_mcp_projection(None).zero_tools is False
+
+    def test_a_non_list_tools_value_is_not_zero_tools(self, agents_dir):
+        (agents_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "tools": "none"}), encoding="utf-8"
+        )
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
 
 
 class TestControlPlane:

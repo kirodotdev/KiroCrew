@@ -71,6 +71,31 @@ narrows, and each narrowing is a permission decision:
   `_may_auto_approve`; anything the governance ceiling withholds is recorded in
   the SEL as `mcp_auto_approve_withheld` and then goes through the ordinary
   approval gate.
+- **The operator's own `allowedTools` entries survive the rebuild.** The
+  installer runs on every gateway start and reads the spec it replaces: an entry
+  the operator added is carried forward after the shipped grants, through the
+  same ceiling, while the shipped set itself is re-derived from this release
+  (`_governed_grants`). What tells the two apart is the history of every grant
+  any release has shipped on this spec (`_SHIPPED_GRANT_HISTORY`, a literal
+  table a test pins to contain everything the installers write): an entry it
+  names is Crew's and is kept exactly when this release ships it, so a grant a
+  release retired is never read back as the operator's; an entry it does not
+  name is the operator's and stays. The one cost is a grant Crew once shipped
+  and has since retired that the operator hand-re-adds: it reads as Crew's and
+  goes, named in the warning and audited as a revoked auto-approval, and the
+  tool asks instead. A clean rebuild drops the operator's entries; a rebuild
+  that drops any entry logs a warning naming it and a kept operator entry is
+  audited as a retained auto-approval. A spec that is present but unreadable is
+  not "no spec": bytes that can never be a spec (a JSON typo, a list that is
+  not a list) are written over, since kiro-cli could not load them either and
+  the ceiling could not be re-filtered onto them, and so is a spec carrying a
+  second hard link, which kiro-cli WOULD load while the hardened reader refuses
+  it for good (the rewrite swaps the directory entry; the other name keeps its
+  bytes); a read that may succeed next time leaves the file in place, named, and
+  the installer reports that it wrote nothing — as the rebuild does when the
+  installer's write raised — so a moved ceiling stays pending. Not a weakening
+  of the withholds above: what Crew ships is unchanged, and an entry the
+  operator writes is theirs to write.
 
 Auto-approved core verbs are reads (`resource_status`, `list_sessions`,
 `skill_search`, `skill_fetch`), the conductor's own patrol lifecycle

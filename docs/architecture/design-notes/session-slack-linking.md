@@ -94,8 +94,9 @@ link untouched, so mirroring would silently resume on the next turn.
 | Origin | How the link is set |
 |---|---|
 | Slack DM or @mention thread | Self-link. `handle_message` calls `set_slack_link(session_key, reply_ts, channel)` on a new session. `reply_ts` (`thread_ts or msg_ts`), never the namespaced key, is stored as `slack_thread_ts`: storing the namespaced form would corrupt reply routing. |
-| Dashboard, user action | `POST /api/chat/slots/{name}/slack-link`. Opens a DM (or uses a supplied channel), posts a thread anchor, links, and back-fills the last 5 messages as context. |
+| Dashboard, user action | `POST /api/chat/slots/{name}/slack-link`. Opens a DM (or uses a supplied channel), posts a thread anchor, links, and back-fills context: the opening turn, a gap marker when turns are skipped, then the last 5 turns. |
 | Dashboard, auto-link from a redirect | The same endpoint with `thread_ts` in the body. Links to THAT existing thread instead of posting a new one, which is what makes a thread reply route back bidirectionally. Context back-fill is skipped, since the thread already contains those messages. |
+| Dashboard, automatic link | With `slack.auto_link_sessions` on, a person's own dashboard session gets a thread in the owner DM on its first message (`maybe_auto_link_slack`). Governed, with no back-fill; the send waits up to `AUTO_LINK_HOLD_SECS` (5 s). See [slack-gateway](../../system-specs/modules/slack-gateway.md). |
 | Slack thread imported to dashboard | `!link-to-dashboard` (`/kirocrew link-to-dashboard`) fetches the thread, redacts each message, imports up to the last 50 into a fresh slot, then `link_slack`. Idempotent: an already-linked thread returns its existing slot. |
 | `/kirocrew sessions` resume | Posts a resume header in-thread or in a DM, then `set_slack_link` plus `dashboard_state.link_slack`. |
 
@@ -108,7 +109,7 @@ truncation boundary cannot split and thereby hide a credential.
 
 ### Slack to dashboard
 
-`maybe_route_linked_thread` (`slack/handler.py`) runs before hook handling and
+`maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`, re-exported by `slack/handler.py`) runs before hook handling and
 before any turn work, on both the native and messaging-transport paths:
 
 1. Look up `get_linked_slot(reply_ts)`. The index is keyed by the **bare
@@ -200,8 +201,12 @@ SEL event.
 
 `POST /api/chat/slots/{slot}/slack-unlink` is the symmetric counterpart. It
 clears the link (both the effective key and, for a dashboard session, its bare
-twin), resets the three slot fields, and posts a best-effort courtesy note into
-the thread so a Slack watcher knows why it went quiet. The session, its history,
+twin) and posts a best-effort courtesy note into the thread so a Slack watcher
+knows why it went quiet. The clear is guarded: an optional `{channel_type,
+binding}` body names the binding to sever, a mismatch is 409 `mirror_changed` and
+clears nothing, the map write is flushed before anything reports it done, and the
+answer carries `relinked` when the slot was linked again meanwhile. The full
+contract is in [session](../../system-specs/modules/session.md). The session, its history,
 and the thread itself all survive. Idempotent: unlinking an unlinked session
 returns `was_linked: false`.
 
@@ -230,5 +235,6 @@ browser action to loopback-only callers.
 - **Mirror posts are best-effort and never buffered.** Every mirror call site
   wraps its post in a `try`/`except` that logs at debug and continues, so a
   Slack-side failure (rate limit, transient 5xx) costs one mirrored message and
-  not the turn. Only `open_dm` retries (`slack/retry.py`); `post_message` stays
-  single-shot at each call site so a retry cannot duplicate a message.
+  not the turn. Only the Slack gateway's proactive and cron DM delivery retries
+  `open_dm` (`slack/retry.py`); the dashboard link path calls `open_dm` once, and
+  `post_message` stays single-shot at each call site so a retry cannot duplicate a message.

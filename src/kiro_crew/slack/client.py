@@ -1011,6 +1011,14 @@ class RealSlackClient(SlackClientOps):
                     break
             except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
                 logger.debug("conversations_list page failed", exc_info=True)
+                # Re-raise while nothing has been collected yet: an all-empty
+                # result caused by a failing page (e.g. an empty first page that
+                # carried a next_cursor, then a later page erroring) must stay a
+                # failure, not a successful empty refresh — otherwise the
+                # resolver caches [] for an hour and suppresses retries. Once we
+                # have channels, keep the partial result instead.
+                if not out:
+                    raise
                 break
         return out
 

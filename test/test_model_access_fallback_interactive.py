@@ -29,6 +29,21 @@ from chat_test_helpers import _make_state
 from kiro_crew.acp.client import AcpError
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.chat_utils import MODEL_UNENTITLED_KIND, SYNTHETIC_RECOVERY_KIND
+from kiro_crew.dashboard.recovery_replays import ReplayFamily
+
+_MA = ReplayFamily.MODEL_ACCESS
+_MA_REPLAY = frozenset({_MA})
+
+
+def _arm_ma_replay(slot, entry_id, *, session_key="", stop_gen=0, session_stop_gen=0):
+    """The record a model-access swap leaves for its queued replay."""
+    slot.replays.arm(
+        _MA,
+        entry_id=entry_id,
+        session_key=session_key,
+        stop_gen=stop_gen,
+        session_stop_gen=session_stop_gen,
+    )
 
 
 def _make_state_for_run_chat(tmp_path, monkeypatch):
@@ -253,7 +268,7 @@ async def test_unrelated_provider_error_stays_terminal_no_swap(tmp_path, monkeyp
 async def test_swap_recovery_replay_preserves_the_one_shot_flag(tmp_path, monkeypatch):
     """The swap re-queues the user's ORIGINAL message, which the turn-start reset
     cannot tell from a fresh user turn. The drain recognizes the replay by its
-    queue id and says so (``_model_access_replay``), which makes the reset
+    queue id and claims it (``_replay``), which makes the reset
     preserve _model_access_fallback_used for that one replay, so a
     still-unentitled candidate cannot trigger a second swap.
 
@@ -281,13 +296,13 @@ async def test_swap_recovery_replay_preserves_the_one_shot_flag(tmp_path, monkey
 
     # Simulate the state a swap leaves behind before its replay turn runs.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_queue_id = "q-replay"
+    _arm_ma_replay(slot, "q-replay")
 
-    await _run_chat(state, slot, "first message", _model_access_replay=True)
+    await _run_chat(state, slot, "first message", _replay=_MA_REPLAY)
 
     # The replay preserved the one-shot flag and consumed the record.
     assert slot._model_access_fallback_used is True
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
 
 
 @pytest.mark.asyncio
@@ -329,7 +344,7 @@ async def test_stop_during_set_model_abandons_the_replay(tmp_path, monkeypatch):
         for i in _inserts
         if i["kind"] == SYNTHETIC_RECOVERY_KIND and i["content"] == "first message"
     ], _inserts
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
 
 
 def _record_inserts(monkeypatch, slot) -> list[dict]:
@@ -387,7 +402,7 @@ async def test_an_owed_completion_is_replayed_as_a_completion_despite_a_stop(tmp
             "kind": SUBAGENT_COMPLETION_KIND,
         }
     ], inserts
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
 
 
 @pytest.mark.asyncio
@@ -420,7 +435,7 @@ async def test_a_synthesis_replay_stays_cancellable(tmp_path, monkeypatch):
 
     client.set_model.assert_awaited_once_with("claude-opus-5")
     assert inserts == [], inserts
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
 
 
 @pytest.mark.asyncio
@@ -455,7 +470,7 @@ async def test_a_runner_continuation_of_a_completion_stays_cancellable(tmp_path,
 
     assert inserts == [{"content": retry_prompt, "kind": SYNTHETIC_RECOVERY_KIND}], inserts
     assert not any(i["kind"] == SUBAGENT_COMPLETION_KIND for i in inserts)
-    assert slot._model_access_recovery_queue_id == slot._queue[0]["id"]
+    assert slot.replays.entry_id(_MA) == slot._queue[0]["id"]
 
 
 @pytest.mark.asyncio
@@ -617,12 +632,14 @@ async def test_soft_stop_after_enqueue_drops_the_recovery_at_dequeue(tmp_path, m
     # A swap has already run: the flag is used, the recovery is queued, and the
     # enqueue stop-gen was snapshotted.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_stop_gen = 0
-    slot._model_access_recovery_queue_id = slot.queue_insert(
-        0,
-        "first message",
-        kind=SYNTHETIC_RECOVERY_KIND,
-        payload=payload_for_replay(False),
+    _arm_ma_replay(
+        slot,
+        slot.queue_insert(
+            0,
+            "first message",
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=payload_for_replay(False),
+        ),
     )
     # A soft Stop lands during the post-turn cleanup await: the counter advances
     # but the queue is NOT cleared.
@@ -633,7 +650,7 @@ async def test_soft_stop_after_enqueue_drops_the_recovery_at_dequeue(tmp_path, m
     # The stopped replay was dropped, not dispatched, and the one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
     assert slot._model_access_fallback_used is False
 
 
@@ -656,13 +673,14 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # A swap has run: flag used, recovery queued, and BOTH stop-gen snapshots
     # taken at enqueue (slot=0, session=0).
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_stop_gen = 0
-    slot._model_access_recovery_session_stop_gen = 0
-    slot._model_access_recovery_queue_id = slot.queue_insert(
-        0,
-        "first message",
-        kind=SYNTHETIC_RECOVERY_KIND,
-        payload=payload_for_replay(False),
+    _arm_ma_replay(
+        slot,
+        slot.queue_insert(
+            0,
+            "first message",
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=payload_for_replay(False),
+        ),
     )
     # A linked-channel Stop lands: the SLOT counter is untouched (still 0), only
     # the session-scoped counter advances. Without the session-scoped comparison
@@ -676,7 +694,7 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # dropped, one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
     assert slot._model_access_fallback_used is False
     """The one-shot fence, proven at its WEAKEST arm: after a swap, the recovery
     replay runs and fails again with an entitlement rejection that DOES satisfy
@@ -698,7 +716,7 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # set and the replay recorded (so the turn-start reset preserves the flag rather
     # than refunding it -- exactly the state the swap enqueued).
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_queue_id = "q-replay"
+    _arm_ma_replay(slot, "q-replay")
     slot.served_model = "claude-opus-5"
     # The replay fails with a rejection whose id is ABSENT from the advertised set
     # (model_is_unusable is True) AND a real candidate exists. Every gate EXCEPT
@@ -718,7 +736,7 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     monkeypatch.setattr(_repo, "queue_insert", _record_insert)
 
     # Drive the recovery turn itself: the user's original message, replayed.
-    await _run_chat(state, slot, "first message", _model_access_replay=True)
+    await _run_chat(state, slot, "first message", _replay=_MA_REPLAY)
 
     # No SECOND swap: the fence held on the flag arm alone. set_model is never
     # called on this turn.
@@ -726,7 +744,7 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # The flag stayed set across the recovery turn (the replay identity preserved
     # it), so a still-unentitled candidate cannot re-open the swap.
     assert slot._model_access_fallback_used is True
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
     # The replay's own failure surfaced the terminal entitlement card (this
     # rejection IS model_is_unusable, so it is tagged so the frontend offers the
     # picker), not a silent dead turn and not a second swap.
@@ -757,16 +775,19 @@ async def test_user_followup_drops_the_recovery_regardless_of_queue_position(tmp
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_stop_gen = getattr(slot, "_stop_generation", 0)
     # A user follow-up sits at the HEAD (plain entry, no kind => user speech), and
     # the recovery replay sits BEHIND it -- the reverse of the swap's own index-0
     # insert. No Stop is pressed; the follow-up alone is the intervention.
     slot.queue_append("please answer this instead")
-    slot._model_access_recovery_queue_id = slot.queue_insert(
-        1,
-        "first message",
-        kind=SYNTHETIC_RECOVERY_KIND,
-        payload=payload_for_replay(False),
+    _arm_ma_replay(
+        slot,
+        slot.queue_insert(
+            1,
+            "first message",
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=payload_for_replay(False),
+        ),
+        stop_gen=getattr(slot, "_stop_generation", 0),
     )
 
     await _start_next_queued_turn(state, slot)
@@ -776,7 +797,7 @@ async def test_user_followup_drops_the_recovery_regardless_of_queue_position(tmp
     # its id, not at index 0. That is the position-independence the disposition
     # rests on; the follow-up's own dispatch is not part of this claim.
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)
     assert slot._model_access_fallback_used is False
 
 
@@ -1123,9 +1144,9 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
     binding differs from the one recorded at enqueue -- the guard the sibling
     refusal replay already carries.
 
-    Mutation guard: drop ``_ma_rebound`` from the drain's condition (or the
-    ``_model_access_recovery_session_key`` capture) and this test reddens, because
-    the rebound replay is dispatched instead of dropped.
+    Mutation guard: drop the rebind clause from ``RecoveryReplays.revalidate`` (or
+    the binding the swap records at arm) and this test reddens, because the
+    rebound replay is dispatched instead of dropped.
     """
     from unittest.mock import MagicMock
 
@@ -1135,19 +1156,20 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_stop_gen = 0
-    slot._model_access_recovery_session_stop_gen = 0
+    slot._stop_generation = 0
+    state.sessions.stop_generation = MagicMock(return_value=0)
     # Enqueue recorded a binding; the slot has since rebound to a DIFFERENT
     # session key (the mid-episode cron bind). No stop was issued -- the ONLY
     # signal that must drop this replay is the binding mismatch.
-    slot._model_access_recovery_session_key = effective_session_key(slot) + "-OLD-BOUND"
-    slot._stop_generation = 0
-    state.sessions.stop_generation = MagicMock(return_value=0)
-    slot._model_access_recovery_queue_id = slot.queue_insert(
-        0,
-        "first message",
-        kind=SYNTHETIC_RECOVERY_KIND,
-        payload=payload_for_replay(False),
+    _arm_ma_replay(
+        slot,
+        slot.queue_insert(
+            0,
+            "first message",
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=payload_for_replay(False),
+        ),
+        session_key=effective_session_key(slot) + "-OLD-BOUND",
     )
 
     dispatched = await _start_next_queued_turn(state, slot)
@@ -1155,8 +1177,7 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
     # The rebind was seen: replay dropped, record cleared, one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_queue_id == ""
-    assert slot._model_access_recovery_session_key == ""
+    assert not slot.replays.armed(_MA)
 
 
 @pytest.mark.asyncio
@@ -1171,9 +1192,9 @@ async def test_recovery_record_cleared_when_the_admission_sweep_removes_the_entr
     record when the recorded replay entry is absent from the queue -- the guard
     the sibling refusal replay carries.
 
-    Mutation guard: delete the entry-gone branch at the top of the drain and this
-    test reddens, because the record is left set after the sweep emptied the
-    queue.
+    Mutation guard: delete the head sweep (``_forget_swept_replays``) from the
+    drain and this test reddens, because the record is left set after the sweep
+    emptied the queue.
     """
     from unittest.mock import MagicMock
 
@@ -1183,11 +1204,6 @@ async def test_recovery_record_cleared_when_the_admission_sweep_removes_the_entr
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_stop_gen = 0
-    slot._model_access_recovery_session_stop_gen = 0
-    # No stop, no rebind, no user input: the ONLY reason the record may clear is
-    # the recorded replay entry being gone from the queue.
-    slot._model_access_recovery_session_key = effective_session_key(slot)
     slot._stop_generation = 0
     state.sessions.stop_generation = MagicMock(return_value=0)
 
@@ -1201,7 +1217,9 @@ async def test_recovery_record_cleared_when_the_admission_sweep_removes_the_entr
     # the queued entry itself so the recorded qid is always the real one.
     if not qid:
         qid = slot._queue[0]["id"]
-    slot._model_access_recovery_queue_id = qid
+    # No stop, no rebind, no user input: the ONLY reason the record may clear is
+    # the recorded replay entry being gone from the queue.
+    _arm_ma_replay(slot, qid, session_key=effective_session_key(slot))
     # The admission sweep removed the entry (containment change) but left the
     # record set -- reproduce that state directly.
     slot.queue_remove_by_id(qid)
@@ -1212,8 +1230,7 @@ async def test_recovery_record_cleared_when_the_admission_sweep_removes_the_entr
     # The entry-gone guard cleared the record and refunded the one-shot, so a
     # later entry cannot inherit it.
     assert dispatched is False
-    assert slot._model_access_recovery_queue_id == ""
-    assert slot._model_access_recovery_session_key == ""
+    assert not slot.replays.armed(_MA)
     assert slot._model_access_fallback_used is False
 
 
@@ -1339,17 +1356,15 @@ async def test_recovery_replay_aborts_at_consume_when_stopped_after_dequeue(tmp_
     # The state a swap leaves behind before its replay turn runs, with the
     # stop-gen snapshots taken AT ENQUEUE.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_queue_id = "q-replay"
-    slot._model_access_recovery_stop_gen = 0
-    slot._model_access_recovery_session_stop_gen = 0
+    _arm_ma_replay(slot, "q-replay")
     # A Stop landed after the drain dequeued the replay: the slot stop counter has
     # advanced past the snapshot. No rebind, no user follow-up -- the ONLY signal
     # that must abort this replay is the advanced stop counter.
     slot._stop_generation = 1
 
-    await _run_chat(state, slot, "first message", _model_access_replay=True)
+    await _run_chat(state, slot, "first message", _replay=_MA_REPLAY)
 
     # The consume guard saw the Stop and aborted: the cancelled prompt never
     # streamed, and the record was cleared.
     assert _streamed["n"] == 0, "the stopped replay executed instead of aborting"
-    assert slot._model_access_recovery_queue_id == ""
+    assert not slot.replays.armed(_MA)

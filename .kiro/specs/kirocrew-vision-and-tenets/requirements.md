@@ -6,7 +6,7 @@ Status: superseded by [`TENETS.md`](../../../TENETS.md).
 
 KiroCrew is an autonomous agent management layer that adds persistent memory, scheduled jobs, heartbeats, background subagents, self-learning, and multi-session orchestration on top of kiro-cli's native LLM capabilities. Today it serves as a powerful developer tool with a dashboard, Slack integration, CLI, multi-agent orchestration, and a plugin architecture in progress.
 
-This spec captures the product vision, tenets, user experience principles, and roadmap milestones that will evolve KiroCrew into an enterprise-grade collaborative AI platform from Amazon. While KiroCrew might not become a consumer product for everyone on the planet, KiroCrew should be designed for professional enterprise users across all job families and AI knowledge levels, not only developers. A developer, a product manager, a program manager, a scientist, a manager, and a leadership should all open KiroCrew and immediately be productive.
+This spec captures the product vision, tenets, user experience principles, and roadmap milestones that will evolve Kiro Crew into an enterprise-grade collaborative AI platform. While Kiro Crew might not become a consumer product for everyone on the planet, Kiro Crew should be designed for professional enterprise users across all job families and AI knowledge levels, not only developers. A developer, a product manager, a program manager, a scientist, a manager, and a leadership should all open Kiro Crew and immediately be productive.
 
 The end goal: users open KiroCrew and work with a full, self-evolving, autonomous team of AI teammates — each with their own role, ultra-long-horizon memory, and context. The team learns from every interaction and task, builds persistent and shareable knowledge through documents and memory, and gets measurably better over time. Kirocrew should 100x productivity, run hundreds if not thousands of agents 24/7, redefining how enterprise professionals work.
 
@@ -41,7 +41,7 @@ This is a strategic and product spec. It guides both UX and architecture decisio
 
 1. THE KiroCrew project SHALL adopt the following vision statement: "KiroCrew is the enterprise AI workspace where professionals across every job family work with a self-evolving team of AI teammates. It delivers 100x productivity through autonomous agent teams with ultra-long-horizon memory that learn from every interaction, build persistent shareable knowledge, and get better every day. It just works for everyone — from a PM who has never touched AI to an SDE who wants full control."
 2. THE vision statement SHALL be referenced in all future spec introductions to ensure alignment.
-3. THE vision statement SHALL position KiroCrew as Amazon's enterprise-grade answer to collaborative AI products such as Claude_Cowork — not a consumer product, but a professional tool for all job families and AI knowledge levels.
+3. THE vision statement SHALL position Kiro Crew as an enterprise-grade alternative to collaborative AI products such as Claude_Cowork — not a consumer product, but a professional tool for all job families and AI knowledge levels.
 
 ### Requirement 2: Design Tenets (Ordered by Priority)
 

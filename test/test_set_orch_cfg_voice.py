@@ -2,28 +2,38 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.slack import handler as handler_mod
-from kiro_crew.slack.handler import _vc, load_voice_reply_config, set_orch_cfg
+from kiro_crew.slack.handler import _vc, _VoiceConfig, load_voice_reply_config, set_orch_cfg
 from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
 
 @pytest.fixture(autouse=True)
 def _reset_vc():
-    """Reset _vc flags before/after each test."""
-    _vc.auto_speak = False
-    _vc.global_enabled = False
-    _vc.auto_reply_to_voice = False
-    _vc.provider = "polly"
-    yield
-    _vc.auto_speak = False
-    _vc.global_enabled = False
-    _vc.auto_reply_to_voice = False
-    _vc.provider = "polly"
+    """Start each test from a pristine voice config and no orchestrator config.
+
+    ``set_orch_cfg`` binds ``handler._orch_cfg`` and ``load_voice_reply_config``
+    rewrites every ``_vc`` field. Both are process state that later tests read:
+    a leftover ``SimpleNamespace()`` here made ``slack_cfg().slack`` raise in
+    ``test_slack_sessions_view.py``. A private ``MonkeyPatch`` puts back what the
+    test inherited, whatever the test's own ``monkeypatch`` does. ``_vc`` is
+    patched field by field, never rebound, because this module and the handler
+    hold the same object.
+    """
+    pristine = _VoiceConfig()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(handler_mod, "_orch_cfg", None)
+        for field in dataclasses.fields(_vc):
+            mp.setattr(_vc, field.name, getattr(pristine, field.name))
+        # The paid provider as the starting value, so a load that kept the old
+        # provider instead of falling back fails the "never polly" assertions.
+        mp.setattr(_vc, "provider", PROVIDER_POLLY)
+        yield
 
 
 def _cfg_file(tmp_path, monkeypatch, voice_reply: dict) -> None:

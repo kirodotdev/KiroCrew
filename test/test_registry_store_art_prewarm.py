@@ -22,6 +22,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -55,6 +56,7 @@ from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.defaults import DefaultAppsLoader
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 FORGE = "https://forge.example.com/org/app-registry.git"
 SIBLING = "https://forge.example.com/org/some-private-app.git"
@@ -158,6 +160,49 @@ def _route_cache_path(entry: dict[str, Any], merged_url: str) -> Path:
     (path,) = query["path"]
     ref = entry.get("branch", "main")
     return _blob_cache_dir() / _blob_cache_key(repo, _entry_git_url(entry)) / ref / path
+
+
+#: Lost-run ceiling on a barrier the production path always reaches (a fetch held
+#: in flight, the copy worker entering, a cancelled row's cleanup). The wait returns
+#: the moment the state is reached; the slowest path to these barriers is the
+#: pre-batch and pre-copy thread hops, a few seconds with every executor job started
+#: late. Reaching the ceiling fails naming the barrier, and it is a quarter of the
+#: suite's 120 s ``--timeout``, so a miss is a readable failure, not a killed worker.
+_BARRIER_CEILING_SECS = 30.0
+
+
+async def _await_barrier(reached: Any, what: str, state: Any = lambda: "") -> None:
+    """Wait for *reached* (an ``asyncio.Event``) within the ceiling, failing by name.
+
+    Call it from the TEST, never from a fake the prewarm awaits: ``_worker`` logs and
+    swallows any exception a row raises, ``pytest.fail`` included.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=_BARRIER_CEILING_SECS)
+    except asyncio.TimeoutError:
+        pytest.fail(
+            f"{what} not reached after {loop.time() - started:.1f}s "
+            f"(lost-run ceiling {_BARRIER_CEILING_SECS:.0f}s); {state()}"
+        )
+
+
+async def _settled(aw: Any, what: str) -> Any:
+    """Await *aw* within the lost-run ceiling; past it fail naming ``what`` and the wait."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        return await asyncio.wait_for(aw, timeout=_BARRIER_CEILING_SECS)
+    except asyncio.TimeoutError:
+        pytest.fail(
+            f"{what} still running after {loop.time() - started:.1f}s "
+            f"(lost-run ceiling {_BARRIER_CEILING_SECS:.0f}s)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1039,23 +1084,80 @@ class TestArtGates:
         assert _read_manifest_cache(entry) == {"token": "hunter2"}
 
 
+_GRAMMAR_PROBE = """
+import json, sys
+from pathlib import Path
+# The child imports the package outside this test's fixtures, so it must not see the
+# real home: refuse to import anything unless the home is under the test's tmp_path.
+root = Path(sys.argv[1]).resolve()
+assert root in Path.home().resolve().parents, f"the probe's home {Path.home()} is not isolated"
+from kiro_crew.apps import routes
+from kiro_crew.apps.registry_pipeline import indexes, store_art
+print(json.dumps({
+    "path": routes._SAFE_PATH_RE is store_art._SAFE_PATH_RE,
+    "branch": indexes._SAFE_BRANCH_RE is store_art._SAFE_BRANCH_RE,
+}))
+"""
+
+#: Lost-run ceiling on the child interpreter that imports the app routes cold: a few
+#: seconds on a loaded runner, so only a wedged import reaches it, and it is half the
+#: suite's 120 s ``--timeout``.
+_GRAMMAR_PROBE_CEILING_SECS = 60.0
+
+
+def _grammar_identities_in_a_fresh_interpreter(tmp_path: Path) -> dict[str, bool]:
+    """Which consumers share the store-art compiled grammars, read in a child interpreter.
+
+    The sharing is an import-time binding, and this worker's own modules are not a
+    reliable witness of it: ``test_external_registry.py`` reloads the registry facade,
+    which re-executes ``store_art`` but not ``routes``, and once ``re``'s cache has
+    dropped the pattern the reload compiles a NEW object, so an in-process identity
+    check reads whichever tests ran before it. A child imports each module once.
+    """
+    source = Path(reg_mod.__file__).resolve().parents[2]
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "KIROCREW_HOME": str(tmp_path / "data"),
+        "KIROCREW_WORKSPACE": str(tmp_path / "workspace"),
+        "PYTHONPATH": os.pathsep.join([str(source), os.environ.get("PYTHONPATH", "")]),
+    }
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _GRAMMAR_PROBE, str(tmp_path)],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            timeout=_GRAMMAR_PROBE_CEILING_SECS,
+            check=False,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"the grammar probe did not finish within {_GRAMMAR_PROBE_CEILING_SECS:.0f}s "
+            "(lost-run ceiling)"
+        )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
 class TestOneGrammar:
     """The path and branch grammars have ONE spelling each; the consumers share the
     compiled object, so a change to one side cannot leave the other behind."""
 
-    def test_the_prewarm_and_the_proxy_share_the_path_grammar(self):
-        from kiro_crew.apps import routes
-        from kiro_crew.apps.registry_pipeline import store_art
-
-        assert routes._SAFE_PATH_RE is store_art._SAFE_PATH_RE
+    def test_the_prewarm_and_the_proxy_share_the_path_grammar(self, tmp_path):
+        identities = _grammar_identities_in_a_fresh_interpreter(tmp_path)
+        assert identities["path"], "the proxy has its own path grammar"
         # The proxy's trailing-newline defect the ``\\Z`` anchor closes stays closed
         # for the prewarm too.
         assert not _servable_art_path("ui/icon.svg\n")
 
-    def test_the_prewarm_and_the_index_fetch_share_the_branch_grammar(self):
-        from kiro_crew.apps.registry_pipeline import indexes, store_art
-
-        assert indexes._SAFE_BRANCH_RE is store_art._SAFE_BRANCH_RE
+    def test_the_prewarm_and_the_index_fetch_share_the_branch_grammar(self, tmp_path):
+        identities = _grammar_identities_in_a_fresh_interpreter(tmp_path)
+        assert identities["branch"], "the index fetch has its own branch grammar"
 
 
 # ---------------------------------------------------------------------------
@@ -1090,28 +1192,58 @@ class TestWarmth:
         import asyncio
 
         reg = _pin_registry(monkeypatch, _TRUST_OWNER)
+        width = reg_mod._PREWARM_CONCURRENCY
         live = 0
         peak = 0
+        full_width = asyncio.Event()
+        release = asyncio.Event()
 
         async def _fetch(git_url, branch, dest, log_lines, **kw):
             nonlocal live, peak
             live += 1
             peak = max(peak, live)
-            await asyncio.sleep(0.01)
+            if live == width:
+                full_width.set()
+            # Held in flight until the pool is SEEN at full width: each worker reaches
+            # this fake only after several thread hops, so a fixed hold let them
+            # arrive one at a time (peak 1 on Windows, where a 10 ms sleep is under the
+            # loop clock's 15.6 ms resolution and ends at the next wake-up).
+            await release.wait()
             dest = Path(dest)
             dest.mkdir(parents=True, exist_ok=True)
             (dest / "app.json").write_text(json.dumps(dict(MANIFEST, iconPath="")), "utf-8")
             live -= 1
             return None
 
+        entered = 0
+        real_row = reg_mod._fetch_owner_tier_store_assets
+
+        async def _row(entry, registry_name):
+            # A worker dequeues a row and enters its fetch in one step, so while the
+            # held fetches keep their workers busy this counts every worker running.
+            nonlocal entered
+            entered += 1
+            return await real_row(entry, registry_name)
+
         monkeypatch.setattr(reg_mod, "_git_fetch_branch", _fetch)
+        monkeypatch.setattr(reg_mod, "_fetch_owner_tier_store_assets", _row)
         rows = [
             _entry(
                 name=f"app-{i}", gitUrl=f"{SIBLING[:-4]}-{i}.git", repo=f"{SIBLING[:-4]}-{i}.git"
             )
             for i in range(10)
         ]
-        assert await _prewarm_owner_tier_store_assets(reg, rows) == 10
+        task = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, rows))
+        try:
+            await _await_barrier(
+                full_width, f"{width} fetches in flight at once", lambda: f"live={live} peak={peak}"
+            )
+            # Every in-flight fetch is held, so no worker can have moved to a further
+            # row: the rows begun are exactly the workers the pool runs.
+            assert entered == width, f"{entered} rows begun at once, the bound is {width}"
+        finally:
+            release.set()
+        assert await _settled(task, "the prewarm after the release") == 10
         assert 1 < peak <= reg_mod._PREWARM_CONCURRENCY
 
     @pytest.mark.asyncio
@@ -1560,19 +1692,27 @@ class TestCopyCancellation:
 
     @pytest.mark.asyncio
     async def test_the_checkout_is_removed_only_after_the_worker_returned(self, monkeypatch):
-        """The ordering the settle exists for: when the budget cancels a row whose
-        copy is in flight, the worker has RETURNED before the scratch checkout is
-        removed. Observed at the removal call itself, so a cancellation that merely
-        propagated out (leaving the thread live) is what this test turns red on."""
+        """The ordering the settle exists for: when a row is cancelled while its copy
+        is in flight, the worker has RETURNED before the scratch checkout is removed.
+        Observed at the removal call itself, so a cancellation that merely propagated
+        out (leaving the thread live) is what this test turns red on.
+
+        The cancel is sent once the copy worker is OBSERVED running, never by a short
+        batch budget: the thread hops before the copy race any budget, and a budget
+        that wins cancels a row with no worker to settle. The budget path and an outer
+        cancel reach the same settle."""
         import asyncio
 
         reg = _pin_registry(monkeypatch, _TRUST_OWNER)
+        loop = asyncio.get_running_loop()
+        copy_entered = asyncio.Event()
         returned = threading.Event()
         removal_saw_worker_returned: list[bool] = []
         real_copy = reg_mod._copy_declared_art
         real_rmtree = reg_mod._rmtree_force_settled
 
         def _slow_copy(entry, mdir, manifest, cancel=None):
+            loop.call_soon_threadsafe(copy_entered.set)
             while cancel is not None and not cancel.is_set():
                 time.sleep(0.01)
             # Linger past the flag: a caller that does not wait for the return
@@ -1589,9 +1729,19 @@ class TestCopyCancellation:
         _fake_fetch(monkeypatch, ART, dict(MANIFEST, screenshots=["ui/shot-1.png"]))
         monkeypatch.setattr(reg_mod, "_copy_declared_art", _slow_copy)
         monkeypatch.setattr(reg_mod, "_rmtree_force_settled", _rmtree)
-        monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.2)
+        # A batch budget that never fires: the only cancellation is the one below.
+        monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 3600.0)
 
-        await asyncio.wait_for(_prewarm_owner_tier_store_assets(reg, [_entry()]), timeout=5)
+        task = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [_entry()]))
+        try:
+            await _await_barrier(
+                copy_entered, "the copy worker", lambda: f"task.done()={task.done()}"
+            )
+        finally:
+            # On every path: a cancel is what sets the copy's flag and lets it return.
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await _settled(task, "the cancelled prewarm")
 
         assert removal_saw_worker_returned == [True], removal_saw_worker_returned
 
@@ -3137,30 +3287,28 @@ class TestBoundedPostBudgetCleanup:
 
         release = threading.Event()
         cleanup_finished = threading.Event()
+        loop = asyncio.get_running_loop()
+        started: list[float] = []
 
-        async def _rmtree(path):
-            # The cancelled clone's cleanup hangs past the cleanup budget, then finishes
-            # once released -- standing in for a slow filesystem / process kill. It still
-            # removes the scratch dir so nothing is left under the system tempdir.
-            await asyncio.get_running_loop().run_in_executor(None, release.wait)
-            import shutil
+        async def _fetch(entry, registry_name):
+            # The row's fetch, parked on its first step: a worker reaches it in the
+            # same loop turn the batch starts, so the budget always lands here, never
+            # in the thread hops a real fetch makes first. Cancelled at the budget,
+            # its cleanup hangs past the cleanup budget, then finishes once released
+            # -- standing in for a slow filesystem / process kill.
+            started.append(loop.time())
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await loop.run_in_executor(None, release.wait)
+                cleanup_finished.set()
+                raise
+            return True
 
-            shutil.rmtree(path, ignore_errors=True)
-            cleanup_finished.set()
-
-        async def _hang_fetch(git_url, branch, dest, log_lines, *, clone_env, sandbox_mode, **kw):
-            Path(dest).mkdir(parents=True, exist_ok=True)
-            await asyncio.Event().wait()  # never returns; cancelled at the batch budget
-            return None
-
-        monkeypatch.setattr(reg_mod, "_git_fetch_branch", _hang_fetch)
-        monkeypatch.setattr(reg_mod, "_rmtree_force_settled", _rmtree)
+        monkeypatch.setattr(reg_mod, "_fetch_owner_tier_store_assets", _fetch)
         monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.2)
         monkeypatch.setattr(reg_mod, "_PREWARM_CLEANUP_BUDGET", 0.2)
         entry = _entry()
-
-        loop = asyncio.get_running_loop()
-        started = loop.time()
         # Everything from the first ``await`` to the last assertion that precedes the
         # release runs under ``try/finally``: the fake cleanup parks a default-executor
         # worker thread on ``release.wait``, and an assertion that fired before
@@ -3168,13 +3316,15 @@ class TestBoundedPostBudgetCleanup:
         # session at interpreter exit. The finally releases it and drains the detached
         # cleanup regardless of how the body ended.
         try:
-            # The outer wait_for turns a missing bound into a red test rather than a
-            # hang: batch budget + cleanup budget + generous slack.
+            # The outer wait is the lost-run guard: a missing bound fails by name
+            # rather than hanging. The bound under test is ``elapsed`` below.
             with caplog.at_level("WARNING", logger="kiro_crew.apps.registry"):
-                fetched = await asyncio.wait_for(
-                    _prewarm_owner_tier_store_assets(reg, [entry]), timeout=3
+                fetched = await _settled(
+                    _prewarm_owner_tier_store_assets(reg, [entry]), "the budgeted prewarm"
                 )
-            elapsed = loop.time() - started
+            # From the batch's start (the row's first step), so the bound covers the
+            # two budgets the test is about and not the thread hops before them.
+            elapsed = loop.time() - started[0]
 
             assert fetched == 0
             assert (
@@ -3188,10 +3338,9 @@ class TestBoundedPostBudgetCleanup:
             # Always unblock the executor worker, then settle the detached cleanup so
             # no task or thread outlives the test.
             release.set()
-            for _ in range(300):
-                if not reg_mod._PENDING_PREWARM_CLEANUPS:
-                    break
-                await asyncio.sleep(0.01)
+            pending = set(reg_mod._PENDING_PREWARM_CLEANUPS)
+            if pending:
+                await asyncio.wait(pending, timeout=_BARRIER_CEILING_SECS)
         assert cleanup_finished.is_set(), "the detached cleanup must still complete"
         assert not reg_mod._PENDING_PREWARM_CLEANUPS, "a finished cleanup removes itself"
 
@@ -3372,24 +3521,24 @@ class TestOuterCancellationSettlesTheBatch:
         reg = _pin_registry(monkeypatch, _TRUST_OWNER)
         cleanup_entered = asyncio.Event()
         release = asyncio.Event()
+        held: list[Any] = []
 
-        async def _hang_fetch(git_url, branch, dest, log_lines, *, clone_env, sandbox_mode, **kw):
-            Path(dest).mkdir(parents=True, exist_ok=True)
-            await asyncio.Event().wait()  # cancelled at the short batch budget
-            return None
+        async def _fetch(entry, registry_name):
+            # The row's fetch, parked on its first step: a worker reaches it in the
+            # same loop turn the batch starts, so the short budget always lands
+            # here, never in the thread hops a real fetch makes first. Its cleanup
+            # blocks, holding the prewarm in the cleanup wait for the outer cancel
+            # below to land there.
+            held.append(asyncio.current_task())
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_entered.set()
+                await release.wait()
+                raise
+            return True
 
-        real_rmtree = reg_mod._rmtree_force_settled
-
-        async def _rmtree(path):
-            # The cancelled clone's cleanup blocks, holding the prewarm in the cleanup
-            # wait long enough for the outer cancel below to land there; once
-            # released it runs the REAL cleanup, so the scratch checkout is removed.
-            cleanup_entered.set()
-            await release.wait()
-            await real_rmtree(path)
-
-        monkeypatch.setattr(reg_mod, "_git_fetch_branch", _hang_fetch)
-        monkeypatch.setattr(reg_mod, "_rmtree_force_settled", _rmtree)
+        monkeypatch.setattr(reg_mod, "_fetch_owner_tier_store_assets", _fetch)
         # Short batch budget -> the run reaches the cleanup wait quickly; a long
         # cleanup budget -> the cleanup wait is where the outer cancel lands.
         monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.1)
@@ -3397,18 +3546,16 @@ class TestOuterCancellationSettlesTheBatch:
 
         task = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [_entry()]))
         try:
-            await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
+            await _await_barrier(cleanup_entered, "the cancelled row's cleanup")
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=5)
+                await _settled(task, "the prewarm cancelled in its cleanup window")
         finally:
             # Let the blocked cleanup drain, even on a failed assertion, so the
-            # test leaves nothing pending and no scratch checkout behind.
+            # test leaves nothing running behind it.
             release.set()
-            for _ in range(300):
-                if not reg_mod._PENDING_PREWARM_CLEANUPS:
-                    break
-                await asyncio.sleep(0.01)
+            if held:
+                await asyncio.wait(held, timeout=_BARRIER_CEILING_SECS)
 
 
 # ---------------------------------------------------------------------------

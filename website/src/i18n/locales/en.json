@@ -5404,15 +5404,17 @@
     },
     "voiceDisabledModal": {
       "enable_it_under": "Enable it under",
+      "model_not_downloaded_open_settings": "The speech model isn't downloaded on this machine yet. Open settings to download it.",
       "not_now": "Not now",
       "open_settings": "Open settings",
       "pick_an_installed_provider_under_settings_voice": "Pick an installed provider under Settings → Voice, or install the current one.",
       "provider_is_not_installed_on_this_machine": "Speech-to-text is on, but the \"{{provider}}\" provider isn't installed on this machine, so recordings can't be transcribed.",
+      "run_the_command_below_in_a_terminal_to_install_v": "Run the command below in a terminal to install voice support, then reload the page.",
       "settings_voice": "Settings → Voice",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "Speech-to-text is not enabled yet, so the microphone cannot turn your voice into text.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", then click the mic to dictate into the message box.",
       "turn_on_voice_input": "Turn on voice input",
-      "voice_provider_not_installed": "Voice provider not installed"
+      "voice_input_cannot_run": "Voice input can't run"
     },
     "voiceStatusBar": {
       "recording": "Recording"
@@ -6436,6 +6438,13 @@
         "summary_hint": "Summary folded — expand to read",
         "title": "Context compacted"
       },
+      "skillLoadCard": {
+        "body_context": "Skill instructions the agent followed this turn",
+        "body_empty": "This skill has no instructions",
+        "body_unavailable": "Instructions weren't recorded for older turns",
+        "title_one": "Loaded skill",
+        "title_other": "Loaded skills"
+      },
       "recoveryCard": {
         "action_not_taken": "Action not taken",
         "announced_no_action_continuing": "announced but not done · continuation sent automatically",
@@ -6532,10 +6541,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentQueued": {
-        "adaptive_cap_zero": "waiting to start — starts are paused while this computer is low on memory or overloaded; they resume on their own once it recovers",
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",
         "low_memory_no_figures": "waiting to start — not enough free memory; free up memory to continue",
-        "memory_pressure": "waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure has lasted 30 minutes"
+        "memory_pressure": "waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure outlasts the wait limit"
       },
       "subagentRunCard": {
         "open_in_the_subagents_panel": "Open in the Subagents panel",
@@ -6803,6 +6811,15 @@
       "remote_sessions_not_shown_in_board_view_other": "{{count}} remote sessions are not shown in board view — board columns manage local sessions only.",
       "sessions_from_instance_unavailable": "Sessions from {{names}} are unavailable right now.",
       "checking_remote_instances": "Checking remote crews…",
+      "machine_group_local": "Local",
+      "crew_status_online": "Online",
+      "crew_status_reconnecting": "Reconnecting",
+      "crew_status_error": "Error",
+      "crew_status_offline": "Offline",
+      "crew_group_offline": "Not connected. Last known sessions; live status unavailable.",
+      "crew_group_empty": "No open sessions",
+      "crew_row_open_here": "Click to open here",
+      "crew_row_offline": "Not connected right now",
       "remote_instances_list_unavailable": "Remote crews could not be listed, so their sessions are not shown.",
       "clean_up_empty_folders": "Clean up empty folders",
       "clean_up_empty_folders_menu": "Clean up empty folders…",
@@ -9494,10 +9511,10 @@
       "lane_system": "System lane",
       "lane_tip": "How many runs this lane may start at once right now. The lines beneath say how that stands against your own limit, and how many are running.",
       "degrade_reason": "Degrade reason",
-      "degrade_reason_tip": "Why the effective concurrency is below your limit right now (event-loop lag, low memory, timeouts, provider throttling).",
+      "degrade_reason_tip": "Why a lane is below your limit right now. Subagent runs are lowered only on evidence from the work itself (such as timeouts, slow or failing starts, or running out of file handles or processes); Backend starts are also lowered while this computer is low on memory or overloaded.",
       "degrade_adaptive_decrease": "Concurrency lowered under load",
-      "degrade_adaptive_pause": "New runs paused until the host recovers",
-      "degrade_adaptive_probe": "Testing one run before resuming",
+      "degrade_adaptive_pause": "Backend starts held to the minimum until this computer frees up memory or load eases",
+      "degrade_adaptive_probe": "Backend starts: testing one before raising the limit",
       "task_retries": "Retry attempts",
       "task_retries_tip": "Attempts already spent by the tasks under Tasks retrying. It counts attempts, not tasks.",
       "recovering_runs": "Backends restarting",

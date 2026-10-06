@@ -54,7 +54,8 @@ Push (new): gateway rekey() ─────────────────�
    caller, per-PID start tokens, and the optional session token; the forward
    loop re-reads the caller per frame.
 3. **The gateway pushes a claim on rekey** (`claim.py`, hooked into
-   `AcpClient.rekey` and `SessionHandle.rekey`): a one-shot connection sends
+   `AcpClient.rekey` and `AcpSessionProvider.rekey` in
+   `acp/session_provider.py`): a one-shot connection sends
    `{"type": "claim", "pid": P, "pid_start_id": T, "stub_session_token": U,
    "caller": {...}}` and reads one ack. `pid_start_id` is the runtime's process
    start token (`platform_compat.get_process_start_id`; `None` where

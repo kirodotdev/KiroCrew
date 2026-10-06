@@ -140,31 +140,39 @@ def test_the_exc_info_sites_left_in_crew_log_are_exactly_the_vetted_ones() -> No
     )
 
 
-def test_every_log_parameter_of_the_emitter_is_annotated_as_a_handle() -> None:
+def test_every_log_parameter_in_the_package_is_annotated() -> None:
     """The annotation IS the guard, so it is pinned on its own.
 
     The no-handle check above decides whether a frame can hold a handle by reading names,
     and a parameter annotated ``Any`` is invisible to it: erode ``log: CrewLog`` back to
     ``log: Any`` and a restored ``exc_info=True`` in that function passes the check again
-    with nothing else going red. In ``emit.py`` every parameter named ``log`` is the open
-    crew log handed down from the writer job, so each one must name the handle type --
-    the module-level import is ``TYPE_CHECKING``-only, so this costs the boot path nothing.
+    with nothing else going red. So every parameter named ``log`` in the package -- the
+    emitter, its writer and turn tracker, the store and the folds alike -- must say what it
+    is: a handle type, which the check above then sees, or a ``logging.Logger``, which is
+    explicitly not one. The modules import the handle type under ``TYPE_CHECKING`` only, so
+    this costs the boot path nothing.
     """
-    source = (PACKAGE / "emit.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="emit.py")
-    untyped: list[tuple[str, int]] = []
-    seen = 0
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for arg in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]:
-            if arg.arg != "log":
+    untyped: list[tuple[str, str, int]] = []
+    seen: dict[str, int] = {}
+    for path in sorted(PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            seen += 1
-            if arg.annotation is None or not _mentions_handle(arg.annotation):
-                untyped.append((fn.name, fn.lineno))
-    assert seen >= 5, f"walk found only {seen} 'log' parameters in emit.py; expected five"
+            for arg in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]:
+                if arg.arg != "log":
+                    continue
+                seen[path.name] = seen.get(path.name, 0) + 1
+                annotation = "" if arg.annotation is None else ast.unparse(arg.annotation)
+                is_logger = annotation in {"logging.Logger", "Logger"}
+                if not is_logger and (
+                    arg.annotation is None or not _mentions_handle(arg.annotation)
+                ):
+                    untyped.append((path.name, fn.name, fn.lineno))
+    assert (
+        seen.get("emit.py", 0) >= 5
+    ), f"walk found only {seen} 'log' parameters; expected five in emit.py"
     assert not untyped, (
-        "a 'log' parameter in emit.py is not annotated as a CrewLog, so the no-handle check "
-        f"cannot see that its frame holds a handle: {untyped}"
+        "a 'log' parameter is annotated neither as a CrewLog nor as a logging.Logger, so the "
+        f"no-handle check cannot tell whether its frame holds a handle: {untyped}"
     )

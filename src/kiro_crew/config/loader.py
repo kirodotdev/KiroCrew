@@ -67,6 +67,23 @@ from kiro_crew.config import sections as _sections
 # Re-export every historical loader name so existing imports keep working while
 # KiroCrewConfig remains the compatibility facade and owns read/merge/save.
 from kiro_crew.config.fields import _coerce_bool
+
+# Historical loader names no builder reads any more (a section's defaults are its
+# DTO fields'), kept bound from their owners for the facade.
+from kiro_crew.config.integration_sections import (  # noqa: F401
+    _CU_DEFAULT_ATTACH_SCREENSHOT,
+    _CU_DEFAULT_MAX_TREE_DEPTH,
+    _CU_DEFAULT_MAX_TREE_NODES,
+    _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY,
+    _CU_DEFAULT_SCREENSHOT_MAX_PX,
+    _CU_DEFAULT_TEXT_LIMIT,
+    _DEFAULT_BACKOFF_MAX,
+    _DEFAULT_MAX_RECOVERY,
+    _DEFAULT_PROBE_FAILS,
+    _DEFAULT_SSH_COMPRESSION,
+    _DEFAULT_TUNNEL_BASE_PORT,
+    _DEFAULT_WARM_SET_CAP,
+)
 from kiro_crew.config.migration import (  # noqa: F401
     _REPORTED_SUPERSEDED_KEYS,
     CONNECTIONS_UI_MIGRATION_MARKER,
@@ -121,30 +138,13 @@ from kiro_crew.config.resolution import (  # noqa: F401
     tailnet_identity_unknown,
 )
 from kiro_crew.config.section_builders import (  # noqa: F401
-    _CU_DEFAULT_ATTACH_SCREENSHOT,
-    _CU_DEFAULT_MAX_TREE_DEPTH,
-    _CU_DEFAULT_MAX_TREE_NODES,
-    _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY,
-    _CU_DEFAULT_SCREENSHOT_MAX_PX,
-    _CU_DEFAULT_TEXT_LIMIT,
     _CU_MAX_SCREENSHOT_MAX_PX,
     _CU_MAX_TEXT_LIMIT,
     _CU_MAX_TREE_DEPTH,
     _CU_MAX_TREE_NODES,
     _CU_MIN_SCREENSHOT_MAX_PX,
-    _DEFAULT_BACKOFF_MAX,
     _DEFAULT_CONNECT_TIMEOUT,
-    _DEFAULT_MAX_RECOVERY,
     _DEFAULT_MINT_TIMEOUT,
-    _DEFAULT_PROBE_FAILS,
-    _DEFAULT_SSH_COMPRESSION,
-    _DEFAULT_TUNNEL_BASE_PORT,
-    _DEFAULT_WARM_SET_CAP,
-    _STT_DEFAULT_IDLE_EVICT_SECS,
-    _STT_DEFAULT_MODEL,
-    _STT_DEFAULT_PARTIAL_INTERVAL_MS,
-    _STT_DEFAULT_SILENCE_MS,
-    _STT_DEFAULT_TIMEOUT_SECS,
     _STT_IDLE_EVICT_SECS_MAX,
     _STT_IDLE_EVICT_SECS_MIN,
     _STT_INTERVAL_MS_MAX,
@@ -409,10 +409,11 @@ from kiro_crew.config.validation import (  # noqa: F401
     _mask_value,
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
-from kiro_crew.constants import (
+from kiro_crew.constants import (  # noqa: F401 - loader namespace compatibility
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
+    DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
     SUBAGENT_TIMEOUT_MAX,
     SUBAGENT_TIMEOUT_MIN,
     SUBAGENT_TIMEOUT_SECS,
@@ -426,6 +427,17 @@ from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     memory_store_name_defect,
 )
+from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
+from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
+from kiro_crew.stt.limits import (  # noqa: F401
+    DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS,
+)
+from kiro_crew.stt.limits import (  # noqa: F401
+    DEFAULT_PARTIAL_INTERVAL_MS as _STT_DEFAULT_PARTIAL_INTERVAL_MS,
+)
+from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS  # noqa: F401
+from kiro_crew.stt.limits import DEFAULT_TIMEOUT_SECS as _STT_DEFAULT_TIMEOUT_SECS  # noqa: F401
+from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL  # noqa: F401
 from kiro_crew.user_json import strip_utf8_bom
 
 logger = logging.getLogger(__name__)
@@ -736,12 +748,12 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
     for it.
 
     For KAS the child IS a kiro-cli: Crew reaches it through kiro-cli's ACP relay.
-    The strip still
-    applies because the v3 engine resolves its tokens either from kiro-cli's
-    OIDC store (``--auth-method cli``) or from Crew's own vault over its
-    ``_kiro/auth/getAccessToken`` callback, and an API key in its environment
-    would take precedence over both — the test is what the child's engine
-    consumes, not which binary it is.
+    The strip applies when Crew owns that relay's credential -- the engine asks
+    Crew's vault over its ``_kiro/auth/getAccessToken`` callback, and an API key
+    in its environment would take precedence over the callback. A cli-owned
+    relay (``--auth-method cli``) authenticates itself, so the KAS harness hands
+    it the key with :func:`inject_kiro_cli_api_key` instead -- the test is what
+    the child's engine consumes, not which binary it is.
 
     Matches the platform env-key convention (exact on POSIX, case-folded on
     Windows) so a differently-cased Windows spelling cannot slip past. Mutates
@@ -920,6 +932,24 @@ def denied_commands_path() -> Path:
     which do not route through the agent tool gate. Respects ``KIROCREW_HOME``.
     """
     return config_dir() / "denied_commands.json"
+
+
+def registry_trust_path() -> Path:
+    """Return path to registry_trust.json — operator grants of ``owner`` trust to
+    hand-configured app registries.
+
+    This is a KEYSTONE trust-root file (on ``security._SENSITIVE_HOME_DIRS``),
+    for the same reason as :func:`denied_commands_path`: a grant lets the
+    registries it names have their apps cloned with the machine's git identity,
+    so it must be a decision only the operator can make. ``config.json`` is
+    agent-writable (any shell form), which is exactly why the registry rows there
+    can never carry the tier themselves; the grant lives here, out of the agent's
+    reach, and the operator edits it through the dashboard
+    ``/api/security/trusted-registries`` endpoints. Holds
+    ``{"version": 1, "owner_trusted": ["<credential-free repo url>", ...]}``.
+    Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "registry_trust.json"
 
 
 def computer_use_state_path() -> Path:
@@ -2285,7 +2315,7 @@ def _persist_config_migration(
     and that writer's bytes are precisely what must not be clobbered: declining is
     the correct outcome, not a compromise. The migration is already
     retry-on-next-load by construction (the degraded-sections branch in
-    ``_load_resolved`` relies on the same property), so the next uncontended load
+    :func:`persist_write_back` relies on the same property), so the next uncontended load
     performs it. The remaining file I/O on the loop -- one read, one atomic
     rename -- is what ``cfg.save()`` did here before, unchanged.
 
@@ -2675,7 +2705,7 @@ def load_loop_stall_exit_after(
     return resolve_loop_stall_exit_after(dashboard_data, environ)
 
 
-def _subagent_timeout_from(raw: object) -> int:
+def _subagent_timeout_from(raw: object, default: int) -> int:
     """Coerce ``agent.subagent_timeout_secs``, preserving its ``0`` sentinel.
 
     ``0`` means "use the default" and is normalized by the manager, so it must
@@ -2683,13 +2713,13 @@ def _subagent_timeout_from(raw: object) -> int:
     documented sentinel into a 60-second deadline that kills healthy subagents.
     Coercion still happens here as well as in ``_clamp_security_bounds``, because
     that clamp skips non-int values and a numeric STRING (``"30"``) reaches this
-    site unbounded.
+    site unbounded. A value it cannot read takes *default*, the field's.
     """
-    value = _safe_int(raw, SUBAGENT_TIMEOUT_SECS, 0, SUBAGENT_TIMEOUT_MAX)
+    value = _safe_int(raw, default, 0, SUBAGENT_TIMEOUT_MAX)
     return value if value == 0 else max(SUBAGENT_TIMEOUT_MIN, value)
 
 
-def _clamp_compact_wait_secs(raw: object) -> float:
+def _clamp_compact_wait_secs(raw: object, default: float) -> float:
     """Coerce ``session.compact_wait_secs``, preserving its ``0`` sentinel.
 
     ``0`` means "use the built-in budget" and the resolver falls back to
@@ -2697,9 +2727,10 @@ def _clamp_compact_wait_secs(raw: object) -> float:
     positive value is lifted to at least ``COMPACT_WAIT_SECS_MIN`` and capped
     at ``COMPACT_WAIT_SECS_MAX``: ``_safe_float`` with ``lo=0`` collapses a
     negative to the sentinel, then the floor keeps a hand-edited near-zero
-    value from arming a budget that restarts every compaction.
+    value from arming a budget that restarts every compaction. A value it cannot
+    read takes *default*, the field's.
     """
-    value = _safe_float(raw, 0.0, lo=0.0, hi=_sections.COMPACT_WAIT_SECS_MAX)
+    value = _safe_float(raw, default, lo=0.0, hi=_sections.COMPACT_WAIT_SECS_MAX)
     return value if value == 0 else max(_sections.COMPACT_WAIT_SECS_MIN, value)
 
 
@@ -2711,8 +2742,8 @@ def _default_memory_mode_from(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
 
 
-def _folder_sort_from(raw: object) -> str:
-    """Normalize the sidebar folder sort mode; anything unknown is ``custom``.
+def _folder_sort_from(raw: object, default: str) -> str:
+    """Normalize the sidebar folder sort mode; anything unknown is *default*, ``custom``.
 
     ``custom`` is the stored-order behaviour every install had before the field
     existed, so a missing, hand-edited or downgraded value changes nothing the
@@ -2720,7 +2751,7 @@ def _folder_sort_from(raw: object) -> str:
     """
     if isinstance(raw, str) and raw in _sections.FOLDER_SORT_MODES:
         return raw
-    return _sections.FOLDER_SORT_DEFAULT
+    return default
 
 
 # (section, key, min, max) for each bounded field clamped at load time. The
@@ -2940,54 +2971,71 @@ def _clamp_security_bounds(data: dict) -> None:
 # Compatibility facade: section DTOs remain importable from this module.
 
 
+def _session_start_concurrency(raw: object) -> int | str:
+    """``agent.session_start_concurrency``: ``"auto"`` or an int clamped to 1..64.
+
+    Anything that is neither (a bool, a non-numeric string) falls back to the
+    ``"auto"`` default, as a junk value of any other int knob falls back to its
+    default.
+    """
+    if _session_start_is_auto(raw) or isinstance(raw, bool):
+        return _SESSION_START_AUTO
+    if isinstance(raw, float) and not raw.is_integer():
+        return _SESSION_START_AUTO
+    try:
+        value = int(raw)  # type: ignore[call-overload]
+    except (TypeError, ValueError, OverflowError):
+        return _SESSION_START_AUTO
+    return max(1, min(64, value))
+
+
 # Build each section in its own frame: the large inline constructor amplifies
 # line-tracing cost on every load. These helpers create fresh values, never
 # cache configuration, and leave resolution and admission checks unchanged.
 def _build_agent_config(agent_data: dict) -> AgentConfig:
+    section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
-        approval_mode=agent_data.get("approval_mode", "auto"),
-        streaming=agent_data.get("streaming", True),
-        model=agent_data.get("model", DEFAULT_MODEL),
-        role_models=coerce_role_models(agent_data.get("role_models")),
-        role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
-        fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
+        approval_mode=section.get("approval_mode"),
+        streaming=section.get("streaming"),
+        model=section.get("model"),
+        role_models=coerce_role_models(section.get("role_models")),
+        role_efforts=coerce_role_efforts(section.get("role_efforts")),
+        fallback_model=coerce_fallback_model(section.get("fallback_model")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
-            agent_data.get("refusal_fallback_model", "")
+            section.get("refusal_fallback_model")
         ),
-        reasoning_effort=agent_data.get("reasoning_effort", ""),
-        provider=agent_data.get("provider", "acp"),
-        mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
-        mcp_quarantine_after_failures=_safe_int(
-            agent_data.get("mcp_quarantine_after_failures", 3), 3
-        ),
-        acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
-        member_acp_backend=_normalize_acp_backend(agent_data.get("member_acp_backend", "kas")),
-        default_agent=agent_data.get("default_agent", ""),
+        reasoning_effort=section.get("reasoning_effort"),
+        provider=section.get("provider"),
+        mcp_registry_mode=section.read("mcp_registry_mode", _safe_bool),
+        mcp_quarantine_after_failures=section.read("mcp_quarantine_after_failures", _safe_int),
+        acp_backend=_normalize_acp_backend(section.get("acp_backend")),
+        member_acp_backend=_normalize_acp_backend(section.get("member_acp_backend")),
+        default_agent=section.get("default_agent"),
         # Through the module alias rather than a new top-level import: the loader's
         # ``from ... import`` list is a FROZEN pre-split compatibility snapshot
         # (``test_config_module_boundaries.test_loader_reexports_historical_snapshot_by_identity``),
         # so a new name joins it only by being an old one. Same shape as
         # ``coerce_refusal_fallback_model`` above.
-        deepseek_env=_sections.coerce_deepseek_env(agent_data.get("deepseek_env")),
-        sweep_agents_backups=_safe_bool(agent_data.get("sweep_agents_backups", False), False),
-        sandbox=agent_data.get("sandbox", "auto"),
-        sandbox_allow_no_isolation=bool(agent_data.get("sandbox_allow_no_isolation", False)),
+        deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
+        sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
+        sandbox=section.get("sandbox"),
+        sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
         sandbox_allow_unsandboxed_exec=bool(
             agent_data.get(
                 "sandbox_allow_unsandboxed_exec",
                 unsandboxed_exec_platform_default(),
             )
         ),
-        apps_allow_third_party=_safe_bool(agent_data.get("apps_allow_third_party", False), False),
+        apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
-            if isinstance(_trusted := agent_data.get("apps_trusted"), list)
-            else []
+            if isinstance(_trusted := section.get("apps_trusted"), list)
+            else section.default("apps_trusted")
         ),
         apps_trusted_local=(
             [a for a in _trusted_local if isinstance(a, str) and a]
-            if isinstance(_trusted_local := agent_data.get("apps_trusted_local"), list)
-            else []
+            if isinstance(_trusted_local := section.get("apps_trusted_local"), list)
+            else section.default("apps_trusted_local")
         ),
         apps_trusted_repositories=(
             {
@@ -2996,42 +3044,35 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
                 if isinstance(name, str) and isinstance(repository, str) and name and repository
             }
             if isinstance(
-                _trusted_repositories := agent_data.get("apps_trusted_repositories"),
+                _trusted_repositories := section.get("apps_trusted_repositories"),
                 dict,
             )
-            else {}
+            else section.default("apps_trusted_repositories")
         ),
-        apps_ui_stream_timeout_secs=_safe_int(
-            agent_data.get("apps_ui_stream_timeout_secs", 30), 30, 5, 600
-        ),
-        jail=_normalize_jail(agent_data.get("jail", "auto")),
+        apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
+        jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
-        yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),
-        notify_override_expiry=agent_data.get("notify_override_expiry", True),
-        tool_search=bool(agent_data.get("tool_search", True)),
-        tool_search_min_pct=_safe_int(agent_data.get("tool_search_min_pct", 5), 5),
-        tool_search_min_tokens=_safe_int(agent_data.get("tool_search_min_tokens", 50000), 50000),
-        session_sharing=bool(agent_data.get("session_sharing", True)),
-        max_subagents=_safe_int(
-            agent_data.get("max_subagents", 0), 0, 0, SUBAGENT_AUTO_MAX_CEILING
+        yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),
+        notify_override_expiry=section.get("notify_override_expiry"),
+        tool_search=bool(section.get("tool_search")),
+        tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
+        tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
+        session_sharing=bool(section.get("session_sharing")),
+        max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
+        max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
+        subagent_mem_buffer_pct=section.read("subagent_mem_buffer_pct", _safe_int),
+        chat_turn_timeout_secs=section.read(
+            "chat_turn_timeout_secs", _safe_int, CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX
         ),
-        max_stop_hook_nudges=_safe_int(agent_data.get("max_stop_hook_nudges", 100), 100, 0),
-        subagent_mem_buffer_pct=_safe_int(agent_data.get("subagent_mem_buffer_pct", 20), 20),
-        chat_turn_timeout_secs=_safe_int(
-            agent_data.get("chat_turn_timeout_secs", 14400),
-            14400,
-            CHAT_TURN_TIMEOUT_MIN,
-            CHAT_TURN_TIMEOUT_MAX,
-        ),
-        session_start_timeout_secs=_safe_int(
-            agent_data.get("session_start_timeout_secs", 90),
-            90,
+        session_start_timeout_secs=section.read(
+            "session_start_timeout_secs",
+            _safe_int,
             SESSION_START_TIMEOUT_MIN,
             SESSION_START_TIMEOUT_MAX,
         ),
-        tool_approval_timeout_secs=_safe_int(
-            agent_data.get("tool_approval_timeout_secs", 600),
-            600,
+        tool_approval_timeout_secs=section.read(
+            "tool_approval_timeout_secs",
+            _safe_int,
             TOOL_APPROVAL_TIMEOUT_MIN,
             TOOL_APPROVAL_TIMEOUT_MAX,
         ),
@@ -3047,7 +3088,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # validation, so it cannot ride the missing-field default back to
         # true; see the normalization above the `_validate_config_data`
         # call. `_safe_bool` here is the final guard for a real bool.
-        session_control=_safe_bool(agent_data.get("session_control", True), True),
+        session_control=section.read("session_control", _safe_bool),
         # Default true preserves the zero-configuration member-dispatch
         # grant (today's behaviour) for a MISSING key. A present-but-
         # malformed value was already coerced to False upstream, BEFORE
@@ -3055,44 +3096,43 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # back to true — see the `member_dispatch` normalization above
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
-        member_dispatch=_safe_bool(agent_data.get("member_dispatch", True), True),
+        member_dispatch=section.read("member_dispatch", _safe_bool),
         # Default true is the zero-configuration panel grant, and the guard is the
         # one above: a present-but-malformed value was already coerced to False
         # upstream, BEFORE schema validation, so it cannot ride the missing-field
         # default back to true. `_safe_bool` here is the final guard for a real
         # bool.
-        crew_panel=_safe_bool(agent_data.get("crew_panel", True), True),
-        subagent_cost_gb=_safe_float(
-            agent_data.get("subagent_cost_gb", DEFAULT_SUBAGENT_COST_GB), DEFAULT_SUBAGENT_COST_GB
+        crew_panel=section.read("crew_panel", _safe_bool),
+        subagent_cost_gb=section.read("subagent_cost_gb", _safe_float),
+        subagent_cpu_cost_cores=section.read("subagent_cpu_cost_cores", _safe_float),
+        subagent_auto_max=section.read(
+            "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
-        subagent_cpu_cost_cores=_safe_float(agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0),
-        subagent_auto_max=_safe_int(
-            agent_data.get("subagent_auto_max", 32), 32, 3, SUBAGENT_AUTO_MAX_CEILING
-        ),
-        subagent_spawn_stagger_secs=_safe_float(
-            agent_data.get("subagent_spawn_stagger_secs", 0.25), 0.25
-        ),
-        spawn_min_memory_gb=_safe_float(
-            agent_data.get("spawn_min_memory_gb", DEFAULT_SPAWN_MIN_MEMORY_GB),
-            DEFAULT_SPAWN_MIN_MEMORY_GB,
-        ),
-        resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
-        resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
-        admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
+        subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
+        spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
+        resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
+        resource_critical_gb=section.read("resource_critical_gb", _safe_float),
+        admission_gate=section.read("admission_gate", _safe_bool),
         # Durable task queue keys, adjacent to admission_gate because a
         # gated spawn is what the queue defers instead of refusing.
-        task_queue_enabled=_safe_bool(agent_data.get("task_queue_enabled"), True),
-        task_dispatch_window=_safe_int(agent_data.get("task_dispatch_window", 64), 64, 1, 4096),
+        task_queue_enabled=section.read("task_queue_enabled", _safe_bool),
+        task_dispatch_window=section.read("task_dispatch_window", _safe_int, 1, 4096),
         task_store_journal_mode=(
-            str(agent_data.get("task_store_journal_mode") or "auto").lower()
-            if str(agent_data.get("task_store_journal_mode") or "auto").lower()
+            journal_mode
+            if (
+                journal_mode := str(
+                    section.get("task_store_journal_mode")
+                    or section.default("task_store_journal_mode")
+                ).lower()
+            )
             in ("auto", "wal", "delete")
-            else "auto"
+            else section.default("task_store_journal_mode")
         ),
-        admit_wait_secs=_safe_int(agent_data.get("admit_wait_secs", 30), 30, 1, 3600),
-        start_collect_timeout_secs=_safe_int(
-            agent_data.get("start_collect_timeout_secs", 300), 300, 10, 3600
+        admit_wait_secs=section.read("admit_wait_secs", _safe_int, 1, 3600),
+        subagent_queue_max_wait_secs=section.read(
+            "subagent_queue_max_wait_secs", _safe_int, 0, 86400
         ),
+        start_collect_timeout_secs=section.read("start_collect_timeout_secs", _safe_int, 10, 3600),
         # Fairness lanes (taskq/lanes.py): weights shape the share of
         # picks; the reserve keeps children startable under full parents.
         lane_weights=(
@@ -3101,94 +3141,87 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
                 for lane, weight in _lane_weights.items()
                 if isinstance(lane, str) and lane
             }
-            if isinstance(_lane_weights := agent_data.get("lane_weights"), dict)
-            else {}
+            if isinstance(_lane_weights := section.get("lane_weights"), dict)
+            else section.default("lane_weights")
         ),
-        child_reserve=_safe_int(agent_data.get("child_reserve", 1), 1, 0, 8),
+        child_reserve=section.read("child_reserve", _safe_int, 0, 8),
         # Shared recovery ladder schedule (recovery/policy.py bounds).
-        recovery_backoff_base_secs=_safe_float(
-            agent_data.get("recovery_backoff_base_secs", 2.0), 2.0, 0.1, 60.0
+        recovery_backoff_base_secs=section.read(
+            "recovery_backoff_base_secs", _safe_float, 0.1, 60.0
         ),
-        recovery_backoff_max_secs=_safe_float(
-            agent_data.get("recovery_backoff_max_secs", 120.0), 120.0, 1.0, 3600.0
+        recovery_backoff_max_secs=section.read(
+            "recovery_backoff_max_secs", _safe_float, 1.0, 3600.0
         ),
         # Session-start gate (acp/runtime_start.py SessionStartGate).
-        session_start_concurrency=_safe_int(
-            agent_data.get("session_start_concurrency", 2), 2, 1, 64
+        # "auto" (default) is sized from the host once per process by
+        # session_start_sizing; an explicit integer keeps the 1..64 clamp.
+        session_start_concurrency=_session_start_concurrency(
+            agent_data.get("session_start_concurrency", "auto")
         ),
         # Adaptive controller (adaptive/policy.py params_from_config).
-        adaptive_concurrency=_safe_bool(agent_data.get("adaptive_concurrency"), True),
+        adaptive_concurrency=section.read("adaptive_concurrency", _safe_bool),
         adaptive_concurrency_mode=(
-            "fixed" if agent_data.get("adaptive_concurrency_mode") == "fixed" else "aimd"
+            "fixed"
+            if section.get("adaptive_concurrency_mode") == "fixed"
+            else section.default("adaptive_concurrency_mode")
         ),
-        adaptive_floor=_safe_int(agent_data.get("adaptive_floor", 1), 1, 1, 64),
-        adaptive_initial=_safe_int(agent_data.get("adaptive_initial", 4), 4, 1, 64),
-        adaptive_slow_start=_safe_bool(agent_data.get("adaptive_slow_start"), True),
-        controller_sample_secs=_safe_int(agent_data.get("controller_sample_secs", 5), 5, 1, 300),
+        adaptive_floor=section.read("adaptive_floor", _safe_int, 1, 64),
+        adaptive_initial=section.read("adaptive_initial", _safe_int, 1, 64),
+        adaptive_slow_start=section.read("adaptive_slow_start", _safe_bool),
+        controller_sample_secs=section.read("controller_sample_secs", _safe_int, 1, 300),
         # Dependency coordinator (taskq/dependency.py coordinator_from_config).
-        dependency_max_attempts=_safe_int(
-            agent_data.get("dependency_max_attempts", 20), 20, 1, 1000
+        dependency_max_attempts=section.read("dependency_max_attempts", _safe_int, 1, 1000),
+        dependency_wait_deadline_secs=section.read(
+            "dependency_wait_deadline_secs", _safe_int, 0, 86400
         ),
-        dependency_wait_deadline_secs=_safe_int(
-            agent_data.get("dependency_wait_deadline_secs", 3600), 3600, 0, 86400
-        ),
-        dependency_wake_per_tick=_safe_int(
-            agent_data.get("dependency_wake_per_tick", 0), 0, 0, 4096
-        ),
-        dependency_wake_spacing_secs=_safe_float(
-            agent_data.get("dependency_wake_spacing_secs", 1.0), 1.0, 0.0, 60.0
+        dependency_wake_per_tick=section.read("dependency_wake_per_tick", _safe_int, 0, 4096),
+        dependency_wake_spacing_secs=section.read(
+            "dependency_wake_spacing_secs", _safe_float, 0.0, 60.0
         ),
         # Tool-stall watchdog (acp/session_handle.py WatchdogSettings).
         interactive_command_policy=(
-            "wait" if agent_data.get("interactive_command_policy") == "wait" else "cancel"
+            "wait"
+            if section.get("interactive_command_policy") == "wait"
+            else section.default("interactive_command_policy")
         ),
-        subagent_max_turns=_safe_int(
-            agent_data.get("subagent_max_turns", DEFAULT_SUBAGENT_MAX_TURNS),
-            DEFAULT_SUBAGENT_MAX_TURNS,
-            1,
-            SUBAGENT_MAX_TURNS_CEILING,
+        subagent_max_turns=section.read(
+            "subagent_max_turns", _safe_int, 1, SUBAGENT_MAX_TURNS_CEILING
         ),
-        subagent_timeout_secs=_subagent_timeout_from(
-            agent_data.get("subagent_timeout_secs", SUBAGENT_TIMEOUT_SECS)
+        subagent_timeout_secs=section.read("subagent_timeout_secs", _subagent_timeout_from),
+        subagent_stall_idle_secs=section.read("subagent_stall_idle_secs", _safe_int),
+        completion_keep=_validated_completion_keep(section.get("completion_keep")),
+        completion_keep_chars=section.read(
+            "completion_keep_chars", _safe_int, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX
         ),
-        subagent_stall_idle_secs=_safe_int(agent_data.get("subagent_stall_idle_secs", 120), 120),
-        completion_keep=_validated_completion_keep(agent_data.get("completion_keep", "head")),
-        completion_keep_chars=_safe_int(
-            agent_data.get("completion_keep_chars", 3000),
-            3000,
-            COMPLETION_KEEP_CHARS_MIN,
-            COMPLETION_KEEP_CHARS_MAX,
-        ),
-        subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
+        subagent_result_ttl_secs=section.read("subagent_result_ttl_secs", _safe_int),
         # Same band workflows/service.py clamp_run_timeout enforces, so a
         # hand-edited file and the live-bound setter agree.
-        workflow_run_timeout_secs=_safe_int(
-            agent_data.get("workflow_run_timeout_secs", 3600), 3600, 60, 21600
-        ),
+        workflow_run_timeout_secs=section.read("workflow_run_timeout_secs", _safe_int, 60, 21600),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
             if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
-            else list(DEFAULT_CWD_ALLOWED_ROOTS)
+            else section.default("subagent_cwd_allowed_roots")
         ),
         log_level=(
             lvl.upper()
-            if isinstance(lvl := agent_data.get("log_level", "WARNING"), str)
-            else "WARNING"
+            if isinstance(lvl := section.get("log_level"), str)
+            else section.default("log_level")
         ),
-        bot_name=_sanitize_bot_name(agent_data.get("bot_name", "")),
-        max_channels=agent_data.get("max_channels", 1),
-        max_channel_agents=agent_data.get("max_channel_agents", 3),
+        bot_name=_sanitize_bot_name(section.get("bot_name")),
+        max_channels=section.get("max_channels"),
+        max_channel_agents=section.get("max_channel_agents"),
         soft_stop_budget_secs=max(
             SOFT_STOP_BUDGET_MIN,
             min(
                 SOFT_STOP_BUDGET_MAX,
-                _safe_float(agent_data.get("soft_stop_budget_secs", 10.0), 10.0),
+                section.read("soft_stop_budget_secs", _safe_float),
             ),
         ),
     )
 
 
 def _build_session_config(session_data: dict) -> SessionConfig:
+    section = _sections.SectionReader(SessionConfig, session_data)
     return SessionConfig(
         # The only field in this group whose site had no `_safe_int` at all, so
         # it is added here for consistency -- but NOT because the type was
@@ -3197,13 +3230,10 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # `_validate_config_data` runs over the raw dict before section
         # extraction and owns type handling. What was missing for this field, as
         # for the other ten, is the RANGE: an int of 999999999 loaded verbatim.
-        timeout_secs=_safe_int(
-            session_data.get("timeout_secs", DEFAULT_SESSION_TIMEOUT),
-            DEFAULT_SESSION_TIMEOUT,
-            SESSION_TIMEOUT_MIN,
-            SESSION_TIMEOUT_MAX,
+        timeout_secs=section.read(
+            "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
-        empty_response_auto_continue=bool(session_data.get("empty_response_auto_continue", True)),
+        empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
         # RANGE-clamped like the other session ints: a hand-edited 0
         # or 999 must load as a sane budget, never disable recovery or
         # arm an unbounded ladder. Type handling is owned by
@@ -3212,191 +3242,170 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # imported: this module's top-level names are a FROZEN
         # compatibility facade (test_loader_reexports_historical
         # _snapshot_by_identity), so a new re-export may not be added.
-        empty_response_max_continues=_safe_int(
-            session_data.get("empty_response_max_continues", 1),
-            1,
+        empty_response_max_continues=section.read(
+            "empty_response_max_continues",
+            _safe_int,
             _sections.EMPTY_RESPONSE_MAX_CONTINUES_MIN,
             _sections.EMPTY_RESPONSE_MAX_CONTINUES_MAX,
         ),
-        autocompact_pct=_safe_float(
-            session_data.get("autocompact_pct", DEFAULT_AUTOCOMPACT_PCT),
-            DEFAULT_AUTOCOMPACT_PCT,
-            lo=AUTOCOMPACT_PCT_MIN,
-            hi=AUTOCOMPACT_PCT_MAX,
+        autocompact_pct=section.read(
+            "autocompact_pct", _safe_float, lo=AUTOCOMPACT_PCT_MIN, hi=AUTOCOMPACT_PCT_MAX
         ),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value
         # is capped. Bounds are referenced via the module handle, not imported:
         # this module's top-level names are a frozen compatibility facade.
-        compact_wait_secs=_clamp_compact_wait_secs(session_data.get("compact_wait_secs", 0.0)),
+        compact_wait_secs=section.read("compact_wait_secs", _clamp_compact_wait_secs),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,
             0,
             POOL_SIZE_MAX,
         ),
-        pool_agent=str(session_data.get("pool_agent", "")),
-        pool_ttl_secs=_safe_int(
-            session_data.get("pool_ttl_secs", 1800),
-            1800,
-            POOL_TTL_SECS_MIN,
-            POOL_TTL_SECS_MAX,
+        pool_agent=str(section.get("pool_agent")),
+        pool_ttl_secs=section.read(
+            "pool_ttl_secs", _safe_int, POOL_TTL_SECS_MIN, POOL_TTL_SECS_MAX
         ),
-        eager_spawn=bool(session_data.get("eager_spawn", True)),
+        eager_spawn=bool(section.get("eager_spawn")),
         archive_retention_days=_archive_retention_days(session_data),
-        watchdog_rss_max_mb=_safe_int(
-            session_data.get("watchdog_rss_max_mb", _sections.DEFAULT_WATCHDOG_RSS_MAX_MB),
-            _sections.DEFAULT_WATCHDOG_RSS_MAX_MB,
-        ),
+        watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
         # non-int values, so a numeric STRING passes it and coerces here.
-        reconcile_max_kills=_safe_int(
-            session_data.get("reconcile_max_kills", _sections.DEFAULT_RECONCILE_MAX_KILLS),
-            _sections.DEFAULT_RECONCILE_MAX_KILLS,
-            0,
-            _sections.RECONCILE_MAX_KILLS_MAX,
+        reconcile_max_kills=section.read(
+            "reconcile_max_kills", _safe_int, 0, _sections.RECONCILE_MAX_KILLS_MAX
         ),
     )
 
 
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
+    section = _sections.SectionReader(TelemetryConfig, telemetry_data)
     return TelemetryConfig(
-        enabled=bool(telemetry_data.get("enabled", False)),
-        local_dir=str(telemetry_data.get("local_dir", "")),
-        export_interval_seconds=_safe_int(telemetry_data.get("export_interval_seconds", 60), 60),
-        retention_days=_safe_int(telemetry_data.get("retention_days", 0), 0),
-        max_total_mb=_safe_int(telemetry_data.get("max_total_mb", 0), 0),
-        otlp_endpoint=str(telemetry_data.get("otlp_endpoint", "")),
-        beacon_enabled=bool(telemetry_data.get("beacon_enabled", True)),
-        beacon_endpoint=str(telemetry_data.get("beacon_endpoint", _DEFAULT_BEACON_ENDPOINT)),
+        enabled=bool(section.get("enabled")),
+        local_dir=str(section.get("local_dir")),
+        export_interval_seconds=section.read("export_interval_seconds", _safe_int),
+        retention_days=section.read("retention_days", _safe_int),
+        max_total_mb=section.read("max_total_mb", _safe_int),
+        otlp_endpoint=str(section.get("otlp_endpoint")),
+        beacon_enabled=bool(section.get("beacon_enabled")),
+        beacon_endpoint=str(section.get("beacon_endpoint")),
     )
 
 
-def _title_refresh_every_turns(value: object) -> int:
+def _title_refresh_every_turns(value: object, default: int) -> int:
     """Parse ``dashboard.title_refresh_every_turns``: 0, or MIN..MAX.
 
-    0 and every negative value parse to 0, the built-in schedule, as does any value
-    ``_safe_int`` rejects (a bool, a fractional float, unparseable text). A value
-    from 1 to MIN - 1 is raised to MIN, so a user who asked for frequent refreshes
-    gets the most frequent cadence allowed rather than the built-in schedule. A
-    value above MAX is capped at MAX.
+    0 and every negative value parse to 0, the built-in schedule. Any value
+    ``_safe_int`` rejects (a bool, a fractional float, unparseable text) takes
+    *default*, the field's, which is that same 0. A value from 1 to MIN - 1 is
+    raised to MIN, so a user who asked for frequent refreshes gets the most
+    frequent cadence allowed rather than the built-in schedule. A value above MAX
+    is capped at MAX.
     """
-    every = _safe_int(value, 0, 0, _sections.TITLE_REFRESH_EVERY_TURNS_MAX)
+    every = _safe_int(value, default, 0, _sections.TITLE_REFRESH_EVERY_TURNS_MAX)
     return every if every == 0 else max(every, _sections.TITLE_REFRESH_EVERY_TURNS_MIN)
 
 
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
+    section = _sections.SectionReader(DashboardConfig, dashboard_data)
     return DashboardConfig(
-        url=dashboard_data.get("url", ""),
+        url=section.get("url"),
         tailscale=_tailscale_config_from(
             dashboard_data.get("tailscale"),
             _degraded,
             key_present="tailscale" in dashboard_data,
         ),
-        restore_sessions=dashboard_data.get("restore_sessions", False),
-        crewmate_threads=_safe_bool(dashboard_data.get("crewmate_threads"), False),
-        crewmates_in_agent_picker=_safe_bool(
-            dashboard_data.get("crewmates_in_agent_picker"), False
+        restore_sessions=section.get("restore_sessions"),
+        crewmate_threads=section.read("crewmate_threads", _safe_bool),
+        crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
+        dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
+        qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
+        qr_session_persist_across_restart=section.read(
+            "qr_session_persist_across_restart", _safe_bool
         ),
-        dynamic_dashboard_cards=_safe_bool(dashboard_data.get("dynamic_dashboard_cards"), False),
-        qr_session_until_restart=_safe_bool(dashboard_data.get("qr_session_until_restart"), True),
-        qr_session_persist_across_restart=_safe_bool(
-            dashboard_data.get("qr_session_persist_across_restart"), False
+        restore_window_minutes=section.get("restore_window_minutes"),
+        surface_channel_sessions=section.get("surface_channel_sessions"),
+        bot_name=section.get("bot_name"),
+        avatar=section.get("avatar"),
+        merge_queued_messages=section.get("merge_queued_messages"),
+        title_refresh_every_turns=section.read(
+            "title_refresh_every_turns", _title_refresh_every_turns
         ),
-        restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
-        surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),
-        bot_name=dashboard_data.get("bot_name", ""),
-        avatar=dashboard_data.get("avatar", ""),
-        merge_queued_messages=dashboard_data.get("merge_queued_messages", False),
-        title_refresh_every_turns=_title_refresh_every_turns(
-            dashboard_data.get("title_refresh_every_turns", 0)
-        ),
-        mcp_probe_timeout_secs=_safe_int(
-            dashboard_data.get("mcp_probe_timeout_secs", 15),
-            15,
-            MCP_PROBE_TIMEOUT_MIN,
-            MCP_PROBE_TIMEOUT_MAX,
+        mcp_probe_timeout_secs=section.read(
+            "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),
         loop_stall_exit_after_secs=(
             None
-            if dashboard_data.get("loop_stall_exit_after_secs") is None
+            if (loop_stall := section.get("loop_stall_exit_after_secs")) is None
             else _safe_int(
-                dashboard_data.get("loop_stall_exit_after_secs"),
+                loop_stall,
                 LOOP_STALL_EXIT_AFTER_DEFAULT,
                 LOOP_STALL_EXIT_AFTER_MIN,
                 LOOP_STALL_EXIT_AFTER_MAX,
             )
         ),
-        chat_entry_cache_max_entries=_safe_int(
-            dashboard_data.get("chat_entry_cache_max_entries", CHAT_ENTRY_CACHE_ENTRIES_DEFAULT),
-            CHAT_ENTRY_CACHE_ENTRIES_DEFAULT,
+        chat_entry_cache_max_entries=section.read(
+            "chat_entry_cache_max_entries",
+            _safe_int,
             CHAT_ENTRY_CACHE_ENTRIES_MIN,
             CHAT_ENTRY_CACHE_ENTRIES_MAX,
         ),
-        chat_entry_cache_max_bytes=_safe_int(
-            dashboard_data.get("chat_entry_cache_max_bytes", CHAT_ENTRY_CACHE_BYTES_DEFAULT),
-            CHAT_ENTRY_CACHE_BYTES_DEFAULT,
+        chat_entry_cache_max_bytes=section.read(
+            "chat_entry_cache_max_bytes",
+            _safe_int,
             CHAT_ENTRY_CACHE_BYTES_MIN,
             CHAT_ENTRY_CACHE_BYTES_MAX,
         ),
-        cautious_boot=_safe_bool(dashboard_data.get("cautious_boot"), True),
-        auto_open_browser=dashboard_data.get("auto_open_browser", True),
-        prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
-        quick_send=dashboard_data.get("quick_send", False),
+        cautious_boot=section.read("cautious_boot", _safe_bool),
+        auto_open_browser=section.get("auto_open_browser"),
+        prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        quick_send=section.get("quick_send"),
         model_picker_configured=(
-            _safe_bool(dashboard_data.get("model_picker_configured"), False)
+            section.read("model_picker_configured", _safe_bool)
             if "model_picker_configured" in dashboard_data
             else any(
                 isinstance(raw, str) and raw.strip() not in ("", "auto")
-                for raw in _safe_list(dashboard_data.get("model_picker_hidden_models"))
+                for raw in _safe_list(section.get("model_picker_hidden_models"))
             )
         ),
         model_picker_hidden_models=list(
             dict.fromkeys(
                 model
-                for raw in _safe_list(dashboard_data.get("model_picker_hidden_models"))
+                for raw in _safe_list(section.get("model_picker_hidden_models"))
                 if isinstance(raw, str) and (model := raw.strip()) and model != "auto"
             )
         ),
-        session_grid=dashboard_data.get("session_grid", False),
-        mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
-        auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
-        session_card_source_links=_safe_bool(dashboard_data.get("session_card_source_links"), True),
-        default_memory_mode=_default_memory_mode_from(
-            dashboard_data.get("default_memory_mode", "persistent")
+        session_grid=section.get("session_grid"),
+        mcp_app_panel=section.get("mcp_app_panel"),
+        auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
+        session_card_source_links=section.read("session_card_source_links", _safe_bool),
+        default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        widget_density=section.get("widget_density"),
+        use_builtin_browser=section.read("use_builtin_browser", _safe_bool),
+        browser_view_port=_port_or_unset(section.get("browser_view_port")),
+        verbosity=section.get("verbosity"),
+        link_previews=section.read("link_previews", _safe_bool),
+        tail_fork_enabled=section.get("tail_fork_enabled"),
+        terminal=section.get("terminal"),
+        default_project=section.get("default_project"),
+        theme_mode=section.get("theme_mode"),
+        sso_login_flags=str(section.get("sso_login_flags")),
+        theme_color=section.get("theme_color"),
+        language=str(section.get("language")),
+        recent_tint_count=section.read(
+            "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
-        widget_density=dashboard_data.get("widget_density", "more"),
-        use_builtin_browser=_safe_bool(dashboard_data.get("use_builtin_browser"), True),
-        browser_view_port=_port_or_unset(dashboard_data.get("browser_view_port", 0)),
-        verbosity=dashboard_data.get("verbosity", "default"),
-        link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
-        tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
-        terminal=dashboard_data.get("terminal", {"enabled": True}),
-        default_project=dashboard_data.get("default_project", ""),
-        theme_mode=dashboard_data.get("theme_mode", ""),
-        sso_login_flags=str(dashboard_data.get("sso_login_flags", "")),
-        theme_color=dashboard_data.get("theme_color", ""),
-        language=str(dashboard_data.get("language", "")),
-        recent_tint_count=_safe_int(
-            dashboard_data.get("recent_tint_count", 0),
-            0,
-            RECENT_TINT_COUNT_MIN,
-            RECENT_TINT_COUNT_MAX,
-        ),
-        folder_sort=_folder_sort_from(
-            dashboard_data.get("folder_sort", _sections.FOLDER_SORT_DEFAULT)
-        ),
+        folder_sort=section.read("folder_sort", _folder_sort_from),
         update_nudge=(
-            dashboard_data.get("update_nudge", {})
-            if isinstance(dashboard_data.get("update_nudge"), dict)
-            else {}
+            nudge
+            if isinstance(nudge := section.get("update_nudge"), dict)
+            else section.default("update_nudge")
         ),
-        onboarded=bool(dashboard_data.get("onboarded", False)),
+        onboarded=bool(section.get("onboarded")),
         import_onboarded=_safe_bool(
             dashboard_data.get("import_onboarded"),
-            _safe_bool(dashboard_data.get("onboarded"), False),
+            section.read("onboarded", _safe_bool),
         ),
         # Falls back to `onboarded`: a user who finished first run before
         # this chapter existed has already reached the product, and
@@ -3404,39 +3413,74 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         # would suppress it forever.
         privacy_acked=_safe_bool(
             dashboard_data.get("privacy_acked"),
-            _safe_bool(dashboard_data.get("onboarded"), False),
+            section.read("onboarded", _safe_bool),
         ),
-        crewmates_onboarded=_safe_bool(dashboard_data.get("crewmates_onboarded"), False),
-        user_role=str(dashboard_data.get("user_role", "")),
-        user_role_other=str(dashboard_data.get("user_role_other", "")),
-        user_technical_level=str(dashboard_data.get("user_technical_level", "")),
-        tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
-        feature_videos_enabled=_safe_bool(dashboard_data.get("feature_videos_enabled"), False),
-        feature_videos_cache_max_mb=_safe_float(
-            dashboard_data.get("feature_videos_cache_max_mb", 500.0), 500.0, lo=0.0
+        crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
+        user_role=str(section.get("user_role")),
+        user_role_other=str(section.get("user_role_other")),
+        user_technical_level=str(section.get("user_technical_level")),
+        tips_enabled=bool(section.get("tips_enabled")),
+        feature_videos_enabled=section.read("feature_videos_enabled", _safe_bool),
+        feature_videos_cache_max_mb=section.read(
+            "feature_videos_cache_max_mb", _safe_float, lo=0.0
         ),
-        folder_suggestions_enabled=bool(dashboard_data.get("folder_suggestions_enabled", True)),
-        tips_cadence_hours=_safe_float(dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0),
-        tips_snooze_hours=_safe_float(dashboard_data.get("tips_snooze_hours", 48.0), 48.0, lo=0.0),
-        tips_recency_decay=_safe_float(
-            dashboard_data.get("tips_recency_decay", 0.6), 0.6, lo=0.0, hi=1.0
+        folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
+        tips_snooze_hours=section.read("tips_snooze_hours", _safe_float, lo=0.0),
+        tips_recency_decay=section.read("tips_recency_decay", _safe_float, lo=0.0, hi=1.0),
+        tips_model=str(section.get("tips_model")),
+        tips_explore_ratio=section.read("tips_explore_ratio", _safe_float, lo=0.0, hi=1.0),
+        gitlab_hosts=_coerce_gitlab_hosts(section.get("gitlab_hosts")),
+        jira_hosts=_coerce_jira_hosts(section.get("jira_hosts")),
+        # These two parse raw JSON entries into DTOs, so they are handed only a
+        # stored value; an omitted key is the field default as built.
+        link_patterns=(
+            _sections._coerce_link_patterns(dashboard_data["link_patterns"])
+            if "link_patterns" in dashboard_data
+            else section.default("link_patterns")
         ),
-        tips_model=str(dashboard_data.get("tips_model", "auto")),
-        tips_explore_ratio=_safe_float(
-            dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0
+        jira_auth=(
+            [
+                _jira_auth_entry(entry)
+                for entry in (dashboard_data["jira_auth"] or [])
+                if isinstance(entry, dict) and entry.get("host")
+            ]
+            if "jira_auth" in dashboard_data
+            else section.default("jira_auth")
         ),
-        gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
-        jira_hosts=_coerce_jira_hosts(dashboard_data.get("jira_hosts")),
-        link_patterns=_sections._coerce_link_patterns(dashboard_data.get("link_patterns")),
-        jira_auth=[
-            JiraAuthEntry(
-                host=str(entry.get("host", "")),
-                # ``user`` is accepted as an alias; ``email`` wins when both are set.
-                email=str(entry.get("email") or entry.get("user") or ""),
-            )
-            for entry in (dashboard_data.get("jira_auth") or [])
-            if isinstance(entry, dict) and entry.get("host")
-        ],
+    )
+
+
+def _jira_auth_entry(raw: dict) -> JiraAuthEntry:
+    """One ``dashboard.jira_auth`` row, read against :class:`JiraAuthEntry`'s defaults."""
+    entry = _sections.SectionReader(JiraAuthEntry, raw)
+    return JiraAuthEntry(
+        host=str(entry.get("host")),
+        # ``user`` is accepted as an alias; ``email`` wins when both are set.
+        email=str(raw.get("email") or raw.get("user") or entry.default("email")),
+    )
+
+
+def _registry_entry(raw: dict) -> ExternalRegistryConfig:
+    """One ``registries`` row, read against :class:`ExternalRegistryConfig`'s defaults."""
+    entry = _sections.SectionReader(ExternalRegistryConfig, raw)
+    return ExternalRegistryConfig(
+        name=str(entry.get("name")),
+        repo=str(entry.get("repo")),
+        # Backward-compat: an entry that OMITS ``branch`` is a legacy config
+        # written before URL registries defaulted new entries to ``main`` (the
+        # registries PUT API now always persists an explicit branch). Such an
+        # entry relied on the historical ``mainline`` default, so preserve it
+        # here — silently retargeting it to ``main`` on upgrade would break any
+        # registry whose content still lives on ``mainline``. The one registry
+        # read whose default is deliberately NOT the field's.
+        branch=str(raw.get("branch", "mainline")),
+        # A credential-posture decision, so it is read back verbatim and
+        # validated downstream rather than here: an unrecognised value must
+        # resolve to the restrictive tier, which ``registry._registry_trust_tier``
+        # does. Absent -> the field's "index", so a config written before the
+        # field existed keeps the credential-free posture it had.
+        trust=str(entry.get("trust")),
     )
 
 
@@ -3827,10 +3871,10 @@ class KiroCrewConfig:
         # than read there because kiro_crew.env.mcp_search_path is reached from
         # the event loop by every MCP probe and by the agent-config resolver, so
         # a config read on that side would stat/read/validate config.json on the
-        # loop. Done here rather than inside _load_resolved so EVERY return path
-        # publishes -- including the defaults path taken when neither config file
-        # could be read, which must CLEAR an already-published snapshot rather
-        # than leave a deleted directory resolving commands. Lazy import: env
+        # loop. Done here rather than inside the load pipeline so EVERY load
+        # publishes -- including one that found neither config file readable, which
+        # must CLEAR an already-published snapshot rather than leave a deleted
+        # directory resolving commands. Lazy import: env
         # must stay off this module's import graph.
         try:
             from kiro_crew.env import publish_config_path_dirs
@@ -3843,10 +3887,10 @@ class KiroCrewConfig:
         # Publish the alias table for the same reason and in the same place: the
         # display-side resolver (:func:`resolve_effective_agent`) runs on the
         # event loop for every slots frame, so it must never reach for
-        # config.json itself. Here rather than in _load_resolved so EVERY return
-        # path publishes -- including the degraded-defaults path, which must
-        # overwrite a richer previous snapshot rather than leave the resolver
-        # honoring aliases that do not load.
+        # config.json itself. Here rather than in the load pipeline so EVERY load
+        # publishes -- including a degraded-defaults one, which must overwrite a
+        # richer previous snapshot rather than leave the resolver honoring aliases
+        # that do not load.
         try:
             publish_agent_alias_snapshot(cfg)
         except Exception as e:  # pragma: no cover - defensive
@@ -3887,896 +3931,18 @@ class KiroCrewConfig:
     def _load_resolved(cls) -> tuple[KiroCrewConfig, int, str | None]:
         """Resolve the config from disk (or defaults). See :meth:`load`.
 
-        Split out so :meth:`load` owns the post-resolution publication on every
-        return path; this method may return from more than one place.
-
-        Returns the config PLUS the ordering ticket drawn before the read, which
-        is what lets :meth:`load` publish the compaction threshold in the correct
-        order relative to a concurrent load without any filesystem I/O of its own
-        on the event loop.
+        Split out so :meth:`load` owns the post-resolution publication. Runs the load
+        pipeline -- :func:`read_config_document`, :func:`build_config`, then
+        :func:`persist_write_back` -- and returns the
+        config PLUS the ordering ticket drawn before the read, which is what lets
+        :meth:`load` publish the compaction threshold in the correct order relative
+        to a concurrent load without any filesystem I/O of its own on the event
+        loop, and the digest of the bytes the config was parsed from.
         """
-        # Drawn BEFORE any read below, so it records when this load began
-        # observing the files rather than when it finished. See
-        # next_config_load_ticket and publish_autocompact_pct.
-        ticket = next_config_load_ticket()
-        path = config_path()
-
-        # Hot-path cache: reuse the validated, merged dict when neither config
-        # file has changed since the last load. Skips read + json.loads +
-        # _deep_merge + the full jsonschema.validate. A deep copy is returned so
-        # in-place mutation by callers (and the write-back migration below) can
-        # never corrupt the cached original.
-        #
-        # ONE stat pass serves both consumers of it below: the cache lookup and
-        # the pre-read TOCTOU fingerprint. load() runs on the event loop, so a
-        # second pass would be filesystem I/O there for information already in
-        # hand.
-        fp = _config_fingerprint()
-        # Data and sidecar come from ONE lock hold: fetched separately, a save()
-        # on another thread could clear the cache between the two and hand this
-        # load a merged document with an EMPTY base shadow — which would then be
-        # captured from as if no overlay existed (see _shadowed_base_sections).
-        cached = _CONFIG_CACHE.get_with_sidecar(fp)
-        # Pre-overlay base copy of the sections the overlay touched. Filled on the
-        # disk path below; read from the sidecar on a cache hit. Empty when there
-        # is no overlay, in which case the merged document IS the base.
-        base_shadow: dict = {}
-        # Bound BEFORE the cache branch, because only the reading branch can decide
-        # an adoption: a cache HIT means no base document was read this load, and a
-        # load that did not look at the file must not adopt from it. Empty is
-        # therefore the correct answer on the hot path, not a missing one -- the load
-        # that populated the cache already adopted.
-        adoptable: list[SupersededDefault] = []
-        # Same rule for the legacy ``skills.lazy_load`` rewrite: the writer stamp of
-        # 0.6.x or older that the base document carried, or None.
-        legacy_lazy_stamp: str | None = None
-        content_digest: str | None = None
-        base_unreadable = False
-        if cached is not None:
-            data, sidecar, content_digest = cached
-            base_shadow = sidecar.get(_SIDECAR_BASE_SHADOW, {})
-            base_unreadable = bool(sidecar.get(_SIDECAR_BASE_UNREADABLE, False))
-        else:
-            # Capture the invalidation generation BEFORE disk I/O. A successful
-            # write advances it, so this read cannot repopulate pre-write data
-            # after the writer clears the cache even if the filesystem's coarse
-            # timestamp and unchanged size leave the fingerprint identical.
-            read_generation = _CONFIG_CACHE.generation()
-            # fp was captured BEFORE reading, so a write landing during the read
-            # is detected: the fingerprint normally changes, and the generation
-            # fence covers filesystems where a same-size replacement does not.
-            # _store_validated_data documents this contract.
-            pre_read_fp = fp
-            data = {}
-            loaded_base = False
-            config_source_unreadable = False
-            # The bytes, kept so the digest names exactly what was parsed rather
-            # than whatever a later read would find.
-            read_parts: list[bytes | None] = [None, None]
-            digestible = True
-            if path.exists():
-                try:
-                    base_text = read_config_text(path)
-                    read_parts[0] = base_text.encode("utf-8")
-                    raw = json.loads(base_text)
-                    if isinstance(raw, dict):
-                        data = raw
-                        loaded_base = True
-                    else:
-                        config_source_unreadable = True
-                        base_unreadable = True
-                        logger.warning("Config is not a JSON object, using defaults")
-                        _mark_file_degraded(path)
-                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                    config_source_unreadable = True
-                    base_unreadable = True
-                    # A digest names the BYTES, and a document that read whole but would
-                    # not parse still has bytes to name -- what it does not have is
-                    # faithful CONTENT, which ``degraded_sections`` is what reports. Only
-                    # a read that never completed leaves nothing to name.
-                    if read_parts[0] is None:
-                        digestible = False
-                    logger.warning("Failed to load config from %s: %s", path, e)
-                    _mark_file_degraded(path)
-
-            # Report -- and, for the entries that opt in, ADOPT -- a stored BASE
-            # value that still holds a superseded default, before the overlay merge
-            # below: the overlay is the operator's live choice and says nothing about
-            # what the base materialized.
-            #
-            # The two halves differ in what they may touch. Reporting is read-only
-            # and covers every drifted key, because a key with a documented escape
-            # hatch cannot be corrected automatically -- a stale default and a
-            # deliberate opt-out are the same bytes. Adoption covers only the
-            # entries whose ``auto_adopt`` says the value has no second meaning, and
-            # happens at most once per key per install; ``auto_adoptable`` owns both
-            # filters plus the acknowledgment one.
-            #
-            # Skipped when no base file loaded -- nothing is stored to adopt or
-            # report on.
-            adoptable = []
-            if loaded_base:
-                adoptable = auto_adoptable(data)
-                # Decided here, on the base as the previous build left it: once this
-                # load writes, or the gateway's meta refresh runs, the stamp names
-                # the running build and the proof is gone.
-                legacy_lazy_stamp = _migration.legacy_lazy_load_rewrite_due(
-                    data, connections_marker=config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
-                )
-                report_skip = {e.dotted_key for e in adoptable}
-                if legacy_lazy_stamp is not None:
-                    # The line must not send the operator after a key this same
-                    # load removes (it applies once the registry has a row for it).
-                    report_skip.add(_migration.LAZY_LOAD_KEY)
-                _report_superseded_defaults(data, skip=report_skip)
-
-            # Deep-merge config.local.json overlay (user-owned, never touched by setup)
-            local_data: dict = {}
-            local_path = config_local_path()
-            if local_path.is_file():
-                try:
-                    st_mode = local_path.stat().st_mode
-                    if st_mode & 0o002:
-                        logger.warning(
-                            "config.local.json is world-writable (%o); "
-                            "consider running: chmod 600 %s",
-                            st_mode & 0o777,
-                            local_path,
-                        )
-                    local_text = read_config_text(local_path)
-                    read_parts[1] = local_text.encode("utf-8")
-                    raw_local = json.loads(local_text)
-                    if isinstance(raw_local, dict):
-                        local_data = raw_local
-                    else:
-                        config_source_unreadable = True
-                        logger.warning("config.local.json is not a JSON object, ignoring")
-                        _mark_file_degraded(local_path)
-                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                    config_source_unreadable = True
-                    # Same rule as the base file: bytes that read whole can be named
-                    # whether or not they parsed.
-                    if read_parts[1] is None:
-                        digestible = False
-                    logger.warning("Failed to load config.local.json: %s", e)
-                    _mark_file_degraded(local_path)
-
-            if local_data:
-                # Remember the base copy of what the overlay is about to shadow —
-                # the last moment both documents exist. See _shadowed_base_sections.
-                base_shadow = _shadowed_base_sections(data, local_data)
-                data = _deep_merge(data, local_data)
-
-            # A present source that cannot be read or parsed may contain the
-            # operator's hard-off switch. Preserve that unknown as disabled
-            # before either the defaults return or schema normalization can
-            # turn it into the enabled-by-default missing-field case.
-            _fail_closed_project_skills_config(
-                data, config_source_unreadable=config_source_unreadable
-            )
-
-            # Return defaults only if neither file was successfully loaded. Seed
-            # the default "kirocrew" agent in-memory (matching the on-disk
-            # migration below) so a never-setup home still lists the default
-            # agent — but do NOT persist: a plain read (e.g. `agent list`) must
-            # not create config files as a side effect. Not cached — there's no
-            # file to invalidate against, and the path is already cheap
-            # (existence checks only, no read/parse/validate).
-            if not loaded_base and not local_data:
-                # An UNREADABLE file reaches this same "no config" branch as a
-                # genuinely absent one, and the two are opposite claims for a
-                # security gate: "the operator configured nothing" versus "we
-                # could not read what they configured". Carry the observation
-                # through so the caller can tell them apart.
-                cfg = cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
-                cfg._base_unreadable = base_unreadable
-                if (
-                    DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
-                    or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
-                ):
-                    cfg.dashboard.default_memory_mode = "temporary"
-                cfg.skills.project_skills_enabled = (
-                    data.get("skills", {}).get("project_skills_enabled", True) is True
-                )
-                kiro = cfg.agent.default_agent or "kirocrew"
-                cfg.agents["default"] = KiroCrewAgentConfig(
-                    kiro_agent=kiro,
-                    workspace="default",
-                    memory_store="default",
-                )
-                cfg.default_agent = "default"
-                # Both files absent is a VALID state with bytes to name -- the digest of
-                # "neither file exists" -- and naming it is what lets a caller holding
-                # this config tell "still absent" from "someone just created one". Only
-                # a read that never completed reaches here with nothing to name.
-                return cfg, ticket, _content_digest_of(read_parts) if digestible else None
-
-            # Preserve fail-closed security semantics before advisory schema
-            # validation can replace malformed input with a missing-field default.
-            # Normalize resource_limits FIRST, for exactly that reason. Its
-            # fields are declared ``int | None``, so jsonschema reads a
-            # hand-edited ``512.5`` as a type violation and
-            # ``_apply_field_default`` POPS the key -- deleting a ceiling the
-            # parse rule would have accepted, since it truncates. That deletion
-            # is not neutral: the rlimit path's fallback for a missing value is
-            # ``0``, which means "leave inherited", so a 512 MB ceiling becomes
-            # NO ceiling, and ``to_dict`` then persists ``null`` over what the
-            # operator wrote. Normalizing here means validation sees the same
-            # integers ``from_raw`` would produce; it is idempotent, so the
-            # section build below agrees by construction.
-            if isinstance(data.get("resource_limits"), dict):
-                data["resource_limits"] = asdict(
-                    ResourceLimitsConfig.from_raw(data["resource_limits"])
-                )
-            # Same fail-closed-before-validation reason for the three agent
-            # switches whose safe direction is FALSE.
-            # `agent.session_control` is the operator's single withdrawal of
-            # cross-session control, `agent.member_dispatch` gates whether
-            # a crew member bypasses that withdrawal, and `agent.crew_panel`
-            # gates the member's own webview. Schema validation pops a
-            # present-but-malformed value and the missing-field default is TRUE
-            # for all three, so a quoted `"false"` -- a routine operator quoting
-            # mistake -- would silently ride that default back to the
-            # capability staying enabled. Coerce a present non-bool to False
-            # HERE, so validation sees a valid bool and keeps it; a genuinely
-            # absent key is left absent and still defaults to true (today's
-            # behaviour). One loop, so no switch can keep the guard while
-            # another loses it.
-            #
-            # Say so out loud. The coercion resolves a malformed value one way,
-            # and an operator who meant the other way has no other signal:
-            # validation sees the repaired bool and stays quiet. The line names
-            # the key, the type it found and the JSON it wanted, so the fix is
-            # the next thing the operator does rather than a capability they
-            # find missing later.
-            _agent_section = data.get("agent")
-            if isinstance(_agent_section, dict):
-                for _fail_closed_key in ("session_control", "member_dispatch", "crew_panel"):
-                    if _fail_closed_key in _agent_section and not isinstance(
-                        _agent_section[_fail_closed_key], bool
-                    ):
-                        logger.warning(
-                            "agent.%s is %s, not a boolean; reading it as the safe "
-                            "value false (the capability is OFF). Write true or false "
-                            "without quotes to choose.",
-                            _fail_closed_key,
-                            type(_agent_section[_fail_closed_key]).__name__,
-                        )
-                        _agent_section[_fail_closed_key] = False
-            # Keep a genuinely absent default backward-compatible with older
-            # configs, but normalize a PRESENT malformed value before advisory
-            # schema validation can delete it and turn corruption into the
-            # missing-field Persistent default.
-            _dashboard_section = data.get("dashboard")
-            if isinstance(_dashboard_section, dict) and "default_memory_mode" in _dashboard_section:
-                _dashboard_section["default_memory_mode"] = _default_memory_mode_from(
-                    _dashboard_section["default_memory_mode"]
-                )
-            # Validate against JSON Schema (advisory — never fatal)
-            _validate_config_data(data)
-            # Clamp security-relevant resource-limit knobs to their API ceilings
-            # BEFORE caching, so a hand-edited/prompt-injected config.json that
-            # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
-            # on the disk-read path; cache hits below already serve clamped values.
-            _clamp_security_bounds(data)
-            # Cache under the PRE-read fingerprint and generation. A mid-read
-            # write either changes the fingerprint or advances the generation;
-            # both paths force the next load to re-read. The base shadow rides
-            # along so a hit can capture unknown keys from the base document
-            # exactly as this disk read did.
-            # Named from the bytes THIS read parsed, so a later hit on this entry can
-            # say which content it represents. Withheld only when a file existed and
-            # could not be READ whole: a document that read but would not parse still
-            # has bytes to name, and that it is not faithful is what
-            # ``degraded_sections`` reports instead.
-            content_digest = _content_digest_of(read_parts) if digestible else None
-            # Cached only when every present file read WHOLE. A transient read
-            # failure (a sharing violation, an EIO) on config.json with an overlay
-            # present leaves an overlay-only document here, and caching it under
-            # the unchanged stat fingerprint served the base settings at their
-            # defaults on every later load until a file happened to change. A file
-            # whose bytes read fine but would not parse is a stable fact about
-            # those bytes and still caches.
-            if digestible:
-                _store_validated_data(
-                    data,
-                    pre_read_fp,
-                    {_SIDECAR_BASE_SHADOW: base_shadow, _SIDECAR_BASE_UNREADABLE: base_unreadable},
-                    expected_generation=read_generation,
-                    content_digest=content_digest,
-                )
-
-        # Collected during the parse that discards them — the only moment the
-        # evidence exists, since the migration below rewrites config.json in
-        # normalized form (see KiroCrewConfig.degraded_sections).
-        _degraded: set[str] = set()
-        agent_data = _coerced_section(data, "agent", _degraded)
-        session_data = _coerced_section(data, "session", _degraded)
-        taskrunner_data = _coerced_section(data, "taskrunner", _degraded)
-        cron_history_data = _coerced_section(data, "cron_history", _degraded)
-        memory_data = _coerced_section(data, "memory", _degraded)
-        knowledge_data = _coerced_section(data, "knowledge", _degraded)
-        telegram_data = _coerced_section(data, "telegram", _degraded)
-        weixin_data = _coerced_section(data, "weixin", _degraded)
-        whatsapp_data = _coerced_section(data, "whatsapp", _degraded)
-        feishu_data = _coerced_section(data, "feishu", _degraded)
-        discord_data = _coerced_section(data, "discord", _degraded)
-        webex_data = _coerced_section(data, "webex", _degraded)
-        wakatime_data = _coerced_section(data, "wakatime", _degraded)
-        teams_data = _coerced_section(data, "teams", _degraded)
-        imessage_data = _coerced_section(data, "imessage", _degraded)
-        slack_data = _coerced_section(data, "slack", _degraded)
-        publish_data = _coerced_section(data, "publish", _degraded)
-        # A malformed allowed_destinations is the same class as a malformed
-        # section one level down, in two shapes. A non-LIST value:
-        # iterating it either crashes load() with a TypeError (a scalar — a
-        # config typo must not abort gateway startup) or yields garbage (a
-        # dict iterates as its keys, a string as its characters). A list with
-        # non-string/empty ENTRIES: the parse filter drops them, so an
-        # all-invalid narrowing like [1, 2] parses to [] — indistinguishable
-        # from "no restriction configured", the exact silent widening this fix
-        # exists to stop. Both shapes record the degradation so the publish
-        # gate denies, and parse from what safely remains. Validation cannot
-        # repair these values (publish.allowed_destinations is fail-closed
-        # there — repairing an OPEN default silently widens), so the loader
-        # must be the layer that survives them.
-        _dests_raw = publish_data.get("allowed_destinations", [])
-        if not isinstance(_dests_raw, list):
-            _degraded.add("publish")
-            _OBSERVED_DEGRADED_SECTIONS.add("publish")
-            logger.warning(
-                "config: 'publish.allowed_destinations' is not a list (got %s) "
-                "— treating the publish section as degraded; publishing is "
-                "denied until the file is fixed and the gateway restarted",
-                type(_dests_raw).__name__,
-            )
-            _dests_raw = []
-        elif any(not (isinstance(_d, str) and _d) for _d in _dests_raw):
-            _degraded.add("publish")
-            _OBSERVED_DEGRADED_SECTIONS.add("publish")
-            logger.warning(
-                "config: 'publish.allowed_destinations' carries entr(y/ies) "
-                "that are not non-empty strings — treating the publish section "
-                "as degraded; publishing is denied until the file is fixed and "
-                "the gateway restarted",
-            )
-            _dests_raw = []
-        # Back-compat: this channel's config section was renamed
-        # "wechat" -> "wecom". Fall back to the legacy key so existing
-        # installs keep their WeCom settings on upgrade (read-only alias;
-        # no broader migration machinery).
-        # Alias-aware: record under whichever key the operator actually used, so
-        # the warning names the section they can go and fix.
-        _wecom_key = "wecom" if "wecom" in data else "wechat"
-        wecom_data = _coerced_section(data, _wecom_key, _degraded)
-        dashboard_data = _coerced_section(data, "dashboard", _degraded)
-        # Persistent is the compatibility default only when a readable config
-        # genuinely omits this field. If the dashboard section or either config
-        # file was unreadable, the missing value may have been a privacy choice
-        # we could not recover, so new chats must fail closed to Temporary until
-        # the operator fixes the file and restarts the gateway.
-        if (
-            "dashboard" in _degraded
-            or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
-            or DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
-        ):
-            dashboard_data["default_memory_mode"] = "temporary"
-        stt_data = _coerced_section(data, "stt", _degraded)
-        computer_use_data = _coerced_section(data, "computer_use", _degraded)
-        instances_data = _coerced_section(data, "instances", _degraded)
-        connect_timeout_raw = instances_data.get("connect_timeout_secs")
-        mint_timeout_raw = instances_data.get("mint_timeout_secs")
-        mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
-        mcp_data = _coerced_section(data, "mcp", _degraded)
-        heartbeat_data = _coerced_section(data, "heartbeat", _degraded)
-        heartbeat_default_deliver = (
-            str(heartbeat_data.get("default_deliver", "slack")).strip().lower()
-        )
-        if heartbeat_default_deliver not in ("slack", "dashboard"):
-            heartbeat_default_deliver = "slack"
-        # A stored document written before this key existed has no "monitoring"
-        # object at all, and that is the case that must keep working: the miss
-        # resolves to the dataclass default, which is the off position. So an
-        # already-installed gateway needs nothing written to be correct here --
-        # only a gateway that wants the key ON writes it, and Settings does
-        # that. (The hazard this avoids belongs to a SHIPPED DEFAULT that
-        # CHANGES: config.json materializes every key, so the stored value
-        # outranks the new default forever. Adding a key has no stored value to
-        # outrank it.)
-        monitoring_data = _coerced_section(data, "monitoring", _degraded)
-        monitoring_prefer_structured_arming = _safe_bool(
-            monitoring_data.get("prefer_structured_arming"), False
-        )
-        tunnel_data = _coerced_section(data, "tunnel", _degraded)
-        skills_data = _coerced_section(data, "skills", _degraded)
-        session_summary_data = _coerced_section(data, "session_summary", _degraded)
-        messaging_data = _coerced_section(data, "messaging", _degraded)
-        telemetry_data = _coerced_section(data, "telemetry", _degraded)
-        watchdog_data = _coerced_section(data, "watchdog", _degraded)
-        decisions_data = _coerced_section(data, "decisions", _degraded)
-        resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
-
-        # Parse agents section into dict[str, KiroCrewAgentConfig]
-        raw_agents = data.get("agents", {})
-        agents: dict[str, KiroCrewAgentConfig] = {}
-        if isinstance(raw_agents, dict):
-            for name, entry in raw_agents.items():
-                if isinstance(entry, dict):
-                    # config.json is hand-editable (and agent-writable), so a
-                    # non-string model (e.g. `model: 123`) must not survive the
-                    # load — it would reach normalize_agent_model().strip() and
-                    # raise AttributeError from the resolver instead of simply
-                    # being ignored.
-                    raw_model = entry.get("model", "")
-                    # Same guard as model: a non-string triggers (e.g. `1`) must
-                    # not survive load — select_crew's roster calls .strip() on it.
-                    raw_triggers = entry.get("triggers", "")
-                    # Same guard family: the label is rendered verbatim by every
-                    # roster surface, so a non-string collapses to "" (show the
-                    # name) rather than reaching the wire.
-                    raw_display_name = entry.get("display_name", "")
-                    agents[name] = KiroCrewAgentConfig(
-                        member_id=entry.get("member_id", ""),
-                        kiro_agent=entry.get("kiro_agent", ""),
-                        workspace=entry.get("workspace", "default"),
-                        memory_store=entry.get("memory_store", "default"),
-                        model=raw_model if isinstance(raw_model, str) else "",
-                        # Same hand-editable-config guard: an unknown level must
-                        # collapse to "" (inherit) rather than travel to the
-                        # provider, where kiro-cli rejects the whole overlay.
-                        reasoning_effort=coerce_effort(entry.get("reasoning_effort", "")),
-                        display_name=raw_display_name if isinstance(raw_display_name, str) else "",
-                        description=entry.get("description", ""),
-                        triggers=raw_triggers if isinstance(raw_triggers, str) else "",
-                        source=entry.get("source", "kirocrew"),
-                        # Hand-editable config: a quoted "true" or a stray int
-                        # must not become a truthy star, so only a real bool
-                        # is honoured and anything else reads as un-starred.
-                        starred=_safe_bool(entry.get("starred", False), False),
-                        # Same guard family as model/triggers: config.json is
-                        # hand-editable, so a junk value must collapse to 0
-                        # (inherit the global window), never crash the load.
-                        # lo=0 keeps a negative override from arming an
-                        # instant-cancel window.
-                        watchdog_tool_stall_suspect_secs=_safe_float(
-                            entry.get("watchdog_tool_stall_suspect_secs", 0.0), 0.0, lo=0.0
-                        ),
-                        watchdog_tool_stall_hard_cap_secs=_safe_float(
-                            entry.get("watchdog_tool_stall_hard_cap_secs", 0.0), 0.0, lo=0.0
-                        ),
-                        telegram_account=entry.get("telegram_account", ""),
-                        session_color=_safe_color(entry.get("session_color", "")),
-                        # Module-qualified on purpose: the facade's `from
-                        # sections import` list is a frozen pre-split snapshot
-                        # (test_config_module_boundaries), and post-split
-                        # internals are reached through the module, not
-                        # re-exported from here.
-                        avatar=_sections._safe_avatar(entry.get("avatar")),
-                    )
-
-        # Migrate workspaces from flat or structured format
-        raw_workspaces = data.get("workspaces", {})
-        if not isinstance(raw_workspaces, dict):
-            # Reported, not just replaced: a gate that fences the memory
-            # workspaces (folder steering's silo fence) reads this table to
-            # learn WHERE the workspaces are, and an operator's absolute
-            # workspace directory that this load could not read is a directory
-            # the fence would otherwise not know to cover. Same posture as the
-            # ``dashboard.tailscale`` key: the consumer decides to fail closed.
-            logger.warning(
-                "Config 'workspaces' is not a JSON object (got %s); the workspace "
-                "table is unavailable for this load",
-                type(raw_workspaces).__name__,
-            )
-            _degraded.add(_resolution.DEGRADED_WORKSPACES)
-            raw_workspaces = {}
-        workspaces = _migrate_workspaces(raw_workspaces)
-
-        # Parse memory_stores; synthesize default if missing.
-        #
-        # A store NAME becomes a single path segment under
-        # ``memory_stores.MEMORY_STORES_DIR_NAME``, so the shape rule is applied
-        # here too — at BOOT, where the operator can see it — rather than only at
-        # the first memory write. Reported, never REPAIRED: the entry is kept
-        # verbatim so a ``to_dict()``/``save()`` round-trip cannot erase the
-        # operator's own declaration, and no name is rewritten into a usable one,
-        # because sanitizing ``../work`` or ``Work`` into ``work`` is the one
-        # thing that would merge two crews' memory into one directory.
-        #
-        # Kept, but not usable: ``memory_stores.usable_store_names`` drops a
-        # malformed name from the resolvable set, so a crew bound to it degrades
-        # at ``resolve_agent_bindings`` instead of carrying the name to a
-        # resolver that would raise on it.
-        raw_stores = data.get("memory_stores", {})
-        memory_stores: dict[str, MemoryStoreConfig] = {}
-        if isinstance(raw_stores, dict) and raw_stores:
-            for name, entry in raw_stores.items():
-                if not isinstance(entry, dict):
-                    continue
-                defect = memory_store_name_defect(name)
-                if defect is not None:
-                    logger.warning(
-                        "memory_stores: store name %r is unusable (%s); any crew "
-                        "bound to it cannot resolve a memory directory",
-                        name,
-                        defect,
-                    )
-                memory_stores[name] = MemoryStoreConfig(
-                    owner_member_id=entry.get("owner_member_id", ""),
-                    description=entry.get("description", ""),
-                    embedding_provider=entry.get("embedding_provider", ""),
-                    owner_member=entry.get("owner_member", ""),
-                    memory_version=entry.get("memory_version", 1),
-                )
-        if not memory_stores:
-            memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
-
-        # Parse top-level default_agent and default_memory_store
-        default_agent_val = data.get("default_agent", "")
-        if not isinstance(default_agent_val, str):
-            default_agent_val = ""
-        default_memory_store_val = data.get("default_memory_store", DEFAULT_MEMORY_STORE)
-        if not isinstance(default_memory_store_val, str):
-            default_memory_store_val = DEFAULT_MEMORY_STORE
-        # Reported, not repaired, for the same reason as the store names above.
-        # Legacy default_memory_store is retained for V1 compatibility. Member
-        # member resolution never uses it as a fallback or a filesystem path.
-        elif memory_store_name_defect(default_memory_store_val) is not None:
-            logger.warning(
-                "default_memory_store %r is not a usable store name (%s); preserved "
-                "for V1 compatibility but not used for member memory resolution",
-                default_memory_store_val,
-                memory_store_name_defect(default_memory_store_val),
-            )
-
-        # Capture unknown top-level sections verbatim so a section this core does
-        # not model (e.g. an edition-contributed section written by a companion)
-        # survives the load()->to_dict()->save() round-trip instead of being
-        # silently dropped. ``meta`` is stamped by save() itself, so it is never
-        # treated as an unknown section to preserve.
-        #
-        # Captured from the BASE view, not the merged one: for any section the
-        # overlay touched, ``base_shadow`` holds what config.json itself said.
-        # Capturing the merged value would make save() emit the overlay's leaf,
-        # which _subtract_overlay then removes — deleting the base file's own
-        # value. See _shadowed_base_sections. Sections the overlay did not touch
-        # are identical in both views.
-        capture_view = {**data, **base_shadow}
-        extra_sections = {
-            k: v
-            for k, v in capture_view.items()
-            if k not in _KNOWN_CONFIG_SECTIONS and k not in CONFIG_RESERVED_TOP_KEYS
-        }
-
-        cfg = cls(
-            agent=_build_agent_config(agent_data),
-            session=_build_session_config(session_data),
-            taskrunner=_build_taskrunner_config(taskrunner_data),
-            cron_history=_build_cron_history_config(cron_history_data),
-            messaging=_build_messaging_config(messaging_data),
-            # watchdog is advertised in config-baseline.json, served by
-            # /api/config/schema, and read by acp/session_handle.py, so load()
-            # passes this kwarg — without it config.json values would be
-            # silently ignored and the dataclass defaults would always win.
-            watchdog=_build_watchdog_config(watchdog_data),
-            resource_limits=ResourceLimitsConfig.from_raw(resource_limits_data),
-            telemetry=_build_telemetry_config(telemetry_data),
-            memory=_build_memory_config(memory_data),
-            knowledge=_build_knowledge_config(knowledge_data),
-            telegram=_build_telegram_config(telegram_data),
-            weixin=_build_weixin_config(weixin_data),
-            whatsapp=_build_whatsapp_config(whatsapp_data),
-            discord=_build_discord_config(discord_data),
-            webex=_build_webex_config(webex_data),
-            wakatime=_build_wakatime_config(wakatime_data),
-            imessage=_build_imessage_config(imessage_data),
-            teams=_build_teams_config(teams_data),
-            slack=_build_slack_config(slack_data),
-            publish=_build_publish_config(_dests_raw, publish_data),
-            wecom=_build_wecom_config(wecom_data),
-            feishu=_build_feishu_config(feishu_data),
-            dashboard=_build_dashboard_config(_degraded, dashboard_data),
-            tunnel=_build_tunnel_config(tunnel_data),
-            hooks=data.get("hooks", {}),
-            agents=agents,
-            default_agent=default_agent_val,
-            workspaces=workspaces,
-            default_workspace=data.get("default_workspace", "default"),
-            memory_stores=memory_stores,
-            default_memory_store=default_memory_store_val,
-            # Every default below restates its dataclass default, and the two must
-            # stay equal: the branch above returns bare dataclass defaults when
-            # neither config file exists, so a disagreement gives one field two
-            # different defaults depending on whether a config.json is present, and
-            # the schema, the docs and the doctor can only describe one of them.
-            stt=_build_stt_config(stt_data),
-            # Every numeric knob is clamped to the same ceiling the MCP tool
-            # schemas enforce, so a hand-edited config.json cannot ask for an
-            # unbounded accessibility walk or a full-resolution screenshot.
-            # There is deliberately NO ``enabled`` key read here — see
-            # ComputerUseConfig's docstring and computer_use_state_path().
-            computer_use=_build_computer_use_config(computer_use_data),
-            # ``_coerce_bool``, not ``_safe_bool``: this one key decides whether
-            # an unattended installer runs, and the two wrong answers are not
-            # symmetric. A hand-edited ``"auto_update": "false"`` is truthy to
-            # the loop, and ``_safe_bool`` would fold it (and ``0``, and
-            # ``null``) to this field's True default — installing on a host whose
-            # owner wrote the opposite. So a recognized spelling is honoured, and
-            # anything else unreadable falls back to OFF: an update not applied
-            # is a notification, while one applied against the owner's wish is a
-            # restart they did not ask for. An ABSENT key still defaults ON.
-            auto_update=(
-                True if "auto_update" not in data else _coerce_bool(data.get("auto_update"), False)
-            ),
-            connections_ui=_safe_bool(data.get("connections_ui", True), True),
-            _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
-            timezone=data.get("timezone", ""),
-            snapshot_dir=data.get("snapshot_dir", ""),
-            registries=[
-                ExternalRegistryConfig(
-                    name=str(r.get("name", "")),
-                    repo=str(r.get("repo", "")),
-                    # Backward-compat: an entry that OMITS ``branch`` is a legacy
-                    # config written before URL registries defaulted new entries
-                    # to ``main`` (the registries PUT API now always persists an
-                    # explicit branch). Such an entry relied on the historical
-                    # ``mainline`` default, so preserve it here — silently
-                    # retargeting it to ``main`` on upgrade would break any
-                    # registry whose content still lives on ``mainline``.
-                    branch=str(r.get("branch", "mainline")),
-                    # A credential-posture decision, so it is read back verbatim
-                    # and validated downstream rather than here: an unrecognised
-                    # value must resolve to the restrictive tier, which
-                    # ``registry._registry_trust_tier`` does. Absent -> "index",
-                    # so a config written before the field existed keeps the
-                    # credential-free posture it had.
-                    trust=str(r.get("trust", "index")),
-                )
-                for r in (data.get("registries") or [])
-                if isinstance(r, dict) and r.get("repo")
-            ],
-            mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
-            mcp=_build_mcp_config(mcp_data),
-            instances=_build_instances_config(
-                connect_timeout_raw, instances_data, mint_timeout_raw
-            ),
-            heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
-            monitoring=_build_monitoring_config(
-                monitoring_data, monitoring_prefer_structured_arming
-            ),
-            decisions=DecisionsConfig.from_raw(decisions_data),
-            skills=_build_skills_config(skills_data),
-            session_summary=_build_session_summary_config(session_summary_data),
-            slack_channels={
-                ch_id: ChannelConfig.from_dict(ch_data)
-                for ch_id, ch_data in (
-                    slack_data.get("channels", {})
-                    if isinstance(slack_data.get("channels"), dict)
-                    else {}
-                ).items()
-                if isinstance(ch_data, dict)
-            },
-            slack_dm_activation=_validate_activation(
-                slack_data.get("dm_activation", ACTIVATION_ALWAYS)
-            ),
-            observe_max_messages=max(
-                1, _safe_int(slack_data.get("observe_max_messages", 200), 200)
-            ),
-            observe_ttl_hours=max(
-                0.0, _safe_float(slack_data.get("observe_ttl_hours", 168.0), 168.0)
-            ),
-            _extra_sections=extra_sections,
-        )
-
-        # Unknown keys nested inside a modelled section. Captured AFTER
-        # construction because deciding what is unknown needs the built
-        # dataclasses' own field sets, not a second hand-maintained list that
-        # could drift from them. Same base-not-merged view as _extra_sections
-        # above, for the same reason.
-        cfg._extra_keys = _resolution.capture_extra_section_keys(capture_view, cfg)
-
-        # Write-back migration: if the on-disk config has legacy format
-        # (flat workspace strings, missing sections), back up the original
-        # and save the migrated version.  One-shot — subsequent loads see
-        # the canonical format and skip.
-        #
-        # The in-memory half below mutates `cfg` and RECORDS which migrations it
-        # decided on; the on-disk half re-reads config.json inside the write lock
-        # and applies exactly those as a delta (see _persist_config_migration),
-        # rather than `cfg.save()`, which would re-serialize this load's whole
-        # snapshot and drop any config write that landed after this load's read.
-        #
-        # Bound BEFORE the try: the ``finally`` at the end reads them, and an
-        # exception raised before their assignments would turn a logged write-back
-        # failure into a NameError out of load().
-        adopt_keys: set[str] = set()
-        adoption_landed = False
-        confirmed_adoptions: list[str] = []
-
-        try:
-            pending: set[str] = set()
-            # Flat workspace strings → need migration to {"dir": ...}
-            for v in raw_workspaces.values():
-                if isinstance(v, str):
-                    pending.add(MIGRATE_WORKSPACES)
-                    break
-
-            # One-time migration: create default agent when none exists
-            if not cfg.agents:
-                kiro = cfg.agent.default_agent or "kirocrew"
-                cfg.agents["default"] = KiroCrewAgentConfig(
-                    kiro_agent=kiro,
-                    workspace="default",
-                    memory_store="default",
-                )
-                pending.add(MIGRATE_AGENTS)
-            if not cfg.default_agent or cfg.default_agent not in cfg.agents:
-                # Prefer "default" if it exists, otherwise use first available agent
-                if "default" in cfg.agents:
-                    cfg.default_agent = "default"
-                elif cfg.agents:
-                    cfg.default_agent = next(iter(cfg.agents))
-                else:
-                    cfg.default_agent = "default"
-                pending.add(MIGRATE_DEFAULT_AGENT)
-
-            # One-shot launch migration for ``connections_ui`` (see the marker
-            # constant's docstring). Decided on the BASE document, not the
-            # merged view: the overlay is user-owned prose we never rewrite,
-            # and the stale materialization only ever landed in config.json.
-            connections_marker = config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
-            connections_migrating = False
-            if not connections_marker.exists():
-                if data.get("connections_ui") is False:
-                    # In-memory half: this very load must already serve the
-                    # launch default — the strip below is the on-disk echo.
-                    cfg.connections_ui = True
-                    pending.add(MIGRATE_CONNECTIONS_UI)
-                connections_migrating = True
-
-            # Adopt the auto-adopting superseded defaults. The in-memory half is
-            # applied BELOW, after the write is confirmed -- never here. Applying it
-            # eagerly would let a failed write leave the running config holding a
-            # value the stored document does not agree with, invisibly: the operator
-            # reads 1800 in config.json while the gateway runs 10800.
-            #
-            # In memory still matters as much as the file, which is why it happens at
-            # all: the gateway reads these budgets once at startup, so a disk-only
-            # fix would leave the very run that performed it still on the old value,
-            # and "upgraded, restarted, nothing changed" is the complaint.
-            adopt_keys = {e.dotted_key for e in adoptable}
-            if adopt_keys:
-                pending.add(MIGRATE_SUPERSEDED_DEFAULTS)
-            # The legacy lazy_load rewrite rides the same write, ledger and
-            # confirmed-only in-memory half as an adoption (see its id's docstring).
-            if legacy_lazy_stamp is not None:
-                pending.add(_migration.MIGRATE_SKILLS_LAZY_LOAD)
-
-            needs_migration = bool(pending)
-
-            persisted = True
-            # Tracked SEPARATELY from ``persisted``, which starts True so the
-            # connections_ui marker still lands on a load that needed no migration
-            # at all. This one starts False and is set only where the adoption
-            # actually reached disk, so every OTHER way out -- a contended-lock
-            # deferral, the degraded-sections branch below, an exception caught by
-            # the handler at the end -- leaves it False and drops the cache in the
-            # ``finally``.
-            if needs_migration and not cfg._degraded_sections:
-                persisted = _persist_config_migration(
-                    path,
-                    frozenset(pending),
-                    default_kiro_agent=cfg.agent.default_agent or "kirocrew",
-                    adopt_keys=frozenset(adopt_keys),
-                    confirmed_adoptions=confirmed_adoptions,
-                )
-                adoption_landed = persisted
-                # In memory only for keys the migration CONFIRMED it removed, and
-                # only where the overlay does not supply the field: there the stale
-                # base bytes are cleared like any other, but the effective value
-                # belongs to ``config.local.json`` and is the operator's live choice.
-                by_key = {e.dotted_key: e for e in adoptable}
-                for key in confirmed_adoptions:
-                    entry = by_key.get(key)
-                    if entry is not None:
-                        logger.warning(
-                            "config: adopted current default for %s; removed stored value %r. "
-                            "To restore it: kirocrew config set %s %s",
-                            key,
-                            entry.old_default,
-                            key,
-                            entry.old_default,
-                        )
-                    if entry is not None and not _overlay_supplies(local_data, key):
-                        _adopt_in_memory(cfg, key, entry.old_default)
-                if _migration.LAZY_LOAD_KEY in confirmed_adoptions:
-                    overlay_sets_it = _overlay_supplies(local_data, _migration.LAZY_LOAD_KEY)
-                    logger.warning(
-                        "config: removed skills.lazy_load=false from config.json: Kiro "
-                        "Crew %s stored it when false was the default full skills "
-                        "listing, and false now selects the short skill entry. %s To "
-                        "choose the short entry: kirocrew config set skills.lazy_load false",
-                        legacy_lazy_stamp,
-                        (
-                            "config.local.json still sets the key, and its value applies."
-                            if overlay_sets_it
-                            else "The current default (the ranked skill index) applies."
-                        ),
-                    )
-                    if not overlay_sets_it:
-                        _adopt_in_memory(cfg, _migration.LAZY_LOAD_KEY, False)
-            elif needs_migration:
-                # This load DISCARDED something (a malformed section, an
-                # unreadable file). The write-back serializes only the parsed
-                # fields, so writing back here would replace the operator's
-                # malformed narrowing with clean defaults — erasing the only
-                # on-disk evidence and turning the denial into silent
-                # allow-all at the next restart. Keep the malformed
-                # bytes; every future process re-observes and re-denies until
-                # the operator actually fixes the file. Migration re-runs on
-                # the first clean load.
-                logger.warning(
-                    "config: skipping write-back migration — this load "
-                    "degraded section(s) %s and writing back would erase the "
-                    "evidence; fix the file to clear",
-                    sorted(cfg._degraded_sections),
-                )
-
-            # Record the connections_ui boundary only after a pass that was
-            # allowed to act on it AND whose write-back actually landed. A
-            # degraded load skips both the strip and the marker; a contended
-            # lock makes _persist_config_migration return False with nothing
-            # written, and the marker MUST defer with the strip — marker
-            # without strip would freeze the stale false as a deliberate
-            # opt-out forever. (The already-migrated-by-another-writer path
-            # also returns False; the marker then lands on the next load,
-            # which finds nothing to strip. One extra boot, same endpoint.)
-            # Failure to write the marker itself is logged and retried next
-            # load — the strip's own condition makes the retry converge.
-            if connections_migrating and persisted and not cfg._degraded_sections:
-                atomic_write(
-                    connections_marker,
-                    json.dumps(
-                        {
-                            "migrated_at": datetime.now(timezone.utc).isoformat(),
-                            "stripped_stale_false": MIGRATE_CONNECTIONS_UI in pending,
-                        },
-                        indent=2,
-                    )
-                    + "\n",
-                )
-        except Exception as e:
-            # Migration write-back is best-effort; never block startup.
-            logger.warning("Config write-back failed: %s", e)
-        finally:
-            # An adoption that did NOT reach disk must not be frozen behind the
-            # validated-data cache. Only a load that READS the base document can
-            # decide an adoption (``adoptable`` is empty on a cache hit, by design),
-            # so a read-and-skip that left its document cached would have every
-            # later load serve the stale value and never retry -- the ceiling the
-            # operator upgraded to fix would come back and stay. In a ``finally``
-            # rather than beside the write, because the write is skipped by more
-            # than one path (a contended lock, an exception) and each leaves the
-            # same stale cache entry.
-            #
-            # The degraded-sections branch is the exception, and it is excluded on
-            # purpose. Its retry condition is not "the next load" but "the operator
-            # fixes the file and restarts the gateway" -- degradation observations
-            # are sticky for the life of a process (``_OBSERVED_DEGRADED_SECTIONS``),
-            # so until then the write is refused every time, and dropping the cache
-            # buys nothing except a full re-read and re-parse of config.json on
-            # EVERY load for as long as the two conditions coexist. After the
-            # restart the fixed file's fingerprint misses the (empty) cache and the
-            # adoption retries on that first load -- no invalidation needed.
-            if (
-                (adopt_keys or legacy_lazy_stamp is not None)
-                and not adoption_landed
-                and not cfg._degraded_sections
-            ):
-                _invalidate_config_cache()
-
-        cfg._base_unreadable = base_unreadable
-        return cfg, ticket, content_digest
+        doc = read_config_document()
+        cfg = build_config(doc, cls)
+        persist_write_back(cfg, doc)
+        return cfg, doc.ticket, doc.content_digest
 
     def to_dict(self) -> dict:
         """Serialize config to the JSON structure used by config.json."""
@@ -5570,6 +4736,1028 @@ class KiroCrewConfig:
             )
 
         return _acp
+
+
+# ---------------------------------------------------------------------------
+# The load pipeline: read the document, build the config, persist the write-back.
+# ---------------------------------------------------------------------------
+@dataclass
+class ConfigDocument:
+    """What one read of ``config.json`` and ``config.local.json`` observed.
+
+    :func:`read_config_document` produces it; :func:`build_config` turns it into a
+    :class:`KiroCrewConfig` without touching the filesystem; :func:`persist_write_back`
+    runs the write-back migration it makes due. Besides this document, the build
+    reads (and extends) one process-wide input: the sticky set of degraded-section
+    observations (``_OBSERVED_DEGRADED_SECTIONS``).
+
+    ``data`` is the read stage's OUTPUT, not raw file content: the overlay is merged,
+    the read-stage repairs are applied (a quoted ``"false"`` on an agent off-switch
+    reads as ``false``; an unreadable source leaves ``skills.project_skills_enabled``
+    off), and the document is validated and clamped. The build applies none of those
+    repairs itself, so a document assembled in memory must already hold them.
+    Single-use: building normalizes ``data`` in place, as the load always has.
+    """
+
+    #: Load-order ticket drawn before any read (see :func:`next_config_load_ticket`).
+    ticket: int
+    #: The ``config.json`` path this read resolved.
+    path: Path
+    #: The repaired, validated, overlay-merged document. When neither file loaded it
+    #: is ``{}``, or carries only the project-skills off-switch an unreadable file
+    #: leaves behind.
+    data: dict
+    #: False when neither file loaded: the build starts from the field defaults.
+    loaded: bool
+    #: Digest of the bytes ``data`` was parsed from, or ``None`` when none can be named.
+    content_digest: str | None
+    #: ``config.json`` was present but unreadable or not a JSON object.
+    base_unreadable: bool = False
+    #: The base document's copy of each top-level section the overlay touched.
+    base_shadow: dict = field(default_factory=dict)
+    #: ``config.local.json`` as this read parsed it; ``{}`` on a cache hit.
+    overlay: dict = field(default_factory=dict)
+    #: Superseded defaults this read found adoptable; only a disk read finds any.
+    adoptable: list[SupersededDefault] = field(default_factory=list)
+    #: The 0.6.x-or-older writer stamp when the legacy ``skills.lazy_load`` rewrite is due.
+    legacy_lazy_stamp: str | None = None
+
+
+def read_config_document() -> ConfigDocument:
+    """Read ``config.json`` and ``config.local.json`` into a :class:`ConfigDocument`.
+
+    The stage that reads the two files and the validated-data cache to build the
+    document (the write-back re-reads ``config.json`` under its lock). It draws the
+    load-order ticket, takes ONE fingerprint stat pass of both files, and either serves
+    the cache entry that fingerprint names or reads both files, merges the overlay,
+    applies the fail-closed normalizations, validates and clamps the result and caches
+    it. A
+    missing, unreadable or malformed file never raises: it degrades to defaults and is
+    recorded (``_mark_file_degraded``). Writes no config file: it fills the cache and,
+    when a security clamp fires, records a SEL event. The superseded defaults it
+    reports are logged, and only a disk read decides an adoption.
+    """
+    # Drawn BEFORE any read below, so it records when this load began
+    # observing the files rather than when it finished. See
+    # next_config_load_ticket and publish_autocompact_pct.
+    ticket = next_config_load_ticket()
+    path = config_path()
+
+    # Hot-path cache: reuse the validated, merged dict when neither config
+    # file has changed since the last load. Skips read + json.loads +
+    # _deep_merge + the full jsonschema.validate. A deep copy is returned so
+    # in-place mutation by callers (and by persist_write_back) can never corrupt
+    # the cached original.
+    #
+    # ONE stat pass serves both consumers of it below: the cache lookup and
+    # the pre-read TOCTOU fingerprint. load() runs on the event loop, so a
+    # second pass would be filesystem I/O there for information already in
+    # hand.
+    fp = _config_fingerprint()
+    # Data and sidecar come from ONE lock hold: fetched separately, a save()
+    # on another thread could clear the cache between the two and hand this
+    # load a merged document with an EMPTY base shadow — which would then be
+    # captured from as if no overlay existed (see _shadowed_base_sections).
+    cached = _CONFIG_CACHE.get_with_sidecar(fp)
+    if cached is not None:
+        # A cache HIT read no base document this load, and a load that did not look
+        # at the file must not adopt from it, so the document carries no adoptable
+        # superseded default and no legacy ``skills.lazy_load`` stamp. Empty is the
+        # correct answer on the hot path, not a missing one -- the load that
+        # populated the cache already decided both.
+        data, sidecar, content_digest = cached
+        return ConfigDocument(
+            ticket=ticket,
+            path=path,
+            data=data,
+            loaded=True,
+            content_digest=content_digest,
+            base_unreadable=bool(sidecar.get(_SIDECAR_BASE_UNREADABLE, False)),
+            base_shadow=sidecar.get(_SIDECAR_BASE_SHADOW, {}),
+        )
+
+    # Pre-overlay base copy of the sections the overlay touched. Filled below.
+    # Empty when there is no overlay, in which case the merged document IS the base.
+    base_shadow: dict = {}
+    # The writer stamp of 0.6.x or older the base document carried when the legacy
+    # ``skills.lazy_load`` rewrite is due, or None.
+    legacy_lazy_stamp: str | None = None
+    base_unreadable = False
+    # Capture the invalidation generation BEFORE disk I/O. A successful
+    # write advances it, so this read cannot repopulate pre-write data
+    # after the writer clears the cache even if the filesystem's coarse
+    # timestamp and unchanged size leave the fingerprint identical.
+    read_generation = _CONFIG_CACHE.generation()
+    # fp was captured BEFORE reading, so a write landing during the read
+    # is detected: the fingerprint normally changes, and the generation
+    # fence covers filesystems where a same-size replacement does not.
+    # _store_validated_data documents this contract.
+    pre_read_fp = fp
+    data = {}
+    loaded_base = False
+    config_source_unreadable = False
+    # The bytes, kept so the digest names exactly what was parsed rather
+    # than whatever a later read would find.
+    read_parts: list[bytes | None] = [None, None]
+    digestible = True
+    if path.exists():
+        try:
+            base_text = read_config_text(path)
+            read_parts[0] = base_text.encode("utf-8")
+            raw = json.loads(base_text)
+            if isinstance(raw, dict):
+                data = raw
+                loaded_base = True
+            else:
+                config_source_unreadable = True
+                base_unreadable = True
+                logger.warning("Config is not a JSON object, using defaults")
+                _mark_file_degraded(path)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            config_source_unreadable = True
+            base_unreadable = True
+            # A digest names the BYTES, and a document that read whole but would
+            # not parse still has bytes to name -- what it does not have is
+            # faithful CONTENT, which ``degraded_sections`` is what reports. Only
+            # a read that never completed leaves nothing to name.
+            if read_parts[0] is None:
+                digestible = False
+            logger.warning("Failed to load config from %s: %s", path, e)
+            _mark_file_degraded(path)
+
+    # Report -- and, for the entries that opt in, ADOPT -- a stored BASE
+    # value that still holds a superseded default, before the overlay merge
+    # below: the overlay is the operator's live choice and says nothing about
+    # what the base materialized.
+    #
+    # The two halves differ in what they may touch. Reporting is read-only
+    # and covers every drifted key, because a key with a documented escape
+    # hatch cannot be corrected automatically -- a stale default and a
+    # deliberate opt-out are the same bytes. Adoption covers only the
+    # entries whose ``auto_adopt`` says the value has no second meaning, and
+    # happens at most once per key per install; ``auto_adoptable`` owns both
+    # filters plus the acknowledgment one.
+    #
+    # Skipped when no base file loaded -- nothing is stored to adopt or
+    # report on.
+    adoptable = []
+    if loaded_base:
+        adoptable = auto_adoptable(data)
+        # Decided here, on the base as the previous build left it: once this
+        # load writes, or the gateway's meta refresh runs, the stamp names
+        # the running build and the proof is gone.
+        legacy_lazy_stamp = _migration.legacy_lazy_load_rewrite_due(
+            data, connections_marker=config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
+        )
+        report_skip = {e.dotted_key for e in adoptable}
+        if legacy_lazy_stamp is not None:
+            # The line must not send the operator after a key this same
+            # load removes (it applies once the registry has a row for it).
+            report_skip.add(_migration.LAZY_LOAD_KEY)
+        _report_superseded_defaults(data, skip=report_skip)
+
+    # Deep-merge config.local.json overlay (user-owned, never touched by setup)
+    local_data: dict = {}
+    local_path = config_local_path()
+    if local_path.is_file():
+        try:
+            st_mode = local_path.stat().st_mode
+            if st_mode & 0o002:
+                logger.warning(
+                    "config.local.json is world-writable (%o); consider running: chmod 600 %s",
+                    st_mode & 0o777,
+                    local_path,
+                )
+            local_text = read_config_text(local_path)
+            read_parts[1] = local_text.encode("utf-8")
+            raw_local = json.loads(local_text)
+            if isinstance(raw_local, dict):
+                local_data = raw_local
+            else:
+                config_source_unreadable = True
+                logger.warning("config.local.json is not a JSON object, ignoring")
+                _mark_file_degraded(local_path)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            config_source_unreadable = True
+            # Same rule as the base file: bytes that read whole can be named
+            # whether or not they parsed.
+            if read_parts[1] is None:
+                digestible = False
+            logger.warning("Failed to load config.local.json: %s", e)
+            _mark_file_degraded(local_path)
+
+    if local_data:
+        # Remember the base copy of what the overlay is about to shadow —
+        # the last moment both documents exist. See _shadowed_base_sections.
+        base_shadow = _shadowed_base_sections(data, local_data)
+        data = _deep_merge(data, local_data)
+
+    # A present source that cannot be read or parsed may contain the
+    # operator's hard-off switch. Preserve that unknown as disabled
+    # before either the defaults return or schema normalization can
+    # turn it into the enabled-by-default missing-field case.
+    _fail_closed_project_skills_config(data, config_source_unreadable=config_source_unreadable)
+
+    # Neither file loaded: hand back an unloaded document, which build_config turns
+    # into field defaults and the write-back skips. Not cached — there's no file to
+    # invalidate against, and the path is already cheap (existence checks only, no
+    # read/parse/validate).
+    if not loaded_base and not local_data:
+        # Both files absent is a VALID state with bytes to name -- the digest of
+        # "neither file exists" -- and naming it is what lets a caller holding
+        # this config tell "still absent" from "someone just created one". Only
+        # a read that never completed reaches here with nothing to name.
+        return ConfigDocument(
+            ticket=ticket,
+            path=path,
+            data=data,
+            loaded=False,
+            content_digest=_content_digest_of(read_parts) if digestible else None,
+            base_unreadable=base_unreadable,
+        )
+
+    # Preserve fail-closed security semantics before advisory schema
+    # validation can replace malformed input with a missing-field default.
+    # Normalize resource_limits FIRST, for exactly that reason. Its
+    # fields are declared ``int | None``, so jsonschema reads a
+    # hand-edited ``512.5`` as a type violation and
+    # ``_apply_field_default`` POPS the key -- deleting a ceiling the
+    # parse rule would have accepted, since it truncates. That deletion
+    # is not neutral: the rlimit path's fallback for a missing value is
+    # ``0``, which means "leave inherited", so a 512 MB ceiling becomes
+    # NO ceiling, and ``to_dict`` then persists ``null`` over what the
+    # operator wrote. Normalizing here means validation sees the same
+    # integers ``from_raw`` would produce; it is idempotent, so
+    # build_config agrees by construction.
+    if isinstance(data.get("resource_limits"), dict):
+        data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
+    # Same fail-closed-before-validation reason for the three agent
+    # switches whose safe direction is FALSE.
+    # `agent.session_control` is the operator's single withdrawal of
+    # cross-session control, `agent.member_dispatch` gates whether
+    # a crew member bypasses that withdrawal, and `agent.crew_panel`
+    # gates the member's own webview. Schema validation pops a
+    # present-but-malformed value and the missing-field default is TRUE
+    # for all three, so a quoted `"false"` -- a routine operator quoting
+    # mistake -- would silently ride that default back to the
+    # capability staying enabled. Coerce a present non-bool to False
+    # HERE, so validation sees a valid bool and keeps it; a genuinely
+    # absent key is left absent and still defaults to true (today's
+    # behaviour). One loop, so no switch can keep the guard while
+    # another loses it.
+    #
+    # Say so out loud. The coercion resolves a malformed value one way,
+    # and an operator who meant the other way has no other signal:
+    # validation sees the repaired bool and stays quiet. The line names
+    # the key, the type it found and the JSON it wanted, so the fix is
+    # the next thing the operator does rather than a capability they
+    # find missing later.
+    _agent_section = data.get("agent")
+    if isinstance(_agent_section, dict):
+        for _fail_closed_key in ("session_control", "member_dispatch", "crew_panel"):
+            if _fail_closed_key in _agent_section and not isinstance(
+                _agent_section[_fail_closed_key], bool
+            ):
+                logger.warning(
+                    "agent.%s is %s, not a boolean; reading it as the safe "
+                    "value false (the capability is OFF). Write true or false "
+                    "without quotes to choose.",
+                    _fail_closed_key,
+                    type(_agent_section[_fail_closed_key]).__name__,
+                )
+                _agent_section[_fail_closed_key] = False
+    # Keep a genuinely absent default backward-compatible with older
+    # configs, but normalize a PRESENT malformed value before advisory
+    # schema validation can delete it and turn corruption into the
+    # missing-field Persistent default.
+    _dashboard_section = data.get("dashboard")
+    if isinstance(_dashboard_section, dict) and "default_memory_mode" in _dashboard_section:
+        _dashboard_section["default_memory_mode"] = _default_memory_mode_from(
+            _dashboard_section["default_memory_mode"]
+        )
+    # Validate against JSON Schema (advisory — never fatal)
+    _validate_config_data(data)
+    # Clamp security-relevant resource-limit knobs to their API ceilings
+    # BEFORE caching, so a hand-edited/prompt-injected config.json that
+    # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
+    # on the disk-read path; a cache hit, served above, already holds clamped values.
+    _clamp_security_bounds(data)
+    # Cache under the PRE-read fingerprint and generation. A mid-read
+    # write either changes the fingerprint or advances the generation;
+    # both paths force the next load to re-read. The base shadow rides
+    # along so a hit can capture unknown keys from the base document
+    # exactly as this disk read did.
+    # Named from the bytes THIS read parsed, so a later hit on this entry can
+    # say which content it represents. Withheld only when a file existed and
+    # could not be READ whole: a document that read but would not parse still
+    # has bytes to name, and that it is not faithful is what
+    # ``degraded_sections`` reports instead.
+    content_digest = _content_digest_of(read_parts) if digestible else None
+    # Cached only when every present file read WHOLE. A transient read
+    # failure (a sharing violation, an EIO) on config.json with an overlay
+    # present leaves an overlay-only document here, and caching it under
+    # the unchanged stat fingerprint served the base settings at their
+    # defaults on every later load until a file happened to change. A file
+    # whose bytes read fine but would not parse is a stable fact about
+    # those bytes and still caches.
+    if digestible:
+        _store_validated_data(
+            data,
+            pre_read_fp,
+            {_SIDECAR_BASE_SHADOW: base_shadow, _SIDECAR_BASE_UNREADABLE: base_unreadable},
+            expected_generation=read_generation,
+            content_digest=content_digest,
+        )
+
+    return ConfigDocument(
+        ticket=ticket,
+        path=path,
+        data=data,
+        loaded=True,
+        content_digest=content_digest,
+        base_unreadable=base_unreadable,
+        base_shadow=base_shadow,
+        overlay=local_data,
+        adoptable=adoptable,
+        legacy_lazy_stamp=legacy_lazy_stamp,
+    )
+
+
+#: The class whose field defaults an omitted top-level key reads, bound at import so a
+#: test that rebinds the module's ``KiroCrewConfig`` cannot steer -- or break -- a
+#: real load, which never read that global.
+_TOP_LEVEL_DEFAULTS: type[KiroCrewConfig] = KiroCrewConfig
+
+
+def build_config(
+    doc: ConfigDocument, config_cls: type[KiroCrewConfig] = KiroCrewConfig
+) -> KiroCrewConfig:
+    """Build the :class:`KiroCrewConfig` a :class:`ConfigDocument` describes.
+
+    No filesystem I/O. Reads *doc* and the process-wide sticky degraded set, and
+    extends that set. Every section is extracted through ``_coerced_section``, so a
+    present section that is not an object is recorded -- in the returned config's
+    ``degraded_sections`` and in the sticky set -- and logged, then built from its
+    field defaults; a degraded dashboard section (or an observed whole-file
+    degradation) forces Temporary memory mode, and a malformed publish narrowing
+    denies publishing. Unknown top-level sections and section keys are captured from
+    the BASE view (``data`` with ``base_shadow`` over it) for the round-trip. The
+    read stage's agent off-switch and project-skills repairs, validation and security
+    clamp are not repeated here (``ResourceLimitsConfig.from_raw`` and the memory-mode
+    parse do run again, idempotently).
+    An unloaded document (neither file read) yields the field defaults plus the
+    seeded default crew, with the fail-closed overrides a degraded or unreadable read
+    leaves: the project-skills off-switch ``data`` carries, and Temporary memory mode
+    once the dashboard section or the whole file was observed degraded. The
+    write-back migration is :func:`persist_write_back`'s, so a loaded document missing
+    its default agent or ``default_agent`` comes back that way.
+
+    *config_cls* is the class to build; ``KiroCrewConfig._load_resolved`` passes its
+    own ``cls``, so a load never builds whatever class a rebound module global names.
+    """
+    data = doc.data
+    base_shadow = doc.base_shadow
+    if not doc.loaded:
+        # Seed the default "kirocrew" agent in-memory (matching the on-disk
+        # migration in persist_write_back) so a never-setup home still lists the
+        # default agent — but do NOT persist: a plain read (e.g. `agent list`) must
+        # not create config files as a side effect, so the write-back skips an
+        # unloaded document.
+        #
+        # An UNREADABLE file reaches this same "no config" branch as a
+        # genuinely absent one, and the two are opposite claims for a
+        # security gate: "the operator configured nothing" versus "we
+        # could not read what they configured". Carry the observation
+        # through so the caller can tell them apart.
+        cfg = config_cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+        cfg._base_unreadable = doc.base_unreadable
+        if (
+            DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
+            or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
+        ):
+            cfg.dashboard.default_memory_mode = "temporary"
+        cfg.skills.project_skills_enabled = (
+            _sections.SectionReader(SkillsConfig, data.get("skills", {})).get(
+                "project_skills_enabled"
+            )
+            is True
+        )
+        kiro = cfg.agent.default_agent or "kirocrew"
+        cfg.agents["default"] = KiroCrewAgentConfig(
+            kiro_agent=kiro,
+            workspace="default",
+            memory_store="default",
+        )
+        cfg.default_agent = "default"
+        return cfg
+
+    # Collected during the parse that discards them — the only moment the
+    # evidence exists, since the write-back rewrites config.json in
+    # normalized form (see KiroCrewConfig.degraded_sections).
+    _degraded: set[str] = set()
+    agent_data = _coerced_section(data, "agent", _degraded)
+    session_data = _coerced_section(data, "session", _degraded)
+    taskrunner_data = _coerced_section(data, "taskrunner", _degraded)
+    cron_history_data = _coerced_section(data, "cron_history", _degraded)
+    memory_data = _coerced_section(data, "memory", _degraded)
+    knowledge_data = _coerced_section(data, "knowledge", _degraded)
+    telegram_data = _coerced_section(data, "telegram", _degraded)
+    weixin_data = _coerced_section(data, "weixin", _degraded)
+    whatsapp_data = _coerced_section(data, "whatsapp", _degraded)
+    feishu_data = _coerced_section(data, "feishu", _degraded)
+    discord_data = _coerced_section(data, "discord", _degraded)
+    webex_data = _coerced_section(data, "webex", _degraded)
+    wakatime_data = _coerced_section(data, "wakatime", _degraded)
+    teams_data = _coerced_section(data, "teams", _degraded)
+    imessage_data = _coerced_section(data, "imessage", _degraded)
+    slack_data = _coerced_section(data, "slack", _degraded)
+    publish_data = _coerced_section(data, "publish", _degraded)
+    # A malformed allowed_destinations is the same class as a malformed
+    # section one level down, in two shapes. A non-LIST value:
+    # iterating it either crashes load() with a TypeError (a scalar — a
+    # config typo must not abort gateway startup) or yields garbage (a
+    # dict iterates as its keys, a string as its characters). A list with
+    # non-string/empty ENTRIES: the parse filter drops them, so an
+    # all-invalid narrowing like [1, 2] parses to [] — indistinguishable
+    # from "no restriction configured", the exact silent widening this fix
+    # exists to stop. Both shapes record the degradation so the publish
+    # gate denies, and parse from what safely remains. Validation cannot
+    # repair these values (publish.allowed_destinations is fail-closed
+    # there — repairing an OPEN default silently widens), so the loader
+    # must be the layer that survives them.
+    _dests_raw = _sections.SectionReader(PublishConfig, publish_data).get("allowed_destinations")
+    if not isinstance(_dests_raw, list):
+        _degraded.add("publish")
+        _OBSERVED_DEGRADED_SECTIONS.add("publish")
+        logger.warning(
+            "config: 'publish.allowed_destinations' is not a list (got %s) "
+            "— treating the publish section as degraded; publishing is "
+            "denied until the file is fixed and the gateway restarted",
+            type(_dests_raw).__name__,
+        )
+        _dests_raw = []
+    elif any(not (isinstance(_d, str) and _d) for _d in _dests_raw):
+        _degraded.add("publish")
+        _OBSERVED_DEGRADED_SECTIONS.add("publish")
+        logger.warning(
+            "config: 'publish.allowed_destinations' carries entr(y/ies) "
+            "that are not non-empty strings — treating the publish section "
+            "as degraded; publishing is denied until the file is fixed and "
+            "the gateway restarted",
+        )
+        _dests_raw = []
+    # Back-compat: this channel's config section was renamed
+    # "wechat" -> "wecom". Fall back to the legacy key so existing
+    # installs keep their WeCom settings on upgrade (read-only alias;
+    # no broader migration machinery).
+    # Alias-aware: record under whichever key the operator actually used, so
+    # the warning names the section they can go and fix.
+    _wecom_key = "wecom" if "wecom" in data else "wechat"
+    wecom_data = _coerced_section(data, _wecom_key, _degraded)
+    dashboard_data = _coerced_section(data, "dashboard", _degraded)
+    # Persistent is the compatibility default only when a readable config
+    # genuinely omits this field. If the dashboard section or either config
+    # file was unreadable, the missing value may have been a privacy choice
+    # we could not recover, so new chats must fail closed to Temporary until
+    # the operator fixes the file and restarts the gateway.
+    if (
+        "dashboard" in _degraded
+        or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
+        or DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
+    ):
+        dashboard_data["default_memory_mode"] = "temporary"
+    stt_data = _coerced_section(data, "stt", _degraded)
+    computer_use_data = _coerced_section(data, "computer_use", _degraded)
+    instances_data = _coerced_section(data, "instances", _degraded)
+    instances = _sections.SectionReader(InstancesConfig, instances_data)
+    connect_timeout_raw = instances.get("connect_timeout_secs")
+    mint_timeout_raw = instances.get("mint_timeout_secs")
+    mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
+    mcp_data = _coerced_section(data, "mcp", _degraded)
+    heartbeat = _sections.SectionReader(
+        HeartbeatConfig, _coerced_section(data, "heartbeat", _degraded)
+    )
+    heartbeat_default_deliver = str(heartbeat.get("default_deliver")).strip().lower()
+    if heartbeat_default_deliver not in ("slack", "dashboard"):
+        heartbeat_default_deliver = heartbeat.default("default_deliver")
+    # A stored document written before this key existed has no "monitoring"
+    # object at all, and that is the case that must keep working: the miss
+    # resolves to the dataclass default, which is the off position. So an
+    # already-installed gateway needs nothing written to be correct here --
+    # only a gateway that wants the key ON writes it, and Settings does
+    # that. (The hazard this avoids belongs to a SHIPPED DEFAULT that
+    # CHANGES: config.json materializes every key, so the stored value
+    # outranks the new default forever. Adding a key has no stored value to
+    # outrank it.)
+    monitoring_data = _coerced_section(data, "monitoring", _degraded)
+    monitoring_prefer_structured_arming = _sections.SectionReader(
+        MonitoringConfig, monitoring_data
+    ).read("prefer_structured_arming", _safe_bool)
+    tunnel_data = _coerced_section(data, "tunnel", _degraded)
+    skills_data = _coerced_section(data, "skills", _degraded)
+    session_summary_data = _coerced_section(data, "session_summary", _degraded)
+    messaging_data = _coerced_section(data, "messaging", _degraded)
+    telemetry_data = _coerced_section(data, "telemetry", _degraded)
+    watchdog_data = _coerced_section(data, "watchdog", _degraded)
+    decisions_data = _coerced_section(data, "decisions", _degraded)
+    resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
+
+    # Parse agents section into dict[str, KiroCrewAgentConfig]
+    raw_agents = data.get("agents", {})
+    agents: dict[str, KiroCrewAgentConfig] = {}
+    if isinstance(raw_agents, dict):
+        for name, entry in raw_agents.items():
+            if isinstance(entry, dict):
+                crew = _sections.SectionReader(KiroCrewAgentConfig, entry)
+                # config.json is hand-editable (and agent-writable), so a
+                # non-string model (e.g. `model: 123`) must not survive the
+                # load — it would reach normalize_agent_model().strip() and
+                # raise AttributeError from the resolver instead of simply
+                # being ignored.
+                raw_model = crew.get("model")
+                # Same guard as model: a non-string triggers (e.g. `1`) must
+                # not survive load — select_crew's roster calls .strip() on it.
+                raw_triggers = crew.get("triggers")
+                # Same guard family: the label is rendered verbatim by every
+                # roster surface, so a non-string collapses to "" (show the
+                # name) rather than reaching the wire.
+                raw_display_name = crew.get("display_name")
+                agents[name] = KiroCrewAgentConfig(
+                    member_id=crew.get("member_id"),
+                    kiro_agent=crew.get("kiro_agent"),
+                    workspace=crew.get("workspace"),
+                    memory_store=crew.get("memory_store"),
+                    model=raw_model if isinstance(raw_model, str) else crew.default("model"),
+                    # Same hand-editable-config guard: an unknown level must
+                    # collapse to "" (inherit) rather than travel to the
+                    # provider, where kiro-cli rejects the whole overlay.
+                    reasoning_effort=coerce_effort(crew.get("reasoning_effort")),
+                    display_name=(
+                        raw_display_name
+                        if isinstance(raw_display_name, str)
+                        else crew.default("display_name")
+                    ),
+                    description=crew.get("description"),
+                    triggers=(
+                        raw_triggers if isinstance(raw_triggers, str) else crew.default("triggers")
+                    ),
+                    source=crew.get("source"),
+                    # Hand-editable config: a quoted "true" or a stray int
+                    # must not become a truthy star, so only a real bool
+                    # is honoured and anything else reads as un-starred.
+                    starred=crew.read("starred", _safe_bool),
+                    # Same guard family as model/triggers: config.json is
+                    # hand-editable, so a junk value must collapse to 0
+                    # (inherit the global window), never crash the load.
+                    # lo=0 keeps a negative override from arming an
+                    # instant-cancel window.
+                    watchdog_tool_stall_suspect_secs=crew.read(
+                        "watchdog_tool_stall_suspect_secs", _safe_float, lo=0.0
+                    ),
+                    watchdog_tool_stall_hard_cap_secs=crew.read(
+                        "watchdog_tool_stall_hard_cap_secs", _safe_float, lo=0.0
+                    ),
+                    telegram_account=crew.get("telegram_account"),
+                    session_color=_safe_color(crew.get("session_color")),
+                    # Module-qualified on purpose: the facade's `from
+                    # sections import` list is a frozen pre-split snapshot
+                    # (test_config_module_boundaries), and post-split
+                    # internals are reached through the module, not
+                    # re-exported from here.
+                    avatar=_sections._safe_avatar(crew.get("avatar")),
+                )
+
+    # Migrate workspaces from flat or structured format
+    raw_workspaces = data.get("workspaces", {})
+    if not isinstance(raw_workspaces, dict):
+        # Reported, not just replaced: a gate that fences the memory
+        # workspaces (folder steering's silo fence) reads this table to
+        # learn WHERE the workspaces are, and an operator's absolute
+        # workspace directory that this load could not read is a directory
+        # the fence would otherwise not know to cover. Same posture as the
+        # ``dashboard.tailscale`` key: the consumer decides to fail closed.
+        logger.warning(
+            "Config 'workspaces' is not a JSON object (got %s); the workspace "
+            "table is unavailable for this load",
+            type(raw_workspaces).__name__,
+        )
+        _degraded.add(_resolution.DEGRADED_WORKSPACES)
+        raw_workspaces = {}
+    workspaces = _migrate_workspaces(raw_workspaces)
+
+    # Parse memory_stores; synthesize default if missing.
+    #
+    # A store NAME becomes a single path segment under
+    # ``memory_stores.MEMORY_STORES_DIR_NAME``, so the shape rule is applied
+    # here too — at BOOT, where the operator can see it — rather than only at
+    # the first memory write. Reported, never REPAIRED: the entry is kept
+    # verbatim so a ``to_dict()``/``save()`` round-trip cannot erase the
+    # operator's own declaration, and no name is rewritten into a usable one,
+    # because sanitizing ``../work`` or ``Work`` into ``work`` is the one
+    # thing that would merge two crews' memory into one directory.
+    #
+    # Kept, but not usable: ``memory_stores.usable_store_names`` drops a
+    # malformed name from the resolvable set, so a crew bound to it degrades
+    # at ``resolve_agent_bindings`` instead of carrying the name to a
+    # resolver that would raise on it.
+    raw_stores = data.get("memory_stores", {})
+    memory_stores: dict[str, MemoryStoreConfig] = {}
+    if isinstance(raw_stores, dict) and raw_stores:
+        for name, entry in raw_stores.items():
+            if not isinstance(entry, dict):
+                continue
+            defect = memory_store_name_defect(name)
+            if defect is not None:
+                logger.warning(
+                    "memory_stores: store name %r is unusable (%s); any crew "
+                    "bound to it cannot resolve a memory directory",
+                    name,
+                    defect,
+                )
+            store = _sections.SectionReader(MemoryStoreConfig, entry)
+            memory_stores[name] = MemoryStoreConfig(
+                owner_member_id=store.get("owner_member_id"),
+                description=store.get("description"),
+                embedding_provider=store.get("embedding_provider"),
+                owner_member=store.get("owner_member"),
+                memory_version=store.get("memory_version"),
+            )
+    if not memory_stores:
+        memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
+
+    # The top-level keys read against KiroCrewConfig's own fields, and the slack
+    # keys that land on top-level fields under the same names. Against the base
+    # config, not *config_cls*: an omitted key reads KiroCrewConfig's default even
+    # when a subclass is built.
+    top = _sections.SectionReader(_TOP_LEVEL_DEFAULTS, data)
+    slack_top = _sections.SectionReader(_TOP_LEVEL_DEFAULTS, slack_data)
+
+    # Parse top-level default_agent and default_memory_store
+    default_agent_val = top.get("default_agent")
+    if not isinstance(default_agent_val, str):
+        default_agent_val = top.default("default_agent")
+    default_memory_store_val = top.get("default_memory_store")
+    if not isinstance(default_memory_store_val, str):
+        default_memory_store_val = top.default("default_memory_store")
+    # Reported, not repaired, for the same reason as the store names above.
+    # Legacy default_memory_store is retained for V1 compatibility. Member
+    # member resolution never uses it as a fallback or a filesystem path.
+    elif memory_store_name_defect(default_memory_store_val) is not None:
+        logger.warning(
+            "default_memory_store %r is not a usable store name (%s); preserved "
+            "for V1 compatibility but not used for member memory resolution",
+            default_memory_store_val,
+            memory_store_name_defect(default_memory_store_val),
+        )
+
+    # Capture unknown top-level sections verbatim so a section this core does
+    # not model (e.g. an edition-contributed section written by a companion)
+    # survives the load()->to_dict()->save() round-trip instead of being
+    # silently dropped. ``meta`` is stamped by save() itself, so it is never
+    # treated as an unknown section to preserve.
+    #
+    # Captured from the BASE view, not the merged one: for any section the
+    # overlay touched, ``base_shadow`` holds what config.json itself said.
+    # Capturing the merged value would make save() emit the overlay's leaf,
+    # which _subtract_overlay then removes — deleting the base file's own
+    # value. See _shadowed_base_sections. Sections the overlay did not touch
+    # are identical in both views.
+    capture_view = {**data, **base_shadow}
+    extra_sections = {
+        k: v
+        for k, v in capture_view.items()
+        if k not in _KNOWN_CONFIG_SECTIONS and k not in CONFIG_RESERVED_TOP_KEYS
+    }
+
+    cfg = config_cls(
+        agent=_build_agent_config(agent_data),
+        session=_build_session_config(session_data),
+        taskrunner=_build_taskrunner_config(taskrunner_data),
+        cron_history=_build_cron_history_config(cron_history_data),
+        messaging=_build_messaging_config(messaging_data),
+        # watchdog is advertised in config-baseline.json, served by
+        # /api/config/schema, and read by acp/session_handle.py, so load()
+        # passes this kwarg — without it config.json values would be
+        # silently ignored and the dataclass defaults would always win.
+        watchdog=_build_watchdog_config(watchdog_data),
+        resource_limits=ResourceLimitsConfig.from_raw(resource_limits_data),
+        telemetry=_build_telemetry_config(telemetry_data),
+        memory=_build_memory_config(memory_data),
+        knowledge=_build_knowledge_config(knowledge_data),
+        telegram=_build_telegram_config(telegram_data),
+        weixin=_build_weixin_config(weixin_data),
+        whatsapp=_build_whatsapp_config(whatsapp_data),
+        discord=_build_discord_config(discord_data),
+        webex=_build_webex_config(webex_data),
+        wakatime=_build_wakatime_config(wakatime_data),
+        imessage=_build_imessage_config(imessage_data),
+        teams=_build_teams_config(teams_data),
+        slack=_build_slack_config(slack_data),
+        publish=_build_publish_config(_dests_raw, publish_data),
+        wecom=_build_wecom_config(wecom_data),
+        feishu=_build_feishu_config(feishu_data),
+        dashboard=_build_dashboard_config(_degraded, dashboard_data),
+        tunnel=_build_tunnel_config(tunnel_data),
+        hooks=top.get("hooks"),
+        agents=agents,
+        default_agent=default_agent_val,
+        workspaces=workspaces,
+        default_workspace=top.get("default_workspace"),
+        memory_stores=memory_stores,
+        default_memory_store=default_memory_store_val,
+        stt=_build_stt_config(stt_data),
+        # Every numeric knob is clamped to the same ceiling the MCP tool
+        # schemas enforce, so a hand-edited config.json cannot ask for an
+        # unbounded accessibility walk or a full-resolution screenshot.
+        # There is deliberately NO ``enabled`` key read here — see
+        # ComputerUseConfig's docstring and computer_use_state_path().
+        computer_use=_build_computer_use_config(computer_use_data),
+        # ``_coerce_bool``, not ``_safe_bool``: this one key decides whether
+        # an unattended installer runs, and the two wrong answers are not
+        # symmetric. A hand-edited ``"auto_update": "false"`` is truthy to
+        # the loop, and ``_safe_bool`` would fold it (and ``0``, and
+        # ``null``) to this field's True default — installing on a host whose
+        # owner wrote the opposite. So a recognized spelling is honoured, and
+        # anything else unreadable falls back to OFF: an update not applied
+        # is a notification, while one applied against the owner's wish is a
+        # restart they did not ask for. An ABSENT key still defaults ON.
+        auto_update=(
+            top.default("auto_update")
+            if "auto_update" not in data
+            else _coerce_bool(data.get("auto_update"), False)
+        ),
+        connections_ui=top.read("connections_ui", _safe_bool),
+        _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
+        timezone=top.get("timezone"),
+        snapshot_dir=top.get("snapshot_dir"),
+        registries=[
+            _registry_entry(r)
+            for r in (data.get("registries") or [])
+            if isinstance(r, dict) and r.get("repo")
+        ],
+        mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
+        mcp=_build_mcp_config(mcp_data),
+        instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),
+        heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
+        monitoring=_build_monitoring_config(monitoring_data, monitoring_prefer_structured_arming),
+        decisions=DecisionsConfig.from_raw(decisions_data),
+        skills=_build_skills_config(skills_data),
+        session_summary=_build_session_summary_config(session_summary_data),
+        slack_channels={
+            ch_id: ChannelConfig.from_dict(ch_data)
+            for ch_id, ch_data in (
+                slack_data.get("channels", {})
+                if isinstance(slack_data.get("channels"), dict)
+                else {}
+            ).items()
+            if isinstance(ch_data, dict)
+        },
+        slack_dm_activation=_validate_activation(
+            slack_data.get("dm_activation", top.default("slack_dm_activation"))
+        ),
+        observe_max_messages=max(1, slack_top.read("observe_max_messages", _safe_int)),
+        observe_ttl_hours=max(0.0, slack_top.read("observe_ttl_hours", _safe_float)),
+        _extra_sections=extra_sections,
+    )
+
+    # Unknown keys nested inside a modelled section. Captured AFTER
+    # construction because deciding what is unknown needs the built
+    # dataclasses' own field sets, not a second hand-maintained list that
+    # could drift from them. Same base-not-merged view as _extra_sections
+    # above, for the same reason.
+    cfg._extra_keys = _resolution.capture_extra_section_keys(capture_view, cfg)
+
+    cfg._base_unreadable = doc.base_unreadable
+    return cfg
+
+
+def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
+    """Run the write-back migration a LOADED document makes due, in memory and on disk.
+
+    Decides the pending migrations from *cfg* and *doc* -- flat workspace strings, a
+    missing default crew or ``default_agent`` (both seeded into *cfg* here), the
+    one-shot ``connections_ui`` strip, the superseded defaults *doc* may adopt and the
+    legacy ``skills.lazy_load`` rewrite -- then applies them to ``config.json`` as a
+    delta under the write lock (:func:`_persist_config_migration`) and moves *cfg* to
+    each adopted value only once the write confirmed it. Skips the disk write for a
+    load that degraded a section, so the malformed bytes stay as evidence. Never
+    raises: a failure is logged and the migration retries on a later load. Drops the
+    validated-data cache when an adoption did not reach disk. An unloaded document
+    has nothing to migrate and returns at once: a plain read of a never-set-up home
+    must not create config files.
+    """
+    if not doc.loaded:
+        return
+    path = doc.path
+    data = doc.data
+    adoptable = doc.adoptable
+    legacy_lazy_stamp = doc.legacy_lazy_stamp
+    local_data = doc.overlay
+    # The workspace table as build_config read it: a value that is not an object
+    # was reported there and holds nothing to migrate.
+    raw_workspaces = data.get("workspaces", {})
+    if not isinstance(raw_workspaces, dict):
+        raw_workspaces = {}
+
+    # Write-back migration: if the on-disk config has legacy format
+    # (flat workspace strings, missing sections), back up the original
+    # and save the migrated version.  One-shot — subsequent loads see
+    # the canonical format and skip.
+    #
+    # The in-memory half below mutates `cfg` and RECORDS which migrations it
+    # decided on; the on-disk half re-reads config.json inside the write lock
+    # and applies exactly those as a delta (see _persist_config_migration),
+    # rather than `cfg.save()`, which would re-serialize this load's whole
+    # snapshot and drop any config write that landed after this load's read.
+    #
+    # Bound BEFORE the try: the ``finally`` at the end reads them, and an
+    # exception raised before their assignments would turn a logged write-back
+    # failure into a NameError out of load().
+    adopt_keys: set[str] = set()
+    adoption_landed = False
+    confirmed_adoptions: list[str] = []
+
+    try:
+        pending: set[str] = set()
+        # Flat workspace strings → need migration to {"dir": ...}
+        for v in raw_workspaces.values():
+            if isinstance(v, str):
+                pending.add(MIGRATE_WORKSPACES)
+                break
+
+        # One-time migration: create default agent when none exists
+        if not cfg.agents:
+            kiro = cfg.agent.default_agent or "kirocrew"
+            cfg.agents["default"] = KiroCrewAgentConfig(
+                kiro_agent=kiro,
+                workspace="default",
+                memory_store="default",
+            )
+            pending.add(MIGRATE_AGENTS)
+        if not cfg.default_agent or cfg.default_agent not in cfg.agents:
+            # Prefer "default" if it exists, otherwise use first available agent
+            if "default" in cfg.agents:
+                cfg.default_agent = "default"
+            elif cfg.agents:
+                cfg.default_agent = next(iter(cfg.agents))
+            else:
+                cfg.default_agent = "default"
+            pending.add(MIGRATE_DEFAULT_AGENT)
+
+        # One-shot launch migration for ``connections_ui`` (see the marker
+        # constant's docstring). Decided on the BASE document, not the
+        # merged view: the overlay is user-owned prose we never rewrite,
+        # and the stale materialization only ever landed in config.json.
+        connections_marker = config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
+        connections_migrating = False
+        if not connections_marker.exists():
+            if data.get("connections_ui") is False:
+                # In-memory half: this very load must already serve the
+                # launch default — the strip below is the on-disk echo.
+                cfg.connections_ui = True
+                pending.add(MIGRATE_CONNECTIONS_UI)
+            connections_migrating = True
+
+        # Adopt the auto-adopting superseded defaults. The in-memory half is
+        # applied BELOW, after the write is confirmed -- never here. Applying it
+        # eagerly would let a failed write leave the running config holding a
+        # value the stored document does not agree with, invisibly: the operator
+        # reads 1800 in config.json while the gateway runs 10800.
+        #
+        # In memory still matters as much as the file, which is why it happens at
+        # all: the gateway reads these budgets once at startup, so a disk-only
+        # fix would leave the very run that performed it still on the old value,
+        # and "upgraded, restarted, nothing changed" is the complaint.
+        adopt_keys = {e.dotted_key for e in adoptable}
+        if adopt_keys:
+            pending.add(MIGRATE_SUPERSEDED_DEFAULTS)
+        # The legacy lazy_load rewrite rides the same write, ledger and
+        # confirmed-only in-memory half as an adoption (see its id's docstring).
+        if legacy_lazy_stamp is not None:
+            pending.add(_migration.MIGRATE_SKILLS_LAZY_LOAD)
+
+        needs_migration = bool(pending)
+
+        persisted = True
+        # Tracked SEPARATELY from ``persisted``, which starts True so the
+        # connections_ui marker still lands on a load that needed no migration
+        # at all. This one starts False and is set only where the adoption
+        # actually reached disk, so every OTHER way out -- a contended-lock
+        # deferral, the degraded-sections branch below, an exception caught by
+        # the handler at the end -- leaves it False and drops the cache in the
+        # ``finally``.
+        if needs_migration and not cfg._degraded_sections:
+            persisted = _persist_config_migration(
+                path,
+                frozenset(pending),
+                default_kiro_agent=cfg.agent.default_agent or "kirocrew",
+                adopt_keys=frozenset(adopt_keys),
+                confirmed_adoptions=confirmed_adoptions,
+            )
+            adoption_landed = persisted
+            # In memory only for keys the migration CONFIRMED it removed, and
+            # only where the overlay does not supply the field: there the stale
+            # base bytes are cleared like any other, but the effective value
+            # belongs to ``config.local.json`` and is the operator's live choice.
+            by_key = {e.dotted_key: e for e in adoptable}
+            for key in confirmed_adoptions:
+                entry = by_key.get(key)
+                if entry is not None:
+                    logger.warning(
+                        "config: adopted current default for %s; removed stored value %r. "
+                        "To restore it: kirocrew config set %s %s",
+                        key,
+                        entry.old_default,
+                        key,
+                        entry.old_default,
+                    )
+                if entry is not None and not _overlay_supplies(local_data, key):
+                    _adopt_in_memory(cfg, key, entry.old_default)
+            if _migration.LAZY_LOAD_KEY in confirmed_adoptions:
+                overlay_sets_it = _overlay_supplies(local_data, _migration.LAZY_LOAD_KEY)
+                logger.warning(
+                    "config: removed skills.lazy_load=false from config.json: Kiro "
+                    "Crew %s stored it when false was the default full skills "
+                    "listing, and false now selects the short skill entry. %s To "
+                    "choose the short entry: kirocrew config set skills.lazy_load false",
+                    legacy_lazy_stamp,
+                    (
+                        "config.local.json still sets the key, and its value applies."
+                        if overlay_sets_it
+                        else "The current default (the ranked skill index) applies."
+                    ),
+                )
+                if not overlay_sets_it:
+                    _adopt_in_memory(cfg, _migration.LAZY_LOAD_KEY, False)
+        elif needs_migration:
+            # This load DISCARDED something (a malformed section, an
+            # unreadable file). The write-back serializes only the parsed
+            # fields, so writing back here would replace the operator's
+            # malformed narrowing with clean defaults — erasing the only
+            # on-disk evidence and turning the denial into silent
+            # allow-all at the next restart. Keep the malformed
+            # bytes; every future process re-observes and re-denies until
+            # the operator actually fixes the file. Migration re-runs on
+            # the first clean load.
+            logger.warning(
+                "config: skipping write-back migration — this load "
+                "degraded section(s) %s and writing back would erase the "
+                "evidence; fix the file to clear",
+                sorted(cfg._degraded_sections),
+            )
+
+        # Record the connections_ui boundary only after a pass that was
+        # allowed to act on it AND whose write-back actually landed. A
+        # degraded load skips both the strip and the marker; a contended
+        # lock makes _persist_config_migration return False with nothing
+        # written, and the marker MUST defer with the strip — marker
+        # without strip would freeze the stale false as a deliberate
+        # opt-out forever. (The already-migrated-by-another-writer path
+        # also returns False; the marker then lands on the next load,
+        # which finds nothing to strip. One extra boot, same endpoint.)
+        # Failure to write the marker itself is logged and retried next
+        # load — the strip's own condition makes the retry converge.
+        if connections_migrating and persisted and not cfg._degraded_sections:
+            atomic_write(
+                connections_marker,
+                json.dumps(
+                    {
+                        "migrated_at": datetime.now(timezone.utc).isoformat(),
+                        "stripped_stale_false": MIGRATE_CONNECTIONS_UI in pending,
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+    except Exception as e:
+        # Migration write-back is best-effort; never block startup.
+        logger.warning("Config write-back failed: %s", e)
+    finally:
+        # An adoption that did NOT reach disk must not be frozen behind the
+        # validated-data cache. Only a load that READS the base document can
+        # decide an adoption (``adoptable`` is empty on a cache hit, by design),
+        # so a read-and-skip that left its document cached would have every
+        # later load serve the stale value and never retry -- the ceiling the
+        # operator upgraded to fix would come back and stay. In a ``finally``
+        # rather than beside the write, because the write is skipped by more
+        # than one path (a contended lock, an exception) and each leaves the
+        # same stale cache entry.
+        #
+        # The degraded-sections branch is the exception, and it is excluded on
+        # purpose. Its retry condition is not "the next load" but "the operator
+        # fixes the file and restarts the gateway" -- degradation observations
+        # are sticky for the life of a process (``_OBSERVED_DEGRADED_SECTIONS``),
+        # so until then the write is refused every time, and dropping the cache
+        # buys nothing except a full re-read and re-parse of config.json on
+        # EVERY load for as long as the two conditions coexist. After the
+        # restart the fixed file's fingerprint misses the (empty) cache and the
+        # adoption retries on that first load -- no invalidation needed.
+        if (
+            (adopt_keys or legacy_lazy_stamp is not None)
+            and not adoption_landed
+            and not cfg._degraded_sections
+        ):
+            _invalidate_config_cache()
 
 
 # ---------------------------------------------------------------------------

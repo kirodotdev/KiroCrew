@@ -39,6 +39,10 @@ my-dashboard/
 
 Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) for all fields.
 
+The scaffold writes no `permissions` block. Add the one below: the sample page
+calls `api.get('/api/status')` and listens for `notification` events, and the
+SDK rejects a path or event the manifest does not declare.
+
 ```json
 {
   "name": "my-dashboard",
@@ -147,6 +151,16 @@ Install and enable with the CLI:
 
 ```bash
 kirocrew app install /absolute/path/to/my-dashboard
+```
+
+Before you enable it, trust the app. Enable refuses every app that is not
+built in, even one that ships only an agent and a skill, until the operator
+trusts it in Settings → Security → Trusted apps. That setting grants this app
+(`agent.apps_trusted`) or all third-party apps (`agent.apps_allow_third_party`
+set to `true`). See
+[Publishing Guide](publishing-guide.md#third-party-executable-code-is-off-by-default).
+
+```bash
 kirocrew app enable my-dashboard
 ```
 
@@ -208,15 +222,9 @@ Also in `@kirocrew/app-sdk`, for an app that renders agent messages itself. An a
 choices and steer acknowledgements inline in its prose (`[OPTIONS: a | b]`,
 `[STEERING steer-<id>: …]`); these parse them out so your UI can show buttons instead of raw syntax.
 
-| Export | Purpose |
-|--------|---------|
-| `parseOptions(content)` | Split the prose from the choices offered with it |
-| `deriveFollowUpOptions(messages, isStreaming)` | The choices that still apply to the conversation |
-| `extractSteeringAcks(content)` | Pull the steer acknowledgement out of the text |
-| `stripPartialOptionMarker(text)` | Hide a marker that is still arriving mid-stream |
-
-Types: `ParsedOptions`, `FollowUpDerivation`, `ChatMessage`. React-free, so it also works in a worker
-or a test. Worked examples: [api-reference.md](api-reference.md#chat-marker-protocol).
+The functions and types are listed in
+[api-reference.md](api-reference.md#chat-marker-protocol), with worked examples. The
+module is React-free, so it also works in a worker or a test.
 
 To render a transcript rather than parse one, `ChatMessageList` draws it and its row
 **registry** lets you add a row type or replace one without forking the list — including the
@@ -308,45 +316,9 @@ undeclared paths throws an error.
 
 ## Python Client
 
-For Python apps, CLI tools, or services that need to talk to the Kiro Crew Gateway,
-install the source-only package from a Kiro Crew checkout:
-
-```bash
-python -m pip install -e /path/to/KiroCrew/packages/kirocrew-client-py
-```
-
-```python
-import asyncio
-from kirocrew_client import KiroCrewClient
-
-async def main():
-    async with KiroCrewClient(app_name="my-tool") as mc:
-        # Check connectivity
-        ok = await mc.ping()
-        print(f"Gateway reachable: {ok}")
-
-        # Dispatch an agent
-        task_id = await mc.dispatch_agent_async("my-agent", "Analyze ticket T-123")
-        result = await mc.get_task_result(task_id)
-        print(f"Result: {result}")
-
-        # Manage crons
-        await mc.add_cron("refresh", message="Check for updates", every=3600)
-        crons = await mc.list_crons()
-
-        # Inject silent context (for background info)
-        await mc.inject_context("slot-id", "PR #456 was approved", source="watch")
-
-asyncio.run(main())
-```
-
-The source-only `kirocrew-client` package is async (uses `aiohttp`) and
-standalone, with no dependency on the Kiro Crew main package. It is not published
-to PyPI or included in the main wheel, covers most but not all of the REST API,
-and includes a WebSocket client (`create_ws()`). See the method table before
-depending on a wrapper.
-
-See [API Reference](api-reference.md) for the full method list.
+Python apps, CLI tools and services use the source-only `kirocrew-client`
+package from a Kiro Crew checkout. Install steps, the constructor and the full
+method table are in [API Reference](api-reference.md#python-client).
 
 ## Publishing Your App
 

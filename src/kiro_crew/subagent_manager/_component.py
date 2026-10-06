@@ -18,6 +18,63 @@ class ManagerComponent:
     def __init__(self, manager: SubagentManager) -> None:
         object.__setattr__(self, "_manager", manager)
 
+    def _record_crew_log_approval_decided(
+        self,
+        origin: "tuple[str, int]",
+        *,
+        approval_id: str,
+        decision: str,
+        by: str = "",
+        cause: str = "",
+    ) -> None:
+        """Write how *approval_id* resolved, under its own request's origin.
+
+        Shared by every component that asks a human to approve something: the
+        spawn gate's prompt before a child starts, and the run coordinator's
+        prompts raised by a child already running. Nothing in the body is
+        specific to either -- it files a decision under an origin -- so one copy
+        lives here and the askers differ only in how they obtain that origin.
+
+        *origin* is what the matching request writer returned, so a request that
+        was not written answers itself with nothing and a written one is always
+        answered: the pair is all-or-nothing by construction rather than by two
+        separate checks at each call site. Re-reading the emitter's pin here
+        would not do, because the paths that drop or open a pin on their way out
+        would leave the closer with nothing to file itself under.
+
+        ``by`` names WHO decided, and only the host can be named with certainty.
+        An answer that came back through an approval future or callback was given
+        by a person at a surface no call site can see, so it omits the field
+        rather than asserting ``user`` for something it did not observe. The host
+        IS named for the exits no answer reached.
+
+        ``cause`` is WHY, and only a host decline has one: a reason code for
+        deciding without a human. It rides in its own field instead of replacing
+        ``decision``, so a reader still learns what was decided without knowing
+        the reason vocabulary.
+
+        Every name is imported inside the body on purpose. A component method
+        that does NOT end in ``_impl`` keeps its defining module's globals, where
+        a facade import may exist only under ``TYPE_CHECKING``.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        sid, asked_turn = origin
+        if not sid:
+            return
+        try:
+            crew_log_emit.on_approval_decided(
+                sid,
+                asked_turn,
+                approval_id=approval_id,
+                decision=decision,
+                by=by,
+                cause=cause,
+            )
+        except Exception:
+            _logger.debug("crew log: recording an approval decision failed", exc_info=True)
+
 
 def bind_component_globals(
     component_types: Iterable[type[ManagerComponent]], namespace: dict[str, Any]

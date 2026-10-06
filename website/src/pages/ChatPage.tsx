@@ -8,6 +8,7 @@ import { useShellSlot } from '../hooks/useShellSlot'
 import { useMobileNavRail } from '../components/MobileNavRailContext'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
+import { useWindowWidth } from '../hooks/useWindowWidth'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
@@ -40,7 +41,9 @@ import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
-import { prependQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
+import { storeSentPastes } from '../chat-core/composer/composerPastes'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
@@ -101,8 +104,7 @@ import TranscriptScrollShell, { useTranscriptWidth } from './chat/TranscriptScro
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { prepareSendPayload, serializeDirTokens } from '../utils/fileTokens'
-import { carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft, pruneBlocks as pruneBlocksUtil, saveStoredPaste } from '../utils/pasteTokens'
+import { carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
 function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
@@ -284,12 +286,12 @@ import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { REASONING_ROLES, stripAppEnvelope } from './chat/groupDisplayItems'
 import { PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import ChatSidebar from './ChatSidebar'
-import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth'
+import { SIDEBAR_MAX, clampSidebarWidth, parseStoredSidebarWidth } from './chat/sidebarWidth'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../utils/chatDrafts'
 import { setFileDraft } from '../utils/chatFileDrafts'
 import { setPasteDraft } from '../utils/chatPasteDrafts'
 import { setSessionRefDraft } from '../utils/chatSessionRefDrafts'
-import { mergeSessionRefs, appendSessionRefLinks } from '../utils/sessionRefs'
+import { mergeSessionRefs } from '../utils/sessionRefs'
 import { commitRevealedSource, parseSourceLinkUrl, type SourceLinkKind } from '../utils/pullRequestLinks'
 import { parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
@@ -300,7 +302,7 @@ import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import { useHoverIntent } from '../hooks/useHoverIntent'
-import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
+import { useKnowledgeFetch, extractKnowledgeQuery } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
 import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
@@ -326,6 +328,8 @@ import { rewindWithRollback } from '../lib/rewindCall'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { sessionTitleRoster } from '../utils/sessionRoster'
 import { errMessage } from '../utils/thunkError'
+import CrewChatWindow from './chat/crew-window/CrewChatWindow'
+import { closeCrewWindow, crewWindowShown, useCrewWindow } from './chat/crew-window/crewWindowStore'
 
 
 import { i18nT } from '../i18n/t'
@@ -754,7 +758,29 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * drawer slide — on the same main thread that drives the slide's transform.
    * Keep every prop handed to ChatSidebar referentially stable.
    */
-  const clearSplitOnSelect = useCallback(() => setSplitMode(false), [])
+  const clearSplitOnSelect = useCallback(() => { setSplitMode(false); closeCrewWindow() }, [])
+  // A crew session opens as a window over the pane (see CrewChatWindow); a
+  // local session taking focus closes it. Only a MOVE between two local
+  // sessions counts, so the reload restore (none -> restored) keeps it open.
+  const storeCrewWindow = useCrewWindow()
+  // An embedded chat frame shares this tab's sessionStorage, so it shows a
+  // crew window only when its own URL names one (the embedded Sessions list
+  // navigates here with `?crew=&key=`); never the tab's stored one.
+  const embedCrew = searchParams.get('crew')
+  const embedCrewKey = searchParams.get('key')
+  const crewWindow = useMemo(
+    () => (embedded
+      ? (embedMode === 'chat' && embedCrew && embedCrewKey ? { instanceId: embedCrew, key: embedCrewKey } : null)
+      : popout ? null : storeCrewWindow),
+    [embedded, embedMode, popout, embedCrew, embedCrewKey, storeCrewWindow],
+  )
+  const openEmbeddedCrewWindow = useCallback((instanceId: string, key: string) => navigate(
+    `/embed/chat?crew=${encodeURIComponent(instanceId)}&key=${encodeURIComponent(key)}`), [navigate])
+  const prevActiveSlotRef = useRef(activeSlot)
+  useEffect(() => {
+    if (prevActiveSlotRef.current && activeSlot !== prevActiveSlotRef.current) closeCrewWindow()
+    prevActiveSlotRef.current = activeSlot
+  }, [activeSlot])
   /** Same contract as `clearSplitOnSelect`, for the `embedMode === 'sessions'`
    *  frame where the sidebar IS the whole page. */
   const navigateToEmbeddedSlot = useCallback((key: string) => navigate(`/embed/chat/${key}`), [navigate])
@@ -1363,7 +1389,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pendingFiles, setPendingFiles, pendingFilesRef,
     pickedFileTokens, mergeSlotTokens,
     snipFrame, setSnipFrame, snipSlotRef,
-    pasteBlocks, setPasteBlocks, pasteBlocksRef,
+    setPasteBlocks, pasteBlocksRef, pasteSlice,
     pendingSessions, setPendingSessions, pendingSessionsRef,
     stageSessionRef, unstageSessionRef, canStageSessionRef,
     chatPaneEl, setChatPaneEl,
@@ -1817,7 +1843,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!isolated) widgetPrefillRef.current = null
     // A staged quote alone is a sendable message (the quote IS the text).
     const sentQuote: MessageQuote | null = isolated || optionText ? null : messageQuote.consume('').quote
-    if (!raw && !sentQuote && (isolated || (!pendingFilesRef.current.length && !pendingSessionsRef.current.length))) return false
+    if (isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
@@ -1935,64 +1961,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // option-click or composer-send behavior.
     const sentSessionRefs = isolated || optionText ? [] : pendingSessionsRef.current.slice()
     const stagedFilesAtSend = [...new Set(sentFiles)]
-    const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = isolated
-      ? { txt: raw, displayTxt: raw, filePaths: [] }
-      : prepareSendPayload(raw, sentFiles)
-    // Folder references serialize like files but from the text alone: each
-    // `@rel/` token becomes `[attached_dir N] /abs/path` in the LLM-facing
-    // text (absolute, so the reference survives a cwd/project mismatch and
-    // history replay), while the display text keeps the `@rel/` token for the
-    // bubble chip — the same fresh-vs-wire split files use. Runs AFTER the
-    // file pass: file tokens never end in `/`, so the two rewrites are
-    // disjoint. `dirPaths` rides `meta.dirs`, ordered so marker N indexes
-    // dirPaths[N-1] losslessly.
-    const { llm: typedTxtDirs, dirPaths } = isolated
-      ? { llm: typedTxt, dirPaths: [] }
-      : serializeDirTokens(typedTxt, currentProjectRef.current || '')
-    // Staged session references become plain markdown links appended to the
-    // message — deliberately a POINTER, not the referenced transcript. Inlining
-    // another session's content would spend a large share of THIS session's
-    // context window in one turn and can trip autocompact, compacting away the
-    // conversation the reference was meant to enrich. The agent follows the link
-    // on demand instead, through a read path that is already bounded, redacted,
-    // and incognito-refusing server-side.
-    //
-    // The link is built by the SAME helper the session menu's "Copy link" uses,
-    // so a referenced session and a hand-copied one are the same string.
-    //
-    // Appended to the sent and displayed text alike: unlike a paste token there
-    // is no collapsed form to preserve in the bubble, so what the user sees is
-    // exactly what was sent. Appending (never splicing) also means paste-token
-    // ranges found earlier in the string are untouched.
-    const txt = appendSessionRefLinks(typedTxtDirs, sentSessionRefs)
-    const displayPlain = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
-    // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
-    // intact so the user bubble can render them as clickable chips.
+    // The staged collapsed pastes: the turn expands the live ones on the wire,
+    // and a failed send hands them all back with its text.
     const activePastes = isolated ? [] : pasteBlocksRef.current
-    let llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
-    // Prepend knowledge context if pending. Before the quote below, so the
-    // quote block stays the very first thing in the text: the bubble strips
-    // it only from position 0 (`stripQuoteBlock`), and a knowledge block in
-    // front of it would leave the card AND the raw block on screen.
-    let knowledgeBlock: import('./chat/useKnowledgeFetch').KnowledgeBlock | null = null
-    if (!isolated && knowledgeFetchRef.current.pendingKnowledge) {
-      knowledgeBlock = knowledgeFetchRef.current.pendingKnowledge
-      llmTxt = expandKnowledgeBlock(knowledgeBlock) + '\n' + llmTxt
-    }
-    // The quoted message opens the text, for the agent and for the bubble alike
-    // (`messageQuote.ts`): the same block in both, so the bubble's card can
-    // strip exactly what was sent. Prepended AFTER the folder and paste token
-    // passes, so nothing inside the quoted text is ever read as one of this
-    // send's tokens (fork Opus review); `pruneBlocks` below likewise reads the
-    // un-quoted display text.
-    if (sentQuote) llmTxt = prependQuote(llmTxt, sentQuote)
-    const displayTxt = sentQuote ? prependQuote(displayPlain, sentQuote) : displayPlain
-    // What {raw, staged files, staged quote} alone explain -- the queued-send
-    // stash eligibility test below compares the POSTed text against it.
-    const typedTxtQuoted = sentQuote ? prependQuote(typedTxtDirs, sentQuote) : typedTxtDirs
+    const knowledgeBlock = isolated ? null : knowledgeFetchRef.current.pendingKnowledge ?? null
+    // The whole message, in the one fixed order `buildOutgoingTurn` owns: staged
+    // files, folder tokens as `[attached_dir N]` markers resolved against the
+    // project (`meta.dirs[N-1]` is marker N), staged session references as
+    // appended links -- a pointer the agent follows on demand, never the
+    // referenced transcript -- the live paste tokens expanded on the wire only,
+    // the knowledge block, and the quoted message opening both texts. An app
+    // launch (`isolated`) sends its own text verbatim, folder tokens included.
+    const turn = isolated
+      ? { wire: raw, bubble: raw, inlined: raw, meta: {}, storedPaste: undefined, typedOnly: true }
+      : buildOutgoingTurn({ text: raw, files: sentFiles, pastes: activePastes, sessionRefs: sentSessionRefs, knowledge: knowledgeBlock, quote: sentQuote, project: currentProjectRef.current || '' }, 'send')
     if (!isolated) knowledgeFetchRef.current.clearPending()
-    const bubblePastes = pruneBlocksUtil(displayPlain, activePastes)
-    if (bubblePastes.length) saveStoredPaste(llmTxt, displayTxt, bubblePastes, filePaths)
+    storeSentPastes(turn.storedPaste)
 
     if (!isolated) setPrefillHint(false)
     // The alias sub-map this send is about to drop, kept as a frozen snapshot
@@ -2208,13 +2192,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
     setPendingAgent(''); setPendingModel(''); setPendingProject('')
-    // Build meta for persistence (knowledge, files, pastes)
-    const meta: Record<string, unknown> = {}
-    if (filePaths.length) meta.files = filePaths
-    if (dirPaths.length) meta.dirs = dirPaths
-    if (bubblePastes.length) meta.pastes = bubblePastes
-    if (sentQuote) meta.quote = sentQuote
-    if (knowledgeBlock) meta.knowledge = { items: knowledgeBlock.items.length, tokens: knowledgeBlock.totalTokens, titles: knowledgeBlock.items.map(i => i.title), content: knowledgeBlock.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }
+    // Meta for persistence (files, folders, pastes, quote, knowledge), in the
+    // turn's wire order.
+    const meta: Record<string, unknown> = { ...turn.meta }
     if (widgetOrigin) meta.origin = 'widget'
     // A client-generated correlation ID so the server echo can be matched
     // to this exact optimistic bubble without relying on content equality.
@@ -2231,7 +2211,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // below read this so none of them describes a row that was never rendered.
     const bubbleMinted = !_busy || forceNew
     if (bubbleMinted) {
-      dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
+      dispatch(appendMessage({ role: 'user', content: turn.bubble, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
     }
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
@@ -2255,15 +2235,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
      * actually on screen, so it restores visibly for a new-session failure while
      * still not splicing a targeted send's text into an unrelated slot.
      *
-     * Restores `typedTxt` — what the user actually TYPED — and brings the staged
-     * references back as chips, rather than restoring the link-appended `txt`.
-     * Restoring `txt` preserved the reference (the link is in the text) but left
-     * it as a raw URL, and re-staging the chips ON TOP of that text would make
-     * the retry append each link a SECOND time. Splitting them puts the composer
-     * back in exactly its pre-send state: chip visible, link appended once on
-     * retry. Paste blocks come back too, or the restored text would show a dead
-     * `[ Paste #N · M lines ]` literal. Shares the create-failure path's merge
-     * rule so a reference staged while the send was in flight is not clobbered.
+     * Restores the turn's `inlined` text — what the user actually TYPED, files
+     * inlined — and brings the staged references back as chips, rather than
+     * restoring the link-appended wire. Restoring that preserved the reference
+     * (the link is in the text) but left it as a raw URL, and re-staging the
+     * chips ON TOP of that text would make the retry append each link a SECOND
+     * time. Splitting them puts the composer back in exactly its pre-send
+     * state: chip visible, link appended once on retry. Paste blocks come back
+     * too, or the restored text would show a dead `[ Paste #N · M lines ]`
+     * literal. Shares the create-failure path's merge rule so a reference
+     * staged while the send was in flight is not clobbered.
      */
     const restoreComposerAfterFailedSend = () => {
       // App payloads remain in the page-level error notice for copying; the
@@ -2282,7 +2263,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // blocks cannot claim one `[ Paste #N ]` marker.
       const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
       const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
-      const carried = carryPastes(typedTxt, activePastes, keepPastes)
+      const carried = carryPastes(turn.inlined, activePastes, keepPastes)
       const pastesBack = carried.pastes
       // Same merge rule as the create-failure path above, and the separator lives
       // in `mergeRecoveredDraft` rather than in a template literal here: the blank
@@ -2307,7 +2288,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // classification all live in the chat-core transport now; this surface
     // only decides how to REACT to the receipt. `sendTurn` never rejects.
     const receipt = await sendTurn({
-      message: llmTxt,
+      message: turn.wire,
       slot: slot ?? undefined,
       meta: metaPayload,
       steer: steerNow,
@@ -2381,7 +2362,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       dispatch(appendSlotMessage({ slot, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
       return true
     }
-    if (body.queued && llmTxt === typedTxtQuoted) {
+    if (body.queued && turn.typedOnly) {
       // The server queued this send and its receipt names the entry:
       // `queue_id` is the same id `queue_push` broadcasts and the card's
       // cancel button carries, so the pre-send composer state binds to
@@ -2392,10 +2373,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // simply doesn't stash — the parser fallback covers those cards.
       //
       // Eligibility is DERIVED, not enumerated: stash only when the POSTed
-      // text is exactly what {raw, staged files} alone explain
-      // (`typedTxtDirs` — prepareSendPayload + dir-token serialization).
+      // text is exactly what {raw, staged files} alone explain (the turn's
+      // `typedOnly`: its file and folder markers and the quote, nothing more).
       // Expanded paste blocks, appended session-ref links, a prepended
-      // knowledge block, and ANY FUTURE feature that diverges `llmTxt`
+      // knowledge block, and ANY FUTURE feature that diverges the wire
       // from the composer state all fail this equality and fall to the
       // parser — a stash hit for such a send would restore `raw` WITHOUT
       // the context the user staged, silently dropping it, so the failure
@@ -2409,7 +2390,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // and are bounded by how many sends a single tab queues in one
       // session.
       if (typeof body.queue_id === 'string' && body.queue_id) {
-        queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: llmTxt, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
+        queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: turn.wire, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
       }
     }
     if (receipt.status === 'refused') {
@@ -2977,10 +2958,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // flip, so both axes have to stay named or the flipped-away one gets driven
   // back to its base (see sidePanelDockMotion).
   const sidePanelDockAnim = useMemo(() => sidePanelDockMotion(sidePanelDock), [sidePanelDock])
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
-    return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
-  })
+  // The width ChatSidebar reports it paints at (see effectiveSidebarWidth).
+  // Until it reports, read the stored width as the list views cap it: the
+  // sidebar's first layout effect corrects it before the frame paints.
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    Math.min(parseStoredSidebarWidth(localStorage.getItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
   const [sidebarDragging, setSidebarDragging] = useState(false)
   // Pinned to the slot the rename opened on: activeSlot moves the instant the user
   // switches sessions, and a live-resolved commit would rename the wrong session.
@@ -3027,7 +3009,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (embedMode) return
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
-        if (!splitFeatureEnabled || splitMode || !activeSlot) return
+        // A crew window covers the pane: never split the hidden local session.
+        if (!splitFeatureEnabled || splitMode || !activeSlot || crewWindowShown()) return
         e.preventDefault()
         enterSplit(activeSlot)
       }
@@ -3330,14 +3313,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   //    sidebar's own state, never the chat container's painted width — that
   //    shrinks when the panel opens, which would oscillate beside <-> fill.
   const railWidth = useRailWidth()
-  const [winW, setWinW] = useState(() => window.innerWidth)
-  useEffect(() => {
-    const onResize = () => setWinW(window.innerWidth)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
-  // Stored width is validated against SIDEBAR_MIN..SIDEBAR_MAX only, never the
-  // window; clamp for render but leave the preference for the wide viewport.
+  const winW = useWindowWidth()
+  // sidebarWidth is the width ChatSidebar reports its root paints at, already
+  // held to this view and this window (see sidebarPaintWidth); the stored
+  // preference stays with the sidebar for a wider window or for board view.
   const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded
@@ -4713,6 +4692,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Close the drawer when a session is selected. Routed through closeSidebar so
   // it slides out — flipping straight to 'closed' would unmount it on the spot.
   useEffect(() => { if (isMobile) closeSidebar() }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (isMobile && crewWindow) closeSidebar() }, [crewWindow]) // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the mobile viewport: drop the panel with no slide. There is no
   // mobile drawer to animate on the other side of that crossing, and the
   // desktop sidebar owns its own open state. The history entry goes with it —
@@ -5346,7 +5326,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             slots={filteredSlots}
             activeSlot={activeSlot}
             unreadSlots={surfaceUnreadSlots}
-            panelWidth={effectiveSidebarWidth}
+            // The flyout is a session list, which gains nothing past
+            // SIDEBAR_MAX; the last reported width may be a board view's.
+            panelWidth={Math.min(effectiveSidebarWidth, SIDEBAR_MAX)}
             // The panel's own height (OverlayDrawer carries pb-2), so the
             // flyout can never be taller than the thing it grows into.
             maxHeight={Math.max(0, containerH - 8)}
@@ -5376,7 +5358,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             mode={mode}
             onWidthChange={setSidebarWidth}
             onDragChange={setSidebarDragging}
+            fillsHost
             onSelectSlot={navigateToEmbeddedSlot}
+            onOpenPeerSession={openEmbeddedCrewWindow}
           />
         </div>
       ) : (
@@ -5425,6 +5409,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           mode={mode}
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
+          fillsHost={isMobile}
           collapsible={!isMobile}
           staticRows={isMobile}
           onSelectSlot={clearSplitOnSelect}
@@ -5490,6 +5475,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
       <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+        {crewWindow && (
+          <div className="absolute inset-0 z-[48] bg-bg" data-crew-cover>
+            <CrewChatWindow key={`${crewWindow.instanceId}:${crewWindow.key}`} target={crewWindow}
+              onClose={embedded ? () => navigate('/embed/sessions') : undefined} />
+          </div>
+        )}
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}
@@ -6215,6 +6206,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 draft={composerDraft}
                 onChange={composerRootChange}
                 voice={composerVoiceOptions}
+                pastes={pasteSlice}
               >
               <StableChatInput
               aboveComposer={composerAbove}
@@ -6388,13 +6380,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               quickSend={dashCfg?.quick_send}
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
-              onFollowUpSelect={(o: string, e: React.MouseEvent) => {
-                // One-click: enabled + no shift + not busy + not already in multi-select
-                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPickedRef.current.size, send)) return
+              onFollowUpSelect={(o: string, e: React.MouseEvent, _key: string | null | undefined, sendNow: (text: string) => void) => {
+                // One-click: enabled + no shift + not busy + not already in multi-select.
+                // `sendNow` is the composer's chip send: it steers or queues per the slot's busy-send mode.
+                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPickedRef.current.size, sendNow)) return
                 toggleFollowUpOption(o)
               }}
-              pasteBlocks={pasteBlocks}
-              onPasteBlocksChange={setPasteBlocks}
               showFullPastes={chatConfig.showFullPastes}
               knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label={i18nT('pages.chatPage.remove_knowledge_context')} title={i18nT('pages.chatPage.remove_knowledge_context')}>&times;</button></div> : undefined}
               connected={connected}
@@ -6482,6 +6473,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOpenChange={setProjectPickerOpen}
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
+              startPath={_slotProject}
               errorHandoff
             />
             {/* App-contributed session control popover — triggered from input bar.

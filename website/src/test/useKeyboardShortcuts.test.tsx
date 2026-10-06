@@ -1,5 +1,7 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { closeCrewWindow, currentCrewWindow, markCrewWindowShown, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
+import * as chatSlice from '../store/chatSlice'
 import { fireEvent, screen, act, render } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -115,6 +117,48 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
     const event = new KeyboardEvent('keydown', { code: 'KeyW', altKey: true, shiftKey: true, cancelable: true, bubbles: true })
     const prevented = !document.dispatchEvent(event)
     expect(prevented).toBe(true)
+  })
+
+  it('Alt+Shift+W closes an open crew window, never the local session under it', async () => {
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
+    })
+    const spy = vi.spyOn(chatSlice, 'deleteSlot')
+    openCrewWindow({ instanceId: 'cd-1', key: 'k1' })
+    const unmark = markCrewWindowShown(closeCrewWindow)
+    try {
+      renderHookWithProviders(
+        () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }),
+        { store },
+      )
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', altKey: true, shiftKey: true, cancelable: true, bubbles: true }))
+      expect(currentCrewWindow()).toBeNull()
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      unmark()
+      closeCrewWindow()
+      spy.mockRestore()
+    }
+  })
+
+  it('Alt+Shift+W runs the shown window\'s own close (an embedded host navigates)', () => {
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
+    })
+    const hostClose = vi.fn()
+    const unmark = markCrewWindowShown(hostClose)
+    try {
+      renderHookWithProviders(
+        () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }),
+        { store },
+      )
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', altKey: true, shiftKey: true, cancelable: true, bubbles: true }))
+      expect(hostClose).toHaveBeenCalledTimes(1)
+    } finally {
+      unmark()
+    }
   })
 
   it('Alt+Shift+W is suppressed when shortcuts are disabled', () => {
@@ -1634,6 +1678,21 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
           },
         },
       } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept
+    confirmSpy.mockRestore()
+  })
+
+  it('Ctrl+W asks first for a session whose children are only queued (closing retires them)', () => {
+    // Queued children are not Working, so the lane reads idle; the gate must
+    // still confirm, because deleteSlot cancels the accepted spawns.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [], subagentQueued: { 'slot-1': 2 } } as unknown as RootState['chat'],
     })
     renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
     press({ code: 'KeyW', ctrlKey: true })

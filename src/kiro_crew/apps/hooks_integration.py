@@ -784,7 +784,17 @@ async def on_gateway_startup(
                 denied,
             )
             if cron_service is not None:
-                await disarm_app_crons_for_execution(name, cron_service)
+                try:
+                    await disarm_app_crons_for_execution(name, cron_service)
+                except (CronStoreUnreadable, CronStoreBusy, OSError) as exc:
+                    # The gateway's boot reconcile already disarmed this app's
+                    # jobs, or failed on the same store and left the scheduler
+                    # unarmed. Raising here would abort the dashboard startup.
+                    logger.warning(
+                        "Startup: could not disarm crons for denied app %s (%s)",
+                        name,
+                        type(exc).__name__,
+                    )
             if _route_registry:
                 _route_registry.deregister_app_routes(name)
             # Same anti-churn record as on_app_enable's denied path: a hook-

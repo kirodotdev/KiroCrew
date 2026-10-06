@@ -177,7 +177,6 @@ def _slot(
         memory_mode="persistent",
         # Idle by default: Layer B only travels when no turn is in flight.
         running=False,
-        _in_stage_execution=False,
     )
 
 
@@ -444,64 +443,6 @@ async def test_build_bundle_async_offloads_the_blocking_read_to_a_thread():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_retries_when_a_flush_lands_during_the_read():
-    """Regression: the offloaded read introduced an await the 5s flush can land in.
-
-    Simulates the dangerous interleaving — the read returns PRE-flush content and
-    the flush then advances the boundary and clears ``_dirty``. A naive merge
-    would see a clean slot and drop the tail entirely. The snapshot must notice
-    the boundary moved and retry, so the tail still reaches the copy.
-    """
-    from kiro_crew.dashboard import session_transfer as st
-
-    tail = {"role": "assistant", "content": "tail turn", "ts": ""}
-    persisted = {"role": "user", "content": "persisted", "ts": ""}
-
-    slot = _slot([persisted], dirty=True)
-    slot.messages = [persisted, tail]
-    slot._disk_window_len = 1
-    # Already persisted as far as the pre-bundle flush is concerned: this test
-    # targets the post-await guards, so it must not trigger a real save.
-    slot._dirty = False
-
-    # Disk content grows when the simulated flush lands.
-    disk = {"messages": [persisted]}
-    reads: list[int] = []
-
-    class _Log(_PersistentLine):
-        def read_messages_chained(self, _key):
-            reads.append(len(disk["messages"]))
-            return list(disk["messages"])
-
-    state = SimpleNamespace(conversation_log=_Log())
-
-    calls = {"n": 0}
-    real_to_thread = st.asyncio.to_thread
-
-    async def _flush_midway(fn, *args):
-        result = fn(*args)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            # The flush completes while we were "off the loop": the tail is now
-            # on disk and the persisted boundary has advanced.
-            disk["messages"] = [persisted, tail]
-            slot._disk_window_len = 2
-            slot._dirty = False
-        return result
-
-    st.asyncio.to_thread = _flush_midway  # type: ignore[assignment]
-    try:
-        bundle = await st.build_transfer_bundle_async(state, slot, origin="mac")
-    finally:
-        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
-
-    contents = [m["content"] for m in bundle["messages"]]
-    # Retried, so the post-flush disk read carries the tail exactly once.
-    assert calls["n"] >= 2, "expected a retry after the boundary moved"
-    assert contents == ["persisted", "tail turn"], contents
-
-
-@pytest.mark.asyncio
 async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monkeypatch):
     """``list_agents`` scans a directory and parses manifests — not on the loop.
 
@@ -656,47 +597,6 @@ async def test_bundle_refuses_while_a_rewrite_is_still_owed():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_failure_is_raised_rather_than_read_inline():
-    """Exhausted retries must FAIL, not fall back to a blocking inline read.
-
-    An inline read would trade a lossy transcript for a blocking one, and on a
-    large active session the blocking read is what starves the heartbeat into a
-    watchdog-triggered gateway exit. A transfer is a copy, so failing costs
-    nothing — the source is untouched and the user can retry.
-    """
-    from kiro_crew.dashboard import session_transfer as st
-
-    persisted = {"role": "user", "content": "persisted", "ts": ""}
-    slot = _slot([persisted], dirty=True)
-    slot.messages = [persisted]
-    slot._disk_window_len = 1
-    slot._dirty = False  # this test targets the guards, not the pre-flush
-
-    state = _state([persisted])
-    bumps = {"n": 0}
-    real_to_thread = st.asyncio.to_thread
-
-    async def _never_settles(fn, *args):
-        result = fn(*args)
-        # Move the persisted boundary on every attempt so the check never passes.
-        # Grow the window in step so the post-await guard does not fire first:
-        # this test is about the retry cap, not the boundary-ahead refusal.
-        bumps["n"] += 1
-        slot._disk_window_len += 1
-        slot.messages = slot.messages + [{"role": "user", "content": "more", "ts": ""}]
-        return result
-
-    st.asyncio.to_thread = _never_settles  # type: ignore[assignment]
-    try:
-        with pytest.raises(st.SnapshotUnstable):
-            await st.build_transfer_bundle_async(state, slot, origin="mac")
-    finally:
-        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
-
-    assert bumps["n"] == st._SNAPSHOT_ATTEMPTS
-
-
-@pytest.mark.asyncio
 async def test_import_refuses_when_the_durable_save_fails(monkeypatch):
     """A swallowed write failure would ack a transfer that only exists in memory,
     so a restart before the next flush would lose the imported session."""
@@ -792,39 +692,6 @@ async def test_bundle_refuses_when_the_boundary_is_ahead_of_the_window():
 
     with pytest.raises(st.SnapshotUnstable):
         await st.build_transfer_bundle_async(_state(persisted), slot, origin="mac")
-
-
-@pytest.mark.asyncio
-async def test_snapshot_rechecks_pending_rewrite_after_the_await():
-    """Regression: a rewind landing DURING the threaded read must be caught.
-
-    ``_pending_rewrite`` can flip to True while ``_disk_window_len`` stays put, so
-    the boundary check alone reads as "stable" and the bundle would carry turns
-    the user just discarded. The guards therefore run after every await, not only
-    before the first one.
-    """
-    from kiro_crew.dashboard import session_transfer as st
-
-    msgs = [{"role": "user", "content": "kept", "ts": ""}]
-    slot = _slot(msgs)
-    slot.messages = list(msgs)
-    slot._disk_window_len = 1
-    slot._dirty = False  # this test targets the guards, not the pre-flush
-
-    real_to_thread = st.asyncio.to_thread
-
-    async def _rewind_midway(fn, *args):
-        result = fn(*args)
-        # The rewind lands while we are off the loop; the boundary does not move.
-        slot._pending_rewrite = True
-        return result
-
-    st.asyncio.to_thread = _rewind_midway  # type: ignore[assignment]
-    try:
-        with pytest.raises(st.SnapshotUnstable):
-            await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
-    finally:
-        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio
@@ -925,43 +792,6 @@ async def test_bundle_refuses_when_the_pre_bundle_flush_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_retries_when_a_turn_lands_during_assembly():
-    """Regression: the tail is captured BEFORE the await, so a turn appended
-    during the threaded assembly is not in it — and it does not move the
-    boundary, so the boundary check alone would return a bundle missing a turn
-    that exists by the time we answer."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    persisted = {"role": "user", "content": "persisted", "ts": ""}
-    late = {"role": "assistant", "content": "late turn", "ts": ""}
-
-    slot = _slot([persisted])
-    slot.messages = [persisted]
-    slot._disk_window_len = 1
-    slot._dirty = False
-
-    calls = {"n": 0}
-    real_to_thread = st.asyncio.to_thread
-
-    async def _append_midway(fn, *args):
-        result = fn(*args)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            # A turn lands while we are off the loop. Boundary does not move.
-            slot.messages = slot.messages + [late]
-        return result
-
-    st.asyncio.to_thread = _append_midway  # type: ignore[assignment]
-    try:
-        bundle = await st.build_transfer_bundle_async(_state([persisted]), slot, origin="mac")
-    finally:
-        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
-
-    assert calls["n"] >= 2, "expected a retry after the message count changed"
-    assert [m["content"] for m in bundle["messages"]] == ["persisted", "late turn"]
-
-
-@pytest.mark.asyncio
 async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
     """An app token clears _guard() (it sets request["user"]), so without an
     ownership check an app declaring /api/instances could have ANOTHER slot's
@@ -1015,44 +845,6 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
     assert resp.status == 403
     assert json.loads(resp.body)["code"] == "owner_only"
     assert sent == [], "nothing may be delivered for a slot the app does not own"
-
-
-@pytest.mark.asyncio
-async def test_snapshot_retries_on_an_in_place_edit_during_assembly():
-    """Regression: an in-place edit moves neither the boundary nor the count.
-
-    A variant switch replaces an already-persisted turn, so only ``_dirty_gen``
-    (bumped centrally by the ``_dirty`` setter) reveals it. Without that marker
-    the copy could carry the superseded response.
-    """
-    from kiro_crew.dashboard import session_transfer as st
-
-    persisted = {"role": "assistant", "content": "old variant", "ts": ""}
-    slot = _slot([persisted])
-    slot.messages = [persisted]
-    slot._disk_window_len = 1
-    slot._dirty = False
-    slot._dirty_gen = 7
-
-    calls = {"n": 0}
-    real_to_thread = st.asyncio.to_thread
-
-    async def _edit_midway(fn, *args):
-        result = fn(*args)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            # Same length, same boundary — only the generation moves.
-            slot.messages[0] = {"role": "assistant", "content": "new variant", "ts": ""}
-            slot._dirty_gen += 1
-        return result
-
-    st.asyncio.to_thread = _edit_midway  # type: ignore[assignment]
-    try:
-        await st.build_transfer_bundle_async(_state([persisted]), slot, origin="mac")
-    finally:
-        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
-
-    assert calls["n"] >= 2, "expected a retry after the dirty generation moved"
 
 
 @pytest.mark.asyncio
@@ -2153,23 +1945,6 @@ async def test_layer_b_is_skipped_while_a_turn_is_in_flight(monkeypatch):
     assert "layer_b" not in bundle
     assert bundle["bundle_version"] == 2
     assert resolved == [], "the sid must not even be resolved mid-turn"
-
-
-@pytest.mark.asyncio
-async def test_layer_b_is_skipped_between_stages_of_a_staged_plan(monkeypatch):
-    """``running`` reads False between stages, so the staged-plan flag is checked
-    too (chat_handlers documents that gap)."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    msgs = [{"role": "user", "content": "hi", "ts": ""}]
-    slot = _slot(msgs)
-    slot.running = False
-    slot._in_stage_execution = True
-    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *a: "sid")
-
-    bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
-
-    assert "layer_b" not in bundle
 
 
 @pytest.mark.asyncio

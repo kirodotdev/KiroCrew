@@ -646,8 +646,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "these six tools are conveniences, so withholding a result beats leaking. The ERROR "
         "paths are scanned too (`_redact_error`): tool ARGUMENTS reach exception text by "
         'design — `get_finding` raises "no finding with fingerprint <fp>" with the caller\'s '
-        "raw value — so a credential-shaped argument was echoed straight back to the model "
-        "and into the SEL record. Measured before fixing. The exception type and JSON-RPC "
+        "raw value — so a credential-shaped argument would be echoed straight back to the "
+        "model and into the SEL record unless scrubbed. The exception type and JSON-RPC "
         "error code are composed in after scrubbing, so the message stays actionable.",
     ),
     (
@@ -661,6 +661,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         # `python helper.py` is allowed and can open a socket. The shell denylist cannot close
         # that — it gates the requested command, not what the command then does. Consequence:
         # point the PR watcher only at repositories whose PR comments you would be willing to
+        # execute; the row detail below states that consequence to the operator.
         "Auto-Improvement PR-watcher egress boundary",
         "apps/builtins/auto_improvement/backend/pr_watchers.py",
         "The watcher reads UNTRUSTED text (pull-request comments, check logs) and runs with an "
@@ -671,7 +672,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "one-time consent: `watcherAcceptEgressRisk` is a HARD precondition — `_make_runner` "
         "refuses to build any watcher runner without it, so a watcher cannot run at all until "
         "the operator acknowledges this egress boundary — and `watcherAutoStart` separately "
-        "gates whether a polled GET may PROMOTE watchers (a promote used to happen with no "
+        "gates whether a polled GET may PROMOTE watchers (without it a promote would need no "
         "operator action, leaving no consent moment). Treat setting either flag as agreeing to "
         "execute the pull request's comments.",
     ),
@@ -686,25 +687,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "progressing without unscanned text reaching the browser. Recursive, because the "
         "agent event is nested. The WATCHER snapshot and chat-session records are scanned on "
         "the same grounds (`routes._redact_tree`): the watcher log ring is redacted on WRITE, "
-        "but `WatcherState.as_dict` beside it served `target`/`title`/`lastNote`/"
-        "`verdictReason`/`fixing` raw — all model- or pull-request-derived, and the watcher "
-        "ingests PR text as untrusted input by design. Measured with a credential-shaped "
-        "`target` (an access-key literal, not reproduced here — this disclosure is itself "
-        "scanned): it reached the browser verbatim. The session "
+        "and `WatcherState.as_dict` beside it serves `target`/`title`/`lastNote`/"
+        "`verdictReason`/`fixing` — all model- or pull-request-derived, and the watcher "
+        "ingests PR text as untrusted input by design, so unscanned a credential-shaped "
+        "`target` would reach the browser verbatim. The session "
         "records go through it too, because `save_session` merges the caller's patch and the "
         "stored `title` is built from a finding's target. So do the route ERROR bodies: "
         "`commit.py` builds its `error` from git stderr — which quotes refs, paths and "
         "whatever a repository's own hooks printed — scrubbed at that source "
         "(redact-then-bound) so its character bound can never cut a credential mid-match. "
-        "That was "
-        "latent while nothing rendered it; surfacing a refused commit at the finding row made "
-        'it a live path to the browser, so all five `result.get("error")` responses plus the '
+        "A refused commit is surfaced at the finding row, which makes that error a live path "
+        'to the browser, so all five `result.get("error")` responses plus the '
         "PR-status and draft bodies are scanned. "
         "Covers the TERMINAL ERROR field on the same response too "
-        '(`_fail`): `f"{type(exc).__name__}: {exc}"` was assigned raw while the feed '
-        "beside it was scanned, and an exception message routinely quotes what failed — a "
-        "git url, a subprocess argv, a path — so a run dying on an agent-influenced value "
-        "carried it to the browser. The exception TYPE is composed in after redaction so "
+        '(`_fail`): `f"{type(exc).__name__}: {exc}"` is scanned like the feed beside it, '
+        "because an exception message routinely quotes what failed — a git url, a "
+        "subprocess argv, a path — so a run dying on an agent-influenced value would carry "
+        "it to the browser. The exception TYPE is composed in after redaction so "
         "the message stays actionable.",
     ),
     (
@@ -900,7 +899,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Onboarding import",
         "onboarding_scan.py",
-        "Imported foreign-agent history and config before it enters Kiro Crew.",
+        "Text imported from a foreign agent's config (instructions, memories, skills, "
+        "settings and the other import categories) before it enters Kiro Crew.",
     ),
     (
         "Discord / Telegram / WeCom / Webex",
@@ -1437,8 +1437,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "session artifact. A signed webhook is accepted from anything able to POST "
         "JSON and a console link can carry a token in its query string, so this "
         "metadata is exactly as untrusted as the evidence bodies gather_evidence "
-        "already covers — that sink was registered while the metadata printed beside "
-        "it was not. Routed through redact_via_context for the same companion-seam "
+        "already covers, so it is redacted the same way. Routed through redact_via_context for the same companion-seam "
         "reason. Fields this app assigns (source, severity, fired_at, fingerprint, "
         "operating_mode) are deliberately not redacted: masking one could only "
         "corrupt a value the agent needs to reason about.",
@@ -1923,8 +1922,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # same overstatement the decision-seam entry above refuses for refusal.
         "builtin_skills/pipeline-conductor/scripts/fleet_probe.py",
         # The loop stop record: store-sourced ids and caller reasons are scrubbed
-        # before they are held in memory or written to the gateway log. Local
-        # diagnostics, not an egress pass.
+        # before they are held in memory or written to the gateway log or the
+        # stop file under ``logs/``. Local diagnostics, not an egress pass.
         "autonudge_stop_log.py",
         # Inbound structured-monitor target validation. A canonical provider URL
         # is rejected when its path contains credential-shaped text, before the
@@ -2070,7 +2069,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The row projection and the restore-time title check, composed into that
         # facade: the same internal persisted copy, no output of their own.
         "dashboard/slot_persistence/message_entries.py",
-        "dashboard/slot_persistence/restored_metadata.py",
+        "dashboard/slot_persistence/metadata_codec.py",
         "dashboard/chat_regenerate.py",
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
@@ -2117,7 +2116,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_directive_apply.py",
         "dashboard/cron_inject.py",
         "dashboard/ws.py",
-        "dashboard/server.py",
+        # The gateway bootstrap's owner DM and workflow-result turn (owners that
+        # dashboard/server.py composes).
+        "dashboard/server_runtime/owner_notices.py",
+        "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
         # Roster last-message previews: same preview + redaction chain as
         # handlers/sessions.py, feeding the same dashboard HTTP surface the
@@ -2269,6 +2271,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/interactions.py",
         "slack/renderer.py",
         "slack/sessions_view.py",
+        # The owners composed into slack/handler.py, in the same class as that
+        # facade: they redact the answer stream, the approval prompts, the command
+        # replies and the thread context the native turn posts or reads, and
+        # slack/handler.py stays the registered "Slack messages" sink for all of
+        # it, so the split adds no egress path of its own.
+        "slack/handler_runtime/approvals.py",
+        "slack/handler_runtime/commands.py",
+        "slack/handler_runtime/inbound.py",
+        "slack/handler_runtime/stream.py",
+        "slack/handler_runtime/turn_context.py",
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.
@@ -2615,7 +2627,10 @@ def _sensitive_path_items() -> list[PostureItem]:
         # as ours just because it shares a string prefix.
         first = entry.split("/", 1)[0]
         if first in own:
-            detail = "Kiro Crew trust root — the agent can neither read nor write it"
+            detail = (
+                "Kiro Crew trust root — agent file tools can neither read nor write it; "
+                "shell reach follows its sandbox disposition"
+            )
         else:
             detail = "Third-party credential store"
         items.append(PostureItem(label=f"~/{entry}", detail=detail))
@@ -2841,10 +2856,12 @@ _CONTROLS: tuple[PostureControl, ...] = (
         label="Sensitive path blocking",
         unit="credential paths",
         summary=(
-            "Paths the agent cannot read or write. Enforced at the PreToolUse gate on the "
-            "resolved target, so a symlink into a blocked directory is refused too."
+            "Paths agent file tools cannot read or write. Enforced at the PreToolUse gate "
+            "on the resolved target, so a symlink into a blocked directory is refused too. "
+            "From a shell, each leaf's sandbox disposition decides: a READONLY leaf stays "
+            "readable by design, and a VISIBLE leaf rests on this tool gate alone."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/paths.py",
         items_fn=_sensitive_path_items,
     ),
     PostureControl(
@@ -2855,7 +2872,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Readable but not writable by agent tools — config carrying resource ceilings "
             "and the data-home migration marker."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/paths.py",
         items_fn=_write_protected_items,
     ),
     PostureControl(
@@ -2868,7 +2885,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "off. The count is the SHIPPED catalogue -- the set actually enforced is "
             "this minus any rule disabled below, so it can be smaller."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/denied_rules.py",
         items_fn=_denied_command_items,
     ),
     PostureControl(
@@ -2877,11 +2894,11 @@ _CONTROLS: tuple[PostureControl, ...] = (
         unit="patterns",
         summary=(
             "Deletion, exfiltration, and pipe-to-interpreter shapes. Advisory: these "
-            "are surfaced by the `kirocrew` history scan, NOT blocked at the "
+            "are surfaced by the `kirocrew security audit` history scan, NOT blocked at the "
             "PreToolUse gate — the gate enforces the narrower denied-command rules "
             "and exfiltration checks above."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/denied_rules.py",
         items_fn=_suspicious_pattern_items,
     ),
     PostureControl(
@@ -2909,7 +2926,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "that run only one, or that the owner can narrow to one for their own "
             "view, say so on their own row."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security_posture.py",
         items_fn=_redaction_sink_items,
     ),
     PostureControl(
@@ -2920,7 +2937,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Credential classes the redaction scanner recognizes, in plaintext and "
             "base64-encoded form."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/redaction.py",
         items_fn=_credential_family_items,
     ),
     PostureControl(
@@ -2931,7 +2948,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Domain-agnostic — flags the payload, not the destination. A URL matching "
             "any heuristic is replaced with a redaction marker."
         ),
-        source="src/kiro_crew/security/__init__.py",
+        source="src/kiro_crew/security/exfil.py",
         items_fn=_exfil_heuristic_items,
     ),
     PostureControl(

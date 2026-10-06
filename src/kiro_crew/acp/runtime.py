@@ -93,7 +93,6 @@ from kiro_crew.acp.runtime_start import (
     _cold_start_counts,
     _resolve_start_collect_timeout,
     _split_init_frames,
-    session_start_gate_counts,
 )
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_ROSTER_CAP,
@@ -2207,17 +2206,20 @@ class AcpRuntime:
             resolve_krb5_ccname(env)
             # KIRO_API_KEY is one host's own MODEL credential and another
             # host's active hazard, so which way it goes is the harness's answer.
-            # kiro-cli is handed it for its v2 agent loop. The KAS relay has it
-            # REMOVED even though its process is now a kiro-cli: the v3 engine
-            # authenticates either from kiro-cli's OIDC store
-            # (--auth-method cli) or from Crew's vault over the
-            # _kiro/auth/getAccessToken callback, and in BOTH shapes the
-            # variable must be absent — the engine gives an API key in its
-            # environment precedence over the callback, so leaving it set would
-            # silently override the credential the operator signed in with.
+            # kiro-cli is handed it for its v2 agent loop. The KAS relay is a
+            # kiro-cli too, so the answer follows the spawn plan's auth owner:
+            # a cli-owned relay (--auth-method cli) authenticates itself and an
+            # API key is one of its sign-ins, so it is handed the key; a
+            # Crew-owned relay answers _kiro/auth/getAccessToken from Crew's
+            # vault and has the key REMOVED -- the engine gives an API key in
+            # its environment precedence over the callback, so leaving it set
+            # would silently override the credential the operator signed in
+            # with.
             # Called here, before the scrub below, so a host can both add its own
             # variables and remove one this generic path would pass through.
-            self._harness.apply_spawn_env(env, spawned_binary=spawned_kiro_bin)
+            self._harness.apply_spawn_env(
+                env, spawned_binary=spawned_kiro_bin, cli_owned_auth=not plan.host_auth
+            )
 
         await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
         # Parent-side equivalent of the launcher scrub. This is required on
@@ -6923,6 +6925,7 @@ class AcpRuntime:
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
         on_gate_queued: Callable[..., None] | None = None,
         start_priority: StartPriority = StartPriority.BACKGROUND,
+        bg_runtime_start: bool = False,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -6960,6 +6963,11 @@ class AcpRuntime:
         to ``late_adopter`` (which returns True to keep it) or tears it down;
         the raised :class:`AcpSessionStartTimeout` carries that collector. The
         gate permit is released exactly once on every path.
+
+        ``bg_runtime_start=True`` (only the shared ``_bg`` runtime's one-liner
+        starts) takes the permit from the loop's separate one-permit ``_bg`` gate
+        instead, so those starts never hold or queue for a user's permit
+        (``runtime_start.bg_runtime_session_start_gate``).
         """
         if memory_mode not in {"persistent", "incognito", "temporary"}:
             raise ValueError("Invalid session memory mode")
@@ -7161,7 +7169,11 @@ class AcpRuntime:
             # right after the answer (the rest of session setup is not what the
             # gate protects), on a timeout by the collector that now owns the
             # request, on any other failure here.
-            gate = await runtime_start.session_start_gate()
+            gate = await (
+                runtime_start.bg_runtime_session_start_gate()
+                if bg_runtime_start
+                else runtime_start.session_start_gate()
+            )
             notify_start_queue(logger, on_gate_queued, START_QUEUE_SESSION_NEW)
             permit = await gate.acquire(start_priority)
             try:
@@ -7369,7 +7381,7 @@ class AcpRuntime:
             int(req_id),
             timeout,
             permit.priority.value,
-            *session_start_gate_counts(),
+            *permit.gate_counts(),
             permit.gate_state(),
         )
         return collector.start()
@@ -7481,6 +7493,7 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
             session_key=session_key,
+            bound_cwd=str(session_work_dir),
         )
         handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
@@ -8070,6 +8083,7 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
             session_key=session_key,
+            bound_cwd=str(load_params["cwd"]),
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token

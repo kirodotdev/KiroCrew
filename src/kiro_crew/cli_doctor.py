@@ -108,7 +108,11 @@ from kiro_crew.constants import (
     node_version_meets_floor,
     parse_node_version,
 )
-from kiro_crew.cron import job_pause_state_from_disk, unhealthy_jobs_from_disk  # noqa: F401
+from kiro_crew.cron import (  # noqa: F401
+    cron_store_quarantine_copies,
+    job_pause_state_from_disk,
+    unhealthy_jobs_from_disk,
+)
 from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     dump_age_seconds,
     dump_first_stack_lines,

@@ -28,6 +28,27 @@ from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, retained_o
 #: a cap would bring back a watch with nothing to watch.
 MONITOR_TERMINAL_REASON = "monitor_terminal"
 
+#: ``stopped_reason`` for a loop whose own kill switch fired: the stop file at
+#: ``stop_sentinel_path`` existed when the timer woke. The file is how the agent
+#: declares the goal reached on a goal whose text carries ``{{STOP_FILE}}`` (the
+#: apps' patrols, ``/goal``, a custom goal; the popover's default text has the
+#: agent call ``autonudge_stop`` instead, and that call's removal of the row is
+#: unchanged here), so the record is KEPT and deactivated under this reason rather
+#: than removed -- a removed row left the goal popover on its empty form with
+#: nothing saying the goal was met.
+#: The stop file itself is left where it was written; the arm path unlinks it
+#: before a new loop is armed on the slot (``authorize_and_add_nudge``).
+STOP_SENTINEL_REASON = "stop_sentinel"
+
+#: The two FINISHED stops -- the agent created its stop file, or the watched
+#: subject merged or closed. Terminal in a way the bounds are not: there is nothing
+#: to resume, so a revival (``update(active=True)``) is refused whoever asks -- the
+#: popover's Play, ``monitor_update``, an app reconciler re-arming its loops -- and
+#: the only ways on are to clear the record or to arm a NEW loop, which may displace
+#: it (both are in ``_REPLACEABLE_LOOP_STOP_REASONS`` below). The popover renders
+#: both as Done.
+FINISHED_LOOP_REASONS = frozenset({STOP_SENTINEL_REASON, MONITOR_TERMINAL_REASON})
+
 
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
@@ -151,7 +172,8 @@ _BUDGET_EXHAUSTED_REASONS = frozenset({CYCLE_CAP_REASON, RUNTIME_BUDGET_REASON})
 
 # System-imposed terminal bounds. Membership here gives a reason TWO properties:
 # (1) ``update`` refuses to overwrite an ALREADY-inactive loop with one of these
-# (the no-op branch in ``_update_locked``), so a stop these mark cannot clobber a
+# (the no-op branches in ``_update_unserialized`` read ``_KEPT_STOP_REASONS``,
+# which these are part of), so a stop these mark cannot clobber a
 # manual pause the user landed first -- e.g. a structural stop firing on an
 # in-flight cycle right after the user paused must NOT replace that pause and
 # make it directive-revivable; and (2) they are re-armable (folded into
@@ -177,16 +199,36 @@ MANUAL_STOP_REASON = "manual"
 
 
 #: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
-#: therefore displace: a lapsed approval, a spent bound, a finished subject, a
-#: dropped kill switch. Everything else — a manual pause (``"manual"``), a
+#: therefore displace: a lapsed approval, a spent bound, a finished subject (a
+#: merged or closed watch, or the loop's own stop file), a dropped kill switch.
+#: Everything else — a manual pause (``"manual"``), a
 #: research tombstone (``AUTONUDGE_STOP_REASON``, consumed by the auto_research
 #: watchdog to tell deliberate completion from crash cleanup), and any reason
 #: this version does not know — is evidence some consumer may read, so it fails
 #: CLOSED to preserved.
-_REPLACEABLE_LOOP_STOP_REASONS = _TERMINAL_BOUND_REASONS | {
-    MONITOR_TERMINAL_REASON,
-    SENTINEL_DROPPED_REASON,
-}
+_REPLACEABLE_LOOP_STOP_REASONS = (
+    _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS | {SENTINEL_DROPPED_REASON}
+)
+
+
+#: Stops a LATER deactivation must not overwrite. A reasonless pause (the goal
+#: popover's, pressed off a record that still read running) or a bound-tagged stop
+#: reaching a row one of these already stopped keeps the earlier reason: the record
+#: keeps why the loop ended, which the popover words its state by -- and for a
+#: finished loop the reason is also what refuses the revival, so ``manual`` stamped
+#: over it would hand Play back on a loop with nothing to resume.
+_KEPT_STOP_REASONS = _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS
+
+
+def reason_in(value: object, reasons: frozenset[str]) -> bool:
+    """Whether a STORED stop reason is one of ``reasons``.
+
+    A loop's ``stopped_reason`` is read back from the state file as written, so
+    a hand-edited or malformed value can be anything; a non-string matches no
+    reason rather than raising on the set lookup, which is how the resume path
+    reads it too.
+    """
+    return isinstance(value, str) and value in reasons
 
 
 def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
@@ -427,7 +469,8 @@ class NudgeLoop:
     # "manual" (user pause / any caller that didn't say otherwise),
     # "autonudge_stop" (deliberate directive), "cycle_cap",
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
-    # bounds).
+    # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
+    # "monitor_terminal" (the watched subject merged or closed).
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is

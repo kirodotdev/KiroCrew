@@ -21,8 +21,17 @@ _glue_logger = _logging.getLogger(__name__)
 #: Longest a start may spend queued for start permits, in total, before it is reaped
 #: as never started. The startup clock pauses while a start is queued, so without a
 #: bound a start parked behind holders that no watchdog bounds would wait forever.
-#: Shares one owner with ``agent.subagent_queue_max_wait_secs`` once that lands.
+#: Not ``agent.subagent_queue_max_wait_secs``: that key bounds a spawn deferred for
+#: memory before it starts, and this caps a started run's wait for permits, which is
+#: a capacity wait and is deliberately not counted as a memory wait.
 _START_QUEUE_MAX_SECS = 1800.0
+
+#: Longest a start may stay silent after its runtime is up (``_pid`` is recorded
+#: only once the session exists) with no frame on its own session and no turn,
+#: before it is reaped as never answering its first prompt. Without it, a runtime
+#: that finished its handshake but wedged on the first prompt ran to the full
+#: ``subagent_timeout_secs``: the startup watchdog stops looking once a PID exists.
+_FIRST_PROMPT_SILENT_SECS = 300.0
 
 
 if TYPE_CHECKING:
@@ -813,9 +822,9 @@ class OrphanStallMonitor(ManagerComponent):
             # summed RSS counts pages a tree of processes shares once per process.
             # Keyed on the LOCAL generation the recheck below proves current, so a
             # respawn re-captures for its fresh process and a reading of the dead
-            # one is never stamped as the new one's. ``_inflight_tool`` holds one
-            # tool, so a second overlapping tool still running can pass; that
-            # over-counts, which errs toward reserving more.
+            # one is never stamped as the new one's. ``_inflight_tool`` is None
+            # only when none of this agent's own calls is in flight, parallel
+            # ones included.
             tool_before = info._inflight_tool
             stall_before = info._stall_gen
             want_settled = (
@@ -977,6 +986,17 @@ class OrphanStallMonitor(ManagerComponent):
                 self._manager._admission.taskq_reopen_if_due()
             except Exception:
                 logger.debug("Reaper: task-store re-open failed", exc_info=True)
+            # An owed-report replay the store refused is retried here; a no-op
+            # once one replay has read every owed row.
+            try:
+                self._manager._admission.taskq_schedule_owed_replay()
+            except Exception:
+                logger.debug("Reaper: owed-report replay failed", exc_info=True)
+            # A parent-end teardown whose store read was refused is swept again.
+            try:
+                await self._manager.retry_owed_teardown_sweeps()
+            except Exception:
+                logger.debug("Reaper: teardown store-sweep retry failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:
@@ -1021,6 +1041,26 @@ class OrphanStallMonitor(ManagerComponent):
                         self._stamped_startup_deadline(info),
                         self._manager._startup_population(exclude=info),
                         info._startup_cotenant_frames,
+                    )
+                    try:
+                        await self._manager._force_reap(
+                            agent_id,
+                            info,
+                            now - (info._exec_started or now),
+                            reason="startup_timeout",
+                        )
+                    except Exception:
+                        logger.exception("Reaper: failed to reap %s", agent_id)
+                    continue
+                if self._is_first_prompt_silent(info, now):
+                    # Imported here: this ``_impl`` resolves globals in ``subagent``.
+                    from kiro_crew.subagent_manager.monitoring import _FIRST_PROMPT_SILENT_SECS
+
+                    logger.warning(
+                        "Reaper: subagent %s launched its runtime but nothing "
+                        "answered its first prompt for %ds (turn 0), force-killing",
+                        agent_id,
+                        int(_FIRST_PROMPT_SILENT_SECS),
                     )
                     try:
                         await self._manager._force_reap(
@@ -1111,6 +1151,30 @@ class OrphanStallMonitor(ManagerComponent):
             and info._pid is None
             and info._first_stream_started is None
             and starting > self._stamped_startup_deadline(info)
+        )
+
+    def _is_first_prompt_silent(self, info: SubagentInfo, now: float) -> bool:
+        """True if *info* launched its runtime but nothing answered its first prompt.
+
+        The complement of :meth:`_is_startup_stalled_impl`, which needs ``_pid is
+        None``: here the PID is recorded (the session exists), yet there is still
+        no turn and no frame addressed to this session, and the activity clock
+        (restarted when the PID is recorded, ``_note_startup_progress``) has
+        not moved for :data:`_FIRST_PROMPT_SILENT_SECS`, so handshake time is
+        never charged to the window. A start queued for a permit or
+        parked on an approval is not silent; it is waiting.
+        """
+        # Out of startup with no turn and no answer leaves one way out: the
+        # runtime PID is recorded (``_in_startup``), read without touching it.
+        return (
+            info._exec_started is not None
+            and not info._reap_started
+            and info.turns == 0
+            and info._first_stream_started is None
+            and not self._manager._in_startup(info)
+            and info._gate_wait_started is None
+            and not info._awaiting_approval
+            and now - info.last_activity > _FIRST_PROMPT_SILENT_SECS
         )
 
     def _start_queue_saturated_secs(self, info: SubagentInfo, now: float) -> float:

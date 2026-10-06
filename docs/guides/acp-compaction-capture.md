@@ -51,7 +51,7 @@ fixture is refused for.
 
 opencode is in that table on purpose: it is already a member, so driving it is the
 control run. If the script reports `COMPACTED` for opencode on your host, the script
-works, and a `NOT_COMPACTED` or `UNPROVEN` for goose or pi is then about the harness.
+works, and a `NOT_COMPACTED` or `UNPROVEN` for pi is then about the harness.
 
 Nothing else is required. The script needs no gateway, no Crew session and no config: it
 speaks ACP to the harness over stdio directly.
@@ -60,7 +60,7 @@ speaks ACP to the harness over stdio directly.
 
 ```
 # the default drive: 4 ordinary turns, /compact, 1 ordinary turn
-python3 scripts/capture_acp_compaction.py --harness goose
+python3 scripts/capture_acp_compaction.py --harness pi
 
 # a longer growth series, and a longer patience for a slow local model
 python3 scripts/capture_acp_compaction.py --harness pi --turns 6 --timeout 300
@@ -116,7 +116,7 @@ carried forward rather than announced once.
 |---|---|---|
 | 0 | `COMPACTED` | `used` fell below the pre-compact peak. This capture is the evidence for a membership. |
 | 1 | `NOT_COMPACTED` | The drive worked and `used` did not fall. Also evidence, and the more interesting kind: it contradicts the harness's own source. |
-| 2 | — | Arguments, or the harness is not installed. The message carries the install command and the override variable. |
+| 2 | — | Arguments, the harness is not installed, or the drive failed before a verdict: a timeout, the harness exiting mid-turn, a JSON-RPC error that is not an auth refusal, or a `session/new` with no `sessionId`. An install failure carries the install command and the override variable; a drive failure carries the harness's last stderr lines. |
 | 3 | — | The harness refused to talk to a model. The message carries the repository's own sign-in remedy for that harness. |
 | 4 | `UNPROVEN` | The turns ran and no `usage_update` carried `used`. This harness does not report the number the bar is written in; say so rather than reading a pass out of silence. |
 | 5 | — | The capture was written and is not commit-ready: a recording-host marker survived the sweep, or `--keep-ids` kept the harness's own ids. The frames are on disk either way. |
@@ -130,9 +130,11 @@ no sweep replaces. The script does the part a machine can, on every run:
   host's own command inventory and run id;
 - drops `agent_thought_chunk` frames — model prose carrying no class any parser reads;
 - replaces the scratch working directory with `<cwd>` and your home directory with `~`;
-- replaces the harness's session id with a synthetic `<harness>-session-1` and each
-  permission id with `perm-N` (pass `--keep-ids` to see the originals, which then makes
-  the file un-committable);
+- cuts every `configOptions` select to the one option naming its `currentValue` — the
+  full option list is the provider and model catalog the recording host could reach;
+- replaces the harness's session id with a synthetic `<harness>-session-1`, each
+  permission id with `perm-N` and each `messageId` with `msg-N` (pass `--keep-ids` to
+  see the originals, which then makes the file un-committable);
 - runs every string through `redact_text`, the same credential and exfiltration-URL
   scrub the in-product frame recorder applies — a frame is agent-written text, so a
   secret the model echoed into its own reply is a secret in the capture, and the marker
@@ -151,21 +153,21 @@ a file whose growth turns were trimmed.
 
 ## Landing the evidence
 
-A `COMPACTED` capture for goose or pi changes one membership and the several places that
-today record its absence. Work through them in order; the tests are what stop a half-done
+A `COMPACTED` capture for pi changes one membership and the several places that
+record its absence. Work through them in order; the tests are what stop a half-done
 move.
 
 **1. The fixture.** Move the reviewed capture in and generate its snapshot:
 
 ```
-cp build/acp-capture/goose/compact-live.jsonl test/fixtures/acp_frames/goose/
+cp build/acp-capture/pi/compact-live.jsonl test/fixtures/acp_frames/pi/
 python3 scripts/update_acp_frame_snapshots.py
 python3 -m pytest test/test_acp_frame_replay.py test/test_acp_frame_host_data.py
 ```
 
 Commit the `.jsonl` and the generated `.expected.json` together.
 
-**2. The corpus README.** `test/fixtures/acp_frames/goose/README.md` (or `pi/`) carries a
+**2. The corpus README.** `test/fixtures/acp_frames/pi/README.md` carries a
 row per file and a short section per thing a capture establishes. Add both: the row names
 the frame classes, the section names what the `used` series shows.
 
@@ -174,15 +176,15 @@ the frame classes, the section names what the `used` series shows.
 - add the id to `ACP_BACKENDS_COMPACT`;
 - add it to `ACP_BACKENDS_INLINE_COMPACTION` as well **if** the compaction finished
   inside the `session/prompt` turn — which is what a terminal `stopReason` with no
-  compaction status frame means, and what both harnesses' source predicts. Skip this and
+  compaction status frame means, and what pi's source predicts. Skip this and
   `wait_for_compaction` waits out its whole timeout on a compaction that already
   happened;
-- rewrite the "pi is NOT a member" paragraph on `ACP_BACKENDS_COMPACT`. It is
-  the record of WHY the set asks for a capture, so replace the waiting-for-a-drive part
-  with what the drive found — the `used` series, the harness version, the fixture path —
-  and leave whichever harness is still unmeasured saying what it still lacks;
-- the same comment's closing paragraph explains that both take the
-  `COMPACT_ARM_UNCLASSIFIED` refusal. Narrow it to whichever harness still takes it.
+- rewrite the pi paragraph on `ACP_BACKENDS_COMPACT`. It is the record of WHY the set
+  asks for a capture, so replace the waiting-for-a-drive part with what the drive found —
+  the `used` series, the harness version, the fixture path;
+- the same comment's closing paragraph explains that pi takes the
+  `COMPACT_ARM_UNCLASSIFIED` refusal. Remove it: no known harness takes that arm once pi
+  is a member.
 
 **4. The backend card's unmeasured cell.** The Settings > Agent Harness card renders
 three marks per line — available, not available, and NOT MEASURED — and the third one is
@@ -197,15 +199,15 @@ different half-done move:
 - an entry naming a MEMBER is stale, so leaving it in place after step 3 fails outright —
   the table may soften a negative, never overrule a membership;
 - every entry must be supported by the deciding set's comment, which names the harness
-  and says the gap is evidence. If step 3 rewrote that comment, the REMAINING entry's
-  support has to survive the rewrite;
-- one test asserts the unmeasured cells are exactly the declared ones. Removing one means
-  editing that assertion, and removing the last means the card has no unmeasured cell.
+  and says the gap is evidence;
+- one test asserts the unmeasured cells are exactly the declared ones. pi's cell is the
+  only one, so removing it means editing that assertion, and the card then has no
+  unmeasured cell.
 
 `website/scripts/capture-agent-backend-unmeasured.mjs` captures the screenshots that show
 the three marks side by side, and its header names pi as the unmeasured cell and keeps
-goose's pre-capture rows. Update that prose; if both cells go, the capture has no subject left and the frames
-it produces are the all-measured case.
+goose's pre-capture rows. Update that prose and its pi rows to the card the capture
+produces.
 
 The frontend needs nothing. `unmeasured_reason` is a machine code labelled in
 `website/src/pages/developer/AgentBackendTab.tsx` and its test drives a stub payload, so
@@ -220,8 +222,8 @@ design:
 - `test/test_compaction_other_backends.py` — `test_pi_waits_for_a_capture` (the
   test that says what the bar is), the `UNCLASSIFIED` frozenset and its reason comment,
   `test_pi_is_the_unclassified_case_today`, and the refusal-arm assertion that
-  names pi as the unclassified example. If BOTH harnesses become members, `UNCLASSIFIED`
-  empties out — the arm itself stays covered by the unknown-id case beside it;
+  names pi as the unclassified example. pi is the only entry, so `UNCLASSIFIED` empties
+  out — the arm itself stays covered by the unknown-id case beside it;
 - `test/test_acp_goose_backend.py` — a block asserting goose's membership in the
   compaction sets, with the capture named in its docstring;
 - `test/test_agent_sdk_capabilities.py` — no edit expected: it asserts

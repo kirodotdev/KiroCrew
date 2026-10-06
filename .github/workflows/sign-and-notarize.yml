@@ -9,8 +9,8 @@ name: Sign and Notarize macOS (reusable)
 #   sign      -- flatten build artifacts, attest provenance, upload unsigned
 #                artifacts to pre-signed/ in the PRIVATE signing bucket,
 #                submit the .app to the signing service. Nothing here is public-facing.
-#                (This job was historically duplicated in nightly.yml and
-#                release.yml under the misleading name "publish".)
+#                nightly.yml and release.yml call this workflow rather than
+#                carrying their own copy of the job.
 #   notarize  -- everything macOS-bound: Apple notarization, staple, the
 #                spctl fail-closed gate. The Apple credential is confined
 #                to this job. Ends by attaching the GATED artifact
@@ -59,15 +59,14 @@ name: Sign and Notarize macOS (reusable)
 # With mac_variant empty, every expression below collapses to the exact
 # string it was before, so the universal leg is byte-for-byte unchanged.
 #
-# DMG history (2026-07-21): the DMG was briefly withdrawn after a field
-# defect -- hdiutil-created DMGs carry an ADHOC signature, which the Apple
-# notary service Accepts but Gatekeeper treats as "no usable signature",
-# showing "app is damaged" when a user drags the app out of the quarantined
-# mount (syspolicy_check: app passed, DMG failed). It is reinstated with a
-# proper Developer ID signature: a SECOND CDSigner task (manifest type:
-# dmg, see packaging/signing/sign-dmg.sh) signs the rebuilt DMG before its
-# notarization -- which also makes the DMG STAPLE-able (stapler fails with
-# Error 73 on unsigned DMGs), so first-install verification now works
+# DMG signing: hdiutil-created DMGs carry an ADHOC signature, which the
+# Apple notary service Accepts but Gatekeeper treats as "no usable
+# signature", showing "app is damaged" when a user drags the app out of the
+# quarantined mount (syspolicy_check: app passed, DMG failed). So the DMG
+# gets its own Developer ID signature: a SECOND CDSigner task (manifest
+# type: dmg, see packaging/signing/sign-dmg.sh) signs the rebuilt DMG before
+# its notarization -- which also makes the DMG STAPLE-able (stapler fails
+# with Error 73 on unsigned DMGs), so first-install verification works
 # fully offline. A fail-closed spctl gate below enforces the end state.
 #
 # Key properties:
@@ -101,7 +100,7 @@ on:
         required: true
         type: string
       write_feed:
-        description: "Publish to the distribution bucket and write feed/<channel>[/<mac_variant>]/latest-mac.yml"
+        description: "Publish to the distribution bucket and write feed/<channel>[/<mac_variant>]/latest-mac.yml. Runs only when vars.CLI_DIST_BUCKET is set; the feed (latest-mac.yml/.json) and the latest-DMG alias move only when the feed guard returns advance -- on hold, versioned assets still publish"
         required: false
         type: boolean
         default: true
@@ -743,17 +742,16 @@ jobs:
       # injects one either. A feed written without it therefore reaches
       # clients with no freshness metadata at all, and CFNetwork applies
       # HEURISTIC caching (~10% of the object's age, so a day-old feed earns
-      # itself hours of "fresh"). That is the #709 incident: a header-less
-      # feed made the desktop app re-resolve a stale entry for hours,
-      # offering to "update" to the version already installed.
+      # itself hours of "fresh"). A header-less feed makes the desktop app
+      # re-resolve a stale entry for hours, offering to "update" to the
+      # version already installed.
       #
-      # NOTE ON WHAT CHANGED: that incident was specifically Squirrel.Mac's
-      # OWN feed request, which went through NSURLCache. Since the
-      # electron-updater migration, Squirrel.Mac never fetches this feed --
-      # MacUpdater downloads the artifact itself and serves it to Squirrel
-      # from a loopback proxy (127.0.0.1). So the NSURLCache hazard now
-      # applies to the LEGACY bridge below, whose readers are exactly the
-      # pre-migration clients that still fetch through it. The header stays
+      # WHICH CLIENTS: the NSURLCache hazard is Squirrel.Mac's OWN feed
+      # request. Squirrel.Mac never fetches this feed under electron-updater
+      # -- MacUpdater downloads the artifact itself and serves it to Squirrel
+      # from a loopback proxy (127.0.0.1). So the NSURLCache hazard applies
+      # to the LEGACY bridge below, whose readers are exactly the
+      # pre-electron-updater clients that still fetch through it. The header stays
       # mandatory on BOTH: electron-updater's own fetch goes through
       # Chromium's cache (it also appends its own noCache query), and a build
       # already in the field cannot be given a header fix retroactively.
@@ -813,7 +811,8 @@ jobs:
           # bridge, which carries no checksum, would happily install the old
           # one. That split is worse than a failed publish, so abort instead.
           # (This also catches CloudFront edge divergence on a republished
-          # immutable key -- the #62 hazard.)
+          # immutable key: a versioned key is never republished with
+          # different bytes.)
           verify_published() {  # $1=url  $2=expected base64 sha512  $3=label
             local got
             got=$(curl -fsS --retry 3 --retry-delay 2 "$1" | openssl dgst -sha512 -binary | base64 -w 0)
@@ -885,9 +884,9 @@ jobs:
             --cache-control "public, max-age=300"
           echo "Feed written: ${FEED_PREFIX}/latest-mac.yml -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
           # Verify the header CLIENTS actually receive, through the public CDN.
-          # Carried over from #709, which fixed a real incident: a feed served
-          # WITHOUT Cache-Control got heuristically cached and the updater
-          # resolved an already-installed version. electron-updater also appends
+          # A feed served WITHOUT Cache-Control gets heuristically cached and
+          # the updater resolves an already-installed version, so the feed
+          # must carry an explicit max-age. electron-updater also appends
           # its own noCache query (isAddNoCacheQuery), but that is the client
           # belt -- this is the origin-side braces, and a build already in the
           # field cannot be given a header fix retroactively.

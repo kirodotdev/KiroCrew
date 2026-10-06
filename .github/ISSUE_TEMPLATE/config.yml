@@ -1,6 +1,6 @@
 # Blank issues stay ENABLED deliberately. issue-triage.yml allows six type
 # labels (bug, enhancement, documentation, refactor, security, question) and the
-# three forms here cover only the first three. Disabling blank issues would push
+# forms here label only bug, enhancement and documentation. Disabling blank issues would push
 # every question-, refactor-, or security-shaped report into whichever form fits
 # it worst. A blank issue also arrives with every label dimension empty, which is
 # the case the triage model classifies best.

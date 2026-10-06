@@ -673,6 +673,79 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(title()).toBe('Set a goal')
   })
 
+  const finished = (over: Partial<AutoNudgeLoop> = {}) => makeLoop({ active: false, next_due_ts: 0, cycle_count: 3, ...over })
+  const CLEAR_FINISHED = 'Clear finished goal'
+
+  it.each([
+    ['the stop file', finished({ stopped_reason: 'stop_sentinel' }), 'Done · the agent created the stop file', true],
+    ['a merged pull request', finished({ stopped_reason: 'monitor_terminal', monitor_outcome: 'success', monitor_kind: 'gh-pr' }), 'Done · the watched pull request merged', true],
+    ['a pull request closed without merging', finished({ stopped_reason: 'monitor_terminal', monitor_outcome: 'blocked', monitor_kind: 'gh-pr' }), 'Done · the watched pull request was closed without merging', false],
+    ['an accepted work ledger (not a pull request)', finished({ stopped_reason: 'monitor_terminal', monitor_outcome: 'success', monitor_kind: 'work-ledger' }), 'Done · the watched subject finished', true],
+    ['a rejected work ledger (not a pull request)', finished({ stopped_reason: 'monitor_terminal', monitor_outcome: 'blocked', monitor_kind: 'work-ledger' }), 'Done · the watched subject ended without finishing', false],
+  ])('DONE by %s: the title says Done, the info box words the finish (check mark only on a reached goal), the fields are read-only and dimmed with their values kept, and the row is Clear finished goal plus a dead Pause and Play', (_how, loop, expected, check) => {
+    renderWith(loop)
+    expect(title()).toBe('Done')
+    expect(status()!.textContent).toBe(expected)
+    expect(status()!.className).toMatch(/\bbg-info-subtle\b/)
+    // The hue itself, as every other info wash in the app: `--info-fg` is black
+    // in the dark themes, which over a 12% wash is unreadable.
+    expect(status()!.className).toMatch(/\btext-info\b/)
+    expect(status()!.className).not.toMatch(/bg-warn-subtle|bg-ok-subtle|text-info-fg/)
+    const mark = screen.queryByTestId('auto-nudge-done-check')
+    expect(mark !== null, 'check mark presence').toBe(check)
+    if (mark) expect(mark.tagName.toLowerCase()).toBe('svg')
+    expect(screen.queryByText(/Paused/)).toBeNull()
+    // Read-only, dimmed, values kept: Done is a dead end, so nothing could be saved.
+    for (const field of [goalBox(), ...screen.getAllByRole('spinbutton')]) {
+      expect(field).toBeDisabled()
+      expect(field.className).toMatch(/\bopacity-60\b/)
+    }
+    expect(goalBox().value).toBe('active loop goal')
+    expect((screen.getAllByRole('spinbutton')[0] as HTMLInputElement).value).toBe('90')
+    expect(cyclesField().value).toBe('3')
+    // The row keeps its shape: the link at the left, the two Paused-state glyphs
+    // at the right, both dead -- a live Play would promise a resume the service
+    // refuses.
+    expectIconRow([PAUSE, RESUME])
+    expect(byLabel(PAUSE)!).toBeDisabled()
+    expect(byLabel(RESUME)!).toBeDisabled()
+    expect(byLabel(RESUME)!.querySelector('svg.lucide-play')).toBeTruthy()
+    expect(byLabel(RESUME)!.querySelector('svg.lucide-zap')).toBeNull()
+    expect(dirtyDot()).toBeNull()
+    expect(clearAction()!.textContent).toBe(CLEAR_FINISHED)
+    expect(screen.getByTestId('auto-nudge-actions').firstElementChild).toBe(clearAction())
+  })
+
+  it('a finished loop whose Play is pressed anyway sends nothing (the control is dead, not merely styled)', async () => {
+    renderWith(finished({ stopped_reason: 'stop_sentinel' }))
+    await act(async () => { fireEvent.click(byLabel(RESUME)!) })
+    await act(async () => { fireEvent.click(byLabel(PAUSE)!) })
+    expect(patchCalls()).toHaveLength(0)
+    expect(fireCalls()).toHaveLength(0)
+  })
+
+  it('Clear finished goal opens the same confirm as Clear stopped goal, with the Done line kept above it, and clears with the clear intent', async () => {
+    const { onChange, onOpenChange } = renderWith(finished({ stopped_reason: 'monitor_terminal', monitor_outcome: 'success', monitor_kind: 'gh-pr' }))
+    fireEvent.click(clearAction()!)
+    expect(rowNames()).toEqual(['Clear', 'Cancel'])
+    expect(screen.getByTestId('auto-nudge-clear-question')).toHaveTextContent('Remove this goal for good?')
+    expect(status()!.textContent).toBe('Done · the watched pull request merged')
+    fireEvent.click(byLabel('Cancel')!)
+    expect(clearAction()!.textContent).toBe(CLEAR_FINISHED)
+    fireEvent.click(clearAction()!)
+    await act(async () => { fireEvent.click(byLabel('Clear')!) })
+    expect(deleteCalls()).toEqual(['/api/autonudge/l1?intent=clear'])
+    expect(onChange).toHaveBeenCalledWith(null)
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('a finished code on a loop that is still active is not Done: the running state wins', () => {
+    renderWith(running({ stopped_reason: 'monitor_terminal', monitor_outcome: 'success', monitor_kind: 'gh-pr' }))
+    expect(title()).toBe('Goal active (cycle 1/3)')
+    expect(status()!.className).toMatch(/\bbg-ok-subtle\b/)
+    expect(goalBox()).toBeEnabled()
+  })
+
   it.each([
     ['RUNNING', running(), NUDGE_NOW, SAVE_AND_NUDGE, true, 'lucide-zap'],
     ['PAUSED', paused(), RESUME, SAVE_AND_RESUME, false, 'lucide-play'],

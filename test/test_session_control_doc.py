@@ -17,6 +17,7 @@ Deliberately NOT pinned here: the prose. A page that may only say what a test ca
 phrase is a page nobody improves.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -206,7 +207,9 @@ def test_the_three_target_forms_match_the_resolver(doc_text: str) -> None:
         assert form in doc_text, f"the page no longer shows the {form} target form"
 
 
-def test_the_queue_row_matches_what_each_verb_does_to_the_queue(doc_text: str) -> None:
+def test_the_queue_row_matches_what_each_verb_does_to_the_queue(
+    doc_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Stop and close treat the queue differently, and in neither case simply.
 
     Both halves are asserted against the code that decides them, because the row is a
@@ -217,14 +220,17 @@ def test_the_queue_row_matches_what_each_verb_does_to_the_queue(doc_text: str) -
 
     The stop half lives in the force branch of ``stop_slot_turn`` (a first, soft stop
     leaves the queue alone; the escalation clears it). The close half is the durable
-    queue: ``queued_prompts`` is written with the archived conversation and handed
-    back by ``sanitize_restored_queue`` when the slot is rehydrated.
+    queue: ``queued_prompts`` is written with the conversation and handed back,
+    sanitized, when its tab is rehydrated from disk. (A History resume of an archived
+    conversation does not read the queue back -- an asymmetry the codec's table
+    declares -- so this checks the rehydrate, which is the path that does.)
     """
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+
     handlers = (
         Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_handlers.py"
-    ).read_text(encoding="utf-8")
-    persistence = (
-        Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_persistence.py"
     ).read_text(encoding="utf-8")
 
     assert (
@@ -242,9 +248,18 @@ def test_the_queue_row_matches_what_each_verb_does_to_the_queue(doc_text: str) -
     assert (
         "_queue.clear()" in hard_kill[0].rsplit("if force", 1)[-1]
     ), "the single _queue.clear() is no longer inside the force branch"
-    assert (
-        'sanitize_restored_queue(meta.get("queued_prompts"))' in persistence
-    ), "a reopened conversation no longer restores its queued prompts; the row says it does"
+    # A tab rehydrated from disk hands its queued prompts back, sanitized: a
+    # hand-added ``kind`` is not carried, and an entry the writer never emits is
+    # dropped.
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    queued = [{"id": "q-1", "content": "still waiting", "kind": "steer"}, {"content": 7}]
+    line = {"_type": "metadata", "created_at": "2026-01-01T00:00:00", "queued_prompts": queued}
+    (tmp_path / "dashboard_reopened.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    slot = _rehydrate_slot_from_history(state, "reopened")
+    assert slot is not None and [(q["id"], q["content"], q["kind"]) for q in slot._queue] == [
+        ("q-1", "still waiting", "")
+    ], "a rehydrated conversation no longer restores its queued prompts; the row says it does"
 
     row = next(
         (ln for ln in doc_text.splitlines() if ln.startswith("| Queued messages |")),

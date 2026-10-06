@@ -150,7 +150,7 @@ describe('sseSubagentQueued carries the wait reason', () => {
 
   it('drops the reason with the count at zero', () => {
     const store = makeStore()
-    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'adaptive_cap_zero' }))
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'memory_pressure' }))
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 0 }))
     expect(count(store)).toBe(0)
     expect(reasonFor(store, 'a')).toBeUndefined()

@@ -686,7 +686,7 @@ async def test_a_claimed_result_write_that_hangs_is_bounded(monkeypatch: pytest.
             await asyncio.wait_for(gate.entered.wait(), 10)
             assert info._ending_claimed and not info.done
             assert await mgr.cancel(info.id) is False
-            assert await mgr.settle_before_delete(info.id, "") == "pending"
+            assert await mgr.settle_before_delete(info.id) == "pending"
             assert info.id in mgr._agents
             done, _ = await asyncio.wait({run}, timeout=15)
             assert run in done, "a hung claimed write held the run past its bound"

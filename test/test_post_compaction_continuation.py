@@ -329,7 +329,6 @@ def test_does_not_fire(field: str, value: object, why: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value", "why"),
     [
-        ("in_stage_execution", True, "stage loop advances before the resume lands"),
         ("stop_in_progress", True, "a Stop is resolving"),
         ("stop_generation_unchanged", False, "a Stop pressed and resolved this turn"),
         ("queue_empty", False, "a user follow-up is queued and must win"),

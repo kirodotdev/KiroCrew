@@ -23,26 +23,18 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock
 
+from conftest import MockSlackClient
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import transport_dispatch
-from kiro_crew.slack.handler import DELIVERY_DEBT_NOTICE
-
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
-
-from conftest import MockSlackClient  # noqa: E402
-from kiro_crew.providers.base import LLMEvent  # noqa: E402
-from kiro_crew.slack.handler import handle_message  # noqa: E402
+from kiro_crew.slack.handler import DELIVERY_DEBT_NOTICE, handle_message
 
 _handler_tests = importlib.import_module("test_slack_handler")
 _golden = importlib.import_module("test_slack_golden_transcript")

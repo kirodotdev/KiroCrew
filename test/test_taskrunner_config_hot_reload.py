@@ -28,7 +28,7 @@ def _sessions() -> MagicMock:
 
 def _runner(tmp_path: Path, **kw) -> TaskRunner:
     with (
-        patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9),
+        patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
         patch("kiro_crew.taskrunner.KiroCrewConfig.load", return_value=KiroCrewConfig()),
     ):
         return TaskRunner(sessions=_sessions(), auto_test=False, work_dir=tmp_path, **kw)
@@ -44,7 +44,10 @@ class TestPerRunReRead:
         assert runner._max_parallel_steps == 9
         cfg = KiroCrewConfig()
         cfg.taskrunner.max_parallel_steps = 2
-        with _snapshot(cfg), patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9):
+        with (
+            _snapshot(cfg),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
+        ):
             runner._refresh_from_config()
         assert runner._max_parallel_steps == 2
 
@@ -52,7 +55,10 @@ class TestPerRunReRead:
         runner = _runner(tmp_path, max_parallel_steps=0)
         cfg = KiroCrewConfig()
         cfg.taskrunner.max_parallel_steps = 50
-        with _snapshot(cfg), patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9):
+        with (
+            _snapshot(cfg),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
+        ):
             runner._refresh_from_config()
         assert runner._max_parallel_steps == 9
 
@@ -62,7 +68,7 @@ class TestPerRunReRead:
         assert runner._max_parallel_steps == 2
         with (
             _snapshot(KiroCrewConfig()),
-            patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
         ):
             runner._refresh_from_config()
         assert runner._max_parallel_steps == 2
@@ -74,7 +80,10 @@ class TestPerRunReRead:
         target.mkdir()
         cfg = KiroCrewConfig()
         cfg.taskrunner.workspace_dir = str(target)
-        with _snapshot(cfg), patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9):
+        with (
+            _snapshot(cfg),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
+        ):
             runner._refresh_from_config()
         assert Path(runner._workspace_dir) == target.resolve()
         assert runner._work_dir == Path(runner._workspace_dir)
@@ -83,7 +92,7 @@ class TestPerRunReRead:
         # restores the constructor's target exactly.
         with (
             _snapshot(KiroCrewConfig()),
-            patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
         ):
             runner._refresh_from_config()
         assert runner._workspace_dir == ""
@@ -96,7 +105,7 @@ class TestPerRunReRead:
         with (
             _snapshot(cfg),
             patch("kiro_crew.taskrunner._resolve_workspace_dir", side_effect=ValueError("no")),
-            patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
         ):
             runner._refresh_from_config()
         assert runner._workspace_dir == ""
@@ -113,7 +122,7 @@ class TestPerRunReRead:
         with (
             patch("kiro_crew.taskrunner.live.snapshot", return_value=None),
             patch("kiro_crew.taskrunner.KiroCrewConfig.load") as load,
-            patch("kiro_crew.taskrunner.compute_max_subagents", return_value=9),
+            patch("kiro_crew.taskrunner.compute_memory_sized_parallel_cap", return_value=9),
         ):
             runner._refresh_from_config()
         load.assert_not_called()

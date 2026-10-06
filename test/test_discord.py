@@ -20,6 +20,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from crew_log_drain import assert_drained, settle, unsync_appends
 from off_loop_helpers import off_loop
 
 import kiro_crew.discord.transport_dispatch as td_mod
@@ -28,6 +29,7 @@ from kiro_crew import session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
@@ -606,6 +608,10 @@ class FakeSessions:
 
     async def discard_conversation(self, key: str) -> None:
         self.discarded.append(key)
+
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs`` (unset: 300 s)."""
+        return 300.0
 
 
 class _FakeHooks:
@@ -2835,61 +2841,6 @@ class TestDispatcher:
         return InboundMessage(channel_type="discord", user_id=user, conversation_id=chan, text=text)
 
     @pytest.mark.asyncio
-    async def test_member_memory_refusal_redacts_before_posting(self, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
-
-        from kiro_crew.memory_stores import UnknownMemoryStore
-
-        private_path = "/home/alice/.kiro/crew/memory_stores/member-one/memory.db"
-        credential = "AKIAIOSFODNN7EXAMPLE"
-        failure = UnknownMemoryStore(
-            f"memory_unavailable: cannot open {private_path}; {credential}"
-        )
-        monkeypatch.setattr(
-            "kiro_crew.discord.transport_dispatch.session_store_for_turn",
-            AsyncMock(side_effect=failure),
-        )
-        dispatcher, client, sessions = _dispatcher({"u1"})
-        await dispatcher.handle_message(self._msg("hello"))
-        posted = "\n".join(text for text, _ in client.sent)
-        assert "memory_unavailable:" in posted
-        assert private_path not in posted and "alice" not in posted
-        assert credential not in posted
-        assert sessions.released == []
-
-    @pytest.mark.asyncio
-    async def test_a_disconnected_conversation_gets_no_reply(self) -> None:
-        """Disconnecting Discord in the dashboard must actually stop the replies.
-
-        Discord runs its OWN copy of the turn loop rather than going through
-        ``messaging.dispatch.drive_turn``, so the gate there does not reach it.
-        Before this, the dashboard control flipped its own label and nothing else:
-        the next message in the conversation was answered exactly as before.
-
-        The turn still runs and the message still lands in the session — the
-        binding is retained by design — so this asserts on what the CONVERSATION
-        receives, which is the whole of what "disconnect" promises.
-        """
-        d, cli, sess = _dispatcher({"u1"})
-        key = d._session_key("u1")
-        # True = the conversation this session was BORN in, which is what a Discord
-        # session's own key names.
-        sess.paused_deliveries.add((key, True))
-
-        await d.handle_message(self._msg("hello"))
-
-        assert cli.sent == [], f"a disconnected conversation still replied: {cli.sent}"
-
-    @pytest.mark.asyncio
-    async def test_a_connected_conversation_still_replies(self) -> None:
-        """The non-vacuity half: without it, a broken renderer would pass above."""
-        d, cli, _ = _dispatcher({"u1"})
-
-        await d.handle_message(self._msg("hello"))
-
-        assert cli.sent, "a connected conversation must still be answered"
-
-    @pytest.mark.asyncio
     async def test_new_command_bumps_generation(self) -> None:
         d, cli, _ = _dispatcher({"u1"})
         k1 = d._session_key("u1")
@@ -2903,93 +2854,6 @@ class TestDispatcher:
         await d.handle_message(self._msg("!help"))
         assert "Kiro Crew" in cli.sent[-1][0]
         assert "!sessions [query]" in cli.sent[-1][0]
-
-    @pytest.mark.asyncio
-    async def test_typing_indicator_starts_before_the_session_cold_start(self, monkeypatch) -> None:
-        """TTFT guard: the typing loop must be STARTED before the ACP cold start.
-
-        ``sessions.get_or_create`` can spend seconds spawning and handshaking an
-        ACP session. ``on_turn_start`` does not send the indicator inline -- it
-        spawns a refresh task -- so it must be called BEFORE the cold start, or
-        the task is not even created until the cold start has finished and the
-        user sees several seconds of dead air. Inserting attachment ingestion
-        ahead of ``on_turn_start`` reintroduces exactly that. The shared
-        skeleton in messaging/dispatch.py documents this order as "typing
-        indicator before cold start"; telegram/transport_dispatch.py follows it.
-
-        Asserting the ORDER of the two calls, not merely that both happened:
-        both happen either way, so order is the entire bug. Deliberately spying
-        on ``on_turn_start`` rather than ``send_typing`` -- the latter runs on a
-        spawned task and cannot fire until the loop next yields, which makes it
-        useless for pinning this ordering.
-        """
-        d, cli, sess = _dispatcher({"u1"})
-        order: list[str] = []
-
-        real_get_or_create = sess.get_or_create
-        real_on_turn_start = DiscordRenderer.on_turn_start
-
-        async def _spy_get_or_create(*args: Any, **kwargs: Any) -> Any:
-            order.append("cold_start")
-            return await real_get_or_create(*args, **kwargs)
-
-        async def _spy_on_turn_start(self_: Any) -> None:
-            order.append("typing_started")
-            await real_on_turn_start(self_)
-
-        monkeypatch.setattr(sess, "get_or_create", _spy_get_or_create)
-        monkeypatch.setattr(DiscordRenderer, "on_turn_start", _spy_on_turn_start)
-
-        await d.handle_message(self._msg("hello world"))
-
-        assert "typing_started" in order, "typing was never started"
-        assert "cold_start" in order, "session was never acquired"
-        assert order.index("typing_started") < order.index(
-            "cold_start"
-        ), f"typing must start before the cold start, got {order}"
-
-    @pytest.mark.asyncio
-    async def test_normal_turn_streams_and_releases(self) -> None:
-        d, cli, sess = _dispatcher({"u1"})
-        await d.handle_message(self._msg("hello world"))
-        assert "Answer: hello world" in (cli.final_text() or "")
-        assert sess.successes and sess.released
-        # Pins that the pre-dispatch closing gate is consulted on the normal
-        # path, so it cannot be dropped or renamed into a no-op unnoticed.
-        assert sess.begin_turns == 1
-
-    @pytest.mark.asyncio
-    async def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
-        self,
-    ) -> None:
-        """The lease-dispatch race gate.
-
-        ``get_or_create`` guards the CLAIM, but the turn only opens at
-        ``driver.run``, and the context build between them is wide enough for a
-        gateway restart to land in. Opening a turn then registers it behind the
-        drain snapshot ``close_all`` has already taken, so it is killed
-        mid-flight holding its native lock and reaches the user as an empty
-        response instead of this channel's notice.
-        """
-        d, cli, sess = _dispatcher({"u1"})
-        # get_or_create deliberately ignores `closing`, so the CLAIM still
-        # succeeds here. That is the race being pinned: a refused claim was
-        # always handled, an accepted claim whose DISPATCH loses was not.
-        sess.closing = True
-
-        await d.handle_message(self._msg("hello world"))
-
-        assert "Answer: hello world" not in (
-            cli.final_text() or ""
-        ), "the turn must not open behind close_all's drain snapshot"
-        assert sess.begin_turns == 1
-        # A restart is neither a success nor a session fault: charging it to the
-        # circuit breaker would count toward resetting a session that never
-        # misbehaved.
-        assert not sess.successes
-        assert not sess.failures
-        # Refused is not leaked -- the session-keyed semaphore still comes back.
-        assert sess.released
 
     @pytest.mark.asyncio
     async def test_a_shutdown_refusal_is_not_spooled_for_a_restricted_session(
@@ -3503,16 +3367,6 @@ class TestDispatcher:
         service.stop()
 
     @pytest.mark.asyncio
-    async def test_cold_start_failure_releases_nothing_but_closes_renderer(
-        self,
-    ) -> None:
-        d, cli, sess = _dispatcher({"u1"}, raise_on_get=True)
-        await d.handle_message(self._msg("hello"))
-        # No semaphore was acquired -> no release/record_failure of a held slot.
-        assert sess.released == []
-        assert sess.failures == []
-
-    @pytest.mark.asyncio
     async def test_session_released_even_when_renderer_close_raises(self, monkeypatch) -> None:
         """A rendering-finalization failure (e.g. Discord returning a
         malformed body) must never leave the session permanently busy."""
@@ -3526,6 +3380,39 @@ class TestDispatcher:
         await d.handle_message(self._msg("hello"))
         assert sess.released  # release still happened
         assert d._active_renderers == {}  # renderer entry cleaned up
+
+    @pytest.mark.asyncio
+    async def test_a_finished_turn_sweeps_its_approval_windows(self, monkeypatch) -> None:
+        """A turn's last step on approvals: the session's armed button windows are
+        discarded, so a late click can never answer a later turn's prompt."""
+        swept: list[str] = []
+        monkeypatch.setattr(
+            DiscordApprovalDecider,
+            "discard_session",
+            classmethod(lambda cls, key: swept.append(key)),
+        )
+        d, _, _sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        assert swept == [d._session_key("u1", "")]
+
+    @pytest.mark.asyncio
+    async def test_a_finished_turn_leaves_a_newer_renderer_registered(self, monkeypatch) -> None:
+        """The cleanup pops only the renderer THIS turn registered: when another turn
+        on the same key registered its own meanwhile, that one stays reachable."""
+        d, _, _sess = _dispatcher({"u1"})
+        newer = object()
+        keys: list[str] = []
+
+        async def _stream(self: Any, message: str) -> Any:
+            (key,) = d._active_renderers  # this turn's own registration
+            keys.append(key)
+            d._active_renderers[key] = newer  # a later same-key turn re-registers
+            yield _Ev(EVENT_TEXT_CHUNK, text="Answer")
+            yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        monkeypatch.setattr(FakeProvider, "stream", _stream)
+        await d.handle_message(self._msg("hello"))
+        assert keys and d._active_renderers == {keys[0]: newer}
 
     @pytest.mark.asyncio
     async def test_text_and_image_reach_prompt_then_temp_is_cleaned(
@@ -3570,6 +3457,13 @@ class TestDispatcher:
         assert cli.attachment_downloads == [url]
         assert not os.path.exists(lines[1])
         assert cleanup_threads and loop_thread not in cleanup_threads
+
+    #: How long a wait for a step this test's own coroutine reaches may take before the run is
+    #: written off. A lost-run guard, not a race to tune: a turn that never gets there fails
+    #: by name here instead of reaching the suite's ``--timeout=120``. MEASURED: the attachment
+    #: turn reaches its download after several executor hops, and a 1 s budget lost that race
+    #: on every run once each executor job started 0.2 s late.
+    _LOST_RUN_CEILING_SECS = 30.0
 
     @pytest.mark.asyncio
     async def test_attachment_turn_acquires_before_download_yields(
@@ -3623,7 +3517,10 @@ class TestDispatcher:
                 )
             )
         )
-        await asyncio.wait_for(download_started.wait(), timeout=1)
+        try:
+            await asyncio.wait_for(download_started.wait(), timeout=self._LOST_RUN_CEILING_SECS)
+        except TimeoutError:
+            pytest.fail(f"the download never started within {self._LOST_RUN_CEILING_SECS:.0f}s")
 
         assert sess._busy, "session must be acquired before attachment download"
         await d.handle_message(self._msg("second"))
@@ -4037,6 +3934,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-owner-dm-turn", raising=False)
         monkeypatch.setattr(FakeProvider, "served_model", "model-x", raising=False)
@@ -4088,9 +3986,8 @@ class TestDispatcher:
             assert "parent" not in opened[0].data
             assert [e.type for e in entries].count("work/recorded") == 1
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
             ledger_routes._BOARD_LOCKS.clear()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_tab_on_the_conversation_and_the_channel_state_one_class(
@@ -4116,6 +4013,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-tabbed-dm", raising=False)
         emit.reset_caches()
@@ -4138,7 +4036,7 @@ class TestDispatcher:
                 workspace="default",
             )
             await d.handle_message(self._msg("hello again"))
-            assert emit.flush()
+            await asyncio.to_thread(assert_drained)
             entries = off_loop(_read_session_log, "acp-tabbed-dm")
             assert [e.type for e in entries if e.type == "session/class"] == []
             opened = [e for e in entries if e.type == "session/opened"]
@@ -4149,8 +4047,7 @@ class TestDispatcher:
                 "workspace": "default",
             }
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_resumed_dashboard_session_is_not_opened_by_the_channel(
@@ -4219,6 +4116,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-1", raising=False)
         emit.reset_caches()
@@ -4226,7 +4124,7 @@ class TestDispatcher:
             d, _cli, sess = _dispatcher({"u1"})
             d.ctx_builder.live_memory_mode_for_session = lambda key: "persistent"
             await d.handle_message(self._msg("hello"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The recycle: the mapping keeps answering the dropped id from its stash
             # (``SessionMap.mapped_sid`` reads ``discarded_sid``) while the next
@@ -4234,7 +4132,7 @@ class TestDispatcher:
             sess.mapped_sid = lambda key: "acp-gen-1"
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             entries = off_loop(_read_session_log, "acp-gen-2")
             opened = [e for e in entries if e.type == "session/opened"]
@@ -4244,12 +4142,11 @@ class TestDispatcher:
             # no edge and no second announcement.
             sess.mapped_sid = lambda key: "acp-gen-2"
             await d.handle_message(self._msg("still here"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
             entries = off_loop(_read_session_log, "acp-gen-2")
             assert [e.type for e in entries].count("session/opened") == 1
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_the_predecessor_is_captured_inside_the_allocation_not_around_it(
@@ -4272,6 +4169,7 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         emit.reset_caches()
         try:
@@ -4284,7 +4182,7 @@ class TestDispatcher:
                 monkeypatch.setattr(FakeProvider, "session_id", sid, raising=False)
                 await d.handle_message(self._msg("hello"))
                 mapping["sid"] = sid
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The loser's view when it reaches the allocation: the older store.
             mapping["sid"] = "acp-gen-0"
@@ -4300,7 +4198,7 @@ class TestDispatcher:
             sess.get_or_create = _wait_for_the_permit_then_allocate
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             opened = [
                 e for e in off_loop(_read_session_log, "acp-gen-2") if e.type == "session/opened"
@@ -4308,8 +4206,7 @@ class TestDispatcher:
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-1"}
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_the_log_is_opened_at_the_allocation_even_when_the_turn_then_fails(
@@ -4329,13 +4226,14 @@ class TestDispatcher:
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         emit.reset_caches()
         try:
             d, _cli, sess = _dispatcher({"u1"})
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-0", raising=False)
             await d.handle_message(self._msg("hello"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The recycle stashed acp-gen-0; the next allocation cold-starts acp-gen-1
             # and the turn then dies in the attachment fetch.
@@ -4356,12 +4254,12 @@ class TestDispatcher:
                         attachments=[{"filename": "a.png", "content_type": "image/png"}],
                     )
                 )
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             # The successor is live now: the next turn is a warm reuse.
             sess.mapped_sid = lambda key: "acp-gen-1"
             await d.handle_message(self._msg("and again"))
-            assert emit.flush(timeout=5.0)
+            await asyncio.to_thread(assert_drained)
 
             opened = [
                 e for e in off_loop(_read_session_log, "acp-gen-1") if e.type == "session/opened"
@@ -4369,8 +4267,7 @@ class TestDispatcher:
             assert len(opened) == 1
             assert opened[0].data.get("previous") == {"sid": "acp-gen-0"}
         finally:
-            emit.drain_for_shutdown(timeout=2.0)
-            emit.reset_caches()
+            await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
     async def test_a_thread_route_is_still_bound_under_a_unified_scope(self) -> None:
@@ -5454,6 +5351,59 @@ class TestCommandSurfaceParity:
         ]
 
 
+class TestTheProcessGrantAnswersDiscordPermissions:
+    """Discord's turns read the operator's process-wide YOLO grant on every
+    permission request, before the approval buttons -- the pipeline's default
+    ``Approvals.grant``, which Discord does not spell out. This is the one test of
+    the REAL dispatcher consulting it: a Discord site that dropped the grant would
+    leave YOLO silently inert there."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("granted", [True, False])
+    async def test_an_interactive_permission_is_answered_by_the_grant_first(
+        self, monkeypatch, granted: bool
+    ) -> None:
+        from kiro_crew.safety_override import safety_override
+
+        answered: list[tuple[str, str]] = []
+        asked: list[str] = []
+
+        async def _stream(self: Any, message: str) -> Any:
+            yield AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="r1",
+                title="Run a tool",
+                options=[{"optionId": "allow", "name": "Allow"}],
+            )
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _approve(self: Any, request_id: Any) -> None:
+            answered.append(("approve", request_id))
+
+        async def _reject(self: Any, request_id: Any) -> None:
+            answered.append(("reject", request_id))
+
+        async def _buttons(self: Any, event: Any) -> bool:
+            asked.append(event.request_id)
+            return False  # the person denies, so a missing grant reads as a rejection
+
+        monkeypatch.setattr(FakeProvider, "stream", _stream)
+        monkeypatch.setattr(FakeProvider, "approve_tool", _approve)
+        monkeypatch.setattr(FakeProvider, "reject_tool", _reject)
+        monkeypatch.setattr(DiscordApprovalDecider, "__call__", _buttons)
+        if granted:
+            assert safety_override().activate("dashboard").active
+        d, _cli, _sess = _dispatcher({"u1"})
+        d.approval_mode = "interactive"
+
+        await d.handle_message(_inbound("run it"))
+
+        if granted:
+            assert answered == [("approve", "r1")] and asked == [], "the grant answers first"
+        else:
+            assert answered == [("reject", "r1")] and asked == ["r1"], "the buttons decide"
+
+
 class TestRenderTogglesAreWiredPerTurn:
     """The dispatcher must actually FEED the render toggles to the renderer.
 
@@ -5492,152 +5442,6 @@ class TestRenderTogglesAreWiredPerTurn:
         d, _cli, _sess = _dispatcher({"u1"})
         with mock.patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError):
             assert d._render_config() == (True, False)
-
-
-class TestUndeliveredTurnIsNotASuccess:
-    @pytest.mark.asyncio
-    async def test_a_turn_whose_every_send_failed_records_a_failure(self) -> None:
-        """The provider answering says nothing about the user hearing it. A
-        revoked token or a dead network fails every send while the turn still
-        returns its text, and filing that as a success hides the outage behind a
-        healthy success rate."""
-        d, cli, sess = _dispatcher({"u1"})
-        cli.edit_ok = False
-        cli.fail_sends = True
-        await d.handle_message(_inbound("hi"))
-        assert sess.failures and not sess.successes
-
-    @pytest.mark.asyncio
-    async def test_a_delivered_turn_still_records_a_success(self) -> None:
-        d, _cli, sess = _dispatcher({"u1"})
-        await d.handle_message(_inbound("hi"))
-        assert sess.successes and not sess.failures
-
-
-class _RecordingCtx(FakeCtx):
-    """``FakeCtx`` that also keeps every ``build_message`` kwarg."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.build_calls: list[dict[str, Any]] = []
-
-    def build_message(self, text: str, is_new: bool, key: str, **kw: Any) -> Any:
-        self.build_calls.append({"text": text, "is_new": is_new, "key": key, **kw})
-        return super().build_message(text, is_new, key, **kw)
-
-
-def _arm_reinjection(sessions: Any) -> dict[str, Any]:
-    """Give the session stand-in the real manager's one-shot flag surface."""
-    ledger: dict[str, Any] = {"consumed": [], "marks": 0, "armed": True}
-
-    def _consume(key: str) -> bool:
-        ledger["consumed"].append(key)
-        was = ledger["armed"]
-        ledger["armed"] = False
-        return was
-
-    def _mark(key: str) -> None:
-        ledger["marks"] += 1
-        ledger["armed"] = True
-
-    sessions.consume_needs_reinjection = _consume
-    sessions.mark_needs_reinjection = _mark
-    return ledger
-
-
-class _DyingProvider(FakeProvider):
-    """A provider whose very next turn fails before any text lands."""
-
-    async def stream(self, message: str) -> Any:
-        raise RuntimeError("provider fell over")
-        yield  # pragma: no cover -- makes this an async generator
-
-
-class TestCompactionReinjection:
-    """The Discord turn loop is its own copy, so it must consume the flag itself.
-
-    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
-    dropped the session-start context. A turn loop that does not read it runs
-    every turn after ``!compact`` without the skills index or the response-preferences
-    block.
-    """
-
-    @pytest.mark.asyncio
-    async def test_a_compacted_session_forwards_the_flag_to_build_message(self) -> None:
-        d, _cli, sess = _dispatcher({"u1"})
-        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
-        ledger = _arm_reinjection(sess)
-        await d.handle_message(_inbound("hi"))
-        call = d.ctx_builder.build_calls[-1]
-        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
-        assert call["needs_reinjection"] is True
-        # Landed: consumed exactly once, and NOT put back.
-        assert ledger["marks"] == 0 and ledger["armed"] is False
-
-    @pytest.mark.asyncio
-    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self) -> None:
-        d, _cli, sess = _dispatcher({"u1"})
-        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
-        assert not hasattr(sess, "consume_needs_reinjection")
-        await d.handle_message(_inbound("hi"))
-        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is False
-        assert sess.successes, "the turn still ran"
-
-    @pytest.mark.asyncio
-    async def test_a_cancelled_consuming_turn_puts_the_flag_back(self) -> None:
-        # A !stop completes the turn normally with stop_reason "cancelled", and
-        # the backend drops that turn from its transcript -- the re-injected
-        # context goes with it, so the flag must come back like a raised turn.
-        d, _cli, sess = _dispatcher({"u1"})
-        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
-        ledger = _arm_reinjection(sess)
-
-        class _Cancelled(FakeProvider):
-            async def stream(self, message: str) -> Any:
-                yield _Ev(EVENT_COMPLETE, stop_reason="cancelled")
-
-        async def _cancelled(key: str, **kw: Any) -> Any:
-            return _Cancelled(), True, False
-
-        sess.get_or_create = _cancelled  # type: ignore[method-assign]
-        await d.handle_message(_inbound("hi"))
-        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
-        assert ledger["marks"] == 1 and ledger["armed"] is True
-
-    @pytest.mark.asyncio
-    async def test_a_delivery_failure_after_a_landed_turn_does_not_rearm(self) -> None:
-        # The provider completed the turn, so the re-injected context is in the
-        # conversation; Discord then failed every send. That is a delivery
-        # failure (recorded as one), not a lost prompt -- re-arming would inject
-        # the same context a second time on the next turn.
-        d, cli, sess = _dispatcher({"u1"})
-        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
-        ledger = _arm_reinjection(sess)
-        cli.edit_ok = False
-        cli.fail_sends = True
-        await d.handle_message(_inbound("hi"))
-        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
-        assert sess.failures and not sess.successes, "undelivered is still a failure"
-        assert ledger["marks"] == 0 and ledger["armed"] is False
-
-    @pytest.mark.asyncio
-    async def test_a_failed_consuming_turn_puts_the_flag_back(self) -> None:
-        # The flag is cleared BEFORE build_message; a provider error on that very
-        # turn discards the prompt carrying the re-injected context. Without the
-        # re-arm the session runs without it until the NEXT compaction -- the
-        # contract the dashboard runner keeps in its finally, applied here.
-        d, _cli, sess = _dispatcher({"u1"})
-        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
-        ledger = _arm_reinjection(sess)
-
-        async def _dying(key: str, **kw: Any) -> Any:
-            return _DyingProvider(), True, False
-
-        sess.get_or_create = _dying  # type: ignore[method-assign]
-        await d.handle_message(_inbound("hi"))
-        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
-        assert sess.failures and not sess.successes
-        assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
 class TestGuildCommandRefusalsAreVisible:

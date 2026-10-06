@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import json
@@ -3102,22 +3103,47 @@ async def api_session_delete(request: web.Request) -> web.Response:
         return refusal
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
-
     # Freeze the slot/transcript/manager route before the first await. The strict
     # cron-store scan establishes exact owner keys independently of that route.
-    delete_claim = _capture_history_delete_claim(state, key)
     request_app = str(request.get("app") or "")
-    if (
-        request_app
-        and delete_claim.slot is not None
-        and getattr(delete_claim.slot, "_app", "") != request_app
-    ):
-        # The transcript records this app, but the live slot the cleanup would
-        # pop is not the app's: the slot is the server-side record, the metadata
-        # line is not, so the slot decides. Same 404 as any other refusal.
-        return _app_not_found(
-            request_app, "session_delete", f"session={key}", "app does not own the live slot"
-        )
+    with contextlib.ExitStack() as delete_window:
+        delete_claim = _claim_history_delete(delete_window, state, key)
+        if (
+            request_app
+            and delete_claim.slot is not None
+            and getattr(delete_claim.slot, "_app", "") != request_app
+        ):
+            # The transcript records this app, but the live slot the cleanup would
+            # pop is not the app's: the slot is the server-side record, the metadata
+            # line is not, so the slot decides. Same 404 as any other refusal.
+            return _app_not_found(
+                request_app, "session_delete", f"session={key}", "app does not own the live slot"
+            )
+        return await _delete_claimed_session(state, key, delete_claim, request_app)
+
+
+def _claim_history_delete(
+    windows: contextlib.ExitStack, state: DashboardState, key: str
+) -> _HistoryDeleteClaim:
+    """Open *key*'s delete-in-flight window on *windows*, then capture its claim.
+
+    The one way a delete handler takes a slot claim. The claim names the slot the
+    delete will remove afterwards, so the window has to be open from that instant
+    until the cleanup ran: a resume that published before it is in the claim, and
+    one that re-checks after it sees the window and refuses with a retryable
+    ``resume_conflict``. Both steps are synchronous, so nothing can land
+    between them. The caller closes *windows* after its slot cleanup.
+    """
+    assert state.conversation_log is not None
+    windows.enter_context(state.conversation_log.delete_in_flight_window(key))
+    return _capture_history_delete_claim(state, key)
+
+
+async def _delete_claimed_session(
+    state: DashboardState, key: str, delete_claim: _HistoryDeleteClaim, request_app: str
+) -> web.Response:
+    """The body of :func:`api_session_delete`, run inside its in-flight window."""
+    assert state.conversation_log is not None
     crons = getattr(state, "crons", None)
     try:
         swept = await _owner_keys_bound_to_transcript(crons, (key,))
@@ -3736,8 +3762,6 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    from kiro_crew import session_ledger
-
     log = state.conversation_log
     clearable, skipped, unreadable = await asyncio.to_thread(_clearable_history_keys, state, log)
 
@@ -3748,6 +3772,27 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
         swept = await _owner_keys_bound_to_transcript(crons, clearable)
     except (CronStoreBusy, CronStoreUnreadable) as exc:
         return _cron_store_refusal(exc, cleared=0, skipped=skipped, failed=0)
+
+    # Every row's window stays open until the batch's slot cleanup below has run,
+    # because that is when the claim it took is acted on.
+    with contextlib.ExitStack() as delete_windows:
+        return await _clear_history_rows(
+            state, log, clearable, skipped, unreadable, swept, crons, delete_windows
+        )
+
+
+async def _clear_history_rows(
+    state: DashboardState,
+    log: Any,
+    clearable: list[str],
+    skipped: int,
+    unreadable: list[str],
+    swept: dict[str, set[str]],
+    crons: Any,
+    delete_windows: contextlib.ExitStack,
+) -> web.Response:
+    """The per-row body of :func:`api_sessions_clear`, inside the rows' windows."""
+    from kiro_crew import session_ledger
 
     count = 0
     failed = 0
@@ -3761,7 +3806,7 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             skipped += 1
             continue
 
-        delete_claim = _capture_history_delete_claim(state, key)
+        delete_claim = _claim_history_delete(delete_windows, state, key)
         # Per ROW, the same precondition the single delete applies: the ledger
         # exclusion is written before this row's transcript is unlinked, because a
         # failure after the unlink has nothing left to refuse and would leave this

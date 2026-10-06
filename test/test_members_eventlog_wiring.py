@@ -2089,6 +2089,7 @@ class TestBaselineSuppression:
     ):
         state = _make_state(tmp_path)
         ws = self._WS()
+        state.register_ws(ws, owner=True)
         refused: list[bool] = []
 
         svc = get_service()
@@ -2131,6 +2132,7 @@ class TestBaselineSuppression:
         """A socket left marked is suppressed for life, i.e. a blank Members page."""
         state = _make_state(tmp_path)
         ws = self._WS()
+        state.register_ws(ws, owner=True)
 
         def _boom():
             raise RuntimeError("log unreadable")

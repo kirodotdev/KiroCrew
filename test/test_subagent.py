@@ -2110,6 +2110,82 @@ class TestSubagentPostToolUseHook:
         assert info.done is True
 
 
+class TestSubagentParallelToolAttribution:
+    """The run loop keeps a slow parallel call judged after a fast one returns."""
+
+    @pytest.mark.asyncio
+    async def test_a_wait_stays_judged_after_a_parallel_write_returns(self) -> None:
+        """Wire-level shape of the reported stall: a write and a ``wait`` in one
+        turn, the write's completed result first. The wait must remain the
+        reaper's in-flight call, and a call the previous turn left open must be
+        gone by the time the new prompt streams."""
+        from kiro_crew.providers.base import (
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t05",
+            task="test",
+            parent_session_key="slack:C:T",
+        )
+        info._active_tool_calls["stale-1"] = MagicMock()
+        seen: dict[str, object] = {}
+
+        async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
+            seen["stale_at_prompt"] = "stale-1" in info._active_tool_calls
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Waiting for CI",
+                tool_call_id="wait-1",
+                tool_input='{"seconds": 1800, "reason": "ci"}',
+                tool_name="wait",
+                mcp_server_name="kirocrew-core",
+                mcp_identity_trusted=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Editing PLAN-a.md",
+                tool_call_id="write-1",
+                tool_input='{"path": "PLAN-a.md"}',
+                tool_kind="edit",
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="write-1",
+                tool_output="ok",
+                tool_final=True,
+                tool_status="completed",
+            )
+            seen["judged"] = info._inflight_tool
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.hooks.auto_approve_subagent_tools = True
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        manager.hook_store = MagicMock()
+        manager.hook_store.fire = AsyncMock()
+        manager._log_spawned(info)
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            await manager._run_inner(info, "subagent:t05")
+
+        assert seen["stale_at_prompt"] is False
+        judged = seen["judged"]
+        assert judged is not None, "the write's result emptied the in-flight slot"
+        assert judged.is_trusted_wait()
+
+
 class TestCompletionKeepHelper:
     """Tests for the apply_completion_keep helper in context_management."""
 
@@ -2557,8 +2633,8 @@ class TestSubagentUsageRow:
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
         manager._log_spawned(info)
         tombstone_credits = []
+        provider.reject_tool = AsyncMock()
         with (
-            patch.object(manager, "_reject_and_log", AsyncMock()),
             patch.object(
                 manager,
                 "_write_tombstone",

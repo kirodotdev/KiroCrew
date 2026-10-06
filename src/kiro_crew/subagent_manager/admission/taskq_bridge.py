@@ -6,13 +6,12 @@ import asyncio as _asyncio
 import functools as _functools
 import logging as _logging
 import time as _time
-from typing import TYPE_CHECKING, Any, Collection, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from kiro_crew.subagent_wait_reasons import (
-    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+    QUEUED_WAIT_EXPIRED_TEXT,
     RESUMING_AFTER_RESTART,
     RESUMING_RETRY,
-    adaptive_pause_text,
 )
 
 from .._component import ManagerComponent
@@ -60,6 +59,10 @@ _OVERDUE_WAKE_WARN_EVERY_SECS = 60.0
 #: listing that stopped here says so (``QueuedRunListing.partial``), since a
 #: cut-off tail otherwise reads as spawns that were never accepted.
 QUEUED_LISTING_CAP = 100
+
+#: Owed expiry reports one replay read returns. The replay pages until a read
+#: comes back short, so this bounds one writer-thread call, not the replay.
+_OWED_REPLAY_PAGE = 256
 
 #: The events that close a deferral: a claim or a state change after the
 #: ``deferred`` event means the sentence does not describe the row's current wait.
@@ -412,6 +415,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         store = self.taskq_store()
         if store is None:
             return
+        # An expiry an earlier process wrote and never reported (the store
+        # attached before the reaper started; ``_initialize_taskq`` covers the
+        # other order).
+        self.taskq_schedule_owed_replay()
         try:
             pending = store.count_pending(_taskq.KIND_SUBAGENT)
         except _taskq.TaskStoreUnavailable:
@@ -735,6 +742,332 @@ class _TaskqBridgeMixin(ManagerComponent):
         )
         return point.queued
 
+    # ── the max wait of a memory deferral (``agent.subagent_queue_max_wait_secs``) ──
+    #
+    # Every re-park above writes ``now + admit_wait``, so on its own a deferral
+    # renews itself for as long as the host stays short. The bound ends it: a row
+    # parked by the memory floor that has spent the bound
+    # PARKED (``TaskStore.deferred_longer_than``) is failed in the store and
+    # reported to its parent as ``QUEUED_WAIT_EXPIRED_TEXT``. The pump runs the
+    # sweep at the END of a pass, after the pass has re-parked what it
+    # re-checked, so a row whose re-check still found the host short is caught in
+    # the same pass. A row whose deferral merely lapsed waits for a slot, not for
+    # memory: it is not parked, so it is left alone, and the time it spends that
+    # way never counts toward the bound once it is parked again.
+
+    def taskq_memory_wait_bound_secs(self) -> float:
+        """The live bound, in seconds; 0 means no bound.
+
+        One reader for both memory waits: this sweep's store deferrals and the
+        macOS kernel memory-pressure hold (``_memory_pressure_holds``), which
+        holds non-durable starts too, so it is the manager's value, not the store's.
+        """
+        return float(getattr(self._manager, "_subagent_queue_max_wait_secs", 0) or 0)
+
+    def _memory_wait_exclusions(self) -> list[str]:
+        """Rows the sweep must not end: a live run, an accept in flight, a pop in flight.
+
+        Read on the loop, which owns these sets. Window rows are NOT excluded: a
+        row there is still only queued, and ending it drops its entry too.
+        """
+        admitting = list(getattr(self._manager, "_admitting_ids", ()) or ())
+        dispatching = list(getattr(self._manager, "_dispatching_ids", ()) or ())
+        return [*self._live_run_ids(), *admitting, *dispatching]
+
+    @staticmethod
+    def _expire_memory_waits_db(
+        store: "_taskq.TaskStore",
+        bound: float,
+        exclude_ids: list[str],
+    ) -> "list[_taskq.TaskRecord]":
+        """Store half of the sweep (writer thread): fail each row past the bound.
+
+        The read and every write share this one writer-thread call, and each
+        write is fenced by the generation the read returned, so a row a claim
+        took in between is refused rather than failed under its new owner. Each
+        failure is written as owing its report (``report_owed``), cleared only
+        once the report has reached the parent (:meth:`_clear_owed_report_after`),
+        so a process lost in between, or a report that never got through, leaves
+        the next one to make it (:meth:`taskq_replay_owed_expiries_async`).
+        Returns the rows whose failure landed.
+
+        Each ``finish`` commits on its own, so a refusal after the first one
+        never discards what already landed: this process owes those rows their
+        report, and no later read names them (the sweep's read wants a waiting
+        row, the replay another incarnation's). A refused ``finish`` ends the
+        loop and leaves that row and the rest queued for the next sweep. Only
+        the read may raise, before anything is written.
+        """
+        from kiro_crew import taskq as _taskq
+
+        ended: list[_taskq.TaskRecord] = []
+        for rec in store.deferred_longer_than(_taskq.KIND_SUBAGENT, bound, exclude_ids=exclude_ids):
+            try:
+                landed = store.finish(
+                    rec.id,
+                    _taskq.FAILED,
+                    generation=rec.generation,
+                    error=QUEUED_WAIT_EXPIRED_TEXT,
+                    report_owed=True,
+                )
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.debug(
+                    "taskq: memory-wait expiry of %s refused; left to the next sweep",
+                    rec.id,
+                    exc_info=True,
+                )
+                break
+            if landed:
+                ended.append(rec)
+        return ended
+
+    def _sweep_inputs(self) -> "tuple[float, list[str]] | None":
+        """The bound and the exclusions; None for no sweep (no bound)."""
+        bound = self.taskq_memory_wait_bound_secs()
+        if bound <= 0:
+            return None
+        return bound, self._memory_wait_exclusions()
+
+    def taskq_expire_memory_waits(self) -> int:
+        """End every memory-deferred row past the bound; how many ended (inline twin).
+
+        For the inline pump (no off-loop pump). Without a running loop nothing is
+        ended, since the terminal report it owes needs one.
+        """
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        inputs = self._sweep_inputs()
+        if store is None or inputs is None:
+            return 0
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+        try:
+            ended = self._expire_memory_waits_db(store, *inputs)
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
+            return 0
+        self._report_memory_waits_expired(ended, inputs[0])
+        return len(ended)
+
+    async def taskq_expire_memory_waits_async(self) -> int:
+        """:meth:`taskq_expire_memory_waits` with its store half on the writer thread."""
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        inputs = self._sweep_inputs()
+        if store is None or inputs is None:
+            return 0
+        try:
+            ended = await store.run(self._expire_memory_waits_db, store, *inputs)
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
+            return 0
+        self._report_memory_waits_expired(ended, inputs[0])
+        return len(ended)
+
+    def _report_memory_waits_expired(
+        self, ended: "list[_taskq.TaskRecord]", bound: float, *, replay: bool = False
+    ) -> None:
+        """Loop half: drop each ended row's window entry and report it.
+
+        The report is the queued-stop report with the expiry as its ``error``, so
+        batch accounting, the digest, a waiting parent's wake and the re-published
+        queued depth take the path a stopped queued row already takes. A row
+        ended while a teardown of its parent is open, and accepted before that
+        teardown's snapshot (``accepted_before_open_teardown``), is reported to
+        the dashboard but never injected: the injector creates a session when
+        none is live, which would rebuild the conversation that ended. A
+        successor's own rows under the same key are reported as usual. Once
+        the teardown's store sweep is done, it has stopped every such row.
+
+        Once a report has reached the parent, the row's owed report is cleared
+        in the store (:meth:`_clear_owed_report_after`); a report cancelled with
+        its process (the shutdown drain's stragglers) stays owed, for the next
+        start. *replay* is that start.
+        """
+        manager = self._manager
+        for rec in ended:
+            params = dict(rec.params)
+            parent = rec.session_key or str(params.get("parent_session_key") or "")
+            params["_preassigned_id"] = rec.id
+            params["parent_session_key"] = parent
+            if replay:
+                _glue_logger.warning(
+                    "taskq: reporting subagent %s's memory-wait expiry, which an earlier "
+                    "process wrote and did not report (%s)",
+                    rec.id,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
+            else:
+                _glue_logger.warning(
+                    "taskq: subagent %s waited for memory longer than %.0fs; ending it (%s)",
+                    rec.id,
+                    bound,
+                    QUEUED_WAIT_EXPIRED_TEXT,
+                )
+            if manager._cancellation.accepted_before_open_teardown(parent, rec.id):
+                manager._teardown_cancelled_ids.add(rec.id)
+            entry = manager._unqueue(rec.id, stored=params, store_cancelled=True)
+            # The sweep already wrote ``failed``: that is the row's terminal
+            # write, so the report's settle writes no second one.
+            report = manager._report_queued_stop(
+                entry or params,
+                error=QUEUED_WAIT_EXPIRED_TEXT,
+                report_owed=True,
+                row_settled=True,
+            )
+            self._clear_owed_report_after(rec.id, report)
+
+    def _clear_owed_report_after(self, agent_id: str, report: "_asyncio.Task[Any] | None") -> None:
+        """Clear *agent_id*'s owed report once *report* has reached the parent.
+
+        At once with no report: no task means no report will run here (an empty
+        id, or a finalize claim another path already holds), so nothing is left
+        for this process to owe. A report whose record the gateway PARKED is not
+        delivered when its task returns: a wave member held for its digest
+        (``_digest_held``) or an announce queued behind a busy slot
+        (``_delivery_queued``) is only in this process's memory until that
+        digest or that turn reaches the parent. The gateway hands the debt on
+        with it (``SubagentDelivery.report_owed``), and whichever settle
+        delivers it clears the mark (:meth:`taskq_clear_owed_reports`), so a
+        restart in between leaves it owed for the replay. A report that did not
+        reach the parent stays owed too: one that returned False (the injection
+        timed out, or ``_on_done`` raised), raised, or was cancelled with its
+        process, and one whose task returned True although the gateway gave up
+        on the injection (``_report_undelivered``: a channel or cron parent's
+        attempts all failed, and the gateway swallowed that). The next start
+        replays it.
+        """
+        info = self._manager._report_owners.get(report) if report is not None else None
+
+        def _clear(task: "_asyncio.Task[Any] | None" = None) -> None:
+            if task is not None and (
+                task.cancelled() or task.exception() is not None or task.result() is not True
+            ):
+                return
+            if info is None:
+                self.taskq_clear_owed_reports([agent_id])
+            else:
+                self.taskq_clear_owed_report_if_delivered(info)
+
+        if report is None:
+            _clear()
+        else:
+            report.add_done_callback(_clear)
+
+    def taskq_clear_owed_report_if_delivered(self, info: Any) -> None:
+        """Clear *info*'s owed report if the report task that just returned True delivered it.
+
+        Not when the gateway parked it (``_digest_held``, ``_delivery_queued``),
+        whose settle clears it on delivery, nor when it gave up on the injection
+        (``_report_undelivered``). A record that owes nothing is left alone.
+        """
+        if not info._report_owed:
+            return
+        if info._digest_held or info._delivery_queued or info._report_undelivered:
+            return
+        self.taskq_clear_owed_reports([info.id])
+
+    def taskq_clear_owed_reports(self, agent_ids: "Collection[str]") -> None:
+        """Clear the store's owed report of each of *agent_ids*: it reached the parent."""
+        store = self.taskq_store()
+        if store is None:
+            return
+        for agent_id in agent_ids:
+            self._post_store_write(
+                store, f"report cleared {agent_id}", store.mark_reported, agent_id
+            )
+
+    async def taskq_replay_owed_expiries_async(self) -> int:
+        """Report the memory-wait expiries an earlier process wrote and never reported.
+
+        After the store is attached, until one replay has read every owed row:
+        the rows ``TaskStore.owed_reports`` names (another incarnation's, so none
+        of this process's in-flight reports), a page at a time. Each is reported
+        exactly as a live expiry is, and cleared only once that report has
+        reached the parent (:meth:`_clear_owed_report_after`). The
+        replay is marked done only once a page comes back short; a read the
+        store refuses leaves it to the next call (the reaper sweep), which
+        resumes after the last page reported, so no row is reported twice by
+        this process. A replayed row of a parent that ended before the restart
+        is reported to that key like any restored row. Nothing is replayed while the gateway
+        holds dispatch for its memory barrier (``_queue_dispatch_held``): a
+        report injected then fails on ``MemoryStartupUnavailable``, which the
+        injector swallows, so the report would look run and its owed mark would
+        be cleared undelivered. ``release_queue_dispatch`` schedules it, and
+        each reaper sweep retries it. Returns the rows reported by this call.
+        """
+        from kiro_crew import taskq as _taskq
+
+        manager = self._manager
+        store = self.taskq_store()
+        if store is None or not self._owed_replay_wanted():
+            return 0
+        setattr(manager, "_taskq_owed_replaying", True)
+        reported = 0
+        try:
+            while True:
+                after = getattr(manager, "_taskq_owed_replay_after", None)
+                try:
+                    page = await store.run(
+                        store.owed_reports,
+                        _taskq.KIND_SUBAGENT,
+                        limit=_OWED_REPLAY_PAGE,
+                        after=after,
+                    )
+                except _taskq.TaskStoreUnavailable:
+                    failures = int(getattr(manager, "_taskq_owed_replay_failures", 0)) + 1
+                    setattr(manager, "_taskq_owed_replay_failures", failures)
+                    # One line per outage at warning; the sweep's retries at debug.
+                    _glue_logger.log(
+                        _logging.WARNING if failures <= 1 else _logging.DEBUG,
+                        "taskq: owed expiry reports could not be read; retrying next sweep",
+                        exc_info=True,
+                    )
+                    return reported
+                expired = [rec for rec in page if rec.state == _taskq.FAILED]
+                self._report_memory_waits_expired(
+                    expired, self.taskq_memory_wait_bound_secs(), replay=True
+                )
+                reported += len(expired)
+                if len(page) < _OWED_REPLAY_PAGE:
+                    setattr(manager, "_taskq_owed_replayed", True)
+                    return reported
+                setattr(manager, "_taskq_owed_replay_after", (page[-1].updated_at, page[-1].id))
+        finally:
+            setattr(manager, "_taskq_owed_replaying", False)
+
+    def _owed_replay_wanted(self) -> bool:
+        """True while an owed-report replay is still owed and may run now.
+
+        Not once one replay has read every owed row, not while one is in
+        flight, and not while dispatch is held for the memory barrier.
+        """
+        manager = self._manager
+        return not (
+            getattr(manager, "_taskq_owed_replayed", False)
+            or getattr(manager, "_taskq_owed_replaying", False)
+            or getattr(manager, "_queue_dispatch_held", False)
+        )
+
+    def taskq_schedule_owed_replay(self) -> None:
+        """Post :meth:`taskq_replay_owed_expiries_async` on the running loop, if any.
+
+        Called at every store attach (``taskq_boot_dispatch``, ``_initialize_taskq``),
+        at ``release_queue_dispatch``, and from each reaper sweep, which retries a
+        replay the store refused or the dispatch hold put off.
+        """
+        if self.taskq_store() is None or not self._owed_replay_wanted():
+            return
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.track_store_task(loop.create_task(self.taskq_replay_owed_expiries_async()))
+
     async def taskq_should_window_async(self, agent_id: str) -> bool:
         """:meth:`taskq_should_window` with its store count on the writer thread."""
         from kiro_crew import taskq as _taskq
@@ -867,12 +1200,18 @@ class _TaskqBridgeMixin(ManagerComponent):
             store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
         )
 
-    def taskq_settle(self, info: SubagentInfo) -> None:
+    def taskq_settle(self, info: SubagentInfo, *, row_settled: bool = False) -> None:
         """Write the run's terminal state from its record; fenced by generation.
 
         Called from ``_claim_finalize``, the one-shot report token, so exactly
         the reporter of the outcome writes it. ``user_stopped`` is a neutral
         cancel, an ``error`` is a failure, anything else is done.
+
+        *row_settled* says the reporter's own store call already wrote that
+        state -- a queued stop whose own cancel of the waiting row landed --
+        so the ``finish`` is skipped: it could only be refused, and it would cost a
+        writer job per row. The propagation still runs, because the cancel
+        does not propagate and the reporter owes it either way.
         """
         from kiro_crew import taskq as _taskq
 
@@ -918,6 +1257,12 @@ class _TaskqBridgeMixin(ManagerComponent):
             loop = _asyncio.get_running_loop()
         except RuntimeError:
             loop = None
+        if row_settled:
+            if loop is None or not type(self).pump_off_loop:
+                _propagate()
+            else:
+                self.track_store_task(loop.create_task(_propagate_async()))
+            return
         if loop is None or not type(self).pump_off_loop:
             try:
                 ok = bool(store.finish(info.id, state, **finish_kw))
@@ -1068,7 +1413,14 @@ class _TaskqBridgeMixin(ManagerComponent):
             current = store.state_of(agent_id)
         except _taskq.TaskStoreUnavailable:
             current = None
-        _glue_logger.warning(
+        # A row that already holds the state this write asked for lost nothing:
+        # another write settled it the same way first. A queued stop whose own
+        # cancel did not land re-posts that cancel ahead of its settle, so when
+        # the store answers again the re-posted cancel writes ``cancelled`` and
+        # this ``finish`` is refused over the very state it asked for
+        # (``_repost_unlanded_cancel`` has already warned). Not a warning.
+        log = _glue_logger.debug if current == state else _glue_logger.warning
+        log(
             "taskq: terminal write %s -> %s did not commit; the row is %s",
             agent_id,
             state,
@@ -1263,6 +1615,12 @@ class _TaskqBridgeMixin(ManagerComponent):
         That reading leaves ``admitted`` rows out: the teardown refuses a
         claimed-not-started row (``allow_admitted=False``), so naming one would
         only mark it in the delivery gate and the sweep's audit as stopped.
+
+        A refused read is the reading's to decide. The teardown's reading lets
+        :class:`TaskStoreUnavailable` propagate: "nothing to stop" would release
+        the fence over rows nobody stopped, so the teardown keeps the fence and
+        owes the sweep instead. The default reading (``cancel_for_parent``)
+        answers ``[]``.
         """
         from kiro_crew import taskq as _taskq
 
@@ -1281,6 +1639,8 @@ class _TaskqBridgeMixin(ManagerComponent):
                 exclude_admitted_ids=registered,
             )
         except _taskq.TaskStoreUnavailable:
+            if include_window:
+                raise
             return []
         return [r.id for r in rows]
 
@@ -1430,12 +1790,6 @@ class _TaskqBridgeMixin(ManagerComponent):
         manager = self._manager
         label = manager._queue_wait.get(parent) or {}
         reason = "" if resuming else str(label.get("reason") or "")
-        if not resuming and not detail and manager._max_concurrent <= 0:
-            # A paused cap holds every unstarted row, whatever the parent's last
-            # label says, and the row has no ``deferred`` event to say so: the
-            # pause is read live, and clears with it.
-            reason = QUEUED_REASON_ADAPTIVE_CAP_ZERO
-            detail = adaptive_pause_text(manager._user_max_concurrent)
         return QueuedRun(
             id=agent_id,
             task=str(params.get("task") or ""),
@@ -1446,68 +1800,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             reason=reason,
             reason_detail=detail,
             resuming=resuming,
-        )
-
-    def taskq_cancel_boundary_store(
-        self,
-        store: "_taskq.TaskStore",
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Store phase for exact queued cancellation; runs on the writer thread."""
-        from kiro_crew import taskq as _taskq
-
-        cancelled: list[dict[str, Any]] = []
-        try:
-            rows = store.list_pending(
-                _taskq.KIND_SUBAGENT,
-                session_key=parent_session_key,
-            )
-            rows.extend(
-                row
-                for row in store.active_rows()
-                if row.kind == _taskq.KIND_SUBAGENT
-                and row.session_key == parent_session_key
-                and row.state == _taskq.ADMITTED
-            )
-            unstarted = _taskq.CLAIMABLE | frozenset({_taskq.ADMITTED})
-            seen: set[str] = set()
-            for row in rows:
-                if (
-                    row.id in seen
-                    or str(row.params.get("_stage_boundary_owner") or "") != boundary_owner
-                ):
-                    continue
-                seen.add(row.id)
-                previous = store.cancel(
-                    row.id,
-                    reason="user_stop",
-                    only_from=unstarted,
-                    generation=row.generation,
-                )
-                if previous is None:
-                    continue
-                params = dict(row.params)
-                params["_preassigned_id"] = row.id
-                cancelled.append(params)
-        except _taskq.TaskStoreUnavailable as exc:
-            return cancelled, str(exc) or "task store unavailable"
-        return cancelled, ""
-
-    async def taskq_cancel_boundary_async(
-        self,
-        parent_session_key: str,
-        boundary_owner: str,
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Cancel exact queued rows on the store's single writer thread."""
-        store = self.taskq_store()
-        if store is None:
-            return [], ""
-        return await store.run(
-            self.taskq_cancel_boundary_store,
-            store,
-            parent_session_key,
-            boundary_owner,
         )
 
     def taskq_batch_pending(self, batch_id: str) -> bool:
@@ -1594,8 +1886,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         try:
             absent, lanes = self._refill_absent(store, children_only)
             room, want = self._refill_make_room(store, absent, lanes)
-            rows = self._refill_fetch(store, absent, room, want, children_only)
-            rows = self._reconcile_refill_boundaries_sync(store, rows)
+            rows, retired, stranded = self._refill_fetch_retiring(
+                store, absent, room, want, children_only
+            )
+            self._report_retired_stage_rows(store, retired, stranded)
             self._refill_apply(rows)
             wake_at = (
                 self._refill_idle_wake_read(store, children_only)()
@@ -1620,8 +1914,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         try:
             absent, lanes = await store.run(self._refill_absent, store, children_only)
             room, want = self._refill_make_room(store, absent, lanes)
-            rows = await store.run(self._refill_fetch, store, absent, room, want, children_only)
-            rows = await self._reconcile_refill_boundaries_async(rows)
+            rows, retired, stranded = await store.run(
+                self._refill_fetch_retiring, store, absent, room, want, children_only
+            )
+            self._report_retired_stage_rows(store, retired, stranded)
             self._refill_apply(rows)
             wake_at = (
                 await store.run(self._refill_idle_wake_read(store, children_only))
@@ -1632,90 +1928,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             return len(rows)
         self._refill_schedule_wake(store, wake_at)
         return len(rows)
-
-    @staticmethod
-    def _refill_boundary_scope(rec: "_taskq.TaskRecord") -> tuple[str, str] | None:
-        owner = str(rec.params.get("_stage_boundary_owner") or "")
-        parent = str(rec.session_key or rec.params.get("parent_session_key") or "")
-        return (parent, owner) if parent and owner else None
-
-    def _stale_refill_boundary_scopes(
-        self,
-        rows: list["_taskq.TaskRecord"],
-    ) -> set[tuple[str, str]]:
-        """Exact stage scopes without a live boundary owner.
-
-        The resolver is gateway-wired and reads loop-owned dashboard state, so
-        the async refill calls this only after its store fetch returns. A manager
-        without that resolver keeps legacy/test behavior. Resolver failure is
-        observable but is not treated as boundary absence, so no row is
-        cancelled without a positive stale-owner verdict.
-        """
-        resolver = getattr(self._manager, "_stage_boundary_for_scope", None)
-        if not callable(resolver):
-            return set()
-        stale: set[tuple[str, str]] = set()
-        for rec in rows:
-            scope = self._refill_boundary_scope(rec)
-            if scope is None:
-                continue
-            try:
-                boundary = resolver(*scope)
-            except Exception:
-                _glue_logger.warning(
-                    "taskq: stage-boundary lookup failed during refill for parent=%s owner=%s",
-                    *scope,
-                    exc_info=True,
-                )
-                continue
-            if boundary is None:
-                stale.add(scope)
-        return stale
-
-    def _without_refill_boundary_scopes(
-        self,
-        rows: list["_taskq.TaskRecord"],
-        stale: set[tuple[str, str]],
-    ) -> list["_taskq.TaskRecord"]:
-        if not stale:
-            return rows
-        return [rec for rec in rows if self._refill_boundary_scope(rec) not in stale]
-
-    def _reconcile_refill_boundaries_sync(
-        self,
-        store: "_taskq.TaskStore",
-        rows: list["_taskq.TaskRecord"],
-    ) -> list["_taskq.TaskRecord"]:
-        """Cancel stale stage rows inline for the non-loop refill variant."""
-        stale = self._stale_refill_boundary_scopes(rows)
-        for parent, owner in sorted(stale):
-            if self._manager._hold_boundary_cancellation(parent, owner):
-                continue
-            cancelled, failure = self.taskq_cancel_boundary_store(store, parent, owner)
-            if failure:
-                failure = self._manager._bounded_boundary_cancellation_failure(failure)
-            self._manager._apply_boundary_cancelled_rows(
-                parent,
-                owner,
-                cancelled,
-                settled=not failure,
-            )
-            if failure:
-                self._manager._pending_boundary_cancellations[(parent, owner)] = failure
-                self._manager._schedule_boundary_cancel_retry()
-        return self._without_refill_boundary_scopes(rows, stale)
-
-    async def _reconcile_refill_boundaries_async(
-        self,
-        rows: list["_taskq.TaskRecord"],
-    ) -> list["_taskq.TaskRecord"]:
-        """Cancel stale stage rows through the exact off-loop writer path."""
-        stale = self._stale_refill_boundary_scopes(rows)
-        for parent, owner in sorted(stale):
-            if self._manager._hold_boundary_cancellation(parent, owner):
-                continue
-            await self._manager._settle_boundary_queue(parent, owner)
-        return self._without_refill_boundary_scopes(rows, stale)
 
     def _refill_absent(
         self, store: "_taskq.TaskStore", children_only: bool
@@ -1799,6 +2011,84 @@ class _TaskqBridgeMixin(ManagerComponent):
             )
         return rows
 
+    def _refill_fetch_retiring(
+        self,
+        store: "_taskq.TaskStore",
+        *fetch_args: Any,
+    ) -> tuple[list["_taskq.TaskRecord"], list[dict[str, Any]], bool]:
+        """Store phase: :meth:`_refill_fetch`, then retire legacy stage rows.
+
+        One store step, so the off-loop refill keeps its single writer-thread hop.
+        """
+        return self._retire_legacy_stage_rows(store, self._refill_fetch(store, *fetch_args))
+
+    @staticmethod
+    def _retire_legacy_stage_rows(
+        store: "_taskq.TaskStore",
+        rows: list["_taskq.TaskRecord"],
+    ) -> tuple[list["_taskq.TaskRecord"], list[dict[str, Any]], bool]:
+        """Store phase: cancel rows a chat Autopilot stage queued, keep the rest.
+
+        Such a row carries ``_stage_boundary_owner``. The stage that owned it is
+        gone with the retired Autopilot, so the row is stopped rather than run.
+        Returns the rows still to dispatch, the params of each one stopped, and
+        whether a store outage left any stage row uncancelled. An outage stops
+        the cancelling but still returns every row already cancelled, so each
+        committed cancel is reported; the rest stay queued, are never
+        dispatched from this pass, and the caller arms a retry pass for them.
+        """
+        from kiro_crew import taskq as _taskq
+
+        kept: list[_taskq.TaskRecord] = []
+        retired: list[dict[str, Any]] = []
+        store_down = False
+        for rec in rows:
+            if not rec.params.get("_stage_boundary_owner"):
+                kept.append(rec)
+                continue
+            if store_down:
+                continue
+            try:
+                previous = store.cancel(
+                    rec.id,
+                    reason="user_stop",
+                    only_from=_taskq.CLAIMABLE,
+                    generation=rec.generation,
+                )
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.warning(
+                    "taskq: cancel of retired-stage row %s failed", rec.id, exc_info=True
+                )
+                store_down = True
+                continue
+            if previous is not None:
+                params = dict(rec.params)
+                params["_preassigned_id"] = rec.id
+                params["_stop_origin"] = "queued by chat Autopilot, which was removed"
+                retired.append(params)
+        return kept, retired, store_down
+
+    def _report_retired_stage_rows(
+        self,
+        store: "_taskq.TaskStore",
+        retired: list[dict[str, Any]],
+        stranded: bool,
+    ) -> None:
+        """Loop step: publish each retired stage row as stopped before start.
+
+        A stage row a store outage left queued gets a retry pass of its own:
+        the refill that follows may finish without any further store step, and
+        nothing else is certain to drain the queue again in this process.
+        """
+        if stranded:
+            self._refill_schedule_wake(store, store.now() + self.taskq_admit_wait_secs())
+        for params in retired:
+            _glue_logger.info(
+                "taskq: %s was queued by chat Autopilot, which was removed; stopped",
+                params.get("_preassigned_id"),
+            )
+            self._manager._report_queued_stop(params)
+
     def _refill_apply(self, rows: list["_taskq.TaskRecord"]) -> None:
         """Loop step: the fetched rows join the window (skipping any that a
         concurrent step already placed).
@@ -1819,6 +2109,12 @@ class _TaskqBridgeMixin(ManagerComponent):
         present = {p.get("_preassigned_id") for p in self._manager._queue}
         held_modes = getattr(self._manager, "_held_approval_modes", {})
         floor_deferred = getattr(self._manager, "_floor_deferred_ids", ())
+        # A parent with a Stop all in flight gets nothing back in the window.
+        # This fetch may have run on the writer thread before the stop's
+        # cancels did, so its rows can be ones the stop just cancelled, or this
+        # parent's store-only rows, which the stop's pending read leaves out
+        # once they are windowed. Left on disk, they are the stop's to cancel.
+        stopping = getattr(self._manager, "_stopping_parents", None) or {}
         for rec in rows:
             entry = self._window_entry(rec)
             if rec.id in held_modes:
@@ -1833,7 +2129,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # leaves it to the gate, which re-checks the floor before the
                 # pressure hold, and no pressure clock starts below the floor.
                 entry[MEMORY_WAIT_UNTIL_KEY] = 0.0
-            if self._manager._boundary_cancellation_pending(entry):
+            if str(entry.get("parent_session_key") or "") in stopping:
                 continue
             if rec.id not in present:
                 self._manager._queue.append(entry)
@@ -1893,6 +2189,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         if rec.state == _taskq.RECOVERING:
             params[WINDOW_ENTRY_RECOVERING] = True
         params.pop("_legacy_import", None)
+        # Every row written before the stage-owner token was removed carries
+        # ``_stage_boundary_owner`` (empty for an unowned spawn). ``spawn`` no
+        # longer takes that keyword, so it is dropped here; a NON-empty owner
+        # never reaches this point, ``_retire_legacy_stage_rows`` stops it first.
+        params.pop("_stage_boundary_owner", None)
         # Both process-local params are stripped on the READ side as well as by
         # ``taskq_build_record``, because a row is written by one build and
         # started by another: a row that still carries either one replays one
@@ -2069,13 +2370,21 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
         ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
-        row it read by and the ``only_from`` the store re-tests under the
-        generation that read returned, so a row a drain claimed and started in
-        between answers None here and the caller falls through to the live reap
-        -- never a ``cancelled`` row with a running spawn under it, whose own
-        later writes the generation bump would fence out. A row claimed but not
-        started (``admitted``) is still this path's: the spawn re-reads the state
-        before it registers and stops there.
+        row it read by and the ``only_from`` the store re-tests inside the cancel,
+        so a row a drain claimed and started in between answers None here and the
+        caller falls through to the live reap -- never a ``cancelled`` row with a
+        running spawn under it. A row claimed but not started (``admitted``) is
+        still this path's: the spawn re-reads the state before it registers and
+        stops there.
+
+        The cancel is deliberately NOT fenced on the read's generation. A claim, a
+        requeue or a wake can bump the generation while the row stays unstarted
+        (``queued`` -> ``admitted``, a wait woken into ``retry_wait``); a generation
+        fence refused that cancel as ``stale_result`` and dropped the stop, leaving a
+        row nothing executes and nothing cancels -- a ``retry_wait`` row is outside
+        the boot reconciler's ``ACTIVE`` set, and the parent's queued count keeps it
+        attached. ``only_from`` alone is the guarantee the fence was there
+        for: whatever generation the row is at, it is cancelled only while unstarted.
         """
         from kiro_crew import taskq as _taskq
 
@@ -2091,9 +2400,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 unstarted = unstarted | frozenset({_taskq.ADMITTED})
             if rec.state not in unstarted:
                 return None
-            previous = store.cancel(
-                agent_id, reason="user_stop", only_from=unstarted, generation=rec.generation
-            )
+            previous = store.cancel(agent_id, reason="user_stop", only_from=unstarted)
         except _taskq.TaskStoreUnavailable:
             _glue_logger.warning("taskq: cancel of %s failed", agent_id, exc_info=True)
             return None
@@ -2102,3 +2409,46 @@ class _TaskqBridgeMixin(ManagerComponent):
         params = dict(rec.params)
         params["_preassigned_id"] = agent_id
         return params
+
+    def taskq_cancel_queued_each(
+        self, agent_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any] | None | Exception]:
+        """:meth:`taskq_cancel_queued` for every id, as ONE call: a bulk stop's store phase.
+
+        Each id keeps its own answer: the params of a row that was cancelled,
+        None for one that was not, or the exception its cancel raised. Caught per
+        id, so one row's error neither cancels nor skips the rest -- the caller
+        reports the rows that were cancelled and then raises the error.
+        """
+        outcomes: dict[str, dict[str, Any] | None | Exception] = {}
+        for agent_id in agent_ids:
+            try:
+                outcomes[agent_id] = self.taskq_cancel_queued(agent_id)
+            except Exception as exc:  # noqa: BLE001 - handed back per row, raised by the caller
+                outcomes[agent_id] = exc
+        return outcomes
+
+    def taskq_post_cancel_queued(
+        self, agent_ids: Sequence[str]
+    ) -> "dict[str, dict[str, Any] | None | Exception] | _asyncio.Future[Any]":
+        """Queue :meth:`taskq_cancel_queued_each` on the writer thread NOW.
+
+        Returns the future of that one job, or the answers themselves when the
+        store is called inline -- no running loop, or the pump on the loop --
+        which is :meth:`_post_store_write`'s rule, and for its reason: queued
+        here, the cancels land before any refill read or claim queued after this
+        call returns, so the caller may drop the rows' window entries before it
+        awaits the answer. Inline, the pump's own store calls are inline too and
+        are not ordered behind a writer-thread job, so the cancels have to have
+        landed before this returns.
+        """
+        store = self.taskq_store()
+        if store is None or not agent_ids:
+            return {}
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return self.taskq_cancel_queued_each(agent_ids)
+        if not type(self).pump_off_loop:
+            return self.taskq_cancel_queued_each(agent_ids)
+        return store.post(self.taskq_cancel_queued_each, list(agent_ids))

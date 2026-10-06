@@ -1,8 +1,8 @@
 name: Add Contributor
 
 # Add the authors of merged pull requests, the linked authors and co-authors of
-# the commits on the default branch, and the people who reported the issues
-# those pull requests closed, to the README Contributors block.
+# the commits that landed via a merged pull request, and the people who reported
+# the issues those pull requests closed, to the README Contributors block.
 # main is a protected branch, so this never commits directly -- it stages the
 # README edit on a single rolling feature branch, opens (or updates) one PR, and
 # arms GitHub auto-merge on it, like test-durations.yml. Auto-merge lets the

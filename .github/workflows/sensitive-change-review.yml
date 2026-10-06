@@ -1,0 +1,68 @@
+name: Sensitive Change Review
+
+# A PR that touches a sensitive path (sandbox, command floor, secret scrubbing,
+# redaction) needs a human approval on the CURRENT head whose review body
+# carries a filled-in reasoning template. A bare "Approve" click stays red.
+#
+# Format only, on purpose: no model and no sandbox run. The reviewer runs the
+# real sandbox and writes what they checked; this gate makes sure they wrote it
+# down for this exact commit. It cannot tell a true reason from a false one.
+#
+# The checker script is read from the DEFAULT branch, so a PR cannot change the
+# rule by editing the script. This workflow FILE still runs from the PR head
+# (a `pull_request` limit every gate here shares), so a PR could rewrite it to
+# skip the check. Listing it as sensitive does not stop that; running the gate
+# from the default branch would, and is left for a follow-up. No waiver label.
+#
+# A fork PR that touches a sensitive path is refused: a maintainer takes it
+# over on a branch here. A same-repository PR gets one sticky comment with the
+# template to paste. `pull-requests: write` is for that comment only; on a fork
+# PR GitHub hands this job a read-only token anyway.
+
+on:
+  pull_request:
+    # `edited` covers a base-branch retarget, which changes the file set.
+    types: [opened, synchronize, reopened, edited]
+  # The approval itself must be able to turn this check green without a push.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sensitive-change-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sensitive-change-review:
+    name: Sensitive Change Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Require a reasoned human approval for sensitive paths
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # The commit this check run lands on; the checker judges this SHA
+          # and fails if the API's head disagrees.
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          script="base/.github/scripts/sensitive_change_review.py"
+          # Never fall back to the PR's own copy: a missing base checker fails
+          # closed. Only the PR that adds this gate ever sees this branch.
+          if [ ! -f "$script" ]; then
+            echo "::error::No checker on the default branch yet, so this PR cannot be judged; a maintainer reviews it by hand."
+            exit 1
+          fi
+          python3 "$script"

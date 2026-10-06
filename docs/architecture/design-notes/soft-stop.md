@@ -28,7 +28,7 @@ second press escalates immediately for a user who is not willing to wait it out.
 
 ## The budget
 
-`agent.soft_stop_budget_secs` (`config/loader.py`), default `10.0`, clamped to
+`agent.soft_stop_budget_secs` (`AgentConfig` in `config/sections.py`), default `10.0`, clamped to
 `[0.5, 60.0]`. `AgentConfig.__post_init__` clamps rather than raises, matching
 what the dashboard PATCH path and the loader already do; an out-of-range value
 logs a WARNING. `config/schema.py` picks the field up automatically by dataclass
@@ -181,11 +181,14 @@ the lost context (see [Context restore](#context-restore-after-a-soft-cancel)).
 
 The abort push exists because in the pooled topology in-flight tool work runs in
 backend processes that a local `reset()` does not reach. It is best-effort, and
-deliberately loud when it cannot resolve a runtime PID or socket: it warns rather
-than failing silently, because if provider internals are renamed the push stops
-firing and the escape-hatch behavior regresses quietly. The initiation is
-SEL-audited at the point of decision, since `schedule_abort` is fire-and-forget and
-the downstream applied-audit only fires on success.
+deliberately loud when it has no target. The session layer asks the provider for
+`runtime_abort_target()` and hands the opaque target it gets back to
+`mcp_gateway.abort.schedule_abort_for` without opening it. When the provider names
+no reachable runtime, the session layer logs a WARNING rather than failing
+silently, because otherwise the push could stop firing and the escape-hatch
+behavior would regress quietly. The initiation is SEL-audited at the point of
+decision, since `schedule_abort_for` is fire-and-forget and the downstream
+applied-audit only fires on success.
 
 **Eager respawn is a UX optimization, not a correctness requirement.** After a hard
 kill, `_eager_respawn` runs as a tracked background task (a strong reference is
@@ -209,7 +212,7 @@ deliberately **not** treated as a failure:
 - The empty-response retry is suppressed. A cancelled turn legitimately produced no
   visible output, and blind-retrying it would re-run work the user just stopped.
 - The refusal-recovery continuation is suppressed
-  (`dashboard/state.should_recover_from_refusal` gates on it), because a user stop
+  (`dashboard/state.should_queue_refusal_recovery` gates on it), because a user stop
   is not a policy block and must not trigger an automatic retry.
 
 ## Surfaces

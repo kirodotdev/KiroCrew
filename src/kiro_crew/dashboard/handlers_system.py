@@ -45,12 +45,20 @@ from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
 
-# Absolute paths for macOS system commands — shutil.which may fail when PATH
-# is minimal (e.g. launched as a background service), so fall back to known
-# locations.
-_SYSCTL = shutil.which("sysctl") or "/usr/sbin/sysctl"
-_VM_STAT = shutil.which("vm_stat") or "/usr/bin/vm_stat"
-_NETSTAT = shutil.which("netstat") or "/usr/sbin/netstat"
+
+def _resolve_tool(name: str, fallback: str) -> str:
+    """The absolute path to run the system command *name* with.
+
+    ``shutil.which`` may fail when PATH is minimal (e.g. launched as a background
+    service), so the command's known location stands in when it finds nothing.
+    """
+    return shutil.which(name) or fallback
+
+
+# Absolute paths for macOS system commands, resolved once at import.
+_SYSCTL = _resolve_tool("sysctl", "/usr/sbin/sysctl")
+_VM_STAT = _resolve_tool("vm_stat", "/usr/bin/vm_stat")
+_NETSTAT = _resolve_tool("netstat", "/usr/sbin/netstat")
 
 # Server-side network speed tracking (survives page refresh)
 _prev_net: dict[str, float] = {"rx": 0.0, "tx": 0.0, "ts": 0.0}
@@ -789,10 +797,13 @@ def _collect_system_metrics() -> dict[str, object]:
         data["ollama_running"] = False
 
     # Resource posture — advisory probe from the same cgroup-aware memory reader
-    # that drives the dynamic sub-agent cap and the injected [RESOURCES] line.
+    # that drives the spawn memory floor and the injected [RESOURCES] line.
+    # ``subagent_cap`` is the count ceiling in force (an explicit
+    # ``max_subagents`` pin, or the ``subagent_auto_max`` auto ceiling); memory
+    # bounds starts beneath it.
     try:
         from kiro_crew.resource_status import probe as _resource_probe
-        from kiro_crew.subagent import compute_max_subagents
+        from kiro_crew.subagent import resolve_max_subagents
 
         status = _resource_probe()
         data["resource_posture"] = status.posture
@@ -801,13 +812,9 @@ def _collect_system_metrics() -> dict[str, object]:
         data["resource_critical_gb"] = status.critical_gb
         try:
             cfg = KiroCrewConfig.load()
-            data["subagent_cap"] = compute_max_subagents(cfg)
+            data["subagent_cap"] = resolve_max_subagents(cfg)
         except Exception:
-            # Fallback: derive from available memory directly
-            if status.available_gb > 0:
-                data["subagent_cap"] = min(11, max(1, int(status.available_gb / 0.5)))
-            else:
-                data["subagent_cap"] = 3
+            data["subagent_cap"] = 3
     except Exception:
         data["resource_posture"] = "unknown"
         data["resource_available_gb"] = -1.0

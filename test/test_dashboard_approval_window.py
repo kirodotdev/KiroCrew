@@ -13,15 +13,39 @@ Three properties, one per failure mode observed in production:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import logging
-import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from turn_harness import (
+    APPROVED,
+    REJECTED,
+    REJECTED_ONCE,
+    UNANSWERED,
+    Emit,
+    ScriptedProvider,
+    SlotSpec,
+    TurnContext,
+    TurnRecord,
+    TurnScript,
+    Wait,
+    run_turn,
+)
 
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_STEER_CONSUMED,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_END_TURN,
+    AcpEvent,
+)
 from kiro_crew.config.loader import (
     APPROVAL_TURN_MARGIN_SECS,
     TOOL_APPROVAL_TIMEOUT_MAX,
@@ -29,8 +53,16 @@ from kiro_crew.config.loader import (
     AgentConfig,
     _clamp_security_bounds,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT, TOOL_APPROVAL_TIMEOUT
+from kiro_crew.constants import (
+    CHAT_TURN_TIMEOUT,
+    DENY_CAUSE_APPROVAL_NO_BUDGET,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    STEER_NOTICE_BOUND_SECS,
+    TOOL_APPROVAL_TIMEOUT,
+)
 from kiro_crew.dashboard import turn_dispatch as td
+from kiro_crew.dashboard.state import REFUSAL_RECOVERY_PREFIX
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
 
 
 class _Cfg:
@@ -111,316 +143,6 @@ class TestDefaultsAreShort:
 
     def test_default_leaves_room_under_the_turn_ceiling(self) -> None:
         assert TOOL_APPROVAL_TIMEOUT <= CHAT_TURN_TIMEOUT - APPROVAL_TURN_MARGIN_SECS
-
-    def test_no_hardcoded_window_left_in_the_runner(self) -> None:
-        """The runner must resolve the window, not inline a literal.
-
-        The bug was exactly an inlined ``7200.0`` here, invisible to config.
-        """
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "wait_for(fut, timeout=7200.0)" not in src
-        # No literal at all, whatever its value: the original bug was an inlined
-        # 7200.0, and pinning only that number would let the next literal through.
-        assert not re.search(r"wait_for\(fut, timeout=\d", src)
-        # Resolved into a local, not inlined into the await: the timeout card
-        # has to report the SAME number the wait actually used. Resolved PER SLOT
-        # rather than from the global config, which is what lets an app-owned
-        # worker with no human responder take the background deny-fast instead of
-        # holding the attended window and being denied anyway.
-        assert "state.approval_timeout_for(slot)" in src
-        # And bounded by the REMAINING turn budget. `approval_timeout_for` returns
-        # a flat constant, so used alone it can outlive its own turn: the outer
-        # `_bounded_turn` cancels first and the timeout branch below never runs —
-        # no card, no decline line. Only `tool_approval_timeout_secs` applies the
-        # ceiling-and-remaining-budget bound (and the 0.0 the no-budget branch
-        # reads), so the window must be the MINIMUM of the two.
-        assert "tool_approval_timeout_secs()" in src
-        assert re.search(
-            r"_approval_window = min\(\s*state\.approval_timeout_for\(slot\),"
-            r"\s*tool_approval_timeout_secs\(\)\s*\)",
-            src,
-        ), "the per-slot window is not bounded by the remaining turn budget"
-
-
-class TestPerSlotWindowIsAlsoBudgetBounded:
-    """The composed window: per-slot deny-fast AND the remaining-turn bound.
-
-    REGRESSION: the runner resolved the window from ``approval_timeout_for``
-    alone. That returns a flat constant — 7200s attended, which dwarfs the 600s
-    default `tool_approval_timeout_secs` resolves, and neither is clamped to what
-    is LEFT of the running turn. So a prompt arming late in a long agentic turn
-    waited past its own deadline, ``_bounded_turn`` cancelled first, and the
-    approval-timeout branch never ran: no card, no decline line, just a turn that
-    died mid-prompt. Taking the MINIMUM of the two is what keeps both properties.
-    """
-
-    @staticmethod
-    def _window(state, slot) -> float:
-        """The runner's expression, evaluated here rather than re-derived."""
-        return min(state.approval_timeout_for(slot), td.tool_approval_timeout_secs())
-
-    @pytest.mark.asyncio
-    async def test_attended_window_is_the_configured_one_not_the_flat_constant(self, cfg) -> None:
-        # 7200 is what `approval_timeout_for` returns for an attended slot; the
-        # window that actually applies is the configurable, bounded one.
-        cfg(window=600, turn=7200)
-        state = SimpleNamespace(approval_timeout_for=lambda _s: 7200.0)
-        assert self._window(state, object()) == pytest.approx(600.0)
-
-    @pytest.mark.asyncio
-    async def test_unattended_deny_fast_survives_the_bound(self, cfg) -> None:
-        # The 180s deny-fast is SHORTER than the configured window, so composing
-        # must not lengthen it back to the attended value.
-        cfg(window=600, turn=7200)
-        state = SimpleNamespace(approval_timeout_for=lambda _s: 180.0)
-        assert self._window(state, object()) == pytest.approx(180.0)
-
-    @pytest.mark.asyncio
-    async def test_a_late_arming_prompt_cannot_outlive_its_turn(self, cfg) -> None:
-        # 300s left of a 2h turn. Even the attended 7200s must come down to fit,
-        # which is the case the flat constant got wrong.
-        cfg(window=600, turn=7200)
-        loop = asyncio.get_running_loop()
-        state = SimpleNamespace(approval_timeout_for=lambda _s: 7200.0)
-        prev = td._TURN_DEADLINE.get()
-        td._TURN_DEADLINE.set(loop.time() + 300.0)
-        try:
-            got = self._window(state, object())
-        finally:
-            td._TURN_DEADLINE.set(prev)
-        assert got == pytest.approx(300.0 - APPROVAL_TURN_MARGIN_SECS, abs=1.0)
-
-    @pytest.mark.asyncio
-    async def test_no_budget_yields_zero_so_the_runner_declines_at_once(self, cfg) -> None:
-        # The 0.0 is load-bearing: it is what the runner's no-budget branch reads
-        # to decline immediately instead of pretending to wait.
-        cfg(window=600, turn=7200)
-        loop = asyncio.get_running_loop()
-        state = SimpleNamespace(approval_timeout_for=lambda _s: 180.0)
-        prev = td._TURN_DEADLINE.get()
-        td._TURN_DEADLINE.set(loop.time() + 5.0)
-        try:
-            assert self._window(state, object()) == 0.0
-        finally:
-            td._TURN_DEADLINE.set(prev)
-
-
-class TestStallSignalReachesTheLoop:
-    """An unanswered prompt must tell any monitoring loop bound to this slot.
-
-    That branch is the only evidence a reactive stop can use, so the wiring is
-    pinned here: without it a loop whose grant lapsed keeps waking, being
-    declined, and spending its cycle cap on cycles that cannot act.
-    """
-
-    @staticmethod
-    def _timeout_branch() -> list[str]:
-        from kiro_crew.dashboard import chat_runner
-
-        lines = inspect.getsource(chat_runner._run_chat).split("\n")
-        start = next(
-            i for i, ln in enumerate(lines) if ln.strip() == "except asyncio.TimeoutError:"
-        )
-        indent = len(lines[start]) - len(lines[start].lstrip())
-        body = []
-        for ln in lines[start + 1 :]:
-            if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
-                break
-            body.append(ln)
-        return body
-
-    def test_signal_is_sent_from_the_timeout_branch(self) -> None:
-        body = "\n".join(self._timeout_branch())
-        assert "notify_approval_stalled(slot.key)" in body, (
-            "the approval-timeout branch does not tell autonudge; a stalled loop "
-            "would keep burning cycles"
-        )
-
-    def test_signal_is_not_gated_on_the_unattended_flag(self) -> None:
-        """The loops this exists for are armed in ATTENDED slots.
-
-        ``_ChatSlot.unattended`` keys on app-ownership, so a babysit loop a
-        person armed in their own tab reads False. Nesting the signal under that
-        flag would skip exactly the case the stop was built for.
-        """
-        body = self._timeout_branch()
-        gate = next(i for i, ln in enumerate(body) if ln.strip() == "if _unattended_wait:")
-        gate_indent = len(body[gate]) - len(body[gate].lstrip())
-        call = next(i for i, ln in enumerate(body) if "notify_approval_stalled" in ln)
-        # Walk out to the STATEMENT that owns the call and confirm it is a
-        # sibling of the gate, not inside it. Blank and comment lines are
-        # skipped: neither owns a block, and a comment left at the outer indent
-        # would mask a call that had been nested under the gate.
-        owner = next(
-            i
-            for i in range(call, -1, -1)
-            if body[i].strip()
-            and not body[i].lstrip().startswith("#")
-            and (len(body[i]) - len(body[i].lstrip())) <= gate_indent
-        )
-        assert owner > gate, "the signal appears before the unattended gate"
-        assert (len(body[owner]) - len(body[owner].lstrip())) == gate_indent, (
-            "the stall signal is nested inside `if _unattended_wait:` — an "
-            "attended slot's monitoring loop would never be told"
-        )
-
-
-class TestTimeoutTellsTheAgentInBand:
-    """The timeout branch must correct the agent's "user denied" attribution.
-
-    kiro-cli reports the auto-decline below as its generic "User denied tool
-    execution", so without an in-band notice the agent concludes the human
-    actively refused a call nobody answered, and changes course on a decision
-    that was never made. The policy-deny paths already steer their reason into
-    the running turn before rejecting; this pins the same wiring — same helper,
-    same before-the-reject ordering — onto the approval-timeout branch.
-    """
-
-    @staticmethod
-    def _timeout_branch() -> list[str]:
-        from kiro_crew.dashboard import chat_runner
-
-        lines = inspect.getsource(chat_runner._run_chat).split("\n")
-        start = next(
-            i for i, ln in enumerate(lines) if ln.strip() == "except asyncio.TimeoutError:"
-        )
-        indent = len(lines[start]) - len(lines[start].lstrip())
-        body = []
-        for ln in lines[start + 1 :]:
-            if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
-                break
-            body.append(ln)
-        return body
-
-    @staticmethod
-    def _shared_steer_block() -> str:
-        """The provenance-gated steer at the shared reject branch.
-
-        The timeout arm records its cause and the correction is steered ONCE
-        where every host auto-decline funnels — immediately before the shared
-        ``reject_tool`` — so the block under ``if _host_deny_cause:`` is the
-        wiring these tests pin.
-        """
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        gate = "if _host_deny_cause:"
-        assert gate in src, "the shared provenance-gated steer is gone"
-        block = src.split(gate, 1)[1]
-        end = block.index("await _reject_attributed(")
-        return block[:end]
-
-    def test_the_branch_records_the_timeout_cause(self) -> None:
-        body = "\n".join(self._timeout_branch())
-        assert "_host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT" in body, (
-            "the approval-timeout branch no longer records its cause; the agent "
-            "is left holding kiro-cli's generic 'User denied tool execution'"
-        )
-        assert (
-            "_host_deny_reason = (" in body
-        ), "the approval-timeout branch no longer records a reason sentence"
-        # The correction itself is folded into the shared reject branch — a
-        # second steer here would tell the model the same fact twice.
-        assert "_steer_policy_notice(" not in body, (
-            "the timeout arm steers its own notice again — the shared "
-            "provenance-gated steer now double-steers"
-        )
-
-    def test_the_shared_branch_steers_the_recorded_cause(self) -> None:
-        block = self._shared_steer_block()
-        assert "_steer_policy_notice(" in block
-        assert "cause=_host_deny_cause" in block, (
-            "the notice must carry the arm's recorded cause, not inherit the "
-            "policy wording — 'blocked by a safety policy' is false here"
-        )
-        # BOTH attended and unattended slots get the notice: the shared site
-        # must gate on provenance alone, never on attendedness.
-        assert "_unattended_wait" not in block, (
-            "the shared steer is gated on the unattended flag — an attended "
-            "slot's agent would never be corrected"
-        )
-
-    def test_the_notice_stays_out_of_the_turn_ledger(self) -> None:
-        """The steer must NOT thread `_refusal_notices`.
-
-        `should_queue_refusal_recovery` compares that list against
-        `_refusal_reasons` by COUNT, and this path deliberately appends no
-        reasons entry (an expired prompt is answered as an ordinary rejection,
-        never by a recovery continuation). Threading the shared ledger would
-        let an unsettled timeout notice force a duplicate recovery turn — or
-        let a settled one mask a real deny whose own steer failed.
-        """
-        # Scanned over CODE lines only: the comment above the call site names
-        # _refusal_notices while explaining why it is NOT used, and a comment
-        # must neither satisfy nor trip a wiring assertion.
-        code = "\n".join(
-            ln for ln in self._shared_steer_block().splitlines() if not ln.lstrip().startswith("#")
-        )
-        assert "[]," in code, "expected a throwaway notice list for the shared host-decline steer"
-        assert "_refusal_notices" not in code, (
-            "the host-decline steer must not participate in the recovery-fallback "
-            "accounting — it pairs with no _refusal_reasons entry"
-        )
-
-    def test_the_cause_is_not_gated_on_the_unattended_flag(self) -> None:
-        """BOTH attended and unattended slots get the notice.
-
-        The unattended transcript line stays unattended-only, but an attended
-        slot's AGENT is handed the exact same generic denial string — recording
-        the cause under the flag would leave the attended case exactly as
-        broken as before this change. The shared steer is gated ONLY on the
-        recorded provenance, so the cause assignment is what must stay outside
-        the unattended gate.
-        """
-        body = self._timeout_branch()
-        gate = next(i for i, ln in enumerate(body) if ln.strip() == "if _unattended_wait:")
-        cause = next(
-            i for i, ln in enumerate(body) if "_host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT" in ln
-        )
-        assert cause < gate, (
-            "the timeout cause is recorded inside (or after) the unattended "
-            "gate — an attended slot's agent would never be corrected"
-        )
-
-    def test_the_steer_is_bounded_so_reject_and_audit_cannot_be_skipped(self) -> None:
-        """The steer await must be bounded INSIDE the helper.
-
-        Every deny path runs reject_tool + a SEL audit write after
-        `_steer_policy_notice`; unbounded, a backpressured ACP stdin could hold
-        the await until the turn deadline cancelled it — skipping both, so the
-        UI would read rejected while the wire and the audit trail never heard
-        about it. The bound lives in the helper (not per call site) so all
-        five deny paths inherit it and a sixth cannot be added without it.
-        """
-        from kiro_crew.dashboard import chat_runner
-
-        helper = inspect.getsource(chat_runner._steer_policy_notice)
-        assert "asyncio.wait_for(" in helper, "the steer notice is awaited unbounded"
-        assert "_STEER_NOTICE_BOUND_SECS" in helper
-        # The call site itself must NOT re-wrap the call: a second, per-site
-        # bound is exactly the duplication moving it into the helper removed.
-        code = "\n".join(
-            ln for ln in self._shared_steer_block().splitlines() if not ln.lstrip().startswith("#")
-        )
-        assert "asyncio.wait_for(" not in code
-
-    def test_the_reject_still_happens_after_the_steer(self) -> None:
-        """The notice explains the decline; it must not replace it.
-
-        Ordering is the mechanism: the steer is written while the permission
-        request is still unanswered, and the generic rejected branch (the one
-        a timed-out approval falls into, identified by its ``_reject_label``
-        append) answers it afterwards.
-        """
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        steer = src.index("cause=_host_deny_cause")
-        reject = src.index('slot.append("tool", _reject_label, "msg msg-tool")')
-        assert steer < reject, "the steer must precede the rejection going on the wire"
-        assert "await _reject_attributed(" in src[steer:reject]
 
 
 class TestResolver:
@@ -672,46 +394,21 @@ class TestNoBudgetCard:
     def test_distinct_from_the_waited_timeout_card(self) -> None:
         assert td.format_approval_no_budget_card() != td.format_approval_timeout_card(600.0)
 
-    def test_runner_declines_without_waiting_when_the_window_is_zero(self) -> None:
-        """A zero window must skip the await entirely, not pass 0 to wait_for."""
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        idx = src.index("_approval_window = min(")
-        branch = src[idx : idx + 1800]
-        assert "if _approval_window <= 0:" in branch
-        assert "format_approval_no_budget_card()" in branch
-        # The await must live on the else side of that guard.
-        assert branch.index("if _approval_window <= 0:") < branch.index("await asyncio.wait_for")
-
 
 class TestCardsMatchRealRecovery:
     """Neither card may claim the turn stopped — the reject path continues it.
 
-    `_run_chat`'s rejected branch calls `reject_tool` and `continue`s the event
-    loop, so the agent is told the tool was denied and keeps working. Wording
-    that says "stopped" tells the user to expect lost work that never happened.
+    A declined prompt is answered with ``reject_tool`` and the turn keeps going,
+    so the agent is told the tool was denied and keeps working (pinned by
+    ``TestTheRunnersApprovalWindow.test_a_declined_prompt_carries_the_turn_on``).
+    Wording that says "stopped" tells the user to expect lost work that never
+    happened.
     """
 
     def test_neither_card_claims_the_turn_stopped(self) -> None:
         for text in (td.format_approval_timeout_card(600.0), td.format_approval_no_budget_card()):
             assert "stopped" not in text.lower()
             assert "carried on" in text.lower()
-
-    def test_reject_path_really_continues(self) -> None:
-        """Guards the premise above: if the runner starts breaking, wording must change.
-
-        Anchored on the GENERIC rejection (the one a timed-out approval takes),
-        identified by its `_reject_label` append — not the invalid-tool-name or
-        hook-error branches above it, which deliberately `break`.
-        """
-        from kiro_crew.dashboard import chat_runner
-
-        src = inspect.getsource(chat_runner._run_chat)
-        idx = src.index('slot.append("tool", _reject_label, "msg msg-tool")')
-        tail = src[idx : idx + 1600]
-        assert "continue" in tail
-        assert tail.index("continue") < (tail.index("break") if "break" in tail else len(tail))
 
 
 class TestTimeoutCard:
@@ -731,12 +428,270 @@ class TestTimeoutCard:
     def test_hour_scale_wording(self) -> None:
         assert "1.5 hours" in td.format_approval_timeout_card(5400.0)
 
-    def test_runner_renders_the_approval_card_on_timeout(self) -> None:
-        """The timeout branch must append the card, not fall through silently."""
-        from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner._run_chat)
-        idx = src.index("_approval_window = min(")
-        branch = src[idx : idx + 2000]
-        assert "except asyncio.TimeoutError:" in branch
-        assert "format_approval_timeout_card(_approval_window)" in branch
+# ── the window as the runner applies it, through one real turn ───────────────
+
+_PROMPT = AcpEvent(
+    kind=EVENT_PERMISSION_REQUEST, request_id="req-1", title="fs_write", tool_kind="edit"
+)
+_AFTER = AcpEvent(kind=EVENT_TEXT_CHUNK, text="after the denial")
+_DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+#: A turn ceiling the config loader keeps as written (a stored value equal to an
+#: earlier default is adopted back to the current one), short enough that a
+#: prompt arming late in it has less than the configured window left.
+_CEILING = 3600
+
+
+def _prompt_turn(*before: Any, answers: dict[str, str] | None = None) -> TurnScript:
+    return TurnScript(events=[*before, _PROMPT, _AFTER, _DONE], answers=answers or {})
+
+
+def _declined_at(record: TurnRecord) -> float:
+    [reject] = [call for call in record.calls("reject_tool") if call.args == ("req-1",)]
+    return reject.at
+
+
+def _cards(record: TurnRecord) -> list[str]:
+    return [row["content"] for row in record.rows("error")]
+
+
+def _steers(record: TurnRecord) -> list[str]:
+    return [call.args[0] for call in record.calls("steer")]
+
+
+class _SteerNeverReturns(ScriptedProvider):
+    """A provider whose steer write never completes (a backpressured stdin)."""
+
+    async def steer(self, message: str) -> bool:
+        self.record("steer", message)
+        await asyncio.Event().wait()
+        return True
+
+
+class _BlocksToolA:
+    """A PreToolUse hook that blocks ``tool_a`` and lets everything else through."""
+
+    async def fire(self, event: str, *args: Any, **kwargs: Any) -> list[Any]:
+        if event == HOOK_EVENT_PRE_TOOL_USE and kwargs.get("tool_name") == "tool_a":
+            return [
+                SimpleNamespace(
+                    exit_code=2, stdout="", stderr="blocked by rule X", error="", hook_name="rule"
+                )
+            ]
+        return []
+
+
+def _echo_last_steer(ctx: TurnContext) -> AcpEvent:
+    """The backend's ``steering_consumed`` echo of the steer the turn just sent."""
+    assert ctx.provider is not None
+    return AcpEvent(kind=EVENT_STEER_CONSUMED, text=ctx.provider.recorded("steer")[-1].args[0])
+
+
+class TestTheRunnersApprovalWindow:
+    """What a dashboard turn does with a prompt nobody answers, end to end.
+
+    Each runs one real ``_run_chat`` turn (``turn_harness.run_turn``) on virtual
+    time, so a 600 s window expires at exactly 600 s in microseconds. The window
+    the turn waits is the MINIMUM of the slot's own (the 180 s deny-fast of an
+    unattended app worker, the attended 7200 s) and ``tool_approval_timeout_secs``
+    (the configured window, bounded by the turn ceiling and by the budget left in
+    the running turn) -- one bound alone either ignores the configuration or
+    outlives the turn.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("window", [300, 900])
+    async def test_an_unanswered_prompt_declines_at_the_configured_window(
+        self, window: int
+    ) -> None:
+        record = await run_turn(
+            _prompt_turn(), config={"agent": {"tool_approval_timeout_secs": window}}
+        )
+        assert _declined_at(record) == window
+        assert _cards(record) == [td.format_approval_timeout_card(float(window))]
+
+    @pytest.mark.asyncio
+    async def test_an_unattended_slot_takes_the_deny_fast_window(self) -> None:
+        record = await run_turn(_prompt_turn(), slot=SlotSpec(key="worker-1", app="issue-radar"))
+        assert _declined_at(record) == 180
+        assert _cards(record) == [td.format_approval_timeout_card(180.0)]
+        # The agent is told too: a denial it cannot read makes it retry forever.
+        [notice] = [
+            row["content"]
+            for row in record.rows("assistant")
+            if "running unattended" in row["content"]
+        ]
+        assert "no one answered within 180s" in notice
+
+    @pytest.mark.asyncio
+    async def test_a_late_prompt_is_shortened_to_the_budget_left(self) -> None:
+        # 300 s of a 3600 s turn left: a 600 s window would outlive the turn,
+        # which would then die as a turn timeout with no approval card at all.
+        left = 300
+        record = await run_turn(
+            _prompt_turn(Wait(_CEILING - left)),
+            config={"agent": {"chat_turn_timeout_secs": _CEILING}},
+        )
+        window = left - APPROVAL_TURN_MARGIN_SECS
+        assert _declined_at(record) == _CEILING - left + window
+        assert _cards(record) == [td.format_approval_timeout_card(float(window))]
+        assert record.stop_reason == STOP_REASON_END_TURN
+
+    @pytest.mark.asyncio
+    async def test_no_budget_declines_without_waiting(self) -> None:
+        # Under the margin no window can both wait and report.
+        armed_at = _CEILING - 5
+        record = await run_turn(
+            _prompt_turn(Wait(armed_at)),
+            slot=SlotSpec(autonudge=True),
+            config={"agent": {"chat_turn_timeout_secs": _CEILING}},
+        )
+        assert _declined_at(record) == armed_at
+        assert _cards(record) == [td.format_approval_no_budget_card()]
+        assert record.approval_decisions[0]["cause"] == DENY_CAUSE_APPROVAL_NO_BUDGET
+        # Nothing waited, so nothing stalled: no monitoring loop is told one did.
+        assert record.notify_approval_stalled == []
+        [steer] = _steers(record)
+        assert "the turn had no budget left to host its approval prompt" in steer
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot", "window"),
+        [
+            (SlotSpec(key="chat-1", autonudge=True), 600),
+            (SlotSpec(key="worker-1", app="issue-radar", autonudge=True), 180),
+        ],
+        ids=["attended", "unattended"],
+    )
+    async def test_an_expired_prompt_tells_the_loop_bound_to_the_slot(
+        self, slot: SlotSpec, window: int
+    ) -> None:
+        # Loops are armed in ATTENDED slots too (a babysit loop a person armed),
+        # so the signal must not depend on the slot being unattended.
+        record = await run_turn(_prompt_turn(), slot=slot)
+        assert record.notify_approval_stalled == [(slot.key, window)]
+
+    @pytest.mark.asyncio
+    async def test_an_answered_prompt_is_not_a_stall(self) -> None:
+        record = await run_turn(
+            _prompt_turn(answers={"req-1": REJECTED}), slot=SlotSpec(autonudge=True)
+        )
+        assert record.notify_approval_stalled == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "slot",
+        [SlotSpec(key="chat-1"), SlotSpec(key="worker-1", app="issue-radar")],
+        ids=["attended", "unattended"],
+    )
+    async def test_the_agent_is_told_in_band_once_before_the_reject(self, slot: SlotSpec) -> None:
+        # kiro-cli reports the auto-decline as "User denied tool execution"; the
+        # notice corrects that attribution, once, while the request is still open.
+        record = await run_turn(_prompt_turn(), slot=slot)
+        [steer] = _steers(record)
+        assert "its approval prompt expired unanswered" in steer
+        assert "This was NOT a user action" in steer
+        assert "safety policy" not in steer
+        window = 600 if not slot.app else 180
+        assert f"fs_write: the approval prompt went unanswered for {window}s" in steer
+        names = [call.name for call in record.provider_calls]
+        assert names.index("steer") < names.index("reject_tool")
+        [decision] = record.approval_decisions
+        assert decision == {
+            "approval_id": "req-1",
+            "decision": "rejected",
+            "by": "host",
+            "cause": DENY_CAUSE_APPROVAL_TIMEOUT,
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_batch_cascade_is_told_the_hosts_reason(self) -> None:
+        second = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST, request_id="req-2", title="tool_b", tool_kind="edit"
+        )
+        record = await run_turn(TurnScript(events=[_PROMPT, second, _DONE]))
+        first, cascade = _steers(record)
+        assert "every remaining call in its batch" in cascade
+        assert "the approval prompt went unanswered for 600s" in cascade
+        assert [call.args for call in record.calls("reject_tool")] == [("req-1",), ("req-2",)]
+
+    @pytest.mark.asyncio
+    async def test_a_steer_that_never_returns_still_lets_the_reject_through(self) -> None:
+        # Unbounded, a backpressured stdin would hold the steer until the turn
+        # ceiling and skip both the reject and its audit.
+        record = await run_turn(
+            TurnScript(events=[_PROMPT, _AFTER, _DONE], provider=_SteerNeverReturns)
+        )
+        assert _declined_at(record) == 600 + STEER_NOTICE_BOUND_SECS
+        assert record.audits(request_id="req-1", outcome="rejected")
+        assert record.stop_reason == STOP_REASON_END_TURN
+
+    @pytest.mark.asyncio
+    async def test_the_host_decline_notice_stays_out_of_the_recovery_ledger(self) -> None:
+        # tool_a is hook-blocked (a refusal: notice steered, reason recorded) and
+        # its notice is echoed back as consumed; tool_b then expires. Its notice
+        # pairs with no refusal reason, so it must not count against the ledger
+        # that decides whether a recovery continuation is still owed.
+        def _blocking_hooks(ctx: TurnContext) -> None:
+            ctx.state._hook_store = _BlocksToolA()
+
+        tool_a = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST, request_id="req-a", title="tool_a", tool_kind="edit"
+        )
+        tool_b = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST, request_id="req-b", title="tool_b", tool_kind="edit"
+        )
+        explained = await run_turn(
+            TurnScript(
+                events=[tool_a, Emit(_echo_last_steer), tool_b, _DONE],
+                answers={"req-a": APPROVED},
+                setup=_blocking_hooks,
+            )
+        )
+        assert len(_steers(explained)) == 2
+        assert explained.successors == ()
+        # Control: with the refusal's notice NOT echoed, the continuation is owed,
+        # so the empty successor list above is the ledger's answer, not silence.
+        unexplained = await run_turn(
+            TurnScript(
+                events=[tool_a, tool_b, _DONE], answers={"req-a": APPROVED}, setup=_blocking_hooks
+            )
+        )
+        [recovery] = unexplained.successors
+        assert recovery.args[0].startswith(REFUSAL_RECOVERY_PREFIX)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [UNANSWERED, REJECTED, REJECTED_ONCE])
+    async def test_a_declined_prompt_carries_the_turn_on(self, answer: str) -> None:
+        # Both cards say the turn "carried on from the denial"; this is that.
+        record = await run_turn(_prompt_turn(answers={"req-1": answer}))
+        assert [row["content"] for row in record.rows("assistant")][-1] == "after the denial"
+        assert record.stop_reason == STOP_REASON_END_TURN
+
+
+def test_the_bounded_steer_is_never_wrapped_again_at_a_call_site() -> None:
+    """Kept as a source pin: it guards duplication, which no turn can observe.
+
+    The steer's bound lives inside ``_steer_policy_notice`` so every deny path
+    inherits it and a new one cannot be added without it. A call site wrapping
+    the helper in its own ``asyncio.wait_for`` behaves identically (same or a
+    larger bound) -- the behavioural half is
+    ``test_a_steer_that_never_returns_still_lets_the_reject_through`` -- so the
+    one thing left to guard is the duplicated bound itself. Scanned over the
+    runner and every ``chat_turn`` owner, so a move between them keeps it.
+    Counted in ``test_source_pin_budget.py``.
+    """
+    from kiro_crew.dashboard import chat_runner, chat_turn
+
+    sources = [Path(chat_runner.__file__)] + sorted(Path(chat_turn.__file__).parent.glob("*.py"))
+    rewrapped = [
+        f"{path.name}:{node.lineno}"
+        for path in sources
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) in ("asyncio.wait_for", "wait_for")
+        and node.args
+        and isinstance(node.args[0], ast.Call)
+        and ast.unparse(node.args[0].func) == "_steer_policy_notice"
+    ]
+    assert rewrapped == [], f"the steer notice is bounded twice: {rewrapped}"

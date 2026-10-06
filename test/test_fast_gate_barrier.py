@@ -66,7 +66,7 @@ _GATE_JOBS = (
 # that was born there. Explicit for the same reason as _GATE_JOBS -- a job added
 # without the push/variable clause would be the one job left running on a
 # queue-on push, and a file-derived list would admit it silently.
-_FAST_GATE_JOBS = _GATE_JOBS[:-1] + ("memory-store-seam", "docs-lint")
+_FAST_GATE_JOBS = _GATE_JOBS[:-1] + ("memory-store-seam", "docs-lint", "static-ratchets")
 
 #: The exact `if` clause that trims a job off the push path while the repository
 #: variable MERGE_QUEUE_ENABLED is 'true', and keeps it there while it is unset.
@@ -102,7 +102,7 @@ _MUST_NOT_REACH: dict[str, str] = {
 # says "reaching the barrier is expected", not "unchecked".
 _REACHES_BUT_SURVIVES_A_SKIP: dict[str, str] = {
     "coverage-gate": (
-        "runs `if: always()` so a required check emits a real verdict -- GitHub "
+        "runs `if: !cancelled()` so a required check emits a real verdict -- GitHub "
         "reports a SKIPPED required check as satisfied, so a silent skip here would "
         "remove the coverage floor exactly when the barrier skips the shards"
     ),
@@ -575,10 +575,13 @@ class TestTheEdgeReachesEveryExpensiveJob:
         )
 
     def test_the_coverage_reporters_survive_a_gate_skipped_upstream(self, ci: dict) -> None:
-        # coverage-gate keeps always() because GitHub reports a SKIPPED required check
-        # as satisfied: without it, a red gate would skip the shards and take the
-        # coverage floor with them.
-        assert "always()" in str(ci["jobs"]["coverage-gate"]["if"])
+        # coverage-gate runs past a failed or skipped upstream (`!cancelled()`, never
+        # the default success()) because GitHub reports a SKIPPED required check as
+        # satisfied: without it, a red gate would skip the shards and take the
+        # coverage floor with them. Only a cancelled RUN stops it.
+        gate_if = str(ci["jobs"]["coverage-gate"]["if"])
+        assert "!cancelled()" in gate_if
+        assert "success()" not in gate_if
         # frontend-coverage-merge solves the mirror-image problem the other way: it
         # still runs when a shard FAILED (there is a report to stitch) but not when the
         # shards were skipped (there is not), so it cannot go red for a reason

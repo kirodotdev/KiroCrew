@@ -1640,14 +1640,14 @@ class TestRebindResetsDismissals:
 # defer its write (``_dismissed_hydrated = False``) -- a site that does neither
 # shows the user a chip they unlinked until the slot next hydrates. The
 # structural pin below DISCOVERS the sites (a new hand-rolled bind path is found,
-# not listed) and this set only asserts the scan has not gone blind.
+# not listed) and this set only asserts the scan has not gone blind. The three
+# restore readers -- the open-tab restore, the recent-sessions restore and the
+# History resume -- apply metadata through ``slot_persistence.metadata_codec``
+# instead of by hand, so they are pinned at that table (the pin's last assertion)
+# and by the end-to-end restore test each gets in the class below.
 _KNOWN_HYDRATION_SITES = frozenset(
     {
-        ("chat_persistence", "_rehydrate_slot_from_history"),
-        ("chat_persistence", "_apply_recent_session"),
         ("channel_slots", "surface_channel_session"),
-        # The chat handlers' resume owner, composed into chat_handlers.
-        ("resume", "_hydrate_slot_from_history"),
         ("cron_inject", "_bind_cron_slot"),
         ("cron", "api_cron_to_chat"),
     }
@@ -1810,6 +1810,15 @@ class TestEveryHydrationPathRestoresOrDefers:
         assert not missing, (
             "these slot-bind paths apply transcript metadata/rows without restoring "
             f"the dismissed source-link mirror: {missing}"
+        )
+        # The restore readers' metadata goes through the codec's field table, and
+        # its dismissed row must be read by every purpose the table serves.
+        from kiro_crew.dashboard.slot_persistence import metadata_codec
+
+        row = next(r for r in metadata_codec.FIELDS if r.key == "dismissed_source_links")
+        assert row.purposes == metadata_codec.PURPOSES, (
+            "a restore reader no longer restores the dismissed source-link mirror: "
+            f"{sorted(metadata_codec.PURPOSES - row.purposes)}"
         )
 
     @pytest.mark.asyncio

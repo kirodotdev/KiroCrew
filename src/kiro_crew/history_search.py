@@ -996,8 +996,8 @@ def needles_match_text(
 # its list container.
 #
 # Why bytes and not an entry count: a session is read up to
-# ``_SESSION_MAX_BYTES`` (2 MB), so ``_SEARCH_SCAN_WINDOW`` entries is anywhere
-# from a few MB to ~1 GB depending on the corpus. An entry count therefore
+# ``history._SESSION_MAX_BYTES`` (10 MB), so ``_SEARCH_SCAN_WINDOW`` entries is
+# anywhere from a few MB to ~5 GB depending on the corpus. An entry count therefore
 # bounds nothing that matters; it only *looked* safe because real sessions are
 # small (a 171 MB / 230-session corpus folds to ~8 MB).
 #

@@ -1,16 +1,46 @@
 """Field metadata and value coercion shared by every config section owner.
 
 ``_meta`` builds the metadata a section field carries into the schema and the
-config surfaces, and the ``_safe_*`` readers turn a raw ``config.json`` value
-into the field's type or its default without raising. This is a leaf module: it
-imports nothing from ``kiro_crew``, so each section owner depends on it without a
-cycle, and ``config.sections`` re-exports every name.
+config surfaces, the ``_safe_*`` readers turn a raw ``config.json`` value into
+the field's type or its default without raising, and ``field_default`` reads the
+default a DTO field declares. This is a leaf module: it imports nothing from
+``kiro_crew``, so each section owner depends on it without a cycle, and
+``config.sections`` re-exports every name.
 """
 
 from __future__ import annotations
 
+import functools
 import math
 import re as _re
+from collections.abc import Mapping
+from dataclasses import MISSING, Field
+from dataclasses import fields as _dataclass_fields
+from typing import Any
+
+
+@functools.cache
+def _declared_fields(dto: type) -> Mapping[str, Field[Any]]:
+    """*dto*'s dataclass fields by name, computed once per DTO class."""
+    return {f.name: f for f in _dataclass_fields(dto)}
+
+
+def field_default(dto: type, name: str) -> Any:
+    """The default declared on dataclass *dto*'s field *name*, a fresh one for a factory.
+
+    The one implementation of that rule: ``sections.SectionReader`` reads its defaults
+    through it, and so does a normalizer or single-value reader with no section
+    mapping to wrap (a ``__post_init__``, a value coercer, a reader the gateway
+    shares), in ``config.sections`` and in the section owners, which sit under that
+    facade and never import it. A name with no field, or a field with no default,
+    raises ``KeyError``.
+    """
+    spec = _declared_fields(dto)[name]
+    if spec.default is not MISSING:
+        return spec.default
+    if spec.default_factory is not MISSING:
+        return spec.default_factory()
+    raise KeyError(name)
 
 
 def _safe_int(value: object, default: int, lo: int | None = None, hi: int | None = None) -> int:

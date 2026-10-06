@@ -474,10 +474,15 @@ _RUN_DIR_BACKLOG_WARN = 1000
 def _doctor_run_dirs() -> None:
     """Report, in one line, the run directories the gateway's sweep cannot reclaim.
 
-    Advisory and read-only. A subagent or stateless cron run gets a directory
-    under the workspace root that the provider marks at first start and reclaims
-    at shutdown; the gateway sweeps what a dead predecessor of its own data home
-    left. Two figures from one bounded walk, judged by the sweep's own rule:
+    Advisory and read-only. A subagent, a stateless cron run or a memory
+    consolidation call gets a directory under the workspace root that the provider
+    marks at first start and reclaims at shutdown; the gateway sweeps what a dead
+    predecessor of its own data home left. Where the walk cannot pin ``.kiro``
+    (Windows), a folder holding kiro-cli's ``.kiro/agents`` is kept, and a
+    marked one whose marker the sweep's rule permits stays out of both figures,
+    which read names and markers only. A memory consolidation folder is never
+    marked there, so the census counts it with the unmarked ones. Two figures
+    from one bounded walk, judged by the sweep's own rule:
     directories from builds that wrote no marker (a name is not provenance, so
     the sweep deletes nothing it cannot prove Crew made), and marked directories
     this data home cannot act on -- another data home's, an unreadable marker,
@@ -487,6 +492,7 @@ def _doctor_run_dirs() -> None:
     from kiro_crew.config.loader import workspace_root
     from kiro_crew.session_pid import retained_gateway_pids
     from kiro_crew.session_work_dir import DERIVED_NAME_RE, RUN_DIR_MARKER, count_run_dirs
+    from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_NAME
 
     try:
         # Resolve only: the default resolver creates the tree, and a read-only
@@ -510,15 +516,17 @@ def _doctor_run_dirs() -> None:
     warn = census.unmarked > _RUN_DIR_BACKLOG_WARN or census.refused > 0
     print(
         f"  run dirs:    {'⚠️ ' if warn else '✅'} under {root}: {census.unmarked}{suffix} run"
-        f" director(ies) carry no {RUN_DIR_MARKER} marker (left by a build that wrote none);"
-        f" {census.refused}{suffix} marked director(ies) this data home cannot reclaim (another"
-        f" data home's, an unreadable marker, or a gateway the pid ledger still retains)"
+        f" director(ies) carry no {RUN_DIR_MARKER} marker (left by a build that did not mark that"
+        f" kind); {census.refused}{suffix} marked director(ies)"
+        f" this data home cannot reclaim (another data home's, an unreadable marker, or a"
+        f" gateway the pid ledger still retains)"
     )
     if census.unmarked > _RUN_DIR_BACKLOG_WARN:
         print(
             f"{render._INDENT}The gateway reclaims only marked run directories. With the gateway"
-            f" stopped, move directories matching {DERIVED_NAME_RE.pattern} that hold only"
-            f" .kiro/settings/cli.json out of {root}; a live run recreates its own."
+            f" stopped, move directories matching {DERIVED_NAME_RE.pattern} that hold nothing"
+            f" beyond .kiro/settings/cli.json, .kiro/settings/{CLI_SETTINGS_LOCK_NAME} and an"
+            f" empty .kiro/agents out of {root}; a live run recreates its own."
         )
 
 

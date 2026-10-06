@@ -6,7 +6,7 @@ import asyncio
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -1073,6 +1073,94 @@ def _overdue_reap_fixture(tmp_path: object, job_id: str) -> tuple[CronService, C
         trigger="scheduled", claimed_at=time.time() - _JOB_TIMEOUT_SECS - 60, task=_live_task()
     )
     return svc, job, claim
+
+
+#: Lost-run ceiling on a state a test has just released ON THE LOOP: a refused
+#: start's reservation cleanup, a held claim reaching the fence door, a claim
+#: reaching a busy parent's turn. Each is a few loop steps and at most one worker
+#: hop, milliseconds; only a wedged allocation path reaches the ceiling, which is
+#: a sixth of the suite's 120 s ``--timeout``, so it fails by name.
+_FENCE_SETTLE_CEILING_SECS = 20.0
+
+#: ``_REAPER_RESET_TIMEOUT`` in a test whose reset COMPLETES. The bound only picks
+#: a production branch -- the completed reset or "reset hung, attempting SIGKILL"
+#: -- so in these tests it is a lost-run ceiling, never the race. The real reset of
+#: a live session makes worker hops (the end-record unlink, the queue unlink, the
+#: child probe), milliseconds on an idle host, and 0.2 s let a loop stall pick the
+#: hung branch. It is the production default and a quarter of ``--timeout``.
+_COMPLETED_RESET_CEILING_SECS = 30.0
+
+
+def _assert_the_reset_completed(caplog: pytest.LogCaptureFixture, elapsed: float) -> None:
+    """Fail by name when a reset outlived ``_COMPLETED_RESET_CEILING_SECS``.
+
+    Production answers that by taking its hung branch, which the test would
+    otherwise report only through a later, unrelated assertion. *elapsed* is how
+    long the reap took, quoted in the failure.
+    """
+    hung = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron" and "reset hung" in r.getMessage()
+    ]
+    assert hung == [], (
+        f"the reset outlived the {_COMPLETED_RESET_CEILING_SECS:.0f}s lost-run ceiling "
+        f"(_COMPLETED_RESET_CEILING_SECS); the reap took {elapsed:.2f}s: {hung}"
+    )
+
+
+async def _settle(predicate: Callable[[], bool], what: str) -> None:
+    """Poll until ``predicate()`` holds; at the ceiling raise naming ``what`` and the time."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    while not predicate():
+        elapsed = loop.time() - started
+        if elapsed > _FENCE_SETTLE_CEILING_SECS:
+            raise AssertionError(f"{what} after {elapsed:.3f}s")
+        await asyncio.sleep(0.005)
+
+
+async def _within_the_ceiling(aw: Any, what: str) -> Any:
+    """Await *aw* under ``_FENCE_SETTLE_CEILING_SECS``; past it raise naming ``what``."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        return await asyncio.wait_for(aw, timeout=_FENCE_SETTLE_CEILING_SECS)
+    except asyncio.TimeoutError:
+        raise AssertionError(
+            f"{what}: not done after {loop.time() - started:.3f}s "
+            f"(lost-run ceiling {_FENCE_SETTLE_CEILING_SECS:.0f}s)"
+        ) from None
+
+
+def _parks_at_the_fence_door(mgr: Any) -> tuple[asyncio.Event, Any]:
+    """An event set when a caller parks at ``mgr``'s ending-fence door, and the patch that sets it."""
+    boundary = mgr._allocation_boundary()
+    real_wait = boundary.wait_for_ending_fence
+    parked = asyncio.Event()
+
+    async def _wait(key: str, deadline: float | None) -> float | None:
+        if key in boundary.state.ending_keys:
+            parked.set()
+        return await real_wait(key, deadline)
+
+    return parked, patch.object(boundary, "wait_for_ending_fence", _wait)
+
+
+async def _held_or_landed(parked: asyncio.Event, claim: asyncio.Task[Any]) -> str:
+    """Wait until the claim parks at the fence door or lands, and name which.
+
+    Returns rather than raises: the reset and history-append seams it runs in
+    swallow exceptions, so the caller's own assertion names the outcome.
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    while not parked.is_set() and not claim.done():
+        elapsed = loop.time() - started
+        if elapsed > _FENCE_SETTLE_CEILING_SECS:
+            return f"neither held nor landed after {elapsed:.3f}s"
+        await asyncio.sleep(0.005)
+    return "held" if parked.is_set() and not claim.done() else "landed before the record"
 
 
 def _audited_outcome(mock_sel: MagicMock) -> str:
@@ -3032,7 +3120,7 @@ class TestTheSessionTheResetPopsIsCaptured:
     async def test_through_the_real_manager_the_popped_session_s_process_is_killed(
         self, tmp_path: object
     ) -> None:
-        """End to end: a cold start attempted inside the reap's reset call is held at the door -- the fence, not the pop capture, answers it -- and lands after the record.
+        """End to end: a cold start attempted inside the reap's pass is held at the door -- the fence, not the pop capture, answers it -- and lands after the record.
 
         Through the real manager the pop capture is the net under the fence: a
         cold start under the key between the reap's snapshot and the reset's pop
@@ -3060,18 +3148,9 @@ class TestTheSessionTheResetPopsIsCaptured:
             return provider
 
         mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory)
-        real_reset = mgr.reset
+        parked, door = _parks_at_the_fence_door(mgr)
         racing: list[asyncio.Task[Any]] = []
-        held_during_reset: list[bool] = []
-
-        async def _cold_start_then_reset(key: str, **kwargs: Any) -> bool:
-            # The late completion's cold start, attempted after the reap's
-            # snapshot and before the pop: held at the door while the fence is up.
-            racing.append(asyncio.create_task(mgr.get_or_create(key)))
-            for _ in range(20):
-                await asyncio.sleep(0)
-            held_during_reset.append(not racing[0].done())
-            return await real_reset(key, **kwargs)
+        held_during_reset: list[str] = []
 
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
@@ -3082,11 +3161,22 @@ class TestTheSessionTheResetPopsIsCaptured:
             trigger="scheduled", claimed_at=time.time() - _JOB_TIMEOUT_SECS - 60, task=_live_task()
         )
         children, start_id, sweep = _kill_path_stubs()
+        real_pass = svc._reset_and_kill_once
+
+        async def _cold_start_then_pass(session_key: str, pairs: Any, **kwargs: Any) -> Any:
+            # The late completion's cold start, after the reap's snapshot and
+            # before the reset's pop: held at the door while the fence is up.
+            # Observed here, outside the reset's own bound, so no reset timeout
+            # can cut the observation short.
+            racing.append(asyncio.create_task(mgr.get_or_create(session_key)))
+            held_during_reset.append(await _held_or_landed(parked, racing[0]))
+            return await real_pass(session_key, pairs, **kwargs)
 
         with (
             patch("kiro_crew.sel.sel") as mock_sel,
             patch.object(svc, "_save"),
-            patch.object(mgr, "reset", side_effect=_cold_start_then_reset),
+            patch.object(svc, "_reset_and_kill_once", _cold_start_then_pass),
+            door,
             patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.2),
             children,
             start_id,
@@ -3097,19 +3187,19 @@ class TestTheSessionTheResetPopsIsCaptured:
             assert svc._session_process_handles("cron:late4") == []
             await svc._force_reap("late4", _JOB_TIMEOUT_SECS + 60, claim=claim)
 
-        assert held_during_reset == [True], (
+        assert held_during_reset == ["held"], (
             "the cold start attempted between the snapshot and the pop was answered under the "
-            f"fenced key: {racing[0].exception() if racing[0].done() and racing[0].exception() else 'it registered'}"
+            f"fenced key: {racing[0].exception() if racing and racing[0].done() and racing[0].exception() else held_during_reset}"
         )
         group_kill.assert_not_called()
         assert _audited_outcome(mock_sel) == "reaped"
         assert "kill failed" not in (job.last_error or "")
         # The fence lifted with the passes: the held call lands -- the completion
         # racing the reap is delivered after the record, not dropped.
-        _, is_new, _ = await asyncio.wait_for(racing[0], timeout=5)
+        _, is_new, _ = await _within_the_ceiling(racing[0], "the held cold start landing")
         assert is_new and mgr.has_session("cron:late4")
         mgr.release("cron:late4")
-        await real_reset("cron:late4")
+        await mgr.reset("cron:late4")
 
 
 class TestARegistrationAfterThePopIsNamedNotChased:
@@ -3213,7 +3303,7 @@ class TestARegistrationAfterThePopIsNamedNotChased:
 
     @pytest.mark.asyncio
     async def test_through_the_real_manager_a_cold_start_after_the_pop_is_held_by_the_fence(
-        self, tmp_path: object
+        self, tmp_path: object, caplog: pytest.LogCaptureFixture
     ) -> None:
         """End to end: the first reset completes and the late cold start after its pop is held by the fence -- nothing lands, nothing is dropped.
 
@@ -3251,9 +3341,10 @@ class TestARegistrationAfterThePopIsNamedNotChased:
         client._start_time = _START_ID
         provider._client = client
         real_reset = mgr.reset
+        parked, door = _parks_at_the_fence_door(mgr)
         resets = 0
         racing: list[asyncio.Task[Any]] = []
-        held_after_pop: list[bool] = []
+        held_after_pop: list[str] = []
 
         async def _reset_then_late_cold_start(key: str, **kwargs: Any) -> bool:
             nonlocal resets
@@ -3262,9 +3353,7 @@ class TestARegistrationAfterThePopIsNamedNotChased:
             if resets == 1:
                 # The late completion's cold start after the pop: held at the door.
                 racing.append(asyncio.create_task(mgr.get_or_create(key)))
-                for _ in range(20):
-                    await asyncio.sleep(0)
-                held_after_pop.append(not racing[0].done())
+                held_after_pop.append(await _held_or_landed(parked, racing[0]))
             return result
 
         svc = CronService(base_dir=None, on_job=AsyncMock())
@@ -3281,7 +3370,8 @@ class TestARegistrationAfterThePopIsNamedNotChased:
             patch("kiro_crew.sel.sel") as mock_sel,
             patch.object(svc, "_save"),
             patch.object(mgr, "reset", side_effect=_reset_then_late_cold_start),
-            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.2),
+            door,
+            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", _COMPLETED_RESET_CEILING_SECS),
             children,
             start_id,
             sweep,
@@ -3289,18 +3379,21 @@ class TestARegistrationAfterThePopIsNamedNotChased:
             patch("kiro_crew.platform_compat.pid_exists", return_value=False),
             patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
+            reap_started = asyncio.get_running_loop().time()
             await svc._force_reap("chase4", _JOB_TIMEOUT_SECS + 60, claim=claim)
+            reap_took = asyncio.get_running_loop().time() - reap_started
+        _assert_the_reset_completed(caplog, reap_took)
 
-        assert held_after_pop == [True], (
+        assert held_after_pop == ["held"], (
             "the late cold start after the pop was answered under the fenced key: "
-            f"{racing[0].exception() if racing[0].done() and racing[0].exception() else 'it registered'}"
+            f"{racing[0].exception() if racing and racing[0].done() and racing[0].exception() else held_after_pop}"
         )
         assert resets == 1, "the key was reset more than once although nothing landed after the pop"
         group_kill.assert_not_called()
         assert _audited_outcome(mock_sel) == "reaped"
         assert "kill failed" not in (job.last_error or "")
         # The held call lands after the record: the completion is delivered, not dropped.
-        _, is_new, _ = await asyncio.wait_for(racing[0], timeout=5)
+        _, is_new, _ = await _within_the_ceiling(racing[0], "the held cold start landing")
         assert is_new and mgr.has_session("cron:chase4")
         mgr.release("cron:chase4")
         await real_reset("cron:chase4")
@@ -3679,7 +3772,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
 
         mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory)
         cold_start = asyncio.create_task(mgr.get_or_create("cron:fence1"))
-        await asyncio.wait_for(inside_start.wait(), timeout=2)
+        await _settle(inside_start.is_set, "the cold start reached the provider start")
         assert not mgr.has_session("cron:fence1"), "nothing is published while start() runs"
 
         svc = CronService(base_dir=None, on_job=AsyncMock())
@@ -3713,7 +3806,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             # start return: refused at registration, its provider hard-killed,
             # and the call allocates again -- the completion lands after the record.
             gate.set()
-            provider, is_new, _ = await asyncio.wait_for(cold_start, timeout=5)
+            provider, is_new, _ = await _within_the_ceiling(cold_start, "the refused cold start")
 
         group_kill.assert_not_called()  # nothing was published for the passes to kill
         assert (
@@ -3734,7 +3827,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
     async def test_through_the_real_manager_a_start_refused_during_the_passes_is_still_named(
         self, tmp_path: object
     ) -> None:
-        """The start returns WHILE the passes run: refused, hard-killed by dispatch, its reservation gone -- and still named.
+        """The start returns after the pass, before the post-pass read: refused, hard-killed by dispatch, its reservation gone -- and still named.
 
         Without the receipt the reservation cleanup erased every trace of that
         start before the post-pass read, so the record said ``reaped`` on the
@@ -3773,20 +3866,9 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
 
         mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory)
         cold_start = asyncio.create_task(mgr.get_or_create("cron:fence7"))
-        await asyncio.wait_for(inside_start.wait(), timeout=2)
-        real_reset = mgr.reset
+        await _settle(inside_start.is_set, "the cold start reached the provider start")
         refused_during_passes: list[bool] = []
-
-        async def _reset_then_let_the_start_return(key: str, **kwargs: Any) -> bool:
-            result = await real_reset(key, **kwargs)
-            # The start returns while the fence is up: refused at registration,
-            # its provider hard-killed, its reservation removed -- all before the
-            # post-pass read.
-            gate.set()
-            for _ in range(50):
-                await asyncio.sleep(0)
-            refused_during_passes.append(not mgr._has_allocation_reservation(key))
-            return result
+        settle_failures: list[str] = []
 
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
@@ -3797,12 +3879,35 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             trigger="scheduled", claimed_at=time.time() - _JOB_TIMEOUT_SECS - 60, task=_live_task()
         )
         children, start_id, sweep = _kill_path_stubs()
+        real_pass = svc._reset_and_kill_once
+
+        async def _pass_then_let_the_start_return(
+            session_key: str, pairs: Any, **kwargs: Any
+        ) -> Any:
+            result = await real_pass(session_key, pairs, **kwargs)
+            # The pass is over and the post-pass read not yet run: the start
+            # returns now, fence up -- refused at registration, its provider
+            # hard-killed, its reservation removed. Waited for OUTSIDE the
+            # reset's own bound, so no reset timeout can cut it short.
+            gate.set()
+            try:
+                await _settle(
+                    lambda: not mgr._has_allocation_reservation(session_key),
+                    "the start released after the pass was not refused with its reservation "
+                    "removed",
+                )
+            except AssertionError as exc:
+                # Recorded, not raised: the test reports it by name below, ahead
+                # of whatever the reap does with an exception from its pass.
+                settle_failures.append(str(exc))
+            refused_during_passes.append(not mgr._has_allocation_reservation(session_key))
+            return result
 
         with (
             patch("kiro_crew.sel.sel") as mock_sel,
             patch.object(svc, "_save"),
             patch.object(mgr, "_dispatch_hard_kill") as hard_kill,
-            patch.object(mgr, "reset", side_effect=_reset_then_let_the_start_return),
+            patch.object(svc, "_reset_and_kill_once", _pass_then_let_the_start_return),
             patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.2),
             children,
             start_id,
@@ -3811,6 +3916,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             await svc._force_reap("fence7", _JOB_TIMEOUT_SECS + 60, claim=claim)
+            assert settle_failures == [], settle_failures
             assert refused_during_passes == [True], (
                 "the test did not get the start refused and its reservation removed before the "
                 "post-pass read"
@@ -3819,7 +3925,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
                 "the audit says the run was reaped while a cold start under the key had just "
                 "been refused at registration with its hard kill unconfirmed"
             )
-            provider, is_new, _ = await asyncio.wait_for(cold_start, timeout=5)
+            provider, is_new, _ = await _within_the_ceiling(cold_start, "the refused cold start")
 
         group_kill.assert_not_called()
         assert (
@@ -3834,11 +3940,11 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         # The receipt went with the fence: the recorded key carries nothing forward.
         assert mgr._spawn_in_flight("cron:fence7") is None
         mgr.release("cron:fence7")
-        await real_reset("cron:fence7")
+        await mgr.reset("cron:fence7")
 
     @pytest.mark.asyncio
     async def test_through_the_real_manager_a_caller_held_at_the_door_lands_only_once_the_run_is_recorded(
-        self, tmp_path: object
+        self, tmp_path: object, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The fence outlives the passes: a completion held at the door wakes to a RECORDED key.
 
@@ -3875,6 +3981,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         client._start_time = _START_ID
         provider._client = client
         real_reset = mgr.reset
+        parked, door = _parks_at_the_fence_door(mgr)
         events: list[str] = []
         racing: list[asyncio.Task[Any]] = []
 
@@ -3888,9 +3995,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             if not racing:
                 # The completion's cold start after the pop: held at the door.
                 racing.append(asyncio.create_task(_land()))
-                for _ in range(20):
-                    await asyncio.sleep(0)
-                events.append("held" if not racing[0].done() else "landed before the passes ended")
+                events.append(await _held_or_landed(parked, racing[0]))
             return result
 
         boundary = mgr._allocation_boundary()
@@ -3921,7 +4026,8 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             patch.object(svc._history, "append", AsyncMock(side_effect=_append)),
             patch.object(boundary, "end_ending", side_effect=_end_ending),
             patch.object(mgr, "reset", side_effect=_reset_then_race),
-            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.2),
+            door,
+            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", _COMPLETED_RESET_CEILING_SECS),
             children,
             start_id,
             sweep,
@@ -3929,8 +4035,11 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             mock_sel().log_tool_invocation.side_effect = lambda **_: events.append("audit")
+            reap_started = asyncio.get_running_loop().time()
             await svc._force_reap("fence5", _JOB_TIMEOUT_SECS + 60, claim=claim)
-            _, is_new, _ = await asyncio.wait_for(racing[0], timeout=5)
+            reap_took = asyncio.get_running_loop().time() - reap_started
+            _assert_the_reset_completed(caplog, reap_took)
+            _, is_new, _ = await _within_the_ceiling(racing[0], "the held caller landing")
 
         assert events == ["held", "record", "audit", "fence down", "landed"], (
             "the caller held at the door was let in against a key that was neither being ended "
@@ -3945,7 +4054,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
 
     @pytest.mark.asyncio
     async def test_through_the_real_manager_a_claim_waiting_on_the_busy_parent_is_not_named_and_lands_after_the_record(
-        self, tmp_path: object
+        self, tmp_path: object, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A reservation is not a process: a completion's claim blocked on the busy parent's turn is held, not named.
 
@@ -3983,9 +4092,16 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         client._start_time = _START_ID
         provider._client = client
 
-        waiter = asyncio.create_task(mgr.get_or_create("cron:fence6"))
-        for _ in range(20):
-            await asyncio.sleep(0)
+        at_the_turn = asyncio.Event()
+        real_reacquire = mgr._reacquire_and_validate
+
+        async def _reacquire(*args: Any, **kwargs: Any) -> bool:
+            at_the_turn.set()  # past the worker hop, about to park on the held permit
+            return await real_reacquire(*args, **kwargs)
+
+        with patch.object(mgr, "_reacquire_and_validate", _reacquire):
+            waiter = asyncio.create_task(mgr.get_or_create("cron:fence6"))
+            await _settle(at_the_turn.is_set, "the claim did not reach the busy parent's turn")
         assert not waiter.done(), "the claim did not wait on the busy parent's turn"
         assert mgr._has_allocation_reservation(
             "cron:fence6"
@@ -4005,20 +4121,23 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         with (
             patch("kiro_crew.sel.sel") as mock_sel,
             patch.object(svc, "_save"),
-            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", 0.2),
+            patch("kiro_crew.cron._REAPER_RESET_TIMEOUT", _COMPLETED_RESET_CEILING_SECS),
             children,
             start_id,
             sweep,
             patch("kiro_crew.platform_compat.pid_exists", return_value=False),
             patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
+            reap_started = asyncio.get_running_loop().time()
             await svc._force_reap("fence6", _JOB_TIMEOUT_SECS + 60, claim=claim)
+            reap_took = asyncio.get_running_loop().time() - reap_started
+            _assert_the_reset_completed(caplog, reap_took)
             assert _audited_outcome(mock_sel) == "reaped", (
                 "the audit says the run's kill failed over a claim that started nothing: "
                 f"{job.last_error!r}"
             )
             # Woken by the reset, held at the door, landed after the record.
-            _, is_new, _ = await asyncio.wait_for(waiter, timeout=5)
+            _, is_new, _ = await _within_the_ceiling(waiter, "the woken claim landing")
 
         group_kill.assert_not_called()
         assert "kill failed" not in (job.last_error or "")
@@ -4130,7 +4249,8 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         so the record says ``reaped`` over a live process nothing answered.
         The fence holds that claim at the door until the record and the audit
         are written, so it lands only under a recorded key. Red with the fence
-        removed (``_ending_fence`` a no-op): the claim lands before the record.
+        removed (``process_identity.ending_fence`` returning ``nullcontext()``): the
+        claim lands before the record.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -4152,6 +4272,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory)
         provider, _, _ = await mgr.get_or_create("cron:fence7")
         mgr.release("cron:fence7")
+        parked, door = _parks_at_the_fence_door(mgr)
         client = MagicMock()
         client._pid = 2**22 + 9393
         client._child_pids = {}
@@ -4178,15 +4299,11 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
 
         async def _append(record: Any) -> None:
             # The passes and the post-pass read are over; the record is being
-            # written. A completion's claim begins now and is given time enough
-            # for a cold start (a thread hop and an instant provider start) to
-            # publish: unfenced, it lands here; fenced, it is held at the door.
+            # written. A completion's claim begins now and is followed until it
+            # parks at the fence door or lands: unfenced, it lands here; fenced,
+            # it is held at the door.
             racing.append(asyncio.create_task(_land()))
-            for _ in range(50):
-                await asyncio.sleep(0.01)
-                if racing[0].done():
-                    break
-            events.append("landed before the record" if racing[0].done() else "held")
+            events.append(await _held_or_landed(parked, racing[0]))
             events.append("record")
             await real_append(record)
 
@@ -4194,6 +4311,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
             patch("kiro_crew.sel.sel") as mock_sel,
             patch.object(svc, "_save"),
             patch.object(svc._history, "append", AsyncMock(side_effect=_append)),
+            door,
             children,
             start_id,
             sweep,
@@ -4202,7 +4320,7 @@ class TestAColdStartInFlightWhenTheRunEndsIsFenced:
         ):
             mock_sel().log_tool_invocation.side_effect = lambda **_: events.append("audit")
             await svc._force_reap("fence7", _JOB_TIMEOUT_SECS + 60, claim=claim)
-            _, is_new, _ = await asyncio.wait_for(racing[0], timeout=5)
+            _, is_new, _ = await _within_the_ceiling(racing[0], "the held caller landing")
 
         assert events == ["held", "record", "audit", "landed"], (
             "the run was recorded reaped over a session that landed under the key after the "

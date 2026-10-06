@@ -175,10 +175,7 @@ HELD_OPEN_PARAM: dict[str, str] = {
 #: Parameterized GETs that answer 5xx for an id that does not exist. Each is a
 #: defect with a tracking issue; an entry comes out when the status moves
 #: below 500 (the test fails on a listed route that answers below 500).
-UNKNOWN_ID_ANSWERS_5XX: dict[str, str] = {
-    "/api/remote-artifacts/{provider}/browse": "GH #14288: unknown provider answered 503",
-    "/api/remote-artifacts/{provider}/{external_id}": "GH #14288: unknown provider answered 502",
-}
+UNKNOWN_ID_ANSWERS_5XX: dict[str, str] = {}
 
 PER_REQUEST_SECS = 10.0
 

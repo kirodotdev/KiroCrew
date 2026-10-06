@@ -216,6 +216,25 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
 
+def _audit_owner_read(request: web.Request, operation: str) -> None:
+    """Record an owner gate grant, as the briefing and rules reads do.
+
+    A denied-only trail cannot answer who read the owner's view of the crew, so a
+    granted read leaves an ``allowed`` record too. Best effort: an audit must never
+    change the outcome.
+    """
+    try:
+        _sel().log_api_access(
+            caller=request.remote or "",
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+            resources="owner_grant",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
 def _member_name_is_addressable(value: object) -> bool:
     return members_mod.is_dispatchable_member_name(value)
 
@@ -353,6 +372,14 @@ async def api_members(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.list")
     if denied is not None:
         return denied
+    # Owner gate, the briefing and rules endpoints' boundary: every row carries the
+    # owner's view of a crewmate (its last DM line, its slot, its projections), and
+    # a non-owner dashboard session holds the same empty app claim the app-caller
+    # guard lets through. Gated before the config load, so a denial costs no read.
+    owner_denied = await require_owner_dashboard_request(request, "members.list.read")
+    if owner_denied is not None:
+        return owner_denied
+    _audit_owner_read(request, "members.list.read")
     state: DashboardState | None = request.app.get("state")
     # Loaded WITH the digest of the bytes it was parsed from. Every config-derived row
     # field below comes from this one load, and the per-row reconcile that writes them
@@ -1308,6 +1335,10 @@ async def api_member_projections(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.projections")
     if denied is not None:
         return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.projections.read")
+    if owner_denied is not None:
+        return owner_denied
+    _audit_owner_read(request, "members.projections.read")
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)
@@ -1436,6 +1467,10 @@ async def api_member_activity(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.activity")
     if denied is not None:
         return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.activity.read")
+    if owner_denied is not None:
+        return owner_denied
+    _audit_owner_read(request, "members.activity.read")
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)
@@ -1602,8 +1637,8 @@ async def api_member_briefing(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     # Owner gate, the rules endpoint's boundary: the briefing is the crewmate's
-    # private working memory, written for its owner. Any allowed Slack user can
-    # mint a dashboard session (`!dashboard`), so the app-caller guard alone
+    # private working memory, written for its owner. A Telegram, Teams or Webex
+    # allowlist user can mint a dashboard session, so the app-caller guard alone
     # would let a non-owner colleague read notes the owner never shared. Gated
     # before any validation or file IO, so a denial costs no read.
     owner_denied = await require_owner_dashboard_request(request, "members.briefing.read")
@@ -1725,8 +1760,8 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     # Owner gate, same boundary as the PUT: the rules are the OWNER's private
-    # safety instructions for this member. Any allowed Slack user can mint a
-    # dashboard session (`!dashboard`), so without this gate a non-owner
+    # safety instructions for this member. A Telegram, Teams or Webex allowlist
+    # user can mint a dashboard session, so without this gate a non-owner
     # colleague could read boundaries the owner never shared — disclosure is
     # one-way, so the read is gated exactly like the write.
     owner_denied = await require_owner_dashboard_request(request, "members.rules.read")

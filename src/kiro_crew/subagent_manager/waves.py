@@ -404,6 +404,25 @@ class WaveDigestCoordinator(ManagerComponent):
             return
         await self._manager._settle_digest_holds(info)
 
+    def _settle_owed_reports(
+        self, deliveries: list[SubagentDelivery], *, delivered: bool = True
+    ) -> list[SubagentDelivery]:
+        """Detach every memory-wait expiry from *deliveries*, clearing its owed
+        report only when the digest or queued announce carrying it was
+        *delivered*.
+
+        A delivered expiry is owed no report any more. One whose carrier the
+        gateway gave up on (``_report_undelivered``) keeps its mark, so the next
+        start replays it. Either way it has no run folder, so it is left out of
+        the tombstones; the rest are returned for them.
+        """
+        owed = [delivery.agent_id for delivery in deliveries if delivery.report_owed]
+        if not owed:
+            return deliveries
+        if delivered:
+            self._manager._admission.taskq_clear_owed_reports(owed)
+        return [delivery for delivery in deliveries if not delivery.report_owed]
+
     async def settle_queued_delivery_impl(self, deliveries: list[SubagentDelivery]) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
 
@@ -426,9 +445,10 @@ class WaveDigestCoordinator(ManagerComponent):
         live child. No gate entry means teardown has finished (or never started).
 
         The tombstone write itself is offloaded: it fsyncs, and this runs on the
-        gateway event loop.
+        gateway event loop. A memory-wait expiry's debt writes no tombstone; it
+        clears the store's owed report (:meth:`_settle_owed_reports`).
         """
-        for delivery in deliveries:
+        for delivery in self._settle_owed_reports(deliveries):
             agent_id = delivery.agent_id
             gate = self._manager._teardown_gates.get(agent_id)
             if gate is not None and not gate.is_set():
@@ -480,6 +500,10 @@ class WaveDigestCoordinator(ManagerComponent):
         unwritable run folder must not strand the rest of the chunk.
         """
         deliveries, info._digest_settle_deliveries = info._digest_settle_deliveries, []
+        # ``_on_done`` also returns normally when the gateway gave up on the
+        # digest's channel or cron injection, so the held expiries it carried
+        # stay owed for the replay.
+        deliveries = self._settle_owed_reports(deliveries, delivered=not info._report_undelivered)
         if not deliveries:
             return
         try:

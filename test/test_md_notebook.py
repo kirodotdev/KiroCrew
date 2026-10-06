@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
-import importlib
 import json
 import os
 import shutil
@@ -37,6 +36,7 @@ from conftest import requires_symlinks
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
+from kiro_crew.loop_lock import LoopBoundLock
 
 SECRET = "test-proxy-secret"
 
@@ -162,9 +162,31 @@ class SignedClient:
         return await self.request("DELETE", path)
 
 
+def _fresh_backend_state(server_mod, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give one test the per-process backend state a new gateway starts with.
+
+    These are the module globals the backend mutates at runtime (locks, caches, watches,
+    the gh-token memo), plus the one by-value import a floor fixture patches on its
+    source. Each is replaced through *monkeypatch*, so teardown hands back exactly the
+    objects this test inherited. The module is never reloaded: a reload re-runs the whole
+    body in the SHARED module and restores nothing, so every function, ``ApiError``'s
+    identity and each by-value import would outlive the test. A runtime-mutable global
+    added to server.py belongs in this list.
+    """
+    monkeypatch.setattr(server_mod, "_HOME", None)
+    for name in ("_save_locks", "_vault_write_locks", "_caches", "_watches", "_self_writes"):
+        monkeypatch.setattr(server_mod, name, {})
+    monkeypatch.setattr(server_mod, "_vaults_lock", LoopBoundLock())
+    monkeypatch.setattr(server_mod, "_settings_lock", LoopBoundLock())
+    monkeypatch.setattr(server_mod, "_gh_cache", {"value": None, "at": 0.0})
+    # server binds restrict_to_owner by value; follow the floor's live binding (Windows
+    # stubs it on platform_compat) for this test only.
+    monkeypatch.setattr(server_mod, "restrict_to_owner", platform_compat.restrict_to_owner)
+
+
 @pytest.fixture
 def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _seed_template: Path):
-    """A fresh backend module bound to a temp home, plus git fixture repos."""
+    """The backend module with fresh per-process state, a temp home and git fixture repos."""
     monkeypatch.setenv("MD_NOTEBOOK_HOME", str(tmp_path / "home"))
     # The PAT lives under the crew data home (config_dir), never MD_NOTEBOOK_HOME,
     # so isolate KIROCREW_HOME too or tests would touch the real ~/.kiro/crew.
@@ -180,9 +202,9 @@ def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _seed_template: Pa
     monkeypatch.setenv("MD_NOTEBOOK_GH_BIN", str(tmp_path / "no-such-gh"))
     from kiro_crew.apps.builtins.md_notebook import server as server_mod
 
-    # HOME and friends are resolved at import time, so rebind them to the temp
-    # home rather than relying on import order.
-    server_mod = importlib.reload(server_mod)
+    # Every data-home path resolves per call from the env above, so the module is
+    # used as imported.
+    _fresh_backend_state(server_mod, monkeypatch)
     remote, seed = _seed_repo(tmp_path, _seed_template)
     return server_mod, remote, seed
 
@@ -1054,11 +1076,13 @@ def test_pat_stays_under_crew_home_ignoring_md_notebook_home(monkeypatch, tmp_pa
     MD_NOTEBOOK_HOME at an unprotected dir must not move the credential there."""
     crew = tmp_path / "crew"
     stray = tmp_path / "stray"
-    monkeypatch.setenv("KIROCREW_HOME", str(crew))
-    monkeypatch.setenv("MD_NOTEBOOK_HOME", str(stray))
+    # Imported before the env moves and never reloaded: the property is that a change
+    # AFTER import is honoured, so no path may be captured when the module loads.
     from kiro_crew.apps.builtins.md_notebook import server as server_mod
 
-    server_mod = importlib.reload(server_mod)
+    monkeypatch.setattr(server_mod, "_HOME", None)
+    monkeypatch.setenv("KIROCREW_HOME", str(crew))
+    monkeypatch.setenv("MD_NOTEBOOK_HOME", str(stray))
     pat = server_mod._pat_file()
     # The PAT is under the crew data home, NOT the stray MD_NOTEBOOK_HOME.
     assert str(stray) not in str(pat), pat
@@ -1278,10 +1302,15 @@ async def test_save_guard_rejects_stale_write(fixtures) -> None:
         _, read = await client.get("/api/note?path=One.md")
         stale_mtime = read["mtime"]
 
-        # Simulate an external edit after the read.
+        # Simulate an external edit after the read. The guard compares float ms
+        # (st_mtime * 1000) within MTIME_TOLERANCE_MS, and one filesystem clock tick
+        # (NTFS ~15.6 ms, HFS+ 1 s) can give this write the read's own mtime, so the
+        # edit is stamped strictly newer rather than slept apart.
         target = Path(vault["localPath"]) / "One.md"
-        time.sleep(0.01)
         target.write_text("# One\n\nchanged by another program\n", encoding="utf-8")
+        newer_ns = round(stale_mtime * 1_000_000) + 5_000_000_000
+        os.utime(target, ns=(newer_ns, newer_ns))
+        assert abs(target.stat().st_mtime * 1000 - stale_mtime) > _mod.MTIME_TOLERANCE_MS
 
         status, body = await client.put(
             "/api/note",
@@ -1726,6 +1755,41 @@ async def test_new_note_in_a_symlinked_scope_is_refused(fixtures) -> None:
         assert sorted(p.name for p in heads.iterdir()) == before, ".git must be untouched"
 
 
+#: Lost-run ceiling for the barriers below, which wait on a signal. Measured worst cases:
+#: 0.21 s on an idle host, 11.9 s under a starved-host model (every executor job 0.2 s
+#: late plus a GIL-hogging thread). Under half the 120 s test timeout, so a missed signal
+#: fails here by name rather than as a killed worker.
+_BARRIER_LOST_RUN_SEC = 30.0
+
+
+def _parking_vault_lock(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Route every ``vault_write_lock`` taker through the real lock, recording who waits.
+
+    The returned list holds one entry per caller suspended in ``acquire()``. Nothing
+    awaits between the append and the acquire, so once a writer shows up here it is
+    parked on the lock the sync holds; a "did not wait" assertion made after that is a
+    consequence, never a guess about how far the request got in a fixed sleep.
+    """
+    real = server_mod.vault_write_lock
+    parked: list[str] = []
+
+    @asynccontextmanager
+    async def observed(local_path: str) -> AsyncIterator[None]:
+        lock = real(local_path)
+        parked.append(local_path)
+        try:
+            await lock.acquire()
+        finally:
+            parked.remove(local_path)
+        try:
+            yield
+        finally:
+            lock.release()
+
+    monkeypatch.setattr(server_mod, "vault_write_lock", observed)
+    return parked
+
+
 @pytest.mark.asyncio
 async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) -> None:
     """The symlink walk and the write it guards are only meaningful if no
@@ -1753,6 +1817,7 @@ async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) ->
 
         monkeypatch.setattr(_mod.git_ops, "sync", slow_sync)
         monkeypatch.setattr(syncer_mod.git_ops, "sync", slow_sync)
+        parked = _parking_vault_lock(_mod, monkeypatch)
 
         # The manual sync, then the background one: both hold the lock.
         for start in (
@@ -1763,6 +1828,7 @@ async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) ->
             release.clear()
             syncing = asyncio.ensure_future(start())
             await asyncio.wait_for(entered.wait(), 5)
+            assert parked == []
             for path, payload in (
                 ("/api/note/new", {"folder": "Projects"}),
                 ("/api/note/duplicate", {"path": "One.md"}),
@@ -1773,15 +1839,30 @@ async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) ->
                     writing = asyncio.ensure_future(client.delete(path[len("DELETE ") :]))
                 else:
                     writing = asyncio.ensure_future(client.post(path, payload))
-                await asyncio.sleep(0.05)
+                await _wait_for(
+                    lambda: parked or writing.done(),
+                    f"{path} never reached the vault lock",
+                    _BARRIER_LOST_RUN_SEC,
+                )
                 assert not writing.done(), f"{path} did not wait for the sync"
                 writing.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await writing
+                # The server cancels the dropped request's handler; wait until it has
+                # left the queue, so the next writer's barrier sees only that writer.
+                await _wait_for(
+                    lambda: not parked,
+                    f"{path}'s cancelled handler stayed queued",
+                    _BARRIER_LOST_RUN_SEC,
+                )
             saving = asyncio.ensure_future(
                 client.put("/api/note", {"path": "Saved/New.md", "content": "x"})
             )
-            await asyncio.sleep(0.05)
+            await _wait_for(
+                lambda: parked or saving.done(),
+                "the save never reached the vault lock",
+                _BARRIER_LOST_RUN_SEC,
+            )
             assert not saving.done(), "save did not wait for the sync"
             release.set()
             await syncing
@@ -1842,6 +1923,7 @@ async def test_a_symlink_landing_while_a_writer_waits_on_the_lock_is_refused(
 
         monkeypatch.setattr(_mod.git_ops, "sync", swapping_sync)
         monkeypatch.setattr(syncer_mod.git_ops, "sync", swapping_sync)
+        parked = _parking_vault_lock(_mod, monkeypatch)
 
         before = sorted(p.name for p in heads.iterdir())
         syncing = asyncio.ensure_future(client.post("/api/sync"))
@@ -1851,7 +1933,11 @@ async def test_a_symlink_landing_while_a_writer_waits_on_the_lock_is_refused(
         saving = asyncio.ensure_future(
             client.put("/api/note", {"path": "Projects/Plan.md", "content": "x"})
         )
-        await asyncio.sleep(0.05)
+        await _wait_for(
+            lambda: len(parked) == 2 or creating.done() or saving.done(),
+            "the create and the save never both queued on the vault lock",
+            _BARRIER_LOST_RUN_SEC,
+        )
         assert not creating.done(), "the create did not wait for the sync"
         assert not saving.done(), "the save did not wait for the sync"
         release.set()
@@ -4132,9 +4218,10 @@ async def _wait_for(predicate: Callable[[], Any], message: str, budget: float = 
     A deadline poll rather than a fixed sleep: a loaded runner starves the loop's
     task, and a fixed sleep would trade the assertion for a flake.
     """
-    give_up_at = time.monotonic() + budget
+    started = time.monotonic()
     while not predicate():
-        assert time.monotonic() < give_up_at, message
+        elapsed = time.monotonic() - started
+        assert elapsed < budget, f"{message} (gave up after {elapsed:.1f}s)"
         await asyncio.sleep(0.01)
 
 
@@ -4421,6 +4508,32 @@ async def test_starting_the_loop_twice_is_a_no_op(fixtures, loop_syncer) -> None
         assert loop_syncer._sync_task is first
 
 
+#: Loop time a "nothing synced" window spans at minimum, on top of its counted ticks:
+#: 40 of the compressed one-minute intervals ``loop_syncer`` configures.
+_QUIET_WINDOW_LOOP_SEC = 0.2
+
+
+def _counted_ticks(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the loop clock at each tick of the running sync loop.
+
+    ``_sync_loop`` re-reads ``server.read_settings()`` exactly once per tick, and it
+    makes that tick's decision in the same task step the read returns in. So when the
+    test observes N entries, N decisions are complete: "nothing ran" is asserted over
+    ticks that really happened, not over a stretch of wall time the loop may have spent
+    starved. The real reader still runs, so the per-tick re-read stays exercised.
+    """
+    real = server_mod.read_settings
+    ticks: list[float] = []
+
+    async def counting() -> dict[str, Any]:
+        settings = await real()
+        ticks.append(asyncio.get_running_loop().time())
+        return settings
+
+    monkeypatch.setattr(server_mod, "read_settings", counting)
+    return ticks
+
+
 @pytest.mark.asyncio
 async def test_the_loop_does_nothing_while_auto_sync_is_off(
     fixtures, loop_syncer, monkeypatch: pytest.MonkeyPatch
@@ -4434,11 +4547,17 @@ async def test_the_loop_does_nothing_while_auto_sync_is_off(
         cycles.append(1)
 
     monkeypatch.setattr(loop_syncer, "_sync_once", _count)
+    ticks = _counted_ticks(server_mod, monkeypatch)
     _write_raw_settings(server_mod, json.dumps({"autoSync": False, "autoSyncMins": 1}))
+    started = asyncio.get_running_loop().time()
     async with running_syncer(loop_syncer):
-        # Many ticks at a (compressed) one-minute interval: without the gate this
-        # window would have produced dozens of pushes.
-        await asyncio.sleep(0.2)
+        # Many ticks spanning many (compressed) one-minute intervals: without the gate
+        # each of those intervals would have produced a push.
+        await _wait_for(
+            lambda: len(ticks) >= 10 and ticks[-1] - started >= _QUIET_WINDOW_LOOP_SEC,
+            "the loop never ticked through the quiet window with autoSync off",
+            _BARRIER_LOST_RUN_SEC,
+        )
         assert cycles == []
 
         _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1}))
@@ -4452,21 +4571,32 @@ async def test_the_loop_picks_up_a_changed_interval_without_a_restart(
     """settings.json is re-read every cycle, so shortening the interval takes
     effect on the running loop instead of at the next gateway start."""
     server_mod, _remote, _seed = fixtures
-    cycles: list[int] = []
+    cycles: list[float] = []
 
     async def _count(*_a: Any) -> None:
-        cycles.append(1)
+        cycles.append(asyncio.get_running_loop().time())
 
     monkeypatch.setattr(loop_syncer, "_sync_once", _count)
+    ticks = _counted_ticks(server_mod, monkeypatch)
     # The longest selectable interval: nothing is due for a compressed day.
     _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1440}))
+    interval = 1440 * loop_syncer.SECONDS_PER_MINUTE
+    started = asyncio.get_running_loop().time()
     async with running_syncer(loop_syncer):
-        await asyncio.sleep(0.2)
-        assert cycles == [], "synced before the configured interval had elapsed"
+        await _wait_for(
+            lambda: len(ticks) >= 10 and ticks[-1] - started >= _QUIET_WINDOW_LOOP_SEC,
+            "the loop never ticked through the quiet window",
+            _BARRIER_LOST_RUN_SEC,
+        )
+        # Judged on the loop clock the schedule itself reads: on a starved runner the
+        # counted ticks can outlast the compressed interval, and a sync after it is due.
+        early = [round(t - started, 3) for t in cycles if t - started < interval]
+        assert early == [], f"synced {early}s into a {interval:.1f}s interval ({len(ticks)} ticks)"
 
         # Shortened while the loop runs — no restart of the loop or the gateway.
+        before = len(cycles)
         _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1}))
-        await _wait_for(lambda: cycles, "a shortened interval never took effect")
+        await _wait_for(lambda: len(cycles) > before, "a shortened interval never took effect")
 
 
 @pytest.mark.asyncio

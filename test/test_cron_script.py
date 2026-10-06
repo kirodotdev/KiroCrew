@@ -19,6 +19,7 @@ from kiro_crew.cron_script import (
     _MAX_SCRIPT_STDERR_TAIL,
     _REDACT_STRADDLE_MARGIN,
     Done,
+    McpToolError,
     Report,
     ScriptContext,
     Skip,
@@ -427,6 +428,9 @@ class TestCommandCronShellResolution:
         assert "/bin/sh" in output and "/usr/bin/sh" in output
         assert "+B" in output
         assert "script cron" in output
+        # The failed probe is cached for the gateway's lifetime, so fixing the
+        # shell alone is not enough: the refusal must name the restart.
+        assert "restart the gateway" in output
 
     def test_windows_refusal_keeps_its_by_design_reason(self, monkeypatch):
         """The Windows wording is unchanged: there the refusal IS the platform."""
@@ -1460,19 +1464,20 @@ class TestScriptContextKeepsServers:
 
     @pytest.fixture
     def started(self, monkeypatch):
-        """Every fake server started, in order. ``fail_next`` makes its next call raise."""
+        """Every fake server started, in order. ``fail_next`` is the error its next call raises."""
         started = []
 
         class FakeClient:
             def __init__(self, server, session_key=""):
                 self.server, self.calls, self.closed = server, [], 0
-                self.running, self.fail_next = True, False
+                self.running, self.fail_next = True, None
                 started.append(self)
 
             def call_tool(self, name, arguments):
                 self.calls.append(name)
-                if self.fail_next:
-                    raise RuntimeError("MCP tool error: boom")
+                if self.fail_next is not None:
+                    failure, self.fail_next = self.fail_next, None
+                    raise failure
                 return f"{self.server}:{name}"
 
             def is_running(self):
@@ -1506,15 +1511,30 @@ class TestScriptContextKeepsServers:
         ctx.close()
         assert [s.closed for s in started] == [1, 1]
 
-    def test_a_failed_call_stops_its_server_and_the_next_call_starts_another(self, started):
+    def test_a_call_without_an_answer_stops_its_server_and_the_next_call_starts_another(
+        self, started
+    ):
         ctx = self._ctx()
         ctx.call_tool("slack", "a", {})
-        started[0].fail_next = True
-        with pytest.raises(RuntimeError, match="boom"):
+        started[0].fail_next = RuntimeError("MCP server 'slack' disconnected")
+        with pytest.raises(RuntimeError, match="disconnected"):
             ctx.call_tool("slack", "b", {})
         assert started[0].closed == 1
         assert ctx.call_tool("slack", "c", {}) == "slack:c"
         assert [s.calls for s in started] == [["a", "b"], ["c"]]
+
+    def test_a_tool_error_keeps_its_server_for_the_next_call(self, started):
+        ctx = self._ctx()
+        ctx.call_tool("slack", "a", {})
+        started[0].fail_next = McpToolError("MCP tool error: boom")
+        with pytest.raises(McpToolError, match="boom"):
+            ctx.call_tool("slack", "b", {})
+        assert started[0].closed == 0
+        assert ctx.call_tool("slack", "c", {}) == "slack:c"
+        (server,) = started
+        assert server.calls == ["a", "b", "c"]
+        ctx.close()
+        assert server.closed == 1
 
     def test_a_kept_server_that_exited_is_replaced(self, started):
         ctx = self._ctx()
@@ -1760,8 +1780,9 @@ class TestMcpToolClientProtocol:
         client._proc.stdout = MagicMock()
         client._req_id = 0
         client._proc.stdout.readline.return_value = ""
-        with pytest.raises(RuntimeError, match="disconnected"):
+        with pytest.raises(RuntimeError, match="disconnected") as raised:
             client._rpc("tools/list")
+        assert not isinstance(raised.value, McpToolError)
 
     def test_call_tool_success(self):
         from kiro_crew.cron_script import McpToolClient
@@ -1798,7 +1819,7 @@ class TestMcpToolClientProtocol:
             )
             + "\n"
         )
-        with pytest.raises(RuntimeError, match="Invalid request"):
+        with pytest.raises(McpToolError, match="Invalid request"):
             client.call_tool("bad_tool", {})
 
     def test_call_tool_is_error_flag(self):
@@ -1822,7 +1843,7 @@ class TestMcpToolClientProtocol:
             )
             + "\n"
         )
-        with pytest.raises(RuntimeError, match="tool failed"):
+        with pytest.raises(McpToolError, match="tool failed"):
             client.call_tool("failing_tool", {})
 
     def test_call_tool_is_error_no_content(self):
@@ -1837,7 +1858,7 @@ class TestMcpToolClientProtocol:
             json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": []}})
             + "\n"
         )
-        with pytest.raises(RuntimeError, match="unknown error"):
+        with pytest.raises(McpToolError, match="unknown error"):
             client.call_tool("failing_tool", {})
 
     def test_close_with_sandbox_cleanup(self, tmp_path):

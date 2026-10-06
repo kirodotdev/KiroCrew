@@ -87,3 +87,20 @@ describe('pinning the shown model to the agent', () => {
     expect(typeof note.payload.ts).toBe('string')
   })
 })
+
+describe('effort control gate on the capability read', () => {
+  it('keeps effort available while the read 404s for a not-yet-registered slot (#14817)', () => {
+    const { opts, hook } = harness()
+    const base: Opts = {
+      ...opts,
+      provider: { ...(opts.provider as object), capabilities: { reasoningEffort: true } } as never,
+      selectionCapabilities: { known: true, effort_supported: true, effort_levels: ['low', 'high'] } as never,
+    }
+    const notFound = Object.assign(new Error('not found'), { status: 404 })
+    hook.rerender({ ...base, selectionCapabilitiesQ: { isError: true, error: notFound } })
+    expect(hook.result.current.effortSupported).toBe(true)
+    const peerDown = Object.assign(new Error('peer unavailable'), { status: 503 })
+    hook.rerender({ ...base, selectionCapabilitiesQ: { isError: true, error: peerDown } })
+    expect(hook.result.current.effortSupported).toBe(false)
+  })
+})

@@ -1,19 +1,21 @@
 """An ABSENT crew-home ceiling is still sealed read-only by the Linux launcher.
 
-``mount(2)`` cannot target a path that does not exist, so the ``READONLY_DIRS`` loop's
-``if os.path.exists(target)`` guard silently skips a ceiling that has never been written
-— and on a default install that is most of them, which left the data home writable at
-exactly the names the seal exists to protect. ``_materialize_sealable_ceilings()`` closes
-that by creating the absent ceiling first, but only for the leaves that clear both tests
-the production comment states: an empty document must mean what an absent file means, and
-a STALE read of it must fail toward refusal.
+``mount(2)`` cannot target a path that does not exist, so the launcher's read-only seal
+(``sandbox_launcher_program.seal_readonly``) skips a ceiling that has never been written
+— and on a default install that is most of them, which would leave the data home
+writable at exactly the names the seal exists to protect. ``_materialize_sealable_ceilings()``
+closes that by creating the absent ceiling first, but only for the leaves that clear both
+tests the production comment states: an empty document must mean what an absent file
+means, and a STALE read of it must fail toward refusal.
 
 The load-bearing test here is
 :meth:`TestSealAppliesToAPreviouslyAbsentCeiling.test_bind_and_remount_pair_is_emitted`:
-it executes the launcher's own seal loop (extracted from the generated script, so the
-production source is what runs) against a real filesystem, with ``_mount_or_die``
-replaced by a recorder. Delete the materialiser and that loop records nothing, because
-the guard falls through — which is the whole defect.
+it runs the launcher program's own seal stage against a real filesystem, with a libc that
+records each ``mount(2)`` instead of making it. Delete the materialiser and that stage
+records nothing, because the pin finds no object to seal — which is the whole defect.
+What each spawn hands the launcher -- the masked, sealed and required paths -- is read
+off the confinement plan (``sandbox._spawn_plan``), or off the plan line of the launcher
+``namespace_argv`` wrote when the spawn path itself is under test.
 
 :class:`TestCeilingsThatMustNotBeMaterialized` is the fence in the opposite direction,
 and it is the one to read before adding a leaf: three ceilings read a present-but-empty
@@ -28,7 +30,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import shutil
 import stat
 import sys
@@ -38,12 +39,23 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from test_sandbox_launcher_program import (
+    RecordingLibc,
+    identity,
+    launch,
+    payload,
+    refusal,
+    rendered_payload,
+)
 
-from kiro_crew import sandbox
+from kiro_crew import sandbox, sandbox_launcher_program
+from kiro_crew.sandbox_plan import BACKEND_NAMESPACE, ConfinementPlan
+
+program = sandbox_launcher_program
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher only")
 
-#: Flag values the launcher defines for itself; mirrored so the extracted loop can run.
+#: The ``mount(2)`` flag values a seal must pass, as the kernel defines them.
 _MS_RDONLY = 1
 _MS_REMOUNT = 32
 _MS_BIND = 4096
@@ -59,11 +71,11 @@ _NO_ALIAS_MASKED_LEAVES: tuple[str, ...] = tuple(
 
 @pytest.fixture(autouse=True)
 def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+    """Planning a namespace spawn asks the HOST's ``ssh -V`` for accept-new support.
 
-    Every test here extracts a loop from the generated launcher; none is about that
-    probe, and a real ssh spawned from the test process is a host dependency the
-    launcher text must not vary with. Pinned so no binary runs.
+    Many tests here plan or write a launcher; none is about that probe, and a real ssh
+    spawned from the test process is a host dependency the plan must not vary with.
+    Pinned so no binary runs.
     """
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
@@ -88,100 +100,72 @@ def crew_home(tmp_path, monkeypatch):
     return home
 
 
-def _seal_loop_source() -> str:
-    """The launcher's ``READONLY_DIRS`` loop body, ready to run.
+class _SealRecorder(RecordingLibc):
+    """A :class:`RecordingLibc` that records each mount by the OBJECTS it reached.
 
-    Pulled out of the generated script rather than restated, so this test cannot pass
-    against a loop the launcher does not contain. The loop pins each target by
-    descriptor, so the helpers it calls come along -- sliced up to
-    ``_locked_mount_flags`` and no further, because that one is deliberately
-    stubbed by the caller.
+    The shared recorder also resolves every ``/proc/self/fd/<n>`` spelling back to a
+    path, which only Linux can. The seal assertions need only the identity each mount
+    landed on, which :func:`identity` reads through the descriptor the stage still holds
+    open, on every POSIX host -- so the seal stage is driven off Linux too, where its
+    no-``O_PATH`` refusal is what is under test.
     """
-    script = sandbox._build_launcher_script("strict")
-    helpers = script[script.index("_O_PATH = getattr") : script.index("def _locked_mount_flags(")]
-    loop = (
-        "for d in READONLY_DIRS:"
-        + script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
-    )
-    return helpers + "\n" + textwrap.dedent(loop)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mounts: list[tuple[object, object, int]] = []
+
+    def mount(self, source, target, fstype, flags, data):  # noqa: ANN001, ANN201
+        self.mounts.append((identity(source), identity(target), flags))
+        return 0
 
 
-def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
-    """Execute the launcher's seal loop over *targets*, recording every mount call."""
+def _run_seal_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: list[str]
+) -> list[tuple[str, int]]:
+    """Run the launcher's seal stage over *targets*, recording every mount call.
+
+    ``sandbox_launcher_program.seal_readonly`` runs as the child runs it, against real
+    files. Each mount is reported by the configured NAME whose object it reached, so
+    these assertions are about the names while still proving the mount landed on that
+    name's object. ``_locked_mount_flags`` is stubbed to 0 so the bind+remount PAIR is
+    asserted exactly; the flag re-assertion itself is covered by
+    test_sandbox_seal_locked_flags.py against the real helper.
+    """
+    libc = _SealRecorder()
+    run = launch(tmp_path, payload(readonly_dirs=list(targets)), libc=libc)
+    with monkeypatch.context() as patched:
+        patched.setattr(program, "_locked_mount_flags", lambda _target: 0)
+        program.seal_readonly(run)
+    names = {identity(target): target for target in targets if identity(target) is not None}
     calls: list[tuple[str, int]] = []
-
-    def _named(path: object) -> str:
-        """Which entry of *targets* the mount actually reached.
-
-        The loop hands ``mount`` a descriptor path pinning the object it
-        classified, so the spelling is a live fd number. Translating it back by
-        device and inode keeps these assertions about the configured NAME while
-        still proving the mount landed on that name's object.
-
-        Resolved with ``fstat`` on the descriptor the spelling NAMES rather than
-        ``stat`` on the spelling itself: the descriptor is still open when the
-        loop calls the recorder, and ``fstat`` reaches the same object on every
-        POSIX host, whereas ``/proc/self/fd/<n>`` resolves only on Linux. Going
-        through the path would have made every assertion here measure the
-        presence of procfs instead of the seal, so the whole suite would have had
-        to skip off Linux -- losing coverage this file already had.
-        """
-        spelling = os.fsdecode(path)  # type: ignore[arg-type]
-        reached = None
-        prefix = "/proc/self/fd/"
-        if spelling.startswith(prefix):
-            try:
-                reached = os.fstat(int(spelling[len(prefix) :]))
-            except (OSError, ValueError):
-                reached = None
-        if reached is None:
-            try:
-                reached = os.stat(spelling)
-            except OSError:
-                return spelling
-        for entry in targets:
-            try:
-                candidate = os.stat(entry)
-            except OSError:
-                continue
-            if (candidate.st_dev, candidate.st_ino) == (reached.st_dev, reached.st_ino):
-                return entry
-        return spelling
-
-    def _record(source, target, flags, what):
-        assert source == target, "a ceiling is bound over ITSELF, not over an empty source"
-        calls.append((_named(target), flags))
-
-    # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-    exec(  # noqa: S102 - running the launcher's OWN generated source is the assertion
-        _seal_loop_source(),
-        {
-            "os": os,
-            "sys": sys,
-            "READONLY_DIRS": targets,
-            "REQUIRED_MASK_TARGETS": frozenset(),
-            "_mount_or_die": _record,
-            "_MS_BIND": _MS_BIND,
-            "_MS_REMOUNT": _MS_REMOUNT,
-            "_MS_RDONLY": _MS_RDONLY,
-            # Stubbed to 0 so this test keeps asserting the bind+remount PAIR
-            # exactly; the flag re-assertion itself is covered by
-            # test_sandbox_seal_locked_flags.py against the real helper.
-            "_locked_mount_flags": lambda _target: 0,
-        },
-    )
+    for source_id, target_id, flags in libc.mounts:
+        assert source_id == target_id, "a ceiling is bound over ITSELF, not over an empty source"
+        calls.append((names.get(target_id, repr(target_id)), flags))
     return calls
+
+
+def _namespace_plan(tier: str, **kwargs: object) -> ConfinementPlan:
+    """The confinement plan a namespace spawn at *tier* hands its launcher, on this host."""
+    return sandbox._spawn_plan(BACKEND_NAMESPACE, tier, **kwargs)
+
+
+def _written_plan(argv: list[str]) -> dict:
+    """The plan data the launcher ``namespace_argv`` wrote carries: what the child acts on."""
+    script = Path(sandbox._launcher_script_of(argv)).read_text(encoding="utf-8")
+    return rendered_payload(script)
 
 
 @_POSIX_ONLY
 @pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
-def test_run_authority_root_is_sealed_before_its_first_record(crew_home, leaf):
+def test_run_authority_root_is_sealed_before_its_first_record(
+    crew_home, tmp_path, monkeypatch, leaf
+):
     target = crew_home / leaf
     assert not target.exists()
     sandbox._materialize_sealable_ceilings()
     assert target.is_dir()
     assert list(target.iterdir()) == []
-    assert _run_seal_loop([str(target)]) == [
+    assert _run_seal_loop(tmp_path, monkeypatch, [str(target)]) == [
         (str(target), _MS_BIND),
         (str(target), _MS_REMOUNT | _MS_BIND | _MS_RDONLY),
     ]
@@ -192,14 +176,12 @@ def test_member_memory_is_not_an_os_hidden_root(crew_home):
     target = crew_home / "memory_stores"
     assert not target.exists()
     sandbox.namespace_argv(["/bin/true"])
-    script = sandbox._build_launcher_script("standard")
-    match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-    assert match and str(target) not in json.loads(match.group(1))
+    assert str(target) not in _namespace_plan("standard").sensitive_dirs
 
 
 @_POSIX_ONLY
 class TestSealAppliesToAPreviouslyAbsentCeiling:
-    def test_bind_and_remount_pair_is_emitted(self, crew_home):
+    def test_bind_and_remount_pair_is_emitted(self, crew_home, tmp_path, monkeypatch):
         """The seal reaches a ceiling that did not exist when the spawn started.
 
         Both calls are asserted, not just the first: ``MS_RDONLY`` is ignored on the
@@ -210,18 +192,20 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         assert not os.path.exists(target)
 
         assert target in sandbox._materialize_sealable_ceilings()
-        calls = _run_seal_loop([target])
+        calls = _run_seal_loop(tmp_path, monkeypatch, [target])
 
         assert calls == [
             (target, _MS_BIND),
             (target, _MS_REMOUNT | _MS_BIND | _MS_RDONLY),
         ]
 
-    def test_loop_skips_the_ceiling_when_it_was_never_materialized(self, crew_home):
+    def test_loop_skips_the_ceiling_when_it_was_never_materialized(
+        self, crew_home, tmp_path, monkeypatch
+    ):
         """The defect, pinned: no target on disk means no seal at all."""
         target = str(crew_home / "computer_use.json")
 
-        assert _run_seal_loop([target]) == []
+        assert _run_seal_loop(tmp_path, monkeypatch, [target]) == []
 
     def test_every_sealable_leaf_is_created(self, crew_home):
         created = sandbox._materialize_sealable_ceilings()
@@ -275,25 +259,20 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         Reconciled PER DISPOSITION rather than against one list, because two kinds
         of path are materialised for opposite reasons and each has its own loop:
 
-        * a read-only ceiling is created so the SEAL can apply -> ``READONLY_DIRS``;
-        * a hidden leaf is created so the MASK can -> ``SENSITIVE_DIRS``.
+        * a read-only ceiling is created so the SEAL can apply -> the plan's ``readonly``;
+        * a hidden leaf is created so the MASK can -> the plan's ``sensitive_dirs``.
 
-        Asserting every created path against ``READONLY_DIRS`` alone would demand
+        Asserting every created path against the read-only list alone would demand
         that a directory meant to be invisible in the sandbox be exposed read-only
         instead -- the exact inversion of its purpose. Derived from the
         precreate tuples, so a leaf added to either disposition must appear in the
         matching launcher list rather than in whichever list this test happened to name.
         """
         created = set(sandbox._materialize_sealable_ceilings())
-        script = sandbox._build_launcher_script("strict")
+        plan = _namespace_plan("strict")
 
-        def _launcher_list(name: str) -> set[str]:
-            match = re.search(rf"{name} = (\[.*?\])\n", script, re.S)
-            assert match, f"{name} is not emitted by the launcher script"
-            return set(json.loads(match.group(1)))
-
-        readonly = _launcher_list("READONLY_DIRS")
-        masked = _launcher_list("SENSITIVE_DIRS")
+        readonly = set(plan.readonly)
+        masked = set(plan.sensitive_dirs)
 
         # Every created path is handed to exactly the loop its disposition needs.
         readonly_leaves = (
@@ -306,7 +285,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
                 continue  # covered by test_every_sealable_leaf_is_created
             assert (
                 path in readonly
-            ), f"{leaf} is created to be read-only but is not in READONLY_DIRS"
+            ), f"{leaf} is created to be read-only but is not sealed read-only"
             assert path not in masked, (
                 f"{leaf} is masked instead of exposed READ-ONLY; masking a governance "
                 "ceiling removes it and restores the permissive default"
@@ -316,7 +295,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
             path = str(crew_home / leaf)
             if path not in created:
                 continue  # covered by test_the_hidden_records_dir_is_materialised
-            assert path in masked, f"{leaf} is created to be masked but is not in SENSITIVE_DIRS"
+            assert path in masked, f"{leaf} is created to be masked but is not masked"
             assert path not in readonly, (
                 f"{leaf} is exposed READ-ONLY as well as masked; a hidden leaf that "
                 "is also readable is not hidden"
@@ -392,14 +371,12 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         parent = str(crew_home / "nested-parent")
         child = f"{parent}/credential.json"
 
-        script = sandbox._build_launcher_script(
+        plan = _namespace_plan(
             "strict",
             extra_hidden_dirs=(parent,),
             required_mask_targets=(parent, child),
         )
-        match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
-        assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
-        required = set(json.loads(match.group(1)))
+        required = set(plan.identities.required_mask_targets)
 
         assert child not in required, (
             "a target under a masked ancestor was required, so the launcher will refuse "
@@ -419,10 +396,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
 
         def required():
             argv = sandbox.namespace_argv(["/bin/true"], "strict")
-            script = Path(argv[-2]).read_text()
-            match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
-            assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
-            return set(json.loads(match.group(1)))
+            return set(_written_plan(argv)["required_mask_targets"])
 
         first = required()
         second = required()
@@ -444,10 +418,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
         defect, and no other assertion here would notice.
         """
         argv = sandbox.namespace_argv(["/bin/true"], "strict")
-        script = Path(argv[-2]).read_text()
-        match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
-        assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
-        required = set(json.loads(match.group(1)))
+        required = set(_written_plan(argv)["required_mask_targets"])
 
         # Derived from the precreate tuples rather than from a materialiser's return
         # value: each returns only what it newly CREATED, so calling one again after
@@ -1926,24 +1897,13 @@ class TestACredentialLeafBehindALinkedComponentIsNotRefused:
 class TestTheAliasReachesTheSpawnsHiddenSet:
     """The walk is only worth anything if what it finds actually reaches the launcher.
 
-    Returning a path the builder never receives would close nothing while reading, in every
-    unit test of the pass itself, exactly like a fix. So these drive the real launch path and
-    inspect what the builder is handed.
+    Returning a path the launcher never receives would close nothing while reading, in
+    every unit test of the pass itself, exactly like a fix. So these drive the real launch
+    path and read the plan the launcher it wrote carries.
     """
 
-    def _capture(self, monkeypatch) -> list:
-        seen: list = []
-        real = sandbox._build_launcher_script
-
-        def _spy(*args, **kwargs):
-            seen.append(tuple(kwargs.get("extra_hidden_dirs") or ()))
-            return real(*args, **kwargs)
-
-        monkeypatch.setattr(sandbox, "_build_launcher_script", _spy)
-        return seen
-
     def test_an_agent_created_home_does_not_refuse_AND_masks_the_sibling(
-        self, crew_home, tmp_path, monkeypatch, caplog
+        self, crew_home, tmp_path, caplog
     ):
         """The ruling's first direction, and the DoS that made the refusal unusable.
 
@@ -1958,12 +1918,10 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
         sibling = planted / "second-name"
         os.link(leaf, sibling)
 
-        seen = self._capture(monkeypatch)
         with caplog.at_level(logging.WARNING):
-            sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
+            argv = sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
 
-        assert seen, "the launcher was never built, so this test proves nothing"
-        assert str(sibling) in seen[-1], (
+        assert str(sibling) in _written_plan(argv)["sensitive_dirs"], (
             "the planted sibling never reached the spawn's hidden set, so the credential "
             "bytes stay readable under it"
         )
@@ -1988,12 +1946,10 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
         elsewhere = legacy / "second-name"
         os.link(target, elsewhere)
 
-        seen = self._capture(monkeypatch)
         with caplog.at_level(logging.WARNING):
-            sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
+            argv = sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
 
-        assert seen, "the launcher was never built, so this test proves nothing"
-        assert str(elsewhere) in seen[-1], (
+        assert str(elsewhere) in _written_plan(argv)["sensitive_dirs"], (
             "the sibling home's name never reached the hidden set, so either it was missed "
             "and the spawn should have refused, or it was found and not masked"
         )
@@ -2092,7 +2048,7 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
             str(absent) in roots
         ), "an absent home was dropped, which narrows the set a refusal is measured against"
 
-    def test_the_alias_is_handed_over_as_a_FAIL_CLOSED_mask(self, crew_home, monkeypatch, tmp_path):
+    def test_the_alias_is_handed_over_as_a_FAIL_CLOSED_mask(self, crew_home, tmp_path):
         """Discovery and the mask bind are two acts, so the bind must not skip a vanished alias.
 
         The launcher's ordinary policy for a sensitive file that is not there is to skip it --
@@ -2102,44 +2058,44 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
         alias has to arrive as a path whose absence is a fault, and the emitted launcher has to
         refuse on it rather than skip.
         """
-        seen: dict = {}
-        real = sandbox._build_launcher_script
-
-        def _spy(*args, **kwargs):
-            seen.update(kwargs)
-            return real(*args, **kwargs)
-
-        monkeypatch.setattr(sandbox, "_build_launcher_script", _spy)
         target = crew_home / ".env"
         target.write_text("SLACK_BOT_TOKEN=x\n", encoding="utf-8")
         alias = crew_home / "second-name"
         os.link(target, alias)
 
-        sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
+        argv = sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
 
-        assert str(alias) in ({entry[0] for entry in (seen.get("fail_closed_file_masks") or ())}), (
+        handed = _written_plan(argv)["fail_closed_file_masks"]
+        assert str(alias) in {entry[0] for entry in handed}, (
             "the discovered alias was passed as an ordinary hidden path, so the launcher would "
             "SKIP it if it had been renamed since discovery and the bytes stay readable"
         )
         info = os.lstat(alias)
-        carried = {entry[0]: tuple(entry[1:]) for entry in seen["fail_closed_file_masks"]}
+        carried = {entry[0]: tuple(entry[1:]) for entry in handed}
         assert carried[str(alias)] == (info.st_dev, info.st_ino), (
             "the alias arrived without the inode it was discovered as, so the launcher can only "
             "judge the path's shape -- and a decoy left at that name is one link away from "
             "passing a mode and link-count test"
         )
-        script = real("strict", fail_closed_file_masks=((str(alias), info.st_dev, info.st_ino),))
-        assert "FAIL_CLOSED_FILE_MASKS" in script and str(alias) in script
-        assert (
-            "credential alias" in script
-        ), "the launcher carries no refusal for a vanished alias, so absence is still a skip"
-        assert "_want_ino" in script, (
+        # What the launcher does with what it was handed: the discovered file passes, a
+        # file substituted at the name refuses, and a vanished alias refuses.
+        run = launch(tmp_path, payload(fail_closed_file_masks=handed))
+        assert refusal(program.verify_fail_closed_aliases, run) is None
+        alias.unlink()
+        alias.write_text("SLACK_BOT_TOKEN=decoy\n", encoding="utf-8")
+        substituted = refusal(program.verify_fail_closed_aliases, run)
+        assert substituted is not None and "names a different inode" in substituted, (
             "the launcher compares no inode, so a file substituted at the same path is masked "
             "while the credential stays reachable under its new name"
         )
+        alias.unlink()
+        vanished = refusal(program.verify_fail_closed_aliases, run)
+        assert (
+            vanished is not None and "credential alias" in vanished
+        ), "the launcher carries no refusal for a vanished alias, so absence is still a skip"
 
     def test_one_located_name_does_NOT_buy_a_pass_while_another_is_unlocated(
-        self, crew_home, tmp_path, monkeypatch, caplog
+        self, crew_home, tmp_path, caplog
     ):
         """Finding ONE alias must not suppress the refusal for the ones still unaccounted.
 
@@ -2157,7 +2113,6 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
         os.link(target, external)
         assert os.lstat(target).st_nlink == 3, "the fixture did not build the three-link shape"
 
-        self._capture(monkeypatch)
         with caplog.at_level(logging.WARNING):
             with pytest.raises(sandbox.SandboxCeilingUnsealable):
                 sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
@@ -2184,9 +2139,7 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
 
         assert "hard links" in str(caught.value)
 
-    def test_the_same_leaf_does_NOT_refuse_when_the_second_name_is_reachable(
-        self, crew_home, monkeypatch
-    ):
+    def test_the_same_leaf_does_NOT_refuse_when_the_second_name_is_reachable(self, crew_home):
         """Same leaf, same link count -- only the alias's LOCATION differs.
 
         This is what separates the two directions above. Without it, the refusal test could
@@ -2197,10 +2150,9 @@ class TestTheAliasReachesTheSpawnsHiddenSet:
         alias = crew_home / "reachable-alias"
         os.link(target, alias)
 
-        seen = self._capture(monkeypatch)
-        sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
+        argv = sandbox.namespace_argv(["echo", "ok"], sandbox_level="strict")
 
-        assert seen and str(alias) in seen[-1]
+        assert str(alias) in _written_plan(argv)["sensitive_dirs"]
 
 
 @_POSIX_ONLY
@@ -2484,6 +2436,67 @@ class TestACreationFailureRefusesTheSpawn:
         assert sandbox._materialize_sealable_ceilings() == []
 
 
+class TestAMissingParentRefusesTheSpawn:
+    """A ceiling whose parent is not a directory refuses instead of scaffolding.
+
+    Building the parents would create a writable ancestor the agent could
+    rename through, so the materialiser names the path and raises rather than
+    running the spawn unprotected.
+    """
+
+    def test_missing_dir_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "profiles")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([ghost], []))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+    def test_missing_file_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "computer_use.json")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([], [ghost]))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+
+class TestEachCeilingIsJudgedAgainstItsOwnHome:
+    """The agents leaf hangs off kiro-cli's home, not the crew data home.
+
+    ``config_dir()`` mkdirs whatever it returns, so gating the agents ceiling on it
+    was true unconditionally and never described that leaf. The refusal then fired on
+    every host with no ``~/.kiro`` at all and took the launcher sweep with it
+    (``test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement``, whose ``fake_home``
+    creates ``.kirocrew`` and never ``.kiro``). These tests drive the real
+    ``_sealable_absent_ceilings`` and the real refusal rather than replacing the
+    function under test, which is the gap that let that ship.
+    """
+
+    # ``crew_home`` already creates ``tmp_path/.kiro/crew``, so the kiro home under
+    # test is a sibling name -- otherwise the fixture would have made it present
+    # before the test could assert its absence.
+    def test_an_absent_kiro_home_yields_no_agents_ceiling(self, crew_home, monkeypatch, tmp_path):
+        kiro_home = tmp_path / "no-kiro-install"
+        monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: kiro_home / "agents")
+
+        dir_targets, _ = sandbox._sealable_absent_ceilings()
+
+        assert str(kiro_home / "agents") not in dir_targets
+        # Absent, not refused: the spawn proceeds, and nothing is scaffolded.
+        assert str(kiro_home / "agents") not in sandbox._materialize_sealable_ceilings()
+        assert not kiro_home.exists()
+
+    def test_a_present_kiro_home_keeps_the_agents_ceiling(self, crew_home, monkeypatch, tmp_path):
+        kiro_home = tmp_path / "kiro-install"
+        kiro_home.mkdir()
+        monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: kiro_home / "agents")
+
+        dir_targets, _ = sandbox._sealable_absent_ceilings()
+
+        assert str(kiro_home / "agents") in dir_targets
+
+
 @_POSIX_ONLY
 class TestADanglingSymlinkRefusesTheSpawn:
     """The one state that defeats every ``os.path.exists`` guard on this path at once.
@@ -2500,13 +2513,13 @@ class TestADanglingSymlinkRefusesTheSpawn:
     and POSIX has no unlink-only-if-still-a-symlink to close that window with.
     """
 
-    def test_the_unguarded_chain_really_is_exploitable(self, crew_home):
+    def test_the_unguarded_chain_really_is_exploitable(self, crew_home, tmp_path, monkeypatch):
         """Pin the mechanism itself, so the refusal below is not guarding a phantom.
 
         Collected on every platform. The link reads as absent everywhere. On Linux
-        the seal loop skips it and a write through the link creates the referent,
+        the seal stage skips it and a write through the link creates the referent,
         so the host reads the agent's bytes back through the ceiling path. Off
-        Linux there is no ``O_PATH``, so the loop's pin refuses the link instead of
+        Linux there is no ``O_PATH``, so the stage's pin refuses the link instead of
         skipping and the chain never reaches the write. Both outcomes are asserted,
         because a skipped witness would let the refusal below guard a phantom on the
         platform that skipped it.
@@ -2519,17 +2532,17 @@ class TestADanglingSymlinkRefusesTheSpawn:
         assert os.path.exists(target) is False, "exists() follows the link -> reads as absent"
         if sys.platform == "linux":
             # The launcher's own guard therefore skips it: no bind, no remount.
-            assert _run_seal_loop([str(target)]) == []
+            assert _run_seal_loop(tmp_path, monkeypatch, [str(target)]) == []
             # And a write through the link lands where the host will read it back.
             target.write_text('{"enabled": true}', encoding="utf-8")
             assert victim.exists()
             assert target.read_text(encoding="utf-8") == '{"enabled": true}'
         else:
-            # No ``O_PATH`` off Linux: the seal loop cannot pin a link no-follow and
+            # No ``O_PATH`` off Linux: the seal stage cannot pin a link no-follow and
             # REFUSES it rather than skipping, so the chain stops before any write.
             # The launcher never runs here; the assertion is that it fails closed.
             with pytest.raises((SystemExit, OSError)):
-                _run_seal_loop([str(target)])
+                _run_seal_loop(tmp_path, monkeypatch, [str(target)])
             assert not victim.exists(), "the refused chain still wrote through the link"
 
     def test_a_file_ceiling_squatter_refuses(self, crew_home):
@@ -2733,10 +2746,10 @@ class TestCeilingsThatMustNotBeMaterialized:
 class TestMaskableDirsAreMaterializedBeforeTheSpawn:
     """An on-demand HIDDEN directory gets the mirror treatment of the ceilings above.
 
-    The ``SENSITIVE_DIRS`` loop is guarded on ``isdir``, so a leaf the gateway creates
-    lazily is unmasked in every sandbox spawned before its first use -- and once the
-    gateway does create it, that running sandbox sees it. Creating it empty before the
-    spawn is what gives the mask a name to bind over.
+    The launcher's directory mask skips a name that holds no directory, so a leaf the
+    gateway creates lazily is unmasked in every sandbox spawned before its first use -- and
+    once the gateway does create it, that running sandbox sees it. Creating it empty before
+    the spawn is what gives the mask a name to bind over.
     """
 
     def test_every_maskable_leaf_is_created_owner_only(self, crew_home):
@@ -2796,20 +2809,14 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
         assert str(root) in created
         assert root.is_dir()
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
-        script = sandbox._build_launcher_script(mode)
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        assert str(root) in set(json.loads(match.group(1)))
+        assert str(root) in set(_namespace_plan(mode).sensitive_dirs)
 
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
     def test_created_dirs_are_in_the_launcher_hidden_list(self, crew_home, mode):
         """Creating a path is only useful if the mask loop is handed it."""
         created = sandbox._materialize_maskable_dirs()
-        script = sandbox._build_launcher_script(mode)
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        hidden = set(json.loads(match.group(1)))
+        hidden = set(_namespace_plan(mode).sensitive_dirs)
 
         assert created
         assert set(created) <= hidden

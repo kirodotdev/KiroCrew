@@ -48,7 +48,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Kill a group the caller CAPTURED | `kill_process_group(pgid, sig)` — group-addressed; the id must have been read while the group's leader was alive and identity-checked (`process_identity.isolated_group_of`), the broadcast/self guard refuses with `ValueError` instead of degrading to a pid, POSIX only | `os.getpgid(pid)` at signal time (a recycled pid names a stranger's group) |
 | Kill a `Popen` child and its descendants | `kill_popen_tree(proc)` — for a child started in its own group (`start_new_session` / a new Windows process group); signals the group only while `proc` is unreaped, then `proc.kill()`, which polls first and so may itself reap a child that already exited; never raises. Collect the status through `Popen.wait()`/`poll()`, never a raw `waitpid` | `proc.kill()` alone (a grandchild survives); a group signal after `wait()` (the pid may name a stranger) |
 | Parent PID | `get_ppid(pid)` (Linux: `PPid:` through `read_proc_status_int`), or `parent_pid(pid)` from `read_proc_stat` where `None` must mean unknown | a text read of `/proc/<pid>/status` (its `Name:` line is the raw comm) / libproc |
-| Fields of `/proc/<pid>/stat` (parent, group, session, state, start ticks, RSS pages) and `status` | `read_proc_stat(pid, proc_root=)` -> `ProcStat`, the reader new code uses: ONE bytes read, `comm` never decoded (any process may set it to arbitrary bytes through `prctl(PR_SET_NAME)`, and the kernel cuts a multibyte name at 15 bytes mid-character); `None` when the file is unreadable or the line has no `)`, otherwise each field is `None` on its own when its token is missing or not a number, and `ProcStat()` is the all-unknown reading. `process_age_secs(start_ticks, now=)` gives the age on the `boottime_now()` clock (`now` for a fixture's own `uptime`). `read_proc_status_int(pid, label)` reads one `status` number (`PPid`, `Threads`, `VmRSS`) from bytes. `linux_pgroup_members(pgid)` is a group's running members with each one's start ticks from the same read; `proc_child_map()` the whole host's parent edges. `_process_group_supervisor.py` runs as `python -I -c` and must stay stdlib-only, so it carries its own minimal bytes parse. Strict text-mode readers of these files still exist, so do not copy one: `dashboard/handlers/terminal.py` (`_proc_comm`), `diag/recorder.py`, `acp/runtime_process_tree._get_start_time`, the pod e2e script, and two readers of `/proc/self/status` (`_linux_peak_rss_bytes` here and `doctor_checks/confinement._read_linux_proc_self`) | `read_text` on the stat or status file (a comm that is not UTF-8 raises `UnicodeDecodeError`, which an `except OSError` does not catch and an `except ValueError` reads as "gone"; a strict ASCII decode fails on any non-ASCII name); splitting before the LAST `)`; one read per field (a recycled pid can answer the second) |
+| Fields of `/proc/<pid>/stat` (parent, group, session, state, start ticks, RSS pages) and `status` | `read_proc_stat(pid, proc_root=)` -> `ProcStat`, the reader new code uses: ONE bytes read, `comm` never decoded (any process may set it to arbitrary bytes through `prctl(PR_SET_NAME)`, and the kernel cuts a multibyte name at 15 bytes mid-character); `None` when the file is unreadable or the line has no `)`, otherwise each field is `None` on its own when its token is missing or not a number, and `ProcStat()` is the all-unknown reading. `process_age_secs(start_ticks, now=)` gives the age on the `boottime_now()` clock (`now` for a fixture's own `uptime`). `read_proc_status_int(pid, label)` reads one `status` number (`PPid`, `Threads`, `VmRSS`) from bytes. `linux_pgroup_members(pgid)` is a group's running members with each one's start ticks from the same read; `proc_child_map()` the whole host's parent edges. `_process_group_supervisor.py` runs as `python -I -c` and must stay stdlib-only, so it carries its own minimal bytes parse. `comm` is read as bytes and decoded with `surrogateescape` or `replace` (`linux_process_name`, the terminal title), and a `status` read that needs more than one number decodes with `errors="replace"`. `test/test_proc_bytes_reads_gate.py` rejects a strict text read of `stat`, `status` or `comm` in `src/kiro_crew` wherever it can follow the path (a literal, a join, or a name bound in the function, an enclosing one or the module; not a leaf passed in as an argument) | `read_text` on the stat or status file (a comm that is not UTF-8 raises `UnicodeDecodeError`, which an `except OSError` does not catch and an `except ValueError` reads as "gone"; a strict ASCII decode fails on any non-ASCII name); splitting before the LAST `)`; one read per field (a recycled pid can answer the second) |
 | Session process identity | `get_process_start_id(pid)`; Windows uses query-only creation FILETIME, Linux start ticks, macOS libproc microseconds with a `sysctl KERN_PROC_PID` fallback for a zombie (libproc refuses one; the kernel's zombie list still carries the same `p_start` instant) | caller-supplied PID or a bare PID without its creation identity |
 | Listener-owner ancestry | `process_descendant_identities(pid, candidate_pids=...)` returns each PID, PPID, start token, and its `ATOMIC` or `LSTART` source. Rechecks use `process_start_id_for_source` and never fall across encodings; an unavailable capture source is inconclusive. Before the POSIX fallback filters stable rows, it derives the root subtree from the first `ps` snapshot and requires every one of those rows to be unchanged in the second; any missing, reparented, or re-identified subtree row returns `None`, while unrelated rows may churn. The shared tri-state process-start comparator accepts strictly later, excludes strictly earlier, and treats equal coarse or unparseable order as inconclusive. A discovered parent must keep the same identity across its child-list read. Every child named by that read must still have a readable identity and the same parent. A changed parent, vanished child, or reparented child makes the whole walk return `None` rather than a completed partial result. On Windows each candidate-to-root chain must also keep the same PIDs, creation IDs, and edges across two Toolhelp snapshots, while unrelated siblings may churn. `created_after` remains a numeric-only Boolean wrapper over that core for its pod and harness callers | requiring the whole process tree to remain unchanged, accepting a bare descendant PID, filtering unstable root-subtree rows into a completed partial result, comparing an `lstart` capture with atomic ticks or microtime, treating same-second fallback timestamps or a changed/vanished task as foreign, or maintaining a second comparison implementation |
 | macOS zombie state | `darwin_pid_is_zombie(pid)` (`True` / `False` / `None` unreadable; a pid the kernel does not list reads `True`); `darwin_kinfo_proc(pid)` for the record with its start id; `darwin_pgroup_members(pgid)` lists a process group with each member's zombie flag | `pid_exists` as an exit oracle (a zombie is alive to it); `pgroup_exists` as an empty-group oracle (a retained zombie leader keeps it true); `proc_pidinfo` on a zombie |
@@ -288,9 +288,10 @@ process the backend does not own (the Task Scheduler service finishing with the
 action file, an indexer or AV scanner) can still have it open, and the delete
 fails with `[WinError 32]`. `pod.windows._unlink_waiting_out_sharing` retries that
 one error under a bounded deadline and re-raises it unchanged once the deadline
-passes, so a real leak still fails closed; every other error raises at once. A
-teardown that deletes a file another process may have just used follows the same
-rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
+passes, so a real leak still fails closed; every other error raises at once. The
+startup rollback of a cancelled `pod up` deletes the same wrapper through the same
+helper. A teardown that deletes a file another process may have just used follows
+the same rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
 `PermissionError`.
 
 On write failure, rollback removes only the bytes counted for that append when
@@ -573,16 +574,27 @@ alone: no liveness wait, no poll, and no sleep on a coroutine's thread. The
 creation `FILETIME` is the whole identity, so answering without the exit half
 costs the caller nothing.
 
-`TerminateProcess` answers a process that has already exited with
+`TerminateProcess` answers a process whose exit has begun with
 `ERROR_ACCESS_DENIED`, the same code a genuine refusal carries, and a drain meets
 that routinely: every member started with `CREATE_NO_WINDOW` owns a `conhost.exe`
 that Toolhelp lists as its child, and that console host exits on its own once its
-client is killed, so it can leave between the liveness read and the terminate.
-`terminate_process_handle` therefore reads that refusal as an exit when the process
-object is signalled and returns `False`, as it does for any member that had already
-exited. A refusal on an unsignalled object, or on a handle that cannot be waited
-on, stays an `OSError`. A real-process regression forces the interleaving:
-`test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`.
+client is killed, so it can leave between the liveness read and the terminate. The
+refusal can arrive before the object signals: an exit publishes the exit code, then
+runs the process down (the terminate is refused from there on), and only then
+signals the object. `terminate_process_handle` therefore reads that refusal as an
+exit, and returns `False` as it does for any member that had already exited, when
+`GetExitCodeProcess` no longer answers `STILL_ACTIVE` (a running process always
+does), or when the object signals within a bounded wait
+(`_WINDOWS_TERMINATE_REFUSAL_WAIT_MS`, a zero-time look on the event loop), which
+covers a process whose exit code is 259. A refusal neither settles stays an
+`OSError`: a genuine refusal of a process still running after that wait, or one on a
+handle that cannot be waited on while its exit code reads `STILL_ACTIVE`. So does any
+other error. Real-process regressions force both interleavings:
+`test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`
+and `test/test_runtime_cleanup_windows.py::test_a_member_refused_before_its_object_signals_reads_as_exited`;
+`test/test_platform_compat.py::TestTerminateRefusedOnAnExitingMember` pins each
+branch on a virtual clock. `pod._windows_job.retire_identity` meets the same refusal
+when it ends a pod publisher, and judges it by its own bounded retirement wait.
 
 Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
 instead of draining exact handles. The Job that `apply_job_limits` creates is

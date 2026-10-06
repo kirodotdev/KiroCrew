@@ -9,39 +9,39 @@ live, so an atomic replace of that name by a host-side writer -- a Dev Fleet
 cutover, a config save -- puts a fresh, writable object at a protected name while
 the mask hangs off the object that was there at spawn.
 
-These tests enumerate the protected names FROM SOURCE for every tier and pin
-which of the two holds each name has. They are static: no namespace, no mount,
-no privilege.
+These tests enumerate the protected names for every tier from the namespace
+plan -- the mask, file and seal lists the launcher is handed -- and pin which of
+the two holds each name has. They are static: no namespace, no mount, no
+privilege.
 
 POSIX only, and the reason is the legitimate one rather than convenience: the
 launcher mask mechanism does not exist on Windows, where the wrap is skipped
 entirely, so the invariant asserted here has no subject on that platform. The
 skip would be hollow the other way round -- if Windows were itself the behaviour
 under test -- but here running on Windows would assert nothing and crash doing
-it, because the launcher builder reads ``os.getuid``.
+it, because the namespace plan reads ``os.getuid``.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 
 import pytest
 
-from kiro_crew import sandbox
+from kiro_crew import sandbox, sandbox_plan
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="_build_launcher_script uses POSIX-only os.getuid; Windows skips the wrap",
+    reason="the namespace plan uses POSIX-only os.getuid; Windows skips the wrap",
 )
 
 
 @pytest.fixture(autouse=True)
 def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+    """A namespace plan asks the HOST's ``ssh -V`` for accept-new support.
 
-    The protected-name populations read out of the launcher do not depend on that
+    The protected-name populations read out of the plan do not depend on that
     answer, and a real ssh spawned from the test process is a host dependency this
     module is not about. Pinned so no binary runs.
     """
@@ -63,10 +63,10 @@ HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
     """The protected names this tier's launcher actually loops over.
 
-    Read back out of the generated script rather than recomputed from the
-    constants, so the pin follows what the child is really handed: every entry
-    goes into both the directory list and the file list and the child classifies
-    by kind, so the union is the masked population.
+    Read from the tier's namespace plan rather than recomputed from the constants,
+    so the pin follows what the child is really handed: every masked tree goes into
+    both the directory list and the file list and the child classifies by kind, so
+    the union is the masked population.
 
     Returned as two lists because the two kinds of mount hold differently, and
     collapsing them is the mistake this whole file exists to prevent:
@@ -77,16 +77,9 @@ def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
       directory entries in place. It withholds write access; it does not change
       which object a name reaches, so it holds nothing for the names beneath it.
     """
-    script = sandbox._build_launcher_script(tier)
-    found: dict[str, list[str]] = {}
-    for line in script.splitlines():
-        for key in ("SENSITIVE_DIRS", "SENSITIVE_FILES", "READONLY_DIRS"):
-            if line.startswith(key + " = "):
-                found[key] = json.loads(line.split(" = ", 1)[1])
-    missing = {"SENSITIVE_DIRS", "SENSITIVE_FILES", "READONLY_DIRS"} - set(found)
-    assert not missing, f"launcher script does not emit {sorted(missing)}"
-    masked = list(dict.fromkeys(found["SENSITIVE_DIRS"] + found["SENSITIVE_FILES"]))
-    return masked, list(dict.fromkeys(found["READONLY_DIRS"]))
+    plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, tier)
+    masked = list(dict.fromkeys(plan.sensitive_dirs + plan.sensitive_files))
+    return masked, list(dict.fromkeys(plan.readonly))
 
 
 def _protected(tier: str) -> list[str]:
@@ -129,7 +122,7 @@ def _split(tier: str) -> tuple[dict[str, str], list[str]]:
 
 
 class TestProtectedNamesAreEnumerable:
-    """The population has to be readable from source before anything can pin it."""
+    """The population has to be readable from the plan before anything can pin it."""
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_every_tier_protects_a_nonempty_population(self, tier: str) -> None:
@@ -143,11 +136,11 @@ class TestProtectedNamesAreEnumerable:
     def test_every_crew_home_leaf_reaches_the_launcher_payload(self, tier: str) -> None:
         """Two independent derivations of the masked set have to agree.
 
-        The constants say which crew-home leaves are masked; the generated script
+        The constants say which crew-home leaves are masked; the namespace plan
         says which paths the child will actually mount over. Comparing one
         against the other can fail: a leaf added to the constants that the
-        builder stops emitting is a mask silently dropped, which no assertion
-        computed from the script alone could see.
+        planner stops emitting is a mask silently dropped, which no assertion
+        computed from the plan alone could see.
         """
         masked, _readonly = _launcher_sets(tier)
         missing = sorted(
@@ -316,12 +309,19 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   member's private memory, so it sits at the root, masked, rather than
     #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
     #:
+    #: One more root-level leaf landed since, three more entries per tier:
+    #:
+    #: * ``registry_trust.json`` -- the operator's grants of ``owner`` trust to a
+    #:   hand-configured app registry, on the same read+write floor as
+    #:   ``denied_commands.json``, so a writable grant cannot clone a registry the
+    #:   agent controls with the machine's git identity.
+    #:
     #: Two directories hold what the MCP gateway launches outside the sandbox,
     #: six entries per tier. ``mcp-launch-approvals`` holds the owner's approved
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

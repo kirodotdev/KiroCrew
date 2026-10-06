@@ -100,8 +100,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "maxLength": 200,
                         "description": (
-                            "Short name for this panel, shown in the page's "
-                            "picker (e.g. 'fleet — cycle 47')."
+                            "Short name for this panel (e.g. 'fleet — cycle "
+                            "47'), used as the panel's heading when data carries "
+                            "no title of its own."
                         ),
                     },
                 },

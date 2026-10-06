@@ -97,6 +97,9 @@ class ReadOnlySpecError(RuntimeError):
     * ``derived_path_foreign`` — a file at the derived path is not this
       module's (no owner marker); it is left alone and the turn is refused.
     * ``spec_write_failed`` — the derived file could not be written.
+    * ``base_spec_malformed`` — the base spec carries ``mcpServers`` or
+      ``toolsSettings`` (or an entry under either) that is neither an object
+      nor ``null``, so its grants cannot be found to empty.
     """
 
     def __init__(self, code: str, detail: str):
@@ -219,6 +222,30 @@ def spec_digest(spec: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _grant_container(spec: dict[str, Any], key: str) -> dict[str, Any]:
+    """``spec[key]`` as a mapping to scrub; absent or ``null`` carries no grant."""
+    value = spec.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ReadOnlySpecError(
+            "base_spec_malformed", f"{key} is a {type(value).__name__}, not an object"
+        )
+    return value
+
+
+def _grant_entry(value: Any, key: str) -> dict[str, Any]:
+    """One entry under *key*; ``null`` carries no grant, any other non-object is refused."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ReadOnlySpecError(
+            "base_spec_malformed",
+            f"an entry under {key} is a {type(value).__name__}, not an object",
+        )
+    return value
+
+
 def derive_readonly_spec(
     base_spec: dict[str, Any], *, base_name: str, source_id: str | None = None
 ) -> dict[str, Any]:
@@ -245,7 +272,9 @@ def derive_readonly_spec(
     * ``includeMcpJson`` → ``False`` — the global ``mcp.json`` carries its own
       ``autoApprove`` lists, which this derivation cannot see or empty. Under
       READ_ONLY an MCP-served tool is never provably read-only anyway, so
-      nothing the side chat can use is lost.
+      nothing the side chat can use is lost. ``useLegacyMcpJson``, kiro-cli's
+      alias for the same field, is removed so the file does not declare it
+      twice.
     * ``autoAllowReadonly`` → ``False`` when present — kiro-cli's own (retired)
       read-only auto-approve, whose notion of read-only is not the host's.
     * ``permissions`` → ``{"rules": []}`` when the base carries one — the KAS
@@ -262,6 +291,10 @@ def derive_readonly_spec(
     ``tools``, ``mcpServers`` (minus ``autoApprove``), ``resources``, ``prompt``,
     ``model`` and every other key are untouched: mounting a tool is not
     approving it, and the reads the side chat exists for go through the gate.
+
+    A ``mcpServers`` or ``toolsSettings`` value, or an entry under either, that
+    is neither an object nor ``null`` raises ``base_spec_malformed``: its grants
+    cannot be located, so the turn is refused rather than run with them.
     """
     if not is_registered_agent_name(base_name):
         raise ReadOnlySpecError(
@@ -284,19 +317,13 @@ def derive_readonly_spec(
         )
     )
     spec["allowedTools"] = []
-    servers = spec.get("mcpServers")
-    if isinstance(servers, dict):
-        for server in servers.values():
-            if isinstance(server, dict):
-                server.pop("autoApprove", None)
-    settings = spec.get("toolsSettings")
-    if isinstance(settings, dict):
-        for tool_settings in settings.values():
-            if isinstance(tool_settings, dict):
-                for key in [
-                    k for k in tool_settings if str(k).startswith(_TOOL_SETTING_GRANT_PREFIXES)
-                ]:
-                    tool_settings.pop(key, None)
+    for server in _grant_container(spec, "mcpServers").values():
+        _grant_entry(server, "mcpServers").pop("autoApprove", None)
+    for tool_settings in _grant_container(spec, "toolsSettings").values():
+        entry = _grant_entry(tool_settings, "toolsSettings")
+        for key in [k for k in entry if str(k).startswith(_TOOL_SETTING_GRANT_PREFIXES)]:
+            entry.pop(key, None)
+    spec.pop("useLegacyMcpJson", None)
     spec["includeMcpJson"] = False
     if "autoAllowReadonly" in spec:
         spec["autoAllowReadonly"] = False

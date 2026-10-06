@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import importlib
 import inspect
 import json
 import logging
@@ -34,6 +35,85 @@ from kiro_crew.slack.gateway import (
     GatewayOrchestrator,
     _result_hash,
 )
+
+#: Lost-run ceiling for a wait the test itself must end (a stub it parks, a
+#: writer it holds, a signal production raises on the way). Timed wait by wait,
+#: every one of them took at most 0.04 s at ``-n 4`` on a loaded 32-CPU host and
+#: at most 0.01 s with every executor hop delayed by 1.2 s (a starved-runner
+#: model). The one exception spans a whole update and waits on progress instead
+#: (see ``_PROGRESS_WINDOW_SECS``). 60 s is half the module's ``--timeout=120``.
+_LOST_RUN_SECS = 60.0
+
+#: The lost-run ceiling of a wait that spans many executor hops: how long it may go
+#: without a hop being submitted or finishing. Over ten times one hop's 1.2 s under
+#: the starved-runner model. The update ahead of the queued reinstall makes about
+#: nine such hops (the whole test took 10.9 s under that model, 0.04 s at ``-n 4``),
+#: so a slow pool keeps the wait alive while a wedged one fails within one window.
+#: Such a wait is also capped at ``_LOST_RUN_SECS`` in all: a livelock backstop held
+#: at the half-timeout limit, not a race bound.
+_PROGRESS_WINDOW_SECS = 15.0
+
+
+async def _until_set_while_progressing(event, progress, what: str) -> None:
+    """Wait for *event* while ``progress()`` keeps changing.
+
+    For a wait that spans many executor hops: a slow pool keeps it alive, and it
+    fails once a whole ``_PROGRESS_WINDOW_SECS`` passes with no change, or after
+    ``_LOST_RUN_SECS`` in all, naming *what* and the elapsed time.
+    """
+    started = last_change = time.monotonic()
+    seen = progress()
+    while not event.is_set():
+        now = time.monotonic()
+        if progress() != seen:
+            seen, last_change = progress(), now
+        if now - last_change > _PROGRESS_WINDOW_SECS or now - started > _LOST_RUN_SECS:
+            pytest.fail(
+                f"{what} did not happen: {now - started:.1f}s elapsed, "
+                f"{now - last_change:.1f}s since the last progress (count {seen})"
+            )
+        await asyncio.sleep(0.05)
+
+
+async def _within_lost_run(awaitable, what: str):
+    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+
+    A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
+    finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
+    raises on its own, before the ceiling, propagates unchanged.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
+        if elapsed < _LOST_RUN_SECS - 1.0:
+            raise
+        pytest.fail(
+            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"({elapsed:.1f}s elapsed)"
+        )
+
+
+class _ImportlibWithoutReload:
+    """``importlib`` as the gateway sees it, except that ``reload`` returns its argument.
+
+    A completed update re-imports ``kiro_crew`` to log the rebuilt version. In a
+    test that re-runs ``kiro_crew/__init__.py`` inside the worker's one package
+    and leaves a NEW ``kiro_crew.shutdown_event`` there, while every module that
+    imported the name keeps the old object. A later test on the same worker that
+    sets ``kiro_crew.shutdown_event`` then never wakes ``gateway.run()``:
+    ``TestRunMethod::test_run_raises_on_shutdown`` hung to ``--timeout`` behind
+    any update test that completes an update (15 tests in the venv and reset
+    classes). Only the gateway's binding is replaced.
+    """
+
+    def reload(self, module):
+        return module
+
+    def __getattr__(self, name):
+        return getattr(importlib, name)
 
 
 def _install_effect(effect: str = "install", route: str | None = "git"):
@@ -2465,9 +2545,74 @@ class TestInitSubagents:
         assert orch.dashboard_state.push_slots_update.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_subagent_queued_pushes_slots_debounced(self):
+        """A queued-depth frame changes slots[].subagents_queued, so it schedules
+        the same debounced push: the next slots frame reconciles a client that
+        missed the depth frame itself, including one not showing that session."""
+        from kiro_crew.subagent import SubagentInfo
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        on_event = self._capture_on_event(orch)
+
+        info = SubagentInfo(id="_queue", task="", parent_session_key="dashboard:s1")
+        await on_event("subagent_queued", info, {"queued": 1})
+        await on_event("subagent_queued", info, {"queued": 0})
+        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced
+        await asyncio.sleep(0.3)
+        assert orch.dashboard_state.push_slots_update.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_queued_frame_carries_its_tabs_sum_across_parents(self):
+        """Two parents that route to one cron tab: each frame carries the tab's
+        sum, which is what serialize_slots reports, so a frame and the next slots
+        push agree -- including after one of the parents publishes 0."""
+        from kiro_crew.dashboard.state import _published_queued_by_slot
+        from kiro_crew.subagent import SubagentInfo
+
+        def _slot(key: str) -> str:
+            return "cron-job7" if key.startswith("cron:job7") else key.removeprefix("dashboard:")
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        table: dict[str, int] = {}
+        with (
+            patch("kiro_crew.slack.gateway.subagent_event_slot", _slot),
+            patch("kiro_crew.dashboard.chat_utils.subagent_event_slot", _slot),
+        ):
+            on_event = self._capture_on_event(orch)
+            orch.subagent_mgr.published_queued_depths = lambda: dict(table)
+
+            async def publish(parent: str, depth: int) -> int:
+                # The manager records before on_event runs (_fire_event).
+                table.pop(parent, None)
+                if depth:
+                    table[parent] = depth
+                info = SubagentInfo(id="_queue", task="", parent_session_key=parent)
+                await on_event("subagent_queued", info, {"queued": depth})
+                frame = orch.dashboard_state.broadcast_ws.call_args.args[1]
+                assert frame["slot"] == "cron-job7"
+                assert frame["queued"] == _published_queued_by_slot(orch.subagent_mgr).get(
+                    "cron-job7", 0
+                )
+                return frame["queued"]
+
+            assert await publish("cron:job7:run1", 2) == 2
+            assert await publish("cron:job7:writer", 1) == 3
+            assert await publish("cron:job7:run1", 0) == 1
+            assert await publish("cron:job7:writer", 0) == 0
+
+    @pytest.mark.asyncio
     async def test_subagent_tool_event_does_not_push_slots(self):
         """High-frequency subagent_tool events must NOT trigger slots pushes —
-        only spawn/done flip the subagents_running truth value."""
+        only spawn/done flip the subagents_running truth value (and a queued
+        frame moves subagents_queued)."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -2556,95 +2701,6 @@ class TestSubagentDoneStoppedClassification:
         assert "Stopped by the user" not in body
         assert "stopped by user" not in body
         assert "partial notes so far" in body
-
-    @pytest.mark.asyncio
-    async def test_boundary_cancelled_completion_is_not_routed(self):
-        """A completion that lost stage authority never reaches its parent."""
-        orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
-        orch.ctx_builder = _mock_context_builder()
-        orch.ctx_builder.hooks = MagicMock()
-        orch.dashboard_state = _mock_dashboard_state()
-
-        slot = MagicMock()
-        slot.key = "gone"
-        slot.running = False
-        slot.task = None
-        slot._subagent_deliveries_inflight = 0
-        slot._subagents_inline_collected = set()
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        on_done = self._capture_on_done(orch)
-        info = self._stopped_info()
-        info._stage_boundary_cancelled = True
-        info.batch_id = "cancelled-wave"
-        info.batch_total = 1
-
-        run_chat = AsyncMock()
-        with patch("kiro_crew.slack.gateway._run_chat", run_chat):
-            await on_done(info)
-            await asyncio.sleep(0)
-
-        run_chat.assert_not_awaited()
-        slot.queue_append.assert_not_called()
-        orch.dashboard_state.notify.assert_not_called()
-        orch.subagent_mgr.finalize_batch.assert_called_once_with("cancelled-wave")
-        assert "cancelled-wave" not in orch._batch_progress
-
-    @pytest.mark.asyncio
-    async def test_completed_owner_revoked_while_report_waits_is_not_routed(self):
-        """Cancellation that lands during report bookkeeping wins before route."""
-        from kiro_crew.dashboard.state import StageBoundary
-
-        orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
-        orch.ctx_builder = _mock_context_builder()
-        orch.ctx_builder.hooks = MagicMock()
-        orch.dashboard_state = _mock_dashboard_state()
-
-        owner = "owner-a"
-        slot = MagicMock()
-        slot.key = "gone"
-        slot.running = False
-        slot.task = None
-        slot._in_stage_execution = False
-        slot._subagent_deliveries_inflight = 0
-        slot._subagents_inline_collected = set()
-        slot.stage_boundary = StageBoundary(stage=1, generation=owner)
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        on_done = self._capture_on_done(orch)
-        info = self._stopped_info()
-        info.user_stopped = False
-        info.result = "completed before cancellation"
-        info._stage_boundary_owner = owner
-        info.batch_id = "cancel-race-wave"
-        info.batch_total = 2
-        bookkeeping_started = asyncio.Event()
-        release_bookkeeping = asyncio.Event()
-
-        async def _blocked_pending(*_args):
-            bookkeeping_started.set()
-            await release_bookkeeping.wait()
-            return False
-
-        run_chat = AsyncMock()
-        with (
-            patch(
-                "kiro_crew.slack.gateway._subagent_batch_pending",
-                side_effect=_blocked_pending,
-            ),
-            patch("kiro_crew.slack.gateway._run_chat", run_chat),
-        ):
-            routing = asyncio.create_task(on_done(info))
-            await bookkeeping_started.wait()
-            info.user_stopped = True
-            info._stage_boundary_cancelled = True
-            release_bookkeeping.set()
-            await routing
-            await asyncio.sleep(0)
-
-        run_chat.assert_not_awaited()
-        slot.queue_append.assert_not_called()
-        orch.dashboard_state.notify.assert_not_called()
 
 
 class TestSubagentFinalSummaryDirective:
@@ -2748,6 +2804,194 @@ class TestSubagentFinalSummaryDirective:
         slot = await self._done_slot([], probe_error=True)
         assert slot._pending_synthesis is False
         assert slot._subagent_deliveries_inflight == 0
+
+
+class TestSynthesisAfterAOneTurnBatch:
+    """The post-fan-out synthesis runs only when the batch's results reached
+    the parent in two or more completion turns. Completions go through the
+    real ``on_done`` into a real slot, and each completion turn ends through
+    ``chat_runner._finish_queue_cycle``, which takes the fire decision."""
+
+    def _wire(self, tmp_path):
+        from chat_test_helpers import _make_state
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        state = _make_state(tmp_path)
+        orch.dashboard_state = state
+        on_done = TestSubagentFinalSummaryDirective()._capture_on_done(orch)
+        mgr = orch.subagent_mgr
+        # Every fire-gate probe set: a bare MagicMock probe reads as a child.
+        mgr.running_agents_for = MagicMock(return_value=[])
+        mgr.has_in_memory_pending_work_for = MagicMock(return_value=False)
+        mgr.queued_count_for_async = AsyncMock(return_value=0)
+        mgr.queued_count_or_none_async = AsyncMock(return_value=0)
+        mgr.published_queued_depths = MagicMock(return_value={})
+        state.subagents = mgr
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        return on_done, state, slot, mgr
+
+    @staticmethod
+    async def _complete(on_done, slot, agent_id, *, busy=False, **fields):
+        """Route one completion; *busy* parks it behind a turn still running."""
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(
+            id=agent_id, task=f"do {agent_id}", parent_session_key="dashboard:s1", **fields
+        )
+        blocker = asyncio.create_task(asyncio.sleep(30)) if busy else None
+        if blocker is not None:
+            slot.task = blocker
+        try:
+            with (
+                patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()),
+                patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 0.01),
+            ):
+                await on_done(info)
+                turn = slot.task
+                if turn is not None and turn is not blocker:
+                    await turn  # the completion turn (a stub) runs
+        finally:
+            if blocker is not None:
+                blocker.cancel()
+                slot.task = None
+
+    @staticmethod
+    async def _turn_end(state, slot) -> bool:
+        """End the turn that just ran; True when a synthesis turn was started."""
+        from kiro_crew.dashboard import chat_runner
+
+        with (
+            patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()) as synth,
+            # A completion still queued drains as a stub turn.
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+        return synth.called
+
+    @staticmethod
+    async def _user_message_drains(state, slot, *, turn_tail=False, **kwargs):
+        """Queue a user message and drain it. *turn_tail* drains it the way a
+        turn's end does (``_hand_off_queue``, with the ending turn still holding
+        the floor); otherwise the direct drain, as the queued card's Run now."""
+        from kiro_crew.dashboard import chat_runner
+
+        qid = slot.queue_append("thanks, carry on")
+        if kwargs.get("allow_user_during_subagents"):
+            kwargs["required_queue_id"] = qid
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            if not turn_tail:
+                assert await chat_runner._start_next_queued_turn(state, slot, **kwargs) is True
+                return
+            assert not kwargs
+            slot.task = ending = asyncio.get_running_loop().create_future()
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+            assert spawn.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy", [False, True], ids=["launched", "queued"])
+    async def test_a_lone_completion_gets_no_synthesis(self, tmp_path, busy):
+        on_done, state, slot, _ = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "a1", busy=busy)
+        assert slot._pending_synthesis is True, "the arm itself is unchanged"
+
+        assert await self._turn_end(state, slot) is False
+        assert slot._pending_synthesis is False, "the arm is consumed, not left for later"
+
+    @pytest.mark.asyncio
+    async def test_a_wave_digest_in_one_turn_gets_no_synthesis(self, tmp_path):
+        """Two members of one spawn wave arrive as ONE digest turn."""
+        on_done, state, slot, _ = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "m1", batch_id="w1", batch_total=2)
+        assert slot._queue == [] and slot.task is None, "the first member is held"
+        await self._complete(on_done, slot, "m2", batch_id="w1", batch_total=2)
+
+        assert await self._turn_end(state, slot) is False
+
+    @pytest.mark.asyncio
+    async def test_completions_in_two_turns_still_get_one_synthesis(self, tmp_path):
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        assert await self._turn_end(state, slot) is False, "a2 is still running"
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+
+        assert await self._turn_end(state, slot) is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_before_the_last_completion_keeps_the_batch(self, tmp_path):
+        """A message run beside the fan-out (the queued card's Run now) does not
+        split the batch: the two results still earn their synthesis."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        await self._turn_end(state, slot)
+        await self._user_message_drains(state, slot, allow_user_during_subagents=True)
+        await self._turn_end(state, slot)
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+
+        assert await self._turn_end(state, slot) is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_after_the_arm_ends_the_batch(self, tmp_path):
+        """The user replies while the last completion's report streams, so the
+        message drains at that turn's end. The user takes over (the armed
+        synthesis is disarmed, as before), and the next lone completion starts
+        a batch of its own."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        mgr.running_agents_for.return_value = [{"id": "a2"}]
+        await self._complete(on_done, slot, "a1")
+        await self._turn_end(state, slot)
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "a2")
+        await self._user_message_drains(state, slot, turn_tail=True)
+        assert slot._pending_synthesis is False
+        assert await self._turn_end(state, slot) is False
+
+        await self._complete(on_done, slot, "a3")
+        assert await self._turn_end(state, slot) is False
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_during_a_follow_up_batch_keeps_its_synthesis(self, tmp_path):
+        """A lone completion's turn spawns b1 and b2, so its arm is still set
+        when b1's completion turn and a Run-now message drain. The message
+        disarms as before but must not zero the count of a batch that is still
+        running: b1 and b2 reached the parent in two turns and earn one
+        synthesis."""
+        on_done, state, slot, mgr = self._wire(tmp_path)
+
+        await self._complete(on_done, slot, "a1")
+        mgr.running_agents_for.return_value = [{"id": "b1"}, {"id": "b2"}]
+        assert await self._turn_end(state, slot) is False, "b1 and b2 are running"
+        mgr.running_agents_for.return_value = [{"id": "b2"}]
+        await self._complete(on_done, slot, "b1")
+        assert await self._turn_end(state, slot) is False, "b2 is still running"
+        await self._user_message_drains(state, slot, allow_user_during_subagents=True)
+        assert await self._turn_end(state, slot) is False
+        mgr.running_agents_for.return_value = []
+        await self._complete(on_done, slot, "b2")
+
+        assert await self._turn_end(state, slot) is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3437,6 +3681,9 @@ class TestAutoApplyUpdateGitPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -3684,23 +3931,39 @@ class TestRunMethod:
 
         events = []
         stall = threading.Event()
+        write_started = threading.Event()
+        late_cleared = threading.Event()
         original_write_marker = run_marker.write_marker
         original_clear_marker = run_marker.clear_marker
         original_clear_late = run_marker.clear_late_marker_write
 
         def stalled_write_marker(port):
             events.append("write-start")
-            stall.wait(5.0)  # far longer than the shrunk 0.05s budget
+            write_started.set()
+            # Held until the finally below releases it, so the shutdown finds the
+            # write in flight however long the boot before it takes. No timeout on
+            # purpose: any bound here is a wall-clock bound on run()'s boot, which is
+            # the race this replaced (the old 5 s stall ended on its own under a
+            # slow boot), and the finally always releases it.
+            stall.wait()
             original_write_marker(port)  # late write republishes the marker
             events.append("write-end")
 
         def recording_clear_marker(port):
+            # The case is a clear that lands WHILE the write is stalled. On a
+            # starved pool the writer can still be queued when the 0.05 s budget
+            # expires, so wait for it to start rather than race it.
+            if not write_started.wait(_LOST_RUN_SECS):
+                events.append("writer-never-started")
             events.append("clear")
             original_clear_marker(port)
 
         def recording_clear_late(port):
             events.append("late-clear")
-            return original_clear_late(port)
+            try:
+                return original_clear_late(port)
+            finally:
+                late_cleared.set()
 
         monkeypatch.setattr(run_marker, "write_marker", stalled_write_marker)
         monkeypatch.setattr(run_marker, "clear_marker", recording_clear_marker)
@@ -3746,10 +4009,9 @@ class TestRunMethod:
             # teardown would restore the real config_dir/write_marker and the
             # worker would wake later and write markers OUTSIDE tmp_path.
             stall.set()
-            for _ in range(200):  # up to ~10s; normally a few ms
-                if "write-start" not in events or "late-clear" in events:
-                    break
-                await asyncio.sleep(0.05)
+            if write_started.is_set():
+                # Bounded inside the thread: a cancelled to_thread cannot stop it.
+                await asyncio.to_thread(late_cleared.wait, _LOST_RUN_SECS)
 
         # The stalled write did not complete before the bounded wait expired,
         # yet the marker was cleared and graceful shutdown still ran — the
@@ -3767,6 +4029,10 @@ class TestRunMethod:
         # does not identify its owner, so it removes only this process's own
         # write and only while the pid record still names this process. The
         # shutdown-side ``clear_marker`` runs once and holds the listener.
+        assert late_cleared.is_set(), (
+            f"the released writer did not self-clear within the {_LOST_RUN_SECS:.0f}s "
+            f"lost-run ceiling: {events}"
+        )
         assert "write-end" in events
         assert events.index("write-end") > events.index("clear")
         assert events.count("clear") == 1  # the timed-out shutdown clear
@@ -4008,123 +4274,6 @@ class TestSubagentDone:
 
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.push_slots_update.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_dashboard_completion_routes_to_exact_run_owner(self):
-        """A tagged run routes to its owner even when another alias armed later."""
-        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
-        from kiro_crew.subagent import SubagentInfo
-
-        orch, mock_sm = self._setup_orch_with_subagent_mgr()
-        on_done = mock_sm.call_args[1]["on_done"]
-        parent = "dashboard:chat-1"
-        canonical = _ChatSlot("chat-1")
-        canonical.mode = "chat"
-        first = _ChatSlot("chat-1-first")
-        first.mode = "chat"
-        first.linked_session_key = parent
-        first.stage_boundary = StageBoundary(
-            stage=1,
-            generation="first-owner",
-            parent_session_keys={parent},
-            armed_at=2,
-        )
-        first._in_stage_execution = True
-        second = _ChatSlot("chat-1-second")
-        second.mode = "chat"
-        second.linked_session_key = parent
-        second.stage_boundary = StageBoundary(
-            stage=1,
-            generation="second-owner",
-            parent_session_keys={parent},
-            armed_at=1,
-        )
-        second._in_stage_execution = True
-        orch.dashboard_state._slots = {
-            canonical.key: canonical,
-            first.key: first,
-            second.key: second,
-        }
-        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
-
-        info = SubagentInfo(id="alias-agent", task="alias task", parent_session_key=parent)
-        info.done = True
-        info.result = "alias result"
-        info._stage_boundary_owner = second.stage_boundary.owner or ""
-        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
-            await on_done(info)
-            await asyncio.sleep(0)
-
-        assert not canonical._queue
-        assert not first._queue
-        assert not first._subagent_delivery_pending
-        assert len(second._queue) == 1
-        assert second._subagent_delivery_pending
-        assert second.stage_boundary.owns_entry(second._queue[0])
-        status_payload = next(
-            call.args[1]
-            for call in orch.dashboard_state.broadcast_ws.call_args_list
-            if call.args[0] == "subagent_status"
-        )
-        assert status_payload["slot"] == second.key
-        run_chat.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_retry_after_released_boundary_routes_to_live_canonical_slot(self):
-        """A retry cannot keep an owner after that exact boundary is released."""
-        from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
-        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
-        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
-        from kiro_crew.subagent import SubagentInfo
-
-        orch, mock_sm = self._setup_orch_with_subagent_mgr()
-        on_done = mock_sm.call_args[1]["on_done"]
-        manager = orch.subagent_mgr
-        parent = "dashboard:chat-1"
-        canonical = _ChatSlot("chat-1")
-        canonical.mode = "chat"
-        canonical.stage_boundary = StageBoundary(
-            stage=1,
-            generation="released-owner",
-            parent_session_keys={parent},
-        )
-        canonical.stage_boundary.clear()
-        orch.dashboard_state._slots = {canonical.key: canonical}
-        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
-        orch.dashboard_state.subagents = manager
-
-        old = SubagentInfo(id="old", task="failed", parent_session_key=parent)
-        old.done = True
-        old.error = "boom"
-        old._stage_boundary_owner = "released-owner"
-        old.execution_context = ExecutionContext(
-            None, MemoryStoreRef("default"), "template", "kirocrew"
-        )
-        retry = SubagentInfo(id="retry", task="failed", parent_session_key=parent)
-        manager.get.return_value = old
-        manager.spawn.return_value = retry
-        request = MagicMock()
-        request.app = {"state": orch.dashboard_state}
-        request.match_info = {"agent_id": old.id}
-        request.get.return_value = None
-        response = await api_spawn_retry(request)
-        assert response.status == 200
-        retry._stage_boundary_owner = manager.spawn.call_args.kwargs["_stage_boundary_owner"]
-
-        canonical.stage_boundary.arm(2)
-        canonical.stage_boundary.parent_session_keys.add(parent)
-        canonical._in_stage_execution = True
-        retry.done = True
-        retry.result = "retry result"
-        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
-            await on_done(retry)
-            await asyncio.sleep(0)
-
-        assert retry._stage_boundary_owner == ""
-        assert len(canonical._queue) == 1
-        assert canonical._queue[0]["kind"] == "subagent_completion"
-        orch.dashboard_state.notify.assert_not_called()
-        run_chat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dashboard_slot_busy_queues(self):
@@ -4535,6 +4684,9 @@ class TestAutoApplyUpdateVenvPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -5385,6 +5537,9 @@ class TestAutoApplyUpdateResetPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -5662,26 +5817,53 @@ class TestAutoApplyUpdateResetPath:
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
         orch.sessions = _mock_sessions()
-        pool = concurrent.futures.ThreadPoolExecutor(1)
+        reinstall_queued = asyncio.Event()
+
+        class _SaturatedPool(concurrent.futures.ThreadPoolExecutor):
+            """One worker, held by the test; reports the next job it is handed."""
+
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                if fn != busy.wait:
+                    reinstall_queued.set()  # run_in_executor submits on the loop thread
+                return future
+
         busy = threading.Event()
-        pool.submit(busy.wait, 5)  # the one worker is taken
+        pool = _SaturatedPool(1)
+        # The one worker is taken until the finally releases it. No timeout on
+        # purpose: a wall-clock hold could end while a slow update was still on its
+        # way to the reinstall, and the finally always releases it.
+        pool.submit(busy.wait)
         ran = []
-        queued = asyncio.Event()
 
         async def _build(*_a, **_k):
             # From here on the reinstall goes to the saturated pool.
             monkeypatch.setattr(gw, "subprocess_executor", lambda: pool)
-            queued.set()
 
+        # The update ahead of the reinstall makes about nine executor hops; count
+        # them (submitted and finished) so the wait below can tell slow from stuck.
+        loop = asyncio.get_running_loop()
+        hops = [0]
+        real_run_in_executor = loop.run_in_executor
+
+        def _counted(executor, func, *args):
+            hops[0] += 1
+            future = real_run_in_executor(executor, func, *args)
+            future.add_done_callback(lambda _f: hops.__setitem__(0, hops[0] + 1))
+            return future
+
+        monkeypatch.setattr(loop, "run_in_executor", _counted)
         task = asyncio.ensure_future(
             self._run_git_apply(orch, sync=lambda *a, **k: ran.append(1) or 0, build=_build)
         )
         try:
-            await asyncio.wait_for(queued.wait(), timeout=5.0)
-            await asyncio.sleep(0)  # let the reinstall be submitted behind the busy worker
+            # The reinstall is queued behind the busy worker: cancel now.
+            await _until_set_while_progressing(
+                reinstall_queued, lambda: hops[0], "the update reaching the queued reinstall"
+            )
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await task
+                await _within_lost_run(task, "the cancelled update")
         finally:
             busy.set()
             pool.shutdown(wait=True)
@@ -8834,10 +9016,9 @@ class TestCountInFlightWork:
         finished = MagicMock()
         finished.done.return_value = True
         state._slots = {
-            "normal": SimpleNamespace(task=running, _in_stage_execution=False),
-            "remote": SimpleNamespace(task=remote, _in_stage_execution=False),
-            "finished": SimpleNamespace(task=finished, _in_stage_execution=False),
-            "stage-gap": SimpleNamespace(task=None, _in_stage_execution=True),
+            "normal": SimpleNamespace(task=running),
+            "remote": SimpleNamespace(task=remote),
+            "finished": SimpleNamespace(task=finished),
         }
         orch.dashboard_state = state
         orch._session_tasks = {}
@@ -8846,7 +9027,7 @@ class TestCountInFlightWork:
         orch._running_script_ids = set()
         orch.task_runner = None
 
-        assert orch._in_flight_work_counts() == (2, 1)
+        assert orch._in_flight_work_counts() == (2, 0)
 
     @pytest.mark.asyncio
     async def test_final_drain_collects_dashboard_and_stage_tasks(self):
@@ -9623,13 +9804,14 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         orch._pending_update_respawn = lambda: "/x/python3"
         orch._pending_update_mandatory = True
         orch._pending_update_mandatory_key = "floor:9.9.9"
-        loop = asyncio.get_running_loop()
-        now = [1000.0]
-        monkeypatch.setattr(loop, "time", lambda: now[0])
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
             await orch._retry_pending_update_restart()
-            now[0] += orch._MANDATORY_UPDATE_MAX_DEFER_SECS + 1
+            # Age the recorded deferral rather than freezing ``loop.time``: the
+            # loop clock is the one every timer on this loop waits on, so a
+            # frozen one strands any bounded await the retry path makes.
+            assert orch._mandatory_update_deferred_at is not None
+            orch._mandatory_update_deferred_at -= orch._MANDATORY_UPDATE_MAX_DEFER_SECS + 1
             await orch._retry_pending_update_restart()
 
         assert "remains deferred after its grace period" in caplog.text

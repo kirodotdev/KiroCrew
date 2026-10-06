@@ -139,14 +139,22 @@ class TestRunnerLaneFeedsTheExecTrack:
         assert ctl._samples[-1].completions == 7  # 4 + (5 - 2)
 
     @pytest.mark.asyncio
-    async def test_workflow_only_load_climbs_past_adaptive_initial(self) -> None:
+    async def test_workflow_only_load_climbs_from_a_lowered_cap(self) -> None:
         """Acceptance: with only workflow lane load at the cap and a clear
-        host, the exec cap climbs past ``adaptive_initial`` toward the user
-        ceiling under the existing earn rules."""
+        host, an exec cap below its ceiling climbs toward the user ceiling
+        under the existing earn rules. (A fresh process starts AT the ceiling;
+        the cap is pinned low here to watch the climb.)"""
+        from dataclasses import replace
+
+        from kiro_crew.adaptive.policy import AdaptivePolicy
+
         mgr = FakeManager(user_max=64)
         lane = FakeLane()
-        ctl, clock = _controller(mgr, lane, cfg=_cfg(adaptive_initial=4, adaptive_slow_start=False))
-        assert mgr.effective == 4  # fresh-start cap
+        ctl, clock = _controller(mgr, lane, cfg=_cfg(adaptive_slow_start=False))
+        assert mgr.effective == 64  # fresh-start cap: the ceiling
+        ctl._policy = AdaptivePolicy(replace(ctl._policy.params, exec_initial=4))
+        ctl._apply_exec(4)
+        assert mgr.effective == 4
 
         # Keep the lane saturated at the live cap with a deep queue, and land a
         # full wave of committed completions each clean window.

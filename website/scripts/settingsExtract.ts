@@ -187,6 +187,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
+  // Mounted from outside pages/settings, so each is also a root in panelRoots:
+  // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
+  // automatic-cards switch.
+  'PortabilityTab.tsx': 'imports',
+  'AutomaticCardSetting.tsx': 'developer',
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;
@@ -424,18 +429,38 @@ export function extractFromSource(
   return { entries, skipped }
 }
 
+/** A directory of panel files, or one `file` in `dir` that a panel mounts. */
+export interface ExtractRoot { dir: string; file?: string }
+
+/** Every place panel source lives, given website/src. A settings panel that
+ *  mounts a component from another pages/ directory adds it here, so the
+ *  registry and the coverage gate both scan it. */
+export function panelRoots(srcDir: string): ExtractRoot[] {
+  return [
+    { dir: path.join(srcDir, 'pages', 'settings') },
+    { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
+    { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
+  ]
+}
+
+/** The panel files under `roots`, as full paths. A directory's files are
+ *  sorted so dedup suffix assignment is deterministic cross-platform
+ *  (readdirSync order is OS-dependent). */
+export function rootFiles(roots: ExtractRoot[]): string[] {
+  return roots.flatMap(({ dir, file }) =>
+    (file ? [file] : fs.readdirSync(dir).filter(f => f.endsWith('.tsx')).sort()).map(f => path.join(dir, f)),
+  )
+}
+
 /**
- * Extract settings from all panel files in the given directory.
- * Files are sorted alphabetically before processing so dedup suffix assignment
- * is deterministic cross-platform (Fix #3: readdirSync order is OS-dependent).
+ * Extract settings from all panel files under the given roots.
  */
-export function extractAll(settingsDir: string): { entries: SettingEntry[]; skipped: number } {
-  const files = fs.readdirSync(settingsDir).filter(f => f.endsWith('.tsx')).sort()
+export function extractAll(roots: ExtractRoot[]): { entries: SettingEntry[]; skipped: number } {
   let allEntries: SettingEntry[] = []
   let totalSkipped = 0
 
-  for (const file of files) {
-    const source = fs.readFileSync(path.join(settingsDir, file), 'utf-8')
+  for (const file of rootFiles(roots)) {
+    const source = fs.readFileSync(file, 'utf-8')
     const { entries, skipped } = extractFromSource(source, file)
     allEntries = allEntries.concat(entries)
     totalSkipped += skipped

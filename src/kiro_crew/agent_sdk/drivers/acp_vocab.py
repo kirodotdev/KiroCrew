@@ -1,10 +1,10 @@
 """The ACP driver's vocabulary: names application code reads by VALUE.
 
 Stop classes and the stop-reason classifier, the structured-status frame and
-its wait reasons, the session-start timeout and the native-child marker are
-backend vocabulary a consumer compares against or raises on. They reach
-application code from here, so a consumer never names ``kiro_crew.acp`` itself
-(``scripts/check_agent_sdk_boundary.py``).
+its wait reasons, the terminal tool-call statuses, the session-start timeout and
+the native-child marker are backend vocabulary a consumer compares against or
+raises on. They reach application code from here, so a consumer never names
+``kiro_crew.acp`` itself (``scripts/check_agent_sdk_boundary.py``).
 
 Unlike :mod:`kiro_crew.agent_sdk.drivers.acp`, the imports here are at MODULE
 scope on purpose: a constant has to exist when the importing module binds it.
@@ -28,6 +28,7 @@ from kiro_crew.acp.types import (
     STOP_CLASS_STALLED,
     STOP_CLASS_SUCCEEDED,
     STOP_RECOVERY_MAX_RETRIES,
+    TERMINAL_TOOL_STATUSES,
     WAIT_REASON_INPUT,
     StructuredStatus,
     classify_stop_reason,
@@ -45,6 +46,7 @@ __all__ = [
     "STOP_CLASS_STALLED",
     "STOP_CLASS_SUCCEEDED",
     "STOP_RECOVERY_MAX_RETRIES",
+    "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
     "StructuredStatus",

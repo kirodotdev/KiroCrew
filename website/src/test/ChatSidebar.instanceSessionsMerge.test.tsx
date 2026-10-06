@@ -1,17 +1,7 @@
 /**
- * Test: live sessions from connected remote instances MERGE into the Sessions
- * list by recency, rather than being appended after every local row.
- *
- * WHY THIS EXISTS AS A SIDEBAR TEST and not only a hook test: the hook returning
- * correct rows is not the property that broke. `history` arrives date-desc from
- * the backend, so the sidebar SKIPS its sort for the `date-desc` key as an
- * optimisation. Concatenating the hook's rows onto that pre-sorted array is a
- * type-correct change that silently violates the premise of that fast path — the
- * result is two sorted runs, not one — so every remote row rendered BELOW every
- * local row. That is the exact "local list with a remote list stuck on the end"
- * shape this feature exists to replace, and at the bottom of a long list it reads
- * as the feature not working at all. Only a test that asserts RENDERED ORDER
- * across the merge catches it; the hook's own spec passes either way.
+ * Test: live sessions from connected remote instances join the LIVE Sessions
+ * list, filed under their crew's group (per-machine groups, preview flag on),
+ * and keep none of the local-only affordances.
  *
  * Mock scaffolding mirrors ChatSidebar.federatedSearch.test.tsx (which mirrors
  * ChatSidebar.offline.test.tsx, the owner of the mock setup).
@@ -118,9 +108,8 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { closeCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 import { api } from '../api/client'
-import { ApiError } from '../api/apiError'
-import { recordError } from '../utils/errorReport'
 import type { ChatSlot, ChatHistoryItem } from '../types'
 import type { RootState } from '../store'
 
@@ -140,8 +129,10 @@ function renderSidebar({
   localNewerRemoteExecutor,
   localNewerRowIdentity,
   onOpenSlotInNewTab,
+  onOpenPeerSession,
   warmInstances = false,
 }: {
+  onOpenPeerSession?: (instanceId: string, key: string) => void
   activeSlot?: string
   localNewerRunning?: boolean
   localNewerPinned?: boolean
@@ -224,6 +215,7 @@ function renderSidebar({
               defaultAgent={'default'}
               installedAgents={[]}
               onOpenSlotInNewTab={onOpenSlotInNewTab}
+              onOpenPeerSession={onOpenPeerSession}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -238,7 +230,7 @@ function renderSidebar({
   return { ...view, store, setActiveSlot: (active: string) => view.rerender(tree(active)) }
 }
 
-describe('ChatSidebar – remote crew sessions merge into the list', () => {
+describe('ChatSidebar – remote crew sessions in the live list', () => {
   // `mockReset` + re-declared default, not `mockClear`: the failure cases here
   // queue rejections, and an unconsumed `mockRejectedValueOnce` (or a persistent
   // `mockRejectedValue`) survives `mockClear` and poisons the NEXT case — which
@@ -251,7 +243,7 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     localStorage.clear()
   })
 
-  it('orders a remote row BETWEEN local LIVE sessions by recency', async () => {
+  it('files a remote row under its crew group, after every local LIVE session', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const { container } = renderSidebar()
 
@@ -266,10 +258,11 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
 
     expect(newer).toBeGreaterThanOrEqual(0)
     expect(older).toBeGreaterThanOrEqual(0)
-    // Interleaved by recency among the LIVE sessions — these are the peer's OPEN
-    // slots, so they belong with local open sessions, not in the closed-tab drawer.
-    expect(newer).toBeLessThan(remote)
-    expect(remote).toBeLessThan(older)
+    // Origin is a container: the peer's OPEN slots sit in the crew's own group
+    // below Local, still in the live list rather than the closed-tab drawer.
+    expect(newer).toBeLessThan(older)
+    expect(older).toBeLessThan(remote)
+    expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE middle row')
   })
 
   it('prints each date-segment header once, even when a remote row was created in another bucket', async () => {
@@ -431,10 +424,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     const remoteRow = Array.from(container.querySelectorAll('[data-slot-key="remote-running"]'))
       .find(row => row.textContent?.includes('REMOTE active turn'))
     expect(remoteRow?.querySelector('.animate-spin')).not.toBeNull()
-    // Live state correctly outranks the click-outcome line, so the chip itself
-    // must stop being a bare guess-level name. "On astro" keeps the ownership
-    // visible without hiding "Running" or adding a second status line.
-    expect(remoteRow?.textContent).toContain('On astro')
+    // Inside its crew group the header names the machine, so no row chip.
+    expect(remoteRow?.closest('[data-testid="crew-group-inst-a"]')).not.toBeNull()
+    expect(remoteRow?.textContent).not.toContain('On astro')
   })
 
   it('says an unlinked peer row is not open here yet, and yields to live peer state', async () => {
@@ -595,156 +587,39 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     expect(remoteRow!.textContent).not.toMatch(/dashboard/i)
   })
 
-  it('adopts the peer session into a fresh LOCAL slot instead of switching panes', async () => {
-    // THE BEHAVIOURAL CLAIM OF THIS FEATURE. The click used to hand the whole app
-    // over to the peer's dashboard pane; it must now bind the peer session to a new
-    // local slot and stay put. Asserted on BOTH sides, because either half alone
-    // passes for the wrong reason: an adopt that ALSO pane-switches still teleports
-    // the user away, and a click that merely stops switching opens nothing at all.
+  it('opens the peer session as a window, creating no local slot', async () => {
+    // The peer OWNS a crew session: the click opens a window onto the peer's own
+    // slot and creates nothing here. Asserted on all three sides: no local slot,
+    // no pane switch, and the window names the PEER's own key.
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    vi.mocked(api.createChatSlot).mockResolvedValue({ key: 'chat-local-adopted' } as ChatSlot)
+    closeCrewWindow()
     const { container } = renderSidebar()
 
     await waitFor(() => expect(container.textContent).toContain('REMOTE middle row'))
-    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
-      .find(row => row.textContent?.includes('REMOTE middle row'))
-    fireEvent.click(remoteRow!)
+    const remoteRow = () => Array.from(container.querySelectorAll('[data-session-row]'))
+      .find(row => row.textContent?.includes('REMOTE middle row'))!
+    fireEvent.click(remoteRow())
 
-    await waitFor(() => expect(vi.mocked(api.createChatSlot)).toHaveBeenCalled())
-    // Positional, because that IS the wire: `instance_id` names the owning crew and
-    // `adopt_remote_slot` the peer session's own key, exactly the pair the listing
-    // row handed us. A mint would send the instance and NO adopt key.
-    const args = vi.mocked(api.createChatSlot).mock.calls.at(-1)!
-    expect(args[8]).toBe('inst-a')
-    expect(args[9]).toBe('chat-9')
-    // The pane switch must never be reached.
+    await waitFor(() => expect(remoteRow().getAttribute('aria-current')).toBe('true'))
+    expect(vi.mocked(api.createChatSlot)).not.toHaveBeenCalled()
     expect(selectInstanceMock).not.toHaveBeenCalled()
+    expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'inst-a', key: 'chat-9' })
+    closeCrewWindow()
   })
 
-  it('switches to the NEW LOCAL slot the adopt returns, not to the peer key', async () => {
-    // The adopted slot's key is minted locally and is NOT the peer's key — binding
-    // to `chat-9` while switching to `chat-9` would land on the peer row again (or
-    // on a colliding LOCAL slot, which is the collision this whole PR exists to
-    // keep apart). `chatSlotDetail` is `switchSlot`'s own read, so seeing the new
-    // key arrive there proves the switch followed the response rather than the row.
+  it('hands a crew row to a host with no chat pane of its own', async () => {
+    // The embedded Sessions list has no pane to draw the window in, so it
+    // says where the window opens; the store is left alone.
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    vi.mocked(api.createChatSlot).mockResolvedValue({ key: 'chat-local-adopted' } as ChatSlot)
-    const { container } = renderSidebar()
+    closeCrewWindow()
+    const onOpenPeerSession = vi.fn()
+    const { container } = renderSidebar({ onOpenPeerSession })
 
     await waitFor(() => expect(container.textContent).toContain('REMOTE middle row'))
-    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
-      .find(row => row.textContent?.includes('REMOTE middle row'))
-    fireEvent.click(remoteRow!)
-
-    await waitFor(() =>
-      expect(vi.mocked(api.chatSlotDetail).mock.calls.some(c => c[0] === 'chat-local-adopted')).toBe(true))
-    expect(vi.mocked(api.chatSlotDetail).mock.calls.some(c => c[0] === 'chat-9')).toBe(false)
-  })
-
-  it('does NOT yank the view onto the adopted slot when the user switched away mid-adopt', async () => {
-    // `createSlot.fulfilled` already refuses to activate a new slot when the user
-    // navigated elsewhere during the round-trip. This path has its own
-    // `switchSlot` (that is what loads the transcript), and an unconditional one
-    // overrode exactly that decision — the user clicked a peer row, moved to
-    // another session while the peer call was in flight, and got yanked back.
-    //
-    // The adopt is a real network trip to the peer and can span seconds over a
-    // tunnel, so this is an ordinary sequence, not a contrived race.
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    vi.mocked(api.chatSlotDetail).mockClear()
-    let release: (slot: ChatSlot) => void = () => {}
-    vi.mocked(api.createChatSlot).mockReturnValue(
-      new Promise<ChatSlot>(resolve => { release = resolve }),
-    )
-    const { container, setActiveSlot } = renderSidebar({ activeSlot: 's1' })
-
-    await waitFor(() => expect(container.textContent).toContain('REMOTE middle row'))
-    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
-      .find(row => row.textContent?.includes('REMOTE middle row'))
-    fireEvent.click(remoteRow!)
-
-    // Wait until the peer call is genuinely OPEN before moving. `mutate` runs its
-    // body in a microtask, so switching first could beat the origin capture and
-    // the test would pass for the wrong reason.
-    await waitFor(() => expect(vi.mocked(api.createChatSlot).mock.calls.length).toBeGreaterThan(0))
-
-    // The user moves on while the peer call is still open.
-    setActiveSlot('s-new')
-    release({ key: 'chat-adopted-while-away' } as ChatSlot)
-
-    // `chatSlotDetail` is `switchSlot`'s own read, so its absence for the adopted
-    // key is what proves the view was left where the user put it.
-    await new Promise(r => setTimeout(r, 0))
-    expect(vi.mocked(api.chatSlotDetail).mock.calls.some(c => c[0] === 'chat-adopted-while-away')).toBe(false)
-  })
-
-  it('renders ONE status line on a running peer row that is also adopting', async () => {
-    // website/AUTOSDE.yaml `session-row-fixed-height`: a row gets ONE status line,
-    // and only one. Adopt feedback used to render BESIDE the ordered resolver
-    // instead of inside it, so a peer row reporting an active remote turn showed
-    // its running line AND the adopting line at once and grew taller than every
-    // row around it. Both lines lead with a spinner, so counting spinners inside
-    // the row is what tells one line from two.
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    instanceChatSlotsMock.mockResolvedValueOnce([
-      {
-        key: 'remote-running',
-        title: 'REMOTE active turn',
-        last_turn_ts: new Date(Date.now() - 120_000).toISOString(),
-        running: true,
-      },
-    ])
-    // Never resolves, so the row stays in its adopting state for the assertion.
-    vi.mocked(api.createChatSlot).mockReturnValue(new Promise(() => {}) as Promise<ChatSlot>)
-    const { container } = renderSidebar()
-
-    await waitFor(() => expect(container.textContent).toContain('REMOTE active turn'))
-    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
-      .find(row => row.textContent?.includes('REMOTE active turn'))
-    expect(remoteRow!.querySelector('.animate-spin')).not.toBeNull()
-
-    fireEvent.click(remoteRow!)
-
-    await waitFor(() =>
-      expect(remoteRow!.querySelector('[data-testid="session-peer-adopt-pending"]')).not.toBeNull())
-    expect(remoteRow!.querySelectorAll('.animate-spin')).toHaveLength(1)
-  })
-
-  it('renders the crew\'s OWN refusal on a failed adopt, not a fixed "could not reach"', async () => {
-    // `remote_bind_failed` is ONE code for every refusal on the bind leg: a dead
-    // tunnel, but also a version-parity refusal from a crew that is up and answering.
-    // Only the backend's sentence tells them apart, so the row must show that
-    // sentence. A fixed "Could not reach astro" here told the user to reconnect a
-    // crew that was reachable, and hid the line naming which end to update.
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    const reason = 'This crew runs Kiro Crew 0.6.0 but this machine runs 0.7.0. '
-      + 'A session only runs on a crew at the same major.minor version — update whichever end is behind.'
-    // What `client.ts::apiFailure` does for a real 502 before it throws: journal the
-    // status and code keyed by the message, which is the only field that survives
-    // the thunk boundary (see `adoptFailureText`'s doc).
-    recordError({
-      source: 'api', message: reason, status: 502, code: 'remote_bind_failed',
-      endpoint: '/api/chat/slots', detail: JSON.stringify({ error: reason, code: 'remote_bind_failed' }),
-    })
-    vi.mocked(api.createChatSlot).mockRejectedValueOnce(new ApiError(502, reason))
-    const { container } = renderSidebar()
-
-    await waitFor(() => expect(container.textContent).toContain('REMOTE middle row'))
-    const remoteRow = Array.from(container.querySelectorAll('[data-session-row]'))
-      .find(row => row.textContent?.includes('REMOTE middle row'))
-    fireEvent.click(remoteRow!)
-
-    await waitFor(() =>
-      expect(remoteRow!.querySelector('[data-testid="session-peer-adopt-error"]')).not.toBeNull())
-    const noticeEl = remoteRow!.querySelector('[data-testid="session-peer-adopt-error"]')!
-    const shown = noticeEl.textContent ?? ''
-    expect(shown).toContain('0.6.0')
-    expect(shown).toContain('0.7.0')
-    expect(shown).not.toMatch(/could not reach/i)
-    // The row is one line wide and clips the sentence (`session-row-fixed-height`),
-    // so the whole reason must also ride a `title` tooltip -- the clipped half is
-    // the one that says what to do.
-    expect(noticeEl.querySelector('[title]')?.getAttribute('title')).toBe(reason)
+    fireEvent.click(Array.from(container.querySelectorAll('[data-session-row]'))
+      .find(row => row.textContent?.includes('REMOTE middle row'))!)
+    expect(onOpenPeerSession).toHaveBeenCalledWith('inst-a', 'chat-9')
+    expect(sessionStorage.getItem('kirocrew.crewWindow') || null).toBeNull()
   })
 
   it('keeps the PEER identity on the adopted row, so it is one row and not two', async () => {
@@ -803,7 +678,7 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     expect(container.textContent).not.toMatch(/checking remote crews/i)
   })
 
-  it('reveals the LOCAL session when a colliding remote row sorts above it', async () => {
+  it('reveals the LOCAL session when a remote row shares its key', async () => {
     // The reveal targets a row through the DOM. `data-slot-key` carries the RAW
     // key, which stops being a unique namespace once peer rows are merged: a
     // remote row with a byte-identical deterministic key carries the same
@@ -828,10 +703,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     try {
       const { container, store } = renderSidebar()
       await waitFor(() => expect(container.textContent).toContain('REMOTE same-key newer row'))
-      // Precondition: the colliding remote row really is first in the DOM, so a
-      // raw-key lookup would find it rather than the local row.
-      const text = container.textContent ?? ''
-      expect(text.indexOf('REMOTE same-key newer row')).toBeLessThan(text.indexOf('LIVE newer slot'))
+      // Precondition: both rows share the key `s-new` and both are rendered, so a
+      // raw-key lookup has two candidates. The remote one sits in its crew group.
+      expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE same-key newer row')
 
       store.dispatch(requestSlotReveal('s-new'))
 
@@ -922,9 +796,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     expect(executedLocally!.querySelector('[aria-label="More options"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-draggable="true"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-session-row]')).toHaveAttribute('aria-current', 'true')
-    // …and exactly ONE server chip: the runs-elsewhere marker it genuinely earns.
-    // Two chips was the visible symptom of the collision.
-    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(1)
+    // Inside its crew group the header names the machine, so no row chip.
+    expect(executedLocally!.closest('[data-testid="crew-group-inst-a"]')).not.toBeNull()
+    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(0)
 
     // …while the peer-OWNED row keeps none of them.
     expect(ownedByPeer!.querySelector('[aria-label="More options"]')).toBeNull()

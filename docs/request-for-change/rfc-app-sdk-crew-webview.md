@@ -51,7 +51,7 @@ Verified on origin/main at the commit named in `audited-at`.
 ### 2.1 Templates
 
 - A template is resolved from two roots, operator override first: `override_templates_dir()` (`<data home>/panel-templates/`) then `shipped_templates_dir()` (`src/kiro_crew/agent_panel_templates/`, which holds `default.html` and `kirocrew-pipeline-conductor.html`). See `resolve_template`.
-- A template id must match `TEMPLATE_ID_RE` (lowercase, digits, single dashes, no dots). `template_for_crew` gives a crew the template whose id equals its slugified name, else `default`. `available_templates` lists both roots and backs the `panel_templates` MCP tool (`api_agent_panel_templates` in `dashboard/handlers/agent_panel.py`).
+- A template id must match `TEMPLATE_ID_RE` (lowercase letters, digits and dashes, 1-64 characters, starting and ending with a letter or digit; consecutive dashes are allowed; no dots). `template_for_crew` gives a crew the template whose id equals its slugified name, else `default`. `available_templates` lists both roots and backs the `panel_templates` MCP tool (`api_agent_panel_templates` in `dashboard/handlers/agent_panel.py`).
 - The module docstring states the trust split: the template is "HTML a human wrote and reviewed", and only the data comes from the crew. `panel-templates` is sealed read-only for a sandboxed shell (`sandbox._CREW_READONLY_LEAVES`), write-protected for agent file tools (`security/paths.py`, the `panel-templates` entry), and refused when it is a symlink (`_real_dir_under_data_home`, `sandbox._CREW_NO_ALIAS_LEAVES`).
 - Composition happens on READ: `render_record` calls `resolve_template` for the stored id on every drawer open, and `compose` fills `DATA_MARKER` with an inert `application/json` island (`kirocrew-panel-data`). A stored id that does not resolve raises `PanelError("unknown_template")`, which `_read_and_compose` turns into a 503 `panel_render_failed` from `api_member_panel`.
 - App Kit has no template contribution. `Contributes` in `apps/manifest.py` holds `commands`, `sessionControls`, `panelTabs` (chat side-panel tabs, unrelated to the Crew Webview) and `fileMenuItems`.
@@ -174,7 +174,7 @@ Every lifecycle frame already passes through `DashboardState.broadcast_ws`, and 
 | `approval.required` | `approval` | `approval_id`, `tool` |
 | `approval.resolved` | `approval_resolved` | `approval_id`, `approved`, `expired` |
 
-Both source frames repeat within one step: `chat_orchestrator.py` re-broadcasts `chat_status` every `_SA_STATUS_EVERY_SECS` during a subagent wait, and `chat_runner.py` sends `tool_call` again on `EVENT_TOOL_CALL_UPDATE` for the same `tool_call_id`. The projector emits each `turn.started` and `tool.called` once per turn and per call.
+A source frame can repeat within one step: `chat_runner.py` sends `tool_call` again on `EVENT_TOOL_CALL_UPDATE` for the same `tool_call_id`. The projector emits each `turn.started` and `tool.called` once per turn and per call.
 
 Common fields: `kind`, `ts`, `slot`, `origin` (the slot's origin class). The projector maps only the slot frames in the table; the `subagent_batch_*` frames are not mapped, so a subagent's steps reach the feed only as its parent slot's turn and tool events. An `approval_resolved` frame without `slot` (§2.3) belongs to an empty or `state` session, so there is no slot to fill; the projector drops it, and no app subscriber receives a slotless event. The owner still sees it on the dashboard as today.
 

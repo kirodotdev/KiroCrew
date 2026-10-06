@@ -365,7 +365,7 @@ function InteractionPlugin({
     // createImeLatch) — the sanctioned wiring shape the ImeEnterClaimRatchet
     // scans for: every compositionstart subscriber must feed the shared latch.
     const onCompositionStart = () => latch.onCompositionStart()
-    const onCompositionEnd = () => latch.onCompositionEnd()
+    const onCompositionEnd = (e: CompositionEvent) => latch.onCompositionEnd(e.data)
     const onFocusChange = () => latch.reset()
     const rootListeners = editor.registerRootListener((root, prevRoot) => {
       if (prevRoot) {

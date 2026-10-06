@@ -928,6 +928,63 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
     assert fresh.done is False
 
 
+@pytest.mark.asyncio
+async def test_reaper_sweep_reaps_a_runtime_that_never_answers_its_first_prompt(
+    monkeypatch,
+) -> None:
+    """One real sweep: a start whose runtime is up (PID recorded) but whose
+    first prompt got no frame for longer than ``_FIRST_PROMPT_SILENT_SECS`` is
+    reaped under ``startup_timeout``; one still inside that window, and one
+    whose stream already answered, are left alone."""
+    from kiro_crew.subagent_manager.monitoring import _FIRST_PROMPT_SILENT_SECS
+
+    now = 10_000.0
+    mgr = _manager(startup_timeout=120)
+    silent = _starting("silent", exec_started=now - 900.0, _pid=4242)
+    silent.last_activity = now - _FIRST_PROMPT_SILENT_SECS - 1.0
+    fresh = _starting("fresh", exec_started=now - 900.0, _pid=4243)
+    fresh.last_activity = now - _FIRST_PROMPT_SILENT_SECS + 30.0
+    answered = _starting(
+        "answered", exec_started=now - 900.0, _pid=4244, _first_stream_started=now - 890.0
+    )
+    answered.last_activity = now - 890.0
+    _register(mgr, silent, fresh, answered)
+    reaped: list[tuple[str, str]] = []
+    swept = asyncio.Event()
+
+    async def _force_reap(agent_id, info, elapsed, *, reason=""):
+        reaped.append((agent_id, reason))
+        info.done = True
+        swept.set()
+
+    mgr._force_reap = _force_reap  # type: ignore[method-assign]
+    mgr._rebuild_conversation_registry = AsyncMock()  # type: ignore[method-assign]
+    mgr._sample_live_costs = MagicMock()  # type: ignore[method-assign]
+    mgr._sweep_stuck_waves_async = AsyncMock()  # type: ignore[method-assign]
+    mgr._sweep_digest_holds_async = AsyncMock()  # type: ignore[method-assign]
+    mgr._sweep_conversations = MagicMock()  # type: ignore[method-assign]
+    mgr._taskq_pump = MagicMock()  # type: ignore[method-assign]
+    mgr._maybe_flag_stall = AsyncMock()  # type: ignore[method-assign]
+    monkeypatch.setattr(subagent_mod, "_REAPER_INTERVAL", 0)
+    monkeypatch.setattr(subagent_mod, "compact_cost_log", lambda: None)
+    monkeypatch.setattr(subagent_mod, "prune_stale_tombstones", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        subagent_mod, "time", SimpleNamespace(time=lambda: now, monotonic=time.monotonic)
+    )
+
+    loop_task = asyncio.ensure_future(mgr._reaper_loop())
+    try:
+        await asyncio.wait_for(swept.wait(), 5.0)
+    finally:
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+        mgr._taskq.close()
+
+    assert reaped == [("silent", "startup_timeout")]
+    assert fresh.done is False
+    assert answered.done is False
+
+
 # ── Leaving startup takes a produced event, not an opened stream ───────────
 
 

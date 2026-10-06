@@ -66,7 +66,7 @@ in the **same commit** when you change what it documents.
 | themes | [themes](docs/system-specs/modules/themes.md) + [theming-contract](website/docs/theming-contract.md) |
 | anything under `website/` | [`website/AGENTS.md`](website/AGENTS.md) |
 | user-facing strings, dates, numbers, sort order | [i18n-catalog](website/docs/i18n-catalog.md) (authoring) + [i18n-gates](docs/ci/i18n-gates.md) (CI) |
-| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, `monkeypatch.undo()`, env-var leaks, host-dependent tests (Windows, Python 3.13, per-user tools, version-manager shims), spawning a real child or reaping one, `.worktrees/` in a repo-wide scan, what `TMPDIR` must not be, what a worker costs, collection-time probes that build a singleton, a `MagicMock` the code converts with `int()`, sizing a ReDoS / complexity guard | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
+| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, `monkeypatch.undo()`, env-var leaks, host-dependent tests (Windows, Python 3.13, per-user tools, version-manager shims), spawning a real child or reaping one, `.worktrees/` in a repo-wide scan, what `TMPDIR` must not be, what a worker costs, collection-time probes that build a singleton, a `MagicMock` the code converts with `int()`, sizing a ReDoS / complexity guard, clocks and time, sleeps, ordering and timestamp ties, ports, timezone and locale, randomness, repeat and shuffle proof, a flaky CI red | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
 | proving a worktree change against an isolated running gateway | [worktree-verification-recipes](docs/guides/worktree-verification-recipes.md) |
 | CI, PR flow, review gates, commit messages | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -288,12 +288,19 @@ human passes `--full`. See
   --max-worker-restart=2`; a bare override silently drops `--dist loadgroup` and
   scatters `@pytest.mark.xdist_group` tests into flaky races.
 
-Gates, the six flake classes, the conftest isolation floor and the traps that are
+Gates, the seven flake classes, the conftest isolation floor and the traps that are
 invisible when reading a test: [code-style](docs/system-specs/common/code-style.md) +
 [testing-conventions](docs/system-specs/common/testing-conventions.md). A test that
 can block forever is a lost RUN, not a failed test: on Windows pytest-timeout kills
 the xdist worker, and with `--max-worker-restart=0` one unbounded `await` aborts the
 whole job (class 6). Frontend and Electron: [website/docs/testing.md](website/docs/testing.md).
+
+Tests MUST be deterministic: wait on a signal, never sleep as a barrier; never sleep
+to make timestamps differ (set them); one clock, injected or frozen at the module's
+own binding; never assert an order you did not define; no literal port for a real
+listener (bind 0); no network beyond loopback; every self-unblocked await bounded.
+`AUTOSDE.yaml`'s `tests-are-deterministic` rule blocks these in review. Contract:
+[testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
 
 ## Cross-platform
 

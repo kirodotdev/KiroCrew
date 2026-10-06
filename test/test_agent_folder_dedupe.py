@@ -12,9 +12,9 @@ produced that shape, and each has a case here:
 * ``session_create`` created its folder path first, so a create the gateway
   then refused left the new folders empty.
 
-The MCP half is driven through ``_call_tool_inner`` with the HTTP helpers
-patched; the gateway half through the real folder endpoint and the real
-``create_session``.
+The MCP half is driven through the dashboard tool table against an in-memory
+dashboard that plays the gateway; the gateway half through the real folder
+endpoint and the real ``create_session``.
 """
 
 from __future__ import annotations
@@ -35,23 +35,19 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
-from kiro_crew.mcp_dashboard import _call_tool_inner
+from kiro_crew.mcp_dashboard import TABLE
+from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 
 _CALLER = "dashboard:chat-1-100"
 _OPS = {"id": "0000000000a1", "name": "Ops", "parent_id": ""}
 _CALLER_ROW = {"key": "chat-1-100", "title": "Conductor", "folder_id": _OPS["id"]}
 
 
-@pytest.fixture(autouse=True)
-def _verified_caller() -> Any:
-    with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=_CALLER):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _custom_sort() -> Any:
-    with patch("kiro_crew.mcp_dashboard._read_folder_sort_setting", return_value="custom"):
-        yield
+def _call(tool: str, args: dict, routes: dict[str, Any]) -> str:
+    """One frame of ``tool`` as the verified conductor, against ``routes``."""
+    ctx = ToolContext(InMemoryDashboardClient(routes), Caller.strict(_CALLER))
+    return TABLE.call(tool, args, ctx)
 
 
 class _Gateway:
@@ -120,12 +116,15 @@ class _Gateway:
         raise AssertionError(f"unexpected POST {path}")
 
     def run(self, tool: str, args: dict) -> str:
-        with (
-            patch("kiro_crew.mcp_dashboard._get", side_effect=self.get),
-            patch("kiro_crew.mcp_dashboard._post", side_effect=self.post),
-            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}),
-        ):
-            return _call_tool_inner(tool, args)
+        return _call(
+            tool,
+            args,
+            {
+                "GET /api/{route}": lambda req: self.get(req.path),
+                "POST /api/{route}": lambda req: self.post(req.path, req.body),
+                "PATCH /api/{route}": {"ok": True},
+            },
+        )
 
     def named(self, name: str) -> list[dict]:
         return [f for f in self.folders if f["name"] == name]
@@ -543,21 +542,24 @@ def test_the_walk_takes_a_reused_folder_as_found_not_created() -> None:
     """A 200 reuse from the endpoint is a match, never a "created" segment."""
     winner = {"id": "0000000000b8", "name": "kirocrew-worker", "parent_id": _OPS["id"]}
 
-    def _post(path: str, body: dict, **_kw: Any) -> dict:
-        if path == "/api/chat/folders":
+    posts: list[DashboardRequest] = []
+
+    def _post(req: DashboardRequest) -> dict:
+        posts.append(req)
+        if req.path == "/api/chat/folders":
             return {**winner, "reused": True}
-        if body.get("dry_run"):
+        if req.body.get("dry_run"):
             return {"dry_run": True}
-        return {"target": "chat-9-900", "title": "w", "folder_id": body.get("folder_id")}
+        return {"target": "chat-9-900", "title": "w", "folder_id": req.body.get("folder_id")}
 
     gw = _Gateway([_OPS])
-    with (
-        patch("kiro_crew.mcp_dashboard._get", side_effect=gw.get),
-        patch("kiro_crew.mcp_dashboard._post", side_effect=_post) as post,
-    ):
-        out = _call_tool_inner("session_create", {"title": "w", "folder": "Ops/kirocrew-worker"})
+    out = _call(
+        "session_create",
+        {"title": "w", "folder": "Ops/kirocrew-worker"},
+        {"GET /api/{route}": lambda req: gw.get(req.path), "POST /api/{route}": _post},
+    )
     assert "created folder path" not in out
-    assert post.call_args_list[-1].args[1]["folder_id"] == winner["id"]
+    assert posts[-1].body["folder_id"] == winner["id"]
 
 
 # ── The preview misses nothing the real create refuses ───────────────────────

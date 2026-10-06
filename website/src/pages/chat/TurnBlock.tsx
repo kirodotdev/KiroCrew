@@ -12,6 +12,7 @@ import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isSystemNoticeRow } from './CompactionCard'
+import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
@@ -147,9 +148,12 @@ const isCrewReply = (it: TurnItem) =>
  *  ([OPTIONS:] marker), a keep-visible-marked deliverable (#7948), a legacy
  *  crew-mode answer, a role that must surface inline (mcp_oauth, error), a
  *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
- *  or an MCP App-bearing tool call (interactive iframe anchored to the row).
+ *  an MCP App-bearing tool call (interactive iframe anchored to the row), or a
+ *  row the caller pins (`pinnedRows`, see findAnsweredRefusalRows).
  *  All bypass the collapse pane. */
-const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
+const NO_PINNED_ROWS: ReadonlySet<TurnItem> = new Set()
+const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinnedRows = NO_PINNED_ROWS) =>
+  pinnedRows.has(it) ||
   isRenderable(it) || isHandBack(it) || isKeepVisible(it) || isAlwaysVisible(it) || isCrewReply(it) ||
   isWorkflowRunItem(it) || isSpawnRunItem(it) ||
   isSubagentCompletionItem(it) ||
@@ -173,11 +177,11 @@ type Seg =
  * `idx` is the item's index in the caller's list, offset by `offset` when the
  * caller passes a slice.
  */
-function splitSegments(items: TurnItem[], appToolCallIds: ReadonlySet<string>, offset = 0): Seg[] {
+function splitSegments(items: TurnItem[], appToolCallIds: ReadonlySet<string>, offset = 0, pinnedRows = NO_PINNED_ROWS): Seg[] {
   const segs: Seg[] = []
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
-    if (isVisibleInline(it, appToolCallIds)) {
+    if (isVisibleInline(it, appToolCallIds, pinnedRows)) {
       segs.push({ type: 'visible', it, idx: offset + i })
     } else {
       const last = segs[segs.length - 1]
@@ -221,6 +225,26 @@ function findConclusionIdx(items: TurnItem[]): number {
     }
   }
   return conclusionIdx === -1 ? fallbackIdx : conclusionIdx
+}
+
+/**
+ * A tool-refusal recovery card whose dispatch ended on a substantive message,
+ * plus that message. The gateway queues the recovery after the dispatch ends,
+ * so the reply to it becomes the turn's conclusion and would fold a message the
+ * user has already read. Text followed by a tool call is working narration and
+ * still folds; other recovery kinds resume an interrupted dispatch.
+ */
+function findAnsweredRefusalRows(items: TurnItem[]): ReadonlySet<TurnItem> {
+  const rows = new Set<TurnItem>()
+  items.forEach((it, i) => {
+    const prev = items[i - 1]
+    if (it.kind === 'single' && it.msg.role === 'inject' && parseRecoveryMessage(it.msg.content)?.kind === 'refusal' &&
+        prev?.kind === 'single' && isConclusion(prev) && substantiveLength(prev.msg.content) >= 50) {
+      rows.add(prev)
+      rows.add(it)
+    }
+  })
+  return rows
 }
 
 /**
@@ -360,6 +384,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // turn.items, so a running turn shows one live reasoning line and a settled
   // turn shows one collapsed "Thought process" instead of a per-burst wall.
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
+  const answeredRefusalRows = useMemo(() => findAnsweredRefusalRows(items), [items])
   // One React key per row of `items`, by message identity (see the block
   // comment above); `rowKey(i)` indexes THIS list, so every render path below
   // must pass the item's position in `items`, never a segment index.
@@ -392,8 +417,9 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     const conclusionIdx = turn.interim ? -1 : findConclusionIdx(items)
     const beforeItems = turn.interim ? items : (conclusionIdx > 0 ? items.slice(0, conclusionIdx) : [])
     // Only the non-visible-inline pre-conclusion items are actually collapsed.
-    return beforeItems.some(it => !isVisibleInline(it, appToolCallIds) && msgIdxs(it).includes(currentMessageIdx))
-  }, [items, term, currentMessageIdx, collapseAll, appToolCallIds, turn.interim])
+    const pinnedRows = turn.interim ? NO_PINNED_ROWS : answeredRefusalRows
+    return beforeItems.some(it => !isVisibleInline(it, appToolCallIds, pinnedRows) && msgIdxs(it).includes(currentMessageIdx))
+  }, [items, term, currentMessageIdx, collapseAll, appToolCallIds, turn.interim, answeredRefusalRows])
   // Revealing a search match must win over the current disclosure state, and it
   // has to travel the SAME channel the host owns, or a controlled row would
   // stay collapsed and hide the <mark>. Held in a ref so an inline parent
@@ -462,7 +488,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     // Split pre-conclusion items into ordered segments (see splitSegments):
     // visible items render in place; collapsed runs hide behind the reasoning
     // toggle.
-    const segs = splitSegments(beforeItems, appToolCallIds)
+    const segs = splitSegments(beforeItems, appToolCallIds, 0, answeredRefusalRows)
     const stepCount = countCollapsedSteps(segs)
 
     if (!turn.complete || stepCount === 0) {

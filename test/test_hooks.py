@@ -816,7 +816,6 @@ class TestHookGateKwargs:
             "permission_floor.py",
             "dashboard/chat_runner.py",
             "dashboard/handlers/hooks.py",
-            "discord/transport_dispatch.py",
             "llm_helpers.py",
             "messaging/dispatch.py",
             "slack/handler.py",

@@ -265,16 +265,15 @@ export function isRegistrySourced(app: Pick<InstalledApp, 'source' | 'origin'>):
 /**
  * Sanitize a self-reported GitHub star count for display.
  *
- * Shared by every path that turns a registry payload into a rendered row:
- * `normalizeRegistryApp` (the Discover query boundary) AND `AppDetailPage`'s
- * own row builds, which spread the raw `listRegistry()` payload without going
- * through normalize. An older gateway does not sanitize this field
+ * Internal to `normalizeRegistryApp`: every surface that renders a registry
+ * row (Discover and `AppDetailPage`) normalizes the `listRegistry()` payload
+ * where it is fetched, so this has exactly one caller. An older gateway does not sanitize this field
  * server-side and external indexes are user-supplied JSON, so the client must
  * hold the line alone: only a safe non-negative integer renders (`1e308` is
  * finite but compact-formats into hundreds of digits; `NaN`/`-1`/`3.5` are
  * `typeof number` and would pass a bare typeof gate).
  */
-export function sanitizeStargazersCount(v: unknown): number | undefined {
+function sanitizeStargazersCount(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined
 }
 

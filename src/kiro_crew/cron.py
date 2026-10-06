@@ -167,6 +167,8 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     cron_store_lock,
     decode_jobs,
     encode_store,
+    quarantine_copies,
+    quarantine_unreadable_store,
     store_digest,
 )
 from kiro_crew.executors import cron_gate_budget  # noqa: F401 -- re-exported
@@ -272,6 +274,12 @@ def _default_dir() -> Path:
 
 # The doctor's two store readers stay defined here: `kirocrew doctor`'s facade
 # test pins `kiro_crew.cron` as the module that defines them.
+def cron_store_quarantine_copies() -> tuple[Path, list[Path]]:
+    """The cron store's path and every copy gateway startup moved aside, for doctor."""
+    store = config_dir() / _CRONS_FILE
+    return store, quarantine_copies(store)
+
+
 def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, str]], bool]:
     """Return ``(auto_paused, errored, loadable)`` for the doctor's cron check.
 
@@ -467,6 +475,8 @@ class CronService:
     ):
         self._dir = base_dir if base_dir is not None else _default_dir()
         self._path = self._dir / _CRONS_FILE
+        #: Where :meth:`create` moved an unparseable store, or None.
+        self.quarantined_store: Path | None = None
         self._on_job = on_job
         self._jobs: list[CronJob] = []
         self._timer_task: asyncio.Task[None] | None = None
@@ -615,6 +625,8 @@ class CronService:
         cls,
         base_dir: Path | None = None,
         on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+        *,
+        quarantine_unreadable: bool = False,
     ) -> "CronService":
         """Async factory for event-loop contexts (the gateway).
 
@@ -630,6 +642,13 @@ class CronService:
 
         Genuinely-sync, loop-less processes (CLI, MCP server, apps SDK, tests)
         must keep using the plain constructor, which loads inline.
+
+        ``quarantine_unreadable`` is for gateway startup. A store that failed to
+        load refuses every write, and startup writes to it (app cron cleanup), so
+        a corrupt file stopped the gateway from serving at all. With the flag, an
+        unparseable file is renamed aside -- never rewritten or deleted -- and the
+        store reloads as missing: empty and writable. :attr:`quarantined_store`
+        then names the copy so the caller can tell the user where the jobs are.
         """
         self = cls(base_dir=base_dir, on_job=on_job, _defer_initial_load=True)
         # Bind to the gateway loop so off-loop mutation paths (async mutators'
@@ -637,9 +656,32 @@ class CronService:
         # re-arm the timer thread-safely — see _arm_timer / __init__ _loop.
         self._loop = asyncio.get_running_loop()
         await asyncio.to_thread(self._load)
+        if quarantine_unreadable and self._load_failed:
+            self.quarantined_store = await asyncio.to_thread(self._quarantine_unreadable_locked)
         # Resolve history usability off the loop too (deferred in __init__).
         await asyncio.to_thread(self._history.prepare)
         return self
+
+    def _quarantine_unreadable_locked(self) -> Path | None:
+        """Rename an unparseable store aside under the store lock and reload."""
+        try:
+            with self._file_lock():
+                moved = quarantine_unreadable_store(self._path)
+                if moved is not None:
+                    self._load()
+        except (CronStoreBusy, OSError):
+            # The startup this exists to rescue must not fail on the lock itself
+            # (busy, or an unwritable lock file): keep the refusing store as-is.
+            logger.warning("Could not lock the cron store; leaving the unreadable store in place")
+            return None
+        if moved is not None:
+            logger.warning(
+                "Cron store %s could not be parsed; moved it to %s and started with an "
+                "empty schedule. Run `kirocrew doctor` for how to restore it.",
+                self._path,
+                moved,
+            )
+        return moved
 
     async def start(self) -> None:
         """Load jobs and start the timer loop.
@@ -1409,10 +1451,9 @@ class CronService:
         start-id reads around the child walk, the group signal (by the group id
         retained while the leader was alive once the leader is gone), the
         pid-scoped fallback, the escaped-children sweep -- is
-        :func:`kiro_crew.process_identity.kill_verified_process`, whose only
-        caller today is this method; the sub-agent manager's twin of this path
-        still runs its own copy of the old kill, and its move onto the same
-        function is tracked follow-up work, not a change here. It never
+        :func:`kiro_crew.process_identity.kill_verified_process`, the one
+        definition this method shares with the sub-agent manager's teardown
+        paths. It never
         raises (the caller took the run's claim and must still finish it) and
         never swallows: it returns what stopped the kill, and the caller records
         it so the audit does not say the run was reaped over a process tree left

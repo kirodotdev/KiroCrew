@@ -33,7 +33,7 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
-from kiro_crew.subagent import compute_max_subagents
+from kiro_crew.subagent import compute_memory_sized_parallel_cap
 from kiro_crew.task_executor import (
     build_task_prompt,
     execute_single_task,
@@ -114,7 +114,9 @@ TaskRun = Project
 
 _MAX_REPLAN = MAX_REPLAN
 _MAX_TOTAL_TASKS = MAX_TOTAL_TASKS
-_MAX_PARALLEL_TASKS = 3  # ctor fallback default when compute_max_subagents fails; live cap is self._max_parallel_steps
+_MAX_PARALLEL_TASKS = (
+    3  # ctor fallback when the memory-sized cap fails; live cap is self._max_parallel_steps
+)
 _MAX_CONCURRENT_TASKS = 3  # max simultaneous task runs
 _SESSION_PREFIX = SESSION_PREFIX
 _STALL_TIMEOUT = STALL_TIMEOUT
@@ -460,13 +462,16 @@ class TaskRunner:
         self._global_timeout = global_timeout
         self._token_budget = token_budget
         self._on_approval = on_approval
-        # Concurrency cap for parallel task groups. ``compute_max_subagents`` is
-        # the host-safe ceiling (derived from ``agent.subagent_auto_max`` and
-        # clamped to host memory/CPU headroom) — it exists to prevent OOM, so it
-        # is always the upper bound. A positive ``taskrunner.max_parallel_steps``
-        # may only lower it (intentional throttling for cost / rate-limits);
-        # ``0`` (or unset) means "use the computed ceiling". An explicit value can
-        # never raise concurrency above the host-safe maximum.
+        # Concurrency cap for parallel task groups.
+        # ``compute_memory_sized_parallel_cap`` is the host-safe ceiling (host
+        # memory over the per-agent cost, clamped to ``[3,
+        # agent.subagent_auto_max]``) -- it exists to prevent OOM, because no
+        # per-start memory floor prices a TaskRunner step the way it prices a
+        # subagent start, so it is always the upper bound. A positive
+        # ``taskrunner.max_parallel_steps`` may only lower it (intentional
+        # throttling for cost / rate-limits); ``0`` (or unset) means "use the
+        # computed ceiling". An explicit value can never raise concurrency above
+        # the host-safe maximum.
         try:
             cfg: KiroCrewConfig | None = KiroCrewConfig.load()
         except Exception:
@@ -772,7 +777,9 @@ class TaskRunner:
     def _clamp_parallel_steps(requested: int | None, cfg: KiroCrewConfig | None) -> int:
         """Bound *requested* by the host-safe ceiling; ``0``/``None`` means the ceiling."""
         try:
-            auto_cap = compute_max_subagents(cfg) if cfg is not None else _MAX_PARALLEL_TASKS
+            auto_cap = (
+                compute_memory_sized_parallel_cap(cfg) if cfg is not None else _MAX_PARALLEL_TASKS
+            )
         except Exception:
             auto_cap = _MAX_PARALLEL_TASKS
         auto_cap = max(1, auto_cap)
@@ -1765,7 +1772,7 @@ class TaskRunner:
                 # not a hardcoded batch size. All ready tasks are dispatched at once
                 # and the semaphore caps how many run simultaneously, so a slow task
                 # no longer stalls a whole fixed-size batch. The knob is the single
-                # place to lift concurrency (capped by compute_max_subagents ceiling).
+                # place to lift concurrency (capped by the memory-sized ceiling).
                 results: list[bool | BaseException] = []
                 sem = asyncio.Semaphore(max_parallel_steps)
 

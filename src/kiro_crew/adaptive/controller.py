@@ -16,7 +16,8 @@ One asyncio task on the gateway event loop. Every ``controller_sample_secs``
    ``SubagentManager.set_effective_cap`` (natural shrink -- in-flight work
    finishes, nothing is killed) and the spawn-gate capacity through
    ``GatewayManager.set_spawn_capacity`` (the daemon clamps to its own
-   floor/ceiling and lets in-flight spawns finish).
+   floor/ceiling and lets in-flight spawns finish). The execution cap moves on
+   work evidence only; loop lag and free memory shape the spawn gate alone.
 
 The controller never blocks the loop and never raises out of its task: a
 failed sample is logged and the previous caps stand. Its state is a plain dict
@@ -229,7 +230,6 @@ class AdaptiveController:
         "agent.adaptive_concurrency",
         "agent.adaptive_concurrency_mode",
         "agent.adaptive_floor",
-        "agent.adaptive_initial",
         "agent.adaptive_slow_start",
         "agent.controller_sample_secs",
         "agent.resource_pressure_gb",
@@ -315,10 +315,10 @@ class AdaptiveController:
             )
         except Exception:
             logger.debug("AdaptiveController could not subscribe to live config", exc_info=True)
-        # Fresh process: the exec cap starts at min(user_max, initial) and
-        # earns its way up. Applied synchronously so the first spawn already
-        # sees it; the gate capacity follows on the first tick (the daemon may
-        # not be up yet).
+        # Fresh process: the exec cap starts at the user's ceiling (memory is
+        # the spawn floor's to bound, not this cap's). Applied synchronously so
+        # the first spawn already sees it; the gate capacity follows on the
+        # first tick (the daemon may not be up yet).
         self._apply_exec(self._policy.exec_cap if self._enabled else None)
 
     # -- configuration -------------------------------------------------------

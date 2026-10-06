@@ -171,6 +171,30 @@ class WebSocketHub:
                     pending.add(slug)
                 return False
         if ws.get("_is_dashboard_user", False):
+            # The per-member event log is the owner's view of the crew, the
+            # boundary the ``/api/members`` reads apply. A non-owner dashboard
+            # session (a Telegram, Teams or Webex allowlist link) is a dashboard
+            # user too, so the owner set decides: ``register_ws`` fills it from
+            # ``is_owner_dashboard_request``.
+            from kiro_crew.dashboard.ws_event_scope import MEMBER_LOG_EVENTS
+
+            if msg_type in MEMBER_LOG_EVENTS and ws not in (
+                getattr(self._owner, "_owner_ws_clients", None) or set()
+            ):
+                try:
+                    from kiro_crew.dashboard.ws_event_scope import (
+                        DASHBOARD_USER_AUDITEE,
+                        _audit_deny,
+                    )
+
+                    _audit_deny(DASHBOARD_USER_AUDITEE, msg_type, "owner_only")
+                except Exception:
+                    self._log.debug(
+                        "state: SEL audit for non-owner deny %s failed",
+                        msg_type,
+                        exc_info=True,
+                    )
+                return False
             # Granted, and the grant is a permission decision like any other:
             # ``AUTOSDE.yaml`` wants an SEL record for it, not only for the
             # refusals below. Recorded HERE, at the chokepoint every dashboard
@@ -560,9 +584,16 @@ class WebSocketHub:
         if not slugs:
             return
         try:
+            from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE, _audit_allow
             from kiro_crew.eventlog import types as eventlog_types
             from kiro_crew.eventlog.service import get_service
 
+            # These frames bypass ``_ws_client_allowed``, which records the grant
+            # for broadcast frames, so the replay records its own.
+            try:
+                _audit_allow(DASHBOARD_USER_AUDITEE, eventlog_types.WS_MEMBER_PROJECTION)
+            except Exception:
+                self._log.debug("members_subscribed: replay grant audit failed", exc_info=True)
             service = get_service()
             for slug in sorted(slugs):
                 snap = await asyncio.to_thread(service.redacted_snapshot, slug)

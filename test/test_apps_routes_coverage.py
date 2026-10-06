@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import platform as platform_mod
 import shutil
 import sys
@@ -1539,6 +1540,77 @@ class TestUpdateApp:
             assert (await resp.json())["error"] == "source manifest mismatch"
         # The rollback re-registered what the failed update had torn down.
         assert registered == [APP]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["local", "registry"])
+    @pytest.mark.parametrize("broken", ["register", "start"])
+    async def test_failed_update_restore_failure_still_audits_and_returns_400(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        source: str,
+        broken: str,
+    ) -> None:
+        # The cause of a failed update (disk full, no free port) often breaks the
+        # restore too; that must not turn the 400 into a bare 500 or skip the audit.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        audit = MagicMock()
+        monkeypatch.setattr(routes_mod, "sel", lambda: audit)
+
+        def _raise(exc: Exception) -> Any:
+            def _fn(*args: Any, **kwargs: Any) -> Any:
+                raise exc
+
+            return _fn
+
+        if source == "registry":
+
+            async def _failed_install(name: str, **kwargs: Any) -> dict[str, Any]:
+                return {"ok": False, "name": name, "error": "clone failed"}
+
+            monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
+            monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
+            monkeypatch.setattr(routes_mod, "install_from_registry", _failed_install)
+            error = "clone failed"
+        else:
+            error = "source manifest mismatch"
+            monkeypatch.setattr(
+                routes_mod,
+                "update_app",
+                lambda source, expected_name=None: AppResult(ok=False, name=APP, error=error),
+            )
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        if broken == "register":
+            monkeypatch.setattr(routes_mod, "register_app", _raise(OSError("disk full")))
+            monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        else:
+            monkeypatch.setattr(
+                routes_mod, "register_app", lambda n: SimpleNamespace(to_dict=dict)
+            )
+            monkeypatch.setattr(
+                routes_mod, "start_app_backend", _raise(RuntimeError("No free ports"))
+            )
+
+        with caplog.at_level(logging.WARNING, logger=routes_mod.logger.name):
+            async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+                resp = await client.post(f"/api/apps/{APP}/update", json={})
+                assert resp.status == 400
+                assert (await resp.json())["error"] == error
+        audit.log_api_access.assert_any_call(
+            caller="dashboard",
+            operation="app_update",
+            outcome="failed",
+            resources=APP,
+            error=error,
+        )
+        assert any(
+            r.levelno == logging.WARNING and r.exc_info and APP in r.getMessage()
+            for r in caplog.records
+        ), caplog.records
 
     @pytest.mark.asyncio
     async def test_local_update_success_returns_registration(

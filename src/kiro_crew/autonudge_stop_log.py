@@ -11,19 +11,27 @@ The service calls :func:`stop_records` at its ONE store commit point, with the
 set of loops that were active in the previous committed store and the rows of
 the new one. Every loop that was active and now is not -- inactive or gone --
 yields one record, whichever path stopped it, and each record is logged as one
-WARNING line. ``gateway.log`` keeps WARNING and above and rotates itself, so that
-line is the kept record; grep it for ``AutoNudge:``.
+WARNING line; grep ``gateway.log`` for ``AutoNudge:``.
+
+Each boot moves ``gateway.log`` aside, so that line alone does not outlive a few
+restarts. :func:`append_record` therefore also appends the same record, as one
+JSON line, to ``<data home>/logs/autonudge_stops.jsonl`` (:data:`STOPS_FILE`).
+That file is the record that survives restarts, bounded by
+:func:`kiro_crew.jsonl_util.rotate_jsonl_at` to one ``.1`` generation.
 
 Pure helpers only; the service owns locking and when to call them.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.platform import redact_log_via_context
 
 logger = logging.getLogger("kiro_crew.autonudge")
@@ -38,6 +46,12 @@ REMOVED_REASON = "removed"
 UNSPECIFIED_REASON = "unspecified"
 # Default clip for store-sourced strings; a stop's free-text detail uses DETAIL_MAX_CHARS.
 FIELD_MAX_CHARS = 200
+
+# The stop records that outlive a gateway restart, under ``<data home>/logs/``.
+STOPS_FILE = "autonudge_stops.jsonl"
+# One record is a few hundred bytes, so the live file plus its ``.1`` generation
+# hold thousands of stops in about 2 MiB.
+STOPS_MAX_BYTES = 1024 * 1024
 
 
 def safe_text(value: object, limit: int = FIELD_MAX_CHARS) -> str:
@@ -159,3 +173,27 @@ def log_record(record: Mapping[str, Any]) -> None:
         record.get("ran_secs"),
         record.get("max_runtime_secs") or None,
     )
+
+
+def stops_path(base_dir: Path) -> Path:
+    """Where the stop records of the data home ``base_dir`` are appended."""
+    return base_dir / "logs" / STOPS_FILE
+
+
+def append_record(base_dir: Path, record: Mapping[str, Any]) -> None:
+    """Append one stop record to :func:`stops_path` as a JSON line. Never raises.
+
+    The record's strings already went through :func:`safe_text`, so the file holds
+    the same scrubbed values as the log line. ``json.dumps`` escapes every control
+    character, so store text cannot forge a second line. The caller's store write
+    has already committed: a failure here costs this record, never the write.
+    """
+    try:
+        path = stops_path(base_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(dict(record), ensure_ascii=True, separators=(",", ":"), default=str)
+        rotate_jsonl_at(path, STOPS_MAX_BYTES)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:  # noqa: BLE001 - see docstring: the store write already stands
+        logger.warning("AutoNudge: could not append a stop record to the stop file", exc_info=True)

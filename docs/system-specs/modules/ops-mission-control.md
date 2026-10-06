@@ -181,26 +181,13 @@ understands reads as fully understood. Review called this the nearest thing in t
   or one that cannot be safely defaulted), never for an added optional field: every field on
   this record already defaults, which is what lets one version cover the whole history.
 
-The field default is spelled as the literal `1`, not as `LEDGER_RECORD_V1`. A dataclass field
-default is evaluated when the class object is built, and `test_ledger_sync_git` evicts this
-module from `sys.modules` mid-test to simulate two instances — a name resolved at
-class-creation time then hits a half-initialised module and raises `NameError` (observed).
-The constant remains the single source of truth for readers, and a test pins the two equal.
+The field default is spelled as the literal `1`, not as `LEDGER_RECORD_V1`. The constant
+remains the single source of truth for readers, and `test_the_field_default_matches_the_constant`
+pins the two equal.
 
-**That eviction needs a two-part restore, and restoring `sys.modules` alone is not enough.**
-Importing `kiro_crew.apps.manager` also sets `manager` as an **attribute on the
-`kiro_crew.apps` package object**, and that package is never evicted — so putting the table
-back left the parent still pointing at the replacement. The two caches are read by different
-syntax: `import a.b as c` resolves through the parent attribute, `from a.b import f` through
-`sys.modules`. So a later test doing `import kiro_crew.apps.manager as manager` patched the
-discarded copy while the code under test called the restored one, and the mock silently never
-applied — two `test_app_bridges` MCP tests failed with `KeyError: 'someapp:srv'` and passed
-when that file ran alone. It reproduced serially, so it was not an xdist race.
-
-`tearDown` now also rebinds each restored module onto its parent. Diagnosed by asserting the
-two views disagree (`from a.b import f` vs `import a.b as c`; `f is c.f`) rather than by
-guessing — the first plausible fix (evicting the sibling that does `from a.b import …`, on the
-theory that value-binding at import was the mechanism) did not help.
+`test_ledger_sync_git` simulates two instances in one process without re-importing anything:
+each instance gets its own `KIROCREW_HOME` and empty `ledger_sync` refusal latches through a
+private `MonkeyPatch`, and asserts its ledger really resolves under its own data home.
 
 ### 2b. The fast-path bar, and the track record behind it (persisted, additive)
 

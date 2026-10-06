@@ -561,8 +561,20 @@ Four things the shape decides, each for a reason worth keeping:
 Every stop, whichever writer decided it, is also reported once more after the
 store commits: `autonudge_stop_log` compares the loops active in the previous
 committed store with the new one, logs each loop that stopped at WARNING with its
-`stopped_reason`. That line in `gateway.log` is the kept record; grep it for
-`AutoNudge:`.
+`stopped_reason`, and appends the same record as one JSON line to
+`<data home>/logs/autonudge_stops.jsonl`. The log line is for reading live; grep
+`gateway.log` for `AutoNudge:`. Each gateway boot moves `gateway.log` to
+`gateway.log.prev`, keeping one copy, so the line is gone after two restarts. The JSONL file is the record that stays: it holds
+the same scrubbed fields, is size-rotated to one `.1` generation (about 2 MiB in
+total), and a failure to append costs that one record, never the store write.
+To see the last stops, newest last:
+
+```bash
+tail -n 20 ~/.kiro/crew/logs/autonudge_stops.jsonl
+```
+
+Each line carries `ts`, `loop_id`, `slot_key`, `kind`, `target`, `reason`,
+`detail`, `cycle_count`/`max_cycles` and `ran_secs`/`max_runtime_secs`.
 A removed legacy loop has no row to carry a reason, so `remove()` takes a
 `stop_reason` for that record alone. A new stop path needs nothing extra to be
 recorded; a new REMOVAL path should pass its reason.

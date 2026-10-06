@@ -1345,7 +1345,6 @@ async def chat_done_payload(
         workflows = getattr(state, "workflow_service", None)
         continuing = bool(
             continuing
-            or slot._in_stage_execution
             or slot._pending_synthesis
             or (slot.queue_depth and not queue_held and not slot._last_turn_auth_required)
             or await subagents_attached_async(
@@ -2976,7 +2975,6 @@ def should_notice_leaked_tool_call(
     is_cancelled: bool,
     refusal_reasons: list,
     turn_tool_calls: int = 0,
-    in_stage_execution: bool = False,
 ) -> bool:
     """Decide whether to surface the leaked-tool-call NOTICE.
 
@@ -3005,11 +3003,7 @@ def should_notice_leaked_tool_call(
     different shape (it is the same leak) but because THIS path un-lands the
     turn, and a turn whose earlier calls had real side effects must not be
     marked unacted; that shape is noticed without un-landing by
-    :func:`should_notice_mixed_turn_leak` — is top-level, is NOT a
-    stage-execution turn (the orchestrator's stage loop reads the turn result
-    for stage accounting, and un-landing a stage turn from here would let the
-    loop record an unfinished stage as complete — same exclusion as the
-    promise-only guard), and its final segment carries the machine-shaped
+    :func:`should_notice_mixed_turn_leak` — is top-level, and its final segment carries the machine-shaped
     leak (:func:`has_leaked_tool_call`). No one-shot budget: nothing is
     re-queued, so there is no loop to bound, and every leaked turn deserves
     its own visible mark.
@@ -3017,8 +3011,6 @@ def should_notice_leaked_tool_call(
     if is_cancelled or refusal_reasons:
         return False
     if turn_tool_calls != 0:
-        return False
-    if in_stage_execution:
         return False
     if stop_reason != end_turn_reason:
         return False
@@ -3058,14 +3050,6 @@ def should_notice_mixed_turn_leak(
     at least one dispatched tool call, a NORMAL end-turn (which excludes the
     cancelled stop reason), top-level, and a final segment carrying the
     machine-shaped leak (:func:`has_leaked_tool_call`).
-
-    Deliberately NOT gated on ``in_stage_execution``, unlike its sibling: that
-    exclusion exists so the orchestrator's stage loop cannot read an unfinished
-    stage as complete, and a notice-only card changes no turn result the loop
-    reads. One mismatch follows and is accepted: the card's guidance ("check
-    what landed before re-sending") addresses a human driving the chat, not the
-    stage loop, so on a stage-execution turn it offers advice its reader cannot
-    act on — harmless, and better than hiding the leak on those turns.
 
     The card says the earlier calls were ATTEMPTED rather than ran, and never
     "nothing was run" as the sibling does, because ``turn_tool_calls`` counts
@@ -3133,9 +3117,7 @@ def should_notice_compaction_dropped_leak(
     re-issued by this layer under any of the three auto-approval routes
     (:func:`should_notice_leaked_tool_call` documents why). It therefore needs
     no ``turn_tool_calls`` gate: that gate exists to protect UN-LANDING, and
-    there is nothing here to un-land. It needs no ``in_stage_execution`` gate
-    either, for the reason its mixed-turn sibling does not: a notice changes no
-    turn result the orchestrator's stage loop reads.
+    there is nothing here to un-land.
 
     Owning no outcome is also why the caller evaluates this OUTSIDE the
     ``if``/``elif`` chain its siblings sit in. Every arm of that chain owns the
@@ -3427,7 +3409,6 @@ def should_recover_promise_only(
     successful_tool_call_ids: frozenset[str] = frozenset(),
     builtin_identity_trusted: bool = False,
     directive_user_origin: bool = False,
-    in_stage_execution: bool = False,
     stop_in_progress: bool = False,
     stop_generation_unchanged: bool = True,
     queue_empty: bool = True,
@@ -3482,10 +3463,6 @@ def should_recover_promise_only(
         full-matched false current-tool blocker above after read-only preparation.
         Because the runner resets its segment buffer at every tool boundary,
         ``final_segment_text`` is exactly the text AFTER the last tool call;
-      * this is NOT a stage-execution turn (``in_stage_execution``). A turn run by
-        the orchestrator's stage loop must not spawn async recovery: the loop
-        records the stage complete and advances before the continuation finishes,
-        corrupting stage attribution;
       * this is a top-level turn (``prompt_depth == 0``) and the one-shot budget
         is unspent (``promise_only_retries < 1``) — bounded to a single attempt,
         never a loop.
@@ -3510,8 +3487,6 @@ def should_recover_promise_only(
         return False
     if turn_tool_calls and not directive_user_origin:
         return False
-    if in_stage_execution:
-        return False
     if stop_reason != end_turn_reason:
         return False
     if not produced_visible_output:
@@ -3535,7 +3510,6 @@ def should_continue_after_compaction(
     compaction_continue_retries: int,
     is_cancelled: bool,
     refusal_reasons: list,
-    in_stage_execution: bool = False,
     stop_in_progress: bool = False,
     stop_generation_unchanged: bool = True,
     queue_empty: bool = True,
@@ -3587,7 +3561,7 @@ def should_continue_after_compaction(
         user-intent gates every sibling recovery path uses, for the same reason:
         a queued continuation must never jump ahead of, or act against, input
         the user has already given;
-      * this is NOT a stage-execution turn, it IS top-level
+      * this IS a top-level turn
         (``prompt_depth == 0``), and the one-shot budget is unspent
         (``compaction_continue_retries < 1``) — one attempt, never a loop. The
         bound matters more here than elsewhere: if the continuation itself
@@ -3606,8 +3580,6 @@ def should_continue_after_compaction(
     if not no_pending_steers:
         return False
     if is_cancelled or refusal_reasons:
-        return False
-    if in_stage_execution:
         return False
     if stop_reason != end_turn_reason:
         return False
@@ -3867,24 +3839,12 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 APP_MESSAGE_PREFIX = "[MCP app message from "
 APP_MESSAGE_END = "[End of MCP app message]"
 
-#: Queue-entry kinds whose turns must settle before an Autopilot stage advances.
-STAGE_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
-
-
-def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | None:
-    """Return the first stage-delivery entry owned by *boundary*."""
-    return next(
-        (
-            entry
-            for entry in entries
-            if entry.get("kind") in STAGE_DELIVERY_KINDS and boundary.owns_entry(entry)
-        ),
-        None,
-    )
+#: Queue-entry kinds that can carry sub-agent delivery debt.
+SUBAGENT_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
 
 
 #: All system-injection kinds (for set-membership checks).
-_SYSTEM_INJECTION_KINDS = STAGE_DELIVERY_KINDS | frozenset(
+_SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
     (CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND)
 )
 
@@ -4058,14 +4018,9 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     return item["content"], [item]
 
 
-def _dequeue_next_system_message(
-    slot,
-    *,
-    exclude_cron: bool = False,
-    preferred_id: str = "",
-) -> tuple:
-    """Pop a preferred queued system injection, or the first one, leaving
-    plain user messages queued.
+def _dequeue_next_system_message(slot) -> tuple:
+    """Pop the first queued system injection, leaving plain user messages
+    queued.
 
     Implements the (always-on) queue-during-subagents behavior: while background
     sub-agents run for a slot, a tangential user message is held (not drained)
@@ -4073,32 +4028,9 @@ def _dequeue_next_system_message(
     keep flowing (sub-agent completions, cron notifications) are still drained.
     Returns ``(content, [item])`` for the drained item, or ``(None, [])`` when
     only held (user) messages remain queued.
-
-    ``exclude_cron`` additionally holds cron notifications. A multi-stage plan
-    runs each stage as its own ``_run_chat`` whose tail-drain fires while
-    ``_in_stage_execution`` is still set; without this a cron notification
-    queued during the plan is pulled BETWEEN stages and starts a turn that
-    scatters the plan. Sub-agent completions and synthetic recovery still flow
-    (a stage may legitimately spawn sub-agents or re-queue a continuation) --
-    only the external cron injection waits for the plan to end.
-
-    ``preferred_id`` is selected by the stage boundary's single owner predicate.
-    It changes queue order only for that owned row; this helper never re-decides
-    ownership.
     """
-
-    def _eligible(item: dict) -> bool:
-        return is_system_injection_item(item) and not (
-            exclude_cron and item.get("kind") == CRON_NOTIFICATION_KIND
-        )
-
-    if preferred_id:
-        for i, item in enumerate(slot._queue):
-            if item.get("id") == preferred_id and _eligible(item):
-                popped = slot.queue_pop(i)
-                return popped["content"], [popped]
     for i, item in enumerate(slot._queue):
-        if _eligible(item):
+        if is_system_injection_item(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

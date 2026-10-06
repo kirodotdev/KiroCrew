@@ -123,7 +123,11 @@ cd ..
 - Reproduce a failure on a clean `origin/main` worktree before calling it
   pre-existing or flaky. A branch-only failure is yours. Never fix a flake with
   a retry, longer sleep, relaxed assertion or skip; use `writing-tests`.
-- To rank suspected flakes, mine CI rather than guessing from a local pass:
+- To rank suspected flakes, start from the flake ledger: the open issues titled
+  `Flaky: <test name> ...`, labelled `area: tests`
+  (`gh issue list --state open --search "flaky in:title"`), where a red confirmed as a
+  flake is recorded before any rerun (`kirocrew-prepare-pr`, *Before you rerun a red
+  test*). For a test not on it, mine CI rather than guessing from a local pass:
 
   ```bash
   gh run list --workflow=ci.yml --limit 250 --json databaseId,conclusion \

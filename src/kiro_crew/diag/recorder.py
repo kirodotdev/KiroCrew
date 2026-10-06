@@ -357,7 +357,9 @@ def _read_self_process(procfs: Path) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - a probe failure is a null field, not an error
         logger.debug("diag: rss probe failed", exc_info=True)
     try:
-        for line in (procfs / "self" / "status").read_text(encoding="utf-8").splitlines():
+        # ``Name:`` is the raw comm, which need not be UTF-8; ``Threads:`` is ASCII.
+        status = (procfs / "self" / "status").read_text(encoding="utf-8", errors="replace")
+        for line in status.splitlines():
             key, _, rest = line.partition(":")
             if key == "Threads":
                 out["threads"] = int(rest.strip())

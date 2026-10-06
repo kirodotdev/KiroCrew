@@ -2,8 +2,9 @@
 
 Each test here asserts an invariant the code already satisfies, so none of them changes
 behaviour. They exist because each invariant is enforced by agreement between two places
-that nothing checks: a default in two request handlers, a key set against two save sites,
-and a filename derivation against the set that enumerates it.
+that nothing checks: a default in two request handlers, and a filename derivation
+against the set that enumerates it. (The slot-owned key set the two save forms write is
+pinned behaviourally at its owner, in ``test_slot_metadata_codec.py``.)
 """
 
 from __future__ import annotations
@@ -13,12 +14,7 @@ import inspect
 from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
-from kiro_crew.dashboard.slot_persistence.metadata_line import (
-    build_full_line,
-    merge_empty_window,
-)
 from kiro_crew.dashboard.state import _ChatSlot
-from kiro_crew.history import SLOT_OWNED_META_KEYS
 
 
 def test_an_omitted_ephemeral_flag_stays_memory_only():
@@ -54,45 +50,6 @@ def test_the_ephemeral_flag_is_stamped_on_the_entry():
     assert '"content": content' in src
     assert '"source": source' in src
     assert '"injectedAt"' in src
-
-
-def test_every_slot_owned_key_is_written_by_both_save_sites():
-    """Absence means CLEARED, so a save site that omits a slot-owned key destroys it.
-
-    The full save rewrites the whole metadata line and lets absence retire a stored value,
-    while the empty-window merge cannot delete a key and so must refresh it. A key wired
-    into one site and not the other therefore either resurrects a stale value or clears a
-    live one, on a path no behavioural test covers.
-
-    The two sites live in ``slot_persistence.metadata_line``: ``build_full_line`` is the
-    full save, and ``merge_empty_window`` is the empty-window merge (its ``_fresh_fields``
-    guard mirrors the full save's enumeration under the write lock). ``_save_slot_to_history``
-    decides when each one runs.
-    """
-    full_src = inspect.getsource(build_full_line)
-    merge_full = inspect.getsource(merge_empty_window)
-    # THE WHOLE GUARD BODY: a key can be merged by an assignment that FOLLOWS the
-    # `_fresh_fields` definition (its own `_refresh_under_lock` additions), which a
-    # narrower window misreads as omitted.
-    at_merge = merge_full.index("def _fresh_fields")
-    end_merge = merge_full.index("applied = conv_log.update_metadata_if(")
-    merge_src = merge_full[at_merge:end_merge]
-
-    # Held as an exact set rather than a filter so ADDING an exclusion is itself a visible
-    # change -- otherwise the cheap way to green this test is to excuse the next omission.
-    merge_exempt = {"_type", "created_at", "last_consolidated"}
-    assert merge_exempt <= SLOT_OWNED_META_KEYS, "an exempt key left the frozenset"
-
-    missing_full = sorted(k for k in SLOT_OWNED_META_KEYS if f'"{k}"' not in full_src)
-    missing_merge = sorted(
-        k for k in SLOT_OWNED_META_KEYS - merge_exempt if f'"{k}"' not in merge_src
-    )
-    assert not missing_full, f"full save never names slot-owned key(s): {missing_full}"
-    assert not missing_merge, f"empty-window merge never names slot-owned key(s): {missing_merge}"
-    # Guard against the exemptions quietly absorbing the whole frozenset.
-    assert (
-        len(SLOT_OWNED_META_KEYS) - len(merge_exempt) >= 15
-    ), "too few keys are actually being checked for this test to mean anything"
 
 
 def test_transcript_naming_is_closed_over_transcript_stems():

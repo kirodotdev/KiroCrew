@@ -81,7 +81,11 @@ class _BackgroundRuntime(Protocol):
     async def kill(self, expected: bool = False, reason: str = "") -> None: ...
 
     async def create_session(
-        self, *, agent: str, start_priority: StartPriority = StartPriority.BACKGROUND
+        self,
+        *,
+        agent: str,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        bg_runtime_start: bool = False,
     ) -> object: ...
 
 
@@ -850,8 +854,12 @@ class BackgroundSessionRuntime:
                 await self._owner._retire_stale_backend_bg_runtime()
                 return await self._owner._provider_backed_bg_session(start_priority)
             try:
+                # The ``_bg`` gate, not the user one: a one-liner start must never
+                # hold a permit a person's own session/new is waiting for.
                 return await selected.create_session(
-                    agent=self._deps.runtime_agent, start_priority=start_priority
+                    agent=self._deps.runtime_agent,
+                    start_priority=start_priority,
+                    bg_runtime_start=True,
                 )
             except AcpRuntimeDead:
                 if attempt >= max_retries:

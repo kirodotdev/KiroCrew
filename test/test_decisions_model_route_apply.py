@@ -28,8 +28,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from test_decisions_strip_rides_message import _quiet_sel, _runner_state, _settle, _slot
+from turn_harness import ScriptedProvider, SlotSpec, TurnContext, TurnScript, run_turn
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT, DecisionsConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.decisions import gate as gate_mod
@@ -37,6 +38,7 @@ from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions import outcomes
 from kiro_crew.decisions.points import model_route as mr
 from kiro_crew.decisions.types import Answer
+from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.providers.base import LLMEvent
 
 ADVERTISED = ["model-a", "model-b", "model-c"]
@@ -936,6 +938,48 @@ def _crew_log_calls(monkeypatch) -> list[str]:
     return seen
 
 
+class _RoutedSession(ScriptedProvider):
+    """A session on model-c holding 100k tokens, whose served model follows a switch."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._served = "model-c"
+
+    @property
+    def served_model(self) -> str:
+        return self._served
+
+    def available_models(self):
+        return [{"modelId": name} for name in ADVERTISED]
+
+    async def set_model(self, name: str) -> None:
+        self.record("set_model", name)
+        self._served = name
+
+    def context_used_tokens(self) -> int:
+        return 100_000
+
+    def context_window_tokens(self) -> int:
+        return 0
+
+    def context_usage_unknown(self) -> bool:
+        return False
+
+
+class _InjectsContext:
+    """A hook store whose one ``UserPromptSubmit`` hook prints *text* as context."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def fire(self, event, *args, **kwargs):
+        if event != HOOK_EVENT_USER_PROMPT_SUBMIT or not self._text:
+            return []
+        return [
+            SimpleNamespace(exit_code=0, stdout=self._text, stderr="", error="", hook_name="ctx")
+        ]
+
+
 def _refusals(tmp_path) -> list[dict]:
     return [row for row in _rows(tmp_path) if row.get("error") == mr.ERROR_WINDOW_REFUSED]
 
@@ -1285,16 +1329,54 @@ class TestTheFitReadingSizesTheAssembledPrompt:
             is True
         ), "150k tokens of CJK does not"
 
-    def test_the_hook_is_handed_the_prompt_the_turn_sends(self):
-        """Two texts reach this hook and only one of them is what the turn sends. The
-        person's words are what the tier is classified from; ``full_message`` carries
-        the request prefix, the replayed history and the hook context. A call site
-        handing the typed text to both reads as correct and undercounts every injected
-        prefix, so the pair is asserted here rather than left to two variable names."""
-        import inspect
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hook_context", [True, False], ids=["hook-context", "control"])
+    async def test_the_fit_rule_sizes_the_prompt_the_turn_sends(
+        self, tmp_path, answered, windows, hook_context
+    ):
+        """Two texts reach the hook, and only one of them is what the turn sends.
 
-        packed = "".join(inspect.getsource(chat_runner._run_chat).split())
-        assert "state,slot,client,_jev_route_text,session_key,prompt=full_message" in packed
+        Through the real ``_run_chat``: the person's words are what the tier is
+        classified from; the prompt the provider is handed also carries the hook
+        context (and any request prefix and replayed history). A downgrade sized
+        on the typed text alone fits a window the sent prompt does not. Here a
+        ``UserPromptSubmit`` hook injects ~50k tokens: on a session holding 100k,
+        the 200k target window reads 75% full -- over the 70% limit -- so the
+        downgrade is refused; sized on the typed words alone it reads 50% and
+        the turn would be moved onto a window its own prompt nearly fills.
+        """
+        answered("simple", 0.95)
+        injected = "x" * 200_000 if hook_context else ""
+
+        def _arrange(ctx: TurnContext) -> None:
+            ctx.slot.jev_route = True
+            ctx.state._hook_store = _InjectsContext(injected)
+            ctx.state.sessions.effective_autocompact_pct = lambda _key: 70.0
+
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="an answer"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+                message="please rename this variable",
+                setup=_arrange,
+                provider=_RoutedSession,
+            ),
+            slot=SlotSpec(key="chat-fit-hook"),
+        )
+        [sent] = [call.args[0] for call in record.calls("stream")]
+        switched = [call.args[0] for call in record.calls("set_model")]
+        if hook_context:
+            assert "[Hook context]" in sent and len(sent) > 200_000
+            assert switched == []
+            [refusal] = _refusals(tmp_path)
+            assert (refusal["tier"], refusal["p"]) == ("simple", 0.95)
+        else:
+            # Without the injected prefix the same turn fits, so the refusal above
+            # is the prefix's doing and not the history's.
+            assert switched == ["model-a"]
+            assert _refusals(tmp_path) == []
 
 
 class TestTheWindowTheSwitchActuallyLandedOn:

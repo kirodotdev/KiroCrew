@@ -206,11 +206,10 @@ class TestMigrateChannelTranscripts:
         assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["channel", "tab"]
 
     def test_remove_false_merges_but_keeps_the_copy_and_its_first_line(self, tmp_path):
-        # The startup crewmate prune reads the first line of every transcript;
-        # the orphan's is the only record of the agent its dashboard surface ran
-        # as. With ``remove=False`` the merge lands (the restores read a complete
-        # channel transcript) and the copy stays, first line untouched, so the
-        # prune still finds that agent. A removing pass afterwards converges.
+        # With ``remove=False`` the merge lands (the restores read a complete
+        # channel transcript) and the copy stays, first line untouched, until
+        # a removing pass afterwards converges. The gateway uses this while
+        # its startup crewmate prune has not settled.
         log = ConversationLog(base_dir=tmp_path)
         channel = tmp_path / f"{CHANNEL_STEM}.jsonl"
         orphan = tmp_path / f"{ORPHAN_STEM}.jsonl"

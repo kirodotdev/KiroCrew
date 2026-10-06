@@ -4,7 +4,7 @@
 
 This page traces one work item from the moment a conductor mints it to the moment it is closed, end to end. It extends the shorter "Binding lifecycle" diagram in [the work-ledger RFC](../request-for-change/rfc-conductor-work-ledger.md) past the first report, through acceptance promotion, evaluation, and the terminal write. Every action name and every status value below is taken from the tool surface in `src/kiro_crew/mcp_work.py` and the routes in `src/kiro_crew/dashboard/handlers/work_ledger.py`.
 
-The two halves of the surface never overlap. A conductor writes with `work_ledger_record` and reads with `work_ledger_read`; a worker reads with `work_brief` and writes with `work_report`. Which half answers a call is resolved from the caller's own session identity, so a worker has no parameter naming its item, its conductor, or itself.
+The two halves of the surface never overlap. A conductor writes with `work_ledger_record`, reads with `work_ledger_read`, and rebuilds a damaged ledger from the crew log with `work_ledger_rebuild`; a worker reads with `work_brief` and writes with `work_report`. Which half answers a call is resolved from the caller's own session identity, so a worker has no parameter naming its item, its conductor, or itself.
 
 ## Sequence
 
@@ -85,4 +85,4 @@ sequenceDiagram
 
 **The bind precedes the seed.** A worker that runs before its binding exists reads `not_bound` and cannot retry intelligently, so `action=bind` is sent before `session_send`. A bound item with no session is visible and recoverable; an unbound running worker is neither.
 
-**Every write appends exactly one event.** There is no way to change a field without also appending a line to the item's event log, which is what lets a conductor read history rather than infer it from a transcript.
+**Every item write appends exactly one event.** There is no way to change an item field without also appending a line to the item's event log, which is what lets a conductor read history rather than infer it from a transcript.

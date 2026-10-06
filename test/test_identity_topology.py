@@ -1138,7 +1138,7 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "the client-declared X-Session-Key header, degrades to status quo "
         "when unresolvable"
     ),
-    "sandbox_launcher.py": (
+    "sandbox_launcher_program.py": (
         "writer-adjacent: launcher exports KIROCREW_HOST_PID (its own HOST pid — "
         "the exact pid the gateway keys the file by) before fork/namespace work, "
         "so in-namespace readers can look the file up directly without a /proc walk"
@@ -1386,53 +1386,3 @@ def test_memory_recall_uses_the_shared_gate_identity_once(monkeypatch, identifie
     else:
         gateway.assert_not_called()
         assert result == refusal
-
-
-# ---------------------------------------------------------------------------
-# Class-level publisher guard
-# ---------------------------------------------------------------------------
-# The "missing X-Session-Key" HTTP 400 was a channel-turn *publisher* gap: a
-# surface that runs an agent turn but never publishes the session_pid mapping
-# leaves managed MCP tools (learn_add, cron management, ...) unable to resolve
-# the caller's session identity. Telegram was the reported case; discord,
-# slack, webex and wecom transport dispatch shared the exact same gap. The fix
-# centralizes publication in messaging.identity.publish_turn_identity so every
-# turn-running surface shares one writer. This guard DYNAMICALLY discovers all
-# channel transport-dispatch surfaces (glob, not a hard-coded list) and fails
-# if any of them — including a newly added channel — does not call the shared
-# helper, so the class-level fix cannot silently regress one surface at a time.
-
-
-def test_every_channel_transport_dispatch_publishes_identity() -> None:
-    src = _src_root()
-    dispatchers = sorted(src.glob("*/transport_dispatch.py"))
-    assert dispatchers, (
-        "no */transport_dispatch.py surfaces discovered — the channel dispatch "
-        "layout changed; update this guard so it keeps covering every surface."
-    )
-    # A surface satisfies the contract either by calling the shared publisher
-    # directly, or by delegating its turn to the shared pipeline
-    # (messaging.dispatch.drive_turn), which publishes on the channel's behalf.
-    # The delegation branch is only sound while the pipeline itself publishes,
-    # so that is asserted first — otherwise "calls drive_turn" would become a
-    # loophole that silently reintroduces the #232 gap for every adopter at once.
-    pipeline = src / "messaging" / "dispatch.py"
-    assert "publish_turn_identity" in pipeline.read_text(encoding="utf-8"), (
-        "messaging/dispatch.py no longer publishes per-turn session identity. "
-        "Every channel delegating to drive_turn depends on it, so removing the "
-        "call reintroduces the #232 'missing X-Session-Key' gap for ALL of them."
-    )
-    missing = []
-    for p in dispatchers:
-        text = p.read_text(encoding="utf-8")
-        if "publish_turn_identity" in text or "drive_turn" in text:
-            continue
-        missing.append(str(p.relative_to(src)))
-    assert not missing, (
-        "channel transport-dispatch surface(s) run a turn without publishing "
-        f"per-turn session identity: {missing}. Every channel turn must call "
-        "messaging.identity.publish_turn_identity — directly, or by delegating "
-        "to messaging.dispatch.drive_turn — so managed MCP tools resolve "
-        "X-Session-Key; otherwise they fail with HTTP 400 'missing "
-        "X-Session-Key' from that channel (#232)."
-    )

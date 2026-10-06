@@ -273,7 +273,8 @@ def build_backend_argv(settings: Settings) -> list[str]:
 #:
 #: `acp_backend` selects the KAS harness, which is what keeps the model credential out
 #: of the worker's environment. `acp/harness/kas.KasHarness.apply_spawn_env` strips the
-#: API key from the relay's environment and the relay asks the host for a token
+#: API key from a Crew-owned relay's environment -- the vault `seed_model_identity`
+#: fills makes every relay here Crew-owned -- and the relay asks the host for a token
 #: instead, which `acp/kas_host_auth.answer_get_access_token` answers from the vault.
 #: Leaving this to the default would make the credential's location a property of
 #: whatever `config.json` the task was given, and `build_backend_env` withholding the
@@ -529,7 +530,8 @@ def build_backend_env(settings: Settings, base: Mapping[str, str] | None = None)
     # therefore reachable by prompt content whatever the sandbox is doing.
     #
     # The worker does not need one. ``acp/harness/kas.KasHarness.apply_spawn_env``
-    # strips the API key from the relay's environment, and the relay asks the HOST
+    # strips the API key from a Crew-owned relay's environment (the seeded vault
+    # makes it one), and the relay asks the HOST
     # for a token over ``_kiro/auth/getAccessToken``, which
     # ``acp/kas_host_auth.answer_get_access_token`` answers from the vault inside the
     # backend process.

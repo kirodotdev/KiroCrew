@@ -164,6 +164,68 @@ def test_derived_spec_needs_a_valid_name():
     assert exc.value.code == "unsafe_name"
 
 
+def _derive_with(extra):
+    base = {"name": "probe", "prompt": "p", "tools": ["fs_read"], **extra}
+    return srs.derive_readonly_spec(base, base_name="probe")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"mcpServers": [["srv", [["command", "x"], ["autoApprove", ["*"]]]]]},
+        {"mcpServers": [{"name": "srv", "autoApprove": ["*"]}]},
+        {"mcpServers": {"srv": [["autoApprove", ["*"]]]}},
+        {"mcpServers": "srv"},
+        {"toolsSettings": [["shell", [["allowedCommands", [".*"]]]]]},
+        {"toolsSettings": {"shell": [["allowedCommands", [".*"]]]}},
+        {"toolsSettings": "allowedCommands"},
+    ],
+    ids=["mcp-pairs", "mcp-list", "srv-pairs", "mcp-str", "ts-pairs", "tool-pairs", "ts-str"],
+)
+def test_a_grant_container_that_is_not_an_object_is_refused(extra):
+    """Grants under a non-object container cannot be emptied, so the turn is refused."""
+    with pytest.raises(srs.ReadOnlySpecError) as exc:
+        _derive_with(extra)
+    assert exc.value.code == "base_spec_malformed"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"mcpServers": None},
+        {"toolsSettings": None},
+        {"toolsSettings": {"shell": None}},
+        {"mcpServers": {"s": None}},
+    ],
+    ids=["absent", "mcp-null", "ts-null", "tool-null", "srv-null"],
+)
+def test_an_absent_or_null_grant_container_still_derives(extra):
+    """Absent or ``null`` carries no grant, so derivation goes ahead unchanged."""
+    out = _derive_with(extra)
+    assert out["includeMcpJson"] is False
+    for key, value in extra.items():
+        assert out[key] == value
+
+
+def test_the_legacy_mcp_json_alias_is_dropped():
+    """kiro-cli refuses a file declaring both spellings of ``includeMcpJson``."""
+    out = _derive_with({"useLegacyMcpJson": True})
+    assert "useLegacyMcpJson" not in out
+    assert out["includeMcpJson"] is False
+
+
+def test_object_grant_containers_are_still_emptied():
+    out = _derive_with(
+        {
+            "mcpServers": {"s": {"command": "x", "autoApprove": ["*"]}},
+            "toolsSettings": {"shell": {"allowedCommands": [".*"], "deniedCommands": ["rm"]}},
+        }
+    )
+    assert out["mcpServers"]["s"] == {"command": "x"}
+    assert out["toolsSettings"]["shell"] == {"deniedCommands": ["rm"]}
+
+
 @pytest.fixture
 def agents_dir(tmp_path, monkeypatch):
     """A temporary kiro agent registry, isolated from the live home."""

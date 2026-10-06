@@ -47,6 +47,9 @@ const params = new URLSearchParams(location.search)
 const theme = params.get('theme') === 'light' ? 'light' : 'dark'
 const scene = params.get('scene') || 'hover'
 const crewmateHost = params.get('host') === 'crewmate'
+// `fork=window`: a loaded window, where ChatPage keeps Fork as a row button
+// (a fork index, no server message id).
+const forkWindow = params.get('fork') === 'window'
 const CREWMATE = { name: 'kirocrew-worker', label: 'Worker' }
 localStorage.setItem('mc-theme', theme)
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
@@ -125,6 +128,8 @@ function Scene() {
     setDraft('')
   }
   const onJump = (q: MessageQuote) => setJumped(q.ts ?? null)
+  // ChatPage offers Regenerate on the newest reply only.
+  const newestReply = [...rows].reverse().find(r => r.role === 'assistant')?.mid
   return (
     <div className="bg-bg text-text flex flex-col" style={{ height: '100vh' }} data-capture-root data-jumped={jumped ?? undefined}>
       {crewmateHost ? (
@@ -147,6 +152,8 @@ function Scene() {
         ) : (
           <RowBox key={m.mid}>
             <AssistantMessage content={m.content} isStreaming={false} slotRunning={false} messageTs={m.ts} timestamp="09:12" timestampTitle="Today 09:12" slotKey="chat-1" slotTitle="Composer PR" onTogglePin={() => {}}
+              onRegenerate={m.mid === newestReply ? () => {} : undefined}
+              onFork={forkWindow ? () => {} : undefined} forkIndex={forkWindow ? rows.indexOf(m) : undefined}
               onQuoteMessage={() => quote.quoteMessage('assistant', m.content, m.ts, m.mid)} />
           </RowBox>
         ))}

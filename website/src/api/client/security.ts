@@ -1,8 +1,8 @@
 /**
  * Settings > Security and the credential vault: posture and stats, denied
- * commands, redaction allowed hosts, third-party app trust, the read-only
- * governance policy, vault secrets, and the paid-AWS, flagged-file-delivery
- * and credential-redaction consents.
+ * commands, redaction allowed hosts, third-party app trust, registry git-identity
+ * trust, the read-only governance policy, vault secrets, and the paid-AWS,
+ * flagged-file-delivery and credential-redaction consents.
  */
 
 import type { ClientTransport } from './transport'
@@ -308,6 +308,74 @@ export interface TrustedAppsRevokeResult extends TrustedAppsData {
   disabled: boolean
 }
 
+/**
+ * One operator-configured app registry, as `GET /api/security/trusted-registries`
+ * reports it.
+ *
+ * `repo` is the credential-free clone URL and is the row's IDENTITY: both writes
+ * take it, never `name`, because a display name is index content the registry
+ * author controls while the URL is what the operator typed.
+ *
+ * Build-pinned registries are never in this list. They are trusted by the build
+ * itself, so a row offering to grant or revoke them would describe a decision the
+ * operator does not own.
+ */
+export interface TrustedRegistryRow {
+  name: string
+  repo: string
+  branch: string
+  host: string
+  trusted: boolean
+  /**
+   * Whether a stored grant names this row's repository, read straight off the
+   * keystone and INDEPENDENT of `served`. A row can be granted and then dropped
+   * by the merge (an operator adds a same-name registry): its grant is dormant
+   * and re-arms when the collision resolves, so the panel offers Revoke on any
+   * granted row (served or not) and Grant only on a served, ungranted row. A
+   * corrupt keystone reads as no grants, so every row is `false` until it is fixed.
+   */
+  granted: boolean
+  /**
+   * Whether the pipeline actually serves this row. A hand-added row whose name
+   * is contested by a build-pinned registry is dropped by the merge and served by
+   * neither — its apps are not listed, so `trusted` is always `false` for it
+   * regardless of any grant.
+   */
+  served: boolean
+  /**
+   * When `served` is `false`, which exclusion applied: `pinned_name` (the name is
+   * claimed by a build-pinned registry) or `not_configured` (a stored grant whose
+   * config row was removed by a direct `config.json` edit, so no row names it —
+   * the snapshot lists it anyway, `granted: true`, so it can be revoked). Absent
+   * when served.
+   */
+  not_served_reason?: 'pinned_name' | 'not_configured'
+}
+
+/**
+ * GET /api/security/trusted-registries — which hand-added registries may clone
+ * with the operator's own git identity.
+ *
+ * Like denied-commands and trusted-apps, both writes answer with the full
+ * refreshed snapshot so a caller seeds its query cache from the response instead
+ * of re-fetching.
+ */
+export interface TrustedRegistriesData {
+  registries: TrustedRegistryRow[]
+  /**
+   * True when `registry_trust.json` is corrupt (bad JSON, unknown version, wrong
+   * `owner_trusted` shape). The runtime fails closed on a corrupt store, so every
+   * row is untrusted until the operator fixes or deletes the file; this flag lets
+   * the Security page render a notice instead of a healthy-looking all-untrusted
+   * list. Absent when the store is healthy.
+   */
+  corrupt?: boolean
+  /** The corrupt-store error detail, present only alongside `corrupt: true`. */
+  corrupt_detail?: string
+  /** The damaged file's absolute path, present only alongside `corrupt: true`. */
+  corrupt_path?: string
+}
+
 /** One credential the gateway knows how to use by name, as `GET /api/secrets`
  *  reports it. `host` is present only for a per-host credential. */
 export interface ManagedSecret {
@@ -384,6 +452,21 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j }: Clien
       del('/api/security/trusted-apps/' + encodeURIComponent(name)).then(j) as Promise<TrustedAppsRevokeResult>,
     setTrustAllApps: (value: boolean) =>
       put('/api/security/trusted-apps/allow-all', { value }).then(j) as Promise<TrustedAppsData>,
+    // Registries trusted with the operator's git identity (Settings → Security).
+    // Same snapshot-returning shape as trusted-apps above, and the same reason:
+    // the panel applies the response rather than issuing a second read.
+    //
+    // `repo` travels in the body on both writes, and it is the credential-free
+    // URL the operator configured — not the registry's own display name, which
+    // is index content its author controls.
+    listTrustedRegistries: () =>
+      get('/api/security/trusted-registries').then(j) as Promise<TrustedRegistriesData>,
+    grantTrustedRegistry: (repo: string) =>
+      post('/api/security/trusted-registries', { repo }).then(j) as Promise<TrustedRegistriesData>,
+    // Idempotent: revoking an already-untrusted registry answers the same
+    // snapshot, so a double click cannot leave the panel in a wrong state.
+    revokeTrustedRegistry: (repo: string) =>
+      post('/api/security/trusted-registries/revoke', { repo }).then(j) as Promise<TrustedRegistriesData>,
     // Read-only governance policy viewer (Settings → Security). No write path —
     // the enterprise ceiling is file-authored and un-editable via the UI.
     governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,

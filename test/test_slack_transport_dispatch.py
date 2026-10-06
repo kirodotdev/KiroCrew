@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import sys
 from collections import OrderedDict
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -35,10 +34,6 @@ from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack import transport_dispatch
 
-# Reuse the golden module's fakes without triggering the stdlib 'test' collision.
-_test_dir = Path(__file__).parent
-if str(_test_dir) not in sys.path:  # pragma: no cover
-    sys.path.insert(0, str(_test_dir))
 _golden = importlib.import_module("test_slack_golden_transcript")
 
 FakeSessions = _golden.FakeSessions

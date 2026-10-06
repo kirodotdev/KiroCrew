@@ -169,6 +169,10 @@ class FakeSessions:
     def max_generation(self, bucket: str) -> int:
         return -1
 
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs`` (unset: 300 s)."""
+        return 300.0
+
 
 class _GateResult:
     def __init__(self, action: str = "") -> None:

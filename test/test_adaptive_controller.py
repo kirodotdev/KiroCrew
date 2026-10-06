@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -38,6 +39,7 @@ from kiro_crew.adaptive.policy import (
     ACTION_PROBE,
     ACTION_RESUME,
     MODE_FIXED,
+    AdaptivePolicy,
     Decision,
 )
 from kiro_crew.adaptive.signals import Sample
@@ -62,10 +64,11 @@ async def test_long_running_stream_can_recover_from_one_without_completion():
     clock = Clock()
     ctl = AdaptiveController(
         manager,
-        cfg=_cfg(adaptive_initial=1),
+        cfg=_cfg(),
         clock=clock,
         host_probe=lambda: HostSample(free_mem_mb=32768),
     )
+    _start_at(ctl, 1)
     await ctl.tick()
     clock.advance(5)
     await ctl.step(_clean(clock.t, running=1, queued=63, loop_lag_ms=400))
@@ -174,14 +177,33 @@ def _clean(t: float, **over: object) -> Sample:
     return Sample(**base)  # type: ignore[arg-type]
 
 
+def _work(t: float, **over: object) -> Sample:
+    """Corroborated WORK pressure (timeouts on two MCP servers): what cuts the
+    exec cap, which never reads loop lag or free memory."""
+    base: dict[str, object] = dict(attributable_timeout_rate=0.4, slow_or_failing_keys=2)
+    base.update(over)
+    return _clean(t, **base)
+
+
+def _start_at(ctl: AdaptiveController, cap: int) -> None:
+    """Start the exec track at *cap*: production starts it at the ceiling, and
+    these cases pin a rule from a lower cap."""
+    ctl._policy = AdaptivePolicy(replace(ctl._policy.params, exec_initial=cap))
+    ctl._apply_exec(cap)
+
+
 # --- wiring to the two actuators ------------------------------------------------
 
 
 class TestActuators:
-    def test_fresh_start_applies_min_user_max_initial_synchronously(self) -> None:
+    def test_fresh_start_applies_the_ceiling_synchronously(self) -> None:
         mgr = FakeManager(user_max=32)
         ctl, _ = _controller(mgr)
-        assert mgr.calls == [4]
+        assert mgr.calls == [32]
+        # adaptive_initial is deprecated and inert: the ceiling still wins.
+        mgr_old = FakeManager(user_max=32)
+        _controller(mgr_old, cfg=_cfg(adaptive_initial=4))
+        assert mgr_old.calls == [32]
         mgr2 = FakeManager(user_max=3)
         _controller(mgr2)
         assert mgr2.calls == [3]
@@ -195,10 +217,23 @@ class TestActuators:
         await ctl.step(_clean(clock.t))  # first tick pushes the gate's initial
         assert gate.calls == [4]
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=10, healthy_in_flight=6))
+        d = await ctl.step(_work(clock.t, running=10, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         assert mgr.effective == 6
         assert gate.calls[-1] == 2 and gate.gate.capacity == 2
+
+    @pytest.mark.asyncio
+    async def test_loop_lag_and_low_memory_move_the_gate_and_never_the_exec_cap(self) -> None:
+        mgr = FakeManager(user_max=10)
+        gate = FakeGate()
+        ctl, clock = _controller(mgr, gate)
+        await ctl.step(_clean(clock.t))
+        for host_only in ({"loop_lag_ms": 3000.0}, {"free_mem_mb": 1000.0}):
+            for _ in range(4):
+                clock.advance(31)
+                d = await ctl.step(_clean(clock.t, running=10, queued=5, **host_only))
+                assert mgr.effective == 10, (host_only, d)
+        assert gate.gate.capacity == 1
 
     @pytest.mark.asyncio
     async def test_shaped_descent_is_driven_end_to_end_by_the_controller(self) -> None:
@@ -241,26 +276,32 @@ class TestActuators:
         assert ctl.state()["applied_gate_cap"] == 4
 
     @pytest.mark.asyncio
-    async def test_pause_sets_zero_grants_and_gate_floor(self) -> None:
+    async def test_a_pause_holds_the_gate_at_its_floor_and_leaves_the_exec_cap(self) -> None:
         mgr = FakeManager()
         gate = FakeGate()
         ctl, clock = _controller(mgr, gate)
         await ctl.step(_clean(clock.t, free_mem_mb=1000.0))
         clock.advance(5)
         d = await ctl.step(_clean(clock.t, free_mem_mb=1000.0))
-        assert d.action == ACTION_PAUSE
-        assert mgr.effective == 0
+        assert d.action == ACTION_PAUSE and d.paused
+        assert mgr.effective == 10  # the spawn floor owns memory, not this cap
         assert gate.gate.capacity == 1
 
     @pytest.mark.asyncio
     async def test_ceiling_change_is_read_every_tick(self) -> None:
         mgr = FakeManager(user_max=10)
-        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_initial=8))
-        assert mgr.effective == 8
+        ctl, clock = _controller(mgr)
+        assert mgr.effective == 10
         mgr._user = 3  # hot-reloaded agent.max_subagents
         d = await ctl.step(_clean(clock.t))
         assert d.effective_exec_cap == 3
         assert mgr.effective == 3
+        # A raise is followed at once: nothing had cut the cap below the old
+        # ceiling, and the exec track starts at its ceiling.
+        mgr._user = 12
+        clock.advance(5)
+        d = await ctl.step(_clean(clock.t))
+        assert d.effective_exec_cap == 12 and mgr.effective == 12
 
     @pytest.mark.asyncio
     async def test_disabled_removes_the_bound(self) -> None:
@@ -271,9 +312,9 @@ class TestActuators:
         d = await ctl.step(_clean(clock.t, loop_lag_ms=5000.0))
         assert d.effective_exec_cap == 10 and not d.paused
         assert mgr.effective is None
-        # Live re-enable: the earned position is applied again.
+        # Live re-enable: the earned position (the ceiling) is applied again.
         ctl.apply_config(_cfg(adaptive_concurrency=True))
-        assert mgr.effective == 4
+        assert mgr.effective == 10
 
     @pytest.mark.asyncio
     async def test_fixed_mode_pins_both_caps(self) -> None:
@@ -282,8 +323,8 @@ class TestActuators:
         ctl, clock = _controller(mgr, gate, cfg=_cfg(adaptive_concurrency_mode=MODE_FIXED))
         for _ in range(4):
             clock.advance(5)
-            await ctl.step(_clean(clock.t, loop_lag_ms=5000.0, running=4, queued=9))
-        assert mgr.effective == 4
+            await ctl.step(_work(clock.t, loop_lag_ms=5000.0, running=4, queued=9))
+        assert mgr.effective == 10  # the exec cap's initial value is its ceiling
         assert gate.gate.capacity == 4
 
 
@@ -310,7 +351,7 @@ class TestTick:
         assert last["running"] == 2 and last["queued"] == 2
         assert last["free_mem_mb"] == 16_000.0
         assert last["loop_lag_ms"] == 12.0
-        assert d.effective_exec_cap == 4
+        assert d.effective_exec_cap == 10
         sample = ctl._samples[-1]
         assert sample.completions == 1  # a1 succeeded
         assert sample.healthy_in_flight == 1  # 2 running, one stalled
@@ -337,7 +378,8 @@ class TestTick:
         monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", _boom)
         host = HostSample(free_mem_mb=16_000.0, rss_mb=300.0, fd_count=50, fd_limit=1000)
         mgr = FakeManager(user_max=64)
-        ctl, clock = _controller(mgr, host=host, cfg=_cfg(adaptive_initial=4))
+        ctl, clock = _controller(mgr, host=host)
+        _start_at(ctl, 4)
         mgr.running_count = 4
         mgr._queue = [{"task": str(i)} for i in range(70)]
         await ctl.tick(loop_lag_ms=5.0)
@@ -512,17 +554,18 @@ class TestTick:
     @pytest.mark.asyncio
     async def test_decrease_is_logged_at_warning_and_increase_at_info(self, caplog) -> None:
         mgr = FakeManager(user_max=10)
-        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_initial=10))
+        ctl, clock = _controller(mgr)
         await ctl.step(_clean(clock.t))
         clock.advance(5)
         with caplog.at_level(logging.INFO, logger=ctl_mod.__name__):
-            d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=10, healthy_in_flight=6))
+            d = await ctl.step(_work(clock.t, running=10, healthy_in_flight=6))
             assert d.action == ACTION_DECREASE
             clock.advance(31)  # past the clean window; slow start was retired by the cut
             d = await ctl.step(_clean(clock.t, running=6, queued=1, completions=6))
             assert d.action == ACTION_INCREASE
-            # The remaining actions are applied directly: a pause needs a
-            # memory or severe-lag sample the policy fakes above do not carry.
+            # The remaining actions are applied directly: a (spawn-gate) pause
+            # needs a memory or severe-lag sample the policy fakes above do not
+            # carry.
             for action, paused in (
                 (ACTION_PAUSE, True),
                 (ACTION_RESUME, False),
@@ -553,7 +596,8 @@ class TestTick:
     async def test_recent_decisions_is_bounded_and_carries_reason(self) -> None:
         mgr = FakeManager(user_max=64)
         gate = FakeGate()
-        ctl, clock = _controller(mgr, gate, cfg=_cfg(adaptive_initial=1))
+        ctl, clock = _controller(mgr, gate)
+        _start_at(ctl, 1)
         await ctl.step(_clean(clock.t))
         assert ctl.state()["recent_decisions"] == []
         changed = 0
@@ -561,15 +605,19 @@ class TestTick:
         while changed < 40:
             clock.advance(5)
             # Alternate a clean sample (demand at the cap, one completion
-            # landed) with a corroborated lag sample; the cooldowns between
-            # cap changes are what produce the holds.
+            # landed) with a corroborated pressure sample (failing work, and a
+            # lagging loop for the gate); the cooldowns between cap changes are
+            # what produce the holds.
             cap = ctl.policy.exec_cap
+            pressure = changed % 2
             sample = _clean(
                 clock.t,
                 running=cap,
                 queued=1,
                 completions=changed + 1,
-                loop_lag_ms=400.0 if changed % 2 else 5.0,
+                loop_lag_ms=400.0 if pressure else 5.0,
+                attributable_timeout_rate=0.4 if pressure else 0.0,
+                slow_or_failing_keys=2 if pressure else 0,
                 healthy_in_flight=0,
             )
             # ``tick`` appends the sample it built before deciding on it; the
@@ -623,7 +671,7 @@ class TestTick:
         confirmed_gate = gate.gate.capacity
         gate.answer = False  # daemon stops answering; the update stays pending
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=10, healthy_in_flight=6))
+        d = await ctl.step(_clean(clock.t, free_mem_mb=2048.0, running=10, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         newest = ctl.state()["recent_decisions"][-1]
         assert newest["exec_cap"] == d.effective_exec_cap == mgr.effective
@@ -639,9 +687,9 @@ class TestTick:
         hold with ``changed=True``. It moves the confirmed cap, so it is the one
         hold that belongs in the history."""
         mgr = FakeManager(user_max=10)
-        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_initial=8))
+        ctl, clock = _controller(mgr)
         await ctl.step(_clean(clock.t))
-        assert mgr.effective == 8
+        assert mgr.effective == 10
         assert ctl.state()["recent_decisions"] == []
 
         mgr._user = 2  # the live ceiling drop (agent.max_subagents hot-reload)
@@ -685,7 +733,7 @@ class TestTick:
         assert gate.gate.capacity == 6
         assert ctl.state()["applied_gate_cap"] == 6
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=8, healthy_in_flight=6))
+        d = await ctl.step(_clean(clock.t, free_mem_mb=2048.0, running=8, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         newest = ctl.state()["recent_decisions"][-1]
         assert newest["gate_cap"] == gate.gate.capacity == ctl.state()["applied_gate_cap"]
@@ -743,15 +791,15 @@ class TestTick:
         reduced AIMD cap that is a cap change, and the history must show it even
         though the decision counter and the log skip fixed-mode decisions."""
         mgr = FakeManager(user_max=10)
-        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_initial=10))
+        ctl, clock = _controller(mgr)
         await ctl.step(_clean(clock.t))
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=10, healthy_in_flight=6))
+        d = await ctl.step(_work(clock.t, running=10, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         reduced = d.effective_exec_cap
         assert reduced < 10
 
-        ctl.apply_config(_cfg(adaptive_initial=10, adaptive_concurrency_mode=MODE_FIXED))
+        ctl.apply_config(_cfg(adaptive_concurrency_mode=MODE_FIXED))
         clock.advance(5)
         d = await ctl.step(_clean(clock.t, running=reduced))
         assert d.action == ACTION_FIXED and d.changed
@@ -811,7 +859,7 @@ class TestSubagentManagerSeam:
         assert mgr.set_effective_cap(4) == 4
         assert mgr.max_concurrent == 4 and mgr.user_max_concurrent == 10
         assert mgr.set_effective_cap(50) == 10  # ceiling never exceeded
-        assert mgr.set_effective_cap(0) == 0  # paused: no grants
+        assert mgr.set_effective_cap(0) == 0  # a 0 bound admits nothing
         should_queue, slot_free = mgr._admission._should_stagger_queue_impl(1e9)
         assert should_queue is True and slot_free is False
         assert mgr.set_effective_cap(None) == 10
@@ -917,10 +965,9 @@ class TestVisibilityAndConfig:
         try:
             lines = rs.adaptive_summary_lines()
             joined = "\n".join(lines)
-            assert "Execution cap: 4/10" in joined
-            assert "MCP spawn gate: 4/8" in joined
-            assert "Dispatch: active" in joined
-            assert rs.adaptive_state()["effective_exec_cap"] == 4
+            assert "Execution cap: 10/10" in joined
+            assert "MCP spawn gate: 4/8 (active)" in joined
+            assert rs.adaptive_state()["effective_exec_cap"] == 10
         finally:
             monkeypatch.setattr(ctl_mod, "_current", None)
         assert rs.adaptive_summary_lines() == []
@@ -959,38 +1006,42 @@ class TestVisibilityAndConfig:
 
     @pytest.mark.asyncio
     async def test_an_idle_controller_restores_the_cap_and_names_the_cut(self) -> None:
-        """End to end: a lag cut, then an idle gateway. The cap returns to the
-        fresh-start value, and until it does the report names the last cut."""
+        """End to end: a cut on failing starts, then an idle gateway. The cap
+        returns to the fresh-start value (the ceiling), and until it does the
+        report names the last cut."""
         from kiro_crew import resource_status as rs
 
         mgr = FakeManager(user_max=9)
         ctl, clock = _controller(mgr, cfg=_cfg(adaptive_slow_start=False))
-        # Loop lag alone cuts: 4 -> 2, then 2 -> 1 past the cooldown.
+        # Loop lag alone cuts nothing on the exec track.
         await ctl.tick(loop_lag_ms=400.0)
-        clock.advance(35.0)
-        await ctl.tick(loop_lag_ms=400.0)
-        assert mgr.effective == 1
+        assert mgr.effective == 9
+        # Starts timing out on two MCP servers cut it: 9 -> 5.
+        clock.advance(31.0)
+        for key in ("srv-a", "srv-b"):
+            ctl.record_start(45_000.0, ok=False, attributable_timeout=True, key=key)
+        await ctl.tick()
+        assert mgr.effective == 5
         clock.advance(10.0)
         await ctl.tick()
         state = ctl.state()
         assert state["last_cut"]["age_secs"] == 10.0
         joined = "\n".join(rs.adaptive_summary_lines(state))
-        assert "Execution cap: 1/9" in joined
-        assert "Last pressure cut: decrease 10s ago (corroborated pressure: loop_lag)" in joined
-        for _ in range(60):
+        assert "Execution cap: 5/9" in joined
+        assert "Last pressure cut: decrease 10s ago (corroborated pressure: " in joined
+        assert "loop_lag" not in state["last_cut"]["signals"]
+        for _ in range(80):
             clock.advance(5.0)
             await ctl.tick()
-        assert mgr.effective == 4
-        assert ctl.state()["effective_exec_cap"] == 4
-        # Below the ceiling still, so the cause stays on the report.
-        assert any(
-            line.startswith("  Last pressure cut:")
-            for line in rs.adaptive_summary_lines(ctl.state())
+        assert mgr.effective == 9
+        assert ctl.state()["effective_exec_cap"] == 9
+        # Back at the ceiling, the cut is history and leaves the report; below
+        # it, the cause stays on the report.
+        assert not any(
+            "Last pressure cut" in line for line in rs.adaptive_summary_lines(ctl.state())
         )
-        at_ceiling = rs.adaptive_summary_lines(
-            {**ctl.state(), "effective_exec_cap": 9, "exec_ceiling": 9}
-        )
-        assert not any("Last pressure cut" in line for line in at_ceiling)
+        below = rs.adaptive_summary_lines({**ctl.state(), "effective_exec_cap": 8})
+        assert any(line.startswith("  Last pressure cut:") for line in below)
 
     def test_summary_lists_recent_cap_changes(self) -> None:
         from kiro_crew import resource_status as rs

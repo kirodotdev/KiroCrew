@@ -148,9 +148,10 @@ gateway vs. service -- the same server, two lifetimes:
                             `kirocrew restart`, `kirocrew logs`.
   Run only one of them at a time -- both bind the same port.
 
-Ports: the dashboard is the only port Kiro Crew opens, and it binds loopback
-  only -- http://localhost:{_DEFAULT_PORT_TEXT}. Messaging channels (Slack, Discord, ...)
-  connect outbound, so nothing else needs to be reachable. Override the port
+Ports: the dashboard is the only port a client needs, and by default it binds
+  loopback only -- http://localhost:{_DEFAULT_PORT_TEXT}. App backends listen on local
+  loopback ports (9100-9199). Messaging channels (Slack, Discord, ...) connect
+  outbound, so nothing else needs to be reachable. Override the port
   with `kirocrew gateway --port N`, KIROCREW_PORT=N, or the `dashboard.url`
   config value; for the service, set KIROCREW_PORT when you run
   `service install` (later, edit /etc/kirocrew/kirocrew.env and restart)."""

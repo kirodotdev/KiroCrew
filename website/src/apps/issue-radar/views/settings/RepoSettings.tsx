@@ -468,6 +468,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           open={true}
           onOpenChange={(o) => { if (!o) setWsPickerOpen(false) }}
           anchorRef={wsBrowseRef}
+          startPath={settings.workspace_path}
           onSelect={(path) => { update({ workspace_path: path }); setWsPickerOpen(false) }}
         />
       )}

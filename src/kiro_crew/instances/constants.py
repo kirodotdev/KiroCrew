@@ -269,6 +269,13 @@ DEFAULT_PROXY_READ_IDLE_TIMEOUT_SECS: float = 120.0
 # SEARCH_REPLY_MAX_BYTES: bound before buffering.
 PROXY_REQUEST_BODY_MAX_BYTES: int = 2 * 1024 * 1024
 
+# Cap (bytes) on what the chat proxy holds to redact one peer reply: a whole
+# JSON body, or one SSE event. Redaction needs a complete string, so the proxy
+# buffers up to this much; a reply past it is refused rather than forwarded
+# unredacted. Sized above the largest real reply (a 200-row slot page, the
+# peer's full `slots` broadcast, itself bounded by PEER_SLOTS_REPLY_MAX_BYTES).
+PROXY_REDACT_BUFFER_MAX_BYTES: int = 8 * 1024 * 1024
+
 # How many times the chat proxy will percent-decode a caller-supplied path
 # before refusing it. The path is decoded to a FIXED POINT so the string the
 # policy inspects is the string the peer will resolve — one decode pass is not

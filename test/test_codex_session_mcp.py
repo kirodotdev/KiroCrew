@@ -959,9 +959,9 @@ class TestTheSessionArraySeam:
         real = session_mcp._agent_spec_and_snapshot_for
         calls: list[object] = []
 
-        def counting(agent, work_dir=None):
+        def counting(agent, work_dir=None, **kwargs):
             calls.append(agent)
-            return real(agent, work_dir)
+            return real(agent, work_dir, **kwargs)
 
         monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", counting)
         params = CodexMirror().session_params("kirocrew", session_key="k", channel_id="c")
@@ -981,8 +981,8 @@ class TestTheSessionArraySeam:
         real = session_mcp._agent_spec_and_snapshot_for
         seen = {"n": 0}
 
-        def drifting(agent, work_dir=None):
-            spec, snapshot = real(agent, work_dir)
+        def drifting(agent, work_dir=None, **kwargs):
+            spec, snapshot = real(agent, work_dir, **kwargs)
             seen["n"] += 1
             if seen["n"] >= 2 and isinstance(spec, dict):
                 spec["mcpServers"]["narrowed"]["disabledTools"] = ["x"]
@@ -1493,7 +1493,11 @@ class TestSpecDisabledToolRefusal:
         assert builds == 2, "a site that answers a permission request was added or removed"
         for site in ("_dispatch_events", "_handle_permission"):
             body = inspect.getsource(getattr(client_mod.AcpClient, site))
-            assert "_build_permission_event(" in body and "_deny_spec_disabled_tool(" in body, site
+            assert (
+                "_build_permission_event(" in body
+                and "_deny_spec_disabled_tool(" in body
+                and "_deny_zero_tools(" in body
+            ), site
         # And the two other loops answer ONLY through _handle_permission.
         assert source.count("await self._handle_permission(msg)") == 2
 

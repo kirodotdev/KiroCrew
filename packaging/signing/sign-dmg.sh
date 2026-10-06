@@ -116,19 +116,9 @@ if ! command -v awscurl >/dev/null 2>&1; then
   exit 4
 fi
 
-RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
-  -X POST -H "Content-Type: application/json" -d "$REQUEST" \
-  "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1) || {
-  echo "ERROR: CDSigner DMG sign-task submission failed" >&2
-  echo "$RESPONSE" >&2
-  exit 4
-}
-
-SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['signTaskId'])" 2>/dev/null) || {
-  echo "ERROR: CDSigner submission returned no signTaskId:" >&2
-  echo "$RESPONSE" >&2
-  exit 4
-}
+# shellcheck source=cdsigner-submit.sh
+source "$(dirname "${BASH_SOURCE[0]}")/cdsigner-submit.sh"
+SIGN_TASK_ID=$(submit_sign_task "$REQUEST") || exit 4
 
 log "Sign task submitted: ${SIGN_TASK_ID}"
 

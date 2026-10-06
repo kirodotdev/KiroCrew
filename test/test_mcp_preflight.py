@@ -311,6 +311,42 @@ def _server() -> McpServerInfo:
     return McpServerInfo(name="srv", command="/bin/true")
 
 
+#: Lost-run ceiling for a wait on a pass's own observable state. A pass reaches
+#: its first measurement after one off-loop hop (``_load_and_identify``), which a
+#: loaded runner stretched past 50 ms; with every executor job started 1 s late
+#: the waits below return in about 1 s. 30 s is far past that and a quarter of
+#: the suite's 120 s ``--timeout``, so only a wedged pass spends it, and it then
+#: fails here by name instead of as a killed worker.
+_PASS_STATE_CEILING_SECS = 30.0
+
+
+async def _await_pass_state(ready, describe, what: str) -> None:
+    """Return once ``ready()`` holds; past the ceiling, raise naming *what*."""
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while not ready():
+        elapsed = loop.time() - start
+        if elapsed > _PASS_STATE_CEILING_SECS:
+            raise AssertionError(f"{what}: not reached after {elapsed:.2f}s ({describe()})")
+        await asyncio.sleep(0.01)
+
+
+async def _finished(aw, what: str):
+    """Await *aw* within the ceiling; past it, raise naming *what* and the wait."""
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    try:
+        return await asyncio.wait_for(aw, _PASS_STATE_CEILING_SECS)
+    except asyncio.TimeoutError:
+        raise AssertionError(f"{what}: still running after {loop.time() - start:.2f}s") from None
+
+
+def _pass_lock_waiters(lock) -> int:
+    """Acquirers parked on *lock* (``_PASS_LOCK``) on this test's loop."""
+    bound = lock._bound() if hasattr(lock, "_bound") else lock
+    return len(bound._waiters or ())
+
+
 class TestEvaluateOnlyWhatChanged:
     """The orchestration policy: pay for a measurement once, per identity."""
 
@@ -1008,13 +1044,24 @@ class TestOnePassAtATime:
         second = asyncio.create_task(
             ev.evaluate_new_servers([srv("other-mcp")], tmp_path, budget=None)
         )
-        await asyncio.sleep(0.05)
-
-        # The lock must keep the second pass out until the first has flushed.
-        assert started == ["slow-mcp"], started
-        release.set()
-        await first
-        await second
+        try:
+            # The first pass is measuring (it holds the lock and has read the
+            # file) and the second is queued on that same lock. A second
+            # measurement ends the wait early, so a broken lock fails on the
+            # assertion below rather than at the ceiling.
+            await _await_pass_state(
+                lambda: "slow-mcp" in started
+                and (_pass_lock_waiters(ev._PASS_LOCK) == 1 or len(started) > 1),
+                lambda: f"started={started} waiters={_pass_lock_waiters(ev._PASS_LOCK)}",
+                "the first pass measuring with the second parked on _PASS_LOCK",
+            )
+            # The lock must keep the second pass out until the first has flushed.
+            assert started == ["slow-mcp"], started
+            assert _pass_lock_waiters(ev._PASS_LOCK) == 1, "the second pass is not on the lock"
+        finally:
+            release.set()
+        await _finished(first, "the first pass after the release")
+        await _finished(second, "the second pass after the first flushed")
 
         stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
         stored.load()
@@ -1051,14 +1098,17 @@ class TestProgressArrivesDuringThePass:
                 on_progress=lambda m, d, t: seen.append((m, d, t)),
             )
         )
-        # Give the fast one time to land while the slow one is still blocked.
-        for _ in range(50):
-            await asyncio.sleep(0.01)
-            if seen:
-                break
-        assert seen == [(1, 1, 2)], f"progress did not arrive mid-pass: {seen}"
-        gate.set()
-        await task
+        # Wait for the fast one to land while the slow one is still gated.
+        try:
+            await _await_pass_state(
+                lambda: bool(seen),
+                lambda: f"seen={seen} task_done={task.done()}",
+                "progress for the first measurement while the last is gated",
+            )
+            assert seen == [(1, 1, 2)], f"progress did not arrive mid-pass: {seen}"
+        finally:
+            gate.set()
+        await _finished(task, "the pass after the last measurement was released")
         assert seen[-1] == (2, 2, 2), seen
 
 
@@ -1642,13 +1692,19 @@ class TestBudgetedPassYields:
             ev.evaluate_new_servers([srv], tmp_path, budget=None)
         )
         try:
-            # Let the task reach the lock, then confirm it is parked there.
-            for _ in range(5):
-                await asyncio.sleep(0)
+            # Park proof: the task is queued ON the lock, not merely still inside
+            # a thread hop, which a pass that skipped the lock would also be
+            # after a few turns. ``task.done()`` ends the wait early on that defect.
+            await _await_pass_state(
+                lambda: _pass_lock_waiters(ev._PASS_LOCK) == 1 or task.done(),
+                lambda: f"waiters={_pass_lock_waiters(ev._PASS_LOCK)} done={task.done()}",
+                "the uncapped pass parked on _PASS_LOCK",
+            )
             assert not task.done(), "an uncapped pass must block on the lock"
+            assert _pass_lock_waiters(ev._PASS_LOCK) == 1, "the pass is not queued on the lock"
         finally:
             ev._PASS_LOCK.release()
-        out = await task
+        out = await _finished(task, "the uncapped pass after the lock was released")
         assert "s" in out
 
     @pytest.mark.asyncio

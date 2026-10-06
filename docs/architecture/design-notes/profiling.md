@@ -29,13 +29,19 @@ right tool for "why is this one operation slow".
 
 ```bash
 KIROCREW_DEBUG=1 kirocrew perf sample \
-  --call kiro_crew.history:ConversationLog.list_sessions \
+  --call kiro_crew.cli_doctor:_doctor \
   --interval 0.002 \
-  --output /tmp/list-sessions.folded
+  --output /tmp/doctor.folded
 ```
 
-The callable is invoked with no arguments. If it raises, the profile is still
-written — the stacks leading to a failure are usually the point.
+The callable is invoked with no arguments, so it must be a module-level function
+(or other callable) that needs none; an unbound instance method such as
+`ConversationLog.list_sessions` raises `TypeError` at once. If the call raises
+(including `SystemExit`, which `_doctor` raises when it finds an issue), the error
+is printed and the profile is still written, provided at least one sample was
+taken — the stacks leading to a failure are usually the point. A call that ends
+before one sampling interval collects no samples: the command exits 1 and writes
+no file.
 
 ## Profiling a running gateway (needs py-spy)
 

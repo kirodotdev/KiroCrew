@@ -65,8 +65,11 @@ CAPABILITY_FIELDS = (
     "model_id_namespace",
     "resolves_model_from_advertised_list",
     "effort_via_config_option",
+    "effort_via_slash_command",
     "compacts_inline",
     "crew_fires_spec_hooks",
+    "honors_zero_tool_ban",
+    "acp_client_spawnable",
 )
 
 
@@ -668,15 +671,74 @@ class TestAForeignProviderIsClassifiedThePreviousWay:
         assert SubagentManager._is_cc_provider(self._foreign_provider()) is False
 
 
-def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
-    """Pins why swapping ``_is_claude`` for the effort capability changed nothing.
+def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
+    """``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`` membership is a JOIN of three facts,
+    not a hand-maintained list, so this recomputes the rule from its own inputs
+    and fails the moment a hand edit and the inputs disagree.
 
-    ``AcpWorker`` constructs its ``AcpClient`` without ``acp_backend``, so the
-    backend is the kiro default and both the old identity read and the new
-    capability answer False. If a future pool starts selecting a backend this
-    fails, which is the moment to check the effort channel deliberately rather
-    than inherit whichever arm the old branch left behind.
+    A backend honours the ban iff its routing is ``Routing.AGENT_SPEC`` (the
+    harness enforces natively -- kiro, kas), OR its routing is in
+    ``tool_gate.ENFORCED_ROUTINGS`` AND it has a mirror
+    (``providers/mirrors/registry.py``'s ``MIRRORS``) AND it is NOT in
+    ``ACP_BACKENDS_ACP_RUNTIME`` (the refusal lives only on ``AcpClient``, never
+    on the shared ``AcpRuntime`` codex and kas are served by).
+
+    Would fail if claude were re-added: its routing is ``SEEDED_SETTINGS``, which
+    ``ENFORCED_ROUTINGS`` does not carry. Would fail if codex were re-added: its
+    routing IS enforced and it has a mirror, but it is a member of
+    ``ACP_BACKENDS_ACP_RUNTIME``.
     """
+    from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
+    from kiro_crew.providers.mirrors.registry import MIRRORS
+
+    for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
+        routing = routing_for(backend)
+        expected = routing is sdk_backends.Routing.AGENT_SPEC or (
+            routing in ENFORCED_ROUTINGS
+            and backend in MIRRORS
+            and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+        )
+        actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
+        assert actual == expected, (
+            f"{backend!r}: honors_zero_tool_ban membership is {actual}, the rule "
+            f"says {expected} (routing={routing}, enforced={routing in ENFORCED_ROUTINGS}, "
+            f"mirrored={backend in MIRRORS}, "
+            f"acp_runtime={backend in sdk_backends.ACP_BACKENDS_ACP_RUNTIME})"
+        )
+    assert sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN == {
+        sdk_backends.ACP_BACKEND_KIRO,
+        sdk_backends.ACP_BACKEND_KAS,
+        sdk_backends.ACP_BACKEND_OPENCODE,
+        sdk_backends.ACP_BACKEND_GOOSE,
+    }
+
+
+def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
+    """Pins why swapping ``_is_claude`` for the effort capability changed nothing --
+    and that the capability answer for EACH zero-tool-safe backend is
+    deliberately checked rather than assumed.
+
+    ``AcpWorker`` constructs its ``AcpClient`` with ``acp_backend=``, and
+    ``llm_pool._get_acp_backend`` restricts the value to whatever answers both
+    ``honors_zero_tool_ban`` and ``acp_client_spawnable`` True -- today
+    kiro/opencode/goose. claude is NOT a member: its routing
+    (``Routing.SEEDED_SETTINGS``) is declared but not enforced by this core, so
+    an inherited ``~/.claude`` pre-approval can skip the permission request the
+    refusal needs to run. Asking the EFFORT capabilities rather than the identity
+    in ``_apply_effort`` means each member's answers (no config option for any of
+    the three, the ``/effort`` slash command for kiro alone) are handled correctly
+    with no branch in the pool itself; this pin exists so a backend that newly
+    qualifies for the pool with different effort answers is caught here, not
+    assumed to inherit an existing member's.
+    """
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
+        ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
+    )
+
     tree = _tree("knowledge/llm_pool.py")
     constructions = [
         node
@@ -686,8 +748,36 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     assert constructions, "llm_pool no longer constructs an AcpClient; re-check this pin"
     for call in constructions:
         passed = {kw.arg for kw in call.keywords}
-        assert "acp_backend" not in passed, (
-            f"llm_pool.py:{call.lineno} now selects a backend; decide the effort "
-            f"channel for it instead of relying on the kiro default"
-        )
-    assert capabilities_for("").effort_via_config_option is False
+        assert (
+            "acp_backend" in passed
+        ), f"llm_pool.py:{call.lineno} no longer selects a backend; re-check this pin"
+    pool_safe_backends = ACP_BACKENDS_HONOR_ZERO_TOOL_BAN & ACP_BACKENDS_ACP_CLIENT_SPAWNABLE
+    assert pool_safe_backends == {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }, (
+        "the set of backends this pool trusts changed -- decide the effort "
+        "channel for whichever member is new or missing deliberately, then "
+        "update this pin"
+    )
+    assert capabilities_for(ACP_BACKEND_KIRO).effort_via_config_option is False
+    assert capabilities_for(ACP_BACKEND_OPENCODE).effort_via_config_option is False
+    assert capabilities_for(ACP_BACKEND_GOOSE).effort_via_config_option is False
+    assert capabilities_for(ACP_BACKEND_KIRO).effort_via_slash_command is True
+    assert capabilities_for(ACP_BACKEND_OPENCODE).effort_via_slash_command is False
+    assert capabilities_for(ACP_BACKEND_GOOSE).effort_via_slash_command is False
+
+
+def test_effort_via_slash_command_membership_is_the_kiro_family() -> None:
+    """``effort_via_slash_command`` translates ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
+    for every known backend, and no backend carries effort down both channels:
+    a change sent down the one the harness does not implement is answered with
+    method-not-found."""
+    for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
+        caps = capabilities_for(backend)
+        assert caps.effort_via_slash_command == (
+            backend in sdk_backends.ACP_BACKENDS_KIRO_SLASH_COMMANDS
+        ), backend
+        assert not (caps.effort_via_slash_command and caps.effort_via_config_option), backend
+    assert capabilities_for("some-harness-nobody-registered").effort_via_slash_command is False

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_update_provider import _UNALLOCATABLE_PID
 
 from conftest import requires_symlinks
 from kiro_crew.apps.backend import (
@@ -311,6 +312,194 @@ class TestPortAllocation:
             with bmod._lock:
                 for i in range(8):
                     bmod._allocated_ports.pop(f"racer-{i}", None)
+
+
+def _drive_spawn_to_publication(monkeypatch, name, *, wrap_marks_sandbox):
+    """Run ``start_app_backend`` to a published record, stubbing the spawn seams.
+
+    ``wrap_marks_sandbox`` chooses whether the stub ``wrap_argv`` returns a
+    launcher cleanup path alongside its wrapped argv or None with an unchanged argv.
+    On Linux that cleanup path identifies the generated forking namespace launcher.
+    Everything after the Popen boundary is faked so the body reaches publication.
+    """
+    import kiro_crew.apps.backend as bmod
+
+    def _wrap(argv, **k):
+        if wrap_marks_sandbox:
+            return (["/run/kirocrew_sandbox_1.py", *argv], "/run/kirocrew_sandbox_1.py")
+        return (list(argv), None)
+
+    class _AliveProc:
+        # The fixture's teardown hands this to the REAL ``stop_app_backend`` kill
+        # path, so the pid must be one no live process can own.
+        pid = _UNALLOCATABLE_PID
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(bmod, "_app_enabled_state", lambda n: True)
+    monkeypatch.setattr(bmod, "wrap_argv", _wrap)
+    monkeypatch.setattr(bmod, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(bmod, "popen_limited", lambda *a, **k: _AliveProc())
+    monkeypatch.setattr(bmod, "_survived_spawn", lambda proc, port: True)
+    monkeypatch.setattr(bmod, "_record_app_pid", lambda *a, **k: "ST-4242")
+    monkeypatch.setattr(bmod, "_start_health_supervisor", lambda ap, hc: None)
+    bmod.start_app_backend(name)
+    return bmod._processes.get(name)
+
+
+def test_spawn_sets_forking_launcher_true_for_the_namespace_launcher_wrap(
+    tmp_path, app_env, monkeypatch
+):
+    """The spawn path identifies the forking launcher from its cleanup path.
+
+    On Linux a non-null cleanup path names the generated namespace launcher, so the
+    published record carries ``forking_sandbox_launcher=True`` and
+    ``running_spawned_backend_pids`` will widen to the launcher's forked server child.
+    The predicate is ``IS_LINUX and cleanup_path is not None``; on a non-Linux host
+    the seatbelt profile's cleanup path does not mark a forking launcher, so the flag
+    stays False -- which is what this asserts against the live platform.
+    """
+    from kiro_crew import platform_compat
+
+    src = tmp_path / "source" / "ns-app"
+    src.mkdir(parents=True)
+    (src / APP_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "ns-app",
+                "version": "1.0.0",
+                "displayName": "NS",
+                "description": "namespace launcher",
+                "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+            }
+        )
+    )
+    (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+    install_app(src)
+
+    ap = _drive_spawn_to_publication(monkeypatch, "ns-app", wrap_marks_sandbox=True)
+    assert ap is not None, "the spawn never published a record"
+    assert ap.forking_sandbox_launcher is platform_compat.IS_LINUX
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the namespace launcher is POSIX-only: rendering it reads os.getuid",
+)
+@pytest.mark.parametrize("tier", ["strict", "standard", "cc"])
+def test_the_namespace_launcher_forks_once_and_its_parent_only_waits(tier):
+    """Pins the launcher shape that ``forking_sandbox_launcher`` relies on.
+
+    For a record marked ``forking_sandbox_launcher``,
+    ``running_spawned_backend_pids`` claims the Popen root's direct children,
+    because the generated namespace launcher forks exactly once, its child execs
+    the server, and its parent only waits for that child. A launcher that gained
+    or lost a fork layer would make that claim over- or under-reach with no other
+    test turning red, so revisit the children claim in
+    ``apps/backend_runtime/tracking.py`` before changing this shape.
+    """
+    import ast
+
+    from kiro_crew import sandbox
+
+    tree = ast.parse(sandbox._build_launcher_script(tier))
+    called = [ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    process_makers = {
+        c
+        for c in called
+        if c.startswith(("os.fork", "os.spawn", "os.posix_spawn", "os.exec", "subprocess."))
+        or c in ("os.system", "os.popen")
+    }
+    assert process_makers == {"os.fork", "os.execvp"}
+    assert called.count("os.fork") == 1
+
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    parent = next(
+        n for n in ast.walk(main) if isinstance(n, ast.If) and ast.unparse(n.test) == "pid > 0"
+    )
+    parent_calls = {
+        ast.unparse(c.func) for s in parent.body for c in ast.walk(s) if isinstance(c, ast.Call)
+    }
+    assert "os.waitpid" in parent_calls
+    assert not parent_calls & process_makers
+    assert ast.unparse(parent.body[-1]).startswith("sys.exit(")
+    # The child carries on past the parent's branch: its exec is reached through
+    # ``run_child``, whose last statement is ``exec_agent``, the one ``os.execvp``.
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    child = main.body[main.body.index(parent) + 1 :]
+    child_calls = {
+        ast.unparse(c.func) for s in child for c in ast.walk(s) if isinstance(c, ast.Call)
+    }
+    assert "run_child" in child_calls and not child_calls & process_makers
+    assert ast.unparse(functions["run_child"].body[-1]) == "exec_agent(launch, argv)"
+    exec_calls = {
+        ast.unparse(c.func) for c in ast.walk(functions["exec_agent"]) if isinstance(c, ast.Call)
+    }
+    assert "os.execvp" in exec_calls
+
+
+def test_spawn_sets_forking_launcher_false_for_a_noop_wrap(
+    tmp_path, app_env, monkeypatch
+):
+    """MUTATION TARGET: an unconfined (no-op wrap) spawn leaves the flag False.
+
+    When ``wrap_argv`` returns the argv unchanged -- an unconfined host -- the root IS
+    the server, so the record must NOT be marked and no children are ever claimed.
+    """
+    src = tmp_path / "source" / "plain-app"
+    src.mkdir(parents=True)
+    (src / APP_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "plain-app",
+                "version": "1.0.0",
+                "displayName": "Plain",
+                "description": "no sandbox",
+                "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+            }
+        )
+    )
+    (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+    install_app(src)
+
+    ap = _drive_spawn_to_publication(monkeypatch, "plain-app", wrap_marks_sandbox=False)
+    assert ap is not None, "the spawn never published a record"
+    assert ap.forking_sandbox_launcher is False
+
+
+def test_an_app_entry_point_named_like_the_launcher_does_not_set_the_forking_flag(
+    tmp_path, app_env, monkeypatch
+):
+    """An app-controlled entry-point name cannot confer ownership of its children."""
+    from kiro_crew import platform_compat, sandbox
+    from kiro_crew.apps.backend import running_spawned_backend_pids
+
+    src = tmp_path / "source" / "launcher-named-app"
+    src.mkdir(parents=True)
+    entry_point = "kirocrew_sandbox_main.py"
+    (src / APP_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "launcher-named-app",
+                "version": "1.0.0",
+                "displayName": "Launcher-named app",
+                "description": "no sandbox",
+                "backend": {"entryPoint": entry_point, "healthCheck": "/health"},
+            }
+        )
+    )
+    (src / entry_point).write_text("import time\ntime.sleep(30)\n")
+    install_app(src)
+
+    ap = _drive_spawn_to_publication(monkeypatch, "launcher-named-app", wrap_marks_sandbox=False)
+    assert ap is not None, "the spawn never published a record"
+    assert ap.forking_sandbox_launcher is False
+    assert sandbox.wrapped_by_crew_sandbox([sys.executable, str(src / entry_point)]) is True
+    monkeypatch.setattr(
+        platform_compat, "_proc_children", lambda pid: [ap.pid + 1] if pid == ap.pid else []
+    )
+    assert running_spawned_backend_pids() == {ap.pid}
 
 
 class TestFixedAndAutoPortIsolation:

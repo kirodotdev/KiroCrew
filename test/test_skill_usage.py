@@ -6,6 +6,8 @@ import json
 import os
 import time
 
+import pytest
+
 from kiro_crew import platform_compat, skill_usage
 from kiro_crew.skill_usage import (
     _MAX_AGE_SECS,
@@ -81,6 +83,24 @@ class TestSkillUsageLedger:
         led = _ledger(tmp_path)
         assert led.score("old")[0] == 0.0  # dropped by TTL
         assert led.score("new")[0] == 1.0
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_a_non_finite_time_is_dropped_on_load(self, tmp_path, literal):
+        # No TTL can expire a NaN or Infinity time, so the load drops the entry.
+        # json.dumps writes these literals, and json.loads reads them back.
+        (tmp_path / "skill-usage.json").write_text(
+            '{"version": 1, "keys": {"bad": {"hits": 5, "last_seen": %s}, '
+            '"good": {"hits": 1, "last_seen": %r}}}' % (literal, time.time())
+        )
+        led = _quiet(tmp_path)
+        assert led.score("bad") == (0.0, 0.0)
+        assert led.score("good")[0] == 1.0
+
+        led.record("good")
+        assert led.flush() is True
+        saved = json.loads((tmp_path / "skill-usage.json").read_text())
+        assert set(saved["keys"]) == {"good"}
+        json.dumps(saved, allow_nan=False)
 
     def test_flush_noop_when_clean(self, tmp_path):
         led = _ledger(tmp_path)

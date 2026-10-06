@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -604,6 +605,64 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
             assert len(seen) == 1
     finally:
         loader.close()
+
+
+@pytest.mark.asyncio
+async def test_installed_exact_read_credits_the_usage_ledger(tmp_path, monkeypatch, opened):
+    """An exact read hands the model the body, so it credits the ledger once.
+
+    A miss, a search and a list are not loads, so they credit nothing, and a
+    paged read credits only the page that starts at the body's first line. The
+    GET read is not the tool's route, so it credits nothing either.
+    """
+    from types import SimpleNamespace
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers import prompts
+    from kiro_crew.dashboard.routes import skills as routes
+
+    _skill(tmp_path / "skills", "alpha")
+    loader = _loader(tmp_path, opened=opened)
+    # An armed debounce keeps the credit from starting the background flush
+    # thread, which would otherwise write after the test ends.
+    loader._usage._last_flush = time.time()
+    monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
+    monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
+    monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
+    monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: None)
+    monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+    app = web.Application()
+    app["state"] = SimpleNamespace(sessions=None)
+    app["allowed_origins"] = set()
+    routes.register(app)
+    read = {"scope": "installed", "action": "read"}
+    async with TestClient(TestServer(app), headers={"X-Session-Key": "dashboard:scoped"}) as client:
+        response = await client.post("/api/skills/-/discover", json={**read, "key": "alpha"})
+        assert response.status == 200
+        assert _BODY_MARKER in (await response.json())["matches"][0]["content"]
+
+        missing = await client.post("/api/skills/-/discover", json={**read, "key": "absent"})
+        assert (await missing.json())["matches"] == []
+        for query in ("q=alpha&scope=installed&action=search", "q=&scope=installed&action=list"):
+            assert (await client.get(f"/api/skills/-/discover?{query}")).status == 200
+
+        # A paged read is one load: the page at line 0 credits it, the next page does not.
+        for offset in (0, 1):
+            page = await client.post(
+                "/api/skills/-/discover",
+                json={**read, "key": "alpha", "offset": offset, "limit": 1},
+            )
+            assert page.status == 200
+            assert (await page.json())["matches"][0]["page"]
+
+        # The GET read serves the body but is not the tool's route, so it credits nothing.
+        legacy = await client.get("/api/skills/-/discover?q=&scope=installed&action=read&key=alpha")
+        assert legacy.status == 200
+        assert _BODY_MARKER in (await legacy.json())["matches"][0]["content"]
+
+    assert {key: hits for key, (hits, _seen) in loader._usage.snapshot().items()} == {"alpha": 2}
 
 
 def test_external_provider_target_keeps_global_budget_and_admitted_root(

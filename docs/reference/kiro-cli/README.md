@@ -1,11 +1,18 @@
 # Kiro CLI Documentation
 
 Offline mirror of the `kiro-cli` documentation. Nothing constrains the CLI to a
-particular line at runtime: `acp/client.py` launches whichever `kiro-cli` is on
-PATH, and `kiro_prerequisite.py`'s `KIRO_CLI_UPDATE_COMMAND` is an unversioned
-`kiro-cli update`. The only version number in the code is a feature floor —
-`mcp_hot_reload.py`'s `MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION` of 2.21.0, which
-decides whether MCP hot reload is available and which a 3.x CLI also satisfies.
+particular line at runtime. `acp/client.py` finds the binary with
+`kiro_cli.resolve_kiro_cli`: the `KIROCREW_KIRO_BIN` override first, then the
+desktop app's bundled directory, the known install directories, and the
+inherited `PATH`. Unattended spawns use `kiro_cli.pin_kiro_cli`, which drops the
+inherited `PATH` and accepts only an absolute path. `kiro_prerequisite.py`'s
+`KIRO_CLI_UPDATE_COMMAND` is an unversioned `kiro-cli update`. The version
+numbers in the code are feature floors, each a lowest probed release rather than
+a supported range, and a 3.x CLI satisfies all of them: `mcp_hot_reload.py`'s
+`MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION` (2.21.0, MCP hot reload) and
+`kiro_cli.py`'s `SPEC_PERMISSIONS_MIN_VERSION` (2.23.0, the agent-spec
+`permissions` block) and `MANDATORY_MCPS_DROP_MIN_VERSION` (2.27.0, deferring
+Crew's MCP servers under Tool Search).
 So these pages describe what upstream published on the fetch date recorded per
 row, not a supported-version contract.
 

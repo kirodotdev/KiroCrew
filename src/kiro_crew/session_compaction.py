@@ -35,7 +35,7 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_session_started,
 )
-from kiro_crew.session_lifecycle import clear_stop_declined
+from kiro_crew.session_lifecycle import allocation_identity, clear_stop_declined
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
@@ -921,12 +921,7 @@ class CompactionCoordinator:
         try:
             await owner.get_or_create(
                 key,
-                agent=getattr(session, "agent", "") or None,
-                approval_policy=getattr(session, "approval_policy", ""),
-                cwd=getattr(session.provider, "cwd", None) or None,
-                channel_id=owner.get_channel(key) or None,
-                model=getattr(session, "requested_model", "") or None,
-                crew_agent=getattr(session, "capability_member", "") or None,
+                **allocation_identity(owner, key, session),
                 speculative=True,
             )
             started = True

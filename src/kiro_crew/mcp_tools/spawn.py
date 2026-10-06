@@ -211,8 +211,8 @@ def schemas() -> list[dict[str, Any]]:
     """Descriptors for the spawn tools."""
     # Advertise the concurrent sub-agent cap so the model fans out with
     # confidence instead of self-limiting. The cap IN FORCE is preferred:
-    # ``agent.max_subagents`` is a ceiling the adaptive controller may be
-    # dispatching 1 at a time under, and a model sized to the ceiling queues
+    # ``agent.max_subagents`` is a ceiling the adaptive controller may have cut
+    # after admitted work kept failing, and a model sized to the ceiling queues
     # work it believes is running. The live figure comes from the in-process
     # registry only (``adaptive_exec_cap``, a dict read) -- this function runs
     # on the gateway's discovery cycle as well as in a tool server, and a
@@ -221,20 +221,24 @@ def schemas() -> list[dict[str, Any]]:
     # gets printed, LABELLED as a ceiling; ``resource_status`` is the tool that
     # pays for the API read and reports the live cap from any process.
     # resolve_max_subagents is the single source of truth for the ceiling
-    # (auto-sizes from host mem/CPU + learned cost, or the explicit
-    # agent.max_subagents) and the gateway's SubagentManager re-derives its
-    # ENFORCED ceiling through the same function on every config reload. A
-    # snapshot at tool-list time is fine: this is advisory guidance, not an
-    # enforced limit, and SubagentManager auto-queues any overflow regardless.
+    # (agent.subagent_auto_max when agent.max_subagents is 0, else the explicit
+    # pin; never 0) and the gateway's SubagentManager re-derives its ENFORCED
+    # ceiling through the same function on every config reload. The count is a
+    # high ceiling: free host memory bounds each start beneath it, which is what
+    # the memory note says. A snapshot at tool-list time is fine: this is
+    # advisory guidance, not an enforced limit, and SubagentManager
+    # auto-queues any overflow regardless.
     _queue_note = (
-        "; submit only useful, ready independent tasks. Overflow queues automatically; "
-        "capacity is a ceiling, not a target. Keep dependent tasks for a later batch."
+        "; each start also waits until host memory can hold it, so a wide batch "
+        "may start in waves. Submit only useful, ready independent tasks. Overflow "
+        "queues automatically; capacity is a ceiling, not a target. Keep dependent "
+        "tasks for a later batch."
     )
     _live_cap = host_status.adaptive_exec_cap()
     if _live_cap > 0:
         _cap_hint = (
             f" You can run up to {_live_cap} sub-agents concurrently right now (the "
-            "adaptive cap in force, earned beneath your configured max)" + _queue_note
+            "cap in force, at most your configured max)" + _queue_note
         )
     else:
         try:

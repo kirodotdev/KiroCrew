@@ -3,21 +3,26 @@
  * Drives website/capture/quote-message.html (real UserMessage / AssistantMessage /
  * ChatInput + the real useMessageQuote hook). Per theme, and asserted:
  *
- *   1-row       hover on Kiro's reply: the row shows Quote + More (two seats)
+ *   1-row       hover on Kiro's newest reply: Regenerate (the seat) + Copy + More
+ *   4-sent      (also) the older reply's row is Quote (the seat) + Copy + More
  *   2-menu      right-click on the bubble: the context menu, Quote first
  *   3-composer  the quote staged INSIDE the input box as a card, with Remove
  *   4-sent      Send: the new user row draws the quote card, body without `>`
  *   5-narrow    390px phone frame: long-press menu open over the staged card
  *   6-unstaged  Remove on the card clears it (composer back to plain)
- *   10-user-more      the user row's More menu open (Copy / Copy link / Pin / Edit)
- *   11-reply-more     the main-chat reply's More menu open (Copy text / link / Pin / Raw)
+ *   10-user-more      the user row (Quote + Copy + More) with More open (Quote / Copy link / Pin / Edit)
+ *   11-reply-more     the main-chat reply's More menu open (Quote / Copy link / Pin / Raw)
  *   12-unavailable    the notice a quote card's failed jump raises
- *   14-copy-failed    a refused clipboard write from the user row's More menu: the
+ *   14-copy-failed    a refused clipboard write from the user row's Copy button: the
  *                     ErrorNotice under the row (clipboard stubbed to refuse)
  *   7-crewmate-menu   the crewmate DM (real ChatMessageList + crewmate renderers,
- *                     Reply in thread in the row): the bubble menu, Quote first
- *   8-crewmate-more   the crewmate reply's More menu: Quote first, then Copy...
+ *                     Reply in thread + Copy in the row): the bubble menu, Quote first
+ *   8-crewmate-more   the crewmate reply's More menu: Quote first, then Copy link...
  *   9-crewmate-sent   a DM row carrying the quote card
+ *   17-fork-older     a loaded window (Fork as a row button): an older reply
+ *                     reads Fork (the seat) + Copy + More
+ *   18-fork-newest    the newest reply there: Regenerate (the seat) + Copy +
+ *                     Fork + More, so Copy stays second
  *   15-selfquote      the user's OWN message quoted: the sent card and the staged
  *                     card both read "You"
  *   16-queued         a quoting send parked behind a busy turn: the queue card's
@@ -56,9 +61,9 @@ for (const theme of ['dark', 'light']) {
     const { ctx, page, errors } = await open(theme, 'hover')
     const kiro = page.locator('[data-role="assistant"]').first()
     await kiro.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(800)
-    const row = kiro.locator('[data-testid="quote-message"]').locator('..')
+    const row = kiro.locator('[data-testid="assistant-more-actions"]').locator('..')
     const labels = await row.locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
-    check(`[${theme}/row] Kiro row = Quote + More`, JSON.stringify(labels) === JSON.stringify(['Quote message', 'More actions']))
+    check(`[${theme}/row] newest Kiro row = Regenerate + Copy + More`, JSON.stringify(labels) === JSON.stringify(['Regenerate response', 'Copy', 'More actions']))
     await shot(page, `${theme}-1-row.png`)
     check(`[${theme}/row] no page errors`, errors.length === 0); await ctx.close()
   }
@@ -100,7 +105,10 @@ for (const theme of ['dark', 'light']) {
     check(`[${theme}/sent] card is the jump control`, await sentRow.getByRole('button', { name: 'Jump to the quoted message' }).isVisible())
     await sentRow.getByRole('button', { name: 'Jump to the quoted message' }).click()
     check(`[${theme}/sent] jump hands over the quoted ts`, (await page.locator('[data-capture-root]').getAttribute('data-jumped')) === '2026-09-29T09:12:40Z')
-    await page.mouse.move(5, 5); await page.waitForTimeout(400)
+    const older = page.locator('[data-role="assistant"]').first()
+    await older.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(800)
+    const olderSeats = await older.getByTestId('assistant-more-actions').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
+    check(`[${theme}/sent] older Kiro row = Quote + Copy + More`, JSON.stringify(olderSeats) === JSON.stringify(['Quote message', 'Copy', 'More actions']))
     await shot(page, `${theme}-4-sent.png`)
     check(`[${theme}/sent] no page errors`, errors.length === 0); await ctx.close()
   }
@@ -118,8 +126,10 @@ for (const theme of ['dark', 'light']) {
     const { ctx, page, errors } = await open(theme, 'hover')
     const userRow = page.locator('[data-role="user"]').first()
     await userRow.hover({ position: { x: 60, y: 20 } }); await page.waitForTimeout(600)
+    const userSeats = await userRow.getByTestId('user-more-actions').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
+    check(`[${theme}/user-row] user row = Quote + Copy + More`, JSON.stringify(userSeats) === JSON.stringify(['Quote message', 'Copy', 'More actions']))
     await userRow.getByTestId('user-more-actions').click(); await page.waitForTimeout(700)
-    check(`[${theme}/user-more] Quote, Copy text, Copy link, Pin, Edit`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Edit & Resend']))
+    check(`[${theme}/user-more] Quote, Copy link, Pin, Edit`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy link to message', 'Pin message', 'Edit & Resend']))
     await shot(page, `${theme}-10-user-more.png`)
     await page.keyboard.press('Escape'); await page.waitForTimeout(200)
     // 13 the user bubble's own right-click menu
@@ -131,11 +141,11 @@ for (const theme of ['dark', 'light']) {
     const kiro = page.locator('[data-role="assistant"]').first()
     await kiro.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(600)
     await kiro.getByTestId('assistant-more-actions').click(); await page.waitForTimeout(700)
-    check(`[${theme}/reply-more] Quote, Copy text, Copy link, Pin, Raw`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown']))
+    check(`[${theme}/reply-more] Quote, Copy link, Pin, Raw`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown']))
     await shot(page, `${theme}-11-reply-more.png`)
     check(`[${theme}/more] no page errors`, errors.length === 0); await ctx.close()
   }
-  // 14 copy failed: stub the clipboard to refuse, Copy text from More, expect the notice
+  // 14 copy failed: stub the clipboard to refuse, press the row's Copy, expect the notice
   {
     const ctx = await browser.newContext({ viewport: { width: 1100, height: 720 }, deviceScaleFactor: 2 })
     await ctx.addInitScript(() => {
@@ -148,9 +158,7 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('textarea'); await page.waitForTimeout(400)
     const userRow = page.locator('[data-role="user"]').first()
     await userRow.hover({ position: { x: 60, y: 20 } }); await page.waitForTimeout(600)
-    await userRow.getByTestId('user-more-actions').click(); await page.waitForTimeout(400)
-    await page.getByTestId('copy-message-menu-item').click(); await page.waitForTimeout(300)
-    await page.keyboard.press('Escape'); await page.waitForTimeout(300)
+    await userRow.getByRole('button', { name: 'Copy', exact: true }).click(); await page.waitForTimeout(300)
     check(`[${theme}/copy-failed] ErrorNotice under the user row`, (await userRow.getByRole('alert').innerText()).includes('Copy failed'))
     await shot(page, `${theme}-14-copy-failed.png`)
     check(`[${theme}/copy-failed] no page errors`, errors.length === 0); await ctx.close()
@@ -178,6 +186,21 @@ for (const theme of ['dark', 'light']) {
     await shot(page, `${theme}-16b-queued-edit.png`)
     check(`[${theme}/queued] no page errors`, errors.length === 0); await ctx.close()
   }
+  // 17-18 loaded window: Fork is a row button
+  {
+    const { ctx, page, errors } = await open(theme, 'sent', false, '&fork=window')
+    await page.waitForSelector('[data-testid="quote-card-sent"]')
+    const seatsOf = row => row.getByTestId('assistant-more-actions').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('data-testid') === 'fork-from-here' ? 'Fork' : b.getAttribute('aria-label')))
+    const older = page.locator('[data-role="assistant"]').first()
+    await older.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(800)
+    check(`[${theme}/fork-older] row = Fork + Copy + More`, JSON.stringify(await seatsOf(older)) === JSON.stringify(['Fork', 'Copy', 'More actions']))
+    await shot(page, `${theme}-17-fork-older.png`)
+    const newest = page.locator('[data-role="assistant"]').last()
+    await newest.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(800)
+    check(`[${theme}/fork-newest] row = Regenerate + Copy + Fork + More`, JSON.stringify(await seatsOf(newest)) === JSON.stringify(['Regenerate response', 'Copy', 'Fork', 'More actions']))
+    await shot(page, `${theme}-18-fork-newest.png`)
+    check(`[${theme}/fork] no page errors`, errors.length === 0); await ctx.close()
+  }
   // 12 unavailable notice
   {
     const { ctx, page, errors } = await open(theme, 'unavailable')
@@ -200,12 +223,12 @@ for (const theme of ['dark', 'light']) {
     const row = page.locator('[data-testid="crewmate-message"]').first()
     await row.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(700)
     const seats = await row.locator('[data-testid="reply-in-thread"]').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
-    check(`[${theme}/crewmate] row keeps Reply + More`, JSON.stringify(seats) === JSON.stringify(['Reply in thread', 'More actions']))
+    check(`[${theme}/crewmate] row = Reply + Copy + More`, JSON.stringify(seats) === JSON.stringify(['Reply in thread', 'Copy', 'More actions']))
     // The footer fades in over 300 ms (+100 ms delay) once its menu opens; shoot after it settled.
     await row.getByTestId('assistant-more-actions').click(); await page.waitForTimeout(700)
     check(`[${theme}/crewmate] footer visible while More is open`, parseFloat(await row.getByTestId('assistant-more-actions').evaluate(b => getComputedStyle(b.closest('div')).opacity)) === 1)
     check(`[${theme}/crewmate] More: Quote first`, (await page.getByRole('menuitem').first().innerText()).includes('Quote message'))
-    check(`[${theme}/crewmate] bubble menu = More item set`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(bubbleItems))
+    check(`[${theme}/crewmate] More = bubble menu minus the row's Copy`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(bubbleItems.filter(i => i !== 'Copy text')))
     await shot(page, `${theme}-8-crewmate-more.png`)
     await page.getByTestId('quote-message-menu-item').click()
     await page.waitForSelector('[data-testid="quote-card-composer"]')

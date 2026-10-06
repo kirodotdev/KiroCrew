@@ -27,6 +27,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import RemoteArtifactDetailPage from '../pages/RemoteArtifactDetailPage'
@@ -126,12 +127,30 @@ function SwitchArtifact({ to, label = 'switch artifact' }: { to: string; label?:
 /** The comment-panel toggle (a `Btn` carrying `aria-pressed`). */
 const commentToggle = () => screen.getByRole('button', { name: /Comments/ })
 
+/**
+ * Ceiling for the comment sidebar's auto-reveal. The sidebar is not on the
+ * body's frame: the body comes from the detail query, while the sidebar mounts
+ * only after the SEPARATE comments query resolves AND the page's auto-reveal
+ * effect commits a second, scheduler-queued render (comments queryFn -> React
+ * Query notify -> the render with the count badge -> that effect -> the sidebar
+ * render). A wait on the body proves neither step.
+ */
+const SIDEBAR_READY = namedCeiling('SIDEBAR_READY', 5000)
+/** Wait for the auto-revealed sidebar. The pressed toggle and the sidebar
+ *  mount come from the same state in the same render. */
+const sidebarRevealed = () =>
+  waitFor(() => expect(commentToggle()).toHaveAttribute('aria-pressed', 'true'), SIDEBAR_READY)
+
 /** The selection toolbar's comment composer textarea, as the toolbar labels it. */
 const COMPOSER_INPUT = 'Comment on the selected text'
 
-/** Let the toolbar's debounced selection check run, so a negative assertion
- *  ("no composer") is made after the point at which one would have opened. */
-const settle = () => act(() => new Promise<void>(resolve => { setTimeout(resolve, 80) }))
+/** Run the toolbar's deferred selection check now, so a negative assertion
+ *  ("no composer") is made after the point at which one would have opened,
+ *  whatever the check's delay. Install fake setTimeout only once the page has
+ *  rendered (waitFor needs the real one), and only setTimeout: React's scheduler
+ *  stays real. The root describe's afterEach puts real timers back. */
+const fakeSelectionCheckTimer = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+const runSelectionCheck = () => act(() => { vi.runOnlyPendingTimers() })
 
 /**
  * Select `word` inside the rendered markdown body and fire the mouseup the
@@ -216,9 +235,15 @@ describe('RemoteArtifactDetailPage', async () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     globalThis.URL.createObjectURL = originalCreate
     globalThis.URL.revokeObjectURL = originalRevoke
     vi.restoreAllMocks()
+    // A refused post leaves the typed text in the per-passage draft slot on
+    // purpose (that is the recovery path); the slot is module memory that lives
+    // for the tab, so no test may hand its draft to the next one.
+    const store = composerDraftStoreFor(`mc-remote-artifact-composer-draft:${PROVIDER}/${EXT_ID}`)
+    for (const q of ['alpha', 'beta', 'gamma']) store.clear(q, MD_BODY.indexOf(q))
   })
 
   describe('load states', () => {
@@ -503,14 +528,6 @@ describe('RemoteArtifactDetailPage', async () => {
   })
 
   describe('anchored comments on a markdown body', () => {
-    // A refused post leaves the typed text in the per-passage draft slot on
-    // purpose (that is the recovery path); the slot lives for the tab, so a test
-    // that ends on a refusal must not hand its draft to the next one.
-    afterEach(() => {
-      const store = composerDraftStoreFor(`mc-remote-artifact-composer-draft:${PROVIDER}/${EXT_ID}`)
-      for (const q of ['alpha', 'beta', 'gamma']) store.clear(q, MD_BODY.indexOf(q))
-    })
-
     it('opens the composer on a body selection and posts the anchor with offsets and version', async () => {
       vi.mocked(api).remoteArtifactDetail = vi.fn().mockResolvedValue(mdDetail())
       renderPage()
@@ -595,6 +612,7 @@ describe('RemoteArtifactDetailPage', async () => {
       vi.mocked(api).postRemoteArtifactComment = vi.fn().mockImplementationOnce(() => new Promise((_res, rej) => { reject = rej }))
       renderPage()
       await screen.findByText(MD_BODY)
+      await sidebarRevealed()
       expect(selectInMarkdown('beta')).toBe(true)
       const box = await screen.findByLabelText(COMPOSER_INPUT)
       fireEvent.change(box, { target: { value: 'orphaned' } })
@@ -626,6 +644,7 @@ describe('RemoteArtifactDetailPage', async () => {
         .mockImplementationOnce(() => new Promise((_res, rej) => { reject = rej }))
       renderPage()
       await screen.findByText(MD_BODY)
+      await sidebarRevealed()
       fireEvent.click(screen.getByRole('button', { name: 'Add comment' }))
       fireEvent.change(screen.getByPlaceholderText('Add a comment on the whole artifact…'), { target: { value: 'from the sidebar' } })
       fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
@@ -690,8 +709,9 @@ describe('RemoteArtifactDetailPage', async () => {
       } as unknown as Selection)
       const host = document.querySelector('.msg-content')
       expect(host).not.toBeNull()
+      fakeSelectionCheckTimer()
       fireEvent.mouseUp(host as Element)
-      await settle()
+      runSelectionCheck()
       expect(screen.queryByLabelText(COMPOSER_INPUT)).not.toBeInTheDocument()
     })
 
@@ -712,8 +732,9 @@ describe('RemoteArtifactDetailPage', async () => {
         removeAllRanges: () => {},
       } as unknown as Selection)
       const host = document.querySelector('.msg-content')
+      fakeSelectionCheckTimer()
       fireEvent.mouseUp(host as Element)
-      await settle()
+      runSelectionCheck()
       expect(screen.queryByLabelText(COMPOSER_INPUT)).not.toBeInTheDocument()
     })
 

@@ -318,12 +318,11 @@ def migrate_channel_transcripts(
     *remove* false merges every orphan but deletes none: the copies stay on
     disk, to be removed by a later pass. The gateway passes false while its
     one-time crewmate prune has not settled (and runs a removing pass once it
-    has) -- that pass reads the first line
-    of every transcript for the agent it ran as, and an orphan is the only
-    transcript that recorded the agent of the dashboard surface it came from
-    (the channel file keeps its own ``agent``), so deleting it under the prune
-    would destroy the evidence that keeps a crewmate. The merge itself still
-    lands before the session restores read the channel transcript.
+    has). That prune's only evidence is each crewmate's own DM-thread
+    transcript (``dashboard_<member slot key>``, live or archived); it never
+    reads these channel orphans, so the deferral does not protect its evidence
+    and only delays the deletes. The merge itself still lands before the
+    session restores read the channel transcript.
 
     Best-effort per orphan: a lock timeout or I/O error is logged and the next
     orphan is still attempted, because one wedged session must not stop the rest

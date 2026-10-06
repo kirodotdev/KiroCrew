@@ -134,6 +134,148 @@ class TestStripImageRefs:
 
         assert out == f"look at this\n{STRIPPED_IMAGE_MARKER}"
 
+    @pytest.mark.parametrize(
+        "template,strip",
+        [
+            ("restore {p}.backup", False),
+            ("restore {p}~", False),
+            ("see {p}/other", False),
+            ("see {p}.", True),
+            ("see {p}.Then we moved on", True),
+        ],
+    )
+    def test_bare_path_requires_a_complete_image_name(self, tmp_path, template, strip):
+        p = _dest(_png(tmp_path))
+        text = template.format(p=p)
+        expected = template.format(p=STRIPPED_IMAGE_MARKER) if strip else text
+        assert strip_image_refs(text) == expected
+
+    def test_a_non_image_file_inside_a_directory_named_like_a_picture_keeps_its_text(
+        self, tmp_path
+    ):
+        p = _dest(_png(tmp_path))
+        text = f"open {p}版本/final.txt"
+
+        assert strip_image_refs(text) == text
+
+    @pytest.mark.parametrize("glued", ["📁", "Ａ"])
+    def test_a_symbol_in_a_directory_named_like_a_picture_keeps_its_text(self, tmp_path, glued):
+        p = _dest(_png(tmp_path))
+        text = f"open {p}{glued}/final.txt"
+
+        assert strip_image_refs(text) == text
+
+    def test_two_paths_glued_by_cjk_text_are_one_reference(self, tmp_path):
+        # Nothing in the text tells a conjunction from a directory component, so
+        # the glued spelling is one token; a space or fullwidth comma keeps two.
+        a = _dest(_png(tmp_path, "a.png"))
+        b = _dest(_png(tmp_path, "b.png"))
+
+        assert strip_image_refs(f"看 {a}和{b}") == f"看 {STRIPPED_IMAGE_MARKER}"
+
+    def test_two_windows_paths_glued_by_cjk_text_are_one_reference(self, monkeypatch):
+        # Same contract under the Windows grammar: the second path's drive
+        # colon must not split the token, or the first picture is scrubbed
+        # alone and the second path survives the replay.
+        from kiro_crew import image_refs
+
+        monkeypatch.setattr(image_refs, "_PATH_RE", image_refs._WINDOWS_PATH_RE)
+
+        text = "看 C:/Users/me/a.png和C:/Users/me/b.png"
+
+        assert strip_image_refs(text) == f"看 {STRIPPED_IMAGE_MARKER}"
+
+    @pytest.mark.parametrize("glue", ["\u2014", "\u2013", "\u2192", "\u2022", "\u30fb"])
+    def test_two_paths_glued_by_punctuation_are_two_references(self, tmp_path, glue):
+        # Punctuation separates the two; only the first stands alone (after
+        # whitespace), so the bare-path pass strips that one and leaves the
+        # second as written, exactly as it did before the glue rules.
+        a = _dest(_png(tmp_path, "a.png"))
+        b = _dest(_png(tmp_path, "b.png"))
+
+        assert strip_image_refs(f"look {a}{glue}{b}") == f"look {STRIPPED_IMAGE_MARKER}{glue}{b}"
+
+    def test_two_paths_glued_by_an_emoji_keep_their_text(self, tmp_path):
+        # No path starts after a symbol and the first is vetoed by the later
+        # suffix, so the grammar sees no picture here -- nothing is scrubbed,
+        # and the builder inlines nothing for the same text.
+        a = _dest(_png(tmp_path, "a.png"))
+        b = _dest(_png(tmp_path, "b.png"))
+        text = f"look {a}\U0001f4c1{b}"
+
+        assert strip_image_refs(text) == text
+
+    def test_two_paths_glued_by_a_backslash_follow_the_host_grammar(self, tmp_path):
+        # A backslash is a symbol to the POSIX grammar (nothing scrubbed) and a
+        # path character to the Windows one (the pair is one token, one marker).
+        a = _dest(_png(tmp_path, "a.png"))
+        b = _dest(_png(tmp_path, "b.png"))
+        text = f"look {a}\\{b}"
+
+        expected = f"look {STRIPPED_IMAGE_MARKER}" if os.name == "nt" else text
+        assert strip_image_refs(text) == expected
+
+    @pytest.mark.parametrize(
+        ("glue", "expected"),
+        [
+            ("\u2014", f"look {STRIPPED_IMAGE_MARKER}\u2014C:/y/b.png"),
+            ("\U0001f4c1", "look C:/x/a.png\U0001f4c1C:/y/b.png"),
+            ("\\", f"look {STRIPPED_IMAGE_MARKER}"),
+        ],
+    )
+    def test_windows_glued_pairs_follow_the_same_rules(self, monkeypatch, glue, expected):
+        # Punctuation separates; a symbol hides both; a backslash is a Windows
+        # path character, so that pair is one token and one marker.
+        from kiro_crew import image_refs
+
+        monkeypatch.setattr(image_refs, "_PATH_RE", image_refs._WINDOWS_PATH_RE)
+
+        assert strip_image_refs(f"look C:/x/a.png{glue}C:/y/b.png") == expected
+
+    def test_a_url_after_a_windows_path_is_not_part_of_it(self, monkeypatch):
+        # A URL scheme's colon is not a drive colon, so a row naming a document
+        # and then a web image keeps every word and the working URL.
+        from kiro_crew import image_refs
+
+        monkeypatch.setattr(image_refs, "_PATH_RE", image_refs._WINDOWS_PATH_RE)
+        prose = r"C:\Users\me\report.md and the banner is at https://example.com/logo.png"
+
+        assert strip_image_refs(prose) == prose
+        assert (
+            strip_image_refs(r"see C:\Users\me\shot.png and https://example.com/logo.png")
+            == f"see {STRIPPED_IMAGE_MARKER} and https://example.com/logo.png"
+        )
+
+    def test_a_url_after_a_posix_path_is_not_part_of_it(self, monkeypatch):
+        from kiro_crew import image_refs
+
+        monkeypatch.setattr(image_refs, "_PATH_RE", image_refs._POSIX_PATH_RE)
+        prose = "/home/me/report.md and the banner is at https://example.com/logo.png"
+
+        assert strip_image_refs(prose) == prose
+        assert (
+            strip_image_refs("see /home/me/shot.png and https://example.com/logo.png")
+            == f"see {STRIPPED_IMAGE_MARKER} and https://example.com/logo.png"
+        )
+
+    def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
+        # Space is both a delimiter and a legal path character, so every "/" here
+        # opens a path body that would walk to the suffix: the bounded body is
+        # what keeps this linear.
+        text = (" /a" * 20000) + ".png~"
+
+        started = time.perf_counter()
+        out = strip_image_refs(text)
+        elapsed = time.perf_counter() - started
+
+        assert out == text
+        assert elapsed < 5.0, f"image-reference scan took {elapsed:.3f}s"
+
+    def test_a_path_component_after_an_image_suffix_is_stripped_whole(self, tmp_path):
+        p = _dest(_png(tmp_path))
+
+        assert strip_image_refs(f"see {p}版本/final.jpg") == f"see {STRIPPED_IMAGE_MARKER}"
+
     def test_every_reference_in_one_row_is_replaced(self, tmp_path):
         a = _png(tmp_path, "a.png")
         b = _png(tmp_path, "b.jpg")
@@ -339,6 +481,15 @@ class TestBarePathPassKeepsProse:
         bare = f"I ran `fix.py` on {_ABS_A}"
         assert strip_image_refs(bare) == f"I ran `fix.py` on {STRIPPED_IMAGE_MARKER}"
 
+    @pytest.mark.parametrize("after", ["/other", _ABS_B])
+    def test_a_code_span_ends_the_run_after_a_path_too(self, after):
+        # The sentinel is a boundary on both sides: a slash or a second picture
+        # past the code span opens a new run, so the picture before the code is
+        # still complete and is replaced; the code stays readable.
+        text = f"{_ABS_A}`x`{after}"
+
+        assert strip_image_refs(text) == f"{STRIPPED_IMAGE_MARKER}`x`{after}"
+
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
@@ -396,14 +547,13 @@ class TestBarePathPassKeepsProse:
         # its dangling path is the reading this scrubber exists to remove.
         assert strip_image_refs(text) == expected
 
-    def test_a_run_on_name_keeps_the_base_behaviour(self):
-        # The grammar stops at the first suffix and has no right boundary, on
-        # both sides: the builder reads "a.png" out of "a.png.bak" and rewrites
-        # just that, so the scrubber replaces the same span. Unchanged by this
-        # fix, and the shape neither attachment writer can produce.
-        assert strip_image_refs(f"{_ABS_A}.bak is the backup") == (
-            f"{STRIPPED_IMAGE_MARKER}.bak is the backup"
-        )
+    def test_a_run_on_name_is_a_longer_name_on_both_sides(self):
+        # "a.png.bak" is one file whose name merely contains a picture's: the
+        # builder refuses to read "a.png" out of it, so the scrubber leaves the
+        # same token alone and the sentence keeps every word.
+        text = f"{_ABS_A}.bak is the backup"
+
+        assert strip_image_refs(text) == text
 
     @pytest.mark.parametrize(
         "row",

@@ -10,10 +10,6 @@ Every name here is from `kiro_crew.crew_log`. Each refusal names a code from
 
 `CrewLog` is the handle. Both entry points are classmethods.
 
-The subagent-aware repair on this page -- the `child_gone` predicate on `CrewLog.open`
-and `repair_interrupted_turn`, and the `approval/decided` and `subagent/failed`
-closers -- is present in this build. It was introduced by #11185.
-
 | Call | Signature | Refuses with |
 |---|---|---|
 | `CrewLog.exists` | `(kind, unit_id) -> bool` | `bad_kind`, `invalid_id`, `bad_root` |
@@ -186,6 +182,22 @@ own tail window on **every** write, never trusted from the cached property. `tim
 is assigned by the writer. So a refusal always means nothing happened, and a return
 always means the line is on disk and fsynced.
 
+### `append_if`
+
+`append_if(type, data, *, src, max_tail_seq, thread=None, ref=None, ignorable=False) -> Entry | None`
+is a conditional `append`. It reads the tail after ownership and the per-append lock
+are held, and writes only while that tail is at or below `max_tail_seq`. It returns
+`None` when it declines, and then no entry is appended; a torn trailing record seen
+by the tail read is still repaired. `max_tail_seq` is the `seq` the caller's decision
+was made against, so a decline proves another writer committed in between. The
+member event log uses it for its last-wins projection.
+
+### `release_ownership`
+
+`release_ownership() -> None` releases the handle's write lease at once, instead of
+waiting for the garbage collector to run the handle's finalizer. It is safe to call
+more than once, and safe on a handle that never took a lease.
+
 ### `append_many`
 
 `append_many(items, *, src, cite=None) -> list[Entry]` writes a group in one write
@@ -244,9 +256,9 @@ One closer per still-open opener, written in this order with a fixed value per t
 
 | Open opener | Closer written | Fixed value |
 |---|---|---|
-| `approval/requested` | `approval/decided` | `decision: "unknown"` (#11185) |
+| `approval/requested` | `approval/decided` | `decision: "unknown"` |
 | `tool/called` | `tool/completed` | `status: "unknown"` |
-| `subagent/spawned` | `subagent/failed` | `outcome: "unknown"` (#11185) |
+| `subagent/spawned` | `subagent/failed` | `outcome: "unknown"` |
 | `turn/started` | `turn/completed` | `stop_reason: "interrupted"` |
 
 Every closer is written with `src` `gateway` and reuses the **last real entry's
@@ -273,6 +285,10 @@ is checked across every boundary. A pruned front — an oldest segment starting 
 
 The write side creates one segment. No code in `kiro_crew.crew_log` rolls a new
 segment or prunes an old one, so `log.jsonl` is the only segment a writer
-produces. Retention removes whole segments off the **front**, which is why a front
-gap is legal and a mid-chain gap is
+produces. A front gap is legal for a reader; a mid-chain gap is
 [`segment_gap`](errors.md#segment_gap).
+
+Retention works on whole units, not segments: `store.sweep_expired` deletes a whole
+closed `session` unit once it is older than `session.archive_retention_days`. A
+negative value turns it off, and crew units are never aged. See
+[crew-log-core.md](../../system-specs/modules/crew-log-core.md).

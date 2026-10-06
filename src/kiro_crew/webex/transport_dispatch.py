@@ -1985,7 +1985,9 @@ class WebexDispatcher:
         """
         try:
             await asyncio.wait_for(provider.compact(), timeout=_COMPACT_TIMEOUT_S)
-            result = await provider.wait_for_compaction()
+            result = await provider.wait_for_compaction(
+                timeout=self.sessions.compact_wait_budget_secs()
+            )
         except asyncio.TimeoutError:
             logger.warning("Webex: compaction timed out after %.0fs", _COMPACT_TIMEOUT_S)
             return False, "timed out"

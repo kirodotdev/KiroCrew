@@ -585,11 +585,17 @@ def register_provider(name: str, factory: Callable[[], PublishProvider]) -> None
     _FACTORIES[name] = factory
 
 
+def is_registered(name: str) -> bool:
+    """Return whether a provider is registered or cached under ``name``."""
+    return name in _INSTANCES or name in _FACTORIES
+
+
 def get_provider(name: str = DEFAULT_PROVIDER) -> PublishProvider:
     """Return the (lazily-instantiated, cached) provider for ``name``.
 
     Raises ``PublishUnavailableError`` if no provider is registered under the
-    name — this surfaces to the user as a 503 rather than a 500. In the public
+    name — callers map it to a 503 rather than a 500; the remote-artifact GET
+    handlers check ``is_registered`` first and answer 404. In the public
     edition the registry is empty, so this always raises (no publish provider).
     """
     inst = _INSTANCES.get(name)

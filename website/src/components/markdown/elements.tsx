@@ -78,8 +78,27 @@ export function isElementWithProps(
   return typeof node === 'object' && node !== null && 'props' in node
 }
 
+/** The heading's id: lowercase; keep letters, numbers and combining marks of
+ *  every script (the set GitHub keeps) plus `_`, whitespace and `-`; fold each
+ *  whitespace run to one `-`; trim the dashes at either end. `\w` is
+ *  ASCII-only in JavaScript (the `u` flag does not widen it), so the class is
+ *  spelled with Unicode properties: a heading written in Japanese keeps its
+ *  text as its id, and a mixed heading keeps every word instead of collapsing
+ *  onto the digits it happens to contain. An ASCII heading yields the same id
+ *  either way.
+ *
+ *  Three marks are dropped first, because they carry no text: the variation
+ *  selectors (U+FE0E, U+FE0F) and the keycap enclosure (U+20E3) only turn a
+ *  symbol into its emoji form, yet they are combining marks and would survive
+ *  the class. `## ⚠️ Risks` keeps the id `risks` instead of gaining an
+ *  invisible first character that no `#risks` link can name. */
 function slugify(children: React.ReactNode): string | undefined {
-  const raw = textOf(children).toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/^-+|-+$/g, '')
+  const raw = textOf(children)
+    .toLowerCase()
+    .replace(/[\uFE0E\uFE0F\u20E3]/g, '')
+    .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
   return raw || undefined
 }
 

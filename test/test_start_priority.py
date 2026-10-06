@@ -971,9 +971,11 @@ def test_the_focus_prefetch_and_reload_arm_background_eager_spawns(path, functio
     assert _priority_args(path, function, "schedule_eager_spawn") == []
 
 
-def test_drive_turn_starts_the_session_at_the_turns_priority():
-    assert _priority_args("messaging/dispatch.py", "drive_turn", "get_or_create") == [
-        "turn.start_priority"
+def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
+    # Both claims: a monitor wake's non-waiting one and an inbound turn's.
+    assert _priority_args("messaging/dispatch.py", "_run", "get_or_create") == [
+        "asker.start_priority",
+        "asker.start_priority",
     ]
 
 
@@ -1018,7 +1020,7 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
         ("weixin/transport_dispatch.py", "ChannelTurn", 1),
         ("wecom/transport_dispatch.py", "ChannelTurn", 1),
         ("whatsapp/transport_dispatch.py", "ChannelTurn", 1),
-        ("discord/transport_dispatch.py", "get_or_create", 2),
+        ("discord/transport_dispatch.py", "Asker", 1),
         ("telegram/transport_dispatch.py", "get_or_create", 1),
     ],
 )

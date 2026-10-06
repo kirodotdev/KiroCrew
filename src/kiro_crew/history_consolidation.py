@@ -68,6 +68,12 @@ _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
+# Seeded sessions (restored from disk after a restart) examined per idle sweep:
+# a large backlog drains a few per heartbeat instead of all at once.
+_SEEDED_PER_SWEEP = 3
+# Oldest transcript the restart seed backfills: older stranded work is left to a
+# manual ``kirocrew consolidate``, so one boot cannot bill a long-idle backlog.
+_SEED_MAX_AGE_SECS = 7 * 86400
 # Rendered CHARACTERS of transcript one history consolidation prompt may carry.
 # The unconsolidated tail is otherwise unbounded: a session that goes a long time
 # between passes — or whose consolidation kept failing — renders every message
@@ -812,6 +818,12 @@ class HistoryConsolidator:
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Track last activity per session for idle-based history consolidation
         self._last_activity: dict[str, float] = {}
+        # ``_last_activity`` lives in memory only, so after a restart a session
+        # nobody touches again would never be idle-checked. The first idle sweep
+        # seeds it once from the transcripts on disk (see _seed_last_activity).
+        self._activity_seeded = False
+        self._seeded_keys: set[str] = set()
+        self._seed_task: "asyncio.Task[None] | None" = None
         self._history_consolidated: dict[str, float] = {}  # key → last history consolidation time
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
@@ -1007,12 +1019,77 @@ class HistoryConsolidator:
             max(0.0, retry_at - _time.time()),
         )
 
+    def _busy(self, key: str) -> bool:
+        """True when *key*, or any other key naming the same transcript file, is running."""
+        target = self._log._path(key).name
+        return any(self._log._path(running).name == target for running in self._running)
+
+    def _scan_unconsolidated_transcripts(self) -> dict[str, float]:
+        """Map each transcript's LIVE session key to its file mtime, for unconsolidated tails.
+
+        Blocking file IO: run off the event loop. The live key, never the filename
+        stem: ``_consolidate`` keys its member-memory receipt on the session key,
+        so a stem would miss a receipt committed before the restart and publish
+        the span twice. A stem whose live key cannot be recovered exactly (the
+        ``:`` fold is not reversible) is skipped. Only persistent transcripts qualify: ``_consolidate`` refuses every other
+        mode, and a refusal sets no throttle, so a private one would be
+        re-dispatched on every sweep. A thread's privacy can live only in the
+        session map (its header stamp may have failed), so a map-flagged
+        transcript is skipped too, and with no map to ask nothing is seeded.
+        """
+        from kiro_crew.messaging.privacy_mode import conv_state_map  # deferred like its own
+
+        found: dict[str, float] = {}
+        session_map = conv_state_map(self._sessions)
+        if session_map is None:
+            return found
+        private = {self._log._path(key).stem for key in session_map.privacy_flagged_entries()}
+        for path in sorted(self._log._dir.glob("*.jsonl")):
+            if path.is_symlink() or path.stem.startswith(("memory-consolidation", "subagent_")):
+                continue
+            if path.stem in private:
+                continue
+            stem = path.stem
+            key = (
+                "dashboard:" + stem[len("dashboard_") :]
+                if stem.startswith("dashboard_")
+                else session_map.channel_key_for_stem(stem)
+            )
+            try:
+                if not key or self._log._path(key).name != path.name:
+                    continue
+                mtime = path.stat().st_mtime
+                if mtime < _time.time() - _SEED_MAX_AGE_SECS:
+                    continue
+                mode = self._log.get_metadata(key).get("memory_mode") or "persistent"
+                if mode == "persistent" and self._log.unconsolidated_count(key) > 0:
+                    found[key] = mtime
+            except Exception:
+                _HISTORY_LOGGER.debug("idle seed skipped %s", path.name, exc_info=True)
+        return found
+
+    async def _seed_last_activity(self) -> None:
+        """Seed ``_last_activity`` once from disk; a live key always wins."""
+        from kiro_crew.history import _safe_key  # circular: history re-exports this module
+
+        try:
+            found = await asyncio.to_thread(self._scan_unconsolidated_transcripts)
+        except Exception:
+            _HISTORY_LOGGER.warning("idle seed scan failed", exc_info=True)
+            return
+        tracked = {_safe_key(key) for key in self._last_activity}
+        for key, mtime in found.items():
+            if _safe_key(key) not in tracked:
+                self._last_activity[key] = mtime
+                self._seeded_keys.add(key)
+
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded."""
         self._last_activity[key] = _time.time()
+        self._seeded_keys.discard(key)  # a key with live activity is not a restored seed
         if _persistence_disabled():
             return
-        if key in self._running:
+        if self._busy(key):
             return
         total = len(self._log._read_messages(key))
         prefs_off = self._prefs_offset.get(key, 0)
@@ -1051,22 +1128,36 @@ class HistoryConsolidator:
         """Check all tracked sessions for idle-based history consolidation."""
         if _persistence_disabled():
             return
+        if not self._activity_seeded:
+            with contextlib.suppress(RuntimeError):  # no running loop: seed later
+                self._seed_task = asyncio.get_running_loop().create_task(self._seed_last_activity())
+                self._activity_seeded = True
         now = _time.time()
+        seeded_budget = _SEEDED_PER_SWEEP
         for key, last in list(self._last_activity.items()):
             if now - last < self._history_idle_secs:
                 continue
-            total, unconsolidated = self._log.consolidation_counts(key)
+            seeded = key in self._seeded_keys
+            if seeded:
+                if seeded_budget < 1:
+                    continue
+                seeded_budget -= 1
+                # Re-queue at the end so a seed that keeps being skipped cannot starve the rest.
+                self._last_activity[key] = self._last_activity.pop(key)
+            # A seed's transcript may be cold and large, so it is never read here on the
+            # loop: ``_consolidate`` snapshots it off the loop and enforces the backoff.
+            total, unconsolidated = (0, 1) if seeded else self._log.consolidation_counts(key)
             if (
                 unconsolidated < 1
                 or now - self._history_consolidated.get(key, 0) < self._history_idle_secs
-                or key in self._running
+                or self._busy(key)
                 # Durable backoff, checked last so it only costs a metadata read
                 # once the cheap conditions pass. The in-memory throttle above is
                 # set only when the task ends without an exception and is lost on
                 # restart, so it alone cannot stop a repeatedly failing span from
                 # re-billing an LLM turn every tick. *total* comes from the read
                 # above, so the check adds no transcript read on the loop.
-                or not self.retry_eligible(key, now, message_count=total)
+                or (not seeded and not self.retry_eligible(key, now, message_count=total))
             ):
                 continue
             self._running.add(key)
@@ -1088,6 +1179,8 @@ class HistoryConsolidator:
                     and fut.result() is not _CONSOLIDATION_REFUSED
                 ):
                     self._history_consolidated[k] = ts
+                elif k in self._seeded_keys and not fut.cancelled() and fut.exception() is None:
+                    self._history_consolidated[k] = ts  # refused seed: retried once per idle window
 
             t.add_done_callback(_on_idle_done)
 
@@ -1103,7 +1196,7 @@ class HistoryConsolidator:
         _session_touched_sensitive() over its window before proposing anything,
         so sensitive sessions never produce skills regardless of entry point.
         """
-        if key in self._running:
+        if self._busy(key):
             return
         if _persistence_disabled():
             return
@@ -1312,6 +1405,9 @@ class HistoryConsolidator:
             # editor. Freeze the submitted evidence before awaiting the model.
             unconsolidated = copy.deepcopy(unconsolidated)
             if not unconsolidated:
+                if key in self._seeded_keys:  # a finished seed stops being re-read
+                    self._seeded_keys.discard(key)
+                    self._last_activity.pop(key, None)
                 return None
             # Display-only rows (``notice``) are text drawn for the person
             # reading the transcript, not conversation: the Slack thread-parent

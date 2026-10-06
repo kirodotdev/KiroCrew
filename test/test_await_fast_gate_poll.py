@@ -12,10 +12,12 @@ classification the barrier can reach:
                                                  is crossed, not before;
 * a run that appears, vanishes, then returns  -> tolerated: the vanish re-enters the
                                                  appear wait and the return concludes it;
-* the API failing from the very first tick    -> exit 1 at the APPEAR window: a read
-                                                 that errors is swallowed and reads as
-                                                 "not listed yet", so it fails closed on
-                                                 the same branch an absent run does;
+* the API failing from the very first tick    -> exit 1 at the TOTAL budget, naming the
+                                                 read error: a read that errors proves
+                                                 only that the barrier could not look,
+                                                 so it never spends the APPEAR budget;
+* reads failing past the APPEAR window, then  -> exit 0: the failed reads were never
+  a green run                                    counted as an absent run;
 * a run seen but never decided                 -> exit 1 at the TOTAL budget (a pending
                                                  fork approval or a run stuck in
                                                  progress).
@@ -204,23 +206,36 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert proc.returncode == 0, proc.stderr
         assert "Fast Gate passed" in proc.stdout
 
-    def test_the_api_failing_from_tick_zero_exits_at_the_appear_window(
+    def test_the_api_failing_every_tick_fails_closed_at_the_total_budget(
         self, tmp_path: Path
     ) -> None:
-        # Every poll's gh call errors. The script swallows the error with
-        # `2>/dev/null || true` and jq turns the empty output into `null`, which
-        # is indistinguishable from "the run has not been listed yet" -- so a
-        # failing read is handled by the SAME appear branch as a genuinely absent
-        # run, and the poll fails closed there. There is deliberately no separate
-        # "the API is down" exit: an unreadable page IS the not-appeared case
-        # until the APPEAR budget says the wait is over. The total-budget exit is
-        # reached only once a run has been SEEN and stays pending, which the
-        # pending-run cases below cover.
+        # Every poll's gh call errors. A failed read proves only that the barrier
+        # could not look, so it must not be reported as "No Fast Gate run found"
+        # and must not spend the APPEAR budget. It still fails closed -- at the
+        # TOTAL budget, naming the read error and saying the code was not judged.
         h = _Harness(tmp_path, ["__FAIL__"], tick=60)
-        proc = h.run(appear_budget=120, total_budget=100_000)
+        proc = h.run(appear_budget=120, total_budget=600)
         assert proc.returncode == 1, proc.stdout
-        assert "No Fast Gate run found" in proc.stdout
-        assert "Failing closed rather than starting the matrix unverified" not in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert "simulated API failure" in proc.stdout
+
+    def test_a_read_failure_past_the_appear_window_does_not_fail_a_listed_run(
+        self, tmp_path: Path
+    ) -> None:
+        # The listing errors for longer than the APPEAR budget (a rate-limit
+        # burst), then answers with a green run. Treating the failed reads as an
+        # absent run would fail this commit at the APPEAR window although its
+        # Fast Gate run existed the whole time.
+        h = _Harness(
+            tmp_path,
+            ["__FAIL__"] * 6 + [_page(_run(15, "completed", "success"))],
+            tick=30,
+        )
+        proc = h.run(appear_budget=90, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert "Fast Gate passed" in proc.stdout
+        assert "No Fast Gate run found" not in proc.stdout
 
     def test_a_pending_fork_approval_keeps_polling_until_the_total_budget(
         self, tmp_path: Path

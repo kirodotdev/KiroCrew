@@ -1,18 +1,21 @@
 """Tests for the append-only learned-cost store (subagent_cost).
 
-Covers append/round-trip, p90 aggregation with tail-outlier robustness,
-max-across-agents, min-sample fallback, empty/corrupt fail-open, concurrent
+Covers append/round-trip, typical-cost aggregation with outlier robustness,
+median-across-agents, min-sample fallback, empty/corrupt fail-open, concurrent
 appends, and FIFO compaction bound.
 """
 
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
 
+import kiro_crew.subagent as subagent
 import kiro_crew.subagent_cost as sc
+from kiro_crew.config.sections import AgentConfig
 
 
 @pytest.fixture
@@ -60,44 +63,99 @@ def test_concurrent_appends_do_not_lose_samples(cost_log):
     assert len(lines) == 20  # O_APPEND keeps every line
 
 
-# --- read_learned_cost -----------------------------------------------------
+# --- read_cap_costs --------------------------------------------------------
 
 
-def test_p90_ignores_single_outlier(cost_log):
-    # 20 samples ~0.3 plus one pathological 9.9 → p90 (rank 18 of 0..20) stays
-    # at 0.3, not dominated by the lone outlier at the top.
+def test_typical_cost_ignores_single_outlier(cost_log):
+    # 20 samples ~0.3 plus one pathological 9.9 → the median stays at 0.3,
+    # not dominated by the lone outlier at the top.
     recs = [{"agent": "kirocrew", "mem_gb": 0.30, "cpu_cores": 0.1} for _ in range(20)]
     recs.append({"agent": "kirocrew", "mem_gb": 9.9, "cpu_cores": 0.1})
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb")
+    val = sc.read_cap_costs("mem_gb")[0]
     assert val is not None
     assert val < 1.0  # outlier did not dominate
 
 
-def test_max_across_agents(cost_log):
+def test_median_across_agents(cost_log):
     recs = (
         [{"agent": "kirocrew-lite", "mem_gb": 0.30, "cpu_cores": 0.1} for _ in range(5)]
-        + [{"agent": "kirocrew", "mem_gb": 0.55, "cpu_cores": 0.1} for _ in range(5)]
+        + [{"agent": "kirocrew", "mem_gb": 0.40, "cpu_cores": 0.1} for _ in range(5)]
+        + [{"agent": "builder", "mem_gb": 9.0, "cpu_cores": 0.1} for _ in range(5)]
     )
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb")
-    assert val == pytest.approx(0.55, abs=0.01)  # heaviest type wins
+    val = sc.read_cap_costs("mem_gb")[0]
+    assert val == pytest.approx(0.40, abs=0.01)  # the heaviest type does not win
+
+
+def _heavy_agent_window(heavy: int) -> list[dict]:
+    """One agent with *heavy* 22 GB build runs in 50, three agents at ~2 GB."""
+    recs = [{"agent": "builder", "mem_gb": 22.0, "cpu_cores": 1.0} for _ in range(heavy)]
+    recs += [{"agent": "builder", "mem_gb": 2.0, "cpu_cores": 1.0} for _ in range(50 - heavy)]
+    for name, gb in (("kirocrew", 1.9), ("kirocrew-lite", 2.0), ("reviewer", 2.1)):
+        recs += [{"agent": name, "mem_gb": gb, "cpu_cores": 0.5} for _ in range(10)]
+    return recs
+
+
+@pytest.mark.parametrize(
+    ("heavy", "heavy_peak", "mem_term"), [(5, 4.0, 64), (6, 22.0, 55), (7, 22.0, 55)]
+)
+def test_auto_cap_prices_slots_at_a_typical_run(
+    cost_log, monkeypatch, heavy, heavy_peak, mem_term
+):
+    # 171.8 GB available, 20% buffer, pool of 2, ~2 GB a slot, the heavy agent's
+    # p90 reserved once: floor((171.8 * 0.8 - 2 * 2 - heavy_peak) / 2). Pricing
+    # every slot at that p90 instead would swing the term between 32 and 4.
+    _seed(cost_log, _heavy_agent_window(heavy))
+    monkeypatch.setattr(subagent, "_available_memory_gb", lambda: 171.8)
+    cfg = types.SimpleNamespace(
+        agent=types.SimpleNamespace(
+            max_subagents=0,
+            subagent_mem_buffer_pct=20,
+            subagent_cost_gb=0.315,
+            subagent_auto_max=AgentConfig().subagent_auto_max,
+            # The memory terms size the subagent cap only with the spawn floor
+            # off; with it on the cap is the ceiling whatever the terms say.
+            spawn_min_memory_gb=0,
+        ),
+        session=types.SimpleNamespace(pool_size=2),
+    )
+    typical, peak = sc.read_cap_costs("mem_gb")
+    assert typical == pytest.approx(2.0, abs=0.01)
+    assert peak == pytest.approx(heavy_peak, abs=0.01)
+    assert subagent._host_mem_term(cfg) == mem_term
+    # What users get: min(mem_term, 32), so the default ``subagent_auto_max``
+    # clamp binds in every case.
+    assert subagent.compute_memory_sized_parallel_cap(cfg) == min(mem_term, 32) == 32
+    assert subagent.compute_max_subagents(cfg) == AgentConfig().subagent_auto_max == 32
+
+
+def test_typical_cost_counts_every_agent_past_the_bucket_cap(cost_log):
+    # More qualifying agents than the held-bucket cap: the light majority still
+    # sets the median, it is not dropped in favour of the heaviest buckets.
+    recs = []
+    for i in range(sc._MAX_BUCKETS):
+        recs += [{"agent": f"light-{i}", "mem_gb": 2.0, "cpu_cores": 0.1} for _ in range(3)]
+    for i in range(sc._MAX_BUCKETS // 2):
+        recs += [{"agent": f"heavy-{i}", "mem_gb": 22.0, "cpu_cores": 0.1} for _ in range(3)]
+    _seed(cost_log, recs)
+    assert sc.read_cap_costs("mem_gb") == (pytest.approx(2.0), pytest.approx(22.0))
 
 
 def test_min_samples_fallback_returns_none(cost_log):
     _seed(cost_log, [{"agent": "kirocrew", "mem_gb": 0.5, "cpu_cores": 0.1}])  # only 1
-    assert sc.read_learned_cost("mem_gb", min_samples=3) is None
+    assert sc.read_cap_costs("mem_gb", min_samples=3) == (None, None)
 
 
 def test_empty_log_returns_none(cost_log):
-    assert sc.read_learned_cost("mem_gb") is None
+    assert sc.read_cap_costs("mem_gb") == (None, None)
 
 
 def test_corrupt_lines_skipped(cost_log):
     cost_log.parent.mkdir(parents=True, exist_ok=True)
     good = json.dumps({"agent": "kirocrew", "mem_gb": 0.4, "cpu_cores": 0.1})
     cost_log.write_text(f"{good}\nNOT JSON\n{good}\n{good}\n", encoding="utf-8")
-    val = sc.read_learned_cost("mem_gb", min_samples=3)
+    val = sc.read_cap_costs("mem_gb", min_samples=3)[0]
     assert val == pytest.approx(0.4, abs=0.01)  # 3 good lines, corrupt skipped
 
 
@@ -106,7 +164,7 @@ def test_window_limits_to_recent(cost_log):
     recs = [{"agent": "kirocrew", "mem_gb": 0.1, "cpu_cores": 0.1} for _ in range(10)]
     recs += [{"agent": "kirocrew", "mem_gb": 0.9, "cpu_cores": 0.1} for _ in range(3)]
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb", window=3, min_samples=3)
+    val = sc.read_cap_costs("mem_gb", window=3, min_samples=3)[0]
     assert val == pytest.approx(0.9, abs=0.01)
 
 

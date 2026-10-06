@@ -744,10 +744,15 @@ def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
 
 
 def _proc_comm(pid: int) -> str | None:
-    """Command name of a process (Linux /proc). None if unavailable."""
+    """Command name of a process (Linux /proc). None if unavailable.
+
+    Read as bytes and decoded with ``replace``: a comm is whatever bytes the
+    process named itself, and a multibyte name cut at the kernel's 15 bytes is
+    not UTF-8. It is only ever shown as a title.
+    """
     try:
-        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
-            return fh.read().strip() or None
+        with open(f"/proc/{pid}/comm", "rb") as fh:
+            return fh.read().decode("utf-8", "replace").strip() or None
     except OSError:
         return None
 
@@ -1833,6 +1838,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 placeholder = False
                 # WS already prepared — send error over WS then close. A timed-out
                 # descriptor close carries no text of its own.
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="terminal.ws.open",
+                    outcome="error",
+                    source="dashboard",
+                    resources=f"pty_spawn_failed={exc}",
+                )
                 if not ws.closed:
                     message = str(exc) or f"Failed to start terminal: {type(exc).__name__}"
                     await ws.send_str(json.dumps({"type": "error", "message": message}))
@@ -2076,11 +2088,25 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         if not isinstance(text, str):
             raise TypeError
     except Exception:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources="invalid_body",
+        )
         return web.json_response(
             {"error": "expected JSON body {text: string}", "code": "terminal_invalid_body"},
             status=400,
         )
     if len(text.encode("utf-8", errors="replace")) > _REDACT_MAX_BYTES:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources="selection_too_large",
+        )
         return web.json_response(
             {"error": "selection too large", "code": "terminal_selection_too_large"},
             status=413,
@@ -2103,10 +2129,24 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="error",
+            source="dashboard",
+            resources="redaction_failed",
+        )
         return web.json_response(
             {"error": "redaction failed", "code": "terminal_redaction_failed"},
             status=500,
         )
+    _sel().log_api_access(
+        caller=caller,
+        operation="terminal.selection.redact",
+        outcome="ok",
+        source="dashboard",
+        resources="ok",
+    )
     return web.json_response({"text": redacted})
 
 
@@ -2662,6 +2702,13 @@ async def api_terminal_delete(request: web.Request) -> web.Response:
 
     registry = _get_registry(request)
     if session_id not in registry:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.session.delete",
+            outcome="denied",
+            source="dashboard",
+            resources="unknown_session",
+        )
         return web.Response(status=404, text="Session not found")
     sess = registry[session_id]
     if sess is None:

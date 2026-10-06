@@ -11,32 +11,45 @@ fenced only by the first one. These tests pin the reconciliation between them:
 
 The third is the one worth failing loudly: an entry that quietly moves from "masked" to
 "exception" is a ceiling the agent can rewrite again.
+
+The Linux side is read from the spawn's :class:`~kiro_crew.sandbox_plan.ConfinementPlan`
+(``sandbox._spawn_plan``), whose mask, seal and file lists are what the namespace
+launcher is handed, and the launcher's own seal stage is driven with a recording libc.
+The macOS side is read from the rendered Seatbelt profile.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 
 import pytest
+from test_sandbox_launcher_program import RecordingLibc, launch, refusal
 
-from kiro_crew import sandbox, security
+from kiro_crew import sandbox, sandbox_launcher_program, sandbox_plan, security
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher only")
+#: The launcher program pins its targets as ``/proc/self/fd/<n>``, which only Linux has.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+)
 
 _MODES = ("standard", "cc", "strict")
 _CREW_PREFIXES = (".kiro/crew", ".kirocrew")
 
+_MS_BIND = 4096
+_MS_REMOUNT = 32
+_MS_RDONLY = 1
+
 
 @pytest.fixture(autouse=True)
 def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+    """A namespace plan asks the HOST's ``ssh -V`` for accept-new support.
 
-    The mask lists read out of the launcher do not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
-    about. Pinned so no binary runs.
+    The mask lists read out of the plan do not depend on that answer, and a real ssh
+    spawned from the test process is a host dependency this module is not about.
+    Pinned so no binary runs.
     """
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
@@ -46,26 +59,25 @@ def _home() -> str:
 
 
 def _crew_path(prefix: str, leaf: str) -> str:
-    """Spell a crew-home target the way the production builders do.
+    """Spell a crew-home target the way the production planner does.
 
-    They join a SINGLE relative string onto the home, so the forward slashes inside it
+    It joins a SINGLE relative string onto the home, so the forward slashes inside it
     survive and Windows gains exactly one native separator. Joining prefix and leaf as
     separate components instead adds a second one, and the resulting mixed-separator
-    string matches nothing the builders emit.
+    string matches nothing the plan carries.
     """
     return os.path.join(_home(), f"{prefix}/{leaf}")
 
 
 def _launcher_sets(mode: str) -> tuple[set[str], set[str], set[str]]:
-    """``(hidden_dirs, readonly, hidden_files)`` as the generated launcher declares them."""
-    script = sandbox._build_launcher_script(mode)
+    """``(hidden_dirs, readonly, hidden_files)`` the namespace launcher is handed.
 
-    def _grab(name: str) -> set[str]:
-        match = re.search(rf"{name} = (\[.*?\])\n", script, re.S)
-        assert match, f"{name} missing from the launcher"
-        return set(json.loads(match.group(1)))
-
-    return _grab("SENSITIVE_DIRS"), _grab("READONLY_DIRS"), _grab("SENSITIVE_FILES")
+    The plan's ``sensitive_dirs`` are the trees the launcher bind-masks, ``readonly``
+    the paths it seals read-only, and ``sensitive_files`` every path its file loop is
+    offered.
+    """
+    plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+    return set(plan.sensitive_dirs), set(plan.readonly), set(plan.sensitive_files)
 
 
 def _crew_sensitive_paths() -> list[str]:
@@ -170,6 +182,7 @@ class TestKeystonesAreSealedInEveryMode:
         "app_admission.json",
         "profiles",
         "denied_commands.json",
+        "registry_trust.json",
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
@@ -228,22 +241,92 @@ class TestKeystonesAreSealedInEveryMode:
         assert f'(deny file-link (subpath "{target}"))' in profile
         assert f'(deny file-read* (subpath "{target}"))' not in profile
 
-    @_POSIX_ONLY
+    @_LINUX_ONLY
     @pytest.mark.parametrize("mode", _MODES)
-    def test_the_seal_survives_a_file_shaped_ceiling(self, mode: str) -> None:
-        """The read-only loop must not require a directory.
+    def test_the_seal_survives_a_file_shaped_ceiling(
+        self, mode: str, tmp_path, monkeypatch
+    ) -> None:
+        """The read-only stage must not require a directory.
 
         ``security_policy.json`` is a plain file. Requiring a directory skips it
-        silently -- no error, and the ceiling stays writable. The loop pins its
-        target by descriptor and accepts ANY kind of object there, which is what
-        ``_any_kind`` names.
+        silently -- no error, and the ceiling stays writable. The stage pins its
+        target by descriptor and accepts ANY kind of object there, so the mode's own
+        plan, handed to the launcher's seal stage, binds the FILE over itself and then
+        remounts that bind read-only.
         """
-        script = sandbox._build_launcher_script(mode)
-        loop = script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
+        monkeypatch.setenv("HOME", str(tmp_path))
+        ceiling = tmp_path / ".kiro" / "crew" / "security_policy.json"
+        ceiling.parent.mkdir(parents=True)
+        ceiling.write_text("{}", encoding="utf-8")
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+        assert str(ceiling) in plan.readonly
+        libc = RecordingLibc()
+        run = launch(tmp_path, sandbox_plan.namespace_payload(plan), libc=libc)
 
-        assert "_pin_mount_path(target, _any_kind)" in loop
-        assert "stat.S_ISDIR" not in loop
-        assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
+        assert refusal(sandbox_launcher_program.seal_readonly, run) is None
+        on_ceiling = [c for c in libc.calls if c.target_path == os.path.realpath(ceiling)]
+        assert len(on_ceiling) == 2, "the ceiling file was not bound and sealed"
+        bind, seal = on_ceiling
+        # Pinned by descriptor: the mount names the object the pin classified, never
+        # the path a second lookup would reach.
+        assert bind.target.startswith(b"/proc/self/fd/")
+        assert bind.flags == _MS_BIND
+        assert bind.source_id == bind.target_id == (ceiling.stat().st_dev, ceiling.stat().st_ino)
+        sealing = _MS_REMOUNT | _MS_BIND | _MS_RDONLY
+        assert seal.flags & sealing == sealing
+
+
+class TestAbsentRegistryTrustIsSealedByPrecreation:
+    """The read-only seal binds an ABSENT ``registry_trust.json``, not just a present one.
+
+    ``mount(2)`` cannot target a path that does not exist, so the read-only seal
+    skips an absent leaf and leaves the data-home name writable — the state of
+    every install before the operator's first grant. Materialising ``{}`` before
+    the spawn closes it, and that is only sound because the leaf clears both
+    precreation criteria: an empty document reads as no grants, and a stale sealed
+    read fails toward the credential-free tier.
+    """
+
+    def test_the_leaf_is_precreated_read_only(self) -> None:
+        # Membership in the READONLY-file precreation list is what gives the seal a
+        # name to bind on a fresh install; without it the absent leaf is creatable
+        # from inside the namespace, which is the write the ceiling listing denies.
+        assert "registry_trust.json" in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+        assert "registry_trust.json" in sandbox._CREW_READONLY_LEAVES
+        # Not on the hidden precreation list: hiding a ceiling restores the
+        # permissive default, the wrong direction for a read-only leaf.
+        assert "registry_trust.json" not in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+
+    def test_an_empty_document_reads_as_no_grants(self, tmp_path, monkeypatch) -> None:
+        """Criterion 1: the ``{}`` the launcher materialises means what an absent file means."""
+        from kiro_crew.apps import registry_trust as rt
+        from kiro_crew.apps.registry_pipeline import sources
+        from kiro_crew.config import loader
+
+        path = tmp_path / "registry_trust.json"
+        monkeypatch.setattr(loader, "registry_trust_path", lambda: path)
+        # The tolerant reader reaches the keystone through
+        # ``registry_trust.read_registry_trust_strict``, which binds
+        # ``registry_trust_path`` at its own module scope, so point that binding at
+        # the temp keystone too.
+        monkeypatch.setattr(rt, "registry_trust_path", lambda: path)
+
+        assert sources._granted_owner_repos() == frozenset()  # absent
+        path.write_text(sandbox._EMPTY_CEILING_DOCUMENT.decode("utf-8"), encoding="utf-8")
+        assert sources._granted_owner_repos() == frozenset()  # the sealed ``{}`` stub
+
+        # Negative control: a real grant is honoured, so the empty read above is a
+        # property of the EMPTY document, not of the reader ignoring the file.
+        path.write_text(
+            json.dumps(
+                {
+                    "version": sources._REGISTRY_TRUST_VERSION,
+                    "owner_trusted": ["https://example.com/x/y.git"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert "https://example.com/x/y.git" in sources._granted_owner_repos()
 
 
 class TestSecretsAreMaskedInEveryMode:
@@ -607,12 +690,12 @@ class TestAppBackendOwnedLeaves:
 
     @_POSIX_ONLY
     def test_linux_unhides_the_owned_leaves_for_this_spawn(self) -> None:
-        script = sandbox._build_launcher_script(
-            "standard", extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook")
+        plan = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE,
+            "standard",
+            extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook"),
         )
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        hidden = set(json.loads(match.group(1)))
+        hidden = set(plan.sensitive_dirs)
 
         for prefix in _CREW_PREFIXES:
             for leaf in self.LEAVES:
@@ -887,27 +970,26 @@ class TestForeignMaskShadowGuard:
     def test_every_crew_home_carveout_producer_asks_the_guard(self) -> None:
         """The guard's worth is the SET of producers that call it.
 
-        Three crew-home carve-out producers exist, and each asks the guard before
-        handing a spelling to a spawn. A fourth that forgets is the defect this
+        Four crew-home carve-out producers exist, and each asks the guard before
+        handing a spelling to a spawn. A fifth that forgets is the defect this
         test catches. Structural, like the two sibling tests in this class, so
         deleting a call reds here instead of silently unmasking a tree.
 
         NOT a closed set over every ``extra_visible_dirs`` producer: three of the
-        six in ``src/`` name a workspace or clone root, and
-        ``monitoring/provider_cli.py`` hands over ``AZURE_CONFIG_DIR`` while
-        ``.azure`` is itself a ``_STANDARD_DIRS`` entry. Whether that one is a
-        crew-home producer is a separate question carrying its own tracked issue,
-        so this test neither guards it nor lists it as exempt.
+        six in ``src/`` name a workspace or clone root. The Azure provider CLI
+        spawn is a crew-home producer only in a pod, which is where it asks.
         """
         import inspect
 
         from kiro_crew.apps import backend as backend_mod
         from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
+        from kiro_crew.monitoring import provider_cli as provider_cli_mod
 
         for name, obj in (
             ("app_backend_visible_targets", sandbox.app_backend_visible_targets),
             ("policy-cache spawn", backend_mod._start_app_backend_body),
             ("aws-control preview staging", storage_mod.get_object_head_bytes),
+            ("pod Azure provider CLI spawn", provider_cli_mod.run_provider_cli),
         ):
             assert "carveout_shadowed_by_foreign_mask(" in inspect.getsource(obj), name
 
@@ -970,6 +1052,14 @@ class TestForeignMaskShadowGuard:
         assert "carveout_shadowed_by_foreign_mask(_cache_target)" in src
 
 
+#: Both renderers, each planned against this host. A namespace plan reads the process's
+#: uid and gid, which Windows does not have; the Seatbelt plan runs everywhere.
+_BACKENDS = (
+    pytest.param(sandbox_plan.BACKEND_NAMESPACE, marks=_POSIX_ONLY, id="namespace"),
+    pytest.param(sandbox_plan.BACKEND_SEATBELT, id="seatbelt"),
+)
+
+
 class TestAPodChildsRemappedHomeIsMasked:
     """``acp.client._apply_pod_home_remap`` gives a pod's
     kiro-cli child a pod-owned ``HOME`` (``KIROCREW_OS_HOME``) and
@@ -977,39 +1067,77 @@ class TestAPodChildsRemappedHomeIsMasked:
     every entry in the tier lists is ``$HOME``-relative joined against the GATEWAY's
     home, so none of them named the remapped tree.
 
-    Both ACP transports freeze their sandbox BEFORE applying the remap, so the mask
-    was computed against the original home and the child's own ``$HOME`` resolved to
-    an UNMASKED copy of the credential. Re-anchoring inside the mask builder (rather
-    than feeding ``extra_hidden_dirs`` from each transport) makes the mask correct
-    regardless of that call order, and covers both transports from one place."""
+    Both ACP transports freeze their sandbox BEFORE applying the remap, so a mask
+    computed against the original home alone leaves the child's own ``$HOME`` resolving
+    to an UNMASKED copy of the credential. Re-anchoring inside the planner (rather than
+    feeding ``extra_hidden_dirs`` from each transport) makes the mask correct
+    regardless of that call order, and covers both transports and both renderers from
+    one place."""
 
-    # The production helper builds each target with ``os.path.normpath(os.path.join(
-    # os_home, leaf))``, so an expected value spelled with a literal "/" matches only
-    # on POSIX -- on Windows the same call yields backslashes and the assertion failed
-    # on shard 3 even though the mask contained the right paths. Building the expected
-    # value through the SAME two calls is platform-correct by construction, and keeps
-    # the assertion an exact-membership check rather than a weaker substring test.
+    # The planner builds each target with ``os.path.normpath(os.path.join(os_home,
+    # leaf))``, so an expected value spelled with a literal "/" matches only on POSIX --
+    # on Windows the same call yields backslashes. Building the expected value through
+    # the SAME two calls is platform-correct by construction, and keeps the assertion an
+    # exact-membership check rather than a weaker substring test.
     _OS_HOME = "/pods/x/os-home"
 
     @staticmethod
     def _expected(leaf: str) -> str:
         return os.path.normpath(os.path.join(TestAPodChildsRemappedHomeIsMasked._OS_HOME, leaf))
 
-    def test_the_remapped_home_is_re_anchored_when_the_pod_marker_is_set(self, monkeypatch) -> None:
+    @staticmethod
+    def _masked(backend: str, tier: str = "strict") -> list[str]:
+        """Every tree this host's plan masks for *tier* on *backend*, repeats kept."""
+        return [mask.path for mask in sandbox._spawn_plan(backend, tier).masks]
+
+    @classmethod
+    def _under_os_home(cls, backend: str) -> list[str]:
+        root = os.path.normpath(cls._OS_HOME)
+        return [
+            path
+            for path in cls._masked(backend)
+            if path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+        ]
+
+    @classmethod
+    def _planned(cls, tier: str, listing: tuple[str, ...] | list[str]) -> list[str]:
+        """The masks a pod's plan derives from *listing*, with the production pod leaves."""
+        host = sandbox_plan.PlanHost(
+            home=_home(),
+            tier_dirs=tuple(listing),
+            pod_os_home=cls._OS_HOME,
+            pod_grant_store_leaves=frozenset(sandbox._POD_OS_HOME_GRANT_STORE_LEAVES),
+            pod_masked_subleaves=tuple(sandbox._POD_OS_HOME_MASKED_SUBLEAVES),
+        )
+        request = sandbox_plan.SandboxRequest(tier=tier)
+        return [mask.path for mask in sandbox_plan.plan_confinement(request, host).masks]
+
+    @pytest.mark.parametrize("backend", _BACKENDS)
+    def test_the_remapped_home_is_re_anchored_when_the_pod_marker_is_set(
+        self, monkeypatch, backend: str
+    ) -> None:
         monkeypatch.setenv("KIROCREW_POD", "1")
         monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
 
-        out = sandbox._pod_os_home_targets((".aws", ".ssh"))
+        out = self._masked(backend)
+
+        assert self._expected(".gnupg") in out
+        # ``.aws`` is the pod's OWN grant store, carved out on purpose -- see
+        # ``sandbox_plan.pod_home_targets``. The credential FILES under it stay masked.
+        assert self._expected(".aws") not in out
+        assert self._expected(".aws/config") in out
+        assert self._expected(".aws/credentials") in out
+
+    def test_every_listed_leaf_but_the_grant_store_is_re_anchored(self) -> None:
+        out = self._planned("strict", (".aws", ".ssh"))
 
         assert self._expected(".ssh") in out
-        # ``.aws`` is the pod's OWN grant store, carved out on purpose -- see
-        # ``_pod_os_home_targets``. The credential FILES under it stay masked.
         assert self._expected(".aws") not in out
         assert self._expected(".aws/config") in out
         assert self._expected(".aws/credentials") in out
 
     def test_the_seeded_sso_token_directory_stays_reachable_in_tiers_that_mask_aws(
-        self, monkeypatch
+        self,
     ) -> None:
         """The concrete credential: `_seed_pod_os_home` writes
         `<os-home>/.aws/sso/cache/kiro-auth-token*.json`, and the pod's kiro-cli
@@ -1027,12 +1155,9 @@ class TestAPodChildsRemappedHomeIsMasked:
         `_STANDARD_DIRS` is deliberately EXCLUDED: standard mode leaves `.aws`
         visible so `credential_process` can reach Bedrock auth, so the carve-out is
         a no-op there and that tier's output is unchanged."""
-        monkeypatch.setenv("KIROCREW_POD", "1")
-        monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
-
-        for listing in (sandbox._STRICT_DIRS, sandbox._CC_DIRS):
+        for tier, listing in (("strict", sandbox._STRICT_DIRS), ("cc", sandbox._CC_DIRS)):
             assert ".aws" in listing, "the tier list no longer masks .aws at all"
-            out = sandbox._pod_os_home_targets(tuple(listing))
+            out = self._planned(tier, listing)
             assert self._expected(".aws") not in out
             # Carving out the store must not reopen the file-credential leg.
             assert self._expected(".aws/config") in out
@@ -1042,48 +1167,70 @@ class TestAPodChildsRemappedHomeIsMasked:
         # A tier that never masked .aws gains nothing, so standard-mode pods keep
         # byte-identical masks -- asserted rather than assumed.
         assert ".aws" not in sandbox._STANDARD_DIRS
-        standard_out = sandbox._pod_os_home_targets(tuple(sandbox._STANDARD_DIRS))
+        standard_out = self._planned("standard", sandbox._STANDARD_DIRS)
         assert self._expected(".aws/config") not in standard_out
 
-    def test_a_non_pod_session_mask_is_unchanged(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("backend", _BACKENDS)
+    def test_a_non_pod_session_mask_is_unchanged(self, monkeypatch, backend: str) -> None:
         """Gated on the pod marker exactly as ``config.paths`` gates the resolver, so
         an ordinary session gains no rule."""
         monkeypatch.delenv("KIROCREW_POD", raising=False)
-        monkeypatch.setenv("KIROCREW_OS_HOME", "/pods/x/os-home")
-
-        assert sandbox._pod_os_home_targets((".aws",)) == []
-
-    def test_the_marker_must_be_exactly_one(self, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCREW_POD", "false")
-        monkeypatch.setenv("KIROCREW_OS_HOME", "/pods/x/os-home")
-
-        assert sandbox._pod_os_home_targets((".aws",)) == []
-
-    def test_no_os_home_yields_nothing(self, monkeypatch) -> None:
-        monkeypatch.setenv("KIROCREW_POD", "1")
         monkeypatch.delenv("KIROCREW_OS_HOME", raising=False)
+        ordinary = self._masked(backend)
+        monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
 
-        assert sandbox._pod_os_home_targets((".aws",)) == []
+        assert self._under_os_home(backend) == []
+        assert self._masked(backend) == ordinary
 
+    @pytest.mark.parametrize("backend", _BACKENDS)
+    def test_the_marker_must_be_exactly_one(self, monkeypatch, backend: str) -> None:
+        monkeypatch.setenv("KIROCREW_POD", "false")
+        monkeypatch.setenv("KIROCREW_OS_HOME", self._OS_HOME)
+
+        assert self._under_os_home(backend) == []
+
+    @pytest.mark.parametrize("backend", _BACKENDS)
+    def test_no_os_home_yields_nothing(self, monkeypatch, backend: str) -> None:
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        monkeypatch.delenv("KIROCREW_OS_HOME", raising=False)
+        ordinary = self._masked(backend)
+        monkeypatch.setenv("KIROCREW_POD", "1")
+
+        assert self._masked(backend) == ordinary
+
+    @pytest.mark.parametrize("backend", _BACKENDS)
     def test_a_remap_target_equal_to_the_real_home_adds_no_duplicate(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, backend: str
     ) -> None:
         """Mirrors ``_relocated_crew_targets``: only paths that DIFFER from the
-        ``$HOME``-relative spelling are returned."""
-        monkeypatch.setenv("KIROCREW_POD", "1")
+        ``$HOME``-relative spelling are added, so the mask list gains no repeat."""
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.setenv("KIROCREW_OS_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        ordinary = self._masked(backend)
+        monkeypatch.setenv("KIROCREW_POD", "1")
 
-        assert sandbox._pod_os_home_targets((".aws",)) == []
+        assert self._masked(backend) == ordinary
 
-    def test_both_mask_builders_consume_the_helper(self) -> None:
-        """One helper, both builders. The launcher script (Linux) and the seatbelt
-        profile (macOS) each join the tier list against ``home`` separately, so a
-        fix in only one of them would be silently platform-specific."""
-        import inspect
+    @pytest.mark.parametrize("backend", _BACKENDS)
+    def test_both_mask_builders_mask_the_remapped_home(
+        self, monkeypatch, tmp_path, backend: str
+    ) -> None:
+        """One rule, both builders. The launcher (Linux) and the Seatbelt profile
+        (macOS) each mask the tier list joined against ``home``, so a re-anchoring
+        that reached only one backend's plan would be silently platform-specific.
+        Read from the plan each builder renders, and from the profile itself."""
+        pod = str(tmp_path / "pod")
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.setenv("KIROCREW_OS_HOME", pod)
 
-        launcher = inspect.getsource(sandbox._build_launcher_script)
-        assert "_pod_os_home_targets(" in launcher
-        seatbelt = inspect.getsource(sandbox._build_seatbelt_profile)
-        assert "_pod_os_home_targets(" in seatbelt
+        masked = self._masked(backend)
+
+        for leaf in (".gnupg", ".aws/config", ".aws/credentials"):
+            assert os.path.normpath(os.path.join(pod, leaf)) in masked, leaf
+        assert os.path.normpath(os.path.join(pod, ".aws")) not in masked
+        if backend == sandbox_plan.BACKEND_SEATBELT:
+            target = os.path.normpath(os.path.join(pod, ".aws", "config"))
+            profile = sandbox._build_seatbelt_profile("strict")
+            assert f'(deny file-read* (subpath "{target}"))' in profile

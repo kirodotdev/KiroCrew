@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -39,12 +40,17 @@ def _create_skill(skills_dir, name, content):
 class TestNoteToolRead:
     """Only content-delivering reads credit the ledger."""
 
-    def _loader(self, tmp_path):
+    def _loader(self, tmp_path, opened=None):
         skills_dir = tmp_path / "skills"
         _create_skill(skills_dir, "alpha", "---\nname: alpha\ndescription: A\n---\n# Alpha\n")
         _create_skill(skills_dir, "beta", "---\nname: beta\ndescription: B\n---\n# Beta\n")
         loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        if opened is not None:
+            opened(loader)
         loader._usage = SkillUsageLedger(tmp_path / "skill-usage.json")
+        # An armed debounce keeps a credit from starting the background flush
+        # thread, which would otherwise write after the test ends.
+        loader._usage._last_flush = time.time()
         return loader, skills_dir
 
     def _read(self, loader, **kw):
@@ -59,6 +65,32 @@ class TestNoteToolRead:
         assert self._read(loader, tool_name="fs_read", raw_params={"path": path}) == ["alpha"]
         assert loader._usage.score("alpha")[0] == 1.0
         assert loader._usage.score("beta")[0] == 0.0
+
+    def test_kiro_read_tool_batched_line_read_credits_a_hit(self, tmp_path, opened):
+        # kiro-cli's `read` batches its targets under `operations`, and it is
+        # how the model loads most skills.
+        loader, skills_dir = self._loader(tmp_path, opened)
+        params = {
+            "operations": [
+                {"mode": "Line", "path": "/etc/hosts"},
+                {"mode": "Line", "path": str(skills_dir / "alpha" / "SKILL.md"), "limit": 40},
+            ]
+        }
+        assert self._read(loader, tool_name="read", raw_params=params) == ["alpha"]
+        assert loader._usage.score("alpha")[0] == 1.0
+
+    def test_kiro_read_tool_non_line_operations_are_not_credited(self, tmp_path, opened):
+        # Directory mode lists names and Image mode reads images: neither returns
+        # the body, and a write tool with the same shape is not a read at all.
+        loader, skills_dir = self._loader(tmp_path, opened)
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        for tool_name, params in (
+            ("read", {"operations": [{"mode": "Directory", "path": path}]}),
+            ("read", {"operations": [{"mode": "Image", "image_paths": [path]}]}),
+            ("write", {"operations": [{"mode": "Line", "path": path}]}),
+        ):
+            assert loader.resolve_tool_read_keys(tool_name, params) == [], (tool_name, params)
+        assert loader._usage.snapshot() == {}
 
     def test_shell_cat_credits_a_hit(self, tmp_path):
         loader, skills_dir = self._loader(tmp_path)

@@ -9,6 +9,7 @@ import {
   isCrewmateChatRow,
   isCrewmateSpeech,
   opensCrewmateRun,
+  crewmateRowClass,
 } from './crewmateBubbles'
 
 const at = (iso: string) => iso
@@ -272,4 +273,16 @@ describe('speech twins agree (shared fixture)', () => {
       expect(isSpeechRow(row)).toBe(c.speech)
     })
   }
+})
+
+describe('crewmateRowClass', () => {
+  it('keeps air between adjacent bubbles of a run, and more above a run opener', () => {
+    // Two bordered bubbles 2px apart read as one surface with a seam (#16974
+    // review); inside a run they sit 6px apart, and a run opens with 12px --
+    // the only thing separating two turns now that no author line does.
+    expect(crewmateRowClass('cont')).toBe('mt-1.5')
+    expect(crewmateRowClass('end')).toBe('mt-1.5')
+    expect(crewmateRowClass('start')).toBe('mt-3')
+    expect(crewmateRowClass('single')).toBe('mt-3')
+  })
 })

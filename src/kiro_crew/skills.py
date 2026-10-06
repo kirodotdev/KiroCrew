@@ -113,7 +113,6 @@ from kiro_crew.skill_runtime.listing import (  # noqa: F401
     _fingerprint_mtime_and_size,
 )
 from kiro_crew.skill_runtime.read_credit import (  # noqa: F401
-    _mentions_skill_basename,
     _shell_segments_reading_content,
     _tool_read_path_candidates,
 )
@@ -123,6 +122,7 @@ from kiro_crew.skill_search_index import (  # noqa: F401
     SkillSearchIndex,
     body_fingerprint,
 )
+from kiro_crew.skill_usage import names_skill_file  # noqa: F401  (read_credit reads it via sk)
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
@@ -350,18 +350,23 @@ class SkillReadRefusal(NamedTuple):
     size_bytes: int | None = None  # the whole body, when the read measured it
     confined: bool = False  # ``capacity`` is the confined project body cap
     line: int | None = None  # over_capacity: the one line that fits no page
+    # outside_scope while the scope's catalog is still building: the key may yet
+    # resolve once the walk finishes, so the absence is not conclusive.
+    incomplete: bool = False
 
 
 class _ExactRead(NamedTuple):
     """One pass of the exact-key resolution chain, with its refusal classified.
 
     ``refusal`` is one of the three read reasons when ``content`` is ``None`` and
-    empty when a body was delivered.
+    empty when a body was delivered. ``incomplete`` marks an outside-scope miss
+    taken while the scope's catalog was still building.
     """
 
     content: str | None
     refusal: str
     confined: bool
+    incomplete: bool = False
 
 
 def _page_skill_body(
@@ -911,9 +916,9 @@ def _packaged_skill_names() -> frozenset[str]:
 #: any filesystem work when deciding whether a tool call touched a skill.
 _SKILL_FILE = "SKILL.md"
 
-#: Argument names under which file-reading tools carry their target. Covers the
-#: builtin read tool's ``path`` plus the spellings other tools use; a name that
-#: is absent simply yields no candidate.
+#: Argument names under which file-reading tools carry a flat target. A name
+#: that is absent simply yields no candidate. kiro-cli's own `read` batches its
+#: targets under ``operations`` instead (see ``_tool_read_path_candidates``).
 _TOOL_READ_PATH_KEYS = ("path", "file_path", "filePath", "paths", "files")
 
 #: A whitespace/quote-delimited token ending in the skill basename — how a skill
@@ -3092,7 +3097,7 @@ class SkillsLoader:
                     # agent, so report the effective forced-body behavior.
                     "inject_on_trigger": True,
                     "size_bytes": len(raw),
-                    "deliveries": self._delivery_count(name),
+                    **self._usage_fields(name),
                     "owned": False,
                 }
             )
@@ -3354,9 +3359,9 @@ class SkillsLoader:
         """
         return _read_credit.resolve_ledger_aliases(self)
 
-    def _delivery_count(self, key: str) -> int | None:
-        """Body deliveries recorded for *key*, or ``None`` when untracked."""
-        return _listing._delivery_count(self, key)
+    def _usage_fields(self, key: str) -> dict[str, int | float | None]:
+        """The listing's ``deliveries`` and ``last_used_at`` for *key*."""
+        return _listing._usage_fields(self, key)
 
     @staticmethod
     def _safe_name(name: str) -> bool:
@@ -5789,7 +5794,7 @@ class SkillsLoader:
         if read.content is None:
             if read.confined and read.refusal == SKILL_READ_OVER_CAPACITY:
                 return SkillReadRefusal(read.refusal, PROJECT_SKILL_BODY_CAP, confined=True)
-            return SkillReadRefusal(read.refusal, bound)
+            return SkillReadRefusal(read.refusal, bound, incomplete=read.incomplete)
         return _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
 
     def _read_exact_key(
@@ -5835,7 +5840,11 @@ class SkillsLoader:
             elif entry is not None or reasons:
                 refusal = SKILL_READ_UNREADABLE
             else:
-                refusal = SKILL_READ_OUTSIDE_SCOPE
+                # While the first walk is unfinished the building-time resolver
+                # withholds the confined project tier by design, so a miss here
+                # cannot tell a correct project key from an absent one.
+                building = self.catalog_status(project_dir) == "building"
+                return _ExactRead(None, SKILL_READ_OUTSIDE_SCOPE, confined, building)
             return _ExactRead(None, refusal, confined)
         meta = self._parse_frontmatter_text(content)
         if meta.get("repo_scope") and not self._repo_scope_satisfied(

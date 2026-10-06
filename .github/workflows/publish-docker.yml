@@ -40,7 +40,10 @@ on:
         required: true
         type: string
       version:
-        description: "Image version tag (matches the CDN version label)"
+        description: >-
+          Image version tag. It matches the CDN lanes' version label on a fresh
+          build; on a stable byte promotion the CDN lanes keep the candidate's
+          version while this tag is the released one.
         required: true
         type: string
       publish:
@@ -49,7 +52,10 @@ on:
         type: boolean
         default: true
       require_public_access:
-        description: "Require an anonymous pull to succeed after publishing"
+        description: >-
+          Require an anonymous pull to succeed after publishing. The check runs
+          only when github.repository_owner is kirodotdev; elsewhere this input
+          has no effect.
         required: false
         type: boolean
         default: false
@@ -66,8 +72,10 @@ on:
         default: false
       promote_digest:
         description: >-
-          Recorded attested manifest digest to promote. Used only when promote
-          is true; it never implicitly selects promotion or build mode.
+          Recorded attested manifest digest to promote. Must be
+          sha256:<64 lowercase hex> when promote is true and must be empty
+          otherwise: a non-empty value with promote=false fails the run. It
+          never implicitly selects promotion or build mode.
         required: false
         type: string
         default: ""

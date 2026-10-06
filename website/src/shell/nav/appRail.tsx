@@ -203,7 +203,7 @@ export function SortableAppNavRow({ id, children }: { id: string; children: Reac
 export function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   collapsed: boolean; expanded: boolean; hiddenCount: number; onClick: () => void
 }) {
-  const { tip, tipOn, rowRef, showTip, hideTip, dismissTip } = useNavTip<HTMLButtonElement>(collapsed)
+  const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps: tipPointerProps } = useNavTip<HTMLButtonElement>(collapsed)
   // `hiddenCount === 0 && !expanded` happens when the only overflow item is the
   // active app (kept visible) — nothing is actually hidden, so the toggle just
   // offers to re-collapse rather than reveal "0 more".
@@ -230,6 +230,7 @@ export function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
       // mode uses the fuller title instead.
       aria-label={collapsed ? titleText : labelText}
       title={titleText}
+      {...tipPointerProps}
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
       // Surface the collapsed-mode hover label on keyboard focus too (button is

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -95,6 +96,42 @@ def register_skill_read_observer(*candidates: object) -> bool:
         if skills is not None:
             set_global_skill_read_observer(skills)
             return True
+    return False
+
+
+#: Basename every skill body lives under.
+_SKILL_FILE = "SKILL.md"
+
+
+def names_skill_file(raw_params: dict | None, command: str | None) -> bool:
+    """Whether a tool call's arguments name a skill body at all.
+
+    A name-agnostic substring scan, so a tool call that touches no skill costs no
+    filesystem work. Whether the call is a content-delivering READ is decided
+    after this. The scan also looks inside the objects of a sequence, because
+    kiro-cli's ``read`` tool batches its targets as
+    ``{"operations": [{"mode": "Line", "path": ...}]}``. Arguments are
+    model-authored, so any other shape is ignored.
+
+    Lives here so the ACP pre-filter and the loader's rename diagnostic share
+    one scan: the ACP layer must not import the skills machinery.
+    """
+    if isinstance(command, str) and _SKILL_FILE in command:
+        return True
+    if not isinstance(raw_params, dict):
+        return False
+    for value in raw_params.values():
+        if isinstance(value, str):
+            if _SKILL_FILE in value:
+                return True
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and _SKILL_FILE in item:
+                    return True
+                if isinstance(item, dict) and any(
+                    isinstance(v, str) and _SKILL_FILE in v for v in item.values()
+                ):
+                    return True
     return False
 
 
@@ -233,8 +270,10 @@ class SkillUsageLedger:
                     h = int(rec.get("hits", 0) or 0)
                 except (TypeError, ValueError):
                     continue
-                if now - ls > _MAX_AGE_SECS:
-                    continue  # TTL: self-heals on next flush
+                if not math.isfinite(ls) or now - ls > _MAX_AGE_SECS:
+                    # TTL-stale, or a time no TTL can expire (NaN, Infinity).
+                    # Dropping it here self-heals the file on the next flush.
+                    continue
                 hits[key] = h
                 last_seen[key] = ls
         with self._lock:

@@ -697,46 +697,6 @@ class TestCompletionKeepSetter:
         assert (mgr._completion_keep, mgr._completion_keep_chars) == ("tail", 1234)
 
 
-class TestApprovalLogging:
-    @pytest.mark.asyncio
-    async def test_approve_logs_auto_when_reason_present(self) -> None:
-        client = AsyncMock()
-        event = SimpleNamespace(title="read", tool_kind="fs")
-        with patch.object(sa, "sel") as sel_mock:
-            await SubagentManager._approve_and_log(
-                client, "req-1", "subagent:a1", event, metadata={"reason": "allowlisted"}
-            )
-        client.approve_tool.assert_awaited_once_with("req-1")
-        assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "auto_approved"
-
-    @pytest.mark.asyncio
-    async def test_approve_logs_plain_without_reason(self) -> None:
-        client = AsyncMock()
-        event = SimpleNamespace(title="read", tool_kind="fs")
-        with patch.object(sa, "sel") as sel_mock:
-            await SubagentManager._approve_and_log(client, 2, "subagent:a1", event)
-        assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "approved"
-
-    @pytest.mark.asyncio
-    async def test_reject_logs_denied_with_error(self) -> None:
-        client = AsyncMock()
-        event = SimpleNamespace(title="write", tool_kind="fs")
-        with patch.object(sa, "sel") as sel_mock:
-            await SubagentManager._reject_and_log(
-                client, 3, "subagent:a1", event, cause=None, error="policy denied"
-            )
-        client.reject_tool.assert_awaited_once_with(3)
-        assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "denied"
-
-    @pytest.mark.asyncio
-    async def test_reject_logs_rejected_without_error(self) -> None:
-        client = AsyncMock()
-        event = SimpleNamespace(title="write", tool_kind="fs")
-        with patch.object(sa, "sel") as sel_mock:
-            await SubagentManager._reject_and_log(client, 4, "subagent:a1", event, cause=None)
-        assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "rejected"
-
-
 # ── Manager: orphan / pid helpers ─────────────────────────────────────────
 
 

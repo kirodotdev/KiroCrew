@@ -4034,18 +4034,15 @@ export default function MembersPage() {
                       page's widest region, and an uncapped line length is
                       unreadable on wide screens.
 
-                      steer-only: a DM is a conversation with one named
-                      member, not an operator console. Talking to a person has
-                      no "queue this until they finish" step, so a send while
-                      the member is working goes straight into its running
-                      turn — no Steer/Queue split, no queue stack. The main
-                      chat and split view keep the split button. */}
+                      Default (split) busy mode: a send while the member is
+                      working offers the same Steer / Queue / Jev auto choice
+                      as the main chat, so the user can queue a follow-up
+                      instead of always interrupting the running turn. */}
                   <ChatPane
                     slotKey={activeSlot}
                     agentLocked
                     frameless
                     followContentWidth
-                    busyMode="steer-only"
                     // The failure notice above owns the verdict on this thread
                     // while a repair has failed; the pane's own "Session
                     // ready" would contradict it one line down.

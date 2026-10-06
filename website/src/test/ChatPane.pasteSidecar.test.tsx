@@ -2,17 +2,18 @@
  * ChatPane's paste-block sidecar (#11337).
  *
  * `ChatInput` collapses a large paste into a `[ Paste #N · M lines ]` token
- * only when its host passes `onPasteBlocksChange`; the pane rendered it
- * without that prop, so a big paste stayed raw text in split view and member
- * DMs while the main chat showed a chip. These scenes drive the REAL pane and
- * assert against the wire: the token in the composer, the EXPANDED text in
- * the API call, the blocks on the bubble, and the composer clear — plus the
- * lifetime cases that make a token safe: a rebind parks the blocks with the
- * text, and a refused send hands them back with it.
+ * only when it has somewhere to keep the block: its `onPasteBlocksChange`
+ * prop, or a `<Composer pastes>` root, which is how the pane hands it the
+ * Paste atom (split view and member DMs). These scenes drive the REAL pane
+ * through the lifetime cases that make a token safe: a rebind parks the
+ * blocks with the text, a refused send hands them back with it (two in one
+ * batch both come back), and a cancelled queued send restores the paste as
+ * its lines. The first scene is the pane's wiring assertion for the outgoing
+ * turn itself.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterAll, afterEach, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, cleanup, render, fireEvent, waitFor, within } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -23,8 +24,13 @@ import chatReducer, { sseChatMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests, readPaneDraft } from '../utils/chatPaneDrafts'
-import { readStoredPaste } from '../utils/pasteTokens'
+import { readStoredPaste, type PasteBlock } from '../utils/pasteTokens'
+import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 
+// Independent of whatever ran before in the same worker: start from a fresh
+// module registry, so the mocks below bind even when another file has already
+// loaded these modules (and `matchMedia` is restored for the next one).
+vi.hoisted(() => { vi.resetModules() })
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
     <div data-testid="virtuoso">{data?.map((d: unknown, i: number) => <div key={i}>{itemContent(i, d)}</div>)}</div>
@@ -65,9 +71,19 @@ vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'def
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
+const MATCH_MEDIA = Object.getOwnPropertyDescriptor(window, 'matchMedia')
 Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
   writable: true,
   value: vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+})
+// Explicit, not only Testing Library's auto-cleanup: that hook is registered
+// once per worker when the library first loads, so a file that is not first
+// in a shared worker would otherwise keep every earlier test's DOM.
+afterEach(() => { cleanup() })
+afterAll(() => {
+  if (MATCH_MEDIA) Object.defineProperty(window, 'matchMedia', MATCH_MEDIA)
+  else Reflect.deleteProperty(window, 'matchMedia')
 })
 
 import ChatPane from '../components/ChatPane'
@@ -105,11 +121,18 @@ function renderPane(slotKey: string, extraSlots: string[] = [], busy = false) {
     </Provider>
   )
   const utils = render(tree(slotKey))
+  host = utils.container
   return { ...utils, store, rebind: (key: string) => utils.rerender(tree(key)) }
 }
 
+/** The container of this test's own pane. Queries are scoped to it, never to
+ *  the whole document, so DOM another file left in a shared worker cannot
+ *  answer them. */
+let host: HTMLElement = document.body
+const view = () => within(host)
+
 async function composer(): Promise<HTMLTextAreaElement> {
-  return (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+  return (await view().findAllByRole('textbox'))[0] as HTMLTextAreaElement
 }
 
 /** Paste through the real handler: ChatInput reads `getData('text')`. */
@@ -121,38 +144,59 @@ async function pasteInto(box: HTMLTextAreaElement, text: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Reset, then reseed, the two mocks scenes reprogram: clearAllMocks keeps a
+  // queued `…Once` value and a scene's own implementation, which would then
+  // answer whichever scene runs next.
+  vi.mocked(api.sendChat).mockReset().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as never)
+  vi.mocked(api.uploadFiles).mockReset().mockResolvedValue({ paths: [] } as never)
   __resetPaneDraftsForTests()
   localStorage.clear()
   sessionStorage.clear()
 })
 
 describe('ChatPane paste sidecar', () => {
-  it('collapses a large paste to a token, sends it expanded and clears the composer', async () => {
-    const { store } = renderPane('pane-paste')
+  it('sends the outgoing turn of what its composer holds, and the send clears text, files and blocks', async () => {
+    // The pane's one wiring assertion for the turn: the POST, the optimistic
+    // bubble and the paste side table carry exactly `buildOutgoingTurn` of the
+    // pane's text, staged files and blocks (the serialization rules are the
+    // turn's own table suite, chat-core/composer/outgoingTurn.test.ts).
+    vi.mocked(api.uploadFiles).mockResolvedValueOnce({ paths: ['/tmp/a.png', '/tmp/notes.txt'] } as never)
+    const { store, container } = renderPane('pane-turn')
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'please read ' } })
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'a.png', { type: 'image/png' })] })
+    fireEvent.change(fileInput)
+    // Wait for the staged chips the send will carry, not for the upload call.
+    await view().findByRole('group', { name: '/tmp/a.png' })
+    await view().findByRole('group', { name: '/tmp/notes.txt' })
+    fireEvent.change(box, { target: { value: 'review @/srv/assets/ and ' } })
     await pasteInto(box, PASTED)
-    // The pill: the composer holds the token, not the pasted lines.
     await waitFor(() => expect(box.value).toMatch(TOKEN))
-    expect(box.value).not.toContain('line3')
+    const typed = box.value
 
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText, slot, , , meta] = vi.mocked(api.sendChat).mock.calls[0]
-    expect(slot).toBe('pane-paste')
-    // The model gets the CONTENT, never the token string.
-    expect(wireText).toContain(PASTED)
-    expect(wireText).not.toMatch(TOKEN)
-    // The bubble keeps the token and carries the block so it renders a chip;
-    // the side table lets history load re-collapse the server's expanded echo.
-    expect(meta.pastes).toEqual([expect.objectContaining({ seq: 1, lines: 5, content: PASTED })])
-    const bubble = store.getState().chat.slotMessages['pane-paste']?.find(m => m.role === 'user')
-    expect(bubble?.content).toMatch(TOKEN)
-    expect(readStoredPaste(wireText as string)?.pastes[0]?.content).toBe(PASTED)
-    // Composer and blocks are gone: a second paste starts again at #1.
+    expect(slot).toBe('pane-turn')
+    const pastes = meta.pastes as PasteBlock[]
+    expect(pastes).toEqual([expect.objectContaining({ seq: 1, lines: 5, content: PASTED })])
+    const turn = buildOutgoingTurn({ text: typed, files: ['/tmp/a.png', '/tmp/notes.txt'], pastes }, 'send')
+    expect(wireText).toBe(turn.wire)
+    // Key order too: it is the order the fields reach the request body.
+    expect(JSON.stringify(meta)).toBe(JSON.stringify({ ...turn.meta, sendId: meta.sendId }))
+    expect(meta.sendId).toMatch(/^s-/)
+    expect(store.getState().chat.slotMessages['pane-turn']?.find(m => m.role === 'user')?.content).toBe(turn.bubble)
+    expect(readStoredPaste(turn.wire)?.pastes).toEqual(pastes)
+    // Composer, files and blocks are gone: a second paste starts again at #1,
+    // and the next send carries that paste alone.
     await waitFor(() => expect(box.value).toBe(''))
     await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await waitFor(() => expect(box.value).toBe('[ Paste #1 · 5 lines ]'))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
+    const [secondWire, , , , secondMeta] = vi.mocked(api.sendChat).mock.calls[1]
+    expect(secondWire).toBe(PASTED)
+    expect(secondMeta.files).toBeUndefined()
   })
 
   it('parks the blocks with the text on a rebind and restores both, so the token still expands', async () => {
@@ -163,14 +207,14 @@ describe('ChatPane paste sidecar', () => {
 
     // Rebind the same pane instance to another slot: A's composer is parked.
     rebind('slot-b')
-    await waitFor(() => expect((screen.getAllByRole('textbox')[0] as HTMLTextAreaElement).value).toBe(''))
+    await waitFor(() => expect((view().getAllByRole('textbox')[0] as HTMLTextAreaElement).value).toBe(''))
     const parked = readPaneDraft('slot-a')
     expect(parked.text).toMatch(TOKEN)
     expect(parked.pastes).toEqual([expect.objectContaining({ seq: 1, content: PASTED })])
 
     // Back to A: the token is back AND still backed by its block.
     rebind('slot-a')
-    const back = screen.getAllByRole('textbox')[0] as HTMLTextAreaElement
+    const back = view().getAllByRole('textbox')[0] as HTMLTextAreaElement
     await waitFor(() => expect(back.value).toMatch(TOKEN))
     fireEvent.keyDown(back, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
@@ -227,7 +271,7 @@ describe('ChatPane paste sidecar', () => {
     await waitFor(() => expect(box.value).toBe(''))
     // The server's queue card for that send, carrying the wire text.
     act(() => { store.dispatch(sseChatMessage({ slot: 'pane-queued', role: 'queued', content: wireText as string, meta: { queueId: 'q-paste' } })) })
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel queued message' }))
+    fireEvent.click(await view().findByRole('button', { name: 'Cancel queued message' }))
     await waitFor(() => expect(box.value).toContain(PASTED))
     expect(box.value).not.toMatch(/\[ Paste #\d/)
     // The retry sends exactly that content.

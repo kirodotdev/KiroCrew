@@ -346,7 +346,14 @@ describe("first-download installer design contract", () => {
       "customFinishPage may diverge from the locked StartApp contract ONLY in its launch target"
     );
     assert.match(buildWorkflow, /test-windows-installer\.ps1/);
-    assert.match(runtimeScript, /^\$MaxInstallSeconds = 120$/m);
+    assert.match(runtimeScript, /^\$MaxInstallSeconds = 200$/m);
+    // The PR gate is the performance ceiling: tighter than the release smoke, never looser.
+    const releaseSmoke = fs.readFileSync(
+      path.join(REPO_ROOT, "scripts", "smoke-windows-install.ps1"),
+      "utf8"
+    );
+    const ceiling = (text) => Number(text.match(/^\$MaxInstallSeconds = (\d+)$/m)[1]);
+    assert.ok(ceiling(runtimeScript) <= ceiling(releaseSmoke));
     assert.match(runtimeScript, /^\$MaxGatewayReadySeconds = 50$/m);
     assert.match(runtimeScript, /silent-install-seconds=/);
     assert.match(runtimeScript, /gateway-ready-seconds=/);

@@ -117,7 +117,11 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
 )
 def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, byte_ceiling):
     text = _text(SKILLS / name / "SKILL.md")
-    assert len(text.encode("utf-8")) <= byte_ceiling
+    assert len(text.encode("utf-8")) <= byte_ceiling, (
+        f"{name}/SKILL.md is over {byte_ceiling} bytes. Move detail out rather than "
+        "trimming words: script flags to the script's --help, rules a step reads only "
+        "sometimes to references/, with a one-line pointer left behind."
+    )
     assert not re.search(r"\b(?:gpt|claude|fable)-(?:\d|opus|fable)", text)
     assert len(_routing().encode("utf-8")) <= 3000
 

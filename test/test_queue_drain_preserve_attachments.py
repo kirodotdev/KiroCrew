@@ -71,7 +71,7 @@ def _busy_state(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("busy-chat")
-    slot._in_stage_execution = True  # force the busy queue path
+    slot.task = _live_turn()  # force the busy queue path
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
     return state, slot
 
@@ -89,6 +89,11 @@ def _seed_pending_steer_stores(slot, count):
         {message: {"files": [f"/tmp/file-{i}"]} for i, message in enumerate(messages)}
     )
     return messages
+
+
+def _live_turn() -> MagicMock:
+    """A stand-in for a turn still running on the slot."""
+    return MagicMock(done=MagicMock(return_value=False))
 
 
 class TestAttachmentMeta:
@@ -212,7 +217,7 @@ class TestQueuePushFrameCarriesTheLists:
     async def test_sub_agent_hold_frame(self, tmp_path, monkeypatch):
         state, slot = _busy_state(tmp_path, monkeypatch)
         # The idle-slot hold: no turn is running, but children are.
-        slot._in_stage_execution = False
+        slot.task = None
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
         receipt = await _post_busy(state, "busy-chat", _WIRE, {"files": [_PATH]})
         (frame,) = _queue_push_frames(state)
@@ -254,7 +259,7 @@ class TestDrainedRow:
         await _post_busy(state, "busy-chat", _WIRE, {"files": [_PATH]})
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
 
         rows = _user_rows(slot)
@@ -276,7 +281,7 @@ class TestDrainedRow:
         await _post_busy(state, "busy-chat", _WIRE, {"files": [_PATH], "dirs": [_DIR]})
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
 
         pops = [
@@ -293,7 +298,7 @@ class TestDrainedRow:
         await _post_busy(state, "busy-chat", "plain text", None)
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
 
         pops = [
@@ -489,7 +494,7 @@ class TestSteeredAttachments:
         assert slot._steer_attachment_meta == {}
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
         assert _user_rows(slot)[-1]["meta"]["files"] == [_PATH]
 

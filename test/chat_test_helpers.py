@@ -38,6 +38,24 @@ def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
     os.utime(path, (sig + 1, sig + 1))
 
 
+def close_before_resume(log: ConversationLog, key: str) -> None:
+    """Backdate a closed session's ``closed_at`` so it predates any resume that follows.
+
+    A resume clears ``closed`` only when ``closed_at`` is strictly earlier than the
+    moment the resume started (``clear_closed(only_if_closed_before=...)``); a tie
+    keeps the marker on purpose and the resume answers ``resume_conflict``. Both
+    values come from ``time.time()``, which moves every ~15.6 ms on Windows CPython
+    3.12, so a close followed at once by a resume ties there and not on Linux. The
+    precondition a close-then-resume test means is "closed BEFORE the resume
+    begins", so it is stated here rather than left to clock granularity, the way
+    ``test_session_control_revive._archive`` states it.
+    """
+    meta = log.get_metadata(key)
+    assert meta.get("closed"), f"{key} is not closed"
+    assert meta.get("closed_at") is not None, f"{key} is closed but carries no closed_at stamp"
+    log.update_metadata(key, {"closed_at": float(meta["closed_at"]) - 60.0})
+
+
 async def drain_background_tasks(state) -> None:
     """Await every task *state* spawned, so an assertion cannot race one.
 

@@ -23,8 +23,9 @@ and it is AST only:
   the literal ``False`` as ``needs_reinjection=`` to ``build_message`` (called
   directly, or handed as the callable to an off-loop runner such as
   ``asyncio.to_thread`` or ``run_in_embed_pool``), and re-arms it. A module that
-  imports and calls ``messaging.dispatch.drive_turn`` delegates all three, and the
-  delegate itself is held to the same rule.
+  imports and calls ``messaging.dispatch.drive_turn``, or imports
+  ``messaging.dispatch.ChannelTurns`` and answers through it, delegates all three,
+  and the pipeline itself is held to the same rule.
 * Modules that implement compaction rather than run a turn loop are exempted by
   name, and the exemption list can only shrink.
 """
@@ -52,6 +53,8 @@ _REARMS = frozenset({"rearm_reinjection"})
 #: The shared turn driver that consumes, forwards and re-arms for its callers.
 _DELEGATE_MODULE = "kiro_crew.messaging.dispatch"
 _DELEGATE = "drive_turn"
+#: The pipeline a dispatcher holds and calls ``answer`` on, the same delegate.
+_PIPELINE = "ChannelTurns"
 
 #: Modules that implement compaction for a caller instead of running a turn loop.
 #: Shrink-only: ``test_the_implementer_exemptions_can_only_shrink`` fails once an
@@ -100,19 +103,29 @@ def _missing_parts(tree: ast.AST) -> list[str]:
     return missing
 
 
-def _delegates(tree: ast.AST) -> bool:
-    """Whether *tree* imports ``drive_turn`` from the shared driver and calls it."""
-    imported = any(
+def _imports_from_the_pipeline(tree: ast.AST, name: str) -> bool:
+    return any(
         isinstance(node, ast.ImportFrom)
         and node.module == _DELEGATE_MODULE
-        and any(alias.name == _DELEGATE and alias.asname is None for alias in node.names)
+        and any(alias.name == name and alias.asname is None for alias in node.names)
         for node in ast.walk(tree)
     )
-    called = any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == _DELEGATE
-        for node in ast.walk(tree)
+
+
+def _delegates(tree: ast.AST) -> bool:
+    """Whether *tree* hands its turns to the shared pipeline.
+
+    Either it imports ``drive_turn`` and calls it, or it imports ``ChannelTurns``
+    and calls ``answer`` on one.
+    """
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    drives = _imports_from_the_pipeline(tree, _DELEGATE) and any(
+        isinstance(call.func, ast.Name) and call.func.id == _DELEGATE for call in calls
     )
-    return imported and called
+    answers = _imports_from_the_pipeline(tree, _PIPELINE) and any(
+        isinstance(call.func, ast.Attribute) and call.func.attr == "answer" for call in calls
+    )
+    return drives or answers
 
 
 def _compacts(tree: ast.AST) -> bool:
@@ -157,15 +170,23 @@ def test_every_compacting_turn_loop_consumes_needs_reinjection():
     assert not offenders, "\n".join(offenders)
 
 
+def _named(path: Path, kind: type, name: str) -> list[ast.AST]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [node for node in ast.walk(tree) if isinstance(node, kind) and node.name == name]
+
+
 def test_the_shared_driver_keeps_the_contract_it_carries_for_its_callers():
-    tree = ast.parse((_SRC / "messaging" / "dispatch.py").read_text(encoding="utf-8"))
-    drivers = [
+    """The pipeline forwards the flag; its bracket consumes it and re-arms it."""
+    (pipeline,) = _named(_SRC / "messaging" / "dispatch.py", ast.ClassDef, _PIPELINE)
+    runs = [
         node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == _DELEGATE
+        for node in pipeline.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_run"
     ]
-    assert len(drivers) == 1
-    assert _missing_parts(drivers[0]) == []
+    (bracket,) = _named(_SRC / "messaging" / "turn_bracket.py", ast.ClassDef, "TurnBracket")
+    assert len(runs) == 1
+    carried = ast.Module(body=[runs[0], bracket], type_ignores=[])
+    assert _missing_parts(carried) == []
 
 
 def test_the_implementer_exemptions_can_only_shrink():
@@ -224,6 +245,22 @@ def loop(sessions, ctx, key):
     sessions.check_context_usage(key)
 """
 
+_ANSWERS_THROUGH_THE_PIPELINE = """
+from kiro_crew.messaging.dispatch import ChannelTurns
+
+async def loop(turns, asker, sessions):
+    sessions.check_context_usage(asker.session_key)
+    await turns.answer(asker, "hi", renderer)
+"""
+
+_IMPORTS_THE_PIPELINE_WITHOUT_ANSWERING = """
+from kiro_crew.messaging.dispatch import ChannelTurns
+
+def loop(sessions, ctx, key):
+    ctx.build_message("hi")
+    sessions.check_context_usage(key)
+"""
+
 _IMPORTS_THE_DRIVER_WITHOUT_CALLING_IT = """
 from kiro_crew.messaging.dispatch import drive_turn
 
@@ -240,8 +277,14 @@ def loop(ctx):
 
 @pytest.mark.parametrize(
     "source",
-    [_CONTRACT_KEPT_OFF_LOOP, _CONTRACT_KEPT_DIRECT, _DELEGATED, _NEVER_COMPACTS],
-    ids=["off-loop", "direct", "delegated", "never-compacts"],
+    [
+        _CONTRACT_KEPT_OFF_LOOP,
+        _CONTRACT_KEPT_DIRECT,
+        _DELEGATED,
+        _ANSWERS_THROUGH_THE_PIPELINE,
+        _NEVER_COMPACTS,
+    ],
+    ids=["off-loop", "direct", "delegated", "answers-through-the-pipeline", "never-compacts"],
 )
 def test_a_loop_that_keeps_the_contract_passes(source):
     assert _violation(source) is None
@@ -254,8 +297,9 @@ def test_a_loop_that_keeps_the_contract_passes(source):
         (_PINS_FALSE, "never forwards"),
         (_NEVER_REARMS, "never re-arms"),
         (_IMPORTS_THE_DRIVER_WITHOUT_CALLING_IT, "never consumes"),
+        (_IMPORTS_THE_PIPELINE_WITHOUT_ANSWERING, "never consumes"),
     ],
-    ids=["no-keyword", "literal-false", "no-rearm", "imported-not-called"],
+    ids=["no-keyword", "literal-false", "no-rearm", "imported-not-called", "pipeline-not-answered"],
 )
 def test_a_loop_that_breaks_the_contract_is_named(source, missing):
     violation = _violation(source)

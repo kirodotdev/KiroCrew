@@ -228,7 +228,7 @@ fail clearly and enforce the version floor in `app.json`.
 - [ ] Python: install `packages/kirocrew-client-py/` from a source checkout and create `KiroCrewClient` at startup
 - [ ] UI: import `useAppApi` / `useAppEvents` and declare `permissions.api` / `permissions.events` in `app.json`
 - [ ] Replace raw HTTP calls (one at a time) with `api.get/post/...` or supported `kirocrew-client` methods
-- [ ] UI: replace custom WebSocket code with `useAppEvents`; Python: keep a direct WebSocket implementation because the client has no `on*()` methods
+- [ ] UI: replace custom WebSocket code with `useAppEvents`; Python: replace a hand-rolled WebSocket with `create_ws()`, which returns a `WsClient` with `on`, `on_slot` and `on_raw` listeners (see [Python Client](api-reference.md#python-client))
 - [ ] Add try/catch fallbacks for optional newer endpoints, or set `minKiroCrewVersion`
 - [ ] Remove old HTTP/WS wrapper code
 - [ ] Test against your target Gateway version

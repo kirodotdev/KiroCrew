@@ -4,12 +4,48 @@ Two sessions sharing a single backend MUST produce the same answers as if
 each had its own backend. Every attribute that changes backend behavior
 MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 
-The 12 dimensions captured below are the union of every spawn-time input
-that influences a Kiro MCP subprocess: identity (``server_name``,
-``agent_name``), execution (``command_args_hash``, ``effective_env_hash``,
-``work_dir``, ``binary_version``), security (``os_uid``, ``sandbox_mode``,
-``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``), and
-config drift (``config_snapshot_hash``).
+The 8 dimensions captured below are the spawn-time inputs that influence a
+Kiro MCP subprocess: identity (``server_name``, ``agent_name``), execution
+(``command_args_hash``, ``effective_env_hash``, ``work_dir``,
+``binary_version``), security (``os_uid``), and config drift
+(``config_snapshot_hash``).
+
+The rule cuts both ways. An attribute that does NOT change backend
+behavior must stay OUT of the key: the hash is injective over every field,
+so a difference in one that isolates nothing still forks a process. Four
+fields labeled "security boundary" are in that class and are not key
+dimensions: ``sandbox_mode``, ``autoapprove_set_hash``, ``approval_mode``
+and ``trust_all_tools``.
+
+* **The sandbox is not applied to a pooled backend at all.** ``gatewayd``
+  spawns backends outside any mount namespace by design (see the security
+  boundary note in ``backend.spawn_backend``); the per-session sandbox wraps
+  kiro-cli, not a gateway-spawned server. Two sessions configured for
+  different sandbox tiers therefore get processes confined identically --
+  partitioning them buys a second unsandboxed process, not a second sandbox.
+* **Approval is decided before a call reaches the gateway.** Tool visibility,
+  the autoApprove list, the approval mode and trust-all are kiro-cli's own
+  per-agent decision, taken against the agent's overlay entry. What arrives
+  at the stub is a ``tools/call`` kiro-cli has already authorised, so a
+  backend never reads these values and cannot act on them. The rewriter keeps
+  each agent's ``autoApprove`` on its own wrapped entry, so the per-agent
+  surface survives sharing.
+* **Keying on them costs a process and buys nothing.** The split they
+  produce today is per agent, across a change to ``agent.approval_mode`` or
+  ``agent.sandbox`` or that agent's own autoApprove list, since the first two
+  are host-wide (``launch_resolve.rewrite_kwargs``). Two agents whose only
+  difference is approval posture are interchangeable from the backend's side,
+  so once agent identity stops being a dimension they share one process; the
+  four fields must be out of the key for that to be true.
+
+``os_uid`` stays. The cross-OS-user boundary is real and is independently
+enforced (the socket is ``0600`` and the daemon checks the peer uid), so the
+dimension costs nothing it does not also deliver.
+
+The four fields are still ACCEPTED on a register payload and simply ignored,
+the same wire-compat treatment ``user_identity`` and ``channel_id`` get: a
+stub and a daemon are upgraded separately, and a rejected register silently
+un-pools an install.
 
 There is deliberately NO channel dimension. A channel is not a trust
 boundary and never was a usable proxy for one:
@@ -160,10 +196,6 @@ class PoolKey:
 
     # Security boundary
     os_uid: int
-    sandbox_mode: str
-    autoapprove_set_hash: str
-    approval_mode: str
-    trust_all_tools: bool
 
     # Config drift
     config_snapshot_hash: str
@@ -175,8 +207,8 @@ class PoolKey:
         """Build a :class:`PoolKey` from a stub's ``Register`` payload.
 
         The caller is responsible for providing pre-computed content hashes
-        for the structured fields (command_args, env, auto-approve,
-        config_snapshot). This mirrors the Rust stub's ``build_pool_key``
+        for the structured fields (command_args, env, config_snapshot).
+        This mirrors the Rust stub's ``build_pool_key``
         helper: the stub has the raw inputs and knows how to hash them, the
         gateway just validates and stores.
 
@@ -194,19 +226,17 @@ class PoolKey:
         # stub still reports it because gatewayd threads it into the per-call
         # caller identity (see ``_build_caller_block``), and an older stub
         # against a newer daemon must keep registering cleanly. It is simply
-        # not a pool dimension — see the module docstring. The same applies
-        # to ``user_identity``, which older stubs still send: it was deleted
-        # as a pool dimension (it never isolated anything) and is ignored.
-        # Security-boundary dims: type-check rather than coerce. bool("false")
-        # is True and int() on a bool silently passes, so a stub sending a JSON
-        # string/number for these could land in the wrong trust/uid partition.
-        # Reject a non-matching type rather than coercing it.
+        # not a pool dimension — see the module docstring. The same applies to
+        # ``user_identity`` and to the four approval/sandbox fields
+        # (``sandbox_mode``, ``autoapprove_set_hash``, ``approval_mode``,
+        # ``trust_all_tools``): stubs send them, nothing here reads them, and
+        # the module docstring records why none of them isolates anything.
+        # ``os_uid`` IS a dimension, so it is type-checked rather than coerced:
+        # ``int()`` on a bool silently passes, and a stub sending a JSON string
+        # or a bool could otherwise land in the wrong uid partition.
         os_uid = register["os_uid"]
         if isinstance(os_uid, bool) or not isinstance(os_uid, int):
             raise ValueError(f"os_uid must be int, got {type(os_uid).__name__}")
-        trust_all_tools = register["trust_all_tools"]
-        if not isinstance(trust_all_tools, bool):
-            raise ValueError(f"trust_all_tools must be bool, got {type(trust_all_tools).__name__}")
 
         try:
             return cls(
@@ -217,10 +247,6 @@ class PoolKey:
                 work_dir=str(register["work_dir"]),
                 binary_version=str(register["binary_version"]),
                 os_uid=os_uid,
-                sandbox_mode=str(register["sandbox_mode"]),
-                autoapprove_set_hash=str(register["autoapprove_set_hash"]),
-                approval_mode=str(register["approval_mode"]),
-                trust_all_tools=trust_all_tools,
                 config_snapshot_hash=str(register["config_snapshot_hash"]),
             )
         except (TypeError, ValueError) as exc:

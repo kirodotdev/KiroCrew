@@ -611,10 +611,10 @@ Wired sites:
   `test_gateway_first_run_setup_routes_through_the_seam`). Best-effort: the
   gateway's surrounding `except` keeps a failure non-fatal to startup, and
   `PlatformCompositionError` still propagates fail-closed.
-- `sandbox_launcher.py` / `sandbox_seatbelt.py` — `_build_launcher_script` /
-  `_build_seatbelt_profile` source the sensitive-dir lists from
-  `current_context().sandbox` through `sandbox._sandbox_policy` (the
-  `.aws`-exclusion at the cc branch is preserved). `sandbox.py`'s
+- `sandbox.py` — `_live_plan_host`, the plan host `_build_launcher_script` /
+  `_build_seatbelt_profile` both plan with, sources the sensitive-dir lists from
+  `current_context().sandbox` through `sandbox._sandbox_policy` (Seatbelt's
+  `.aws`-exclusion at the cc tier is preserved, as that renderer's declared capability). `sandbox.py`'s
   `namespace_argv` / `sandbox_exec_argv` resolve argv[0] through
   `current_context().agent_executable` before applying the core sandbox. The
   public Default is identity; a companion may return the direct
@@ -758,7 +758,7 @@ Wired sites:
   `current_context().apps_loader` sources.
 - `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
-- Telemetry `record_event` sites — `dashboard/server.py` records `gateway_start`
+- Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
   at boot; `dashboard/chat_runner.py` and `slack/handler.py` record one
   `interaction` event per successful chat turn (immediately after the
   `record_success` call, non-cancelled / non-retrying branch only; cancelled
@@ -825,7 +825,7 @@ Wired sites:
   `start()` reached, so a companion tunnel cannot start without dashboard token
   auth; the connect/disconnect callbacks and `/api/tunnel/status` stay wrapped
   AROUND the provider. **Teardown is wired at
-  `dashboard/server.py::_wire_tunnel_shutdown`** — an `app.on_cleanup` hook that
+  `dashboard/server_runtime/tunnel.py::_wire_tunnel_shutdown`** — an `app.on_cleanup` hook that
   reads `state.tunnel_manager` lazily (the manager is assigned later, by
   `setup_tunnel`). It covers BOTH start paths, because a live tunnel does not
   imply a manager: with a manager it calls `TunnelManager.stop()`; with
@@ -852,7 +852,7 @@ Wired sites:
   `setup_tunnel`, so it needs no hook.
   Import direction: `tunnel/` imports
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
-- `dashboard/server.py` — tunnel enable-gate
+- `dashboard/server.py` (the gate in `dashboard/server_runtime/tunnel.py`) — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor (wave 3):**
   in `start_dashboard` only, the `/api/sso-login` route binds
   `dashboard.sso_login_handler()` (or the built-in stub when `None`),
@@ -865,7 +865,7 @@ Wired sites:
   contract, centralized so the fail-closed policy cannot diverge). `stop_services`
   takes the same `app` handle as `start_services` (symmetric) so a companion need
   not stash services in process-global state.
-- `dashboard/server.py` `_mixed_internal_api_paths()` — unions
+- `dashboard/server_runtime/security_middleware.py` `_mixed_internal_api_paths()` — unions
   `dashboard.mixed_internal_api_paths()` into the module-level
   `_MIXED_INTERNAL_API_PATHS` at BOTH `token_auth_middleware` construction sites
   (the dashboard chain and the headless `--slack-only` one), so the two cannot

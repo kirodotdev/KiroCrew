@@ -5,12 +5,23 @@
 // the write -- a preset id, never an address or a port -- and how the card follows
 // the gateway while it downloads, installs and runs a local model.
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { namedCeiling } from '../../test/namedCeiling'
 
 import { api } from '../../api/client'
-import type { DecisionsLocalModel, DecisionsProviderData, DecisionsRuntimeStatus } from '../../api/client/decisions'
-import { DecisionsProviderPicker, recommendedPreset } from './DecisionsProviderPicker'
+import type {
+  DecisionsLocalModel,
+  DecisionsLocalRuntimeData,
+  DecisionsProviderData,
+  DecisionsRuntimeStatus,
+} from '../../api/client/decisions'
+import {
+  DECISIONS_PROVIDER_QUERY_KEY,
+  DecisionsProviderPicker,
+  recommendedPreset,
+  RUNTIME_POLL_MS,
+} from './DecisionsProviderPicker'
 
 const PLUMB: DecisionsLocalModel = {
   id: 'plumb-4b',
@@ -78,7 +89,7 @@ function providerOf(
   }
 }
 
-function renderPicker({
+async function renderPicker({
   active = 'jev',
   memGb = 32 as number | null,
   frozen = false,
@@ -94,15 +105,77 @@ function renderPicker({
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <DecisionsProviderPicker frozen={frozen} consentOn={consentOn} />
     </QueryClientProvider>,
   )
+  // The machine's memory is a SEPARATE read from the preset list, so a frame that
+  // shows the presets says nothing about the recommendation badge, which needs
+  // both. Both reads start on mount; wait until neither is still in flight.
+  await waitFor(() => expect(client.isFetching()).toBe(0))
+  return view
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+/**
+ * Ceiling for the status poll's first read. It sits behind a chain: the provider
+ * read resolves, the card renders it as busy, and that render turns the status
+ * query's `enabled` on, so the read goes out in the commit after it.
+ */
+const STATUS_POLL_STARTS = namedCeiling('STATUS_POLL_STARTS', 5000)
+
+/**
+ * Mount a card whose model is being prepared, with the status poll on a FAKE
+ * clock. React Query arms the poll's interval when a status read settles, on
+ * whatever setInterval is global at that moment, so the first read is held open
+ * until fake timers are on: one armed on the real clock would fire on its own.
+ * After this returns, use `settle` and `stepPoll`, never waitFor or findBy:
+ * Testing Library's waits do not advance vitest's fake clock.
+ */
+async function mountPreparing(
+  provider: DecisionsProviderData,
+  later: () => Promise<DecisionsLocalRuntimeData>,
+) {
+  const first = deferred<DecisionsLocalRuntimeData>()
+  const providerRead = vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue(provider)
+  const status = vi
+    .spyOn(api, 'getDecisionsLocalRuntime')
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(later)
+  vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 32 } as never)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={client}>
+      <DecisionsProviderPicker frozen={false} />
+    </QueryClientProvider>,
+  )
+  // The poll starts in an effect after the frame that shows the provider read.
+  await waitFor(() => expect(status).toHaveBeenCalledTimes(1), STATUS_POLL_STARTS)
+  vi.useFakeTimers()
+  // React Query hands results to React on a setTimeout(0); on the fake clock one
+  // queued mid-step lands a millisecond past the step, so run them as microtasks.
+  notifyManager.setScheduler(queueMicrotask)
+  return { providerRead, status, first }
+}
+
+/** Run `action` and let everything it settles render. */
+const settle = (action: () => void) =>
+  act(async () => { action(); await vi.advanceTimersByTimeAsync(0) })
+/** Move the fake clock on by whole poll periods. */
+const stepPoll = (periods = 1) =>
+  act(async () => { await vi.advanceTimersByTimeAsync(RUNTIME_POLL_MS * periods) })
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
+  notifyManager.setScheduler(defaultScheduler)
   vi.restoreAllMocks()
 })
 
@@ -136,14 +209,14 @@ describe('recommendedPreset', () => {
 
 describe('DecisionsProviderPicker', () => {
   it('states each local model against Jev: accuracy, memory and speed', async () => {
-    renderPicker()
+    await renderPicker()
     expect(await screen.findByText(/About 103% of Jev's accuracy, 109% on hard decisions/)).toBeTruthy()
     expect(screen.getByText(/About 67% of Jev's accuracy, 47% on hard decisions/)).toBeTruthy()
     expect(screen.getByText(/recommended with 24\s*GB or more/)).toBeTruthy()
   })
 
   it('marks the model this machine is suited to, and the one in use', async () => {
-    renderPicker({ active: 'jev', memGb: 32 })
+    await renderPicker({ active: 'jev', memGb: 32 })
     const laya = (await screen.findByText('Laya')).closest('label') as HTMLElement
     expect(laya.textContent).toMatch(/Recommended for this machine's 32\s*GB of memory/)
     const plumb = screen.getByText('Plumb-4B').closest('label') as HTMLElement
@@ -153,20 +226,20 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('recommends nothing when the machine memory is unknown', async () => {
-    renderPicker({ memGb: null })
+    await renderPicker({ memGb: null })
     await screen.findByText('Plumb-4B')
     expect(screen.queryByText(/Recommended for this machine/)).toBeNull()
   })
 
   it('says what the first use downloads before the reader commits', async () => {
-    renderPicker()
+    await renderPicker()
     fireEvent.click(await screen.findByRole('radio', { name: /Plumb-4B/ }))
     expect(screen.getByText(/downloads 8\.4\s*GB of model files and about 1 GB of software/)).toBeTruthy()
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
   it('warns what the model costs the rest of the machine, and only for a local model', async () => {
-    renderPicker()
+    await renderPicker()
     fireEvent.click(await screen.findByRole('radio', { name: /Plumb-4B/ }))
     expect(
       screen.getByText(/Plumb-4B keeps about 15\s*GB of memory in use.*fewer subagents.*Pick No model to free it/),
@@ -176,7 +249,7 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('says a downloaded model only needs starting', async () => {
-    renderPicker({
+    await renderPicker({
       data: providerOf('jev', {}, [PLUMB, { ...LAYA, installed: true }]),
     })
     fireEvent.click(await screen.findByRole('radio', { name: /Laya/ }))
@@ -185,7 +258,7 @@ describe('DecisionsProviderPicker', () => {
 
   it('writes a preset id, never an address or a port', async () => {
     const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('laya'))
-    renderPicker()
+    await renderPicker()
     fireEvent.click(await screen.findByRole('radio', { name: /Laya/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Use this model' }))
     await waitFor(() => expect(save).toHaveBeenCalledWith('laya'))
@@ -193,7 +266,7 @@ describe('DecisionsProviderPicker', () => {
 
   it('switches back to hosted Jev', async () => {
     const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('jev'))
-    renderPicker({ active: 'laya' })
+    await renderPicker({ active: 'laya' })
     fireEvent.click(await screen.findByRole('radio', { name: /Jev, hosted by TypeSafe/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Use this model' }))
     await waitFor(() => expect(save).toHaveBeenCalledWith('jev'))
@@ -201,14 +274,14 @@ describe('DecisionsProviderPicker', () => {
 
   it('stops the local model by choosing no model', async () => {
     const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('none'))
-    renderPicker({ active: 'laya' })
+    await renderPicker({ active: 'laya' })
     fireEvent.click(await screen.findByRole('radio', { name: 'No model' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use this model' }))
     await waitFor(() => expect(save).toHaveBeenCalledWith('none'))
   })
 
   it('shows download progress for the model being prepared', async () => {
-    renderPicker({
+    await renderPicker({
       data: providerOf('plumb-4b', {
         preset: 'plumb-4b',
         state: 'downloading',
@@ -224,7 +297,7 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('says decisions are skipped while preparing, how to stop, and claims no "In use" yet', async () => {
-    renderPicker({
+    await renderPicker({
       data: providerOf('plumb-4b', { preset: 'plumb-4b', state: 'downloading', bytes_done: 1e9, bytes_total: 8.4e9 }),
     })
     expect(await screen.findByText(/Decisions are skipped until it is ready\. To stop, pick another model/)).toBeTruthy()
@@ -233,7 +306,7 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('claims no "In use" while the Decisions switch is off, and says so under a running model', async () => {
-    renderPicker({ consentOn: false, data: providerOf('laya', { preset: 'laya', state: 'running', port: 8104 }) })
+    await renderPicker({ consentOn: false, data: providerOf('laya', { preset: 'laya', state: 'running', port: 8104 }) })
     expect(await screen.findByText(/nothing is sent to it while the Decisions switch above is off/)).toBeTruthy()
     const laya = screen.getByText('Laya').closest('label') as HTMLElement
     expect(laya.textContent).not.toMatch(/In use/)
@@ -241,19 +314,19 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('never recommends hosted Jev for the machine memory', async () => {
-    renderPicker({ memGb: 4 })
+    await renderPicker({ memGb: 4 })
     const jev = (await screen.findByText(/Jev, hosted by TypeSafe/)).closest('label') as HTMLElement
     expect(jev.textContent).not.toMatch(/Recommended/)
   })
 
   it('marks a local model "In use" once its server runs', async () => {
-    renderPicker({ data: providerOf('laya', { preset: 'laya', state: 'running', port: 8104 }) })
+    await renderPicker({ data: providerOf('laya', { preset: 'laya', state: 'running', port: 8104 }) })
     const laya = (await screen.findByText('Laya')).closest('label') as HTMLElement
     expect(laya.textContent).toMatch(/In use/)
   })
 
   it('does not recommend a model that just failed to start here', async () => {
-    renderPicker({ memGb: 32, data: providerOf('plumb-4b', { preset: 'plumb-4b', state: 'error', error: 'OOM' }) })
+    await renderPicker({ memGb: 32, data: providerOf('plumb-4b', { preset: 'plumb-4b', state: 'error', error: 'OOM' }) })
     const plumb = (await screen.findByText('Plumb-4B')).closest('label') as HTMLElement
     expect(plumb.textContent).not.toMatch(/Recommended/)
   })
@@ -275,75 +348,52 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('keeps polling after a failed progress poll, so a download does not freeze', async () => {
-    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue(
+    const { status, first } = await mountPreparing(
       providerOf('laya', { preset: 'laya', state: 'downloading', bytes_done: 1e8, bytes_total: 8e8 }),
-    )
-    const status = vi
-      .spyOn(api, 'getDecisionsLocalRuntime')
-      .mockRejectedValueOnce(Object.assign(new Error('502'), { status: 502 }))
-      .mockResolvedValue({
+      () => Promise.resolve({
         runtime: { ...IDLE, preset: 'laya', state: 'downloading', bytes_done: 4e8, bytes_total: 8e8 },
         installed: [],
-      })
-    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 32 } as never)
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={client}>
-        <DecisionsProviderPicker frozen={false} />
-      </QueryClientProvider>,
+      }),
     )
-    expect(await screen.findByText(/this progress may be out of date/)).toBeTruthy()
-    await waitFor(() => expect(status.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
-    await waitFor(() => expect(screen.queryByText(/this progress may be out of date/)).toBeNull(), { timeout: 4000 })
+    await settle(() => first.reject(Object.assign(new Error('502'), { status: 502 })))
+    expect(screen.getByText(/this progress may be out of date/)).toBeTruthy()
+    await stepPoll()
+    expect(status).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/this progress may be out of date/)).toBeNull()
+    // The second read is what rendered: the provider read said 0.1 GB.
+    expect(screen.getByText(/Downloading the model: 0\.4\s*GB of 0\.8\s*GB/)).toBeTruthy()
   })
 
   it('polls the audit-free status route while the model is being prepared, then stops', async () => {
-    const provider = vi
-      .spyOn(api, 'getDecisionsProvider')
-      .mockResolvedValue(providerOf('laya', { preset: 'laya', state: 'starting', port: 8104 }))
-    const status = vi
-      .spyOn(api, 'getDecisionsLocalRuntime')
-      .mockResolvedValueOnce({ runtime: { ...IDLE, preset: 'laya', state: 'starting', port: 8104 }, installed: [] })
-      .mockResolvedValue({ runtime: { ...IDLE, preset: 'laya', state: 'running', port: 8104 }, installed: ['laya'] })
-    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 32 } as never)
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={client}>
-        <DecisionsProviderPicker frozen={false} />
-      </QueryClientProvider>,
+    const { providerRead, status, first } = await mountPreparing(
+      providerOf('laya', { preset: 'laya', state: 'starting', port: 8104 }),
+      () => Promise.resolve({ runtime: { ...IDLE, preset: 'laya', state: 'running', port: 8104 }, installed: ['laya'] }),
     )
-    expect(await screen.findByText(/Starting the model/)).toBeTruthy()
-    expect(await screen.findByText('Running on this machine.', {}, { timeout: 4000 })).toBeTruthy()
+    expect(screen.getByText(/Starting the model/)).toBeTruthy()
+    await settle(() => first.resolve({ runtime: { ...IDLE, preset: 'laya', state: 'starting', port: 8104 }, installed: [] }))
+    await stepPoll()
+    expect(status).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Running on this machine.')).toBeTruthy()
     // The provider route, which audits and evaluates governance, is read once only.
-    expect(provider).toHaveBeenCalledTimes(1)
-    const settled = status.mock.calls.length
-    await new Promise(r => setTimeout(r, 2500))
-    expect(status.mock.calls.length).toBe(settled)
+    expect(providerRead).toHaveBeenCalledTimes(1)
+    // Running is settled, so the poll stops however long the card stays open.
+    await stepPoll(3)
+    expect(status).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the provider read when the status route answers something malformed', async () => {
-    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue(
+    const { first } = await mountPreparing(
       providerOf('plumb-4b', { preset: 'plumb-4b', state: 'downloading', bytes_done: 1e9, bytes_total: 8.4e9 }),
+      () => Promise.resolve([] as never),
     )
-    vi.spyOn(api, 'getDecisionsLocalRuntime').mockResolvedValue([] as never)
-    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 32 } as never)
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={client}>
-        <DecisionsProviderPicker frozen={false} />
-      </QueryClientProvider>,
-    )
-    await waitFor(() => expect(api.getDecisionsLocalRuntime).toHaveBeenCalled())
-    // Let the malformed answer land and render before asserting the card survived it.
-    const settled = vi.mocked(api.getDecisionsLocalRuntime).mock.results[0].value as Promise<unknown>
-    await settled
-    await new Promise(r => setTimeout(r, 50))
+    // The malformed answer lands and renders inside `settle`, before the card is read.
+    await settle(() => first.resolve([] as never))
     expect(screen.getByText(/Downloading the model: 1\s*GB of 8\.4\s*GB/)).toBeTruthy()
   })
 
   it('reports a model that could not start, with its log and a retry', async () => {
     const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('laya'))
-    renderPicker({
+    await renderPicker({
       data: providerOf('laya', {
         preset: 'laya',
         state: 'error',
@@ -360,7 +410,7 @@ describe('DecisionsProviderPicker', () => {
 
   it('offers to remove a download that is not in use, and only that one', async () => {
     const remove = vi.spyOn(api, 'removeDecisionsLocalModel').mockResolvedValue(providerOf('laya'))
-    renderPicker({
+    await renderPicker({
       data: providerOf('laya', { preset: 'laya', state: 'running', port: 8104 }, [
         { ...PLUMB, installed: true },
         { ...LAYA, installed: true },
@@ -375,13 +425,13 @@ describe('DecisionsProviderPicker', () => {
   })
 
   it('offers no save while nothing differs from what is configured', async () => {
-    renderPicker({ active: 'laya' })
+    await renderPicker({ active: 'laya' })
     await screen.findByText('Laya')
     expect(screen.queryByRole('button', { name: 'Use this model' })).toBeNull()
   })
 
   it('holds every control while the card is frozen', async () => {
-    renderPicker({ frozen: true })
+    await renderPicker({ frozen: true })
     const radios = await screen.findAllByRole('radio')
     expect(radios.every(r => (r as HTMLInputElement).disabled)).toBe(true)
   })
@@ -397,7 +447,8 @@ describe('DecisionsProviderPicker', () => {
         <DecisionsProviderPicker frozen={false} />
       </QueryClientProvider>,
     )
-    await waitFor(() => expect(api.getDecisionsProvider).toHaveBeenCalled())
+    // On the answer, not the request: before any answer the picker draws nothing too.
+    await waitFor(() => expect(client.getQueryState(DECISIONS_PROVIDER_QUERY_KEY)?.status).toBe('error'))
     expect(container.textContent).toBe('')
   })
 

@@ -1,13 +1,17 @@
 """``kiro_crew.sandbox`` stays the sandbox's import and patch surface after the split.
 
-The Linux launcher program, the macOS Seatbelt profile and the stale mount-source sweep
+The Linux launcher renderer, the macOS Seatbelt renderer and the stale mount-source sweep
 are defined in ``sandbox_launcher``, ``sandbox_seatbelt`` and ``sandbox_mount_sweep``.
-The facade keeps every moved name readable under its old path, and FORWARDS every one of
-them, so a patch through the facade lands on the owner, where the owner's own callers
-read it -- whether or not a scan could read the patched name off the test. The two
-builders read the plan they render from the facade when they run, through a
-function-local import, so a test that rebinds a tier list or a target helper there still
-reaches them.
+The facade keeps every name moved to those owners readable under its old path, and
+FORWARDS every one of them, so a patch through the facade lands on the owner, where the
+owner's own callers read it -- whether or not a scan could read the patched name off the
+test. The path rules moved to ``kiro_crew.sandbox_plan`` are bound on the facade as plain
+compatibility aliases instead, pinned by identity below; a patch of one does not reach
+the planner. The two
+builders are the facade's own functions: they gather the live host here, plan the spawn
+(``kiro_crew.sandbox_plan``) and hand the plan to the owner's renderer, so a test that
+rebinds a tier list or a host-fact helper on the facade reaches the plan, and no owner
+imports the facade at all.
 
 This file also holds what both facades share -- ``kiro_crew.sandbox`` and
 ``kiro_crew.platform_compat`` -- so ``test_platform_compat_refactor_facade`` runs the same
@@ -40,7 +44,13 @@ from unittest import mock
 import pytest
 import test_sandbox_refactor_create_guard as create_guard
 
-from kiro_crew import sandbox, sandbox_launcher, sandbox_mount_sweep, sandbox_seatbelt
+from kiro_crew import (
+    sandbox,
+    sandbox_launcher,
+    sandbox_mount_sweep,
+    sandbox_plan,
+    sandbox_seatbelt,
+)
 
 # The patch census parses every test file once; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_sandbox_refactor_facade")
@@ -56,10 +66,12 @@ _OWNERS: dict[str, ModuleType] = {
     m.__name__: m for m in (sandbox_launcher, sandbox_seatbelt, sandbox_mount_sweep)
 }
 
-#: Every module-level name the split moved out of sandbox.py, by its owner.
+#: Every module-level name the split moved out of sandbox.py, by its owner. The two
+#: builders are not here: they are ``kiro_crew.sandbox``'s own functions again, which
+#: plan the spawn and hand the plan to the owners' renderers.
 _MOVED: dict[str, tuple[str, ...]] = {
-    "kiro_crew.sandbox_launcher": ("_build_launcher_script",),
-    "kiro_crew.sandbox_seatbelt": ("_SEATBELT_PROFILE", "_build_seatbelt_profile"),
+    "kiro_crew.sandbox_launcher": (),
+    "kiro_crew.sandbox_seatbelt": ("_SEATBELT_PROFILE",),
     "kiro_crew.sandbox_mount_sweep": (
         "_MOUNT_SOURCE_PREFIX",
         "_MOUNT_SOURCE_MAX_AGE_SECONDS",
@@ -87,65 +99,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
 }
 
 #: Every function in an owner that imports from the facade, and what it reads there.
-_SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
-    ("kiro_crew.sandbox_launcher", "_build_launcher_script"): (
-        "kiro_crew.sandbox",
-        (
-            "_AGENT_DENIED_ENV_KEYS",
-            "_CC_EXPOSE_FILES",
-            "_CC_FILES",
-            "_CREW_HIDDEN_LEAVES",
-            "_CREW_READONLY_LEAVES",
-            "_CREW_READONLY_TARGETS",
-            "_CREW_UNREADABLE_MASK_LEAVES",
-            "_PYTHON_ENV_PREFIXES",
-            "_SENSITIVE_ENV_PREFIXES",
-            "_STANDARD_DIRS",
-            "_agent_scrub_prefixes",
-            "_fold_crew_home_alias",
-            "_hidden_path_contains_visible_path",
-            "_is_policy_cache_dir",
-            "_md_notebook_degraded_mask_dirs",
-            "_pod_os_home_targets",
-            "_private_window_spellings",
-            "_relocated_crew_targets",
-            "_relocated_policy_cache_dirs",
-            "_resolved_kiro_agents_targets",
-            "_sandbox_policy",
-            "_ssh_supports_accept_new",
-            "_voice_runtime_parent_paths",
-            "_voice_runtime_sandbox_paths",
-            "_writable_carveout_spellings",
-        ),
-    ),
-    ("kiro_crew.sandbox_seatbelt", "_build_seatbelt_profile"): (
-        "kiro_crew.sandbox",
-        (
-            "_CC_EXPOSE_FILES",
-            "_CC_FILES",
-            "_CREW_HIDDEN_LEAVES",
-            "_CREW_READONLY_LEAVES",
-            "_CREW_READONLY_TARGETS",
-            "_STANDARD_DIRS",
-            "_crew_hidden_sandbox_targets",
-            "_hidden_path_contains_visible_path",
-            "_is_policy_cache_dir",
-            "_is_voice_runtime_dir",
-            "_md_notebook_degraded_mask_dirs",
-            "_pod_os_home_targets",
-            "_private_window_spellings",
-            "_relocated_crew_targets",
-            "_relocated_policy_cache_dirs",
-            "_resolved_kiro_agents_targets",
-            "_sandbox_policy",
-            "_voice_runtime_ancestor_guards",
-            "_voice_runtime_parent_paths",
-            "_voice_runtime_sandbox_paths",
-            "_window_ancestors",
-            "_writable_carveout_spellings",
-        ),
-    ),
-}
+#: None does: the renderers read only the plan they are handed, and the live host the
+#: plan is made from is gathered in ``kiro_crew.sandbox`` itself.
+_SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {}
 
 
 class _Reached(BaseException):
@@ -756,7 +712,6 @@ def test_the_forwarding_table_names_each_owner_by_its_dotted_name() -> None:
 @pytest.mark.parametrize(
     ("owner", "name"),
     [
-        (sandbox_launcher, "_build_launcher_script"),
         (sandbox_seatbelt, "_SEATBELT_PROFILE"),
         (sandbox_mount_sweep, "_mount_source_candidate_roots"),
         (sandbox_mount_sweep, "_PIN_SCAN_MAX_PASSES"),
@@ -767,8 +722,8 @@ def test_a_patch_through_the_facade_round_trips_on_the_owner(owner: ModuleType, 
 
 
 def test_a_write_of_a_facade_name_stays_on_the_facade(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A name the facade binds itself -- the plan the builders read, a module it
-    imports -- is an ordinary attribute write, which the builders then read."""
+    """A name the facade binds itself -- a table or host fact the live plan host reads,
+    a module it imports -- is an ordinary attribute write, which that code then reads."""
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", "stub")
     assert vars(sandbox)["_ssh_supports_accept_new"] == "stub"
     assert "_ssh_supports_accept_new" not in vars(sandbox_launcher)
@@ -802,6 +757,7 @@ def test_the_star_import_binds_the_public_names(tmp_path: Path) -> None:
                 "importlib",
                 "sandbox_launcher",
                 "sandbox_mount_sweep",
+                "sandbox_plan",
                 "sandbox_seatbelt",
             }
         ),
@@ -857,6 +813,82 @@ def test_the_owners_depend_on_nothing_above_them() -> None:
 
 def test_the_owners_log_under_the_sandbox_name() -> None:
     check_owner_logger(sandbox, _OWNERS)
+
+
+def _imported_modules(module: ModuleType) -> set[str]:
+    """Every module *module* imports, at any depth of its body."""
+    found: set[str] = set()
+    for node in ast.walk(tree_of(module)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            found.add(node.module)
+    return found
+
+
+#: The layers under the facade: the plan and the launcher program import the standard
+#: library and nothing else, and the two renderers import the plan and nothing else of
+#: the package. So the plan stays pure, the program stays runnable as a stdlib script,
+#: and neither renderer can reach back into ``kiro_crew.sandbox`` for a rule.
+_LAYERED: dict[str, frozenset[str]] = {
+    "kiro_crew.sandbox_plan": frozenset(),
+    "kiro_crew.sandbox_launcher_program": frozenset(),
+    "kiro_crew.sandbox_launcher": frozenset({"kiro_crew.sandbox_plan"}),
+    "kiro_crew.sandbox_seatbelt": frozenset({"kiro_crew.sandbox_plan"}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LAYERED))
+def test_the_plan_layers_import_nothing_above_them(name: str) -> None:
+    imported = _imported_modules(importlib.import_module(name))
+    package = {m for m in imported if m.split(".")[0] == "kiro_crew"}
+    assert package == _LAYERED[name], name
+    foreign = {
+        m
+        for m in imported - package
+        if m.split(".")[0] not in sys.stdlib_module_names and m != "__future__"
+    }
+    assert foreign == set(), (name, foreign)
+
+
+def test_the_layer_check_flags_an_import_of_the_facade(tmp_path: Path) -> None:
+    probe = tmp_path / "probe_layer.py"
+    probe.write_text("import os\nfrom kiro_crew import sandbox\nimport yaml\n", encoding="utf-8")
+    module = ModuleType("probe_layer")
+    module.__file__ = str(probe)
+    assert _imported_modules(module) == {"os", "kiro_crew", "yaml"}
+
+
+#: The path rules that moved to ``kiro_crew.sandbox_plan`` and are still bound on the
+#: facade under their old names, for the callers and tests that read them there. They
+#: are compatibility ALIASES, not forwards: a patch of one does not reach the planner,
+#: which calls its own functions -- patch ``sandbox_plan.<rule>`` instead. A moved rule
+#: nothing outside the plan reads is not bound here at all.
+_PLAN_ALIASES: dict[str, str] = {
+    "_is_policy_cache_dir": "is_policy_cache_dir",
+    "_hidden_path_contains_visible_path": "hidden_path_contains_visible_path",
+    "_path_within": "path_within",
+    "_agent_scrub_prefixes": "scrub_prefixes",
+}
+
+
+@pytest.mark.parametrize(("alias", "rule"), sorted(_PLAN_ALIASES.items()))
+def test_a_plan_rule_kept_on_the_facade_is_an_alias_not_a_forward(alias: str, rule: str) -> None:
+    assert vars(sandbox)[alias] is getattr(sandbox_plan, rule)
+    assert alias not in sandbox._EXPORTS
+
+
+def test_every_plan_object_the_facade_binds_is_a_listed_alias() -> None:
+    plan_objects = {id(v) for v in vars(sandbox_plan).values() if callable(v)}
+    bound = {
+        name
+        for name, value in vars(sandbox).items()
+        if name.startswith("_")
+        and not name.startswith("__")
+        and id(value) in plan_objects
+        and getattr(value, "__module__", None) == sandbox_plan.__name__
+    }
+    assert bound == set(_PLAN_ALIASES)
 
 
 #: Names a test patches through ``kiro_crew.sandbox`` that the facade AND an owner both
@@ -971,17 +1003,35 @@ def test_a_patched_profile_builder_reaches_sandbox_exec_argv(
         sandbox.sandbox_exec_argv(["/bin/true"], "standard")
 
 
-def test_the_facade_code_reads_a_forwarded_builder_as_an_owner_attribute() -> None:
-    """``namespace_argv`` and ``sandbox_exec_argv`` stay here and call the builders
-    through their owners, the one spelling a forwarded patch reaches."""
-    tree = tree_of(sandbox)
-    calls = {
-        ast.unparse(node.func)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    assert "sandbox_launcher._build_launcher_script" in calls
-    assert "sandbox_seatbelt._build_seatbelt_profile" in calls
+@pytest.mark.parametrize(
+    ("owner", "renderer", "builder"),
+    [
+        pytest.param(
+            sandbox_launcher,
+            "render_namespace_launcher",
+            "_build_launcher_script",
+            marks=_POSIX_ONLY,
+            id="namespace",
+        ),
+        pytest.param(
+            sandbox_seatbelt, "render_seatbelt_profile", "_build_seatbelt_profile", id="seatbelt"
+        ),
+    ],
+)
+def test_each_builder_renders_through_its_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: ModuleType,
+    renderer: str,
+    builder: str,
+) -> None:
+    """The builders stay here and plan the spawn; the owner renders it, read from the
+    owner at call time so a patch of the owner's renderer reaches the builder."""
+    monkeypatch.setattr(sandbox, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    monkeypatch.setattr(owner, renderer, _raiser(renderer))
+    with pytest.raises(_Reached, match=renderer):
+        getattr(sandbox, builder)("standard")
 
 
 def test_every_moved_name_is_forwarded_so_no_patch_needs_resolving() -> None:

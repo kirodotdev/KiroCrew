@@ -461,7 +461,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             f"'{CLICK_METHOD_GLOBAL}' to accept the cursor move. "
                             f"'{CLICK_METHOD_GLOBAL}' MOVES THE USER'S REAL MOUSE "
                             "POINTER and clicks there, so only ask for it when a "
-                            "click must be physically real."
+                            "click must be physically real. "
+                            "'sky_click' clicks a point in a window that "
+                            "may sit behind others, without raising it or moving "
+                            "the pointer, through a private macOS window-server "
+                            "path: macOS only (refused on Windows), left button "
+                            "only, click_count 1 or 2, and never chosen by "
+                            f"'{CLICK_METHOD_AUTO}', so name it explicitly."
                         ),
                     },
                 },
@@ -526,8 +532,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "mouse route: name it explicitly to accept the cursor "
                             f"move. '{CLICK_METHOD_GLOBAL}' MOVES THE USER'S REAL "
                             "MOUSE POINTER along the path. "
-                            f"'{CLICK_METHOD_ACCESSIBILITY}' cannot express a drag "
-                            "and is refused everywhere."
+                            f"'{CLICK_METHOD_ACCESSIBILITY}' and "
+                            "'sky_click' cannot express a drag and "
+                            "are refused everywhere."
                         ),
                     },
                 },

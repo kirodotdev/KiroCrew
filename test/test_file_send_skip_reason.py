@@ -290,6 +290,22 @@ class TestToolDescriptionMatchesBehaviour:
         assert "not guaranteed" in desc
         assert _REMEDY_MARKER in desc
 
+    def test_the_description_names_the_binary_types_it_accepts(self) -> None:
+        """A binary file outside ``BINARY_MIME_ALLOWLIST`` is refused, so the
+        description must not promise "any file" and must name every category
+        the allowlist admits -- otherwise a caller builds a zip and only learns
+        from the refusal that it cannot be sent."""
+        from kiro_crew.mcp_tools.messaging import schemas
+        from kiro_crew.security import BINARY_MIME_ALLOWLIST
+
+        desc = next(s for s in schemas() if s["name"] == "file_send")["description"]
+        assert "any file" not in desc
+        assert "refused" in desc
+        for mime in BINARY_MIME_ALLOWLIST:
+            major, _, minor = mime.partition("/")
+            category = minor if major == "application" else major
+            assert category.lower() in desc.lower(), mime
+
     def test_the_description_does_not_claim_slack_delivery_is_dashboard_only(self) -> None:
         from kiro_crew.mcp_tools.messaging import schemas
 

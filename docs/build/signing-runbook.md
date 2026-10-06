@@ -101,9 +101,9 @@ latest-DMG permalink (`desktop/<channel>/latest/KiroCrew.dmg`) are a public
 contract, so deriving filenames from the bundle name would silently rename keys
 and break the permalink. The DMG's **volume** name does follow the bundle.
 
-The single-arch legs (`mac_variant: arm64 | x64`, nightly only today) run the
-same three jobs once more per DMG and append the arch to every name the legs
-would otherwise share: the signing-bucket keys (`SIGN_KEY_SUFFIX`, read by
+The single-arch legs (`mac_variant: arm64 | x64`, on nightly and on both release
+channels) run the same three jobs once more per DMG and append the arch to every
+name the legs would otherwise share: the signing-bucket keys (`SIGN_KEY_SUFFIX`, read by
 `sign.sh`), `notarized/…/KiroCrew-<arch>.zip`, the gated artifact
 `KiroCrew-notarized-<channel>-<version>-<arch>`, the public
 `desktop/<channel>/<version>/KiroCrew-<arch>.{zip,dmg}` and alias
@@ -276,6 +276,14 @@ generic scan rejection. The known trigger is macOS tar metadata: `bsdtar` embeds
 --no-acls --no-fflags` on Darwin. If it recurs with a clean tar, isolate it with a
 probe matrix (vary the manifest and the input tarball independently) before
 blaming the manifest.
+
+**Submission answers `{"message":"Too Many Requests"}`.** The service throttles a
+burst, and the universal, arm64 and x64 legs of one release submit together.
+`sign.sh` and `sign-dmg.sh` submit through `cdsigner-submit.sh`, which resubmits a
+throttled request up to five times with jittered doubling backoff (at most 300s
+of waiting) and fails at once on any other answer. A throttled request created no
+task, so the resubmission is safe. Exit code 4 with "still throttled after 5
+attempts" means the service stayed saturated; rerun the failed job.
 
 **Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a

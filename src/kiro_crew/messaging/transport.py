@@ -434,6 +434,14 @@ class MessagingTransport(ABC):
         not). This hook names the peer and decides nothing about authorization
         itself; the roster does.
 
+        A second reader is session control's owner-DM audience predicate
+        (``dashboard.session_control.owner_dm_refusal``), which places a dashboard
+        tab's persisted mirror ``ChannelLink`` as the owner's own DM by comparing
+        this answer against the roster's sole ``user:`` target. Same contract --
+        the hook names the peer, the predicate decides -- but that reader REFUSES
+        on ``""`` (``MIRROR_PEER_NOT_ON_RECORD``) where the recipient leg lets the
+        verified record stand: an admission to drive a session is not a delivery.
+
         Synchronous and in-memory like :meth:`may_send_to`: it runs inside gates
         that must not suspend, so a transport that would need a round trip to
         answer returns ``""`` instead. Default ``""`` is the fail-closed answer, so

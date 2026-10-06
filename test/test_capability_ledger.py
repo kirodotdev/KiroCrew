@@ -90,6 +90,15 @@ ENFORCED = {
     # everywhere -- so the flag decides whether a widget appears, not whether the
     # user can answer.
     "rich_blocks",
+    # Gates whether an unreadable inbound message is answered. A channel
+    # declaring False cannot reach messaging.attachments.ingest, so it has no
+    # IngestResult to carry a rejection and the sender would be left unable to
+    # tell a refused attachment from a broken bot -- the defect that module
+    # exists to prevent. feishu/transport.py::receive reads it and replies with
+    # attachments.channel_reads_no_attachments, after every deny gate and after
+    # the dedup window so a redelivery cannot answer twice. A channel declaring
+    # True is untouched: its attachments go through ingest as before.
+    "files_inbound",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface
@@ -99,7 +108,6 @@ ASPIRATIONAL = {
     "streaming",
     "edit",
     "reactions",
-    "files_inbound",
     "threads",
 }
 

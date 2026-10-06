@@ -99,11 +99,19 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
 
 
 # ── Hypothesis profiles ─────────────────────────────────────────────────
-# Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough python -m pytest``
-# for deeper coverage.
+# "default": fast iteration, new examples on every run.  "ci" (loaded whenever CI is
+# set; hypothesis's own check also honours TF_BUILD, this suite keys on CI alone) is
+# that profile derandomized: each test replays one fixed example sequence derived from
+# the test, so a @given test cannot red a pull request whose diff never touched it,
+# and it keeps no example database, which would make the sequence depend on what
+# earlier runs saved.  Exploration stays with "default" locally or
+# ``HYPOTHESIS_PROFILE=thorough``; a red reproduces from the printed blob.
 settings.register_profile("default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None)
+settings.register_profile(
+    "ci", parent=settings.get_profile("default"), derandomize=True, database=None, print_blob=True
+)
 settings.register_profile("thorough", max_examples=100)
-settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE") or ("ci" if "CI" in os.environ else "default"))
 
 
 _HAS_GIT = shutil.which("git") is not None
@@ -610,7 +618,22 @@ def _fresh_reexec_environment(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _approve_every_mcp_launch(request, monkeypatch):
+def _a_shared_monkeypatch_first(monkeypatch):  # flake-ok: patches nothing; only fixes setup order
+    """Build the test's shared ``monkeypatch`` before every other autouse fixture here.
+
+    No autouse fixture in this file patches through the shared instance (each uses
+    ``_floor_monkeypatch``, so a test's ``monkeypatch.undo()`` cannot lift it), and so
+    without this anchor the shared instance would be created last and undone FIRST,
+    before the teardowns below. Fixtures here are written for it being undone after
+    them: ``_no_leaked_interleave_hook`` checks on the way in for exactly that reason,
+    and the socket tripwire is a hook rather than a fixture because of it. Named to
+    sort first: autouse fixtures in one conftest are set up in name order.
+    """
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
     gatewayd refuses a target command or declared env the operator has not
@@ -628,6 +651,7 @@ def _approve_every_mcp_launch(request, monkeypatch):
         from kiro_crew.mcp_gateway import launch_approval, launch_resolve
     except ImportError:
         return
+    monkeypatch = _floor_monkeypatch
     monkeypatch.setattr(launch_approval, "launch_approved", lambda *_a, **_k: True)
 
     def _stand_in_launches(names, **_kwargs):
@@ -1078,69 +1102,6 @@ def _restore_autonudge_singleton():
         _an._INSTANCE = inherited
 
 
-#: How long a test's teardown waits for the member event-log writes it queued. A
-#: slow runner disk retires each queued append in tens of milliseconds, so this is
-#: generous; a queue that does not drain in it is a wedge worth failing on.
-_MEMBER_EVENTLOG_DRAIN_SECONDS = 30.0
-
-
-@pytest.fixture(autouse=True)
-def _reset_member_eventlog_singleton():
-    """Reset ``eventlog.service`` process-global singleton at each test boundary.
-
-    ``get_service()`` memoises one ``MemberEventLogService`` for the process,
-    rebuilding it only when the crew-log root changes. The root is derived from
-    ``KIROCREW_HOME``, which the autouse ``_isolate_kirocrew_home`` fixture points
-    at a fresh per-test tmp dir -- so a test that touches the service (directly, or
-    through a dashboard handler / ``members.record_activity``) leaves a live
-    singleton BOUND TO THAT TEST'S HOME, and the next test on the same xdist worker
-    inherits it after that home has been torn down. Its cached ``MemberLog`` objects
-    hold open OS handles under the dead directory, which is harmless on POSIX (the
-    rebuild against the new home just works) but not on Windows: the stale handles
-    block the tmp-dir teardown and the very first write in the inheriting test then
-    fails, so ``record_activity`` returns ``False`` -- exactly the shard-only red on
-    ``TestMemberActivityRoute`` that only Windows CI runs.
-
-    Reset at BOTH ends: teardown so a test's own service does not outlive it, and
-    setup so a test that runs after a leak from an OLDER build (or a test that skips
-    the module-level ``set_service(None)`` helper, as ``test_members_roster_recency``
-    does) still starts on a clean singleton bound to its own home. Silent, like the
-    other singleton floors here -- production genuinely publishes this reference, and
-    a test driving that code cannot avoid inheriting it; stopping the leak from
-    reaching the next test is the part that is not optional.
-
-    Teardown first DRAINS the member event-log writes the test queued. Dashboard DM
-    messages and slot transitions reach the log through ``eventlog_hooks.submit``:
-    one process-wide worker thread that is otherwise drained only at interpreter
-    exit. Undrained, a test's queued write runs during whatever test comes next on
-    the worker, resolves the crew-log root at run time, and so opens that member's
-    log -- holding its open lock -- inside the NEXT test's home. A test there that
-    touches the same member from the event-loop thread meets the held lock, and
-    ``file_lock`` on the loop thread makes one attempt and refuses: the
-    ``record_activity(...) == False`` red. This fixture's teardown runs before the
-    home pin is undone, so every queued write lands in the home of the test that
-    queued it; a queue that does not drain in time fails the test that filled it,
-    not whichever test would have inherited the work. The drain is bound at SETUP:
-    tests of the shutdown path replace ``drain_for_shutdown`` with a wedged or
-    recording stand-in, and that patch is still in place when this teardown runs.
-    """
-    from kiro_crew import eventlog_hooks
-    from kiro_crew.eventlog import service as _svc
-
-    drain = eventlog_hooks.drain_for_shutdown
-    _svc.set_service(None)
-    try:
-        yield
-    finally:
-        drained = drain(_MEMBER_EVENTLOG_DRAIN_SECONDS)
-        _svc.set_service(None)
-        if not drained:
-            raise TimeoutError(
-                "queued member event-log writes did not finish within "
-                f"{_MEMBER_EVENTLOG_DRAIN_SECONDS:.0f}s of the test that queued them"
-            )
-
-
 @pytest.fixture(autouse=True)
 def _reset_reasoning_effort_globals():
     """Snapshot + restore the process-global reasoning-effort allowlist around
@@ -1238,6 +1199,24 @@ def _isolate_kiro_window_cache():
     finally:
         _mr._KIRO_WINDOWS.clear()
         _mr._KIRO_WINDOWS.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _history_cleanup_throttle_closed(_floor_monkeypatch):
+    """Keep ``history``'s hourly retention sweep closed unless a test opens it.
+
+    The sweep runs on the first archive write after ``_last_cleanup`` is an hour old,
+    and the module starts it at ``0.0``, so on each worker only the FIRST test that
+    archived anything also expired sessions under whatever retention its home
+    resolved: an order-dependent side effect. Pinned to infinity the throttle is
+    always closed; a test of the sweep opens it with ``monkeypatch.setattr(history,
+    "_last_cleanup", 0.0)`` and wins, and a raw assignment is undone after the test.
+    """
+    import math
+
+    from kiro_crew import history
+
+    _floor_monkeypatch.setattr(history, "_last_cleanup", math.inf)
 
 
 @pytest.fixture(autouse=True)
@@ -1390,13 +1369,15 @@ def _reset_runtime_ownership_tables(request):
 
 
 @pytest.fixture(autouse=True)
-def _reset_session_switch_locks(monkeypatch):
+def _reset_session_switch_locks(_floor_monkeypatch):
     """Tests reuse session keys across loops; the gateway has one serving loop."""
     import weakref
 
     from kiro_crew import llm_helpers
 
-    monkeypatch.setattr(llm_helpers, "_slot_switch_session_locks", weakref.WeakValueDictionary())
+    _floor_monkeypatch.setattr(
+        llm_helpers, "_slot_switch_session_locks", weakref.WeakValueDictionary()
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -1544,7 +1525,7 @@ def _shut_down_shared_pools_in_session():
 
 
 @pytest.fixture(autouse=True)
-def _no_boot_sandbox_sweep(monkeypatch):
+def _no_boot_sandbox_sweep(_floor_monkeypatch):
     """A real ``SessionManager`` must not sweep the host's sandbox profiles from a test.
 
     ``SessionManager.get_or_create`` arms the cleanup loop, whose boot reclaim
@@ -1564,7 +1545,7 @@ def _no_boot_sandbox_sweep(monkeypatch):
     """
     from kiro_crew import session as session_mod
 
-    monkeypatch.setattr(session_mod, "cleanup_stale_sandbox_profiles", lambda *a, **kw: 0)
+    _floor_monkeypatch.setattr(session_mod, "cleanup_stale_sandbox_profiles", lambda *a, **kw: 0)
 
 
 @pytest.fixture(autouse=True)

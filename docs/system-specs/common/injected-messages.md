@@ -125,11 +125,15 @@ Usage: <credits> credits · <elapsed>
 races the sub-agents. Your reply is what the user sees, so fold the results into it
 rather than pasting them.
 
-When every agent in a fan-out has completed and each result has been processed, one
-further synthesis turn is fired, prefixed `SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM]
-Sub-agent synthesis:'`. Its visible reply is the consolidated, user-facing summary,
-so treat it as the deliverable: restate the goal, synthesize across the agents
-rather than repeating each in turn, and give concrete next actions.
+When every agent in a fan-out has completed and the results reached you in two or
+more completion turns, one further synthesis turn is fired, prefixed
+`SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM] Sub-agent synthesis:'`. Its visible reply is
+the consolidated, user-facing summary, so treat it as the deliverable: restate the
+goal, synthesize across the agents rather than repeating each in turn, and give
+concrete next actions. A batch whose results all arrived in one turn (a lone
+sub-agent, or one wave digest) normally gets no synthesis turn: that turn's reply
+is the deliverable. The one exception is a task store the turn-end fire gate
+could not read; its later re-check fires the synthesis as before.
 
 The prompt itself is appended to the slot as an `inject` row carrying
 `meta.injectKind = "synthesis"`, and the turn is dispatched with
@@ -422,11 +426,11 @@ recording steer/reject order.
 
 **The task runner steers the same notice.** `task_executor` answers the
 permission requests of every autonomous-project and cron-launched step turn
-through ONE funnel, `_reject_and_log`, whose REQUIRED `cause=` keyword is the
-per-site verdict: a `DENY_CAUSE_*` name steers `llm_helpers._steer_host_deny`
-before the reject, and `None` is the explicit "not a host deny" that stays bare,
-so a site added later has to write one or the other. The SEL row is written
-first at every site. Per site:
+through `tool_permission.settle`, where every refusal says who refused: a HOST
+refusal carries a `DENY_CAUSE_*` cause and steers `llm_helpers._steer_host_deny`
+before the reject, a person's no and a teardown carry none and stay bare, and a
+host refusal without a cause cannot be built. The SEL row is written first at
+every site. Per site:
 
 - the agent spec's PreToolUse gate blocked the call (a delivered deny, or a gate
   with no verdict — an unreadable spec, a hook that could not run) — `policy`,
@@ -443,9 +447,10 @@ first at every site. Per site:
 `task_planner.decompose` (the decomposition turn) denies inline, audit → steer →
 reject: the stored hooks' `deny` — `policy`; the deny-by-default when the phase
 has no hook store to gate a call — `surface_policy` (the planning phase runs no
-tools). `test_taskrunner_deny_notice.py` enumerates both modules' sites with
-their verdicts, pins the funnel's order and required keyword, and drives each
-deny with a provider double recording steer/reject order.
+tools). `test_taskrunner_deny_notice.py` enumerates the planner's sites with
+their verdicts and drives each deny on both modules with a provider double
+recording steer/reject order; `test_tool_permission.py` pins the ladder's
+order and its cause rule.
 
 **The eval harness and the subagent surface steer the same notice.**
 `eval/runner.py` answers a scenario turn's permission requests inline, audit →
@@ -455,11 +460,10 @@ filesystem tool (a sensitive credential path, or no path it can read from the
 input) — `policy`; and a tool the harness does not know to be read-only —
 `surface_policy`, the notice saying the harness runs tools read-only and
 offering no remediation. `eval/judge.py` denies every tool call at its one site —
-`surface_policy` (the judge runs no tools). The subagent surface denies through
-ONE funnel, `SubagentManager._reject_and_log` in `subagent.py`, called from
-`subagent_manager/run.py`; its REQUIRED `cause=` keyword is the per-site
-verdict, so a site added later has to write one or the other. The SEL row (and
-the child-denial metric) is written first. Per site in `run.py`:
+`surface_policy` (the judge runs no tools). The subagent surface answers through
+`tool_permission.settle` with the ladder `subagent_manager/run.py` builds, under
+the same cause rule. The SEL row (and the child-denial metric) is written first.
+Per site:
 
 - the agent spec's PreToolUse gate blocked the call, and the stored hooks'
   `deny` — `policy`, with the gate's or the hook's reason.
@@ -475,9 +479,11 @@ the child-denial metric) is written first. Per site in `run.py`:
   correct.
 
 `test_eval_subagent_deny_notice.py` enumerates every `reject_tool(` in the two
-eval modules and every funnel call in `run.py` with its verdict, pins the
-funnel's order and required keyword, and drives each deny with a provider double
-recording steer/reject order.
+eval modules with its verdict and drives each of their denies; through a real
+subagent run it drives each host deny above, the gateway approver's no and a
+`turn_limit` bail, all with a provider double recording steer/reject order.
+`test_tool_permission.py` drives every approver's no and both bails through the
+subagent's own ladder, and pins the ladder's order and its cause rule.
 
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry

@@ -3,11 +3,15 @@
 The first line of a session file carries the slot-owned fields (title, folder,
 tags, model, mode and the rest), fields other layers own (carried through, a
 durable execution record only ever tightened to the line's mode), and the privacy
-contract every learning reader gates on (``memory_mode``). This module owns that fold: the memory-mode ratchet and its
-worker-to-loop witness, the monotonic newest-human-turn stamp, and the bounded
-dismissed source-link line. ``_save_slot_to_history`` decides when it runs.
+contract every learning reader gates on (``memory_mode``). The slot-owned fields
+and their key order are ``metadata_codec``'s; this module owns what a save folds
+against the line on disk before it encodes them: the memory-mode ratchet and its
+worker-to-loop witness, the monotonic newest-human-turn stamp, the bounded
+dismissed source-link line, the held-note retirement, and the rows-only deferral.
+``_save_slot_to_history`` decides when it runs.
 
-New slot-owned metadata fields belong here.
+New rules about what a save folds from the line it replaces belong here; new
+slot-owned fields belong in ``metadata_codec``.
 """
 
 from __future__ import annotations
@@ -38,7 +42,6 @@ from kiro_crew.history import (
     carry_unowned_metadata,
     latest_transcript_ts,
 )
-from kiro_crew.memory_stores import named_store_or_empty
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -290,6 +293,37 @@ def line_memory_mode(meta: dict) -> str:
     return line_mode if line_mode in MEMORY_MODES else "persistent"
 
 
+def _merge_dismissed_line(slot: _ChatSlot, meta: dict) -> list[str] | None:
+    """The ``dismissed_source_links`` an empty-window merge writes, or ``None``.
+
+    Decided under the lock from the on-disk ``meta``. When the slot's set is
+    HYDRATED (reflects disk) it is written (sorted, deterministic; empty =
+    nothing dismissed). When it is UNHYDRATED (bound while the set could not be
+    read) the in-memory empty set does not reflect disk, so the on-disk line is
+    carried forward rather than erasing the real tombstones. And while an unlink
+    transaction holds an uncommitted TENTATIVE dismissal
+    (``_dismissed_txn_depth`` > 0) the on-disk line is carried forward too: the
+    tentative set may be rolled back by a failed guarded write, and this
+    provisional flush must not outlive it.
+    """
+    if slot._dismissed_hydrated and slot._dismissed_txn_depth == 0:
+        # UNION with the on-disk line rather than replacing: a stale off-loop
+        # prefetch can bind a hydrated set that predates a concurrent unlink's
+        # committed tombstone, and a bare replacement would erase it. Dismissals
+        # only grow, so the union can only ADD. The in-memory set and the raw
+        # (untrusted) on-disk list go in as ONE chained iterable:
+        # _capped_dismissed_line validates, dedups and bounds during iteration,
+        # so no unbounded merged set is built before the cap.
+        disk_prev = meta.get("dismissed_source_links")
+        if isinstance(disk_prev, list):
+            return _capped_dismissed_line(chain(slot._dismissed_source_links, disk_prev))
+        return _capped_dismissed_line(slot._dismissed_source_links)
+    carry = meta.get("dismissed_source_links")
+    if isinstance(carry, list) and carry:
+        return _capped_dismissed_line(carry)
+    return None
+
+
 def merge_empty_window(
     conv_log: ConversationLog,
     slot: _ChatSlot,
@@ -310,199 +344,41 @@ def merge_empty_window(
 
     # A FORCED (or closing) save of a message-less slot is a metadata
     # mutation (folder filing/unfiling, a tag assignment, a pin, a
-    # pinned title, a mode switch, a close) -- the full save below has no window to
+    # pinned title, a mode switch, a close) -- the full save has no window to
     # write, but the mutation still has to reach disk. `session_create`
     # persists `folder_id` at birth, so an empty newborn HAS a metadata
     # line and any acknowledged metadata change before its first message must
     # overwrite that line, or a restart resurrects the birth state the
     # user already changed. The merge carries every slot-owned field a
-    # force/closed save is responsible for -- not just `folder_id`:
-    # the tag routes, the pin route, the recreate PATCH (folder or
-    # pinned title) and the close path all persist ONLY through this
-    # save, so a folder-only merge would silently drop their
-    # acknowledged writes on restart. Merged ONLY into an existing
-    # line: a slot with no line at all does not survive a restart, so
-    # there is nothing to reconcile, and materializing files for every
-    # empty tab here would create transcripts nothing else expects.
-    # The existence guard runs INSIDE the same cross-process lock as
-    # the merge (`update_metadata_if`): the plain update is an upsert,
-    # so a checked-then-written pair would let a permanent deletion
-    # land between the two and be resurrected as a fresh file.
-    # Clearable fields are written even when empty -- the merge cannot
-    # delete a key, and rehydrate treats a falsy value as cleared
-    # (unfiled / untagged / unpinned / untitled / default mode). Fails
-    # closed on an unreadable record, per `update_metadata_if`'s own
-    # contract.
-    def _fresh_fields(meta: dict) -> dict:
-        # Mirrors the FULL save's slot-owned enumeration (the
-        # ``meta_line`` construction below), so a forced save of an
-        # empty slot persists exactly what a forced save of a
-        # non-empty slot would persist for the metadata line -- the
-        # invariant that keeps this branch from silently dropping
-        # whichever acknowledged mutation a route happens to persist
-        # through it (folder, tags, pin, title, mode, project,
-        # artifact binding, ...). Two write classes, matching
-        # rehydrate's semantics:
-        # - CLEARABLE fields are written even when empty (the merge
-        #   cannot delete a key; rehydrate treats a falsy value as
-        #   cleared: unfiled / untagged / unpinned / untitled /
-        #   default mode / unbound artifact / uncolored).
-        # - IDENTITY and MONOTONIC fields are written only when
-        #   truthy, exactly like the full save (origin's fail-closed
-        #   sentinel and the once-flags must never be erased by a
-        #   writer that has not learned them).
-        if slot.reasoning_effort:
-            cp._remember_reasoning_effort_for_restore(slot.reasoning_effort)
-        # ``meta`` is the line as the guard read it under the lock, so
-        # the ratchet folds the CURRENT on-disk mode, not a snapshot.
-        _mode = stricter_memory_mode(
-            line_memory_mode(meta), retained_memory_mode(slot, live_session)
-        )
-        fields: dict = {
-            "folder_id": slot.folder_id or "",
-            "tags": list(slot.tags),
-            "pinned": bool(slot.pinned),
-            "mode": slot.mode or "",
-            "artifact": slot._artifact or "",
-            "reasoning_effort": slot.reasoning_effort or "",
-            "color_index": slot.color_index,
-            "color_hex": slot.color_hex or "",
-            "color_theme": slot.color_theme or "",
-            "memory_mode": _mode,
-            "model": slot.model,
-            # CLEARABLE: the queued prompts a restore hands back. Written
-            # even when empty, so a drain that emptied the queue is not
-            # left with the pre-drain set on disk (the merge cannot
-            # delete a key, and the restore treats a falsy value as an
-            # empty queue). The value is the snapshot taken WITH the
-            # window, never a fresh read: a re-read here would be a
-            # second, unpaired observation of the queue.
-            "queued_prompts": queue_snapshot,
-            # None means "follow the global threshold" and is the
-            # cleared value (rehydrate reads it with ``is not None``),
-            # so the override is CLEARABLE: written even when None,
-            # like the other clearable fields above.
-            "autocompact_pct": slot.autocompact_pct,
-        }
-        if slot.title and slot.title != slot.key:
-            fields["title"] = slot.title
-            # Persist the title's provenance next to it (mirrors the
-            # full save): without it rehydration conservatively
-            # re-classifies an auto title as "user" and locks the
-            # refresh out.
-            _origin = getattr(slot, "_title_origin", "")
-            if _origin:
-                fields["title_origin"] = _origin
-            _mark = getattr(slot, "_title_refresh_mark", 0)
-            if _mark:
-                fields["title_refresh_mark"] = _mark
-            # Title-coupled like the two fields above, and written
-            # UNCONDITIONALLY: _persist_title is the primary writer but
-            # returns False without retry on a transient failure, so a
-            # full save must land the CURRENT boolean either direction
-            # -- a skipped True loses the turn-one refresh after
-            # restart, and a skipped False (flag just cleared by
-            # consumption or manual regenerate) re-arms it.
-            fields["title_low_signal"] = bool(getattr(slot, "_title_low_signal", False))
-        else:
-            fields["title"] = ""
-        if slot.agent:
-            fields["agent"] = slot.agent
-        if slot.workspace:
-            fields["workspace"] = slot.workspace
-        # CLEARABLE, and it has to be: the merge cannot delete a key, so a
-        # crew rebound from a silo back to the default store would keep
-        # consolidating into the silo it left. The cleared spelling is ""
-        # rather than "default" so it reads as falsy everywhere -- the
-        # rehydrate mirror and the consolidator's own resolver both treat
-        # falsy as "the global store", which is also how a session written
-        # before crew stores existed reads.
-        # A RESTRICTED line names no store (see the full save below).
-        fields["memory_store"] = (
-            named_store_or_empty(slot.memory_store) if _mode == "persistent" else ""
-        )
-        # Clearable like memory_store: a name-only pick after a template
-        # pick must not keep advertising the template namespace.
-        fields["agent_kind"] = slot.agent_kind
-        # Written even when EMPTY: the merge is an upsert that cannot delete a key, so
-        # omitting a cleared project leaves the previous directory on disk to be read
-        # back as though the clear never happened.
-        fields["project"] = slot.project
-        if slot._app:
-            fields["app"] = slot._app
-        if slot._origin:
-            fields["origin"] = slot._origin
-        if getattr(slot, "_created_by", ""):
-            # Creator attribution: the member ownership boundary in
-            # session-control authorization reads it, so dropping it here
-            # would orphan a member's workers on the next restart.
-            fields["created_by"] = slot._created_by
-        # `_created_by_sid` is NOT persisted (lineage is process-local; see
-        # _ChatSlot._lineage_minted).
-        if slot.linked_session_key:
-            fields["linked_session_key"] = slot.linked_session_key
-        if getattr(slot, "channel_origin", False):
-            fields["channel_origin"] = True
-        if slot.forked_from is not None:
-            fields["forked_from"] = slot.forked_from
-        # CLEARABLE: the merge cannot delete a key and rehydrate reads
-        # zero as "no local turn outstanding", so the current value is
-        # written either way -- a forced save after a turn's teardown
-        # must not leave the admitted generation on disk.
-        fields["turn_in_flight_generation"] = slot._turn_in_flight_generation
-        # Same rule for the opening-row copy: None is the cleared value
-        # (rehydrate reads anything but a dict as "no copy").
-        fields["turn_in_flight_prompt"] = slot._turn_in_flight_prompt
-        if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
-            # All three or none, exactly like the full save: a newborn
-            # bound to a peer has an EMPTY window until the first relayed
-            # row lands, so this merge is the only writer its binding
-            # ever sees. Dropping it here means a restart in that window
-            # brings the session back as an ordinary local one and the
-            # next turn runs on this machine instead of the crew the user
-            # picked. The completeness guard keeps the fail-closed
-            # invariant: a half-binding is never written, so rehydration
-            # never has to repair one.
-            fields["executor"] = "remote"
-            fields["instance_id"] = slot.instance_id
-            fields["remote_slot"] = slot.remote_slot
-            if getattr(slot, "_relay_in_flight", False):
-                # Only ever written while a turn is mid-flight; the relay
-                # clears it when the turn ends, so a persisted True means
-                # "crashed mid-turn" on reload. Nested under the binding
-                # because it is meaningless without one.
-                fields["relay_in_flight"] = True
-        if getattr(slot, "_tab_id", None):
-            fields["tab_id"] = slot._tab_id
-        if getattr(slot, "_auto_tagged", False):
-            # Once-flag, monotonic (see the full save): written when
-            # set, never cleared.
-            fields["auto_tagged"] = True
-        if getattr(slot, "_human_seen", False):
-            fields["human_seen"] = True
-        if slot._channel_folder_filed:
-            # Sticky like the full save; the disk-carry half is
-            # inherent here since a merge never deletes a key.
-            fields["channel_folder_filed"] = True
-        if closed:
-            # Without this a closed empty newborn's line stays
-            # open-shaped and the next restart resurrects a tab the
-            # user dismissed.
-            fields["closed"] = True
-            fields["closed_at"] = closed_at if closed_at is not None else time.time()
-        return fields
-
-    # The slot fields are read INSIDE the guard, which
-    # `update_metadata_if` evaluates under the cross-process lock at
-    # write time -- exactly the contract that method exists for ("the
-    # decision is re-made here rather than trusted from before the
-    # lock"). A dict snapshotted before the lock could commit out of
-    # order: a tag save that snapshotted `pinned=False` before a
-    # concurrent pin request committed `pinned=True` would land its
-    # stale aggregate second and silently revert the acknowledged pin.
-    # The full save has the same shape -- it builds its metadata line
-    # from slot state inside the locked block -- so whichever writer
-    # commits last writes the newest slot state.
+    # force/closed save is responsible for -- the tag routes, the pin route,
+    # the recreate PATCH (folder or pinned title) and the close path all
+    # persist ONLY through this save. Merged ONLY into an existing line: a
+    # slot with no line at all does not survive a restart, so there is nothing
+    # to reconcile, and materializing files for every empty tab here would
+    # create transcripts nothing else expects. The existence guard runs INSIDE
+    # the same cross-process lock as the merge (`update_metadata_if`): the
+    # plain update is an upsert, so a checked-then-written pair would let a
+    # permanent deletion land between the two and be resurrected as a fresh
+    # file. Fails closed on an unreadable record, per `update_metadata_if`'s
+    # own contract.
+    #
+    # The merge writes the codec's MERGE form: the same slot-owned fields a
+    # full save writes, with clearable fields written even when empty (the
+    # merge cannot delete a key; a read treats a falsy value as cleared) and
+    # identity and monotonic fields written only when set (origin's fail-closed
+    # sentinel and the once-flags must never be erased by a writer that has not
+    # learned them).
+    #
+    # The slot fields are read INSIDE the guard, which `update_metadata_if`
+    # evaluates under the cross-process lock at write time -- exactly the
+    # contract that method exists for ("the decision is re-made here rather
+    # than trusted from before the lock"). A dict snapshotted before the lock
+    # could commit out of order: a tag save that snapshotted `pinned=False`
+    # before a concurrent pin request committed `pinned=True` would land its
+    # stale aggregate second and silently revert the acknowledged pin. The
+    # full save has the same shape -- it builds its metadata line from slot
+    # state inside the locked block -- so whichever writer commits last writes
+    # the newest slot state.
     merged_fields: dict = {}
     guard_state = {"ran": False}
 
@@ -511,51 +387,36 @@ def merge_empty_window(
         if not meta:
             return False
         merged_fields.clear()
-        merged_fields.update(_fresh_fields(meta))
-        # Serialized dismissed source-link identities, decided under the
-        # lock from the on-disk ``meta``. When the slot's set is HYDRATED
-        # (reflects disk) write it (sorted, deterministic; empty = nothing
-        # dismissed). When it is UNHYDRATED (bound while the set could not
-        # be read) the in-memory empty set does not reflect disk, so carry
-        # the on-disk line forward rather than erase the real tombstones.
-        # And while an unlink transaction holds an uncommitted TENTATIVE
-        # dismissal (``_dismissed_txn_depth`` > 0), carry the on-disk line
-        # forward too: the tentative set may be rolled back by a failed
-        # guarded write, and this provisional flush must not outlive it.
-        if slot._dismissed_hydrated and slot._dismissed_txn_depth == 0:
-            # UNION with the on-disk line (available here as ``meta``)
-            # rather than replacing: a stale off-loop prefetch can bind a
-            # hydrated set that predates a concurrent unlink's committed
-            # tombstone, and a bare replacement would erase it. Dismissals
-            # only grow, so the union can only ADD.
-            _disk_prev = meta.get("dismissed_source_links")
-            if isinstance(_disk_prev, list):
-                # Pass the in-memory set and the raw (untrusted) on-disk
-                # list as ONE chained iterable: _capped_dismissed_line
-                # validates, dedups and bounds during iteration, so no
-                # unbounded merged set is built here before the cap.
-                merged_fields["dismissed_source_links"] = _capped_dismissed_line(
-                    chain(slot._dismissed_source_links, _disk_prev)
-                )
-            else:
-                merged_fields["dismissed_source_links"] = _capped_dismissed_line(
-                    slot._dismissed_source_links
-                )
-        else:
-            _carry = meta.get("dismissed_source_links")
-            if isinstance(_carry, list) and _carry:
-                merged_fields["dismissed_source_links"] = _capped_dismissed_line(_carry)
-        # Held /note lines: a MERGE writer, so it unions
-        # with the on-disk hold and never shrinks it. A live-state
-        # mirror here could race a turn-end flush that just delivered
-        # rows into a window this empty-window save does not write —
-        # clearing the only durable copy of a note whose row is
-        # unsaved. Retirement belongs to the full save's paired
-        # snapshot alone.
-        merged_fields["deferred_notes"] = union_deferred_notes(
-            meta.get("deferred_notes"),
-            serialize_deferred_notes(slot._deferred_notes[:]),
+        if slot.reasoning_effort:
+            cp._remember_reasoning_effort_for_restore(slot.reasoning_effort)
+        # ``meta`` is the line as the guard read it under the lock, so the
+        # ratchet folds the CURRENT on-disk mode, not a snapshot.
+        mode = stricter_memory_mode(
+            line_memory_mode(meta), retained_memory_mode(slot, live_session)
         )
+        folds = cp._metadata_codec.SaveFolds(
+            memory_mode=mode,
+            closed=closed,
+            # Without the close a closed empty newborn's line stays open-shaped
+            # and the next restart resurrects a tab the user dismissed.
+            closed_at=(closed_at if closed_at is not None else time.time()) if closed else None,
+            # The value is the snapshot taken WITH the window, never a fresh
+            # read: a re-read here would be a second, unpaired observation of
+            # the queue.
+            queued_prompts=queue_snapshot,
+            dismissed_source_links=_merge_dismissed_line(slot, meta),
+            # Held /note lines: a MERGE writer, so it unions with the on-disk
+            # hold and never shrinks it. A live-state mirror here could race a
+            # turn-end flush that just delivered rows into a window this
+            # empty-window save does not write — clearing the only durable copy
+            # of a note whose row is unsaved. Retirement belongs to the full
+            # save's paired snapshot alone.
+            deferred_notes=union_deferred_notes(
+                meta.get("deferred_notes"),
+                serialize_deferred_notes(slot._deferred_notes[:]),
+            ),
+        )
+        merged_fields.update(cp._metadata_codec.encode(slot, merge=True, folds=folds))
         return True
 
     applied = conv_log.update_metadata_if(
@@ -589,6 +450,44 @@ def merge_empty_window(
             slot._queue_persisted_sig = queue_persist_signature(_merged_queue)
 
 
+def _full_dismissed_line(slot: _ChatSlot, existing_meta: dict) -> list[str] | None:
+    """The ``dismissed_source_links`` a full save writes, or ``None`` to omit it.
+
+    The full save rebuilds the line from scratch, so an omitted key means "no
+    dismissals" on restore; a dismissal is permanent (there is no unlink-undo),
+    so the set only ever grows within a session.
+
+    A slot bound to a transcript whose dismissed set could NOT be read
+    (``_dismissed_hydrated is False``) holds an EMPTY in-memory set that does NOT
+    reflect disk, so serializing it would erase the real tombstones: the on-disk
+    line is carried forward verbatim instead until a readable hydration replaces
+    it. Likewise, while an unlink transaction holds an uncommitted TENTATIVE
+    dismissal (``_dismissed_txn_depth`` > 0), the in-memory set is ahead of the
+    authoritative guarded write and may be rolled back; carrying the on-disk line
+    forward keeps this provisional flush from persisting a tombstone that a
+    failed DELETE would then be unable to take back.
+    """
+    if not slot._dismissed_hydrated or slot._dismissed_txn_depth > 0:
+        carry = existing_meta.get("dismissed_source_links")
+        if isinstance(carry, list) and carry:
+            return _capped_dismissed_line(carry)
+        return None
+    disk_prev = existing_meta.get("dismissed_source_links")
+    # UNION the in-memory set with the on-disk line rather than replacing disk
+    # with memory. ``_dismissed_hydrated`` means the set was readable AT BIND,
+    # but a stale off-loop prefetch (workflow/cron fallback) can bind a set that
+    # predates a concurrent unlink's committed tombstone; a bare replacement
+    # would then SHRINK the on-disk set and erase that tombstone. A union can
+    # only ADD, whichever side is momentarily stale, while still persisting a
+    # genuinely new in-memory dismissal. The two go in as ONE chained iterable
+    # so no unbounded merged set is built before the cap.
+    if isinstance(disk_prev, list):
+        return _capped_dismissed_line(chain(slot._dismissed_source_links, disk_prev))
+    if slot._dismissed_source_links:
+        return _capped_dismissed_line(slot._dismissed_source_links)
+    return None
+
+
 def build_full_line(
     slot: _ChatSlot,
     existing_meta: dict,
@@ -610,40 +509,19 @@ def build_full_line(
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
-    meta_line: dict = {
-        "_type": "metadata",
-        "created_at": existing_meta.get("created_at") or slot.created_at,
-        "last_consolidated": existing_meta.get("last_consolidated", 0),
-    }
-    # Preserve history-layer-owned metadata this dashboard save does NOT
-    # manage. The save is authoritative only for the slot fields it writes
-    # (SLOT_OWNED_META_KEYS), where an absent field means "cleared"; every
-    # other key is another layer's durable state, and reconstructing the
-    # subset deletes it. That is not hypothetical: it erased the rotation
-    # generation (re-opening the consolidation race the generation check
-    # closed) and then the consolidation retry accounting (resetting the
-    # backoff so billed retries resumed). Carrying unowned keys through by
-    # default closes the class instead of enumerating one more field to
-    # rescue. Applied after the slot fields below so an inherited value can
-    # never shadow the slot's own state.
+    # Epoch stamp of WHEN the tab was closed. The channel-slot reconciler
+    # compares channel-side activity against this to decide whether a close
+    # still stands: a Discord/Slack message arriving after the close
+    # re-surfaces the conversation, while a conversation that stayed idle stays
+    # closed. Prefer the caller-supplied instant (captured by note_slot_closed
+    # at the moment the user acted): this save runs only after the close
+    # handler's awaits (task cancellation, patient lock acquire), and stamping
+    # save time here would make channel activity that landed during that
+    # teardown window compare as OLDER than the close — hiding a conversation
+    # the reactivation rule should surface. The save-time fallback covers
+    # callers with no user gesture to anchor to.
     if closed:
-        meta_line["closed"] = True
-        # Epoch stamp of WHEN the tab was closed. The channel-slot
-        # reconciler compares channel-side activity against this to
-        # decide whether a close still stands: a Discord/Slack message
-        # arriving after the close re-surfaces the conversation, while
-        # a conversation that stayed idle stays closed.
-        #
-        # Prefer the caller-supplied instant (captured by
-        # note_slot_closed at the moment the user acted): this save
-        # runs only after the close handler's awaits (task
-        # cancellation, patient lock acquire), and stamping save time
-        # here would make channel activity that landed during that
-        # teardown window compare as OLDER than the close — hiding a
-        # conversation the reactivation rule should surface. The
-        # save-time fallback covers callers with no user gesture to
-        # anchor to (and legacy call sites).
-        meta_line["closed_at"] = closed_at if closed_at is not None else time.time()
+        closed_at = closed_at if closed_at is not None else time.time()
     # Read INSIDE the lock, like every other slot field on this line: a
     # mode switch that committed while this save waited must land here,
     # or the restart re-reads the looser value. Folded with the mode the
@@ -654,196 +532,9 @@ def build_full_line(
     _mode = stricter_memory_mode(
         line_memory_mode(existing_meta), retained_memory_mode(slot, live_session)
     )
-    meta_line["memory_mode"] = _mode
-    if slot.title and slot.title != slot.key:
-        meta_line["title"] = slot.title
-        # Persist the title's provenance next to it (mirrors
-        # _persist_title): without this, the canonical full save would
-        # strip the field and rehydration would conservatively
-        # re-classify an auto title as "user" after restart —
-        # permanently locking the background refresh out.
-        _origin = getattr(slot, "_title_origin", "")
-        if _origin:
-            meta_line["title_origin"] = _origin
-        _mark = getattr(slot, "_title_refresh_mark", 0)
-        if _mark:
-            meta_line["title_refresh_mark"] = _mark
-        # Title-coupled like the two fields above, and written
-        # UNCONDITIONALLY: _persist_title is the primary writer but
-        # returns False without retry on a transient failure, so the
-        # full save must land the CURRENT boolean either direction -- a
-        # skipped True loses the turn-one refresh after restart, and a
-        # skipped False (flag just cleared by consumption or manual
-        # regenerate) re-arms it.
-        meta_line["title_low_signal"] = bool(getattr(slot, "_title_low_signal", False))
-    if slot.agent:
-        meta_line["agent"] = slot.agent
-    meta_line["model"] = slot.model
     if slot.reasoning_effort:
         cp._remember_reasoning_effort_for_restore(slot.reasoning_effort)
-        meta_line["reasoning_effort"] = slot.reasoning_effort
-    # Unconditional, matching the empty-window merge mirror: None is
-    # the cleared "follow the global" value, not an absent field.
-    meta_line["autocompact_pct"] = slot.autocompact_pct
-    # Serialized dismissed source-link identities. This path rebuilds the
-    # metadata line from scratch, so an omitted key means "no dismissals"
-    # on restore -- write it only when non-empty (sorted for a
-    # deterministic line). A dismissal is permanent (there is no unlink-
-    # undo), so the set only ever grows within a session; the empty case
-    # is simply a session that has never dismissed a chip.
-    #
-    # A slot bound to a transcript whose dismissed set could NOT be read
-    # (``_dismissed_hydrated is False``) holds an EMPTY in-memory set that
-    # does NOT reflect disk, so serializing it would erase the real
-    # tombstones. Carry the on-disk line forward verbatim instead until a
-    # readable hydration replaces it.
-    #
-    # Likewise, while an unlink transaction holds an uncommitted TENTATIVE
-    # dismissal (``_dismissed_txn_depth`` > 0), the in-memory set is ahead
-    # of the authoritative guarded write and may be rolled back. Carrying
-    # the on-disk line forward keeps this provisional flush from
-    # persisting a tombstone that a failed DELETE would then be unable to
-    # take back (the 409-then-restart-hides-the-chip corruption).
-    if not slot._dismissed_hydrated or slot._dismissed_txn_depth > 0:
-        _carry = existing_meta.get("dismissed_source_links")
-        if isinstance(_carry, list) and _carry:
-            meta_line["dismissed_source_links"] = _capped_dismissed_line(_carry)
-    elif slot._dismissed_source_links or isinstance(
-        existing_meta.get("dismissed_source_links"), list
-    ):
-        # UNION the in-memory set with the existing on-disk line rather
-        # than replacing disk with memory. ``_dismissed_hydrated`` means
-        # the set was readable AT BIND, but a stale off-loop prefetch
-        # (workflow/cron fallback) can bind a set that predates a
-        # concurrent unlink's committed tombstone; a bare replacement
-        # would then SHRINK the on-disk set and erase that tombstone
-        # (chip reappears after restart). Dismissals are permanent and
-        # only grow, so a union can only ADD — it can never drop a
-        # committed tombstone, whichever side is momentarily stale, while
-        # still persisting a genuinely new in-memory dismissal.
-        _disk_prev = existing_meta.get("dismissed_source_links")
-        if isinstance(_disk_prev, list):
-            # Pass the in-memory set and the raw (untrusted) on-disk list
-            # as ONE chained iterable: _capped_dismissed_line validates,
-            # dedups and bounds during iteration, so no unbounded merged
-            # set is built here before the cap.
-            meta_line["dismissed_source_links"] = _capped_dismissed_line(
-                chain(slot._dismissed_source_links, _disk_prev)
-            )
-        elif slot._dismissed_source_links:
-            meta_line["dismissed_source_links"] = _capped_dismissed_line(
-                slot._dismissed_source_links
-            )
-    if slot.mode:
-        meta_line["mode"] = slot.mode
-    if slot.workspace and slot.workspace != "default":
-        meta_line["workspace"] = slot.workspace
-    # A restricted session's line names no memory store. The store name is
-    # what ``read_session_execution`` reads as an owner claim when the
-    # line carries no execution carrier -- and a restricted session never
-    # writes one (its carrier lives in process and is released on close).
-    # A store here would make the restart refuse the chat as a legacy
-    # member record with no identity. Left out, the restart reads the
-    # session as unbound, and the first turn re-selects the member from
-    # ``agent`` under the retained mode, exactly as the live session did.
-    # ``agent_kind`` stays: it is a display fact, not an owner claim.
-    if _mode == "persistent" and (_named := named_store_or_empty(slot.memory_store)):
-        meta_line["memory_store"] = _named
-    if slot.agent_kind:
-        meta_line["agent_kind"] = slot.agent_kind
-    if slot.project:
-        meta_line["project"] = slot.project
-    # Remote-execution binding. All three are written together or not at
-    # all: a half-restored binding (executor="remote" with no peer slot)
-    # is the fail-closed refusal case, so persisting the marker without
-    # its target would resurrect a session that can never run. Written
-    # only when the whole binding is present, and read back the same way.
-    if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
-        meta_line["executor"] = "remote"
-        meta_line["instance_id"] = slot.instance_id
-        meta_line["remote_slot"] = slot.remote_slot
-        if getattr(slot, "_relay_in_flight", False):
-            # See the merge-save site: written only while a turn is
-            # in-flight, so a True read back on reload is the crash signal
-            # that triggers the interrupted-turn row.
-            meta_line["relay_in_flight"] = True
-    if slot._turn_in_flight_generation > 0:
-        # Written while a local turn is between admission and teardown
-        # and omitted otherwise; ``SLOT_OWNED_META_KEYS`` makes that
-        # omission the durable clear.
-        meta_line["turn_in_flight_generation"] = slot._turn_in_flight_generation
-        if slot._turn_in_flight_prompt is not None:
-            meta_line["turn_in_flight_prompt"] = slot._turn_in_flight_prompt
-    if slot.folder_id:
-        meta_line["folder_id"] = slot.folder_id
-    if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):
-        # Sticky, and carried forward from disk rather than only from the
-        # slot: this function rebuilds the metadata line from scratch, so
-        # a restore path that failed to set the in-memory flag would
-        # otherwise ERASE the marker on the next save and the
-        # conversation would be re-filed. Preserving the on-disk value
-        # makes that whole class of omission harmless — same reason
-        # rotation_generation is carried forward above.
-        meta_line["channel_folder_filed"] = True
-    if slot._app:
-        meta_line["app"] = slot._app
-    # Slot ORIGIN (user / app / cron) must round-trip with ``app``:
-    # the rehydrate paths restore ``origin=meta.get("origin", "")`` and an
-    # untagged restore falls back to the fail-closed empty sentinel. Without
-    # this write every slot would come back unattributed after a restart —
-    # ``slots:user`` subscribers would stop seeing user slots, and a cron
-    # slot would lose the CRON tag that keeps it out of ``slots:user``.
-    if slot._origin:
-        meta_line["origin"] = slot._origin
-    if getattr(slot, "_created_by", ""):
-        # Creator attribution — read by the member ownership boundary in
-        # session-control authorization; see the partial-save mirror above.
-        meta_line["created_by"] = slot._created_by
-    # `_created_by_sid` is NOT persisted -- see the partial-save mirror above.
-    # Artifact companion binding — persisted so a bound
-    # session restored after a gateway restart (or resumed from the
-    # History page) comes back as the artifact's active bound session.
-    if slot._artifact:
-        meta_line["artifact"] = slot._artifact
-    if slot.pinned:
-        meta_line["pinned"] = True
-    if slot.color_index is not None:
-        meta_line["color_index"] = slot.color_index
-    if slot.color_hex:
-        meta_line["color_hex"] = slot.color_hex
-    if slot.color_theme:
-        meta_line["color_theme"] = slot.color_theme
-    if slot.tags:
-        meta_line["tags"] = list(slot.tags)
-    if getattr(slot, "_auto_tagged", False):
-        # Once-flag for project auto-tagging: without it a restart
-        # re-runs maybe_auto_tag and silently re-adds a tag the user
-        # removed (see chat_auto_tag.maybe_auto_tag).
-        meta_line["auto_tagged"] = True
-    if getattr(slot, "_human_seen", False):
-        # Once-flag for attendance (state._ChatSlot.unattended). Without
-        # it a restart drops an app-owned tab a person is working in from
-        # the 2h approval window to the 180s deny-fast — a gateway
-        # restart happens on every upgrade and is not evidence the person
-        # left. Monotonic like auto_tagged above, so it is written when
-        # set and never cleared; both are therefore absent from
-        # SLOT_OWNED_META_KEYS and survive via carry_unowned_metadata
-        # even on a save by a slot that has not learned the flag yet.
-        meta_line["human_seen"] = True
-    # Durable copy of the held /note lines. OWNED
-    # (in SLOT_OWNED_META_KEYS), so this rebuild decides the key's
-    # whole value — and retirement is ROW-DERIVED: an entry is
-    # retired exactly when the window THIS save writes contains its
-    # delivered row (``meta.noteId``, stamped by the flush) or its id
-    # was recorded as dropped at the rebind seam. Everything else —
-    # the on-disk hold and the live hold, both read HERE, under the
-    # same history lock the merge writers commit under — is kept, so
-    # a /note persist that won the lock during this save's patient
-    # acquire is unioned rather than overwritten, and a flush
-    # interleaving anywhere around the window snapshot leaves the
-    # entry to the save that actually writes its row. Row and
-    # retirement land in one atomic file replace; a crash on either
-    # side re-delivers rather than loses.
+    dismissed = _full_dismissed_line(slot, existing_meta)
     # Ranking signal for every "recent sessions" list: the instant of
     # this session's newest HUMAN turn. Derived here because this save
     # already rebuilds the metadata line and already holds the window,
@@ -861,8 +552,18 @@ def build_full_line(
         _stored_human_ts if isinstance(_stored_human_ts, str) else "",
         _newest_human_turn_ts(window),
     )
-    if _latest_human_ts:
-        meta_line[_META_LAST_USER_AT] = _latest_human_ts
+    # Durable copy of the held /note lines. OWNED (in SLOT_OWNED_META_KEYS),
+    # so this rebuild decides the key's whole value — and retirement is
+    # ROW-DERIVED: an entry is retired exactly when the window THIS save
+    # writes contains its delivered row (``meta.noteId``, stamped by the
+    # flush) or its id was recorded as dropped at the rebind seam.
+    # Everything else — the on-disk hold and the live hold, both read HERE,
+    # under the same history lock the merge writers commit under — is kept,
+    # so a /note persist that won the lock during this save's patient acquire
+    # is unioned rather than overwritten, and a flush interleaving anywhere
+    # around the window snapshot leaves the entry to the save that actually
+    # writes its row. Row and retirement land in one atomic file replace; a
+    # crash on either side re-delivers rather than loses.
     window_note_ids: set[str] = set()
     for row in window:
         row_meta = row.get("meta")
@@ -879,8 +580,6 @@ def build_full_line(
         )
         if entry.get("id") not in window_note_ids and entry.get("id") not in dropped_note_ids
     ]
-    if surviving_hold:
-        meta_line["deferred_notes"] = surviving_hold
     # Durable copy of the queued user prompts. OWNED, and the whole
     # value is decided here, so an emptied queue is cleared by absence.
     #
@@ -900,8 +599,6 @@ def build_full_line(
     # indeterminate send must never be auto-resent (sendTurn.ts), and a
     # prompt whose turn may have run un-persisted is exactly that case.
     _durable_queue = queue_snapshot
-    if _durable_queue:
-        meta_line["queued_prompts"] = _durable_queue
     # Both halves of this subtraction come from the SAME queue read (see
     # ``durable_queue_view``). Counting the live queue here instead would
     # report a prompt that merely arrived after the snapshot as one the
@@ -918,31 +615,13 @@ def build_full_line(
             _queue_shortfall,
             len(_durable_queue),
         )
-    # The drop records this write retires are CONSUMED only after the
-    # save's atomic_write commits (and never on the rows-only path,
-    # which defers the key to the on-disk value): a dropped note's row
-    # never exists, so the recorded id is its ONLY retirement path —
-    # consuming it before the write commits would leak the entry into
-    # the durable hold forever if the write fails.
-    retired_drop_ids = dropped_note_ids if not rows_only else set()
-    if slot.forked_from is not None:
-        meta_line["forked_from"] = slot.forked_from
-    if slot.linked_session_key:
-        # The slot's conversation lives on another session (a channel
-        # thread, a cron job). Nothing recreates that binding on
-        # restart for a channel slot — no injection re-fires — so
-        # without persisting it the slot rehydrates unbound and
-        # silently reverts to a dashboard-only copy of the thread.
-        meta_line["linked_session_key"] = slot.linked_session_key
-    if getattr(slot, "channel_origin", False):
-        # Durable provenance. Without it the restore has only the slot
-        # name to go on, and a name is not evidence -- persisting the
-        # flag is what lets a later boot know this tab was adopted from
-        # a channel conversation rather than merely named like one.
-        meta_line["channel_origin"] = True
+    # Sticky, and carried forward from disk rather than only from the slot: a
+    # restore path that failed to set the in-memory flag would otherwise ERASE
+    # the marker on the next save and the conversation would be re-filed.
+    channel_folder_filed = bool(
+        slot._channel_folder_filed or existing_meta.get("channel_folder_filed")
+    )
     tab_id = getattr(slot, "_tab_id", None) or existing_meta.get("tab_id")
-    if tab_id:
-        meta_line["tab_id"] = tab_id
     # ``rewrite`` is the structural signal for "this save EDITS the
     # conversation": the regenerate / rewind / fork paths pass an explicit
     # window snapshot (or leave ``_pending_rewrite`` set), while a steady
@@ -970,8 +649,36 @@ def build_full_line(
     # in both directions: the armed backoff deadline survives, so a user
     # repeatedly regenerating a reply cannot re-bill a failing
     # consolidation turn on each gesture.
-    if rewrite:
-        meta_line["rotation_generation"] = int(existing_meta.get("rotation_generation", 0) or 0) + 1
+    rotation = int(existing_meta.get("rotation_generation", 0) or 0) + 1 if rewrite else None
+    # Preserve history-layer-owned metadata this dashboard save does NOT
+    # manage: the save is authoritative only for the slot fields it writes
+    # (SLOT_OWNED_META_KEYS), where an absent field means "cleared"; every
+    # other key is another layer's durable state, carried below after the
+    # slot fields so an inherited value can never shadow the slot's own state.
+    meta_line = cp._metadata_codec.encode(
+        slot,
+        folds=cp._metadata_codec.SaveFolds(
+            memory_mode=_mode,
+            created_at=existing_meta.get("created_at") or slot.created_at,
+            last_consolidated=existing_meta.get("last_consolidated", 0),
+            closed=closed,
+            closed_at=closed_at,
+            dismissed_source_links=dismissed,
+            deferred_notes=surviving_hold,
+            queued_prompts=_durable_queue,
+            last_user_at=_latest_human_ts,
+            channel_folder_filed=channel_folder_filed,
+            tab_id=tab_id,
+            rotation_generation=rotation,
+        ),
+    )
+    # The drop records this write retires are CONSUMED only after the
+    # save's atomic_write commits (and never on the rows-only path,
+    # which defers the key to the on-disk value): a dropped note's row
+    # never exists, so the recorded id is its ONLY retirement path —
+    # consuming it before the write commits would leak the entry into
+    # the durable hold forever if the write fails.
+    retired_drop_ids = dropped_note_ids if not rows_only else set()
     # ``rows_only`` DEFERS to the line on disk, so it owes evidence that the
     # line is somebody ELSE's. ``tab_id`` is that evidence and the only
     # per-writer mark the line carries: it is minted per slot OBJECT

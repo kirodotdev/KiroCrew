@@ -541,6 +541,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=1800.0,
         changed_in="#8949",
     ),
+    # The session-start gate went from a fixed 2 to "auto" (sized from the host,
+    # never below 2). A stored 2 is not broken, only slow on a big host: a burst
+    # of starts finishes one per ~1.9 s instead of in parallel.
+    #
+    # REPORT-ONLY on the stagger's reasoning: the width is the knob an operator
+    # lowers when the host or provider is the bottleneck, so 2 is an ordinary
+    # deliberate value.
+    SupersededDefault(
+        dotted_key="agent.session_start_concurrency",
+        old_default=2,
+        new_default="auto",
+        changed_in="#17055",
+    ),
 )
 
 

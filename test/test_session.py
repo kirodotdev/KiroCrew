@@ -2792,7 +2792,8 @@ class TestResetWithPid:
         await mgr.get_or_create("k1")
         mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
 
-        await mgr.reset("k1")
+        # Only an ending reset drops the queue; a recycle parks it for a successor.
+        await mgr.reset("k1", ends_conversation=True)
 
         assert not img.exists()
 

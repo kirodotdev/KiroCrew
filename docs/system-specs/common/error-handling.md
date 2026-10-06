@@ -158,7 +158,8 @@ never drift. Notable terminal (non-retryable) classes:
   session-scoped stop generations at enqueue, and the queue drain drops the entry
   (refunding the shared one-shot) when either counter moved, when user input
   queued behind it, or when the slot was rebound to another session — the same
-  rule (`chat_runner._replay_revocation`) the model-access and refusal replays
+  rule (`RecoveryReplays.revalidate`, `dashboard/recovery_replays.py`) the
+  model-access and refusal replays
   carry, re-checked at the turn's consume seam. One requeue is exempt, decided
   at the requeue: a verbatim requeue of a sub-agent completion the model never
   consumed is a result the parent is still owed, so it is queued again as the

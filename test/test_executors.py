@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from unittest import mock
 
 import pytest
@@ -17,9 +18,39 @@ import pytest
 import kiro_crew.executors as ex
 
 
+def setup_function() -> None:
+    # Own fresh pools. They are memoized process-wide, so a test that runs right
+    # after another file on the same xdist worker would otherwise inherit whatever
+    # that file queued: a session-tree checkpoint debounce parks a 1 s sleep on
+    # mc-maint per seeded projection, and a trivial call queued behind tens of them.
+    ex.shutdown_maintenance_executor()
+
+
 def teardown_function() -> None:
     # Don't leak pools between tests (the module memoizes them process-wide).
     ex.shutdown_maintenance_executor()
+
+
+#: Lost-run ceiling on a pool this test owns running a trivial callable. ``submit``
+#: starts the worker thread itself, so all this bounds is one hand-off to that
+#: thread: milliseconds, about 0.2 s with every executor job started late. Three
+#: waits share one test, and 3 x 20 s is half the suite's 120 s ``--timeout``, so
+#: a dead pool fails here by name rather than as a lost run.
+_LOST_RUN_CEILING_SECS = 20.0
+
+
+def _ran_on(pool, fn):
+    """``fn()`` as run by *pool*, or a failure naming the pool and what it waited."""
+    started = time.monotonic()
+    future = pool.submit(fn)
+    try:
+        return future.result(timeout=_LOST_RUN_CEILING_SECS)
+    except TimeoutError:
+        pytest.fail(
+            f"{pool._thread_name_prefix} ran nothing within the "
+            f"{_LOST_RUN_CEILING_SECS:.0f}s lost-run ceiling: waited "
+            f"{time.monotonic() - started:.2f}s, {pool._work_queue.qsize()} item(s) still queued"
+        )
 
 
 def test_maintenance_and_cron_are_distinct_pools() -> None:
@@ -91,11 +122,9 @@ def test_shutdown_is_idempotent_and_resets() -> None:
 
 
 def test_pools_execute_work() -> None:
-    # The timeout only stops a dead pool from hanging the run. A loaded CI
-    # shard can take seconds to start a fresh worker thread, so keep it wide.
-    assert ex.maintenance_executor().submit(lambda: 1 + 1).result(timeout=60) == 2
-    assert ex.subprocess_executor().submit(lambda: 4 + 4).result(timeout=60) == 8
-    assert ex.cron_executor().submit(lambda: 2 + 3).result(timeout=60) == 5
+    assert _ran_on(ex.maintenance_executor(), lambda: 1 + 1) == 2
+    assert _ran_on(ex.subprocess_executor(), lambda: 4 + 4) == 8
+    assert _ran_on(ex.cron_executor(), lambda: 2 + 3) == 5
 
 
 def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:

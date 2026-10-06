@@ -549,7 +549,9 @@ class WeComDispatcher:
                 await provider.compact()
                 # A failed or timed-out compaction is a RETURNED result, not an
                 # exception, so the notice is posted only for a completed one.
-                cr = await provider.wait_for_compaction()
+                cr = await provider.wait_for_compaction(
+                    timeout=self.sessions.compact_wait_budget_secs()
+                )
                 if cr["type"] == "completed":
                     await self._notice_bubble(inbound, "🗜️ 上下文接近上限，已自动压缩。")
                 else:
@@ -817,7 +819,9 @@ class WeComDispatcher:
             await provider.compact()
             # Failure and timeout come back as the result's ``type``, not as an
             # exception, so the receipt is read off it rather than assumed.
-            cr = await provider.wait_for_compaction()
+            cr = await provider.wait_for_compaction(
+                timeout=self.sessions.compact_wait_budget_secs()
+            )
             if cr["type"] == "completed":
                 await self.client.say(inbound, "🗜️ 已压缩上下文。")
             elif cr["type"] == "failed":

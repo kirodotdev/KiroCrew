@@ -153,8 +153,10 @@ _KIND_COLUMN: Final = "kind"
 # hold under the same name AND reach through the same statements: ``_log_event``,
 # ``get_events``, ``rotate_events`` and ``_read_meta``/``_write_meta`` name them
 # literally, with none of the per-lineage relation indirection the semantic and
-# episodic writes carry. So each has ONE definition here, composed into
-# ``vector_memory._SCHEMA_V1`` and into :data:`CREW_SCHEMA_SQL` alike.
+# episodic writes carry. So each has ONE definition here. :data:`CREW_SCHEMA_SQL`
+# composes both. On v1, ``memory_events`` is part of ``vector_memory._SCHEMA_V1``,
+# while ``memory_meta`` arrives through migration 3
+# (``vector_memory._MEMORY_META_TABLE``), not through ``_SCHEMA_V1``.
 #
 # Two hand copies is the shape that fails silently: ``MIGRATIONS_CREW`` is one
 # frozen entry, so a v1 migration adding a column to either table would reach every
@@ -262,7 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_mi_crew         ON memory_items (crew, is_deleted
 CREATE INDEX IF NOT EXISTS idx_mi_surface      ON memory_items (surface, is_deleted);
 
 -- The v1 relation NAMES survive as READ-ONLY views, in the v1 COLUMN ORDER,
--- because ~36 read statements name them and `SELECT *` feeds `sqlite3.Row`.
+-- because the engine's read statements name them and `SELECT *` feeds `sqlite3.Row`.
 -- Splitting by `kind` is also what keeps the vector scorers sound, and omitting
 -- every facet column is what makes facets unreachable from every ranker.
 -- Never add an `INSTEAD OF` trigger here -- see the module docstring.
@@ -336,9 +338,9 @@ def episodic_guard(lineage: str) -> str:
 
 # ── The four statements a relation swap cannot express ──
 #
-# Fifteen of the engine's nineteen write statements differ between the lineages
-# only in which relation they name, so they interpolate ``semantic_relation`` /
-# ``episodic_guard`` and render byte-identically on v1. These four differ in their
+# Every other write statement in the engine differs between the lineages only in
+# which v1 relation it names, so it interpolates ``semantic_relation`` /
+# ``episodic_guard`` and renders byte-identically on v1. These four differ in their
 # COLUMN LIST: ``memory_items`` requires ``id``, ``kind``, ``text`` and
 # ``updated_at``, none of which v1 supplies. Each therefore carries two spellings
 # and a param builder, kept side by side so a change to one is visibly a change to

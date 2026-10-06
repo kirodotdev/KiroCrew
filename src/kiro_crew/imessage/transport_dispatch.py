@@ -410,7 +410,9 @@ class IMessageDispatcher:
                 await provider.compact()
                 # A failed or timed-out compaction is a RETURNED result, not an
                 # exception, so the notice is posted only for a completed one.
-                cr = await provider.wait_for_compaction()
+                cr = await provider.wait_for_compaction(
+                    timeout=self.sessions.compact_wait_budget_secs()
+                )
                 if cr["type"] == "completed":
                     await self._notify(
                         handle,
@@ -463,7 +465,9 @@ class IMessageDispatcher:
             await provider.compact()
             # Failure and timeout come back as the result's ``type``, not as an
             # exception, so the receipt is read off it rather than assumed.
-            cr = await provider.wait_for_compaction()
+            cr = await provider.wait_for_compaction(
+                timeout=self.sessions.compact_wait_budget_secs()
+            )
             if cr["type"] == "completed":
                 await self._notify(handle, "🗜️ Context compacted.")
             elif cr["type"] == "failed":

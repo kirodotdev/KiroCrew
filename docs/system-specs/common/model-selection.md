@@ -182,6 +182,15 @@ Entitlement stays with the live `session/new` list (`_entitled_kiro_models`,
 install, and in that window the catalogs alone cannot call any pin foreign; every
 send is still a wire decision, so no turn runs the wrong model.
 
+A catalog row's wire id is its `model_id`. kiro-cli prints a `model_id` beside each
+`model_name`, and the two can differ: a model can carry a display name that is not
+its id. `session/new` advertises the id, and every reader of a picker row (the
+entitlement narrowing, the pin validators, `session/set_model`) treats
+`model_name` as the id, so `GET /api/models` serves such a row with `model_name`
+set to the `model_id` and the printed name kept as `display_name`
+(`_fetch_kiro_catalog`). Left under its printed name, the row would never match an
+advertised id and the picker would hide a model the account can run.
+
 That live list is revalidated on the read path before it narrows anything. A
 `session/new` snapshot is one answer captured at one instant, and an entitlement
 lookup racing a token refresh can answer with the free tier; no explicit pick is
@@ -329,7 +338,11 @@ its own once the cache refreshes with a list that carries it.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`; the composer then uses its existing
-  model-name heuristic until ACP reports the session's actual options. The same
+  model-name heuristic until ACP reports the session's actual options. A slot the
+  gateway has not registered yet answers 404 `slot_not_found`, and the composer
+  reads that the same way (`selectionCapabilitiesFailed` in `website/src/lib/effort.ts`):
+  only a real fault (403, 503 `peer_unavailable`, transport failure) shows the
+  "could not verify effort options" notice and hides the effort control. The same
   endpoint proxies a remote slot to its execution peer. Model and effort are ONE
   composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
   the model chip names the level in force, and the model picker embeds the effort

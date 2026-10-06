@@ -32,6 +32,7 @@ from kiro_crew.autonudge_service.model import (
     CONSECUTIVE_FAILURE_REASON,
     MONITOR_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
+    STOP_SENTINEL_REASON,
     NudgeLoop,
     is_channel_key,
     is_structured_monitor_loop,
@@ -108,10 +109,22 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             ):
                 self._arm_from_deadline(loop)
         return
-    # Kill switch: sentinel file present?
+    # Kill switch: sentinel file present? The goal is finished, so the record is
+    # KEPT under its own reason rather than removed: a removed row left the goal
+    # popover on its empty form with nothing saying the goal was met. The file
+    # stays where it was written -- the next arm on this slot unlinks it before
+    # the new loop exists (``authorize_and_add_nudge``), and an inactive loop's
+    # timer is never armed, so the stale file can kill nothing in between. No
+    # ``expired`` here: that event says the loop stopped SHORT of its goal, and
+    # this stop is the agent reporting the goal reached.
     if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
-        logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
-        await self.remove(loop.id, stop_reason="stop_sentinel")
+        logger.info("AutoNudge: stop sentinel found for %s — deactivating loop", loop.id)
+        # Retire THIS task's registration first. ``update`` runs its mutation in a
+        # shielded task, from which ``_cancel_timer`` cannot recognise this timer as
+        # the current task and would cancel it mid-await; popped here, from the task
+        # itself, the self-guard applies and the deactivation returns normally.
+        self._cancel_timer(loop.id)
+        await self.update(loop.id, active=False, stopped_reason=STOP_SENTINEL_REASON)
         return
     # Cycle cap reached?
     if loop.max_cycles and loop.cycle_count >= loop.max_cycles:

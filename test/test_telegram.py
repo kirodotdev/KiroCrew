@@ -619,6 +619,10 @@ class FakeSessions:
     async def discard_conversation(self, key: str) -> None:
         self.discarded.append(key)
 
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs`` (unset: 300 s)."""
+        return 300.0
+
 
 class _FakeHooks:
     auto_approve_subagent_spawn = False

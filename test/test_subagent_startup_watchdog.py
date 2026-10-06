@@ -164,6 +164,85 @@ async def test_force_reap_startup_timeout_error_and_tombstone_cause():
 
 
 @pytest.mark.asyncio
+async def test_force_reap_first_prompt_silence_names_the_launched_runtime():
+    """A startup reap of a start whose runtime IS up must not claim that no
+    runtime launched: it names the unanswered first prompt instead."""
+    from kiro_crew.subagent_manager.monitoring import _FIRST_PROMPT_SILENT_SECS
+
+    mgr = _make_manager(startup_timeout=120)
+    _neuter_force_reap_collaborators(mgr)
+    info = _info(_exec_started=1.0, _pid=4242, turns=0)
+
+    await mgr._force_reap("a1b2c3d4", info, 400.0, reason="startup_timeout")
+
+    assert info.error.startswith(
+        f"Runtime launched but its first prompt got no answer within "
+        f"{int(_FIRST_PROMPT_SILENT_SECS)}s"
+    )
+    assert "no runtime launched" not in info.error
+    assert mgr._write_tombstone.call_args.args[1] == "startup_timeout"
+
+
+class TestFirstPromptSilent:
+    """``_is_first_prompt_silent``: runtime up, turn 0, no frame, clock still."""
+
+    NOW = 10_000.0
+
+    def _silent(self, **overrides):
+        from kiro_crew.subagent_manager.monitoring import _FIRST_PROMPT_SILENT_SECS
+
+        base = {
+            "_exec_started": self.NOW - 900.0,
+            "_pid": 4242,
+            "turns": 0,
+            "last_activity": self.NOW - _FIRST_PROMPT_SILENT_SECS - 1.0,
+        }
+        base.update(overrides)
+        return _info(**base)
+
+    def _check(self, info) -> bool:
+        return _make_manager()._monitor._is_first_prompt_silent(info, self.NOW)
+
+    def test_pid_set_no_stream_past_window_is_silent(self):
+        assert self._check(self._silent()) is True
+
+    def test_stream_started_is_not_silent(self):
+        assert self._check(self._silent(_first_stream_started=self.NOW - 800.0)) is False
+
+    def test_inside_window_is_not_silent(self):
+        assert self._check(self._silent(last_activity=self.NOW - 60.0)) is False
+
+    def test_no_pid_is_left_to_the_startup_watchdog(self):
+        assert self._check(self._silent(_pid=None)) is False
+
+    def test_a_turn_was_produced(self):
+        assert self._check(self._silent(turns=1)) is False
+
+    def test_recording_the_pid_restarts_the_window(self, monkeypatch):
+        """A handshake longer than the window is not charged to it: the PID
+        record restarts the clock, so the start is not silent right after it."""
+        import kiro_crew.subagent as subagent_mod
+
+        mgr = _make_manager()
+        mgr._drain_queue = MagicMock()
+        # Clock last moved at the gate grant, 400 s ago: a long session/new.
+        info = self._silent(last_activity=self.NOW - 400.0)
+        monkeypatch.setattr(
+            subagent_mod, "time", SimpleNamespace(time=lambda: self.NOW, monotonic=lambda: 0.0)
+        )
+
+        mgr._note_startup_progress(info)
+
+        assert info.last_activity == self.NOW
+        assert mgr._monitor._is_first_prompt_silent(info, self.NOW) is False
+
+    def test_queued_or_approval_parked_is_waiting_not_silent(self):
+        assert self._check(self._silent(_gate_wait_started=self.NOW - 400.0)) is False
+        assert self._check(self._silent(_awaiting_approval=True)) is False
+        assert self._check(self._silent(_exec_started=None)) is False
+
+
+@pytest.mark.asyncio
 async def test_force_reap_start_queue_saturated_error_and_tombstone_cause():
     mgr = _make_manager(startup_timeout=120)
     _neuter_force_reap_collaborators(mgr)

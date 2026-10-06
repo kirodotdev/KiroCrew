@@ -274,8 +274,8 @@ open panel cached one. Approvals share the app shell's
 `global-approvals` cache, which keeps its own 30-second refresh and is re-read on
 reconnect. A `slot_projection` frame never cancels a work read in flight; one
 more read follows it once it settles. The shared model's session-state rule — a
-session is running while its turn runs or while subagents run, it is
-orchestrating, or it holds queued messages; a paused workflow waits and a planning
+session is running while its turn runs, while subagents run, or while it
+holds queued messages; a paused workflow waits and a planning
 one runs — also governs the all-session view's Running badge and its sort
 priority, which read the same model rather than the slot's turn flag alone. The all-session view takes its sort order
 when the set of sessions, what needs attention, the filter or the page changes,
@@ -537,10 +537,10 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `POST` | `/api/artifacts/{slug}/pull-latest` | Pull the tracked upstream (`?source=publication\|origin\|auto`) into a NEW local snapshot via `publish_sync.pull_upstream`; ungated ingress |
 | `GET` | `/api/artifacts/{slug}/upstream-status` | Cheap metadata-only drift check (`publish_sync.upstream_status`); best-effort, never blocks on the network |
 | `POST` | `/api/artifacts/{slug}/overwrite-remote` | Force-push local content over an upstream-ahead remote (`publish_sync.overwrite_upstream`); **egress — gated by `_publish_governance_denied` on the resolved `publication.provider`** |
-| `GET` | `/api/remote-artifacts/{provider}/browse` | Provider-routed discovery: `?q=` → `search_remote`, else `list_remote(?scope=mine\|shared\|public)`; rows annotated with `local_slug`; unregistered provider → 503 (matches clone/fork) |
+| `GET` | `/api/remote-artifacts/{provider}/browse` | Provider-routed discovery: `?q=` → `search_remote`, else `list_remote(?scope=mine\|shared\|public)`; rows annotated with `local_slug`; unregistered provider → 404; registered but unavailable → 503 |
 | `POST` | `/api/remote-artifacts/{provider}/clone` | Bidirectional clone (`publish_sync.clone_from_remote`, sets `auto_sync=True` → arms future pushes); **gated by `_publish_governance_denied` on the routed provider**; empty registry → 503. Body: `{ "external_id": ... }` (provider-native ids can contain `/`, which a path segment can't carry) |
 | `POST` | `/api/remote-artifacts/{provider}/fork` | Independent copy with pull-only `fork_metadata` lineage (`publish_sync.fork_from_remote`); ungated ingress; empty registry → 503. Body: `{ "external_id": ... }` |
-| `GET` | `/api/remote-artifacts/{provider}/{external_id}` | Read-only detail fetch (metadata + content) for a provider-hosted artifact the user has no local copy of — content source for the remote-detail viewer; ungated ingress; passes `_redact_remote_response`; empty registry → 503 |
+| `GET` | `/api/remote-artifacts/{provider}/{external_id}` | Read-only detail fetch (metadata + content) for a provider-hosted artifact the user has no local copy of — content source for the remote-detail viewer; ungated ingress; passes `_redact_remote_response`; unregistered provider → 404; provider failure → 502 |
 | `GET` | `/api/remote-artifacts/{provider}/{external_id}/comments` | List comments on a provider-hosted artifact (`fetch_comments`, `COMMENTS_READ`); TTL-cached in memory; provider failure surfaces as `remote_sync_error`, not a 500; ungated ingress; anchor/body redacted per comment |
 | `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments` | Post a top-level comment straight through to the provider (`post_comment`, `COMMENTS_WRITE`, scope=shared); **egress — gated by `_publish_governance_denied` on the routed provider** |
 | `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/reply` | Reply to a provider thread (`reply_comment`); **egress — gated by `_publish_governance_denied`** |

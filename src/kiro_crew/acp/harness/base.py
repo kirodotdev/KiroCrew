@@ -297,13 +297,23 @@ class HarnessAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
         """Mutate the child's environment in place for this host.
 
         Called after the generic environment is assembled and before it is
         scrubbed, so a host can both add its own variables and remove one the
         generic path would otherwise pass through.
         ``spawned_binary`` names the executable before sandbox and scope wrappers.
+        ``cli_owned_auth`` is the spawn plan's answer to who owns the child's
+        credential: True when the child authenticates itself (no Crew callback,
+        :attr:`SpawnPlan.host_auth` False). It defaults to False so a caller that
+        does not say keeps the stricter Crew-owned treatment.
         """
 
     @property

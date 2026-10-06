@@ -17,7 +17,6 @@ if TYPE_CHECKING:
         _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
-        COLOR_HEX_RE,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -25,28 +24,19 @@ if TYPE_CHECKING:
         _app_resume_refusal,
         _app_slot_acquisition_recheck,
         _attach_variants,
-        _bump_slot_tags_revision,
         _ChatSlot,
         _collapse_wire_rows,
         _has_validated_effort_marker,
         _history_key_for,
         _live_child_instance,
         _load_restore_cfg,
-        _local_turn_generation,
-        _local_turn_prompt,
         _normalize_slot_key,
         _prepare_messages,
-        _rebase_rehydrated_refresh_mark,
-        _reconcile_local_turn_marker,
         _redact_meta_for_role,
-        _rehydrate_slot_title,
-        _restore_dismissed_source_links,
         _restore_model_fields,
         _restored_agent_name,
-        _restored_mode,
         _sync_dashboard_slots,
         _unhide_folder,
-        _validate_autocompact_pct,
         app_owns_transcript_meta,
         audit_app_slot_denial,
         carry_provenance,
@@ -57,7 +47,6 @@ if TYPE_CHECKING:
         is_channel_session_key,
         logger,
         members_mod,
-        normalize_theme_consent_sha,
         note_crew_log_class,
         queue_entry_view,
         read_bounded_json,
@@ -486,24 +475,30 @@ def _materialise_slot_from_history(
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
+    from kiro_crew.dashboard.slot_persistence import metadata_codec
+
     slot = None
     try:
         with state.suspend_slots_push():
+            # The BINDING is the pin's authority on a member key — not the
+            # transcript's own metadata (the guard above verified identity
+            # structurally; metadata lives in the same operator-editable file it
+            # would otherwise re-pin from). Passing mode="member" is also what
+            # admits the key through the constructor's reservation.
             slot = state.get_or_create_slot(
                 name,
-                app=app,
-                # The BINDING is the pin's authority on a member key — not the
-                # transcript's own metadata (the guard above verified identity
-                # structurally; metadata lives in the same operator-editable file it
-                # would otherwise re-pin from). Passing mode="member" here is also
-                # what admits the key through the constructor's reservation.
-                agent=(member_binding or {}).get("member", ""),
-                mode=members_mod.DM_SLOT_MODE if member_binding is not None else "",
-                # Resuming an existing channel transcript from History is an adoption
-                # of that conversation, so the tab is channel-origin even when the
-                # session map cannot name its session.
-                channel_origin=is_channel_session_key(history_key),
-                origin=str(meta.get("origin", "")),
+                **metadata_codec.slot_args(
+                    meta,
+                    metadata_codec.Resume(
+                        member=(
+                            None
+                            if member_binding is None
+                            else (member_binding.get("member", ""), members_mod.DM_SLOT_MODE)
+                        ),
+                        app=app,
+                        history_key=history_key,
+                    ),
+                ),
             )
             # Keep the slot REGISTERED in ``state._slots`` throughout hydration, and
             # mark it under construction BEFORE the block's coalesced push flushes.
@@ -583,177 +578,31 @@ def _hydrate_slot_from_history(
     metadata field set resume has always applied and never the remote binding
     (RFC 7.1b); see the parameter docs on the public function.
     """
-    # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
-    # call always sends a ``title`` (see website/src/api/client/chat.ts
-    # resumeChatSlot: ``title: title || key``), and that value is client
-    # chrome — often a STALE echo of an older name (a notification deep link,
-    # a sidebar row rendered before a background refresh landed). Classifying
-    # request titles (echo vs override) is unwinnable against staleness: a
-    # stale echo is indistinguishable from a deliberate override. So the
-    # request title is used ONLY when no persisted title exists; otherwise the
-    # persisted title and its provenance are restored exactly like the
-    # chat_persistence loaders (resume is the THIRD hydration path).
-    # Reuse the SNAPSHOT the guard above validated. A second get_metadata here
-    # would re-read the file, and a write between the two reads would hydrate
-    # values the guard never saw (validate-A / hydrate-B).
-    raw_persisted_title = meta.get("title")
-    # Accept the persisted title only when it is a string: a legacy or
-    # hand-corrupted JSONL could carry a non-string here, and redacting it
-    # would raise TypeError and 500 the resume. Non-string == absent.
-    persisted_title = raw_persisted_title if isinstance(raw_persisted_title, str) else ""
-    title = request_title
-    if persisted_title:
-        _rehydrate_slot_title(
-            slot,
-            persisted_title,
-            titled=True,
-            metadata=meta,
-        )
-    elif title:
-        # Never-titled session with a caller-supplied name: apply it, with
-        # conservative "user" provenance (unknown origin — the background
-        # refresh must never rewrite it) and an epoch bump so any in-flight
-        # background attempt stands down.
-        slot.title = title
-        slot._titled = True
-        slot._title_origin = "user"
-        slot._title_epoch += 1
-    # else: untitled on disk and no caller name — leave the slot untitled
-    # (mirrors _rehydrate_slot_from_history: ``_titled = bool(meta title)``),
-    # so the auto-titler can still name it on the next turn.
-    if meta.get("created_at"):
-        slot.created_at = meta["created_at"]
-    # Disk-identity bookkeeping for the delete-won guard in
-    # ``_save_slot_to_history``: it recognises a transcript recreated by another
-    # writer after a permanent delete, which is only meaningful when this
-    # hydration READ an existing on-disk transcript. Resume did
-    # (``disk_meta_observed=True``); import synthesised its metadata in memory
-    # and has no pre-existing file, so it passes ``False`` and the guard stays
-    # dormant rather than comparing against a disk read that never happened. The
-    # observed bit also records that a read occurred even when the metadata
-    # carried no ``created_at`` (legacy files), so the guard's evidence gate does
-    # not treat a real resume as never-hydrated.
-    slot._disk_meta_created_at = str(meta.get("created_at") or "") if disk_meta_observed else ""
-    slot._disk_meta_observed = disk_meta_observed and bool(meta)
-    # This slot's memory assignment comes from restored history, not a fresh
-    # member selection -- true for every hydration-from-a-persisted-transcript
-    # path (resume, the persistence loaders, channel/member/cron restores) and
-    # equally for an import, which materialises from a bundle transcript. The
-    # runner reads it when selecting the memory binding; the flag is not
-    # persisted in the transcript, so it must be set on each hydration.
-    slot._memory_assignment_from_history = True
-    # On a member key the pin came from the BINDING at slot creation above and
-    # metadata may not override it (same tamperable file the guard refused to
-    # trust). On an ordinary key, mode="member" may not ride in either — the
-    # guard already 409s that shape, so this arm only defends a same-request
-    # inconsistency.
-    if member_binding is None:
-        if meta.get("agent"):
-            slot.agent = meta["agent"]
-        # Same fold as the two persistence loaders: a retired mode (``crew``)
-        # comes back as plain chat, so the ``surface`` this handler returns is
-        # one the chat page can render rather than a value it dropped.
-        _mode = _restored_mode(meta.get("mode"))
-        if _mode and _mode != members_mod.DM_SLOT_MODE:
-            slot.mode = _mode
-    if meta.get("workspace"):
-        slot.workspace = meta["workspace"]
-    # The namespace the agent was picked in rides with the pick itself, exactly
-    # as in the two persistence loaders (same position, same two-value guard on
-    # the operator-editable transcript). Restoring the name without it leaves
-    # the dropdown's name-only fallback lighting the same-name MEMBER row for a
-    # template-picked slot, and the next canonical full save -- which rebuilds
-    # meta_line from the live slot -- then omits the empty field and strips the
-    # recorded namespace from disk.
-    if meta.get("agent_kind") in ("member", "template"):
-        slot.agent_kind = meta["agent_kind"]
-    if meta.get("project"):
-        slot.project = meta["project"]
-    if meta.get("channel_folder_filed"):
-        # Resuming from History must carry the filing marker forward, or the
-        # next save of this slot drops it and the conversation is re-filed.
-        slot._channel_folder_filed = True
-    if meta.get("folder_id"):
-        slot.folder_id = meta["folder_id"]
-        # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
-        # visible until the user hides it again. A folder deleted since this
-        # session was last saved leaves the stored id dangling; drop it so the
-        # resumed session is plainly unfiled instead of pointing at nothing.
-        #
-        # Only when the verdict is ABOUT this folder. ``_unhide_folder`` reports
-        # existence from inside the folder-store lock precisely because a check
-        # made outside it can go stale, so re-deriving one here against
-        # ``state._folders`` is the race its own docstring warns about; and it
-        # cannot simply be re-run, because a second await here would reopen the
-        # publish-to-hydrate window this ordering exists to close. Holding no
-        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
-        # self-corrects on the next folder operation, whereas erasing a live
-        # filing is silent and indistinguishable from the user unfiling the
-        # session -- and the dirty-slot flush would then persist that erasure.
-        if not folder_unhidden and meta["folder_id"] == folder_checked_id:
-            slot.folder_id = ""
-    if meta.get("pinned"):
-        slot.pinned = True
-    if meta.get("color_index") is not None:
-        slot.color_index = meta["color_index"]
-    _ch = meta.get("color_hex")
-    if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
-        slot.color_hex = _ch.lower()
-    if meta.get("color_theme"):
-        slot.color_theme = meta["color_theme"]
-        slot.theme_consent = meta.get("theme_consent") is True
-        # Restore from history metadata: re-run the same fail-closed normalizer
-        # so a tampered/legacy JSONL can't seed a malformed sha that later
-        # crashes the compare.
-        slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
-    if meta.get("autocompact_pct") is not None:
-        # Restore the per-session compaction threshold, mirroring the
-        # persistence loaders: without this, a resumed slot's field stays None
-        # and the next save overwrites the persisted override with null, while
-        # the live gate silently falls back to the global.
-        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
-        if slot.autocompact_pct is not None and state.sessions:
-            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
-    # Restore the dismissed source-link tombstones, mirroring the persistence
-    # loaders (_rehydrate_slot_from_history / _apply_recent_session). This
-    # RESUME path re-applies metadata by hand rather than going through those
-    # loaders, so without this an unlinked PR/issue/Jira chip reappears on
-    # resume and the next save — serializing an empty dismissed set — erases the
-    # persisted tombstone for good.
-    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
-    # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
-    # Without the flag, resuming a session whose auto-tag the user removed
-    # would re-run maybe_auto_tag on the next message and silently re-add it.
-    raw_tags = meta.get("tags")
-    if isinstance(raw_tags, list):
-        slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-        # Prune ids missing from the vocabulary (crash-atomic delete leaves
-        # dangling ids on disk; see api_chat_tag_delete). FAIL-OPEN only when
-        # the vocabulary is UNKNOWN (tags.json parse/I/O failure) — pruning
-        # then would wipe every assignment. A legitimately-empty vocabulary
-        # is authoritative and must prune dangling ids.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
-        # Bump the tags revision so the first published frame advertises a fresh
-        # revision for the tags just applied (invariant: tags change => revision
-        # change). Pure counter rotation, no broadcast -- safe under construction;
-        # the single push at the caller's tail carries the bumped revision.
-        _bump_slot_tags_revision(slot)
-    if meta.get("auto_tagged"):
-        slot._auto_tagged = True
-    mm = meta.get("memory_mode", "persistent")
-    slot.memory_mode = mm
-    # ``slot.key``, not the ``name`` parameter: import mints its key inside
-    # ``get_or_create_slot`` (name=None), so only ``slot.key`` names the slot
-    # after creation. For resume the two are identical (resume passes the
-    # resolved key), so this changes nothing there.
-    if mm != "persistent":
-        state._restricted_keys.add(f"dashboard:{slot.key}")
-    else:
-        state._restricted_keys.discard(f"dashboard:{slot.key}")
-    if meta.get("forked_from") is not None:
-        slot.forked_from = meta["forked_from"]
+    from kiro_crew.dashboard.slot_persistence import metadata_codec
+
+    # Every field a resume reads from the line goes through the one field table
+    # (``slot_persistence.metadata_codec``), from the SNAPSHOT the guards
+    # validated: a second get_metadata here would re-read the file, and a write
+    # between the two reads would hydrate values the guards never saw
+    # (validate-A / hydrate-B). The remote binding is deliberately NOT among
+    # them: a session bound to a remote instance comes back LOCAL here, and
+    # rehydrating the binding is the startup restore's job.
+    applied = metadata_codec.apply(
+        state,
+        slot,
+        meta,
+        metadata_codec.Resume(
+            member=(
+                None
+                if member_binding is None
+                else (member_binding.get("member", ""), members_mod.DM_SLOT_MODE)
+            ),
+            request_title=request_title,
+            folder_unhidden=folder_unhidden,
+            folder_checked_id=folder_checked_id,
+            disk_meta_observed=disk_meta_observed,
+        ),
+    )
     disk_total = len(all_messages)
     # ``window_limit`` is a fact about the data, not a caller switch: how many of
     # the newest rows to surface as the live window, given that any rows before
@@ -816,17 +665,11 @@ def _hydrate_slot_from_history(
     slot._disk_window_len = len(slot.messages)
     # After the window boundary, like the startup restore: a local turn the
     # previous process admitted and never tore down becomes the interruption
-    # row here, so a session pulled up off disk and one restored at boot agree.
-    _reconcile_local_turn_marker(
-        slot, _local_turn_generation(meta), _local_turn_prompt(meta), persisted=all_messages
-    )
-    # Same as the two chat_persistence loaders, and after the reconcile for
-    # the same reason: a transcript past the 500-row window restores fewer user
-    # rows than its persisted refresh mark was taken over, so re-base the mark
-    # or the opt-in cadence stays silent after the resume. A mark at or below
-    # the restored count is left alone, so surfacing every row (import's
-    # ``window_limit=None``) changes nothing.
-    _rebase_rehydrated_refresh_mark(slot)
+    # row here, so a session pulled up off disk and one restored at boot agree;
+    # then the title refresh mark is re-based against the rows the window holds
+    # (a mark at or below the restored count is left alone, so surfacing every
+    # row -- import's ``window_limit=None`` -- changes nothing).
+    applied.settle(all_messages)
 
 
 async def api_chat_slot_resume(request: web.Request) -> web.Response:
@@ -929,10 +772,12 @@ async def resume_slot_from_history(
     nothing resolves it, ``serialize_slots`` never shows it, and a named create on
     its key is refused by the construction guard. A refusal it returns discards
     the built slot the way a failed construction is discarded and comes back as
-    ``ResumeOutcome.refusal``. With a hook the reopen write (clearing ``closed``)
-    is deferred until the hook has passed, so a hook refusal has nothing durable
-    to undo, and a clear that cannot land refuses (``reopen_failed``) rather than
-    publishing a tab that would not restore. The hook is an idempotent pre-publish
+    ``ResumeOutcome.refusal``. The reopen write (clearing ``closed``) runs in the
+    same retracted window, after the hook when there is one, with or without a
+    hook: it is awaited and verified BEFORE the publish, a refusal before it has
+    nothing durable to undo, one after it puts the marker back, and a clear that
+    cannot land refuses (``reopen_failed``) rather than publishing a tab that
+    would not restore. The hook is an idempotent pre-publish
     check (it may update in-memory bookkeeping such as ``_created_by`` and
     ``_revived_by`` on the built slot, never durable state) and runs TWICE: once before the deferred clear, and once after it as the last
     awaiting act, because the clear and its verification read are awaits during
@@ -1132,17 +977,21 @@ async def resume_slot_from_history(
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
     cleared_closed: bool = False
     cleared_closed_at: Any = meta.get("closed_at")
-    # With a containment hook the clear is DEFERRED until the hook has passed:
-    # a refusal then has no durable change to undo, and a clear that cannot
-    # land refuses the resume instead of publishing a tab that would not restore.
-    defer_clear = containment is not None and bool(meta.get("closed"))
+    # The reopen write (clearing ``closed``) is DEFERRED to the reserved window
+    # after construction, with or without a hook: every refusal before it has no
+    # durable change to undo, the write is awaited and verified BEFORE the
+    # publish, and a clear that cannot land refuses the resume instead of
+    # publishing a tab that would not restore.
+    defer_clear = bool(meta.get("closed"))
+    # The slot is built retracted under its construction mark, and published only
+    # after the awaited tail (the hook, the reopen write) has passed.
+    reserved = containment is not None or defer_clear
     if name in getattr(state, "_slots_under_construction", ()):
         # Another resume of this key is between hydration and publish. The same
         # coded conflict is answered again at construction (the window can open
         # after this read); asking here first means the common case refuses
-        # BEFORE the eager clear below has dropped the ``closed`` marker, so a
-        # click that lost the race leaves the line as it found it. An app gets
-        # the uniform 404 (see _app_resume_refusal).
+        # before any of the reads below. An app gets the uniform 404 (see
+        # _app_resume_refusal).
         if request_app:
             return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
         return ResumeOutcome(
@@ -1150,46 +999,6 @@ async def resume_slot_from_history(
                 "this session is being resumed elsewhere; try again", "resume_in_progress", 409
             )
         )
-    if meta.get("closed") and not defer_clear:
-        # Clear the closed flag so the session restores on the next gateway restart.
-        # Offloaded because clear_closed takes the per-session cross-process lock,
-        # which fails fast on the loop under contention. Best-effort: resume anyway.
-        #
-        # COMPARE-AND-CLEAR, not an unconditional clear. We are acting on the
-        # ``meta`` snapshot above, and by the time this call takes the lock the
-        # session may have been closed again by someone else -- or deleted,
-        # recreated and closed, in which case the flag we would drop belongs to a
-        # DIFFERENT conversation that the identity re-check below is about to
-        # refuse with a 409. Clearing it anyway reopens a replacement the user
-        # closed. ``only_if_closed_before`` moves the comparison inside the store's
-        # own lock, so there is no window between the check and the write; a close
-        # instant at or after our boundary leaves the flag standing.
-        try:
-            await asyncio.to_thread(
-                state.conversation_log.clear_closed,
-                history_key,
-                only_if_closed_before=resume_started_at,
-            )
-        except Exception:
-            logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
-        else:
-            cleared_closed = True
-            # Absorb OUR OWN mutation into the identity baseline: the member
-            # guard further down compares a later snapshot against ``meta``,
-            # and clear_closed just dropped exactly ``closed``/``closed_at``
-            # from the line this baseline was read from. Without this, a
-            # legitimate closed-thread resume trips that barrier — a
-            # guaranteed 409 issued AFTER the reopen durably landed. The two
-            # keys are removed from the LOCAL dict rather than re-reading the
-            # file, so every drift the barrier exists for (delete/recreate,
-            # concurrent edits — anything not these two keys) still differs
-            # from the post-await snapshot and still refuses. clear_closed is
-            # conditional (compare-and-clear, no-op arms), so the snapshot
-            # may retain the keys; the barrier compares the POST-read against
-            # this baseline, and a retained ``closed`` there simply mismatches
-            # and refuses — fail-closed, never fail-open.
-            meta = {k: v for k, v in meta.items() if k not in ("closed", "closed_at")}
-
     restored_agent = await asyncio.to_thread(
         _restored_agent_name, _resume_session_identity(state, history_key), meta
     )
@@ -1433,6 +1242,10 @@ async def resume_slot_from_history(
             return True
 
         def _same_transcript(current: dict) -> bool:
+            # An app resume read a transcript that app owns; a line now owned by
+            # someone else is not that transcript, whatever its stamp says.
+            if request_app and not app_owns_transcript_meta(current, request_app):
+                return False
             stamp = current.get("created_at")
             return not pre_identity or not stamp or stamp == pre_identity
 
@@ -1471,20 +1284,15 @@ async def resume_slot_from_history(
     # Late twin of the transcript-ownership refusal above, on the post-await
     # snapshot: a delete and same-key recreate inside the reads replaces the
     # metadata line, so ownership the old snapshot earned says nothing about the
-    # transcript about to be adopted. Like every refusal after the eager clear,
-    # it puts back the ``closed`` marker that clear dropped.
+    # transcript about to be adopted. Nothing durable has changed yet (the
+    # reopen write runs in the reserved window after construction), so there is
+    # no ``closed`` marker to put back.
     if request_app and (
         destination_refusal is not None or not app_owns_transcript_meta(meta, request_app)
     ):
         if destination_refusal is None:
             audit_app_slot_denial(
                 request_app, "slot_resume", name, "app does not own this transcript (late barrier)"
-            )
-        if cleared_closed and not await _restore_closed_marker():
-            logger.error(
-                "app resume of %s was refused after its closed marker was cleared, and "
-                "the marker could not be confirmed restored; the session may restore as open",
-                history_key,
             )
         return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
     if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
@@ -1518,39 +1326,42 @@ async def resume_slot_from_history(
         # a bare ``ValueError``; answer with a coded conflict instead, since a
         # retry a moment later finds the key either published or free.
         #
-        # This arm sits AFTER the hook-less path's eager clear: a click that won
-        # the guard at the top and lost here has already dropped the ``closed``
-        # marker, and if the resume it lost to is then refused (a hooked revive
-        # discards its build and restores only what IT cleared) the archived
-        # session would come back as a sidebar row at the next start. Put the
-        # marker back, compare-and-set, before answering. An app gets the
-        # uniform 404 whatever the restore did (see _app_resume_refusal), as at
-        # the late ownership barrier above.
-        if cleared_closed and not await _restore_closed_marker():
-            logger.error(
-                "resume of %s lost to a concurrent resume after its closed marker was "
-                "cleared, and the marker could not be confirmed restored; the session "
-                "may restore as open",
-                history_key,
-            )
-            if request_app:
-                return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
-            # The same answer ``_discard`` gives for this failure: the caller
-            # must hear that the durable session is not as it found it, not an
-            # ordinary conflict that a retry would clear.
-            return ResumeOutcome(
-                refusal=ResumeRefusal(
-                    "the session was refused but its closed marker could not be restored; "
-                    "close it again from the History tab",
-                    "reopen_rollback_failed",
-                    503,
-                )
-            )
+        # Nothing durable has changed yet: the reopen write runs in the reserved
+        # window after construction, so the refusal leaves the ``closed`` marker
+        # as this resume found it. An app gets the uniform 404 (see
+        # _app_resume_refusal).
         if request_app:
             return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
         return ResumeOutcome(
             refusal=ResumeRefusal(
                 "this session is being resumed elsewhere; try again", "resume_in_progress", 409
+            )
+        )
+    # A delete still IN FLIGHT is invisible to the existence and identity
+    # barrier above: it holds the transcript lock across its whole transaction
+    # (index drop, attachment and reply-thread staging, the unlink) and that
+    # barrier's read takes no lock, so the file reads as present until the very
+    # end. Publishing here leaves a slot the delete does not know about -- a
+    # delete handler removes only the slot it claimed before its first await --
+    # so the deleted conversation stays open as a tab. Checked HERE, the last
+    # synchronous point before construction, because every await above (the
+    # member-binding read included) is a window a delete can start in.
+    # ``delete_in_flight`` is in-process bookkeeping with no I/O. The reserved
+    # path re-runs the same check in ``_identity_refusal`` after its own awaits.
+    #
+    # The resume cannot know yet whether the delete will go through (a bulk
+    # clear skips a pinned row), so it refuses with a retryable
+    # ``resume_conflict``: a retry after the delete ends either finds the
+    # session gone or opens it. Nothing durable has changed yet (the reopen
+    # write comes after construction), so the session is left as it was found.
+    if session_existed and state.conversation_log.delete_in_flight(history_key):
+        logger.info(
+            "chat resume: session %s is being deleted; refusing the resume",
+            history_key,
+        )
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session is being deleted; try again", "resume_conflict", 409
             )
         )
     slot = _materialise_slot_from_history(
@@ -1564,10 +1375,10 @@ async def resume_slot_from_history(
         member_binding=_member_binding,
         folder_unhidden=folder_unhidden,
         folder_checked_id=folder_checked_id,
-        # Under a hook the rows must not reach any client before the hook has
+        # A reserved build must not reach any client before its tail has
         # passed: a refused build is discarded, and frames already pushed for it
         # would describe a session that never appears.
-        broadcast_rows=containment is None,
+        broadcast_rows=not reserved,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the
@@ -1612,11 +1423,11 @@ async def resume_slot_from_history(
     # unsaved interruption row, and the wrapper's paging cursor has to account
     # for it or the next older page repeats a row.
     total = slot._disk_older_count + len(slot.messages)
-    if containment is not None:
-        # Retract while the hook awaits, keep the construction mark: a lookup
+    if reserved:
+        # Retract while the tail awaits, keep the construction mark: a lookup
         # finds nothing, the payload shows nothing, and a create on this key is
         # refused by the construction guard, so no acquirer can reach a slot the
-        # hook may still refuse. The refusal discard mirrors the construction
+        # hook or the reopen write may still refuse. The refusal discard mirrors the construction
         # rollback above (mark released, key freed, restricted marker dropped) and
         # puts back the ``closed`` marker this call cleared, so a refused resume
         # leaves the durable session exactly as it found it.
@@ -1670,12 +1481,36 @@ async def resume_slot_from_history(
                     "resume_conflict",
                     409,
                 )
+            if (
+                session_existed
+                and state.conversation_log is not None
+                and state.conversation_log.delete_in_flight(history_key)  # type: ignore[arg-type]
+            ):
+                # Same in-flight arm as the pre-hook barrier: the lock-free read
+                # above still sees a file the delete is about to unlink. The
+                # refusal goes through ``_discard``, which restores the marker.
+                return ResumeRefusal(
+                    "this session is being deleted; try again", "resume_conflict", 409
+                )
             if not post and session_existed:
                 return ResumeRefusal(
                     "the session was deleted while it was being resumed",
                     "resume_session_deleted",
                     409,
                 )
+            if request_app and not app_owns_transcript_meta(post, request_app):
+                # The late barrier's ownership term, re-asserted on every re-read
+                # after its awaits. A delete and same-key recreate under another
+                # owner, on a line with no ``created_at`` for the identity arm
+                # below to compare, is told apart only by its owner. An app gets
+                # the uniform 404 (see _app_resume_refusal).
+                audit_app_slot_denial(
+                    request_app,
+                    "slot_resume",
+                    name,
+                    "app does not own this transcript (reserved window)",
+                )
+                return _RESUME_APP_NOT_FOUND
             post_created = post.get("created_at")
             if pre_identity and post_created and pre_identity != post_created:
                 return ResumeRefusal(
@@ -1695,7 +1530,7 @@ async def resume_slot_from_history(
         # Same shape as the construction rollback above. The discard is
         # shielded so a second cancellation cannot cut the rollback short.
         try:
-            refusal = await containment(slot)
+            refusal = await containment(slot) if containment is not None else None
             if refusal is not None:
                 return ResumeOutcome(refusal=(await _discard()) or refusal)
             holder = state._slots.get(slot.key)
@@ -1720,12 +1555,15 @@ async def resume_slot_from_history(
             if refusal is not None:
                 return ResumeOutcome(refusal=(await _discard()) or refusal)
             if defer_clear:
-                # The reopen write, after the hook and before the publish. A clear
-                # that cannot land refuses: publishing a tab whose line still says
-                # ``closed`` would give the person a session that vanishes at the
-                # next start. Compare-and-clear against the resume's own boundary,
-                # as on the hook-less path; a marker still present afterwards means
-                # somebody re-closed the session inside the window, which refuses too.
+                # The reopen write, after the hook (when there is one) and before
+                # the publish. A clear that cannot land refuses: publishing a tab
+                # whose line still says ``closed`` would give the person a session
+                # that vanishes at the next start. COMPARE-AND-CLEAR against the
+                # resume's own boundary, inside the store's lock: a close at or
+                # after that instant (someone re-closed it, or deleted, recreated
+                # and closed it) keeps its marker, and a marker still present
+                # afterwards refuses too. Offloaded because clear_closed takes the
+                # per-session cross-process lock, which fails fast on the loop.
                 try:
                     # Recorded BEFORE the write is awaited: a cancellation can be
                     # delivered at this very await after the worker has already
@@ -1765,32 +1603,54 @@ async def resume_slot_from_history(
                             409,
                         )
                     )
-            # The identity re-read and the deferred reopen write above were awaits
-            # taken AFTER the hook answered, and the hook is where the store-backed
-            # boundaries (channel link, Slack binding, outbound mirror) are read --
-            # ``final_check`` below may not touch the store. A binding recorded in the
-            # store during those awaits would otherwise publish. So the hook runs
-            # once more here, as the LAST awaiting act: after it only the synchronous
-            # ``final_check`` and the publish remain. The hook is a read-only
-            # predicate, so the second pass has no side effect of its own.
-            refusal = await containment(slot)
-            if refusal is not None:
-                return ResumeOutcome(refusal=(await _discard()) or refusal)
-            # The second hook pass was itself an await, so the transcript identity is
-            # read one final time SYNCHRONOUSLY here, where nothing can run between
-            # the read and the publish. A plain file read, not a session-store getter
-            # (those share a lock with an off-loop writer and stay in the hook);
-            # ``get_metadata_status`` sleeps between retries only when off the loop,
-            # so on the loop it answers at once; an unreadable answer refuses
-            # (``resume_conflict``) rather than publishing on a read that could not
-            # be made, and the caller retries.
+            # The transcript identity is read one final time here. The read runs
+            # off the loop so its bounded retries pause between attempts: a
+            # just-written session file is transiently unopenable for a few
+            # milliseconds on Windows (a sharing violation while an indexer or AV
+            # scanner holds it), and an on-loop read exhausts every attempt within
+            # microseconds and reports it as unreadable, so it refuses a resume no
+            # delete touched.
+            #
+            # The off-loop hop is an await, so a whole process-local delete can
+            # begin AND end inside it: its in-flight marker opens and closes, and
+            # ``_identity_refusal`` then reads the marker as clear, ``post`` as the
+            # file the read saw before the unlink, and ``created_at`` unchanged --
+            # a tab published over a deleted session, whose later saves ``delete_won``
+            # drops. The invalidation generation is the witness that survives the
+            # marker: every delete bumps it (``delete_session`` -> ``_invalidate_cache``)
+            # under the file lock, a transient file lock does not, and reading it
+            # is pure in-memory string math. Snapshot it BEFORE the hop and
+            # re-read it SYNCHRONOUSLY below the last await, as the last act
+            # before the publish.
+            #
+            # This read runs BEFORE the second containment pass, not after: the
+            # store-backed boundaries (channel link, Slack binding, outbound
+            # mirror) are read in the hook, so the hook must stay the LAST awaiting
+            # act or a binding recorded during this read would publish. The
+            # generation re-check below the hook still covers a delete landing in
+            # EITHER await.
+            last_cache_gen = log._cache_gen(history_key)
             try:
-                _last, _last_readable = log.get_metadata_status(history_key)
+                _last, _last_readable = await asyncio.to_thread(
+                    log.get_metadata_status, history_key
+                )
             except Exception:
                 _last, _last_readable = {}, False
             refusal = _identity_refusal(_last, _last_readable)
             if refusal is not None:
                 return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The deferred reopen write, the ``_after`` read and the off-loop
+            # identity read above were awaits taken AFTER the hook answered, and
+            # the hook is where the store-backed boundaries are read -- ``final_check``
+            # below may not touch the store. A binding recorded in the store during
+            # those awaits would otherwise publish. So the hook runs once more here,
+            # as the LAST awaiting act: after it only the synchronous ``final_check``,
+            # the generation re-check and the publish remain. The hook is a
+            # read-only predicate, so the second pass has no side effect of its own.
+            if containment is not None:
+                refusal = await containment(slot)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
             if final_check is not None:
                 # The last word, SYNCHRONOUS, after the last await above: the hook's
                 # answers that need no store read are re-asserted on the built slot
@@ -1798,6 +1658,31 @@ async def resume_slot_from_history(
                 refusal = final_check(slot)
                 if refusal is not None:
                     return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The delete-and-recreate signature after the last await, SYNCHRONOUS
+            # and lock-free, where nothing can run between it and the publish. A
+            # file read here would reopen the Windows transient this change moved
+            # off the loop (a just-rewritten file is briefly unopenable), so two
+            # in-memory witnesses stand in for it. A COMPLETED delete bumps the
+            # invalidation generation under the file lock (``delete_session`` ->
+            # ``_invalidate_cache`` after the unlink), while a transient file lock
+            # does not. A delete still IN FLIGHT -- opened during the containment
+            # await, past its unlink or not -- has not bumped the generation yet,
+            # so the in-flight marker catches it; ``_identity_refusal``'s own
+            # marker check now runs before that await, so this is the only place
+            # left to see a delete that opens during it. Either witness refuses
+            # through ``_discard`` so no slot is published over the session; the
+            # caller retries.
+            if log._cache_gen(history_key) != last_cache_gen or (
+                session_existed and log.delete_in_flight(history_key)
+            ):
+                return ResumeOutcome(
+                    refusal=(await _discard())
+                    or ResumeRefusal(
+                        "this session changed while resuming; open it again",
+                        "resume_conflict",
+                        409,
+                    )
+                )
             state._slots[slot.key] = slot
         except BaseException:
             await asyncio.shield(_discard())

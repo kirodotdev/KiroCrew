@@ -12,7 +12,11 @@ name: Cross-Platform Portability
 # Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
 # tests (they may legitimately assert POSIX behaviour behind a skip marker),
 # and `platform_compat.py` itself -- that module's whole job is to name the
-# os-specific primitives everything else routes through.
+# os-specific primitives everything else routes through. Its siblings
+# `platform_owner_compat.py` and `platform_lock_compat.py` hold POSIX owner and
+# lock primitives too but ARE scanned like any other module, so a PR that adds
+# a line matching a rule there (an `os.getuid` call, say) needs the
+# `posix-only-approved` label.
 #
 # The test exclusion has to be spelled out as a pathspec, not assumed from the
 # `test/` tree living outside `src/`: ~120 test modules ship INSIDE the package

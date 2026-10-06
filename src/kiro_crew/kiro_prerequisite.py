@@ -336,6 +336,11 @@ async def spawn_supervised_oneshot(argv: list[str], **kwargs: Any) -> asyncio.su
     (Windows ignores ``start_new_session``). So does a
     host that cannot reap (no pidfd, e.g. macOS): there the supervisor would only
     wait for the leftovers instead of ending them, which would hold the call open.
+
+    Every call is spawned with ``CREATE_NO_WINDOW`` (``0`` off Windows) unless
+    the caller passes its own ``creationflags``: these are background helpers,
+    and a console-subsystem child of the console-less gateway otherwise gets a
+    console of its own that flashes on screen at each call.
     """
     supervised = False
     if _PROCESS_GROUP_SUPERVISOR_CODE and argv and _host_can_reap():
@@ -357,6 +362,7 @@ async def spawn_supervised_oneshot(argv: list[str], **kwargs: Any) -> asyncio.su
             ]
     if not supervised:
         _note_unsupervised_once()
+    kwargs.setdefault("creationflags", platform_compat._SUBPROCESS_NO_WINDOW)
     return await create_subprocess_limited(*argv, start_new_session=True, **kwargs)
 
 
@@ -442,6 +448,13 @@ _IDENTITY_CLAIM_FIELDS = frozenset(
         "start_url",
     }
 )
+# Claims whose value is a label rather than an identifier, compared without case.
+# kiro-cli has more than one token refresher, and they serialise the same flow with
+# different casing (`PKCE` and `Pkce` observed minutes apart on one login). Hashing
+# the raw spelling turns every such refresh into an "account change" and retires
+# healthy sessions. Case-folding keeps a real flow change (PKCE to device
+# code) visible while ignoring spelling.
+_CASE_INSENSITIVE_CLAIM_FIELDS = frozenset({"oauth_flow"})
 # How long a computed fingerprint may be reused. Bounds both the SQLite reads and
 # the SEL audit events a poll storm can produce (N dashboard tabs poll status every
 # few seconds), so the store is observed per action rather than per poll. Read off
@@ -1243,7 +1256,8 @@ def identity_fingerprint(path: Path, *, definitive: list[bool] | None = None) ->
     rotating field would report an account change roughly hourly and retire
     healthy sessions, so the rotating and secret ones -- ``access_token``,
     ``refresh_token``, ``expires_at``, ``client_secret`` -- are excluded and the
-    identifying ones are kept: the SSO ``start_url``, ``region``, ``oauth_flow``,
+    identifying ones are kept: the SSO ``start_url``, ``region``, ``oauth_flow``
+    (compared without case, see :data:`_CASE_INSENSITIVE_CLAIM_FIELDS`),
     ``scopes`` and the OIDC registration's ``client_id``. Key NAMES also
     participate, so a change of credential kind counts even when no value moved.
 
@@ -1503,7 +1517,7 @@ def spawned_under(holder: Any, live: str) -> bool:
     unreadable store (empty *live*) spares nothing, so a host whose store
     cannot be fingerprinted keeps the fail-safe retire-everything sweep.
     The one exception to whole-string equality is the API-key component of a
-    child that never received the key (KAS, every foreign backend,
+    child that never received the key (a Crew-owned KAS relay, every foreign backend,
     :func:`receives_kiro_cli_api_key`): it is left out of the comparison,
     because a key rotation cannot have changed that child's credential.
     """
@@ -1519,7 +1533,7 @@ def spawned_under(holder: Any, live: str) -> bool:
         return True
     if receives_kiro_cli_api_key(holder):
         return False
-    # A harness that strips the key (KAS, every foreign backend) authenticated
+    # A harness that strips the key (Crew-owned KAS, every foreign backend) authenticated
     # from the store or vault, so the key component says nothing about its
     # credential: a key rotation alone must not un-spare it and cancel its
     # running children. Compare the components it can actually have loaded.
@@ -1537,16 +1551,18 @@ def _without_api_key_component(fingerprint: str) -> str:
 def receives_kiro_cli_api_key(holder: Any) -> bool:
     """Whether *holder*'s child is handed Kiro CLI's own ``KIRO_API_KEY``.
 
-    Only the kiro-cli backend (:data:`ACP_BACKEND_KIRO`, the empty id) is; KAS
-    and every foreign backend have it stripped at spawn. Read off the shared
-    runtime first -- once a provider swaps its placeholder client for a session
-    provider the runtime is the only object that still knows the backend --
-    then the holder and its client. A holder whose backend cannot be read
-    counts as receiving the key: that keeps the stricter whole-fingerprint
-    spare, never a looser one.
+    The kiro-cli backend (:data:`ACP_BACKEND_KIRO`, the empty id) is, and so is
+    a KAS relay spawned cli-owned; a KAS relay whose credential Crew's vault
+    answers (the runtime's ``_kas_host_auth``) and every foreign backend have it
+    stripped at spawn. Read off the shared runtime first -- once a provider swaps
+    its placeholder client for a session provider the runtime is the only object
+    that still knows the backend -- then the holder and its client. A holder
+    whose backend cannot be read, and a KAS holder whose auth owner is not
+    positively Crew, counts as receiving the key: that keeps the stricter
+    whole-fingerprint spare, never a looser one.
     """
 
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
     client = getattr(holder, "client", None) or getattr(holder, "_client", None)
     owners = (
@@ -1561,6 +1577,8 @@ def receives_kiro_cli_api_key(holder: Any) -> bool:
                 continue
             backend = getattr(owner, attribute, None)
             if isinstance(backend, str):
+                if backend == ACP_BACKEND_KAS:
+                    return getattr(owner, "_kas_host_auth", None) is not True
                 return backend == ACP_BACKEND_KIRO
     return True
 
@@ -1800,6 +1818,8 @@ def _identity_claims(key: str, value: object) -> list[str]:
             rendered = ",".join(sorted(str(item) for item in raw))
         else:
             rendered = str(raw)
+        if claim in _CASE_INSENSITIVE_CLAIM_FIELDS:
+            rendered = rendered.casefold()
         claims.append(f"c:{key}:{claim}={_claim_digest(rendered)}")
     return claims
 

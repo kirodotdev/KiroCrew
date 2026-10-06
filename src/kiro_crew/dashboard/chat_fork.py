@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_persistence import (
     _coerce_requested_mode,
     save_slot_off_loop,
@@ -31,6 +32,12 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     request_slot_origin,
 )
+from kiro_crew.dashboard.transcript_snapshot import (
+    FORK,
+    SlotView,
+    SnapshotUnstable,
+    read_consistent_transcript,
+)
 from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -42,11 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _FORK_TITLE_MARKER = "↳ "
-
-# Attempts to land a transcript read and the unpersisted tail on ONE consistent
-# view of the slot. Matches session_transfer._SNAPSHOT_ATTEMPTS and
-# chat_persistence._FLUSH_SNAPSHOT_RETRIES, which bound the same race.
-_SNAPSHOT_ATTEMPTS = 4
 
 # Fork direction: "head" copies messages up to and including the fork point
 # (the default); "tail" copies only the messages after it.
@@ -124,6 +126,19 @@ class ForkSource:
     slot: "_ChatSlot"
     execution: Any
     identity: tuple[str, str, str, str, str, str]
+
+
+class _ForkRefused(Exception):
+    """Carries a finished refusal out of a snapshot callable to :func:`fork_slot`.
+
+    The snapshot propagates whatever its callables raise, so a refusal decided
+    inside one -- with the code clients match on -- reaches the handler unchanged
+    and is returned there like every other refusal in this module.
+    """
+
+    def __init__(self, response: web.Response) -> None:
+        super().__init__(response.status)
+        self.response = response
 
 
 @dataclass(frozen=True)
@@ -433,315 +448,108 @@ async def fork_slot(
     async with slot._fork_lock:
         all_messages: list[dict] = []
         new_msgs: list[dict] = []
-        # Two tail candidates, because a boundary ahead of the resident window has
-        # TWO causes needing OPPOSITE remedies and they can only be told apart
-        # once the true on-disk length is known -- i.e. after the read. Both are
-        # snapshotted ON THE LOOP so whichever is chosen still pairs with the
-        # boundary the read observed.
-        tail: list[dict] | None = None
-        capped_tail: list[dict] | None = None
         # True when the read proved disk holds rows the slot's counters do not
         # represent (the capped-restore signature). Gates BOTH flush sites in this
         # handler, because the save's frozen prefix cannot protect those rows.
         disk_holds_unrepresented = False
         if state.conversation_log:
-            # Pair the disk read with the unpersisted tail on ONE consistent view
-            # of the slot, using the idiom session_transfer._snapshot_transcript
-            # already uses: capture the boundary, read, re-check, retry on change.
-            #
-            # The offset is ``_disk_window_len`` -- "how many window messages are
-            # now on disk", advanced by the save path (chat_persistence
-            # ``_save_slot_to_history``). Two nearby counters cannot serve here:
-            #
-            #   * ``_resumed_count`` records only how many messages were loaded
-            #     when the slot was rehydrated. The flush never advances it, so a
-            #     persisted tail stays inside the slice and reconciles in twice.
-            #     session_transfer hit exactly this and documents it.
-            #   * a length captured on a ``_dirty`` transition fails the same way.
-            #     ``_dirty`` is a boolean, so it cannot distinguish "never flushed"
-            #     from "flushed, then re-dirtied by an append" -- and in that
-            #     interleaving no transition registers at all.
-            #
-            # ``_dirty_gen`` (monotonic, bumped centrally by the ``_dirty`` setter)
-            # catches in-place edits that move neither boundary nor length; the
-            # length is a backstop for any path that mutates ``slot.messages``
-            # without marking dirty. There is deliberately no ``_dirty`` gate on
-            # the merge below: the boundary alone is authoritative and the slice is
-            # empty when everything is persisted, so a flush clearing ``_dirty``
-            # mid-read cannot skip the reconciliation and drop the tail.
-            # ``pending_retry`` carries a SUSPICION across the ``continue`` below.
-            # The pending-rewrite save below clears ``_pending_rewrite``
-            # unconditionally once the archive-safe rewrite succeeds
-            # (``chat_persistence``: ``if rewrite:
-            # slot._pending_rewrite = False``) with NO check that the flag it clears
-            # is the one its own snapshot was taken for. So a rewind landing while
-            # that save is suspended has its flag erased, and without this carry the
-            # next attempt reads ``False`` and falls through to a disk read holding
-            # the turns the rewind just discarded.
-            pending_retry = False
-            for _ in range(_SNAPSHOT_ATTEMPTS):
-                if slot._pending_rewrite or pending_retry:
-                    # Disk is KNOWN stale: a rewind/regenerate discarded a tail in
-                    # memory and the truncating rewrite has not been written yet, so
-                    # the file still holds the PRE-EDIT transcript. None of the four
-                    # counters captured below carries that state -- ``chat_rewind``
-                    # sets ``_dirty``, zeroes ``_resumed_count`` and sets this flag,
-                    # but never touches ``_disk_window_len`` -- so the boundary keeps
-                    # its pre-rewind value and can still satisfy the authoritative
-                    # predicate. The read would then return the discarded turns and
-                    # the post-await re-check would PASS, because nothing moved
-                    # during the read: it measures stability, not correctness.
-                    # ``session_transfer._guard_snapshot`` refuses on exactly this
-                    # flag for exactly this reason.
-                    #
-                    # SAVE and retry rather than refuse outright: a rewrite save
-                    # clears the flag (chat_persistence sets ``_pending_rewrite =
-                    # False`` once the archive-safe rewrite succeeds), so this is
-                    # the recoverable path, and a fork is required to still succeed.
-                    # The 503 below is the terminal arm for a source that cannot be
-                    # persisted, and the loop's own 503 covers a flag that keeps
-                    # being re-set within the attempt budget.
-                    # Capture the generation BEFORE the suspension point, so a
-                    # re-dirty that lands while the save is awaited is witnessed.
-                    gen_at_save = slot._dirty_gen
-                    try:
-                        # ``rewrite=True`` UNCONDITIONALLY, because every entry into
-                        # this arm means "disk is stale because an EDIT truncated the
-                        # window", and that is exactly what the archive-safe path is
-                        # for. ``_save_slot_to_history`` only ever PROMOTES this flag
-                        # (``if messages is not None or slot._pending_rewrite: rewrite
-                        # = True``) and gates both the archive-diff (``if rewrite and
-                        # path.exists()``) and the ``rotation_generation`` bump behind
-                        # it -- so on the RETRY, where no snapshot is passed and
-                        # ``_pending_rewrite`` has already been cleared by the first
-                        # save, neither promotion input is present. Without this the
-                        # retry would persist the rewind's truncation through the
-                        # PLAIN path, deleting the discarded turns with no archive
-                        # copy: strictly worse than the bug it recovers from, which
-                        # at least left them readable on disk.
-                        #
-                        # Passing it on the first entry too is a no-op rather than a
-                        # widening -- ``_pending_rewrite`` is still set there, so the
-                        # promotion above already produces True
-                        # (``test_a_first_entry_pending_rewrite_save_archives_as_
-                        # before`` pins that). Stating it here removes the dependence
-                        # on that promotion, which is the thing that silently failed.
-                        saved = await save_slot_off_loop(
-                            state,
-                            slot,
-                            rewrite=True,
-                            best_effort=False,
-                            # An authorized transcript key makes this a GUARDED
-                            # write, which is what puts it under the same ordering
-                            # as the other truncating saves: it registers in the
-                            # slot's guarded-write registry, so a retraction of the
-                            # slot's name waits for it instead of popping while its
-                            # worker is on the way to the rename; it is refused
-                            # while a retraction is already past that wait; and it
-                            # engages the in-lock routing re-read. Without the key
-                            # this rewrite was the LEAST ordered truncating save in
-                            # the codebase, not the most, and the fork is the one
-                            # caller that then republishes the file it wrote.
-                            #
-                            # The key alone pins only ROUTING at that boundary,
-                            # and a same-name close-and-recreate resumes the same
-                            # transcript, so the key stays identical while the
-                            # object under the name changes.
-                            # ``expected_slot_name`` re-reads the map inside the
-                            # transcript lock, with no await before the write, and
-                            # refuses when the name holds a different slot. It
-                            # matters most for this caller: the refusal arm below
-                            # aborts the fork, where committing would copy a
-                            # window the replacement never authorized under a
-                            # fresh key.
-                            expected_history_key=slot_history_key(slot),
-                            expected_slot_name=slot.key,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "chat_fork: could not persist the pending rewrite for "
-                            "slot=%s; refusing the fork rather than copying the "
-                            "discarded turns still on disk",
-                            slot.key,
-                            exc_info=True,
-                        )
-                        return web.json_response(
+            # The disk read paired with the unpersisted tail on ONE consistent view
+            # of the slot. The read, the pending-rewrite save and the boundary
+            # re-sync stay here as this handler's own; transcript_snapshot owns
+            # the attempts, the witness and the tail they pair with.
+            conversation_log = state.conversation_log
+
+            async def _read_transcript(_view: SlotView) -> list[dict]:
+                return await asyncio.to_thread(
+                    conversation_log.read_messages_chained, slot_history_key(slot)
+                )
+
+            async def _save_pending_rewrite() -> None:
+                # Disk is KNOWN stale: a rewind/regenerate discarded a tail in memory
+                # and the truncating rewrite has not been written yet, so the file
+                # still holds the PRE-EDIT transcript. SAVE it rather than refuse
+                # outright: the rewrite save clears the flag, so this is the
+                # recoverable path, and a fork is required to still succeed.
+                try:
+                    # ``rewrite=True`` UNCONDITIONALLY, because every call means "disk
+                    # is stale because an EDIT truncated the window", which is what
+                    # the archive-safe path is for. ``_save_slot_to_history`` only
+                    # PROMOTES this flag (``if messages is not None or
+                    # slot._pending_rewrite: rewrite = True``) and gates both the
+                    # archive-diff and the ``rotation_generation`` bump behind it, so
+                    # on the RETRY after a rewind landed inside an earlier save --
+                    # where ``_pending_rewrite`` has already been cleared by that save
+                    # -- neither promotion input is present, and without this the
+                    # retry would delete the discarded turns with no archive copy.
+                    saved = await save_slot_off_loop(
+                        state,
+                        slot,
+                        rewrite=True,
+                        best_effort=False,
+                        # An authorized transcript key makes this a GUARDED write:
+                        # it registers in the slot's guarded-write registry, so a
+                        # retraction of the slot's name waits for it instead of
+                        # popping while its worker is on the way to the rename; it is
+                        # refused while a retraction is already past that wait; and
+                        # it engages the in-lock routing re-read. The key pins only
+                        # ROUTING, and a same-name close-and-recreate resumes the
+                        # same transcript, so ``expected_slot_name`` re-reads the map
+                        # inside the transcript lock and refuses when the name holds
+                        # a different slot -- committing would copy a window the
+                        # replacement never authorized under a fresh key.
+                        expected_history_key=slot_history_key(slot),
+                        expected_slot_name=slot.key,
+                    )
+                except Exception:
+                    logger.warning(
+                        "chat_fork: could not persist the pending rewrite for "
+                        "slot=%s; refusing the fork rather than copying the "
+                        "discarded turns still on disk",
+                        slot.key,
+                        exc_info=True,
+                    )
+                    raise _ForkRefused(
+                        web.json_response(
                             {
                                 "error": "the source session is being written to; " "please retry",
                                 "code": "fork_snapshot_unstable",
                             },
                             status=503,
                         )
-                    if not saved:
-                        # The save declined WITHOUT writing, and the reasons it
-                        # can decline are indistinguishable from a bool: the
-                        # source session was permanently deleted while this flush
-                        # awaited the lock, the routing moved off the transcript the
-                        # key authorizes, the name now holds a different slot
-                        # object, or a retraction of this slot's name is
-                        # already past the point where it can wait for this write.
-                        # Every one of them says the same thing about forking: the
-                        # file on disk still holds the discarded turns, so copying
-                        # it would republish them under a fresh key. The response
-                        # code is kept as it is because clients match on it; the
-                        # message states the class rather than picking one cause.
-                        logger.warning(
-                            "chat_fork: the pending rewrite for slot=%s was not "
-                            "persisted (deleted, rerouted, or being closed); "
-                            "aborting fork rather than copying the discarded turns "
-                            "still on disk",
-                            slot.key,
-                        )
-                        return web.json_response(
+                    )
+                if not saved:
+                    # The save declined WITHOUT writing, and the reasons it can
+                    # decline are indistinguishable from a bool: the session was
+                    # permanently deleted while this flush awaited the lock, the
+                    # routing moved off the transcript the key authorizes, the name
+                    # now holds a different slot object, or a retraction of this
+                    # slot's name is already past the point where it can wait for
+                    # this write. Every one says the same thing about forking: the
+                    # file still holds the discarded turns, so copying it would
+                    # republish them under a fresh key. The code is kept as it is
+                    # because clients match on it; the message states the class.
+                    logger.warning(
+                        "chat_fork: the pending rewrite for slot=%s was not "
+                        "persisted (deleted, rerouted, or being closed); "
+                        "aborting fork rather than copying the discarded turns "
+                        "still on disk",
+                        slot.key,
+                    )
+                    raise _ForkRefused(
+                        web.json_response(
                             {
                                 "error": "the source session could not be saved; retry the fork",
                                 "code": "fork_source_deleted",
                             },
                             status=409,
                         )
-                    # A moved generation means a genuine re-dirty landed across the
-                    # await -- i.e. a rewind, whose ``_pending_rewrite`` this save
-                    # has just erased along with its own. Two properties make the
-                    # witness clean rather than a permanent trip: ``_dirty_gen``
-                    # advances ONLY on a True assignment (see the ``_dirty`` setter
-                    # in ``state.py``), so this save clearing ``_dirty`` cannot move
-                    # it; and ``best_effort=False`` PROPAGATES a failure instead of
-                    # re-marking the slot dirty, so the save cannot bump it either.
-                    #
-                    # RETRY rather than refuse, per the reasoning above: this is the
-                    # recoverable path and a fork is required to still succeed. The
-                    # next attempt re-enters this arm and persists the rewind that
-                    # was missed. A flag that keeps being re-set simply spends the
-                    # attempt budget and is caught by the loop's own terminal 503 --
-                    # exactly the division of labour described above. Mirrors
-                    # ``flush_slot_now``'s generation compare in ``state.py``, which
-                    # distinguishes "the True I started this save under" from "a NEW
-                    # True set during it" for this same reason.
-                    pending_retry = slot._dirty_gen != gen_at_save
-                    continue
-                disk_len_before = slot._disk_window_len
-                gen_before = slot._dirty_gen
-                count_before = len(slot.messages)
-                older_before = slot._disk_older_count
-                # Witnessed for STABILITY ONLY -- see the guard below. Captured here
-                # so the branch selector at ``elif slot._dirty`` and the post-await
-                # check read the same value.
-                dirty_before = slot._dirty
-                # Snapshot the tail ON THE LOOP, before the await, so it pairs
-                # with the boundary the read is about to observe.
-                if disk_len_before <= count_before:
-                    # The boundary is a usable index and authoritative: the slice
-                    # is empty exactly when everything is persisted. Deliberately
-                    # NO ``_dirty`` gate here -- a gate is what lets a flush
-                    # clearing ``_dirty`` mid-read skip the merge and drop the tail.
-                    tail = list(slot.messages[disk_len_before:])
-                elif slot._dirty:
-                    # The boundary can run AHEAD of the resident window, and is
-                    # then unusable as an index. It has TWO causes and they need
-                    # OPPOSITE remedies, so this branch must not pick one blind:
-                    #
-                    #   * a CAPPED RESTORE dropped leading messages from memory
-                    #     without bumping ``_disk_older_count``. Disk legitimately
-                    #     holds MORE than memory, and flushing would write the
-                    #     smaller window over it. The frozen prefix is keyed on
-                    #     ``_disk_older_count`` (chat_persistence
-                    #     ``_load_frozen_prefix``), which the cap never moved, so
-                    #     the prefix is EMPTY and the save truncates disk to the
-                    #     window -- destroying every persisted message the cap
-                    #     dropped. ``test_fork_preserves_full_history_when_dirty_
-                    #     and_capped`` is the guard for exactly that.
-                    #   * a mid-stream ``_flush_segment`` reassigned
-                    #     ``slot.messages`` to drop a trailing chunk run. Disk and
-                    #     the counters still agree, so flushing is safe and is what
-                    #     re-syncs the boundary.
-                    #
-                    # ``_resumed_count`` is not a blanket substitute either: the
-                    # save never advances it -- ``_save_slot_to_history`` only READS
-                    # it, in its no-op skip -- so for a slot created in this gateway
-                    # run it stays 0 and slicing from it appends the whole resident
-                    # window onto the disk read, duplicating every persisted turn.
-                    # It IS the right offset in the capped-restore case, where the
-                    # restore sets it to the capped length, which is precisely "how
-                    # many resident messages came from disk".
-                    #
-                    # So snapshot that candidate here and decide below, once the
-                    # read has supplied the only authoritative discriminator: the
-                    # true on-disk length.
-                    tail = None
-                    capped_tail = list(slot.messages[slot._resumed_count :])
-                else:
-                    tail = []
-                all_messages = await asyncio.to_thread(
-                    state.conversation_log.read_messages_chained, slot_history_key(slot)
-                )
-                if not (
-                    slot._disk_window_len == disk_len_before
-                    and slot._dirty_gen == gen_before
-                    and len(slot.messages) == count_before
-                    # ``_disk_older_count`` too: it is half of the window's identity
-                    # (channel_slots: the window is
-                    # ``messages[_disk_older_count:][:len(window)]``), and the
-                    # discriminator below is computed from it, so a move here
-                    # invalidates the pairing exactly as a boundary move does.
-                    and slot._disk_older_count == older_before
-                    # ``_pending_rewrite`` is checked on BOTH sides of the await, as
-                    # session_transfer's guard documents. It was False when this
-                    # attempt began (the branch above continues otherwise), so True
-                    # here means a rewind landed DURING the threaded read -- which it
-                    # can, because ``slot._fork_lock`` has exactly one acquirer in the
-                    # tree and no rewind path takes it. Equality against the other
-                    # counters cannot see this: a rewind moves none of them back.
-                    and not slot._pending_rewrite
-                    # ``_dirty`` as a STABILITY WITNESS, never as a merge gate. The
-                    # other four cannot see a save that merely COMPLETES under the
-                    # read: an in-place content edit (a variant switch) moves neither
-                    # ``len(slot.messages)`` nor ``_disk_older_count``, the save
-                    # re-assigns ``_disk_window_len`` to the value it already had
-                    # because the window length did not change, and CLEARING
-                    # ``_dirty`` cannot move ``_dirty_gen`` (the setter advances it
-                    # only on a True assignment). So the threaded read can return
-                    # pre-save bytes while the slot reports everything persisted, and
-                    # the boundary-derived tail is empty -- leaving the fork to adopt
-                    # the stale read verbatim and carry the SUPERSEDED content.
-                    #
-                    # A mismatch RETRIES; it does not skip the reconciliation. That
-                    # distinction is the whole reason this is safe to add: the two
-                    # comments above rejecting a ``_dirty`` gate are about the MERGE
-                    # decision, which stays keyed on the boundary alone. The next
-                    # attempt re-reads a disk that now holds the completed save.
-                    and slot._dirty == dirty_before
-                ):
-                    logger.debug(
-                        "chat_fork: slot=%s changed during the transcript read; retrying",
-                        slot.key,
                     )
-                    continue
-                if tail is not None:
-                    new_msgs = tail
-                    break
-                # Boundary ahead AND dirty. Discriminate on the invariant
-                # channel_slots states for these counters: disk holds
-                # ``_disk_older_count`` frozen rows followed by the window, so
-                # ``older + window`` is everything the counters claim is on disk.
-                # Disk holding MORE than that means rows exist which the counters
-                # do not represent -- the capped-restore signature. channel_slots
-                # ``_window_matches_disk`` tests the same arithmetic in the
-                # opposite direction.
-                if len(all_messages) > older_before + count_before:
-                    # Do NOT flush: it would truncate those unrepresented rows.
-                    # Merge from ``_resumed_count`` instead, which the restore set.
-                    disk_holds_unrepresented = True
-                    new_msgs = capped_tail or []
-                    break
-                # Counters agree with disk, so the window shrank mid-stream and the
-                # flush is what re-syncs the boundary: the save assigns
-                # ``_disk_window_len = len(window)`` and never READS the boundary,
-                # so flushing while it is ahead cannot mislead the write. Then spend
-                # the attempt; the next one re-derives from the authoritative branch
-                # above. If it still does not settle the loop's 503 refuses, which
-                # is what session_transfer's ``_guard_snapshot`` does here -- but
-                # retrying first is what keeps a fork succeeding once the stream
-                # that moved the window has finalized.
+
+            async def _resync_boundary() -> None:
+                # The window shrank mid-stream and the counters still agree with
+                # disk: the save assigns ``_disk_window_len = len(window)`` and never
+                # READS the boundary, so flushing while it is ahead cannot mislead
+                # the write, and the next attempt slices from the re-synced boundary.
                 try:
                     await save_slot_off_loop(state, slot, best_effort=False)
                 except Exception:
@@ -751,23 +559,34 @@ async def fork_slot(
                         slot.key,
                         exc_info=True,
                     )
-                    return web.json_response(
-                        {
-                            "error": "the source session is being written to; " "please retry",
-                            "code": "fork_snapshot_unstable",
-                        },
-                        status=503,
+                    raise _ForkRefused(
+                        web.json_response(
+                            {
+                                "error": "the source session is being written to; " "please retry",
+                                "code": "fork_snapshot_unstable",
+                            },
+                            status=503,
+                        )
                     )
-                continue
-            else:
-                # Do NOT fall through with the mismatched pair: that is precisely
-                # the state the loop exists to reject, and taking it either drops
-                # the tail or duplicates it. Both are silent; a retryable 503 is
-                # not, and this handler already uses that shape below.
+
+            try:
+                snapshot = await read_consistent_transcript(
+                    state,
+                    slot,
+                    FORK,
+                    _read_transcript,
+                    persist=_resync_boundary,
+                    rewrite=_save_pending_rewrite,
+                )
+            except _ForkRefused as refused:
+                return refused.response
+            except SnapshotUnstable:
+                # Never fall through with a mismatched pair: taking it either drops
+                # the tail or duplicates it, both silently; a retryable 503 is not.
                 logger.warning(
                     "chat_fork: slot=%s did not settle in %d attempts; refusing the fork",
                     slot.key,
-                    _SNAPSHOT_ATTEMPTS,
+                    transcript_snapshot.SNAPSHOT_ATTEMPTS,
                 )
                 return web.json_response(
                     {
@@ -776,6 +595,9 @@ async def fork_slot(
                     },
                     status=503,
                 )
+            all_messages = snapshot.result
+            new_msgs = snapshot.tail
+            disk_holds_unrepresented = snapshot.disk_holds_unrepresented
         _fork_tail_len = len(new_msgs) if (all_messages and new_msgs) else 0
         if all_messages and new_msgs:
             # REBIND, never ``extend``. ``read_messages_chained`` hands back the

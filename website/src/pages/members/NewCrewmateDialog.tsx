@@ -72,12 +72,12 @@ const FORM_ID = 'crewmate-create-form'
 
 /** Longest the create waits for the registry/config caches to re-read before
  *  handing over anyway (see `createMut.onSuccess`). */
-const CACHE_WARM_BOUND_MS = 2500
+export const CACHE_WARM_BOUND_MS = 2500
 /** Longest a create with no server answer waits for the roster read that
  *  reconciles it (see `createMut.onError`). Past it the roster counts as
  *  unreadable — the same `null` an errored read yields — so the dialog says
  *  "unconfirmed" and unlocks instead of sitting on "Creating…". */
-const RECONCILE_BOUND_MS = 2500
+export const RECONCILE_BOUND_MS = 2500
 
 /** What the page needs to open the new crewmate's chat and seed its greeting. */
 export interface CreatedCrewmate {

@@ -33,13 +33,11 @@ ANNOUNCER = "_note_bind"
 #: the recorder's callers fails; an entry here naming a site that does not assign a
 #: link fails as well.
 LINK_EXEMPT: dict[str, str] = {
-    "dashboard/chat_persistence.py:_apply_recent_session": (
+    # The open-tab and recent-sessions restores read the link through the field table.
+    "dashboard/slot_persistence/metadata_codec.py:_read_linked_session_key": (
         "a restore replays a link that was already recorded when it was first set, and "
         "it runs before the restored slot takes a turn, so the opening entry of its next "
         "session states the class it comes back with"
-    ),
-    "dashboard/chat_persistence.py:_rehydrate_slot_from_history": (
-        "same as the restore above: replay, before any turn"
     ),
 }
 
@@ -399,3 +397,58 @@ def test_a_live_session_id_does_not_stop_the_mark(monkeypatch):
         "",
         True,
     ), "the binding left no trace once the link was removed inside the window"
+
+
+def test_a_real_chat_slot_holds_the_mark_and_keeps_the_record(monkeypatch):
+    """MUTATION-SENSITIVE: the recorder works on the slot class it is written for.
+
+    The doubles above are plain classes, which accept any attribute. ``_ChatSlot`` declares
+    ``__slots__`` and has no ``__dict__``, so assigning an attribute it does not declare
+    raises ``AttributeError`` -- and the recorder swallows every exception, so nothing
+    reports it. The loss is both halves, not just the mark: the mark is written BEFORE the
+    append, so the raise skips the append too, and a channel session's class record never
+    reaches its log.
+
+    So this drives the recorder with a real slot and asserts the append, the mark and the
+    fold that reads it, starting from a fresh slot that reads as never published.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.dashboard.chat_runner import PENDING_CHANNEL_ATTR, _crew_log_class
+    from kiro_crew.dashboard.state import _ChatSlot, note_crew_log_class
+
+    seen: list[tuple[str, str, str, bool, str]] = []
+    monkeypatch.setattr(
+        crew_log_emit,
+        "on_class_observed",
+        lambda sid, *, memory, app, channel, workspace: seen.append(
+            (sid, memory, app, channel, workspace)
+        ),
+    )
+
+    class _Client:
+        session_id = "sess-real-slot"
+
+    slot = _ChatSlot("chat-4", workspace="alpha", memory_mode="persistent")
+    assert _crew_log_class(None, slot) == (
+        "persistent",
+        "",
+        False,
+    ), "a fresh slot that was never bound already reads as published"
+
+    slot._acp_client = _Client()
+    slot.linked_session_key = "telegram:-100555"
+    note_crew_log_class(None, slot)
+
+    assert seen == [
+        ("sess-real-slot", "persistent", "", True, "alpha")
+    ], "the real slot lost its class record: the mark raised before the append ran"
+    assert (
+        getattr(slot, PENDING_CHANNEL_ATTR, False) is True
+    ), "the real slot could not hold the mark, so a log opened later states never-published"
+
+    slot.linked_session_key = ""
+    assert _crew_log_class(None, slot) == (
+        "persistent",
+        "",
+        True,
+    ), "the removed link left no trace on the real slot"

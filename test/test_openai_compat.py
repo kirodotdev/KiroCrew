@@ -108,7 +108,6 @@ def _make_slot():
     slot.task = None
     slot.running = False
     slot.turn_running = False
-    slot.stage_boundary.stage = None
     slot.event = asyncio.Event()
     slot._pending = []
 
@@ -156,81 +155,6 @@ async def test_named_slot_refuses_while_stage_controller_runs():
     assert response_body["error"]["code"] == "slot_busy"
     assert response_body["code"] == "slot_busy"
     run_chat.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_named_slot_refuses_while_stage_boundary_is_pending():
-    """A real pending stage boundary makes the slot accessor report busy."""
-    from kiro_crew.dashboard.state import _ChatSlot
-
-    slot = _ChatSlot("test-slot")
-    slot.stage_boundary.arm(1, consumed=True)
-    assert slot.task is None
-    assert slot.running is True
-    state = _make_state(slot)
-    request = _make_request(
-        {
-            "id": "test-slot",
-            "model": "vanellope",
-            "messages": [{"role": "user", "content": "do not contaminate stage output"}],
-            "stream": False,
-        },
-        state,
-    )
-
-    async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
-        slot._pending.append({"role": "assistant", "content": "interleaved"})
-        slot._pending.append({"cls": "done"})
-        slot.event.set()
-
-    with patch(
-        "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
-    ) as run_chat:
-        response = await api_completions(request)
-
-    assert response.status == 409
-    response_body = json.loads(response.body)
-    assert response_body["error"]["type"] == "slot_busy"
-    assert response_body["code"] == "slot_busy"
-    run_chat.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_named_slot_stays_busy_until_boundary_release():
-    """Named-slot admission reopens only once the pending boundary clears."""
-    from kiro_crew.dashboard.state import _ChatSlot
-
-    slot = _ChatSlot("test-slot")
-    slot.stage_boundary.arm(1, consumed=True)
-    state = _make_state(slot)
-    request = _make_request(
-        {
-            "id": "test-slot",
-            "model": "vanellope",
-            "messages": [{"role": "user", "content": "do not race cancellation"}],
-            "stream": False,
-        },
-        state,
-    )
-
-    async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
-        slot._pending.append({"role": "assistant", "content": "admitted after release"})
-        slot._pending.append({"cls": "done"})
-        slot.event.set()
-
-    with patch(
-        "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
-    ) as run_chat:
-        busy = await api_completions(request)
-        assert busy.status == 409
-        assert json.loads(busy.body)["code"] == "slot_busy"
-        run_chat.assert_not_called()
-
-        slot.stage_boundary.clear()
-        admitted = await api_completions(request)
-
-    assert admitted.status == 200
-    run_chat.assert_called_once()
 
 
 def _make_state(slot):

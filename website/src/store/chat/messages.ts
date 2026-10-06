@@ -321,7 +321,14 @@ export const messageReducers = {
       if (e.type === 'tool' && e.output == null && !e.rejected) e.rejected = true
     }
   },
-  clearMessages(state: ChatState) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
+  clearMessages(state: ChatState) {
+    state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false
+    // An idle /clear discards the closed turn and any chunk the hook buffered
+    // for it, so the next seq is not a gap; the floor kept past `_done` would
+    // otherwise flag those discarded chunks as missed.
+    if (state.slotState === 'idle') state.lastChunkSeq = undefined
+    if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false)
+  },
   /** A server-confirmed clear for a slot that is NOT the active view. The
    *  active-slot case routes through `clearMessages`; this one exists so a
    *  background slot's cached page cannot outlive its authoritative clear --
@@ -332,6 +339,9 @@ export const messageReducers = {
     const slot = action.payload
     if (isUnsafeKey(slot)) return
     writeSlotPage(state, slot, [], false)
+    // Same idle-clear floor reset as `clearMessages`.
+    const run = state.slotRun[safeKey(slot)]
+    if (run && run.state === 'idle') run.lastChunkSeq = undefined
     delete state.thinkingOrphans?.[safeKey(slot)]
     evictMcpApps(state, slot)
   },

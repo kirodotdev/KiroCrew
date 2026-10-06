@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 # Absolute paths ending in a supported raster suffix.
 #
-# Two properties are load-bearing, and BOTH were learned from real defects:
+# Four properties are load-bearing:
 #
 # 1. The quantifier is non-greedy. A greedy `+` swallows the separator between
 #    two paths, so "/tmp/a.png and /tmp/b.png" matched as ONE span ending at the
@@ -69,17 +69,66 @@ logger = logging.getLogger(__name__)
 #    Slack message containing a link therefore lost its image. The `(?<![\w:/])`
 #    guard rejects the "/" inside "https://" as a start position, which also
 #    stops a URL that merely ends in ".png" from being probed as a local file.
+#
+# 3. An atomic path plus tail guards rejects longer names without swallowing a
+#    separate path; a later separator across symbols marks a directory component.
+#    With no later separator or image suffix, a glued non-ASCII run reads as
+#    prose because nothing distinguishes it from a directory name mentioned alone.
+#    Two paths glued by non-ASCII text with no space or punctuation between them
+#    ("/tmp/a.png和/tmp/b.png") therefore read as ONE token: the builder inlines
+#    nothing for it and the replay scrubber replaces it with one marker; a space
+#    or a fullwidth comma between them keeps two pictures.
+#
+# 4. A later suffix in the same whitespace- and parenthesis-free run belongs
+#    to this path; stopping early could attach a different picture at its prefix.
 _SUFFIX_GROUP = r"(?:png|jpg|jpeg|gif|webp|bmp)"
+
+# Bounds the path body and every lookahead scan. Space is legal inside a path,
+# so without a bound a message of spaced fragments (" /a /a /a ... .png~") would
+# be re-walked from every start before the tail guard refuses it; a path longer
+# than this stays text.
+_MAX_PATH_SCAN_CHARS = 512
 
 #: Space and tab only -- NEVER `\s`. See note 2 above.
 _PATH_CHARS = r"[\w./@~ \t()\-]"
 
-#: Must not begin mid-token: rules out "https://host/..." and a "/" that is
-#: already part of a longer path.
-_NOT_MID_TOKEN = r"(?<![\w:/])"
+# Scan through symbols so unsupported path characters cannot hide later separators.
+# Punctuation ends a token: ASCII, Latin-1, General and Supplemental Punctuation,
+# the arrow blocks, and the CJK/fullwidth punctuation sub-ranges. Whitespace and
+# parentheses are the one deliberate overlap with the path bodies (a quoted path
+# may hold them); no other break character is a path character, so letters and
+# digits of every script continue a token. NUL is the scrubber's stand-in for
+# masked code, so a code span ends a token too.
+_TOKEN_BREAK = (
+    r"\s\x00!\"#$%&'()*+,:;<=>?\[\]^`{|}"
+    r"\u00a1\u00a7\u00ab\u00b6\u00b7\u00bb\u00bf"
+    r"\u2010-\u2027\u2030-\u205e\u2190-\u21ff\u27f0-\u27ff\u2900-\u297f"
+    r"\u2e00-\u2e2e\u2e30-\u2e7f"
+    r"\u3000-\u3004\u3008-\u3020\u302a-\u3030\u3037\u303d-\u303f\u30fb"
+    r"\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65"
+)
+_RUN_CHARS = rf"[^{_TOKEN_BREAK}]"
+
+#: A path begins at the text start or after a token break, never mid-token:
+#: rules out "https://host/...", a "/" already inside a longer path, and the
+#: second of two paths glued by a symbol -- which would otherwise be inlined
+#: alone while the first is dropped without a word.
+_NOT_MID_TOKEN = rf"(?<![\w:/])(?<![^{_TOKEN_BREAK}])"
+#: A longer name begins where a word character follows the suffix, directly or
+#: after a joiner. A period before a CAPITAL letter is the one exception: file
+#: extensions are lowercase and sentences start upper, so `/tmp/a.png.Then`
+#: is a picture followed by prose, while `/tmp/a.png.backup` is another file
+#: (the class opts out of the pattern's IGNORECASE so the case still counts).
+_NOT_LONGER_NAME = (
+    rf"(?![A-Za-z0-9_~]|[/@\-][A-Za-z0-9_]|(?-i:\.[a-z0-9_])"
+    rf"|{_RUN_CHARS}{{0,{_MAX_PATH_SCAN_CHARS}}}?/)"
+)
+_NO_LATER_SUFFIX = rf"(?!{_RUN_CHARS}{{0,{_MAX_PATH_SCAN_CHARS}}}?\.{_SUFFIX_GROUP})"
 
 _POSIX_PATH_RE = re.compile(
-    rf"{_NOT_MID_TOKEN}(/{_PATH_CHARS}+?\.{_SUFFIX_GROUP})",
+    rf"{_NOT_MID_TOKEN}((?>/{_PATH_CHARS}{{1,{_MAX_PATH_SCAN_CHARS}}}?"
+    rf"\.{_SUFFIX_GROUP}{_NO_LATER_SUFFIX}))"
+    rf"{_NOT_LONGER_NAME}",
     re.IGNORECASE,
 )
 
@@ -111,9 +160,29 @@ _POSIX_PATH_RE = re.compile(
 # leaving a dead reference. The POSIX class has always held ``~``; this keeps the
 # two grammars symmetric on the one character a real Windows temp path needs.
 _WINDOWS_PATH_CHARS = r"[\w\\/.@~ \t()\-]"
+# A drive colon glued into a token continues it: without this the colon ends
+# the run and a second absolute path glued on by prose hides from both guards,
+# so the first picture is attached alone where the POSIX grammar attaches none.
+# Only a letter GLUED to the token counts -- preceded by a character that neither
+# ends a token nor spells a word: after whitespace the drive begins its own path,
+# and "https:" is a scheme, not a drive, so neither can carry a body from a
+# non-image path through prose into a later picture.
+_WINDOWS_DRIVE_COLON = rf"(?<=[^{_TOKEN_BREAK}A-Za-z0-9_][A-Za-z]):(?=[\\/])"
+_WINDOWS_RUN_CHARS = rf"(?:{_WINDOWS_DRIVE_COLON}|{_RUN_CHARS})"
+_WINDOWS_PATH_BODY = rf"(?:{_WINDOWS_DRIVE_COLON}|{_WINDOWS_PATH_CHARS})"
+_WINDOWS_NOT_LONGER_NAME = (
+    rf"(?![A-Za-z0-9_~]|[\\/@\-][A-Za-z0-9_]|(?-i:\.[a-z0-9_])"
+    rf"|{_WINDOWS_RUN_CHARS}{{0,{_MAX_PATH_SCAN_CHARS}}}?[\\/])"
+)
+_WINDOWS_NO_LATER_SUFFIX = (
+    rf"(?!{_WINDOWS_RUN_CHARS}{{0,{_MAX_PATH_SCAN_CHARS}}}?\.{_SUFFIX_GROUP})"
+)
 _WINDOWS_PATH_RE = re.compile(
-    rf"(?<![\w:])(?:(?<![\w:/]))((?:[A-Za-z]:[\\/]|[\\/]{{2}}[^\\/:*?\"<>|\r\n]+[\\/])"
-    rf"{_WINDOWS_PATH_CHARS}+?\.{_SUFFIX_GROUP})",
+    rf"(?<![\w:])(?:(?<![\w:/]))(?<![^{_TOKEN_BREAK}])((?>(?:[A-Za-z]:[\\/]"
+    rf"|[\\/]{{2}}[^\\/:*?\"<>|\r\n]{{1,{_MAX_PATH_SCAN_CHARS}}}[\\/])"
+    rf"{_WINDOWS_PATH_BODY}{{1,{_MAX_PATH_SCAN_CHARS}}}?\.{_SUFFIX_GROUP}"
+    rf"{_WINDOWS_NO_LATER_SUFFIX}))"
+    rf"{_WINDOWS_NOT_LONGER_NAME}",
     re.IGNORECASE,
 )
 
@@ -257,9 +326,10 @@ def _spaced_span_is_one_path(
     )
 
 
-#: Stands in for a masked character. Outside ``_PATH_CHARS``,
-#: ``_WINDOWS_PATH_CHARS`` and ``_NOT_MID_TOKEN``, so it ends a candidate, does
-#: not start one, and does not stop the path right after it from starting one.
+#: Stands in for a masked character. Outside ``_PATH_CHARS`` and
+#: ``_WINDOWS_PATH_CHARS`` and inside ``_TOKEN_BREAK``, so it ends a candidate
+#: and the run after one, does not start one, and does not stop the path right
+#: after it from starting one.
 #: The one place it can still sit INSIDE a candidate is the UNC host segment of
 #: ``_WINDOWS_PATH_RE``, a negated class that admits it -- as it admitted the
 #: space the mask wrote before -- so a code span inside a ``\\host\share``

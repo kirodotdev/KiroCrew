@@ -42,7 +42,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -77,6 +77,37 @@ async def _settle() -> None:
     """Let every ready callback run (a few loop turns)."""
     for _ in range(5):
         await asyncio.sleep(0)
+
+
+#: Lost-run ceiling for a wait on state the code under test reaches in a few loop
+#: turns plus a few thread hops (the register-time pid snapshot, the approval and
+#: resolver reads): milliseconds, and about a second with every executor job
+#: started late. Only a host that stopped scheduling this test reaches it, so
+#: reaching it raises naming the state; a quarter of the suite's 120 s ``--timeout``.
+_LOST_RUN_CEILING_SECS = 30.0
+
+
+async def _await_state(predicate: Callable[[], bool], what: str) -> None:
+    """Poll until ``predicate()`` holds; past the ceiling raise naming ``what``."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    while not predicate():
+        waited = loop.time() - started
+        if waited > _LOST_RUN_CEILING_SECS:
+            raise AssertionError(f"{what}: not reached after {waited:.2f}s (lost run)")
+        await asyncio.sleep(0.005)
+
+
+async def _within_ceiling(aw: Awaitable[Any], what: str) -> Any:
+    """Await *aw* under the lost-run ceiling; past it raise naming ``what``."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        return await asyncio.wait_for(aw, timeout=_LOST_RUN_CEILING_SECS)
+    except asyncio.TimeoutError:
+        raise AssertionError(
+            f"{what}: still running after {loop.time() - started:.2f}s (lost run)"
+        ) from None
 
 
 # --- SpawnGate unit --------------------------------------------------------
@@ -282,7 +313,7 @@ class TestDeadlineAndKeepalive:
         w1 = asyncio.create_task(gate.acquire(label="w1", on_queued=_cb("w1"), keepalive_secs=0.01))
         await _settle()
         w2 = asyncio.create_task(gate.acquire(label="w2", on_queued=_cb("w2"), keepalive_secs=0.01))
-        await asyncio.sleep(0.05)
+        await _await_state(lambda: {"w1", "w2"} <= seen.keys(), "both waiters reported a position")
         assert seen == {"w1": 1, "w2": 2}
         held.release()
         (await w1).release()
@@ -381,19 +412,52 @@ class TestInitializeWatcher:
         permit = await gate.acquire(label="p")
         done = asyncio.Event()
         state = self._state_holder("in_flight")
+        reads: list[str] = []
+
+        def init_state() -> str:
+            # Read only once a window expired with ``init_done`` unset, so the
+            # first read IS the deadline passing; the grace wait is armed in the
+            # same step.
+            reads.append(state[0])
+            return state[0]
+
         task = gate.watch_initialize(
             permit,
             init_done=done,
-            init_state=lambda: state[0],
+            init_state=init_state,
             process_exited=AsyncMock(),
             timeout=0.02,
         )
-        await asyncio.sleep(0.03)
+        await _await_state(lambda: bool(reads), "the watcher's first window expired")
+        assert reads == ["in_flight"]
         assert not task.done(), "in flight at the deadline: the backend's own timer fires next"
         state[0] = "ready"
         done.set()
         await task
         assert permit.outcome == adm.OUTCOME_SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_a_success_near_its_own_deadline_counts_as_slow(self) -> None:
+        """Slow is relative to each init's own timeout, and only successes count."""
+        clock = [100.0]
+        gate = adm.SpawnGate(4, clock=lambda: clock[0])
+        for took, timeout in ((7.9, 10.0), (8.0, 10.0), (20.0, 30.0), (25.0, 30.0)):
+            permit = await gate.acquire(label="p")
+            done = asyncio.Event()
+            clock[0] += took
+            done.set()
+            await gate.watch_initialize(
+                permit,
+                init_done=done,
+                init_state=lambda: "ready",
+                process_exited=AsyncMock(),
+                timeout=timeout,
+            )
+            assert permit.outcome == adm.OUTCOME_SUCCESS
+        # 8.0/10 and 25/30 reach 80% of their own deadline; 7.9/10 and 20/30 do not.
+        assert gate.snapshot()["slow_inits"] == 2
+        clock[0] += adm.SLOW_INIT_WINDOW_SECS + 1
+        assert gate.snapshot()["slow_inits"] == 0
 
 
 class TestAdmissionBundle:
@@ -876,17 +940,14 @@ class TestEnsureBackendWire:
                 admission,
             )
         )
-        for _ in range(50):
-            await asyncio.sleep(0.005)
-            if len(writer.writes) >= 2:
-                break
+        await _await_state(lambda: len(writer.writes) >= 2, "the compat rejection written")
         frames = writer.frames()
         assert frames[1]["type"] == "rejected" and frames[1]["class"] == "compat"
         assert frames[1]["fallback"] is True
         assert "retry_after_secs" not in frames[1]
         assert admission.budget.snapshot()["by_kind"] == {"fallback": 1}
         hangup.set()
-        await asyncio.wait_for(task, timeout=5)
+        await _within_ceiling(task, "the handler ending on the hangup")
         assert admission.budget.procs_in_use == 0
 
     @pytest.mark.asyncio
@@ -913,9 +974,7 @@ class TestEnsureBackendWire:
         ping, a non-control frame parked for after ``ready``."""
         admission = _admission(capacity=1)
         blocker = await admission.gate.acquire(label="blocker")
-        monkeypatch.setattr(adm, "QUEUED_KEEPALIVE_SECS", 0.01)
         backend = _fake_backend()
-        original = gw._acquire_backend
 
         async def acquire(*args: Any, **kwargs: Any) -> Any:
             # A real gate wait with the keepalive callback the handler supplied,
@@ -929,16 +988,8 @@ class TestEnsureBackendWire:
             permit.release()
             return backend, True
 
-        assert original is not None
         monkeypatch.setattr(gw, "_acquire_backend", acquire)
-        release_blocker = asyncio.Event()
-        hangup = asyncio.Event()
-
-        async def unblock() -> None:
-            await asyncio.sleep(0.05)
-            blocker.release()
-            release_blocker.set()
-
+        hangup = asyncio.Event()  # never set: only the parked unregister may end the conn
         reader = _ScriptedReader(
             _register_frame(),
             {"type": "ensure_backend", "wait_budget_secs": 600},
@@ -948,15 +999,22 @@ class TestEnsureBackendWire:
             hangup,
         )
         writer = _FakeWriter()
-        asyncio.create_task(unblock())
-
-        async def finish() -> None:
-            await release_blocker.wait()
-            await asyncio.sleep(0.05)
-            hangup.set()
-
-        asyncio.create_task(finish())
-        await asyncio.wait_for(_handle(reader, writer, _fake_pool(), admission), timeout=5)
+        handler = asyncio.create_task(_handle(reader, writer, _fake_pool(), admission))
+        try:
+            # ``queued`` is written only from inside the gate wait, and only the
+            # hangup is left unread once both pings were answered and
+            # ``unregister`` was parked: release the slot at exactly that state.
+            await _await_state(
+                lambda: reader.remaining == 1
+                and any(f["type"] == "queued" for f in writer.frames()),
+                "a queued spawn with both pings answered and unregister parked",
+            )
+        except BaseException:
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
+            raise
+        blocker.release()
+        await _within_ceiling(handler, "the handler ending on the parked unregister")
         types = [f["type"] for f in writer.frames()]
         assert types[0] == "registered"
         assert types.count("pong") == 2, types
@@ -964,8 +1022,8 @@ class TestEnsureBackendWire:
         assert types.index("queued") < types.index("ready"), "keepalives precede ready"
         queued = next(f for f in writer.frames() if f["type"] == "queued")
         assert queued["position"] == 1 and queued["capacity"] == 1
-        # The parked ``unregister`` was processed after ``ready`` and ended the
-        # connection cleanly rather than being dropped.
+        # Nothing ever set the hangup, so the parked ``unregister`` is what ended
+        # the connection, after ``ready``, rather than being dropped.
         assert types[-1] == "ready"
 
     @pytest.mark.parametrize("dimension", ["frames", "bytes"])
@@ -1063,17 +1121,14 @@ class TestEnsureBackendWire:
         )
         writer = _FakeWriter()
         task = asyncio.create_task(_handle(reader, writer, _fake_pool(), admission))
-        for _ in range(50):
-            await asyncio.sleep(0.005)
-            if len(writer.writes) >= 2:
-                break
+        await _await_state(lambda: len(writer.writes) >= 2, "the compat rejection written")
         frames = writer.frames()
         assert frames[1]["type"] == "rejected" and frames[1]["class"] == "compat"
         assert frames[1]["fallback"] is True
         assert admission.budget.snapshot()["by_kind"] == {"fallback": 1}, "the exec is charged"
         assert not task.done(), "the charge holds while the socket is open"
         hangup.set()
-        await asyncio.wait_for(task, timeout=5)
+        await _within_ceiling(task, "the handler ending on the hangup")
         assert admission.budget.procs_in_use == 0
 
     @pytest.mark.asyncio
@@ -1140,11 +1195,11 @@ class TestAcquireBackendOrder:
             )
             for i in range(2)
         ]
-        for _ in range(100):
-            await asyncio.sleep(0.005)
-            if admission.gate.queued == 2:
-                break
-        assert admission.gate.queued == 2 and admission.gate.in_flight == 1
+        await _await_state(
+            lambda: admission.gate.queued == 2,
+            "both spawns parked in the gate behind the blocker",
+        )
+        assert admission.gate.in_flight == 1
         snapshot = admission.budget.snapshot()
         assert (snapshot["procs"], snapshot["charges"], snapshot["by_kind"]) == (0, 0, {})
         # A third arrival meets the QUEUE, never a full host: the budget still
@@ -1432,10 +1487,9 @@ class TestPrewarmYieldsToALiveStub:
             )
         )
         try:
-            totals: list[str] = []
-            for _ in range(600):
-                await asyncio.sleep(0.01)
-                totals = [
+
+            def _totals() -> list[str]:
+                return [
                     m.group(1)
                     for m in (
                         re.search(r"prewarm: warmed (\d+)/2 backend", r.getMessage())
@@ -1443,8 +1497,9 @@ class TestPrewarmYieldsToALiveStub:
                     )
                     if m
                 ]
-                if totals:
-                    break
+
+            await _await_state(lambda: bool(_totals()), "the prewarm pass logged its total")
+            totals = _totals()
             assert totals == ["1"], f"the pass warmed {totals} of 2 keys, warmed={warmed}"
             assert warmed == ["hot-one"], "the second key stood down for the queued stub"
             assert deadlines and deadlines[0] is not None, "a prewarm wait must be bounded"

@@ -11,7 +11,7 @@
  * so the trigger is activated by keyboard — the path jsdom does handle.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -58,7 +58,10 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  createChatSlot: vi.fn(), listInstances: vi.fn(),
+  instancesCapabilities: vi.fn(), crewPeerPost: vi.fn(), dashboardConfig: vi.fn(),
+}))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -88,6 +91,7 @@ import {
 // on is the same write the Settings > Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import enManual from '../i18n/locales/en.manual.json'
+import { openCrewWindow, closeCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 
 /** Where the router is: the "Crew Members" entry navigates rather than creates,
  *  so its tests read the destination back instead of a create call. */
@@ -96,7 +100,7 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}{loc.search}</div>
 }
 
-function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void } = {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots: [], approvalMode: 'normal',
@@ -120,7 +124,8 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
             <ChatSidebar
               slots={[]} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent={opts.defaultAgent ?? ''} installedAgents={[]}
-            />
+              onOpenPeerSession={opts.onOpenPeerSession}
+              />
             <LocationProbe />
           </MemoryRouter>
         </ThemeProvider>
@@ -155,6 +160,9 @@ beforeEach(() => {
   installSoftNavigate(() => {})
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
+  mocks.instancesCapabilities.mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
+  mocks.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent' })
+  mocks.crewPeerPost.mockResolvedValue({ key: 'peer-new-1' })
   mocks.listInstances.mockResolvedValue({
     active: true, warm_set_cap: 5, sso: {},
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
@@ -313,27 +321,52 @@ describe('create-button caret menu', () => {
     expect(screen.queryByTestId('new-chat-on-crew-i-gian')).toBeNull()
 
     fireEvent.click(row)
-    // The session is created LOCALLY and bound to the peer for execution, so it
-    // lands in this machine's list with a crew chip. This replaced an earlier
-    // shape that POSTed straight to the peer's own create endpoint through the
-    // proxy: the session then existed only over there, and the only way to reach
-    // it was to switch to that crew's iframe pane. `instance_id` is what carries
-    // the binding, and it must be sent at BIRTH — the backend opens the peer's
-    // slot before creating the local one, so a disconnected or version-skewed
-    // peer fails the create instead of leaving a session that cannot send.
+    // The session is minted ON the peer through the proxy, with this machine's
+    // privacy default, and opens as a window. Nothing is created locally.
     await waitFor(() =>
-      expect(mocks.createChatSlot).toHaveBeenCalledWith(
-        undefined, undefined, undefined, undefined, 'persistent', undefined, undefined,
-        undefined, 'i-nobita',
-        // The trailing `adopt_remote_slot`, and it must stay UNDEFINED here: this
-        // is the MINT path ("New chat on crew"), which asks the peer for a brand
-        // new session. Naming a key here would turn it into an adopt of somebody
-        // else's existing session — the two paths differ only by this argument.
-        undefined,
-        // `agent_kind`: no agent was named, so no namespace rides with it.
-        undefined,
-      ),
-    )
+      expect(mocks.crewPeerPost).toHaveBeenCalledWith('i-nobita', 'api/chat/slots', { memory_mode: 'persistent' }))
+    await waitFor(() =>
+      expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'i-nobita', key: 'peer-new-1' }))
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('hands a new crew session to a host with no chat pane of its own', async () => {
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    const onOpenPeerSession = vi.fn()
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } }, onOpenPeerSession })
+    openCreateMenu()
+    fireEvent.keyDown(await screen.findByTestId('new-chat-on-crew'), { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
+    await waitFor(() => expect(onOpenPeerSession).toHaveBeenCalledWith('i-nobita', 'peer-new-1'))
+    expect(sessionStorage.getItem('kirocrew.crewWindow') || null).toBeNull()
+  })
+
+  it('does not yank the view onto the new crew session when the user moved meanwhile', async () => {
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    let finish: (v: unknown) => void = () => {}
+    mocks.crewPeerPost.mockReturnValue(new Promise(r => { finish = r }))
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
+    openCreateMenu()
+    fireEvent.keyDown(await screen.findByTestId('new-chat-on-crew'), { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
+    await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalled())
+    // The user opens another crew session while the create is in flight.
+    openCrewWindow({ instanceId: 'i-other', key: 'elsewhere' })
+    await act(async () => { finish({ key: 'peer-new-1' }) })
+    expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'i-other', key: 'elsewhere' })
+    closeCrewWindow()
+  })
+
+  it('refuses a crew create across a version mismatch before minting anything', async () => {
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    mocks.instancesCapabilities.mockResolvedValue({ version_match: false, version: '0.6.0', local_version: '0.9.0' })
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
+    openCreateMenu()
+    fireEvent.keyDown(await screen.findByTestId('new-chat-on-crew'), { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
+    const alert = await screen.findByTestId('new-chat-on-crew-error')
+    expect(alert.textContent).toContain('0.6.0')
+    expect(mocks.crewPeerPost).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -345,7 +378,7 @@ describe('create-button caret menu', () => {
     const user = userEvent.setup()
     mobileViewport.value = mobile
     localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
-    mocks.createChatSlot.mockRejectedValue(new Error('peer version mismatch'))
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer version mismatch'))
     renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
     openCreateMenu()
 
@@ -357,12 +390,12 @@ describe('create-button caret menu', () => {
     row.focus()
     await user.keyboard('{Enter}')
     const alert = await screen.findByTestId('new-chat-on-crew-error')
-    expect(mocks.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(mocks.crewPeerPost).toHaveBeenCalledTimes(1)
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
     row.focus()
     await user.keyboard('{Enter}')
-    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalledTimes(2))
     await screen.findByTestId('new-chat-on-crew-error')
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
@@ -374,16 +407,12 @@ describe('create-button caret menu', () => {
     await user.keyboard(key)
 
     expect(consumeChatHandoff()).toContain('peer version mismatch')
-    expect(mocks.createChatSlot).toHaveBeenCalledTimes(2)
+    expect(mocks.crewPeerPost).toHaveBeenCalledTimes(2)
   })
 
   it('sends no agent with a crew create even when this machine has a default', async () => {
-    // The assertion above pins `agent` to undefined too, but only because its
-    // fixture configures no default — so it would still pass if the entry sent
-    // one. This is the case that makes the omission load-bearing: `defaultAgent`
-    // names a crew from THIS machine's roster and the backend forwards any agent
-    // it is given straight to the peer, where that name means nothing (or means
-    // a different crew). The peer applies its own default instead.
+    // `defaultAgent` names a crew from THIS machine's roster, where the peer's
+    // name means nothing (or a different crew). The peer applies its own.
     localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
     renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } }, defaultAgent: 'planner' })
     openCreateMenu()
@@ -391,12 +420,8 @@ describe('create-button caret menu', () => {
     fireEvent.keyDown(trigger, { key: 'ArrowRight' })
     fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
 
-    // `agent` is the SECOND positional argument; `instance_id` the tenth.
-    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
-    const call = mocks.createChatSlot.mock.calls.at(-1)
-    expect(call?.[1]).toBeUndefined()
-    expect(call?.[8]).toBe('i-nobita')
-    expect(call).not.toContain('planner')
+    await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalled())
+    expect(JSON.stringify(mocks.crewPeerPost.mock.calls.at(-1))).not.toContain('planner')
   })
 
   it('still stamps the default agent on an ordinary local create', async () => {
@@ -409,7 +434,7 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
   })
 
-  // A crew create takes seconds (the peer's session opens before the local one),
+  // A crew create takes seconds (a version read, then the peer's own create),
   // so the picked row must show the pending window: a spinner and a label naming
   // the crew, both gone once the create settles either way.
   it.each([
@@ -418,7 +443,7 @@ describe('create-button caret menu', () => {
   ])('shows a pending crew create until it %s', async (_outcome, ok) => {
     let settle: (v: unknown) => void = () => {}
     let fail: (e: unknown) => void = () => {}
-    mocks.createChatSlot.mockReturnValue(new Promise((resolve, reject) => { settle = resolve; fail = reject }))
+    mocks.crewPeerPost.mockReturnValue(new Promise((resolve, reject) => { settle = resolve; fail = reject }))
     localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
     renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
     openCreateMenu()
@@ -436,9 +461,9 @@ describe('create-button caret menu', () => {
     // refused by the guard, not by the disabled state.
     expect(screen.getByTestId('new-chat-on-crew-i-nobita')).not.toHaveAttribute('data-disabled')
     fireEvent.click(screen.getByTestId('new-chat-on-crew-i-nobita'))
-    expect(mocks.createChatSlot).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalledTimes(1))
 
-    if (ok) settle({ key: 'chat-new-1' })
+    if (ok) settle({ key: 'peer-new-1' })
     else fail(new Error('peer version mismatch'))
     await waitFor(() => expect(screen.queryByTestId('new-chat-on-crew-spinner-i-nobita')).toBeNull())
     expect(screen.queryByText(pendingText)).toBeNull()

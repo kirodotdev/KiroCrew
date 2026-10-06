@@ -29,8 +29,9 @@ What the prewarm does NOT do, each of which is why the trust argument holds:
 - It never runs anything from the clone. It reads ``app.json`` and copies image
   files; ``setup.onInstall`` stays where it was.
 - It never widens the host set: ``is_clone_host_trusted`` gates every clone.
-- It never escalates a registry that is not build-pinned ``owner``:
-  ``_registry_trust_tier`` reads ``index`` for every ``config.json`` row.
+- It never escalates a registry that is not ``owner``: the tier is read with
+  ``_registry_trust_tier_of`` off the row whose index was fetched, which is
+  ``owner`` only for a build-pinned row or an operator-granted repository.
 - It never writes a file the proxy would refuse to serve: the same extension
   allowlist, path grammar and traversal rules are applied to each declared path
   BEFORE it is read, and the bytes are read from the resolved clone tree with a
@@ -80,7 +81,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _TRUST_OWNER,
     _context_clone_sandbox_mode,
     _is_supported_registry_transport,
-    _registry_trust_tier,
+    _registry_trust_tier_of,
     _repo_key_claims,
     _sel_credential_decision,
     _sel_credential_grant,
@@ -1445,7 +1446,11 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
     if not entries:
         return 0
     registry_name = _public_registry_name(reg)
-    tier = await asyncio.to_thread(_registry_trust_tier, registry_name)
+    # Read the tier off the SAME row object whose index was just fetched, never by
+    # re-resolving the name: config.json is agent-writable, so a name looked up
+    # again could now point at a granted repository while *entries* came from an
+    # index the agent chose.
+    tier = await asyncio.to_thread(_registry_trust_tier_of, reg)
     if tier != _TRUST_OWNER:
         return 0
 

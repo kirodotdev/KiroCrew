@@ -288,10 +288,12 @@ _DEV_LOG_TAIL_CHARS = 800
 # buffer the redactor sees. A single-pass redaction has no chunk seam a secret
 # could straddle to escape scrubbing.
 _DEV_LOG_READ_WINDOW = 64 * 1024
-# PEM private-key markers for detecting a key body bisected by the window
-# start (an END with no preceding BEGIN inside the window). Mirrors the header
-# shape the redaction floor anchors on: any "-----BEGIN/END ... PRIVATE KEY-----".
-_PEM_BEGIN_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+# PEM private-key END marker: any "-----END ... PRIVATE KEY-----", the same
+# spelling the redaction floor's PEM branch matches through from its BEGIN
+# anchor. `_drop_truncated_window_head` masks a mid-file window through the
+# first one it finds, since the region before it may be the body of a key whose
+# BEGIN header sat above the window start, which the floor's BEGIN-anchored PEM
+# branch cannot match.
 _PEM_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 # A line that is nothing but PEM/base64 key-body material: the base64 charset
 # ([A-Za-z0-9+/=]) with no spaces. Matches the anchorless body of a key whose
@@ -716,11 +718,12 @@ def _read_dev_log_tail(log: Path) -> str:
     a secret's body from the opening anchor the redactor keys on. A ``-----BEGIN
     ... PRIVATE KEY-----`` header that sat before the window leaves an anchorless
     key body at the window start that the header-anchored redactor would miss.
-    So on a truncated read the partial first line is dropped and, if a
-    ``-----END ... PRIVATE KEY-----`` marker appears with no preceding ``BEGIN``
-    inside the window, everything up to and including that END (the bisected key
-    body) is masked before redaction. Redacting in one pass over what remains
-    leaves no boundary a secret could straddle to escape scrubbing.
+    So on a truncated read ``_drop_truncated_window_head`` drops through the
+    first newline (the partial first line) and any leading run of two or more
+    base64-only lines, then masks everything up to and including the first
+    ``-----END ... PRIVATE KEY-----`` marker left in the window, whether or not
+    a ``BEGIN`` precedes it, all before redaction. Redacting in one pass over
+    what remains leaves no boundary a secret could straddle to escape scrubbing.
     """
 
     try:
@@ -747,11 +750,13 @@ def _drop_truncated_window_head(window: str) -> str:
     The first line is partial (the read cut into it). Beyond it, a key whose
     ``BEGIN`` header sat above the window start leaves an anchorless body the
     header-anchored redactor cannot scrub. Two guards remove it: drop through
-    the partial first line and every leading PEM/base64 body line, then mask
-    through the first ``-----END ... PRIVATE KEY-----`` marker. The leading-body
-    drop is what closes the case where NO END marker falls inside the window (so
-    the END-mask never fires); the END-mask additionally covers a later full PEM.
-    No orphaned key body survives into the redacted tail in either case.
+    the first newline and a leading run of two or more PEM/base64 body lines,
+    then mask through the first ``-----END ... PRIVATE KEY-----`` marker. The
+    leading-body drop is the only guard when NO END marker falls inside the
+    window (so the END-mask never fires); the END-mask additionally covers a
+    later full PEM. Between them they remove a bisected key body that ends at an
+    END marker inside the window, or that opens the window, after the partial
+    first line, as one unbroken run of two or more base64-only lines.
     """
 
     # Drop the whole first line unconditionally. On a mid-file read the first
@@ -773,9 +778,10 @@ def _drop_truncated_window_head(window: str) -> str:
     # lines would otherwise reach the redactor and a later labeled secret shrinking
     # under redaction could leave them in the retained tail. Requiring ≥2 lines is
     # what keeps a single legitimate base64-charset diagnostic line (a hash, an id,
-    # a long token) from being discarded. Dropping the run closes the no-END case
-    # regardless of any END; it costs at most a run of non-secret base64-shaped
-    # diagnostic lines from a bounded tail.
+    # a long token) from being discarded. Dropping the run covers the no-END case
+    # when the body opens the window as one unbroken run, regardless of any END;
+    # it costs at most a run of non-secret base64-shaped diagnostic lines from a
+    # bounded tail.
     lines = window.split("\n")
     run = 0
     for line in lines:
@@ -787,13 +793,14 @@ def _drop_truncated_window_head(window: str) -> str:
     if run >= 2:
         window = "\n".join(lines[run:])
     # Mask through the first END marker in the window. On a mid-file read the
-    # region before that END is untrusted: it is either the anchorless body of a
-    # key whose BEGIN header sat above the window start, or a self-contained PEM
-    # the redactor would scrub anyway — so discarding it never loses legitimate
-    # content, while keeping it can leak an orphaned key body. Masking through
-    # the FIRST END unconditionally is why a later ``BEGIN`` cannot re-expose the
-    # bisected body: a preceding-BEGIN test would skip the mask exactly when an
-    # orphan body is followed by a fresh full PEM.
+    # region before that END is untrusted: it may hold the anchorless body of a
+    # key whose BEGIN header sat above the window start. Discarding it costs at
+    # most the diagnostic text before that END, including any on the END's own
+    # line (a self-contained PEM in it the redactor would scrub anyway), while
+    # keeping it can leak an orphaned key body. Masking through the FIRST END
+    # unconditionally is why a later ``BEGIN`` cannot re-expose the bisected
+    # body: a preceding-BEGIN test would skip the mask exactly when an orphan
+    # body with no END of its own in the window is followed by a fresh full PEM.
     end = _PEM_END_RE.search(window)
     if end is not None:
         window = window[end.end() :]

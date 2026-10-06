@@ -16,9 +16,10 @@
  * tree transforms are exercised end to end.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import SessionGridView from '../components/SessionGridView'
 import PaneDim from '../components/PaneDim'
+import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
@@ -230,6 +231,24 @@ describe('SessionGridView — entry seeding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'focus b' }))
     await waitFor(() => expect(dimOf('b').dataset.paneDim).toBe('off'))
     expect(dimOf('a').dataset.paneDim).toBe('on')
+  })
+
+  // The "Dim inactive panes" chat setting off: no pane carries the overlay,
+  // and turning it back on restores the dim on the unfocused pane live.
+  it('dims no pane when the dim-inactive-panes setting is off', async () => {
+    saveChatConfig({ ...loadChatConfig(), dimInactivePanes: false })
+    seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-a', 'a'), leaf('l-b', 'b')] })
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    renderGrid('a')
+    await screen.findByTestId('pane-b')
+    const dimOf = (id: string) => screen.getByTestId(`pane-${id}`).querySelector('[data-pane-dim]') as HTMLElement
+    expect(dimOf('a').style.opacity).toBe('0')
+    expect(dimOf('b').dataset.paneDim).toBe('off')
+    expect(dimOf('b').style.opacity).toBe('0')
+
+    act(() => saveChatConfig({ ...loadChatConfig(), dimInactivePanes: true }))
+    await waitFor(() => expect(dimOf('b').style.opacity).toBe('var(--pane-dim-opacity)'))
+    expect(dimOf('a').style.opacity).toBe('0')
   })
 
   it('leaves split mode when there is no session to seed from', async () => {

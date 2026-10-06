@@ -37,6 +37,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
+import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
@@ -289,6 +290,17 @@ export function createTranscriptRenderers(
   return [
     // ── Shape-matched rows, ahead of anything keyed only by role ──
     {
+      // A dollar-picked skill is gateway-authored context, not a conversational
+      // reply. Its metadata carries the exact redacted body that entered this
+      // turn, so the card remains truthful after the source skill changes.
+      id: 'skill_load',
+      roles: ['system'],
+      match: isSkillLoadRow,
+      render: (m, ctx) => ctx.row(
+        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} />,
+      ),
+    },
+    {
       // Replaces the default: same card, but wired to open a folder and the
       // side panel the way the single-chat surface does.
       id: 'subagent_completion',
@@ -460,7 +472,8 @@ export function createTranscriptRenderers(
     },
     // Replaces the SDK's `assistant` entry (same id) ONLY for a crewmate's
     // chat: the same AssistantMessage (markdown, option chips, hover actions),
-    // placed as a bubble in a run under the crewmate's avatar and name. The
+    // placed as a bubble in a run with grouped corners (no author line:
+    // the DM header already names the speaker). The
     // run position is derived from the list the pane already filtered, so the
     // neighbours it reads are the rows drawn next to it. The two assistant-role
     // refinements above (system notice, workflow completion) still precede it;
@@ -494,7 +507,7 @@ export function createTranscriptRenderers(
             })
             if (bubble === null) return null
             return ctx.row(
-              <CrewmateMessage crewmate={crewmate} pos={pos} ts={m.ts}>{bubble}</CrewmateMessage>,
+              <CrewmateMessage pos={pos}>{bubble}</CrewmateMessage>,
               true,
             )
           },

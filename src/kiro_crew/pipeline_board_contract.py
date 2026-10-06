@@ -39,6 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
+# The host's byte cap, IMPORTED rather than restated. A local copy would need a reason to
+# exist, and the obvious one -- keeping the dashboard package out of this module's import
+# graph -- buys nothing: both consumers of this module (``agent_panel`` and
+# ``dashboard/handlers/agent_panel``) are reached only from inside that package. A copy
+# could only drift from the number the host actually enforces, and a producer bounding a
+# card against a stale limit builds cards the host drops whole.
 from kiro_crew.dashboard.dynamic_cards import MAX_DATA_BYTES as _HOST_MAX_DATA_BYTES
 from kiro_crew.work_vocab import (
     WORK_ITEM_STATES,
@@ -676,18 +682,9 @@ def card_template_path() -> Path:
 # compared is the one carried on the PANEL, and a record built by an older provider and stored
 # on disk reaches the flattener untouched whenever its board is served as published.
 
-#: The host's byte cap, IMPORTED rather than restated.
-#:
-#: A local copy needs a reason to exist, and the obvious one -- keeping the
-#: dashboard package out of its import graph -- does not survive measurement: both consumers
-#: of this module (``agent_panel`` and ``dashboard/handlers/agent_panel``) are reached only
-#: from inside that package, and importing it adds 4 modules and 4 ms on top of what this
-#: module already pulls. So the copy bought nothing and could drift from the number the host
-#: actually enforces, which is the one failure a restated cap has: a producer bounding a card
-#: against a stale limit builds cards the host drops whole.
-#:
-#: There is deliberately no constant for the FIELD cap either. ``normalize_card`` spells 24
-#: inline and exports nothing, so a name here would be a second copy of a number with no
+#: There is deliberately no constant for the FIELD cap. The byte cap is imported from the
+#: host (see the ``_HOST_MAX_DATA_BYTES`` import at the top of this module), but
+#: ``normalize_card`` spells 24 inline and exports nothing, so a name here would be a second copy of a number with no
 #: importable source -- and the field count is already asserted the way that matters, by handing
 #: the real card to the real ``normalize_card``.
 

@@ -310,6 +310,61 @@ class TestClaimFromPool:
         assert mgr._warm_pool.qsize() == 1  # not consumed
 
 
+class TestPoolAgentResolvesLikeASession:
+    """A blank / alias pool agent resolves to the kiro agent a session asks for."""
+
+    def _manager(self, tmp_path, monkeypatch, pool_agent: str):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = KiroCrewConfig.load()
+        cfg.session.pool_size = 1
+        cfg.session.pool_agent = pool_agent
+        factory = MagicMock(side_effect=lambda *a, **kw: _make_provider())
+        with patch("kiro_crew.session.default_project_dir", return_value=str(tmp_path)):
+            mgr = SessionManager(cfg, provider_factory=factory)
+        return mgr, factory
+
+    @pytest.mark.parametrize("pool_agent", ["", "default"])
+    def test_default_pool_is_claimed_by_the_resolved_default_agent(
+        self, tmp_path, monkeypatch, pool_agent
+    ):
+        mgr, _ = self._manager(tmp_path, monkeypatch, pool_agent)
+        provider = _make_provider()
+        mgr._warm_pool.put_nowait((provider, time.monotonic()))
+
+        result = mgr._claim_from_pool("kirocrew")
+
+        assert result is not None and result[0] is provider
+
+    def test_a_kiro_agent_name_the_resolver_cannot_see_is_kept(self, tmp_path, monkeypatch):
+        """A name that is not a config alias is a kiro agent already, kept as written."""
+        mgr, _ = self._manager(tmp_path, monkeypatch, "project-agent")
+        provider = _make_provider()
+        mgr._warm_pool.put_nowait((provider, time.monotonic()))
+
+        assert mgr._claim_from_pool("kirocrew") is None
+        result = mgr._claim_from_pool("project-agent")
+        assert result is not None and result[0] is provider
+
+    def test_a_different_agent_still_misses(self, tmp_path, monkeypatch):
+        mgr, _ = self._manager(tmp_path, monkeypatch, "")
+        mgr._warm_pool.put_nowait((_make_provider(), time.monotonic()))
+
+        assert mgr._claim_from_pool("custom-agent") is None
+        assert mgr._warm_pool.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_default_pool_prewarms_the_resolved_agent(self, tmp_path, monkeypatch):
+        """The pooled process runs the same agent the claiming session asked for."""
+        mgr, factory = self._manager(tmp_path, monkeypatch, "")
+
+        await mgr._fill_warm_pool()
+
+        assert factory.call_args.kwargs.get("agent") == "kirocrew"
+
+
 # ---------------------------------------------------------------------------
 # _schedule_replenish
 # ---------------------------------------------------------------------------

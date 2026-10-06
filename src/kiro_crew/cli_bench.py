@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Callable
 
 from kiro_crew import cli_help
 
@@ -162,9 +163,10 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         "compare",
         help="Diff two saved JSON reports",
         description=(
-            "Refuses to attribute a delta when the two runs disagree on corpus "
-            "fingerprint, ingest config, retrieval config or search backend -- any "
-            "of those makes the difference unattributable to the code change."
+            "Refuses to attribute a delta when the two runs disagree on, or either "
+            "report lacks, corpus fingerprint, ingest config, retrieval config, "
+            "search backend, embedder or environment -- any of those makes the "
+            "difference unattributable to the code change."
         ),
     )
     cmp_p.add_argument("baseline", help="Path to the baseline .json report")
@@ -213,6 +215,46 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         help="Skip the vector leg entirely (keyword+graph only), to isolate the FTS contribution",
     )
 
+    lr = bench_sub.add_parser(
+        "lesson-recall",
+        help="Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic)",
+        description=(
+            "Writes a labeled golden set of rules into a throwaway memory store, "
+            "ranks every rule for each request with the same call startup and "
+            "explicit recall use, and scores whether the rules the request needs "
+            "rank first -- reported as recall@k, MRR and nDCG per query class "
+            "(distinctive term, paraphrase, common-word trap, long request, short "
+            "request). Defaults to the deterministic toy embedder so it runs "
+            "anywhere; pass --real-embedder for a semantic run."
+        ),
+    )
+    lr.add_argument(
+        "golden",
+        nargs="?",
+        default=None,
+        help="Path to a golden-set JSON (default: the packaged lesson_golden_v1.json)",
+    )
+    lr.add_argument(
+        "-k",
+        type=_positive_int,
+        default=3,
+        help="Cut-off to headline in the printed summary (default: 3)",
+    )
+    lr_embedding = lr.add_mutually_exclusive_group()
+    lr_embedding.add_argument(
+        "--real-embedder",
+        action="store_true",
+        help=(
+            "Use the configured in-process embedder instead of the deterministic toy "
+            "stand-in. Required for a reportable semantic number."
+        ),
+    )
+    lr_embedding.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="Rank on the keyword measure alone, as a session with no vectors does",
+    )
+
 
 def bench_cmd(args: argparse.Namespace) -> int:
     """Dispatch, with the ONE catch site for every deliberate refusal.
@@ -249,7 +291,7 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     """Route to a subcommand. Returns a process exit code."""
     action = getattr(args, "bench_action", None)
     if action is None:
-        print("usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,compare}")
+        print("usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,lesson-recall,compare}")
         return 2
 
     # Deferred deliberately, and measured. `cli.py` imports this module at module
@@ -286,6 +328,9 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
 
     if action == "kb-retrieval":
         return _kb_retrieval(args)
+
+    if action == "lesson-recall":
+        return _lesson_recall(args)
 
     print(f"unknown bench action: {action}")
     return 2
@@ -492,25 +537,10 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
     embed_fn = None
     embedder_id = "toy-hashed-bow"
     if args.real_embedder:
-        from kiro_crew.knowledge.embedder import InProcessEmbedder
-
-        embedder = InProcessEmbedder()
-        if not embedder.wait_ready(timeout=_KB_REAL_EMBED_TIMEOUT_S):
-            print(
-                "refusing to run: --real-embedder requested but the in-process "
-                "embedding model did not become ready within "
-                f"{_KB_REAL_EMBED_TIMEOUT_S:g} seconds. Run 'kirocrew doctor' for "
-                "model diagnostics, or omit the flag to use the deterministic toy "
-                "embedder (plumbing check only)."
-            )
+        loaded = _real_embedder()
+        if loaded is None:
             return 1
-        embed_fn = embedder.embed
-        # The embedder's own model identity, never a hardcoded literal: a run
-        # with a custom model (InProcessEmbedder(model=...) or a swapped backend)
-        # must be labeled as that model in the report, or `bench compare` diffs
-        # apples against oranges under the same name. Mirrors the fail-closed
-        # embedder-identity invariant run_kb_retrieval enforces.
-        embedder_id = embedder.model
+        embed_fn, embedder_id = loaded
     elif not args.no_embeddings:
         print(
             "WARNING: using the toy hashed-bag-of-words embedder. These numbers "
@@ -549,4 +579,73 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
         return 1
 
     print(format_kb_report(report, k=args.k))
+    return 0
+
+
+def _real_embedder() -> tuple[Callable[[str], list[float] | None], str] | None:
+    """The in-process embedder's bound ``embed`` and model id, or None after printing why.
+
+    The id is the embedder's own model identity, never a hardcoded literal: a run
+    with a custom model must be labeled as that model in the report, or two runs
+    on different models compare under the same name.
+    """
+    from kiro_crew.knowledge.embedder import InProcessEmbedder
+
+    embedder = InProcessEmbedder()
+    if not embedder.wait_ready(timeout=_KB_REAL_EMBED_TIMEOUT_S):
+        print(
+            "refusing to run: --real-embedder requested but the in-process "
+            "embedding model did not become ready within "
+            f"{_KB_REAL_EMBED_TIMEOUT_S:g} seconds. Run 'kirocrew doctor' for "
+            "model diagnostics, or omit the flag to use the deterministic toy "
+            "embedder (plumbing check only)."
+        )
+        return None
+    return embedder.embed, embedder.model
+
+
+def _lesson_recall(args: argparse.Namespace) -> int:
+    """Run the lesson ranking recall harness against a golden set.
+
+    Lazy imports, like ``_kb_retrieval``: ``vector_memory`` stays out of the boot
+    path of every unrelated ``kirocrew`` subcommand.
+    """
+    from kiro_crew.eval.bench.lesson_recall import (
+        LessonGoldenSet,
+        default_lesson_golden_set_path,
+        format_lesson_report,
+        run_lesson_recall,
+    )
+
+    golden = LessonGoldenSet.from_json(args.golden or default_lesson_golden_set_path())
+    embed_fn = None
+    embedder_id = "toy-hashed-bow"
+    if args.real_embedder:
+        loaded = _real_embedder()
+        if loaded is None:
+            return 1
+        embed_fn, embedder_id = loaded
+    elif not args.no_embeddings:
+        print(
+            "WARNING: using the toy hashed-bag-of-words embedder. These numbers "
+            "measure term overlap, not semantic recall, and must not be reported "
+            "as a benchmark result. Use --real-embedder for a real number."
+        )
+    # The same driver module the store uses: pysqlite3's exception classes are
+    # distinct from stdlib sqlite3's on Linux x86_64.
+    from kiro_crew._sqlite_compat import sqlite3
+
+    try:
+        report = run_lesson_recall(
+            golden,
+            embed_fn=embed_fn,
+            embedder_id=embedder_id,
+            use_embeddings=not args.no_embeddings,
+            # The headlined cut-off must be computed, or the report has no number for it.
+            k_values=tuple(sorted({1, 3, 5, 10, args.k})),
+        )
+    except sqlite3.Error as exc:
+        print(f"refusing to run: store error while building the eval store: {exc}")
+        return 1
+    print(format_lesson_report(report, k=args.k))
     return 0

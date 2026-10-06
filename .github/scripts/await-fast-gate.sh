@@ -65,10 +65,32 @@ seen=false
 while :; do
   elapsed=$(( $(now) - started ))
 
-  runs="$(gh api --method GET \
+  # A read that ERRORS is not a run that is absent. The listing call's stderr
+  # is kept, so a rate limit or 5xx is named in the log, and a failed read
+  # never spends the APPEAR budget: it only proves the barrier could not look.
+  # The TOTAL budget still bounds the wait, so an API that stays down fails
+  # closed -- with a message that says the code was never judged.
+  read_err=""
+  if ! runs="$(gh api --method GET \
     "repos/$REPO/actions/workflows/fast-gate.yml/runs" \
     -f "head_sha=$SHA" -f "event=$EVENT" -f "branch=$BRANCH" \
-    -f per_page=100 2>/dev/null || true)"
+    -f per_page=100 2>"${TMPDIR:-/tmp}/await-fg-err.$$")"; then
+    read_err="$(head -c 300 "${TMPDIR:-/tmp}/await-fg-err.$$" 2>/dev/null | tr '\n' ' ')"
+    runs=""
+  fi
+  rm -f "${TMPDIR:-/tmp}/await-fg-err.$$"
+
+  if [ -n "$read_err" ] || [ -z "$runs" ]; then
+    echo "::warning::Fast Gate listing read failed after ${elapsed}s: ${read_err:-empty response}"
+    if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
+      echo "::error::Fast Gate listing unreadable after ${elapsed}s (${read_err:-empty response})." \
+           "The gates were never judged, so the matrix is not cleared to run;" \
+           "this is not a verdict on the code -- re-run this job."
+      exit 1
+    fi
+    nap 10
+    continue
+  fi
 
   # `branch=` is passed to the API as a narrowing hint, but the match is
   # re-asserted here: a filter the server silently ignores would hand
@@ -126,7 +148,8 @@ while :; do
 
   if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
     echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
-         "Failing closed rather than starting the matrix unverified."
+         "Failing closed rather than starting the matrix unverified." \
+         "This is not a verdict on the code: re-run this job once that run completes."
     exit 1
   fi
 

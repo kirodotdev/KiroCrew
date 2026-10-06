@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import time
 from typing import Any
@@ -403,6 +404,113 @@ def test_slow_lateack_acks_even_if_the_stream_ends_first(monkeypatch):
     # Inbox drained by the single consuming poll, yet the ack still lands.
     assert fake._INBOX.empty()
     assert _messages(buf)[-1]["result"]["stopReason"] == "cancelled"
+
+
+# [[SLOW_HOLD:<token>]]: a slow stream held after one chunk until released.
+
+
+@pytest.fixture
+def hold_dir(tmp_path, monkeypatch, fast_slow_stream):
+    """A release directory the fake reads, and a hold that polls without waiting.
+
+    The wait ceiling is cut to 5 s so a hold the code under test never releases
+    fails the turn by name instead of running out the 60 s production bound.
+    """
+    monkeypatch.setenv(fake.SLOW_HOLD_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(fake, "SLOW_HOLD_CHUNK_DELAY_SECS", 0)
+    monkeypatch.setattr(fake, "SLOW_HOLD_WAIT_SECS", 5.0)
+    monkeypatch.setattr(fake, "_POLL_INTERVAL_SECS", 0.001)
+    return tmp_path
+
+
+def _chunk_count(buf: io.StringIO) -> int:
+    return sum(1 for m in _messages(buf) if m.get("method") == "session/update")
+
+
+def test_slow_hold_waits_after_one_chunk_until_released(monkeypatch, fast_slow_stream):
+    """The hold is asked only once ``SLOW_HOLD_AFTER_CHUNKS`` chunks are out,
+    nothing streams while it answers False, and the stream resumes on True."""
+    monkeypatch.setattr(fake, "_POLL_INTERVAL_SECS", 0)
+    buf = _capture(monkeypatch)
+    seen: list[int] = []
+
+    def hold() -> bool:
+        seen.append(_chunk_count(buf))
+        return len(seen) == 3  # released on the third poll
+
+    assert fake._stream_slowly("s1", cancel_aware=True, hold=hold, delay=0) is False
+    assert seen == [fake.SLOW_HOLD_AFTER_CHUNKS] * 3
+    assert _chunk_count(buf) == fake.SLOW_CHUNKS
+
+
+def test_a_cancel_during_the_hold_ends_the_stream_as_cancelled(monkeypatch, fast_slow_stream):
+    monkeypatch.setattr(fake, "_POLL_INTERVAL_SECS", 0)
+    buf = _capture(monkeypatch)
+
+    def hold() -> bool:
+        # The cancel arrives while the stream is held; the hold never releases.
+        fake._INBOX.put(
+            {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+        )
+        return False
+
+    assert fake._stream_slowly("s1", cancel_aware=True, hold=hold, delay=0) is True
+    assert _chunk_count(buf) == fake.SLOW_HOLD_AFTER_CHUNKS
+
+
+def test_slow_hold_marker_waits_on_the_last_tokens_release_file(monkeypatch, hold_dir):
+    """Each marker line names a token; the last one holds, on the file of that
+    name in the hold directory. Released in advance, the turn streams it all."""
+    (hold_dir / "second").touch()
+    buf = _capture(monkeypatch)
+    text = f"{fake.slow_hold_trigger('first')}\n{fake.slow_hold_trigger('second')}"
+    fake._handle(_prompt(text))
+    assert _chunk_count(buf) == fake.SLOW_CHUNKS
+    assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_a_hold_nobody_releases_fails_the_turn_by_name(monkeypatch, hold_dir):
+    monkeypatch.setattr(fake, "SLOW_HOLD_WAIT_SECS", 0)
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.slow_hold_trigger("never")))
+    msgs = _messages(buf)
+    assert _chunk_count(buf) == fake.SLOW_HOLD_AFTER_CHUNKS
+    assert msgs[-1]["id"] == 100
+    assert "result" not in msgs[-1]
+    assert msgs[-1]["error"]["message"] == (
+        "fake ACP backend: slow hold 'never' was not released within 0s"
+    )
+
+
+def test_a_hold_without_its_directory_is_refused(monkeypatch, fast_slow_stream):
+    monkeypatch.delenv(fake.SLOW_HOLD_DIR_ENV, raising=False)
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.slow_hold_trigger("tok")))
+    (msg,) = _messages(buf)
+    assert msg["error"]["message"] == (
+        f"fake ACP backend: a slow hold needs {fake.SLOW_HOLD_DIR_ENV}"
+    )
+
+
+def test_a_quoted_hold_marker_holds_nothing(monkeypatch):
+    """Line-anchored: a transcript quoting the prompt is not a hold."""
+    monkeypatch.delenv(fake.SLOW_HOLD_DIR_ENV, raising=False)
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(f"User: {fake.slow_hold_trigger('tok')}"))
+    msgs = _messages(buf)
+    assert "error" not in msgs[-1]
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_slow_hold_trigger_and_path_spell_the_marker_and_release_file():
+    assert fake.slow_hold_trigger("A-z_09") == "[[SLOW_HOLD:A-z_09]]"
+    assert fake.slow_hold_path("holds", "tok") == os.path.join("holds", "tok")
+
+
+@pytest.mark.parametrize("token", ["", "has space", "x" * 65, "a]]b", "../up"])
+def test_slow_hold_trigger_refuses_a_token_the_marker_cannot_carry(token):
+    with pytest.raises(ValueError, match="slow-hold token"):
+        fake.slow_hold_trigger(token)
 
 
 def _permission_answer(option_id: str) -> dict[str, Any]:

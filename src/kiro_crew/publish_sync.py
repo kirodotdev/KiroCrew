@@ -983,9 +983,10 @@ async def refresh_publication(slug: str) -> Artifact:
             fields["shared_with"] = normalized
     # Out-of-band content/version drift: someone rolled the provider's live
     # pointer back to an older version, or edited the bytes directly. We do NOT
-    # mirror it into KiroCrew's append-only history; instead surface a re-sync
-    # prompt (the conflict banner's "Force re-sync" re-asserts KiroCrew's
-    # current content as a new top version). KiroCrew stays authoritative.
+    # mirror it into Kiro Crew's append-only history; instead record a drift
+    # message telling the user to publish again (re-publishing an already-published
+    # artifact force-pushes Kiro Crew's current content as a new top version).
+    # Kiro Crew stays authoritative.
     expected_dest_v = pub.version_map.get(str(pub.last_synced_kirocrew_version))
     cur_v = state.get("current_version")
     cur_sha = state.get("sha256")
@@ -994,7 +995,7 @@ async def refresh_publication(slug: str) -> Artifact:
     # copy) that the user can PULL into a new local snapshot — see
     # ``pull_upstream`` / ``upstream_status``. Only a NON-ahead mismatch (a
     # rollback to an older version, or an out-of-band edit at the SAME version
-    # detected via sha) is genuine drift the force-re-sync banner addresses.
+    # detected via sha) is genuine drift the drift message addresses.
     cloud_ahead = isinstance(cur_v, int) and expected_dest_v is not None and cur_v > expected_dest_v
     drifted = not cloud_ahead and (
         (isinstance(cur_v, int) and expected_dest_v is not None and cur_v != expected_dest_v)
@@ -1005,7 +1006,7 @@ async def refresh_publication(slug: str) -> Artifact:
         )
     )
     # A live CRDT doc has no version/sha drift to reconcile — the remote
-    # owns the doc. Never surface a Force-resync banner for a LIVE publication.
+    # owns the doc. Never surface a drift message for a LIVE publication.
     if pub.collab_mode == "live":
         drifted = False
     if drifted:
@@ -1015,7 +1016,8 @@ async def refresh_publication(slug: str) -> Artifact:
         )
         drift_msg = (
             f"{_DRIFT_PREFIX}: it is showing {cur_v_str} (Kiro Crew published "
-            f"{expected_str}). Force re-sync to re-publish Kiro Crew's current version."
+            f"{expected_str}). Publish the artifact again to re-publish Kiro Crew's "
+            "current version."
         )
         if pub.last_error != drift_msg:
             fields["last_error"] = drift_msg

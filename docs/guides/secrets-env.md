@@ -60,6 +60,20 @@ count as multiple runtime entries, so they never accidentally enable the global
 fallback. For a single host, an already-stored per-host token remains visible
 because the runtime gives it precedence.
 
+A stored Connections OAuth client secret,
+`KIROCREW_CONNECTIONS_<SLUG>_CLIENT_SECRET`, appears in the catalog as kind
+`connections_client_secret`, with `host` set to the provider slug. It is listed
+only once stored. The Secrets routes do not edit it: a write or delete of that
+name returns `409` with code `managed_by_connections`; change it under
+**Settings → OAuth Apps**.
+
+When a stored integration name is one the runtime will not read, the response
+also carries an `unused` list of `{name, reason}` entries. The reasons are
+`wakatime_disabled` (`WAKATIME_API_KEY` stored while WakaTime is off),
+`jira_multi_host` (`JIRA_API_TOKEN` stored with more than one Jira host), and
+`jira_host_precedence` (`JIRA_API_TOKEN` stored beside the single host's own
+`JIRA_TOKEN_<HEX>`, which wins).
+
 The catalog is deliberately based on **actual vault consumers**, not the broader
 set of credential names accepted from `.env`. Most channel credentials still
 read literal environment/config values, so storing a same-named vault entry does

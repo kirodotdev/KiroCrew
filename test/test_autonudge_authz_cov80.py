@@ -596,6 +596,51 @@ async def test_add_defaults_the_sentinel_for_a_channel_loop(
 
 
 @pytest.mark.asyncio
+async def test_a_new_goal_after_a_stop_file_finish_is_not_killed_by_the_stale_file(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The stop file finishes a loop and is left on disk; the record is kept, not
+    removed. The per-slot sentinel path is the same for the next goal on that
+    slot, so the person's sequence -- Clear, then set a new goal -- must not
+    end on the new loop's first tick. The arm chokepoint unlinks the stale
+    file before the new loop exists, which is what this pins end to end."""
+    from kiro_crew.autonudge import STOP_SENTINEL_REASON, AutoNudgeService
+
+    sentinel = tmp_path / ".stop-chat-1-1"
+    monkeypatch.setattr(
+        autonudge_authz, "resolve_stop_sentinel", lambda key, *a, **kw: str(sentinel)
+    )
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    await svc.start()
+    state = _state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)})
+    try:
+        first, error, status = await authorize_and_add_nudge(
+            svc=svc, state=state, slot_key="chat-1-1", message="first goal", source="dashboard"
+        )
+        assert error is None and status == 200 and first is not None
+        assert first.stop_sentinel_path == str(sentinel)
+        sentinel.write_text("goal met", encoding="utf-8")
+        svc._cancel_timer(first.id)
+        await svc._timer(first, delay=0)
+        kept = svc.get_by_slot("chat-1-1")
+        assert kept is not None and kept.stopped_reason == STOP_SENTINEL_REASON
+        assert sentinel.exists()
+        # The person clears the finished goal, then sets the next one.
+        assert await svc.remove(first.id, stop_reason="dashboard_delete")
+        second, error, status = await authorize_and_add_nudge(
+            svc=svc, state=state, slot_key="chat-1-1", message="second goal", source="dashboard"
+        )
+        assert error is None and status == 200 and second is not None
+        assert not sentinel.exists(), "the stale stop file is gone before the new loop exists"
+        svc._cancel_timer(second.id)
+        await svc._timer(second, delay=0)
+        live = svc.get_by_slot("chat-1-1")
+        assert live is not None and live.id == second.id and live.active
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_add_audits_then_reraises_a_service_failure(audits: list[dict]) -> None:
     svc = RecordingSvc(add_error=OSError("store wedged"))
     with pytest.raises(OSError, match="store wedged"):

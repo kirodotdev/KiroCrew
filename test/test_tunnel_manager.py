@@ -910,6 +910,21 @@ def _cleanup_registration_order() -> list[str]:
     from kiro_crew.dashboard import server
 
     src = inspect.getsource(server.start_dashboard)
+    # The registrations the one-module file made inline now sit in the boot phases
+    # it calls in server_runtime owners; each phase's source replaces its call.
+    for phase in (
+        server._start_app_backends,
+        server._register_watchdog_shutdown,
+        server._register_diag_recorder_shutdown,
+        server._register_kiro_service_shutdown,
+    ):
+        start = src.index(f"{phase.__name__}(")
+        depth = 0
+        for end in range(start, len(src)):
+            depth += {"(": 1, ")": -1}.get(src[end], 0)
+            if src[end] == ")" and depth == 0:
+                break
+        src = src[:start] + inspect.getsource(phase) + src[end + 1 :]
     hits: list[tuple[int, str]] = []
     for token in _CLEANUP_REGISTRARS:
         start = 0

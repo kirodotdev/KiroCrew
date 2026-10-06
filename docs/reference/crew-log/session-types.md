@@ -3,13 +3,15 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Thirty-three types. Read [envelope.md](envelope.md) first for the fields every entry
+Thirty-five types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
-never carry `thread`, and no session emitter sets `ref`. A repair closer is the one
-writer that can put `gateway` on a type whose ordinary emitter uses `acp`, and it
-reuses the last real entry's `time` rather than the clock.
+never carry `thread`, and no session emitter sets `ref`. A type whose ordinary
+emitter uses `acp` can still carry `gateway`: crash repair writes its closers that
+way, reusing the last real entry's `time` rather than the clock, and the in-process
+failed-turn closer writes `turn/completed` with `gateway` too. Each type's section
+names its writers.
 
 Every subsection below follows one template: summary, kind and `src`, when written,
 pairing, fields, invariants, example, reader hint, since.
@@ -25,6 +27,8 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
 | [`session/class`](#sessionclass) | The session's class changed after its log was opened. | live | `gateway` | supersedes `session/opened.class` |
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
+| [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
+| [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
 | [`turn/started`](#turnstarted) | A turn was authorized and is about to run. | live | `gateway` | opener of `turn/completed` |
 | [`turn/refused`](#turnrefused) | A gate refused to run a dispatched turn. | live | `gateway` | terminal on its own |
 | [`turn/completed`](#turncompleted) | A turn ended; its outcome and cost. | live | `acp`, `gateway` | closer, written last |
@@ -136,7 +140,8 @@ The chain walker is `crew_log/session_tree.fold_slot_chain`
 first, bounded, refusing to visit an id twice, and stepping only onto a crew log
 whose own header slot matches the slot it started on -- so it enforces the
 same-slot rule below rather than trusting it. It reports WHY it stopped, and only
-`first` means it reached the slot's first crew log; no shipped route calls it yet.
+`first` means it reached the slot's first crew log. Its consumer is
+`crew_log/read.slot_chain`, which `dashboard/card_lifecycle._read_card_tools` calls.
 
 `previous` always names a crew log of the SAME slot, and that is verified rather
 than assumed. The id comes from three sources in order, latched by whichever
@@ -266,6 +271,72 @@ corruption. Read to the end of the last segment.
 
 **Since** — #10091.
 
+### `session/adopted`
+
+Another session took this one over, so it now hangs under that session in the
+session tree.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When a takeover lands, on the session that was taken over.
+Carries no `turn`. The append is the operation: the caller waits for it to land
+before it reports the takeover.
+
+**Pairing** — None. It supersedes the creating edge in `session/opened.parent`
+without rewriting it, and a later `session/released` takes it away.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `parent` | object | required | The session that took this one over, resolved by the gateway from the calling connection rather than named by the caller. | |
+| `parent.slot` | string | required inside `parent` | The adopter's slot key. The tree's own key. | |
+| `parent.sid` | string | optional | The adopter's ACP session id at the moment of the call; absent when the gateway had no live handle for it. | |
+| `previous_parent` | object | optional | The parent this adoption replaced, `{slot, sid}` in the same shape. Absent when the session was a root. | |
+
+**Invariants** — Recorded on the session that moved, which is where
+`session/opened.parent` already puts a creating edge. A takeover of a session with
+children writes one entry, because descendants hang on this session's slot rather
+than on a path. `session/opened` still states who OPENED the session; this entry
+states who holds it now.
+
+```json
+{"type":"session/adopted","seq":211,"time":1789000091000,"src":"gateway","data":{"parent":{"slot":"dashboard:7","sid":"s-9c2e"},"previous_parent":{"slot":"dashboard:3"}}}
+```
+
+**Reader hint** — Take the parent from the newest of `session/opened.parent`,
+`session/adopted` and `session/released`; do not merge them. No fold reads
+`previous_parent`; it is there for a person reading who held the session and when.
+
+**Since** — #12962.
+
+### `session/released`
+
+This session's parent let it go, so it stands on its own again.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When a release lands, on the session that was let go. Carries
+no `turn`. Like `session/adopted`, the caller waits for the append to land.
+
+**Pairing** — None. The counterpart of `session/adopted`, and the only entry that
+takes a parent edge away.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `previous_parent` | object | optional | The parent that let this session go, `{slot, sid}`. Absent when the gateway could not name it. | |
+
+**Invariants** — The meaning is that there is no parent NOW, which does not depend
+on naming the one there was. A `session/opened` carrying no `parent` is not a
+retraction: it means that entry did not repeat a creator.
+
+```json
+{"type":"session/released","seq":212,"time":1789000092000,"src":"gateway","data":{"previous_parent":{"slot":"dashboard:7","sid":"s-9c2e"}}}
+```
+
+**Reader hint** — After this entry the session is a root in the tree until a later
+`session/adopted` says otherwise.
+
+**Since** — #12962.
+
 ### `turn/started`
 
 A turn was authorized and is about to run.
@@ -355,6 +426,7 @@ for a turn that was still open.
 | `credits` | float | optional | Present only when the provider billed credits (positive and finite). Absent on a synthesized close, and on a measured one the provider did not bill in credits. | |
 | `tokens` | object | optional | `{input, output, cache_read, cache_write}`, all ints, all four present. Written only when the provider reported a count above zero on some dimension; absent on a synthesized close, and on a measured one that reported no count. | |
 | `error` | string | optional | Exception class name — never its message — on the failed close. | |
+| `context` | object | optional | `{used, window}`, both ints and both present: the provider's own reading of how full the context window was, and the window size it was taken against. Absent when the provider reports no occupancy. | |
 
 **Invariants** — `credits` and `tokens` are each present only when measured, and
 independently: a provider can bill a turn in credits without reporting a token
@@ -597,11 +669,13 @@ there are no blocks to tally.
 | `tokens` | int | required | Estimated tokens. | |
 | `tokens_estimated` | bool | required | Always `true`. | `true` |
 | `step` | int | optional | Model call ordinal. Omitted when 0. A turn-opening composition is written before the first `step/started`, so it is step-less; join it to the turn's FIRST model call. | |
+| `phase` | string | optional | Which population this composition belongs to: the one-off session-start injection or a per-turn one. Absent when the composer does not state it. | `session_start`, `per_turn` |
 
 **Invariants** — `tokens` is an estimate derived from `chars`, which is why
 `tokens_estimated` is written on every entry rather than only when it is true.
-Blocks with no classification are folded into a single `other` source, so `sources`
-does not enumerate every injected block by name. A step-less `context/composed`
+A block with an empty label is renamed to `other`; every other label, including
+`unclassified`, keeps its own name, so `sources` does not enumerate every injected
+block individually. A step-less `context/composed`
 belongs to its turn's first model call: the context is composed once, in front of
 the call that opens as step 1, and the entry is written before that opener, so it
 cannot carry the ordinal without dropping below the `message/received` it is derived
@@ -779,7 +853,11 @@ decision, so a request can never be lost while its decision is written.
 | `tool` | string | optional | Tool name. Absent when the frame named none. | |
 | `reason` | string | optional | The redacted, clipped title shown to the human. Absent when there is none. | |
 
-**Invariants** — `reason` is what a person saw, not the tool's arguments.
+**Invariants** — `reason` is what a person saw, not the tool's arguments. A
+subagent's approval is filed on the PARENT session's unit, under the turn that
+dispatched the child. A spawn approval's id is `spawn:<agent_id>` and its `tool` is
+the spawn tool; a child's own tool prompt is recorded as `<agent_id>:<request_id>`,
+so two children's prompts never share an id.
 
 ```json
 {"type":"approval/requested","seq":24,"time":1789000000600,"src":"gateway","data":{"turn":3,"approval_id":"a-1","tool":"shell","reason":"remove the build directory"}}
@@ -806,7 +884,7 @@ an unmatched request with `decision` `unknown`.
 |---|---|---|---|---|
 | `turn` | int | required | Turn ordinal. | |
 | `approval_id` | string | required | The same id as the request. | |
-| `decision` | string | required | The decision. `unknown` is written **only by crash repair**. | `unknown` (repair only) |
+| `decision` | string | required | The decision, as the resolving surface worded it. `unknown` is written **only by crash repair**. | `approved`, `rejected`, `rejected_once`, `unknown` (repair only) |
 | `by` | string | optional | Written only for a host-made decision. Omitted for a person's own answer. | `host` |
 | `cause` | string | optional | The host's reason code for an automatic decline. | |
 
@@ -980,7 +1058,7 @@ no task line for it rather than an empty one.
 **Reader hint** — A missing `turn` is normal and does not mean the entry is
 damaged. Group children by `agent_id`, not by turn.
 
-**Since** — type #10091; written by #11185.
+**Since** — type #10091; written by #11185; `task` added by #16386.
 
 ### `subagent/steered`
 
@@ -1028,8 +1106,6 @@ while the child was still running.
 **Invariants** — A fact about the SESSION, which is why it is here rather than in a
 store beside the log: the Subagents panel's durable half is a fold of this log, so a
 dismissal kept anywhere else is a second record that has to be held in step with it.
-It was held in a registry keyed on the run's folder at both ends, and when that folder
-was reclaimed first the dismissed card came back.
 
 ```json
 {"type":"subagent/dismissed","seq":41,"time":1789000001200,"src":"gateway","data":{"agent_id":"sub-1"}}
@@ -1040,7 +1116,7 @@ dismissal does not change what the session dispatched or what it spent, so a spe
 figure that fell when someone tidied the panel would be wrong. The flag does not come
 back off: the log does not un-record an act.
 
-**Since** — this entry type is new in this change.
+**Since** — #16386.
 
 ### `subagent/completed`
 
@@ -1056,16 +1132,17 @@ A child finished its work.
 |---|---|---|---|---|
 | `agent_id` | string | required | The child's id. | |
 | `ms` | int | optional | Elapsed time. Omitted at 0. | |
+| `credits` | number | optional | What the child billed, cumulative across every attempted turn. Positive and finite; absent when the run was unmetered. | |
 
-**Invariants** — Carries no `tokens` and no `credits`: the subagent runtime
-measures neither, so a child's cost is not recoverable from the parent's log.
+**Invariants** — Carries no `tokens`: the subagent runtime does not measure them.
+An absent `credits` means the provider reported no credit spend, not a free run.
 
 ```json
-{"type":"subagent/completed","seq":70,"time":1789000002500,"src":"gateway","data":{"agent_id":"sub-1","ms":40000}}
+{"type":"subagent/completed","seq":70,"time":1789000002500,"src":"gateway","data":{"agent_id":"sub-1","ms":40000,"credits":0.84}}
 ```
 
-**Reader hint** — Do not attribute child cost from this entry. There is none to
-attribute.
+**Reader hint** — Attribute child cost from `credits` when it is present; never
+derive tokens from it.
 
 **Since** — type #10091; written by #11185.
 
@@ -1088,9 +1165,10 @@ rather than closed on a guess.
 | `outcome` | string | optional | Which non-success outcome. Defaults to `failed`, so it is absent only when a caller passes an empty value. `unknown` is written **only by crash repair**. | `failed`, `stopped`, `unknown` (repair only) |
 | `reason` | string | optional | Redacted, clipped failure reason. | |
 | `ms` | int | optional | Elapsed time. Omitted at 0. | |
+| `credits` | number | optional | What the child billed before it stopped, cumulative across every attempted turn. Positive and finite; absent when the run was unmetered. | |
 
 **Invariants** — This one type covers both non-success outcomes; `outcome` is what
-separates them.
+separates them. Like `subagent/completed`, it carries no `tokens`.
 
 ```json
 {"type":"subagent/failed","seq":71,"time":1789000002510,"src":"gateway","data":{"agent_id":"sub-2","reason":"provider error","outcome":"failed","ms":12000}}
@@ -1217,7 +1295,7 @@ every crew of the repository.
 | `crew_id` | string | required | The crew this update belongs to. | |
 | `owner` | string | required | Repository owner the crew works in. | |
 | `repo` | string | required | Repository name the crew works in. | |
-| `number` | int | optional | The issue this update is about. ABSENT on a crew-level step (a queue sweep that took nothing), which is the only kind of entry that patches no work item. | |
+| `number` | int | optional | The issue this update is about. ABSENT on a crew-level step (a queue sweep that took nothing), which patches no work item. A carried pass (`carried` true, a `skip`, and no `phase`) names a number and also patches no work item: it records the skip and the progress line only. Every other entry patches the item it names. | |
 | `phase` | string | optional | The item's new phase. Never written without `event` and `event_kind`, which is what makes the phase-requires-a-reason rule a property of ONE entry. Closed: the writer refuses an unknown phase before anything is appended. | `selected`, `claimed`, `investigating`, `implementing`, `awaiting-ci`, `addressing-review`, `awaiting-merge`, `awaiting-reply`, `resolved`, `skipped`, `yielded`, `handed-back`, `preempted` |
 | `outcome` | string | optional | Terminal outcome; an empty string clears it. | |
 | `decision` | string | optional | What the crew decided to do. | |
@@ -1271,7 +1349,7 @@ once; an item that legitimately returns to identical fields after intervening up
 is a new update and applies. An entry naming a `crew_id` other than
 the fold's first is left out: every unit of one slot belongs to one crew.
 
-**Since** — the Issue Radar crew ledger's move onto the crew log.
+**Since** — #12303.
 
 ## The work board
 
@@ -1298,6 +1376,7 @@ log rather than a record beside it; the routes still read that cache.
 | `item_id` | string | optional | The item acted on. Absent only for `goal`, the board-level header write. | |
 | `goal` | string | optional | The board's objective, when `goal` set one. | |
 | `round` | int | optional | The board's or the item's round counter, when set. | |
+| `generation` | string | optional | An opaque id minted when the conductor record was created; a slot reused after its board was purged mints a new one. Absent on an entry of a board that predates the stamp. | |
 | `depth` | int | optional | The board's nesting depth, carried by the first entry of a board. | |
 | `parent_item` | string | optional | The parent board's item this board works, carried with `depth`. | |
 | `title` | string | optional | The item's title, set by `create`. | |
@@ -1313,14 +1392,36 @@ log rather than a record beside it; the routes still read that cache.
 | `pr` | int | optional | The pull request number, set by `report`. | |
 | `event` | string | optional | The one-line item event this mutation appends to the item's tail. | |
 | `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close` (closed) |
+| `event_id` | string | optional | The store's content-addressed id of the event this write appended. | |
+| `event_ts` | string | optional | The store's stamp on that event. | |
+| `created_at` | string | optional | The item's committed creation stamp, carried by `create`. | |
+| `last_report_at` | string | optional | The item's committed last-report stamp, carried by `report`. | |
+| `closed_at` | string | optional | The item's committed close stamp, carried by `close`. | |
+| `board_round` | int | optional | The board's committed round, carried by a baseline entry. | |
+| `board_created_at` | string | optional | The board's committed creation stamp, carried by a baseline entry. | |
+| `goal_version` | int | optional | The header's goal-write count after this write, set by `goal`. | |
+| `baseline` | bool | optional | `true` when the entry carries the WHOLE committed item rather than a delta. | |
 
-**Invariants** — A delta, never a whole record: only the fields the one `action`
-set are present. A conductor entry never carries a worker field and a worker entry
-never carries a conductor field; the writer refuses the cross before it builds the
-entry. Every item action carries its `event` and `event_kind` in the SAME entry, so
-no reader can observe an item that moved without its logged reason. The board's
-timestamps (`created_at`, `closed_at`, `last_report_at`) are the entries' own `time`
-and are not repeated in `data`. Every entry carries `generation`, an opaque id minted when the conductor record was created: a slot reused after its board was purged mints a new one, and the fold transitions in log order (a conductor entry with a new id opens the next board, a worker entry with another id is omitted), so a rebuild never revives a purged board. An entry about an item the record has never held whole (one from before the projection) carries `baseline: true` and the whole committed item. Every entry carries the store's own event id and stamps (`event_id`, `event_ts`, `created_at`, `last_report_at`, `closed_at`), so a rebuild reproduces them rather than the append time.
+**Invariants** — A delta: only the fields the one `action` set are present,
+except on a baseline entry. A conductor entry never carries a worker field and a
+worker entry never carries a conductor field; the writer refuses the cross before it
+builds the entry. Every item action carries its `event` and `event_kind` in the SAME
+entry, so no reader can observe an item that moved without its logged reason.
+
+The store's own stamps ride in `data`, per action: an item write carries `event_id`
+and `event_ts` for the event it appended, `create` carries `created_at`, `report`
+carries `last_report_at`, and `close` carries `closed_at`. A rebuild reproduces those
+stamps rather than the append time.
+
+`generation` lets the fold move between boards in log order: a conductor entry with
+a new id opens the next board, and a worker entry with another id is omitted, so a
+rebuild never revives a purged board. A board that predates the stamp writes no
+`generation`.
+
+An entry about an item the record has never held whole (one from before the
+projection) carries `baseline: true` and the whole committed item, whichever party
+wrote it, together with the board's `depth`, `parent_item`, `goal`, `board_round`
+and `board_created_at`.
 
 ```json
 {"type":"work/recorded","seq":72,"time":1789000002600,"src":"gateway","data":{"slot":"dashboard:3","actor":"worker","by":"dashboard:9","action":"report","item_id":"it_0badc0de","status":"progress","summary":"scoped tests green, opening the PR next","artifacts":{"branch":"feat/x","pr":"123"},"pr":123,"event":"progress: scoped tests green","event_kind":"report"}}
@@ -1331,7 +1432,7 @@ bound worker slot's units. Fold them all, oldest unit first, and key items by
 `item_id`; a report seen before its item's `create` belongs to a unit the reader has
 not folded yet, not to a missing item.
 
-**Since** — the change that made the work ledger a projection of the crew log.
+**Since** — #12314.
 
 ## The member panel
 
@@ -1393,14 +1494,13 @@ publish" is answered by the durable `crew-panels/<slug>.json`, not here: the app
 best-effort, so a publish whose entry never landed leaves the fold with no record while
 the file still serves that crew's panel.
 
-**Since** — the change that gave the member panel a crew-log record beside its file.
+**Since** — #13440.
 
 ## Removed types
 
 These nine are owned by the `session` kind in the format and have no producing
 site, so they are removed rather than kept as unwritten declarations.
-`message/steered` sits here even though its emitter function exists, because nothing
-calls it. A reader needs no handling for anything in this table.
+A reader needs no handling for anything in this table.
 
 | Type | Why it is removed |
 |---|---|

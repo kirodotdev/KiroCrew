@@ -886,3 +886,13 @@ the contracts CHANGE on both sides. Template: `src/kiro_crew/apps/builtins/issue
 - Keep `defaultEnabled: false`; users opt in via the App Store.
 - Full worktree + build-gate discipline applies (see the kirocrew-worktree-dev
   skill) — this is now Kiro Crew source.
+- **Tests**: the suite under `tests/` follows the repo's test rules — the
+  [writing-tests](../../src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md)
+  skill and the
+  [Determinism contract](../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
+  The rootdir `conftest.py` floor applies there (plus the app's own `tests/conftest.py`
+  where one exists), not `test/conftest.py`, and the helpers under `test/` are not on
+  your import path: take shared test support from
+  `kiro_crew.testing`, which ships in the package (`kiro_crew.testing.clock`, `.wait`,
+  `.ids` and `.links`), and the rootdir's `manual_clock`, `seeded_rng` and `local_tz`
+  fixtures.

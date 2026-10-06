@@ -108,6 +108,23 @@ def test_warm_sel_singleton_swallows_init_failure(monkeypatch, caplog):
     assert any("SEL startup warm failed" in r.message for r in caplog.records)
 
 
+def _with_call_inlined(src: str, callee) -> str:
+    """*src* with its call to *callee* replaced by *callee*'s source, in place.
+
+    The middleware chain moved out of the entrypoints into a ``server_runtime``
+    installer they call, so the chain's position in the boot is the call's.
+    """
+    import inspect
+
+    start = src.index(f"{callee.__name__}(")
+    depth = 0
+    for end in range(start, len(src)):
+        depth += {"(": 1, ")": -1}.get(src[end], 0)
+        if src[end] == ")" and depth == 0:
+            break
+    return src[:start] + inspect.getsource(callee) + src[end + 1 :]
+
+
 def test_start_paths_warm_sel_singleton_before_ready() -> None:
     """Source guard: both async server startup paths must await
     ``warm_sel_singleton()`` BEFORE publishing readiness, so no handler's
@@ -132,8 +149,12 @@ def test_start_paths_warm_sel_singleton_before_ready() -> None:
         "keep the gateway from becoming ready"
     )
 
+    installers = {
+        "start_dashboard": _srv._install_dashboard_middlewares,
+        "start_api_server": _srv._install_api_middlewares,
+    }
     for fn in (_srv.start_dashboard, _srv.start_api_server):
-        src = inspect.getsource(fn)
+        src = _with_call_inlined(inspect.getsource(fn), installers[fn.__name__])
         warm_at = src.find("await warm_sel_singleton()")
         assert warm_at != -1, f"{fn.__name__} must await warm_sel_singleton()"
         ready_at = src.find("state.ready = True")

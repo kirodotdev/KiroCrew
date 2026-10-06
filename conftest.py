@@ -8,9 +8,10 @@ all -- only this file, plus that app's own ``tests/conftest.py`` where one exist
 Anything that must hold for EVERY test therefore has to live here, at the
 rootdir, which is the one conftest pytest applies to every testpath.
 
-Only the HOST-MUTATION FLOOR belongs in this file: the guards that must hold for a
-test collected from any testpath, because what they protect is the
-developer's machine rather than the correctness of one suite. Everything that is
+Only the HOST-MUTATION FLOOR belongs in this file, plus the two Determinism-contract
+pieces described below: the guards that must hold for a test collected from any
+testpath, because what they protect is the developer's machine rather than the
+correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
 The floor has eight parts, and each one exists because the "remember to isolate
@@ -88,6 +89,14 @@ The fixtures below remove that "remember to" from the contract. None of them
 changes the behaviour of a test that already isolates itself correctly: every one
 sets a value a test can still override, and a test that sets its own
 ``KIROCREW_HOME`` or its own temp dir keeps winning.
+
+Besides the floor, this file carries the two pieces of the Determinism contract
+(``docs/system-specs/common/testing-conventions.md``) that every testpath needs and
+that no test can import from ``test/``: the opt-in ``manual_clock``, ``seeded_rng``
+and ``local_tz`` fixtures (requested by name, never autouse), and the per-test
+publication of the running test's timeout to
+``kiro_crew.testing.wait.runner_timeout_secs``, so a wait helper's default deadline is
+half of the timeout pytest-timeout enforces on that test.
 
 Imports at MODULE level are stdlib + pytest only, on purpose: a rootdir conftest is
 imported before every collection, so pulling ``kiro_crew`` in here would make the
@@ -323,8 +332,9 @@ def _refuse_a_real_data_home() -> None:
 
 
 # ── Hypothesis example database (rootdir floor) ─────────────────────────────
-# ``test/conftest.py`` registers the "default"/"thorough" profiles but never sets
-# ``database=``, so hypothesis falls back to its own default: ``.hypothesis/examples``
+# ``test/conftest.py`` registers the "default"/"thorough" profiles without a
+# ``database=`` (its derandomized "ci" profile sets ``database=None`` and is left
+# alone below), so hypothesis falls back to its own default: ``.hypothesis/examples``
 # resolved against the CURRENT WORKING DIRECTORY, i.e. the repo root, for every test
 # collected from ANY testpath -- including the ~108 modules under
 # ``src/kiro_crew/apps/builtins/*/tests/`` that never import ``test/conftest.py`` at all.
@@ -394,6 +404,10 @@ def _redirect_hypothesis_database() -> None:
                 os.environ.setdefault("HYPOTHESIS_STORAGE_DIRECTORY", _HYPOTHESIS_DB_DIR)
             except Exception:  # noqa: BLE001 - an older hypothesis without the hook
                 pass
+    if getattr(_current, "derandomize", False):
+        # A derandomized profile (``test/conftest.py``'s "ci") keeps no database on
+        # purpose; re-registering it here would quietly give it one back.
+        return
     database = DirectoryBasedExampleDatabase(_HYPOTHESIS_DB_DIR) if _HYPOTHESIS_DB_DIR else None
     _hyp_settings.register_profile(
         _hyp_settings._current_profile,
@@ -859,6 +873,94 @@ def monkeypatch(_floor_monkeypatch):
     mp = pytest.MonkeyPatch()
     yield mp
     mp.undo()
+
+
+@pytest.fixture
+def manual_clock():
+    """A fresh ``kiro_crew.testing.clock.ManualClock`` (Determinism contract D2, D3).
+
+    Nothing is installed until the test asks:
+    ``manual_clock.install(monkeypatch, subject_module)`` replaces that module's own
+    ``time`` binding through the test's ``monkeypatch``, so the stdlib clock, the event
+    loop and pytest-timeout keep real time.
+    """
+    from kiro_crew.testing.clock import ManualClock
+
+    return ManualClock()
+
+
+@pytest.fixture
+def seeded_rng(request):
+    """A ``random.Random`` seeded from this test's node id (Determinism contract D6).
+
+    The seed is the same in every run and on every host, and it is printed in the
+    report of a failing test, so the draws that failed can be replayed with
+    ``kiro_crew.testing.ids.seeded_rng(nodeid, seed=<printed seed>)``.
+    """
+    from kiro_crew.testing import ids
+
+    nodeid = _nodeid_without_xdist_group(request.node)
+    seed = ids.seed_for(nodeid)
+    request.node.add_report_section("setup", "seeded_rng", f"seed={seed}")
+    return ids.seeded_rng(nodeid, seed=seed)
+
+
+def _nodeid_without_xdist_group(node) -> str:
+    """``node.nodeid`` without the ``@<group>`` suffix ``--dist loadgroup`` appends.
+
+    xdist renames an ``xdist_group`` test's node id on the worker, so a seed taken
+    from the raw id would differ between a ``-n0`` run and a CI shard.
+    """
+    nodeid = node.nodeid
+    marker = node.get_closest_marker("xdist_group")
+    if marker is not None:
+        # The same resolution xdist uses to build the suffix.
+        name = marker.args[0] if marker.args else marker.kwargs.get("name", "default")
+        suffix = f"@{name}"
+        if nodeid.endswith(suffix):
+            return nodeid[: -len(suffix)]
+    return nodeid
+
+
+@pytest.fixture
+def local_tz():
+    """Set the process time zone for this test: ``local_tz("Pacific/Kiritimati")`` (D5).
+
+    Sets ``TZ`` and calls ``time.tzset()``, then restores both at teardown, so a test
+    about local time runs under the zone it names instead of the host's. ``tzset`` is
+    POSIX-only, so the test is skipped where it is missing; inject the zone where the
+    product allows it to cover Windows. An unknown zone name raises at the call.
+    """
+    import time as host_time
+
+    if not hasattr(host_time, "tzset"):
+        pytest.skip("time.tzset is POSIX-only; inject the zone to cover this platform")
+    mp = pytest.MonkeyPatch()
+
+    def set_zone(zone: str) -> str:
+        import datetime
+        import zoneinfo
+
+        info = zoneinfo.ZoneInfo(zone)
+        mp.setenv("TZ", zone)
+        host_time.tzset()
+        # A C library without that zone's data falls back to UTC silently; refuse
+        # rather than run a local-time test in the wrong zone.
+        reference = 1_700_000_000
+        expected = info.utcoffset(datetime.datetime.fromtimestamp(reference, info))
+        applied = host_time.localtime(reference).tm_gmtoff
+        if expected is None or applied != int(expected.total_seconds()):
+            raise RuntimeError(
+                f"the C library did not apply TZ={zone!r} (offset {applied}s, want "
+                f"{expected}); is the system tzdata installed?"
+            )
+        return zone
+
+    try:
+        yield set_zone
+    finally:
+        mp.undo()
+        host_time.tzset()
 
 
 @pytest.fixture(autouse=True)
@@ -1563,6 +1665,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _install_short_tmp_root()
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
+    _install_determinism_audit_hook()
     _put_the_tree_under_test_first_on_child_paths()
     _gate_pytest_asyncio_fixture_scan()
     global _SESSION_CWD
@@ -2034,12 +2137,20 @@ def pytest_runtest_teardown(item, nextitem):
     )
     _restore_session_cwd()
     yield
+    _publish_runner_timeout(None)
+    try:
+        refused_network = _determinism_floors_end(item)
+    except Exception as exc:  # noqa: BLE001 - a floor bug must not skip the checks below
+        refused_network = None
+        warnings.warn(f"[determinism floors] end-of-test check failed: {exc!r}", stacklevel=1)
     if resolved_real_home is not None:
         _refuse_a_resolved_real_default_home(resolved_real_home)
     if wedged_eager_fold is not None:
         # Reported AFTER the yield for the reason on _retire_crew_log_eager_fold: fixture
         # finalization has run by here, so failing the test costs nothing but the failure.
         raise wedged_eager_fold
+    if refused_network is not None:
+        raise refused_network
 
 
 def _restore_session_cwd() -> None:
@@ -2437,6 +2548,67 @@ _probe_verdict: str | None = None
 _probe_attempted = False
 
 
+def _runner_timeout_secs(item) -> float | None:
+    """The timeout pytest-timeout enforces on ``item``, read through public pytest API.
+
+    The same order the plugin resolves it in: a ``timeout`` marker, then
+    ``--timeout``, then ``PYTEST_TIMEOUT``, then the ini value. ``None`` when the
+    plugin is absent or the value is not a positive number.
+    """
+    raw = None
+    marker = item.get_closest_marker("timeout")
+    if marker is not None:
+        raw = marker.kwargs.get("timeout", marker.args[0] if marker.args else None)
+    if raw is None:
+        raw = item.config.getoption("timeout", None)
+    if raw is None:
+        raw = os.environ.get("PYTEST_TIMEOUT")
+    if raw is None:
+        try:
+            raw = item.config.getini("timeout") or None
+        except ValueError:
+            return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+#: The session's own ``time.monotonic``, ``time.sleep`` and ``asyncio.sleep``, taken in
+#: ``pytest_sessionstart`` (after every plugin's configure, before any test can patch
+#: them): what :func:`_publish_runner_timeout` hands back to ``kiro_crew.testing.wait``.
+_WAIT_CLOCKS: tuple | None = None
+
+
+def _publish_runner_timeout(seconds: float | None) -> None:
+    """Hand the running test's timeout, and the real clocks, to ``kiro_crew.testing.wait``.
+
+    Set at setup and cleared after teardown, so a wait in a fixture's teardown still
+    sees it. The module is imported here once its package is loaded, which is cheap
+    (only ``wait`` itself and ``kiro_crew.loop_lock``) and lets a test that imports
+    ``wait`` inside its body see its own timeout. The package itself is never
+    imported here: its ``__init__`` loads the gateway harness, which must not happen
+    under one test's pinned home. A test in a suite that never loaded
+    ``kiro_crew.testing`` waits on the module's fallback instead.
+
+    The module captures the clocks it waits with when it is first imported, so a test
+    that patched ``time.monotonic`` and then imported it first would leave every later
+    wait in the worker reading the fake. Writing the session's originals back at each
+    setup confines that to the one test.
+    """
+    wait = sys.modules.get("kiro_crew.testing.wait")
+    if wait is None and seconds is not None and "kiro_crew.testing" in sys.modules:
+        try:
+            wait = importlib.import_module("kiro_crew.testing.wait")
+        except ImportError:  # pragma: no cover - a partial checkout
+            return
+    if wait is not None:
+        wait.runner_timeout_secs = seconds
+        if _WAIT_CLOCKS is not None:
+            wait._monotonic, wait._sleep, wait._asyncio_sleep = _WAIT_CLOCKS
+
+
 def pytest_runtest_setup(item):
     """Keep ``sandbox._backend`` warm for every test, at one probe per worker, and hand
     the crew log's eager fold worker back to it.
@@ -2479,7 +2651,9 @@ def pytest_runtest_setup(item):
     every test in the run. A probe failure is swallowed either way -- a host genuinely
     without a sandbox must still run the tests that do not need one.
     """
+    _determinism_floors_begin(item)
     _resume_crew_log_eager_fold()
+    _publish_runner_timeout(_runner_timeout_secs(item))
     global _probe_verdict, _probe_attempted
     try:
         from kiro_crew import sandbox
@@ -2492,6 +2666,563 @@ def pytest_runtest_setup(item):
             sandbox._backend = _probe_verdict
     except Exception:  # pragma: no cover - never let the warm-up fail a test
         pass
+
+
+# ── report-only determinism floors ────────────────────────────────────
+
+#: The process's own clock and zone module under a name no test rebinds: an inner
+#: session in ``test_xdist_escaped_failure_guard`` replaces this file's ``time``.
+_host_time = time
+
+#: Findings of the report-only floors below, for this process: ``(floor, nodeid,
+#: detail)`` in arrival order. One aggregated warning at session end names them
+#: (:func:`_report_only_floor_summary`); a per-call warning would be retained for the
+#: whole session and would not merge in the summary.
+_FLOOR_FINDINGS: list[tuple[str, str, str]] = []
+
+#: Entries the summary prints per floor; the counts cover everything.
+_FLOOR_SUMMARY_PER_FLOOR = 40
+
+#: Turns the network floor from a report into a refusal: an off-loopback connect,
+#: send or name lookup raises at the call and fails the test at teardown.
+_NET_STRICT_ENV = "KIROCREW_NET_STRICT"
+
+#: Turns the package-attribute floor from restore-and-report into restore-and-fail.
+_PKG_ATTR_STRICT_ENV = "KIROCREW_PKG_ATTR_STRICT"
+
+
+def _floor_report(floor: str, nodeid: str, detail: str) -> None:
+    _FLOOR_FINDINGS.append((floor, nodeid, detail))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _report_only_floor_summary():
+    """Warn once per worker with what the report-only floors saw.
+
+    The floors in this section REPORT before they are allowed to fail anyone, so their
+    findings can be counted across a full CI run before a strict switch is flipped.
+    The warning is raised at session teardown, so it is recorded against the worker's
+    last test and forwarded to the controller's warning summary under xdist.
+    """
+    yield
+    if _FLOOR_FINDINGS:
+        warnings.warn(_floor_summary(_FLOOR_FINDINGS), stacklevel=1)
+
+
+def _floor_summary(findings: list[tuple[str, str, str]]) -> str:
+    by_floor: dict[str, list[tuple[str, str]]] = {}
+    for floor, nodeid, detail in findings:
+        by_floor.setdefault(floor, []).append((nodeid, detail))
+    lines = ["[determinism floors] report-only findings in this worker:"]
+    for floor, rows in sorted(by_floor.items()):
+        lines.append(f"  {floor}: {len(rows)} finding(s)")
+        for nodeid, detail in rows[:_FLOOR_SUMMARY_PER_FLOOR]:
+            lines.append(f"    {nodeid}: {detail}")
+        if len(rows) > _FLOOR_SUMMARY_PER_FLOOR:
+            lines.append(f"    ... and {len(rows) - _FLOOR_SUMMARY_PER_FLOOR} more")
+    return "\n".join(lines)
+
+
+# The process time zone. Nothing pins it (a pinned zone would hide every test that reads
+# the host's), so a test that changes it changes every later test on the worker. The
+# floor reports the test that changed it; it does not put the zone back.
+_TZ_STATE = pytest.StashKey[tuple]()
+
+
+def _process_zone() -> tuple:
+    return (
+        os.environ.get("TZ"),
+        tuple(_host_time.tzname),
+        _host_time.timezone,
+        _host_time.altzone,
+        _host_time.daylight,
+    )
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    tz = os.environ.get("TZ")
+    return (
+        f"time zone: {'/'.join(_host_time.tzname)} (TZ={tz!r}, utcoffset={-_host_time.timezone}s)"
+    )
+
+
+def _check_zone_drift(item) -> None:
+    before = item.stash.get(_TZ_STATE, None)
+    if before is None:
+        return
+    after = _process_zone()
+    if after != before:
+        _floor_report("time zone", item.nodeid, f"changed the process zone {before} -> {after}")
+
+
+# The shared ``kiro_crew.executors`` pools. Work a test hands one and does not wait for
+# runs inside whichever test comes next on the worker, against that test's home.
+_POOL_STATE = pytest.StashKey[dict]()
+
+
+def _pool_activity() -> dict[str, tuple[int, int]]:
+    """``name -> (busy, queued)`` for every loaded shared pool that has work."""
+    executors = sys.modules.get("kiro_crew.executors")
+    if executors is None:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    active: dict[str, tuple[int, int]] = {}
+    for name, pool in list(vars(executors).items()):
+        if not isinstance(pool, ThreadPoolExecutor) or name == "_crew_log_pool":
+            continue
+        try:
+            if pool._shutdown:
+                continue  # its queue holds the wake-up sentinels, not work
+            busy = len(pool._threads) - pool._idle_semaphore._value
+            queued = pool._work_queue.qsize()
+        except Exception:  # noqa: BLE001 - CPython internals; skip a pool that changed shape
+            continue
+        if busy > 0 or queued > 0:
+            active[name] = (max(busy, 0), queued)
+    return active
+
+
+def _check_pool_leftovers(item) -> None:
+    before = item.stash.get(_POOL_STATE, None)
+    if before is None:
+        return
+    for name, (busy, queued) in _pool_activity().items():
+        if name not in before:
+            _floor_report(
+                "shared pool",
+                item.nodeid,
+                f"left work on executors.{name}: {busy} running, {queued} queued",
+            )
+
+
+# ``kiro_crew`` package attributes. ``monkeypatch.setattr("kiro_crew.mod.name", ...)``
+# resolves each dotted component as an ATTRIBUTE of its parent package, so a test that
+# evicts ``kiro_crew.mod`` from ``sys.modules`` and imports it again without putting the
+# parent's attribute back, or that replaces a module the others already hold, breaks
+# later tests far from the cause (2,167 setup errors on one Windows worker). The floor
+# restores what the test inherited and names the test that changed it.
+class _PackageTable:
+    """The inherited ``kiro_crew`` module graph: one row per bound submodule."""
+
+    __slots__ = ("modules_len", "root", "root_items", "names", "objs", "parent_dicts", "childs")
+
+    def __init__(self) -> None:
+        self.modules_len = -1
+        self.root = None
+        self.root_items: list[tuple[str, object]] = []
+        self.names: list[str] = []
+        self.objs: list[object] = []
+        self.parent_dicts: list[dict] = []
+        self.childs: list[str] = []
+
+    def rebuild(self) -> None:
+        modules = sys.modules
+        self.root = modules.get("kiro_crew")
+        self.root_items = (
+            [(k, v) for k, v in vars(self.root).items() if not k.startswith("__")]
+            if self.root is not None
+            else []
+        )
+        names, objs, parent_dicts, childs = [], [], [], []
+        for name, module in list(modules.items()):
+            if module is None or not name.startswith("kiro_crew."):
+                continue
+            parent_name, _, child = name.rpartition(".")
+            parent_dict = getattr(modules.get(parent_name), "__dict__", None)
+            # Only rows that are consistent now: a facade may export a name that
+            # shadows a submodule on purpose, and that is not this floor's business.
+            if parent_dict is None or parent_dict.get(child) is not module:
+                continue
+            names.append(name)
+            objs.append(module)
+            parent_dicts.append(parent_dict)
+            childs.append(child)
+        self.names, self.objs, self.parent_dicts, self.childs = names, objs, parent_dicts, childs
+        self.modules_len = len(modules)
+
+    def intact(self) -> bool:
+        modules = sys.modules
+        if modules.get("kiro_crew") is not self.root:
+            return False
+        if list(map(modules.get, self.names)) != self.objs:
+            return False
+        if list(map(dict.get, self.parent_dicts, self.childs)) != self.objs:
+            return False
+        root_dict = getattr(self.root, "__dict__", None)
+        return root_dict is None or all(root_dict.get(k) is v for k, v in self.root_items)
+
+    def restore(self) -> list[str]:
+        """Put back every inherited binding, and return what had changed."""
+        changed: list[str] = []
+        modules = sys.modules
+        if self.root is not None and modules.get("kiro_crew") is not self.root:
+            changed.append("sys.modules['kiro_crew'] replaced")
+            modules["kiro_crew"] = self.root
+        for name, obj, parent_dict, child in zip(
+            self.names, self.objs, self.parent_dicts, self.childs
+        ):
+            current = modules.get(name)
+            if current is not obj:
+                changed.append(
+                    f"sys.modules[{name!r}] {'removed' if current is None else 'replaced'}"
+                )
+                modules[name] = obj
+            if parent_dict.get(child) is not obj:
+                changed.append(f"{name.rpartition('.')[0]}.{child} rebound")
+                parent_dict[child] = obj
+        root_dict = getattr(self.root, "__dict__", None)
+        if root_dict is not None:
+            for key, value in self.root_items:
+                if root_dict.get(key) is not value:
+                    changed.append(f"kiro_crew.{key} rebound")
+                    root_dict[key] = value
+        return changed
+
+
+_PACKAGE_TABLE = _PackageTable()
+
+
+@pytest.fixture(autouse=True)
+def _kiro_crew_package_attr_floor(request):
+    """Restore the ``kiro_crew`` module graph a test inherited; report the test that changed it.
+
+    Compares, at teardown, every ``kiro_crew.*`` entry of ``sys.modules`` the test
+    inherited and its parent package's attribute (plus the root package's own globals,
+    which an in-process ``importlib.reload(kiro_crew)`` rebinds) with what they were at
+    setup, using C-level ``map`` comparisons; only a change takes the slow path. A
+    module the test imported for the first time is checked too: one left in
+    ``sys.modules`` without its parent attribute is bound back. Reports by default and
+    fails under ``KIROCREW_PKG_ATTR_STRICT=1``; restores either way. A module- or
+    session-scoped fixture that replaces a module defeats the check for its own tests
+    (the table is taken when the test starts), and one created lazily inside a test
+    (``request.getfixturevalue``) has its replacement undone at that test's teardown.
+    """
+    table = _PACKAGE_TABLE
+    if sys.modules.get("kiro_crew") is None:
+        yield
+        return
+    if len(sys.modules) != table.modules_len or not table.intact():
+        table.rebuild()
+    yield
+    changed: list[str] = []
+    if not table.intact():
+        changed = table.restore()
+    if len(sys.modules) != table.modules_len:
+        changed += _bind_unbound_kiro_crew_modules()
+        table.rebuild()
+    if not changed:
+        return
+    detail = "; ".join(changed[:10]) + (
+        f" (+{len(changed) - 10} more)" if len(changed) > 10 else ""
+    )
+    if os.environ.get(_PKG_ATTR_STRICT_ENV) == "1":
+        raise AssertionError(
+            f"this test changed the kiro_crew module graph (restored): {detail}. Load a "
+            "private copy with spec_from_file_location under a unique name instead of "
+            "reloading or evicting a shared module (testing-conventions D11)."
+        )
+    _floor_report("package attrs", request.node.nodeid, detail)
+
+
+def _bind_unbound_kiro_crew_modules() -> list[str]:
+    """Bind back a loaded ``kiro_crew`` submodule its parent package lost."""
+    bound: list[str] = []
+    modules = sys.modules
+    for name, module in list(modules.items()):
+        if module is None or not name.startswith("kiro_crew."):
+            continue
+        parent_name, _, child = name.rpartition(".")
+        parent_dict = getattr(modules.get(parent_name), "__dict__", None)
+        if parent_dict is not None and child not in parent_dict:
+            parent_dict[child] = module
+            bound.append(f"{parent_name}.{child} was unbound")
+    return bound
+
+
+# Network and process-kill audit. One ``sys.addaudithook`` hook per process, installed
+# from ``pytest_configure`` (an audit hook cannot be removed, and this file is
+# re-executed by several tests, so nothing irreversible happens at import). It is
+# active only while a test runs, in the worker process itself (never in a forked
+# child), and it never raises unless a strict switch asks it to: an exception from an
+# audit hook aborts the audited call.
+class _AuditState:
+    __slots__ = ("active", "nodeid", "pid", "parent_pid", "network_ok", "strict_net", "seen")
+
+    def __init__(self) -> None:
+        self.active = False
+        self.nodeid = ""
+        self.pid = 0
+        self.parent_pid = 0
+        self.network_ok = False
+        self.strict_net = False
+        self.seen: dict[tuple[str, str], int] = {}
+
+
+_AUDIT = _AuditState()
+_AUDIT_INSTALLED = False
+_AUDITED_EVENTS = frozenset(
+    {
+        "socket.connect",
+        "socket.sendto",
+        "socket.getaddrinfo",
+        "socket.gethostbyname",
+        "socket.gethostbyaddr",
+        "os.kill",
+        "os.killpg",
+        "subprocess.Popen",
+    }
+)
+
+
+class OffLoopbackNetworkRefused(ConnectionRefusedError):
+    """Raised under ``KIROCREW_NET_STRICT=1`` when a test reaches past loopback."""
+
+
+def _install_determinism_audit_hook() -> None:
+    global _AUDIT_INSTALLED
+    if _AUDIT_INSTALLED:
+        return
+    _AUDIT_INSTALLED = True
+    sys.addaudithook(_determinism_audit_hook)
+
+
+def _determinism_audit_hook(event: str, args: tuple) -> None:
+    if event not in _AUDITED_EVENTS:
+        return
+    state = _AUDIT
+    if not state.active:
+        return
+    try:
+        if os.getpid() != state.pid:
+            return
+        if event.startswith("socket."):
+            finding = _network_finding(event, args, state)
+        else:
+            finding = _kill_finding(event, args, state)
+    except Exception:  # noqa: BLE001 - a floor must never break the call it watches
+        return
+    if finding is None:
+        return
+    key = finding
+    state.seen[key] = state.seen.get(key, 0) + 1
+    if key[0] == "network" and state.strict_net and not state.network_ok:
+        if not key[1].startswith("udp-route-probe"):  # a datagram connect sends nothing
+            raise OffLoopbackNetworkRefused(f"off-loopback network refused in a test: {key[1]}")
+
+
+def _is_loopback_host(host) -> bool:
+    if host is None:
+        return True
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    host = str(host).strip("[]").split("%", 1)[0]
+    if host in ("", "0.0.0.0", "::", "localhost") or host.endswith(".localhost"):
+        return True
+    import ipaddress
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(address.is_loopback or (mapped is not None and mapped.is_loopback))
+
+
+def _is_address_literal(host) -> bool:
+    import ipaddress
+
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    try:
+        ipaddress.ip_address(str(host).strip("[]").split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
+
+
+def _network_finding(event: str, args: tuple, state: _AuditState):
+    import socket as _socket
+
+    if event in ("socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr"):
+        host = args[0] if args else None
+        if event == "socket.gethostbyaddr" and not _is_loopback_host(host):
+            return ("network", f"reverse lookup {host!r}")
+        if _is_loopback_host(host) or _is_address_literal(host):
+            return None  # a numeric host resolves without asking anyone
+        name = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host)
+        own = _socket.gethostname()
+        if name in (own, own.split(".", 1)[0]):
+            return ("network", f"own-hostname lookup {name!r}")
+        return ("network", f"name lookup {name!r}")
+    sock, address = args[0], args[1] if len(args) > 1 else None
+    family = getattr(sock, "family", None)
+    if family not in (_socket.AF_INET, _socket.AF_INET6) or not isinstance(address, tuple):
+        return None
+    if _is_loopback_host(address[0]):
+        return None
+    if event == "socket.sendto":
+        kind = "sendto"
+    elif getattr(sock, "type", None) == _socket.SOCK_DGRAM:
+        kind = "udp-route-probe"  # a datagram connect picks a route and sends nothing
+    else:
+        kind = "connect"
+    return ("network", f"{kind} {address[0]}:{address[1] if len(address) > 1 else '?'}")
+
+
+def _kill_finding(event: str, args: tuple, state: _AuditState):
+    if event == "subprocess.Popen":
+        argv = args[1] if len(args) > 1 else None
+        if isinstance(argv, bytes):
+            argv = argv.decode("utf-8", "replace")
+        if isinstance(argv, str):
+            # Windows hands the audit event one command line, not a list.
+            argv = [word.strip('"') for word in argv.split()]
+        try:
+            words = [str(word) for word in (argv or ())]
+        except Exception:  # noqa: BLE001
+            return None
+        if not words or os.path.basename(words[0]).lower() not in ("taskkill", "taskkill.exe"):
+            return None
+        lowered = [word.lower() for word in words]
+        if "/im" in lowered:
+            return ("kill", f"taskkill by image name: {' '.join(words[1:])}")
+        if "/pid" in lowered and lowered.index("/pid") + 1 < len(words):
+            try:
+                target = int(words[lowered.index("/pid") + 1])
+            except ValueError:
+                return None
+            return _classify_kill_target(target, "taskkill", state)
+        return None
+    pid, sig = args[0], args[1] if len(args) > 1 else None
+    if os.name != "nt" and sig == 0:
+        return None  # a POSIX liveness probe signals nothing
+    if os.name != "nt" and event == "os.kill" and isinstance(pid, int) and pid < -1:
+        # ``kill(-pgid, sig)`` is a group signal: classify it as the killpg it is,
+        # so signalling a child's own group is not read as a broadcast.
+        event, pid = "os.killpg", -pid
+    if event == "os.killpg":
+        own_group = os.getpgrp() if hasattr(os, "getpgrp") else None
+        if pid == own_group:
+            return ("kill", f"killpg of the worker's own process group (signal {sig})")
+        return _classify_kill_target(pid, f"killpg signal {sig}", state, group=True)
+    if pid == state.pid and _handled_signal(sig):
+        return None  # a test of the worker's own handler
+    return _classify_kill_target(pid, f"signal {sig}", state)
+
+
+def _handled_signal(sig) -> bool:
+    """Whether the process has its own handler for *sig* (so a self-signal is not lethal)."""
+    import signal as _signal
+
+    try:
+        handler = _signal.getsignal(sig)
+    except (ValueError, TypeError, OSError):
+        return False
+    return handler is _signal.SIG_IGN or (
+        callable(handler) and handler is not _signal.default_int_handler
+    )
+
+
+def _classify_kill_target(pid, what: str, state: _AuditState, *, group: bool = False):
+    if not isinstance(pid, int):
+        return None
+    if pid <= 0:
+        return ("kill", f"{what} to pid {pid} (a process group, possibly the worker's own)")
+    if pid == state.pid:
+        return ("kill", f"{what} to the worker itself")
+    if pid == state.parent_pid:
+        return ("kill", f"{what} to the xdist controller (pid {pid})")
+    if group or not sys.platform.startswith("linux") or _is_descendant(pid, state.pid):
+        return None
+    owner = _another_run_member(pid, state)
+    return None if owner is None else ("kill", f"{what} to pid {pid}, {owner}")
+
+
+def _is_descendant(pid: int, ancestor: int) -> bool:
+    """Whether *pid* descends from *ancestor*, read from ``/proc`` (Linux)."""
+    current = pid
+    for _ in range(16):
+        try:
+            with open(f"/proc/{current}/stat", "rb") as handle:
+                stat = handle.read()
+        except OSError:
+            return True  # gone, or never existed: nothing reached a live foreign process
+        try:
+            fields = stat[stat.rindex(b")") + 2 :].split()
+            if fields[0] == b"Z":
+                return True  # a zombie: the signal reaches nothing that runs
+            current = int(fields[1])
+        except (ValueError, IndexError):
+            return True
+        if current == ancestor:
+            return True
+        if current <= 1:
+            return False
+    return False
+
+
+def _another_run_member(pid: int, state: _AuditState) -> str | None:
+    """What *pid* is, when it is a process this test had no business signalling (Linux).
+
+    Another xdist worker is a child of the controller, so its parent in
+    ``/proc/<pid>/stat`` is the worker's own parent. A process of another account is
+    told by the owner of ``/proc/<pid>``. A process this worker spawned and lost from
+    its parent chain (a ``setsid`` grandchild, an orphan) is neither, and so is not
+    reported, nor is one that is gone.
+    """
+    try:
+        owner = os.stat(f"/proc/{pid}").st_uid
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read()
+    except OSError:
+        return None
+    if hasattr(os, "getuid") and owner != os.getuid():
+        return "a process of another account"
+    try:
+        parent = int(stat[stat.rindex(b")") + 2 :].split()[1])
+    except (ValueError, IndexError):
+        return None
+    if parent == state.parent_pid:
+        return "another child of this process's parent (under xdist, a sibling worker)"
+    return None
+
+
+def _determinism_floors_begin(item) -> None:
+    item.stash[_TZ_STATE] = _process_zone()
+    item.stash[_POOL_STATE] = _pool_activity()
+    state = _AUDIT
+    state.nodeid = item.nodeid
+    state.pid = os.getpid()
+    state.parent_pid = os.getppid()
+    state.network_ok = item.get_closest_marker("real_network") is not None
+    state.strict_net = os.environ.get(_NET_STRICT_ENV) == "1"
+    state.seen = {}
+    state.active = True
+
+
+def _determinism_floors_end(item) -> AssertionError | None:
+    state = _AUDIT
+    state.active = False
+    seen, state.seen = state.seen, {}
+    _check_zone_drift(item)
+    _check_pool_leftovers(item)
+    refused = []
+    for (floor, detail), count in seen.items():
+        if floor == "network" and state.network_ok:
+            continue
+        suffix = f" (x{count})" if count > 1 else ""
+        _floor_report(floor, item.nodeid, detail + suffix)
+        if floor == "network" and state.strict_net and not detail.startswith("udp-route-probe"):
+            refused.append(detail)
+    if not refused:
+        return None
+    return AssertionError(
+        f"this test reached past loopback under {_NET_STRICT_ENV}=1: "
+        + "; ".join(refused)
+        + ". Stub the network at the seam the product calls, or mark the test "
+        "@pytest.mark.real_network (testing-conventions D10)."
+    )
 
 
 # ── tracked Windows gaps apply to every testpath ──────────────────────
@@ -4186,10 +4917,84 @@ def _isolate_agent_state_sidecar(_isolation_dirs, _floor_monkeypatch):
     otherwise read and write the operator's real sidecar. Redirect
     ``config_dir`` — referenced as a module attribute at call time — to a fresh
     tmp dir so every test starts from empty state.
+
+    The module is taken from ``sys.modules`` (``import_module``), never through the
+    dotted string ``"kiro_crew.agent_state.config_dir"``: that string resolves each
+    component as an ATTRIBUTE of its parent package, so a test that evicted
+    ``kiro_crew.agent_state`` and re-imported it without restoring
+    ``kiro_crew``'s attribute made this setup raise ``AttributeError`` for every
+    later test on the worker (2,167 setup errors on one Windows worker).
     """
-    monkeypatch = _floor_monkeypatch
-    sidecar_root = _isolation_dirs("agent-state")
-    monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
+    _pin_agent_state_sidecar(_floor_monkeypatch, _isolation_dirs("agent-state"))
+
+
+def _pin_agent_state_sidecar(monkeypatch, sidecar_root) -> None:
+    agent_state = importlib.import_module("kiro_crew.agent_state")
+    monkeypatch.setattr(agent_state, "config_dir", lambda: sidecar_root)
+
+
+#: How long a test's teardown waits for the member event-log writes it queued. A
+#: slow runner disk retires each queued append in tens of milliseconds, so this is
+#: generous; a queue that does not drain in it is a wedge worth failing on.
+_MEMBER_EVENTLOG_DRAIN_SECONDS = 30.0
+
+
+@pytest.fixture(autouse=True)
+def _reset_member_eventlog_singleton(_isolate_kirocrew_home):
+    """Drain the member event-log queue a test filled, and reset the service singleton.
+
+    ``get_service()`` memoises one ``MemberEventLogService`` for the process,
+    rebuilding it only when the crew-log root changes. The root is derived from
+    ``KIROCREW_HOME``, which the floor points at a fresh per-test directory -- so a
+    test that touches the service (directly, or through a dashboard handler /
+    ``members.record_activity``) leaves a live singleton BOUND TO THAT TEST'S HOME,
+    and the next test on the same xdist worker inherits it after that home has been
+    torn down. Its cached ``MemberLog`` objects hold open OS handles under the dead
+    directory, which is harmless on POSIX but not on Windows: the stale handles block
+    the tmp-dir teardown and the very first write in the inheriting test then fails,
+    so ``record_activity`` returns ``False`` -- a shard-only red on Windows CI.
+
+    Teardown first DRAINS the writes the test queued. Dashboard DM messages and slot
+    transitions reach the log through ``eventlog_hooks.submit``: one process-wide
+    worker thread that is otherwise drained only at interpreter exit. Undrained, a
+    test's queued write runs during whatever test comes next on the worker, opens
+    that member's log inside the NEXT test's home, and holds its lock there; a test
+    that then touches the same member from the event-loop thread meets the held lock
+    and ``record_activity(...)`` answers ``False``. This fixture depends on
+    ``_isolate_kirocrew_home``, so its teardown runs while the home pin still holds:
+    every queued write lands in the home of the test that queued it, and a queue
+    that does not drain in time fails the test that filled it.
+
+    It lives in the rootdir conftest because the in-package app suites
+    (``src/kiro_crew/apps/builtins/**/tests``) reach the same queue and see no other
+    conftest. Both modules are looked up in ``sys.modules`` rather than imported, so
+    a test that never loads them pays nothing; the drain is bound at setup when the
+    module is already loaded, so a test that replaces ``drain_for_shutdown`` with a
+    wedged stand-in does not wedge this teardown. Reset at both ends, so a test that
+    runs after a leak still starts on a clean singleton.
+    """
+    hooks = sys.modules.get("kiro_crew.eventlog_hooks")
+    drain = getattr(hooks, "drain_for_shutdown", None)
+    _reset_member_eventlog_service()
+    try:
+        yield
+    finally:
+        if drain is None:
+            hooks = sys.modules.get("kiro_crew.eventlog_hooks")
+            drain = getattr(hooks, "drain_for_shutdown", None)
+        drained = drain(_MEMBER_EVENTLOG_DRAIN_SECONDS) if drain is not None else True
+        _reset_member_eventlog_service()
+        if not drained:
+            raise TimeoutError(
+                "queued member event-log writes did not finish within "
+                f"{_MEMBER_EVENTLOG_DRAIN_SECONDS:.0f}s of the test that queued them"
+            )
+
+
+def _reset_member_eventlog_service() -> None:
+    service = sys.modules.get("kiro_crew.eventlog.service")
+    if service is not None:
+        service.set_service(None)
 
 
 # ── the repository checkout is host state too ─────────────────────────
@@ -4277,7 +5082,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     worker. The controller's session brackets all of them, which is exactly the
     window this guard wants.
     """
-    global _ROOT_BASELINE
+    global _ROOT_BASELINE, _WAIT_CLOCKS
+    _WAIT_CLOCKS = (time.monotonic, time.sleep, asyncio.sleep)
     if hasattr(session.config, "workerinput"):
         return
     _ROOT_BASELINE = _root_entries()

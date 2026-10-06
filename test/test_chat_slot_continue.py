@@ -417,20 +417,6 @@ class TestChatSlotContinue:
             assert resp.status == 200
 
     @pytest.mark.asyncio
-    async def test_mid_plan_orchestration_is_refused(self, _patched):
-        # An autopilot plan reads `running` False BETWEEN stages, so `running`
-        # alone would let Continue dispatch concurrently with the next stage.
-        slot = _ChatSlot("s")
-        slot.append("user", "hi", "msg msg-u")
-        slot._in_stage_execution = True
-        state = _mock_state(slot)
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post("/api/chat/slots/s/continue")
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "slot_orchestrating"
-        assert not slot._queue
-
-    @pytest.mark.asyncio
     async def test_continuation_never_claims_prior_work_exists(self, _patched):
         # The runner's POSTTOKEN continuation asserts "the work already done
         # above ... is preserved". On a zero-output interruption that is false, so

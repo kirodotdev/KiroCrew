@@ -20,6 +20,7 @@ import logging
 import socket
 from collections.abc import Iterable
 
+from kiro_crew import platform_compat
 from kiro_crew.instances.constants import DEFAULT_TUNNEL_BASE_PORT
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,8 @@ def _is_addr_free(port: int, host: str) -> bool:
     inferred from *host*, so this probes the same address a listener would
     actually bind rather than assuming IPv4.
 
-    Sets ``SO_REUSEADDR`` before probing so this check mirrors what the SSH
-    forward listener actually does at bind time — OpenSSH sets ``SO_REUSEADDR``
+    On POSIX, sets ``SO_REUSEADDR`` before probing so this check mirrors what
+    the SSH forward listener actually does at bind time — OpenSSH sets ``SO_REUSEADDR``
     on its ``-L`` listener. This matters for the disconnect -> reconnect path:
     when a tunnel is torn down, ``_SshTunnel.stop()`` reaps the ``ssh`` child so
     the *listener* socket is gone, but the forward's **accepted** data
@@ -76,6 +77,18 @@ def _is_addr_free(port: int, host: str) -> bool:
     while a genuinely *live* listener (a real port collision between two
     connected instances) still fails to bind and is correctly reported in use
     (``SO_REUSEADDR`` exempts ``TIME_WAIT`` only, never an active ``LISTEN``).
+
+    That last sentence is POSIX only. On Windows ``SO_REUSEADDR`` lets a second
+    socket bind AND listen on an address a live listener already holds, as long
+    as that listener set the option too -- and OpenSSH's ``-L`` listener does, as
+    can any other local process. A probe with ``SO_REUSEADDR`` there reads a live
+    listener as free, the forward then binds as a second listener without error,
+    and Windows keeps routing new connections to the first one. So the Windows
+    probe sets ``SO_EXCLUSIVEADDRUSE`` instead: that bind fails against any socket
+    still bound to the address, whatever options it set. The ``TIME_WAIT`` reason
+    for ``SO_REUSEADDR`` does not carry over, because Winsock does not refuse a
+    fresh bind over ``TIME_WAIT`` remnants. ``pod/runtime_ports.py`` makes the
+    same split for the same reasons.
 
     A bind failure (``OSError``) is interpreted as "in use / unavailable", except
     for the errnos in :data:`_ADDRESS_UNUSABLE`, which mean the address itself is
@@ -98,7 +111,12 @@ def _is_addr_free(port: int, host: str) -> bool:
             return True
         raise
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if platform_compat.IS_WINDOWS:
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is not None:
+                sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         return True
     except OSError as e:

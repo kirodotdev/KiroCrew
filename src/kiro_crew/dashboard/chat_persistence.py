@@ -12,17 +12,19 @@ from, and it keeps the orchestration that has to stay together:
   ``_apply_recent_session`` and the prefetch reads they share;
 * process-wide state with the code that mutates it: the reasoning-effort
   allowlist, and the persisted-entry memo ``_build_message_entry`` with its bounds;
-* the private member-store assignment and the retired-mode map.
+* the private member-store assignment and the request-side retired-mode coercion.
 
 The rules those consult are composed from :mod:`kiro_crew.dashboard.slot_persistence`:
-``write_guards`` (the save's refusals and witnesses), ``metadata_line`` (the line
-a save writes), ``transcript_merge`` (frozen prefix, foreign appends, payload),
-``message_entries`` (row projection), ``restored_metadata`` (values a restore
-re-validates), ``restore_inputs`` (restore-time reads and screens) and
-``turn_marker`` (the turn-in-flight marker). Every name this module bound before
-the owners were composed is still importable from here, and the names tests rebind
-on this module are read through it at call time, so such a patch reaches the code
-that moved.
+``write_guards`` (the save's refusals and witnesses), ``metadata_codec`` (every
+slot field of the metadata line, written and read back through one table),
+``metadata_line`` (what a save folds against the line on disk before it encodes),
+``transcript_merge`` (frozen prefix, foreign appends, payload), ``message_entries``
+(row projection), ``restore_inputs`` (restore-time reads and screens) and
+``turn_marker`` (the turn-in-flight marker). The slot builders construct and fill a
+slot through ``metadata_codec``; the window replay and the rollback stay here. Every
+project name this module bound before the owners were composed is still importable
+from here, and the names tests rebind on this module are read through it at call
+time, so such a patch reaches the code that moved.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ import os
 import re
 import threading
 import time
-import uuid
 from collections import OrderedDict, deque  # noqa: F401
 from collections.abc import Iterable, Iterator, Mapping  # noqa: F401
 from itertools import chain, islice  # noqa: F401
@@ -85,7 +86,7 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     serialize_deferred_notes,
     union_deferred_notes,
 )
-from kiro_crew.dashboard.slot_queue_repository import (
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     queue_persist_signature,
     sanitize_restored_queue,
 )
@@ -131,17 +132,10 @@ from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.session_agent_selection import session_agent_selection_name  # noqa: F401
-from kiro_crew.validation import ARTIFACT_SLUG_RE
+from kiro_crew.validation import ARTIFACT_SLUG_RE  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-
-# Custom session color contract: lowercase-normalized #rrggbb only. Canonical
-# home of the regex (chat_handlers imports it from here to avoid an import
-# cycle). Every persistence read site below re-validates against it because
-# the JSONL metadata line is attacker-writable and this string reaches every
-# client's inline style.
-COLOR_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 #: Sentinel: the slot is a member key whose binding is missing/unreadable —
 #: skip publishing it (the transcript stays on disk; the member-thread
@@ -385,52 +379,6 @@ def _validate_reasoning_effort(raw: object, *, persisted_marker: bool = False) -
     return ""
 
 
-def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: bool = False) -> bool:
-    """Apply the persisted ``model`` and ``reasoning_effort`` to *slot*.
-
-    Shared by every path that hydrates a slot from a transcript -- the two
-    restart loaders, History resume, and channel surfacing
-    (:func:`kiro_crew.dashboard.channel_slots.surface_channel_session`) -- so
-    they cannot drift apart.
-    A path that skips this leaves ``slot.model`` empty, and the next save
-    writes that empty value over the model the user picked.
-
-    *cfg* is the already-loaded restore config, or None. Its provider
-    canonicalizes a pre-migration claude_code provider id to the dropdown
-    key (no-op for other providers); it is read only when a model is set.
-    *effort_marker* is the off-loop ``_has_validated_effort_marker`` read for
-    this effort value.
-    Returns True when the metadata carried a model, so a caller can fall
-    back to the agent's default model when it did not.
-    """
-    raw_model = meta.get("model")
-    # Metadata is agent-writable: a non-string model is dropped, not hashed.
-    has_model = isinstance(raw_model, str) and bool(raw_model)
-    if has_model and isinstance(raw_model, str):
-        provider = cfg.agent.provider if cfg else ""
-        slot.model = model_registry.canonicalize_for_provider(_normalize_model(raw_model), provider)
-    # `jev_route` is deliberately not read here: it is an owner pick that can
-    # spend money, and transcript metadata is agent-writable.
-    if meta.get("reasoning_effort"):
-        slot.reasoning_effort = _validate_reasoning_effort(
-            meta["reasoning_effort"], persisted_marker=effort_marker
-        )
-    return has_model
-
-
-#: Retired session modes. A slot persisted under one of these comes back as a
-#: PLAIN chat: the transcript is untouched and still renders; there is no
-#: mode-specific dispatch for it, because the mode itself is gone.
-#:
-#: ``crew`` — Crew Mode (one session fanning topics out to sub-sessions),
-#: retired in favour of the Crew Members page. Its durable store under
-#: ``<data home>/crew/`` is neither read nor deleted here; the transcript is
-#: the user's record and the store held only routing state.
-#:
-#: ``orchestrator`` — chat Autopilot mode (a planned, staged run), retired
-#: without a replacement. Its stage result files are neither read nor deleted.
-_RETIRED_MODES: frozenset[str] = frozenset({"crew", "orchestrator"})
-
 #: Retired modes a client may still SEND. An older dashboard build can still
 #: ask for one on create, switch or fork, so the request runs as plain chat
 #: instead of failing. ``crew`` is not here: its refusal predates this set.
@@ -443,21 +391,6 @@ def _coerce_requested_mode(raw: Any) -> Any:
     Anything else is returned unchanged for the caller's own allowlist check.
     """
     if isinstance(raw, str) and raw in _COERCED_REQUEST_MODES:
-        return ""
-    return raw
-
-
-def _restored_mode(raw: object) -> str:
-    """The mode a persisted slot comes back with, or "" for plain chat.
-
-    Maps a :data:`_RETIRED_MODES` value to "" rather than refusing the restore:
-    the session and its history are still the user's, the mode that once
-    dispatched them is not. Anything that is not a non-empty string is "" too,
-    which matches what the old ``if meta.get("mode")`` guard admitted.
-    """
-    if not isinstance(raw, str) or not raw:
-        return ""
-    if raw in _RETIRED_MODES:
         return ""
     return raw
 
@@ -1234,263 +1167,23 @@ def _rehydrate_slot_from_history(
     )
     if _member_identity is _SKIP_MEMBER_RESTORE:
         return None
+    purpose = _metadata_codec.Restore(
+        name=slot_name,
+        member=_member_identity,
+        agent=_prefetched_agent,
+        cfg=_restore_cfg,
+        model_map=kiro_model_map,
+        effort_marker=_prefetched_effort_marker,
+    )
     try:
-        slot = state.get_or_create_slot(
-            slot_name,
-            agent=_member_identity[0] if _member_identity else "",
-            mode=_member_identity[1] if _member_identity else "",
-            app=meta.get("app", ""),
-            # PERSISTED provenance only. A name is not evidence: main supports a
-            # dashboard slot a caller happened to name ``slack_notes`` (see
-            # test_slack_dashboard_live_sync's "the guard must not be a name
-            # heuristic"), so inferring channel origin from the stem would let a
-            # fresh dashboard conversation adopt a real thread's transcript.
-            # A legacy channel transcript carrying neither marker is surfaced by
-            # ``channel_slot_reconciler`` instead, which sets the flag -- and the
-            # first save then persists it, so later boots need no inference.
-            channel_origin=(
-                bool(meta.get("channel_origin")) or bool(meta.get("linked_session_key"))
-            ),
-            # Restore the persisted origin. Re-deriving it here would relabel
-            # every rehydrated slot on restart, so a cron slot would come back
-            # as USER (leak) and a real user slot as untagged (silently
-            # dropping `slots:user` for apps that legitimately hold it).
-            origin=str(meta.get("origin", "")),
-        )
-        # Title comes from the metadata line we already read above. We deliberately
-        # do NOT consult ``list_sessions()`` here: that call globbed + stat'd + read
-        # the first line of EVERY session file in the history dir (O(all sessions))
-        # to look up one title, and it ran once per restored slot — so a boot with N
-        # open tabs did N full directory scans. With 77 tabs over 455 session files
-        # that measured ~13s of pure event-loop block, which alone can trip the
-        # 25s LoopStallWatchdog and crash-loop the gateway before it ever serves.
-        #
-        # It was also dead code: ``list_sessions()`` keys are FILENAME STEMS
-        # (``dashboard_chat-1-...``, because history's ``_safe_key()`` folds ``:``
-        # to ``_``), while ``history_key`` here is the canonical colon form
-        # (``dashboard:chat-1-...``). The two never compared equal, so the lookup
-        # always yielded ``{}`` and the title always fell through to ``meta``.
-        # Dropping it is therefore behaviour-identical as well as O(N) cheaper.
-        #
-        # Titles may have been auto-generated by an LLM (_generate_title_via_kiro)
-        # and are surfaced on the dashboard, so apply the same redaction passes
-        # used on assistant content before setting. Defence-in-depth — the title
-        # author is trusted-ish (our own kiro process), but the generation input
-        # is user content, so a prompt injection could craft a title with an
-        # exfiltration URL or leaked credential.
-        raw_title = meta.get("title") or slot_name
-        _rehydrate_slot_title(
-            slot,
-            raw_title,
-            titled=bool(meta.get("title")),
-            metadata=meta,
-        )
-        if meta.get("created_at"):
-            slot.created_at = meta["created_at"]
-        # The identity of the file this restore just read — lets a later save
-        # recognize a file recreated by another writer after a permanent
-        # delete (delete-won guard).
-        slot._disk_meta_created_at = str(meta.get("created_at") or "")
-        # Legacy metadata has no ``created_at``: record the observation
-        # itself so the guard's missing-file witness still fires for it.
-        slot._disk_meta_observed = bool(meta)
-        slot._memory_assignment_from_history = True
-        # Member keys keep the binding-derived agent/mode: transcript metadata
-        # is the operator-editable file the pin must not re-derive from.
-        if _member_identity is None:
-            slot.agent = (
-                _prefetched_agent
-                if _prefetched_agent is not None
-                else _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta)
-            )
-        # Reuse the already-loaded _restore_cfg provider — no second config load.
-        if (
-            not _restore_model_fields(
-                slot,
-                meta,
-                cfg=_restore_cfg,
-                effort_marker=_prefetched_effort_marker,
-            )
-            and slot.agent
-        ):
-            try:
-                mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
-                kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
-                slot.model = kiro_model_map.get(kiro_name, "")
-            except Exception:
-                logger.debug(
-                    "Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True
-                )
-        # `jev_route` is deliberately NEITHER written nor read here. It records an
-        # OWNER's pick that spends money -- a routed turn can run on a dearer model
-        # -- and transcript metadata is editable by the agent's own file tools, so a
-        # value read back from this file would let a prompt-injected agent grant
-        # itself routing the owner never selected. Same rule, and the same reason,
-        # as the crew log refusing to promote a restored `_created_by` to
-        # gateway-authored lineage. The flag lives in memory only: a restart leaves
-        # the slot on its persisted model -- the documented refusal -- and the owner
-        # re-picks "Auto (Jev)" to route again.
-        if meta.get("autocompact_pct") is not None:
-            slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
-        _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
-        if meta.get("workspace"):
-            slot.workspace = meta["workspace"]
-        if meta.get("memory_store"):
-            slot.memory_store = str(meta["memory_store"])
-        # The namespace the agent was picked in survives a restart with the
-        # pick itself: a template-picked slot must not come back lighting the
-        # same-name member row. Only the two known values are honoured.
-        if meta.get("agent_kind") in ("member", "template"):
-            slot.agent_kind = meta["agent_kind"]
-        if meta.get("project"):
-            slot.project = meta["project"]
-        # Restore the remote executor marker INDEPENDENTLY of its target fields.
-        # history JSONL is a file on disk, so a truncated write or a hand-edit can
-        # leave the ``executor="remote"`` marker without a valid instance_id /
-        # remote_slot. Dropping the marker in that case would fail
-        # OPEN: the session would come back as an ordinary local slot and its next
-        # send would run the crew's turn on THIS machine — the wrong-host execution
-        # the remote binding exists to prevent. Fail CLOSED instead: keep the
-        # marker, populate only the target fields that are valid, and let the
-        # incomplete-binding guard in ``api_chat`` (``slot.executor == "remote" and
-        # not slot.is_remote`` -> 409 ``remote_binding_incomplete``) plus the
-        # ``_run_chat`` chokepoint (keyed on ``executor``, not ``is_remote``) refuse
-        # the send with a message the user can act on, rather than run local.
-        _local_turn_was_in_flight = _local_turn_generation(meta)
-        _local_turn_prompt_copy = _local_turn_prompt(meta)
-        _relay_was_in_flight = False
-        _executor_meta = meta.get("executor")
-        _instance_meta = meta.get("instance_id")
-        _remote_slot_meta = meta.get("remote_slot")
-        if _executor_meta == "remote":
-            slot.executor = "remote"
-            if isinstance(_instance_meta, str) and _instance_meta:
-                slot.instance_id = _instance_meta
-            if isinstance(_remote_slot_meta, str) and _remote_slot_meta:
-                slot.remote_slot = _remote_slot_meta
-            # Deferred to AFTER the window is loaded (see below): the metadata line
-            # is read before the transcript rows, so appending here would land the
-            # notice ahead of the conversation instead of at its tail. Only a
-            # COMPLETE binding can have been mid-relay; an incomplete one never
-            # dispatched, so there is no in-flight tail to recover.
-            if slot.is_remote:
-                _relay_was_in_flight = bool(meta.get("relay_in_flight"))
-        if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
-            slot.mode = _mode
-        if meta.get("created_by"):
-            # Creator attribution restored so the member ownership boundary in
-            # session-control authorization survives a restart: without it every
-            # worker a member dispatched would come back unowned and the
-            # fail-closed `not_creator` check would strand them.
-            slot._created_by = str(meta["created_by"])
-            # `created_by_sid` is never restored, and `_lineage_minted` stays False
-            # on a restored slot: this file is editable by an agent's file tools,
-            # so a value read back from it must not become the gateway-authored
-            # crew-log lineage record. Attribution above is restored for the
-            # ownership boundary only.
-        if meta.get("folder_id"):
-            slot.folder_id = meta["folder_id"]
-        if meta.get("channel_folder_filed"):
-            slot._channel_folder_filed = True
-        if meta.get("app"):
-            slot._app = meta["app"]
-        # Re-validate the companion binding against the slug grammar on restore
-        # (same gate as slot create) — history JSONL is a file an attacker with
-        # disk access could tamper, and this value flows into to_dict()/WS
-        # broadcasts to every connected dashboard client.
-        _artifact_meta = meta.get("artifact")
-        if isinstance(_artifact_meta, str) and ARTIFACT_SLUG_RE.match(_artifact_meta):
-            slot._artifact = _artifact_meta
-        if meta.get("pinned"):
-            slot.pinned = True
-        if meta.get("color_index") is not None:
-            slot.color_index = meta["color_index"]
-        _ch = meta.get("color_hex")
-        if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
-            slot.color_hex = _ch.lower()
-        raw_tags = meta.get("tags")
-        if isinstance(raw_tags, list):
-            slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-            # Prune ids missing from the vocabulary: tag deletion commits the
-            # vocab write first (crash-atomic), so a crash mid-delete can
-            # leave dangling ids on the persisted slot line. load_tags() runs
-            # before any slot restore, so state._tags is authoritative here.
-            # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-            # or I/O failure): pruning then would wipe EVERY assignment and
-            # the next save persists the loss. A legitimately-empty vocabulary
-            # (user deleted the last tag) IS authoritative and must prune —
-            # otherwise a crash mid-delete resurrects the dangling id forever.
-            if getattr(state, "_tags_authoritative", True):
-                known = {t.get("id") for t in state._tags}
-                slot.tags = [t for t in slot.tags if t in known]
-            # Keep "tags changed => revision changed" everywhere tags are
-            # replaced (chat_tags.py cannot be imported here: it imports us).
-            bump_revision = getattr(slot, "bump_tags_revision", None)
-            if callable(bump_revision):
-                bump_revision()
-        if meta.get("auto_tagged"):
-            slot._auto_tagged = True
-        if meta.get("human_seen"):
-            # Attendance survives the restart, so an app-owned tab a person has
-            # been working in keeps the full approval window instead of silently
-            # dropping to the unattended deny-fast (state._ChatSlot.unattended).
-            slot._human_seen = True
-        restored_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
-        if restored_notes:
-            # Replay the persisted deferred-note hold so the
-            # existing flush_deferred_notes() call sites deliver it on the
-            # first turn after the restart. Sanitized, and bounded by the
-            # DURABLE CEILING (2x the live cap): every durable entry is a
-            # 200-acknowledged note, and the first flush drains the surplus
-            # while the live cap still binds new enqueues. Entries whose
-            # delivered row is already committed (the rows-only handover
-            # window) are dropped below, once the message window is loaded —
-            # the filter is pure and scans that in-memory window, never the
-            # transcript file (this function runs on the event loop).
-            slot._deferred_notes = restored_notes
-        _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
-        if _restored_queue:
-            # Hand the queued prompts back as queue cards. They are the user's
-            # own words, admitted while a turn was running and never dispatched,
-            # so before this they simply vanished on a restart with no row and no
-            # error. Nothing drains an idle slot on boot, so they wait for the
-            # user to send, edit or delete them rather than running unasked.
-            slot._queue[:] = _restored_queue
-            logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
-        # Stamped whatever was restored (including nothing), so the first flush
-        # after a restart re-persists only a queue that actually changed.
-        slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
-        mm = meta.get("memory_mode", "persistent")
-        slot.memory_mode = mm
-        if mm != "persistent":
-            state._restricted_keys.add(f"dashboard:{slot_name}")
-        if meta.get("forked_from") is not None:
-            slot.forked_from = meta["forked_from"]
-        if meta.get("linked_session_key"):
-            # Rebind the slot to the session its conversation actually runs on.
-            # Skipped, the slot would answer from a dashboard-only session and the
-            # channel thread would stop seeing its replies.
-            slot.linked_session_key = str(meta["linked_session_key"])
-        # Re-seed the live compaction threshold. The SessionManager's override
-        # map is process-local, so a rehydrated slot must push its persisted
-        # value back or the session silently compacts at the global threshold.
-        # After the link assignment above, so a channel-born slot seeds the
-        # session its turns actually run on.
-        if slot.autocompact_pct is not None and state.sessions:
-            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
-        # Restore the persisted tab_id so cross-restart fork chaining survives.
-        # get_or_create_slot (called by our caller) assigns a fresh random uuid to
-        # slot._tab_id; if we don't overwrite it here, the next _flush_dirty_slots
-        # persists that uuid back into meta, severing the tab_id ancestry that
-        # read_messages_chained walks across forks — one restart + one flush
-        # permanently loses forked-session history. Mirrors restore_recent_sessions.
-        tab_id = meta.get("tab_id")
-        if not tab_id:
-            tab_id = uuid.uuid4().hex[:12]
-            needs_tab_id_backfill = True
-        else:
-            needs_tab_id_backfill = False
-        slot._tab_id = tab_id
+        slot = state.get_or_create_slot(slot_name, **_metadata_codec.slot_args(meta, purpose))
+        # Every field the line carries is applied through the one field table
+        # (``slot_persistence.metadata_codec``), from the metadata line already
+        # read above. The title deliberately does not come from
+        # ``list_sessions()``: that globs, stats and reads the first line of EVERY
+        # session file, once per restored slot -- a boot with many open tabs then
+        # blocks the event loop long enough to trip the LoopStallWatchdog.
+        applied = _metadata_codec.apply(state, slot, meta, purpose)
         # Use read_messages_chained (not read_messages) so the loaded window walks
         # the tab_id ancestry across forks, matching restore_recent_sessions.
         # read_messages alone caps visible history at 200 lines from THIS file and
@@ -1501,19 +1194,7 @@ def _rehydrate_slot_from_history(
             if _prefetched_messages is not None
             else state.conversation_log.read_messages_chained(history_key)
         )
-        if slot._deferred_notes:
-            # The committed-row dedup deferred from the hold restore above:
-            # pure scan of the in-memory window, no file I/O on the loop.
-            _pre_filter_notes = slot._deferred_notes
-            slot._deferred_notes = drop_committed_restored_notes(messages, _pre_filter_notes)
-            # A filtered entry's row is committed (often by a rows-only
-            # handover save, into the frozen prefix no later save window
-            # carries) — record its id so the next full save retires the
-            # durable entry row-lessly instead of retaining it forever.
-            slot._dropped_note_ids.update(
-                committed_filtered_note_ids(_pre_filter_notes, slot._deferred_notes)
-            )
-        if needs_tab_id_backfill:
+        if applied.minted_tab_id is not None:
             # Persist the freshly-minted tab_id AFTER reading the transcript above,
             # never before. update_metadata_off_loop dispatches an os.replace() of
             # THIS session file to a worker thread; scheduling it before the read
@@ -1532,7 +1213,9 @@ def _rehydrate_slot_from_history(
             # returns the identical window whether it is written before or after.
             # Kept off the loop because update_metadata enters _locked (flock +
             # os.close), a blocking-on-loop-prohibited op.
-            update_metadata_off_loop(state.conversation_log, history_key, {"tab_id": tab_id})
+            update_metadata_off_loop(
+                state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
+            )
         # Only the recent window is loaded into memory; older on-disk lines become
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
         # therefore count those older lines so the save model preserves them.
@@ -1622,33 +1305,26 @@ def _rehydrate_slot_from_history(
         # turns counted above) is never rewritten.
         slot._disk_window_len = len(slot.messages)
         slot._dirty = False
-        # A local turn admitted by the previous process and never torn down.
-        # Placed with the relay notice below for the same window-boundary
-        # reasons; when both markers are present the metadata is inconsistent
-        # (a slot runs locally OR on a peer), and one row is enough.
-        _had_local_turn_marker = _reconcile_local_turn_marker(
-            slot, _local_turn_was_in_flight, _local_turn_prompt_copy, persisted=messages
-        )
-        # A session past 500 rows restores fewer user rows than its persisted
-        # refresh mark was taken over; re-base the mark so the opt-in cadence
-        # continues after the reload. After the reconcile, because it can
-        # re-append an opening row the flush never wrote and the mark must
-        # match the window the next turn counts over.
-        _rebase_rehydrated_refresh_mark(slot)
-        if _relay_was_in_flight and not _had_local_turn_marker:
-            # The gateway crashed while this slot's turn was executing on the peer
-            # (flagged in the binding block above). The relay reader died with it
-            # and the turn's tail was never mirrored here, so the loaded window
-            # stops mid-turn. Append an explicit notice at the TAIL rather than
-            # resurrect a silently truncated conversation — the peer may well have
-            # finished, and the next send re-synchronises the visible history.
-            # ``broadcast=False`` is the sanctioned replay door (fork / transfer /
-            # window-rebuild use it): no clients exist at boot, and it appends a
-            # schema-correct row with a minted id. Placed AFTER ``_disk_window_len``
-            # so the new row is not miscounted as already-persisted, with ``_dirty``
-            # re-armed so the next flush writes it. The runtime ``_relay_in_flight``
-            # stays False, so that flush clears the on-disk marker and a second
-            # restart cannot append the notice twice.
+        # A local turn admitted by the previous process and never torn down, the
+        # held notes the window already delivered, and the title refresh mark
+        # re-based against the rows the window holds -- the fields whose read
+        # needs the window. When both the local-turn marker and the relay marker
+        # are present the metadata is inconsistent (a slot runs locally OR on a
+        # peer), and one row is enough.
+        _had_local_turn_marker = applied.settle(messages)
+        if applied.relay_in_flight and not _had_local_turn_marker:
+            # The gateway crashed while this slot's turn was executing on the peer.
+            # The relay reader died with it and the turn's tail was never mirrored
+            # here, so the loaded window stops mid-turn. Append an explicit notice
+            # at the TAIL rather than resurrect a silently truncated conversation —
+            # the peer may well have finished, and the next send re-synchronises the
+            # visible history. ``broadcast=False`` is the sanctioned replay door
+            # (fork / transfer / window-rebuild use it): no clients exist at boot,
+            # and it appends a schema-correct row with a minted id. Placed AFTER
+            # ``_disk_window_len`` so the new row is not miscounted as
+            # already-persisted, with ``_dirty`` re-armed so the next flush writes
+            # it. The runtime ``_relay_in_flight`` stays False, so that flush clears
+            # the on-disk marker and a second restart cannot append the notice twice.
             slot.append(
                 "error",
                 "This turn was interrupted when the app restarted. The crew may "
@@ -1933,184 +1609,31 @@ def _apply_recent_session(
         return
     if _is_app_owned_channel_row(meta, key):
         return
-    slot = state.get_or_create_slot(
-        slot_name,
-        agent=_member_identity[0] if _member_identity else "",
-        mode=_member_identity[1] if _member_identity else "",
-        app=meta.get("app", ""),
-        # No channel_origin here: the caller skips every non-dashboard key, so a
-        # channel-born session never reaches this — ``channel_slot_reconciler``
-        # owns surfacing those.
-        # Restore the persisted origin. Re-deriving it here would relabel
-        # every rehydrated slot on restart, so a cron slot would come back
-        # as USER (leak) and a real user slot as untagged (silently
-        # dropping `slots:user` for apps that legitimately hold it).
-        origin=str(meta.get("origin", "")),
+    purpose = _metadata_codec.Recent(
+        name=slot_name,
+        member=_member_identity,
+        agent=agent,
+        cfg=_restore_cfg,
+        model_map=kiro_model_map,
+        effort_marker=effort_marker,
+        listing=session,
+        history_key=key,
     )
-    # Titles can be LLM-generated (auto-title) and are surfaced on the
-    # dashboard — apply the same redaction as assistant content. Matches
-    # the treatment in _rehydrate_slot_from_history above.
-    raw_title = session.get("title", slot_name)
-    _rehydrate_slot_title(
-        slot,
-        raw_title,
-        titled=bool(session.get("title")),
-        metadata=meta,
-    )
-    if meta.get("created_at"):
-        slot.created_at = meta["created_at"]
-    # The identity of the file this restore just read — lets a later save
-    # recognize a file recreated by another writer after a permanent delete
-    # (delete-won guard).
-    slot._disk_meta_created_at = str(meta.get("created_at") or "")
-    # Legacy metadata has no ``created_at``: record the observation itself so
-    # the guard's missing-file witness still fires for it.
-    slot._disk_meta_observed = bool(meta)
-    slot._memory_assignment_from_history = True
-    # Member keys keep the binding-derived agent/mode: transcript metadata is
-    # the operator-editable file the pin must not re-derive from.
-    if _member_identity is None:
-        slot.agent = (
-            agent
-            if agent is not None
-            else _restored_agent_name(
-                str(meta.get("linked_session_key") or slot_transcript_key(slot_name)), meta
-            )
-        )
-    if (
-        not _restore_model_fields(
-            slot,
-            meta,
-            cfg=_restore_cfg,
-            effort_marker=effort_marker,
-        )
-        and slot.agent
-    ):
-        try:
-            mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
-            kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
-            slot.model = kiro_model_map.get(kiro_name, "")
-        except Exception:
-            logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
-    if meta.get("autocompact_pct") is not None:
-        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
-    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
-    if meta.get("workspace"):
-        slot.workspace = meta["workspace"]
-    if meta.get("memory_store"):
-        slot.memory_store = str(meta["memory_store"])
-    if meta.get("agent_kind") in ("member", "template"):
-        slot.agent_kind = meta["agent_kind"]
-    if meta.get("project"):
-        slot.project = meta["project"]
-    if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
-        slot.mode = _mode
-    if meta.get("created_by"):
-        # Same rehydration as _rehydrate_slot_from_history: without it a
-        # member-created worker restored through the recent-session path
-        # loses its creator binding and authorize_target refuses the
-        # legitimate member with not_creator.
-        slot._created_by = str(meta["created_by"])
-        # `created_by_sid` is never restored here either -- see
-        # _rehydrate_slot_from_history: transcript metadata is not a lineage source.
-    if meta.get("folder_id"):
-        slot.folder_id = meta["folder_id"]
-    if meta.get("channel_folder_filed"):
-        slot._channel_folder_filed = True
-    if meta.get("app"):
-        slot._app = meta["app"]
-    # Same tamper gate as _rehydrate_slot_from_history: re-validate the
-    # companion binding against the slug grammar before it reaches
-    # to_dict()/WS broadcasts.
-    _artifact_meta = meta.get("artifact")
-    if isinstance(_artifact_meta, str) and ARTIFACT_SLUG_RE.match(_artifact_meta):
-        slot._artifact = _artifact_meta
-    if meta.get("pinned"):
-        slot.pinned = True
-    if meta.get("color_index") is not None:
-        slot.color_index = meta["color_index"]
-    _ch = meta.get("color_hex")
-    if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
-        slot.color_hex = _ch.lower()
-    if meta.get("color_theme"):
-        slot.color_theme = meta["color_theme"]
-    raw_tags = meta.get("tags")
-    if isinstance(raw_tags, list):
-        slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
-        # Prune ids missing from the vocabulary: tag deletion commits the
-        # vocab write first (crash-atomic), so a crash mid-delete can
-        # leave dangling ids on the persisted slot line. load_tags() runs
-        # before any slot restore, so state._tags is authoritative here.
-        # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-        # or I/O failure): pruning then would wipe EVERY assignment and
-        # the next save persists the loss. A legitimately-empty vocabulary
-        # (user deleted the last tag) IS authoritative and must prune —
-        # otherwise a crash mid-delete resurrects the dangling id forever.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
-        # Keep "tags changed => revision changed" everywhere tags are
-        # replaced (chat_tags.py cannot be imported here: it imports us).
-        bump_revision = getattr(slot, "bump_tags_revision", None)
-        if callable(bump_revision):
-            bump_revision()
-    if meta.get("auto_tagged"):
-        slot._auto_tagged = True
-    if meta.get("human_seen"):
-        # Attendance survives the restart, so an app-owned tab a person has
-        # been working in keeps the full approval window instead of silently
-        # dropping to the unattended deny-fast (state._ChatSlot.unattended).
-        slot._human_seen = True
-    _sanitized_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
-    restored_notes = drop_committed_restored_notes(messages, _sanitized_notes)
-    # A filtered entry's row is committed (often by a rows-only handover save,
-    # into the frozen prefix no later save window carries) — record its id so
-    # the next full save retires the durable entry row-lessly instead of
-    # retaining it forever. Sanitizer-dropped entries are NOT recorded: only
-    # the committed-filter delta has a transcript owner.
-    slot._dropped_note_ids.update(committed_filtered_note_ids(_sanitized_notes, restored_notes))
-    if restored_notes:
-        # Replay the persisted deferred-note hold — see the
-        # mirror in _rehydrate_slot_from_history (committed rows dropped by a
-        # pure scan of the already-prefetched messages; no file I/O here,
-        # this apply half runs on the event loop).
-        slot._deferred_notes = restored_notes
-    _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
-    if _restored_queue:
-        # Mirror of the hand-back in _rehydrate_slot_from_history.
-        slot._queue[:] = _restored_queue
-        logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
-    slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
-    mm = meta.get("memory_mode", "persistent")
-    slot.memory_mode = mm
-    if mm != "persistent":
-        state._restricted_keys.add(f"dashboard:{slot_name}")
-    if meta.get("forked_from") is not None:
-        slot.forked_from = meta["forked_from"]
-    if meta.get("linked_session_key"):
-        slot.linked_session_key = str(meta["linked_session_key"])
-    elif is_channel_session_key(key) and state.sessions:
-        # First time this thread is surfaced: bind it to the session the
-        # channel itself runs. Resolved from the session map, never derived
-        # from the filename — the ``:``-to-``_`` fold is not reversible, so
-        # a guess could point the tab at a session the channel never reads.
-        real_key = state.sessions.channel_key_for_stem(key)
-        if real_key:
-            slot.linked_session_key = real_key
-    # Re-seed the live compaction threshold (see _rehydrate_slot_from_history).
-    if slot.autocompact_pct is not None and state.sessions:
-        state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
-    tab_id = meta.get("tab_id")
-    if not tab_id:
-        tab_id = uuid.uuid4().hex[:12]
-        # restore_recent_sessions runs during on_startup (event loop live)
-        # — keep the _locked flock/os.close off the loop via the off-loop
-        # backfill helper. Dispatched AFTER the transcript read above (the
-        # caller prefetches messages first) so its os.replace() cannot race
-        # the read of the same file — see the equivalent note in
-        # _rehydrate_slot_from_history.
-        update_metadata_off_loop(conv_log, key, {"tab_id": tab_id})
-    slot._tab_id = tab_id
+    # No channel origin here: the caller skips every non-dashboard key, so a
+    # channel-born session never reaches this — ``channel_slot_reconciler`` owns
+    # surfacing those.
+    slot = state.get_or_create_slot(slot_name, **_metadata_codec.slot_args(meta, purpose))
+    # The title is the session list's (it names an untitled session after its
+    # first message); every other field comes from the line, through the one
+    # field table (``slot_persistence.metadata_codec``).
+    applied = _metadata_codec.apply(state, slot, meta, purpose)
+    if applied.minted_tab_id is not None:
+        # restore_recent_sessions runs during on_startup (event loop live) — keep
+        # the _locked flock/os.close off the loop via the off-loop backfill
+        # helper. Dispatched AFTER the transcript read (the caller prefetches
+        # messages first) so its os.replace() cannot race the read of the same
+        # file — see the equivalent note in _rehydrate_slot_from_history.
+        update_metadata_off_loop(conv_log, key, {"tab_id": applied.minted_tab_id})
     older_cut = max(0, len(messages) - 500)
     slot._disk_older_count = older_cut
     # Durable-only view of the same prefix, recomputed from disk on every load —
@@ -2151,13 +1674,9 @@ def _apply_recent_session(
     # _disk_older_count above) are the frozen prefix saves never rewrite.
     slot._disk_window_len = len(slot.messages)
     slot._dirty = False
-    _reconcile_local_turn_marker(
-        slot, _local_turn_generation(meta), _local_turn_prompt(meta), persisted=messages
-    )
-    # Same as _rehydrate_slot_from_history, and after the reconcile for the
-    # same reason: a session past 500 rows restores fewer user rows than its
-    # persisted refresh mark was taken over.
-    _rebase_rehydrated_refresh_mark(slot)
+    # The held notes the window already delivered, the local-turn marker and
+    # the title refresh mark: the fields whose read needs the loaded window.
+    applied.settle(messages)
     logger.info("Restored session %s (%s)", slot_name, slot.title)
 
 
@@ -3238,6 +2757,7 @@ def _build_history_prefix(
 # code calls them through these bindings. The owners read every name a test
 # rebinds on this module through it at call time, so such a patch reaches them
 # too (test_chat_persistence_composition_contract derives that set from the tests).
+from kiro_crew.dashboard.slot_persistence import metadata_codec as _metadata_codec  # noqa: E402
 from kiro_crew.dashboard.slot_persistence import metadata_line as _metadata_line  # noqa: E402
 from kiro_crew.dashboard.slot_persistence import transcript_merge as _transcript_merge  # noqa: E402
 from kiro_crew.dashboard.slot_persistence import write_guards as _write_guards  # noqa: E402
@@ -3245,6 +2765,19 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     _approx_window_payload_bytes,
     _attach_variants,
     _build_message_entry_uncached,
+)
+from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
+    _RETIRED_MODES,
+    COLOR_HEX_RE,
+    _rebase_rehydrated_refresh_mark,
+    _rehydrate_slot_title,
+    _rehydrate_title_low_signal,
+    _rehydrate_title_origin,
+    _rehydrate_title_refresh_mark,
+    _restore_dismissed_source_links,
+    _restore_model_fields,
+    _restored_mode,
+    _validate_autocompact_pct,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
     _META_LAST_USER_AT,
@@ -3268,15 +2801,6 @@ from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,
     _recover_mcp_app_claims,
     _restored_agent_name,
     _sanitize_open_slot_key,
-)
-from kiro_crew.dashboard.slot_persistence.restored_metadata import (  # noqa: E402,F401
-    _rebase_rehydrated_refresh_mark,
-    _rehydrate_slot_title,
-    _rehydrate_title_low_signal,
-    _rehydrate_title_origin,
-    _rehydrate_title_refresh_mark,
-    _restore_dismissed_source_links,
-    _validate_autocompact_pct,
 )
 from kiro_crew.dashboard.slot_persistence.transcript_merge import (  # noqa: E402,F401
     _archive_dropped_lines,

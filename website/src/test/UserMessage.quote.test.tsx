@@ -1,5 +1,5 @@
 /**
- * Quote a whole user message: the row's two-seat shape once Quote is offered,
+ * Quote a whole user message: the row's seat + Copy + More shape once Quote is offered,
  * the right-click / long-press menu, and the card a row carrying `meta.quote`
  * draws in place of its `>` block.
  */
@@ -35,34 +35,32 @@ describe('UserMessage action row with Quote offered', () => {
     <UserMessage content="hi" renderContent={renderContent} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} canEdit onEditResend={() => {}} onQuoteMessage={onQuoteMessage} {...extra} />
   )
 
-  it('shows exactly two peer controls: Quote and More', () => {
-    render(full(() => {}))
-    const row = screen.getByTestId('quote-message').parentElement!
-    const buttons = row.querySelectorAll('button')
-    expect(Array.from(buttons).map(b => b.getAttribute('aria-label'))).toEqual(['Quote message', 'More actions'])
-  })
+  const rowLabels = () => Array.from(screen.getByTestId('user-more-actions').parentElement!.querySelectorAll(':scope > button')).map(b => b.getAttribute('aria-label'))
 
-  it('Quote fires the host callback', () => {
+  it('shows Quote, Copy and More; Quote and Copy both work from the row', () => {
     const onQuote = vi.fn()
     render(full(onQuote))
+    expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote).toHaveBeenCalledTimes(1)
-  })
-
-  it('More lists Quote first (matching the bubble menu), then Copy text, Copy link, Pin, Edit; Copy still copies', () => {
-    render(full(() => {}))
-    openMore()
-    const items = screen.getAllByRole('menuitem').map(i => i.textContent)
-    expect(items).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Edit & Resend'])
-    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
+    fireEvent.click(screen.getByLabelText('Copy'))
     expect(copyToClipboard).toHaveBeenCalledWith('hi')
   })
 
-  it('beside Reply in thread, Reply keeps its seat and Quote moves into More', () => {
+  it('More lists Quote first (matching the bubble menu), then Copy link, Pin, Edit; Quote fires the host callback', () => {
+    const onQuote = vi.fn()
+    render(full(onQuote))
+    openMore()
+    const items = screen.getAllByRole('menuitem').map(i => i.textContent)
+    expect(items).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Edit & Resend'])
+    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    expect(onQuote).toHaveBeenCalledTimes(1)
+  })
+
+  it('beside Reply in thread, Reply takes the seat, Copy follows, and Quote is in More', () => {
     const onQuote = vi.fn()
     render(full(onQuote, { onReplyInThread: () => {} }))
-    expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()
-    expect(screen.getByTestId('reply-in-thread')).toBeInTheDocument()
+    expect(rowLabels()).toEqual(['Reply in thread', 'Copy', 'More actions'])
     openMore()
     expect(screen.getAllByRole('menuitem')[0]).toHaveTextContent('Quote message')
     fireEvent.click(screen.getByTestId('quote-message-menu-item'))
@@ -78,7 +76,7 @@ describe('UserMessage menus while the row is the pinned stand-in', () => {
       </div>,
     )
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message'])
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
     fireEvent.contextMenu(screen.getByTestId('content'))
     expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message'])
@@ -108,32 +106,40 @@ describe('UserMessage quotes what the bubble shows', () => {
     const onQuote = vi.fn()
     const block = { id: 'p1', seq: 1, lines: 3, content: 'line a\nline b\nline c' }
     render(<UserMessage content="see [ Paste #1 · 3 lines ] please" meta={{ pastes: [block] }} renderContent={renderContent} onQuoteMessage={onQuote} />)
-    fireEvent.click(screen.getByTestId('quote-message'))
+    fireEvent.contextMenu(screen.getByTestId('content'))
+    fireEvent.click(screen.getByTestId('message-context-quote'))
     expect(onQuote).toHaveBeenCalledWith('see line a\nline b\nline c please')
   })
   it('ignores a malformed meta.pastes entry', () => {
     const onQuote = vi.fn()
     render(<UserMessage content="see [ Paste #1 · 3 lines ]" meta={{ pastes: [{ id: 'x' }, null, 'junk'] }} renderContent={renderContent} onQuoteMessage={onQuote} />)
-    fireEvent.click(screen.getByTestId('quote-message'))
+    fireEvent.contextMenu(screen.getByTestId('content'))
+    fireEvent.click(screen.getByTestId('message-context-quote'))
     expect(onQuote).toHaveBeenCalledWith('see [ Paste #1 · 3 lines ]')
   })
   it('quoting a row that itself carries a quote quotes only its own words, never the old block', () => {
     const onQuote = vi.fn()
     const carried = { role: 'assistant' as const, text: 'older reply', ts: 't0' }
     render(<UserMessage content={prependQuote('my follow-up', carried)} meta={{ quote: carried }} renderContent={renderContent} onQuoteMessage={onQuote} />)
-    fireEvent.click(screen.getByTestId('quote-message'))
+    fireEvent.contextMenu(screen.getByTestId('content'))
+    fireEvent.click(screen.getByTestId('message-context-quote'))
     expect(onQuote).toHaveBeenCalledWith('my follow-up')
   })
   it('a row that is ONLY a carried quote withholds Quote from the row and both menus (nothing of its own to quote)', () => {
     const carried = { role: 'assistant' as const, text: 'older reply', ts: 't0' }
     render(<UserMessage content={prependQuote('', carried)} meta={{ quote: carried }} renderContent={renderContent} messageTs="t1" slotKey="chat-1" onQuoteMessage={() => {}} />)
-    expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Copy')).toBeInTheDocument()
     openMore()
     expect(screen.queryByTestId('quote-message-menu-item')).not.toBeInTheDocument()
-    expect(screen.getByTestId('copy-message-menu-item')).toBeInTheDocument()
     fireEvent.contextMenu(screen.getByTestId('quote-card-sent'))
     expect(screen.queryByRole('menuitem', { name: 'Quote message' })).not.toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Copy text' })).toBeInTheDocument()
+  })
+  it('a bare carried quote with nothing else to offer shows Copy and no empty More', () => {
+    const carried = { role: 'assistant' as const, text: 'older reply', ts: 't0' }
+    render(<UserMessage content={prependQuote('', carried)} meta={{ quote: carried }} renderContent={renderContent} onQuoteMessage={() => {}} />)
+    expect(screen.getByLabelText('Copy')).toBeInTheDocument()
+    expect(screen.queryByTestId('user-more-actions')).not.toBeInTheDocument()
   })
   it('Edit on a row carrying a quote opens on the shown body, and the block goes back on the head when resent', () => {
     const quote = { role: 'assistant' as const, text: 'older reply', ts: 't0' }

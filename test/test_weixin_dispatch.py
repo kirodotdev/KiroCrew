@@ -173,6 +173,10 @@ class FakeSessions:
     def set_mirror_link(self, key, location):
         self.mirror_links[key] = location
 
+    def compact_wait_budget_secs(self) -> float:
+        """The real manager's resolved ``session.compact_wait_secs`` (unset: 300 s)."""
+        return 300.0
+
 
 class FakeHooks:
     auto_approve_subagent_spawn = False

@@ -105,13 +105,14 @@ _BASE_NAMES = frozenset("""
         SESSION_NOT_FOUND_CANCELLED_TEXT
         SESSION_NOT_FOUND_GIVE_UP_TEXT SESSION_NOT_FOUND_RETRY_TEXT
         SESSION_RECOVERY_MAX_ATTEMPTS SESSION_START_FAILED_KIND SLACK_NAMESPACE
-        STAGE_DELIVERY_KINDS STALE_RECOVERY_PREFIX
+        STALE_RECOVERY_PREFIX
         STEER_NOTICE_BOUND_SECS STEER_POSSIBLY_DELIVERED_META
         STEER_POSSIBLY_DELIVERED_NOTE STEER_STATE_CONSUMED
         STEER_STATE_REQUEUED STOP_CLASS_FAILED STOP_REASON_CANCELLED
         STOP_REASON_COMPACTION_FAILED STOP_REASON_END_TURN STOP_REASON_REFUSAL
         STOP_REASON_STALE_RECOVER STOP_REASON_TOOL_STALL STOP_RECOVERY_MAX_RETRIES
-        SUBAGENT_COMPLETION_KIND SUBAGENT_COMPLETION_PREFIXES SUBAGENT_SYNTHESIS_PREFIX
+        SUBAGENT_COMPLETION_KIND SUBAGENT_COMPLETION_PREFIXES SUBAGENT_DELIVERY_KINDS
+        SUBAGENT_SYNTHESIS_PREFIX
         SUBAGENT_SYNTHESIS_PROMPT SYNTHESIS_CLEAR SYNTHESIS_HELD SYNTHESIS_UNKNOWN
         SYNTHETIC_RECOVERY_KIND SecurityEvent SessionBusyError
         SessionClosingError SessionEndingError
@@ -156,7 +157,7 @@ _BASE_NAMES = frozenset("""
         _begin_local_turn_marker _broadcast_auto_tool _broadcast_compaction_result
         _broadcast_expired_oauth_banners _cap_armed_prefetches _cap_redacted
         _clear_eager_spawn_failures _clear_fallback_sticky_state
-        _clear_local_turn_marker _clear_session_not_found_replay
+        _clear_local_turn_marker
         _clip_card_error _configured_refusal_fallback _connections_managed_mcp_names
         _consume_pending_reset _context_usage_payload _credential_tool_hint_for _crew_log_class
         _crew_log_lineage _crew_log_model _crew_log_workspace _current_turn_carries_image_ref
@@ -201,11 +202,11 @@ _BASE_NAMES = frozenset("""
         _resolve_channel_target _resolve_folder_steering_dirs _resolve_mirror_target
         _resolve_prompt_mention _resolve_refusal_fallback_target _restore_refusal_fallback
         _retain_terminal_native _retire_local_turn_marker _retire_sessions_on_identity_change
-        _retry_cancel_reason _route_history_source _route_model_for_turn _run_chat
+        _route_history_source _route_model_for_turn _run_chat
         _run_pending_synthesis _safe_native_crew_debug_title _safe_read_snapshot
         _schedule_prefetch_ttl _schedule_widget_registration _segment_row_meta
         _session_auto_approves _session_mcp_report
-        _session_not_found_replay_revoked _session_principal
+        _session_principal
         _session_stop_generation_for _settle_consumed_steers _shared_dependency_delay
         _should_suppress_requeue _slot_binding _slot_is_trusted _slot_predecessor_store
         _slot_prompt_project _snapshot_write_target _spawn_admitted_prefetch
@@ -244,7 +245,7 @@ _BASE_NAMES = frozenset("""
         logging math mcp_apps_render member_lifecycle mint_options_token mirror_is_paused
         model_is_unusable model_registry normalize_agent_model normalize_banner
         normalize_stop_reason note_coding_activity oauth_url_contains_credential os
-        owned_stage_delivery_entry parse_hook_continuations parse_session_key
+        parse_hook_continuations parse_session_key
         parse_workflow_command payload_for_replay
         persist_token_record_async person_priority pick_epoch_host
         pin_human_approval post_linked_approval pre_tool_match_names prepare_store_vectors
@@ -275,7 +276,7 @@ _BASE_NAMES = frozenset("""
         should_notice_mixed_turn_leak should_queue_hook_continuation
         should_queue_refusal_recovery should_recover_promise_only shutdown_event
         slack_mirror_is_paused slot_history_key slot_steering_principal
-        slot_switch_session_lock spawn_guarded_turn split_blocks stage_boundary_for stat_module
+        slot_switch_session_lock spawn_guarded_turn split_blocks stat_module
         stricter_memory_mode strip_control_comments subagents_attached_async
         subprocess_executor synthesis_fire_verdict
         telemetry_channel_of tighten_live_session_execution
@@ -451,11 +452,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(slot_key: 'str', exc: 'BaseException', *, self_wake: 'bool') -> 'None'",
         ),
         ("_recovery_delay", "async function", "(secs: 'float') -> 'None'"),
-        (
-            "_retry_cancel_reason",
-            "function",
-            "(rebound: 'bool', superseded: 'bool', stopped: 'bool') -> 'str'",
-        ),
         (
             "_session_stop_generation_for",
             "function",
@@ -743,12 +739,8 @@ _AWAIT_FREE_PHASES = (
     "_rearm_turn_episode",
     "_checklist_resync",
     "_purge_superseded_continuations",
-    "_drop_superseded_model_access_replay",
-    "_drop_superseded_image_recovery",
-    "_drop_superseded_refusal_replay",
-    "_image_recovery_vetoed_at_consume",
-    "_model_access_replay_vetoed_at_consume",
-    "_refusal_replay_vetoed_at_consume",
+    "_drop_revoked_replays",
+    "_replay_vetoed_at_consume",
     "_requeue_auth_retry",
     "_requeue_after_prompt_busy",
     "_report_unclaimed_directives",
@@ -794,10 +786,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_attachments",
         "_attachment_meta",
         "_synthetic_payload",
-        "_refusal_replay",
-        "_image_recovery",
-        "_session_not_found_recovery",
-        "_model_access_replay",
+        "_replay",
         "_synthetic_recovery_turn",
         "_replays_completion",
         "_steer_possibly_delivered",
@@ -807,6 +796,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_loop_id",
         "_directive_loop_gen",
         "_directive_channel_origin",
+        "_commands_off",
         "_turn_actor",
         "regenerate_hint",
         "_on_consumed",

@@ -14,13 +14,11 @@ scan, which is exactly the regression worth catching.
 
 from __future__ import annotations
 
-import ast
 import gc
-import inspect
 import json
 import logging
 import logging.handlers
-import textwrap
+import sys
 import threading
 import weakref
 from pathlib import Path
@@ -1228,20 +1226,66 @@ def test_the_edge_recorder_swallows_a_projection_failure_as_text(monkeypatch, ca
     ), "the traceback text did not reach the record"
 
 
-def test_the_edge_recorder_body_is_one_guarded_try():
-    """Nothing in ``_record_session_tree_edge`` sits outside its ``try``.
+class _HostileHeader:
+    """A handle whose header cannot be read at all."""
 
-    The caller is the writer job, whose comment says this never raises. A statement
-    before the ``try`` -- an import, a lookup -- is a raise path the guard does not
-    cover, and ``session/opened`` is already on disk when it runs.
+    @property
+    def header(self):
+        raise RuntimeError("the header cannot be read")
+
+
+class _HostileValue:
+    """An argument that raises on anything done with it: truth, text, equality, hash."""
+
+    def __bool__(self):
+        raise RuntimeError("the argument cannot be read")
+
+    __str__ = __repr__ = __bool__
+
+    def __eq__(self, other):
+        raise RuntimeError("the argument cannot be read")
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("failure", ["import", "header", "projection", "arguments"])
+def test_the_edge_recorder_raises_nothing_into_the_writer_job(monkeypatch, caplog, failure):
+    """Nothing the edge recorder does can raise into the writer job that called it.
+
+    The caller is the job that has just appended ``session/opened``, so a raise here
+    would report a landed entry as a failed one. Every step that can fail is driven to
+    fail -- loading the projection, reading the header, folding the record, and the
+    parent and superseded ids themselves -- and the call must return, saying so at debug
+    level.
+
+    Mutation guard: moving the projection import, or the header read, ahead of the
+    recorder's ``try`` lets the matching case raise and reddens it; letting an unreadable
+    header escape its own guard turns a recorded edge into a reported miss.
     """
-    source = inspect.getsource(emit._record_session_tree_edge)
-    fn = ast.parse(textwrap.dedent(source)).body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    body = fn.body
-    if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        body = body[1:]  # the docstring
-    assert len(body) == 1 and isinstance(body[0], ast.Try), (
-        "the edge recorder has a statement outside its try/except, which can raise into "
-        f"the writer job: {[type(n).__name__ for n in body]}"
-    )
+    handle: object = _log(f"s-hostile-{failure}", "slot-a")
+    parent: object = None
+    superseded: object = None
+    if failure == "arguments":
+        parent, superseded = _HostileValue(), _HostileValue()
+    elif failure == "import":
+        monkeypatch.setitem(sys.modules, stp.__name__, None)
+    elif failure == "header":
+        handle = _HostileHeader()
+    else:
+        monkeypatch.setattr(
+            stp, "record_opened", lambda *a: (_ for _ in ()).throw(RuntimeError("refused"))
+        )
+    with (
+        caplog.at_level(logging.DEBUG, logger=emit.__name__),
+        caplog.at_level(logging.DEBUG, logger=stp.__name__),
+    ):
+        emit._record_session_tree_edge(f"s-hostile-{failure}", "slot-a", handle, parent, superseded)
+    ours = [r for r in caplog.records if "session tree projection not advanced" in r.getMessage()]
+    # An unreadable header orders nothing and blocks nothing: the edge is still recorded,
+    # so it is not a miss. Unreadable ids reach the projection's own guard, which
+    # reports them itself.
+    expected = 0 if failure in ("header", "arguments") else 1
+    assert len(ours) == expected, f"the recorder reported {len(ours)} misses, not {expected}"
+    if failure == "arguments":
+        folded = [r for r in caplog.records if "could not apply an opened record" in r.getMessage()]
+        assert len(folded) == 1, "the unreadable ids never reached the projection's guard"

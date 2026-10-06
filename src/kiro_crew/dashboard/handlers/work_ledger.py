@@ -279,7 +279,8 @@ async def _caller_key(
             "restricted_session",
             "The work ledger is not available in this session mode.",
         )
-    if why := _contained_channel_caller(request, sk):
+    why, caller_slot, admission = _caller_admission(request, sk)
+    if why:
         # Containment for channel agents, held HERE rather than only in
         # ``channel.CHANNEL_AGENT_BLOCKED_TOOLS``. That list is matched against a
         # rendered permission request (``channel.py``'s ``EVENT_PERMISSION_REQUEST``
@@ -299,7 +300,8 @@ async def _caller_key(
         # containment case. The same holds for a dashboard-BORN session that was
         # later given an outbound mirror: its key looks local while every turn is
         # republished to Slack or Telegram, so the key alone is not the test — see
-        # :func:`_reaches_a_channel`. The reason rides along so the caller reads
+        # :func:`_reaches_a_channel` — and the same exemption reaches it when that
+        # mirror is the owner's own DM. The reason rides along so the caller reads
         # the same clause session control would name for it.
         _audit(sk, operation, "denied", resources="channel_agent_block")
         return None, _refuse_403(
@@ -309,7 +311,58 @@ async def _caller_key(
             "sessions a conductor binds nor be one. The owner-DM exemption is "
             f"withheld because {why}.",
         )
+    # Admitted. A brief, a ledger, a report echo -- what these routes return is
+    # private dispatch data that becomes part of the caller's reply, published to
+    # its mirror later and resolved live. Record the audience the caller was
+    # admitted under -- the row the verdict above judged, never a second read --
+    # at this one gate every ledger route passes (the same record session control's
+    # caller gate writes), so a mirror gained or retargeted before that reply
+    # publishes withholds it -- see ``session_control.record_audience_admission``.
+    if admission is not None:
+        session_control.record_audience_admission(caller_slot, admission)
     return session_ledger.ledger_key(sk), None
+
+
+def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
+    """The entry gate's one judgement of *sk*: ``(why, slot, admission)``.
+
+    ``why`` is ``""`` when the caller may reach the ledger, else the refusal reason
+    :func:`_contained_channel_caller` would name; ``slot`` is the caller's own live
+    slot, resolved the way every session-control verb resolves its caller
+    (``caller_slot_key``); ``admission`` is the containment to record on it -- the
+    ``admission`` of the ONE :func:`session_control.judge_owner_dm` verdict this
+    judgement rests on, so the row that decided the refusal and the row recorded as
+    the admitted audience are the same object. Deciding from one verdict is the
+    point: a boolean probe, then the predicate's own read, then a third read for
+    the record would leave two windows in which a retarget lands and is recorded as
+    admitted without having been judged.
+
+    Whether the caller REACHES a channel at all is read off the same verdict: a
+    channel key, a channel link on the slot, or the verdict's fail-closed
+    ``mirrored`` flag. A caller that reaches none is admitted with its (unmirrored)
+    containment recorded, so a mirror gained before its reply publishes still
+    withholds that reply.
+
+    A key that resolves to no open slot has no slot to record an audience on and
+    nothing of its own that publishes; it is judged as before -- by its key and the
+    live probe -- and records nothing.
+    """
+    state: DashboardState = request.app["state"]
+    slot_key = session_control.caller_slot_key(state, sk)
+    slot = state.get_slot(slot_key) if slot_key else None
+    if slot is None:
+        return _contained_channel_caller(request, sk), None, None
+    try:
+        verdict = session_control.judge_owner_dm(state, slot)
+    except Exception:  # pragma: no cover - the predicate fails closed itself
+        logger.debug("owner-DM check failed for %s", sk, exc_info=True)
+        return "the owner-DM check could not be completed", slot, None
+    reaches = (
+        is_channel_session_key(sk)
+        or bool(session_control._channel_link_of(slot))
+        or verdict.mirrored
+    )
+    return (verdict.refusal if reaches else ""), slot, verdict.admission
 
 
 def _contained_channel_caller(request: web.Request, sk: str) -> str:
@@ -318,19 +371,24 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
     Two mechanisms reach a channel -- a channel-BORN key, and a dashboard-born
     session given an outbound mirror (:func:`_reaches_a_channel`) -- and one
     exemption applies to both: ``session_control.session_owner_dm_refusal``
-    answering ``""``, a 1:1 DM whose only human is the configured owner and whose
-    mirror (if any) is that same DM. It is the SAME predicate the session-control
+    answering ``""``, a 1:1 DM whose only human is the configured owner -- the DM
+    the session lives in, or the DM a dashboard tab mirrors to -- with no wider
+    room bound beside it. It is the SAME predicate the session-control
     gates consult, over the slot ``caller_slot_key`` resolves, so a session this
     gate admits is one ``session_create`` admits as a conductor and vice versa --
     the two cannot disagree about a slot. Fails CLOSED with the predicate: an
-    unreadable roster or store, an unknown origin conversation, or a key no open
-    slot answers to all read as contained. The string is the predicate's own
-    reason, so the ledger and session control tell the caller the same thing.
+    unreadable roster or store, an unknown origin conversation, a mirror whose
+    peer the transport holds no record of, or a key no open slot answers to all
+    read as contained. The string is the predicate's own reason, so the ledger
+    and session control tell the caller the same thing.
 
-    Consulted on entry AND re-checked after every read the routes await across,
-    because the exemption rests on live state -- a mirror retargeted at a thread
-    while the ledger was being read widens the audience exactly as a mirror gained
-    by a dashboard session does.
+    Re-checked after every read the routes await across, because the exemption
+    rests on live state -- a mirror retargeted at a thread while the ledger was
+    being read widens the audience exactly as a mirror gained by a dashboard
+    session does. The ENTRY gate judges through :func:`_caller_admission` instead,
+    which takes the same predicate's verdict once and records the row it judged;
+    this reason-only form is what that gate falls back to for a key no open slot
+    answers to, where there is nothing to record.
     """
     if not (is_channel_session_key(sk) or _reaches_a_channel(request, sk)):
         return ""

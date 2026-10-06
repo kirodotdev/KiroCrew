@@ -23,7 +23,7 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 |---|---|
 | `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, run summary, nightly issue, lane status. |
 | `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder and the sample project at a fixed path (see "Seeds" below). |
-| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed` adds `config.agents.<slug>` for each `--member` so the Crew Members page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
+| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed`, marks the install onboarded (including `dashboard.crewmates_onboarded`), writes `config.agents.default` and then `config.agents.<slug>` for each `--member` so the Crewmates page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
 | `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the staged sample folders. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
@@ -164,13 +164,12 @@ sorts the same way the report groups.
 ### Keeping a scenario true as the product moves
 
 A step that names a control by its exact label goes stale when the label changes.
-When a surface is mid-transition, describe it by what does not change: the Feature
-Previews card for Crew Members was relabelled from "Crew Members and Crew Mode" to
-"Crew Members" as Crew Mode retired (#9519), so `members-dm-hello` asks for the card
-"whose title starts with `Crew Members`" and names both readings, and finds the page by
-its rail label, which was the same on both sides of the change. When a scenario does
-need to move with the product, change the YAML in the same PR as the UI and re-run it
-on demand (below) before merging.
+When a surface is mid-transition, describe it by what does not change, or name every
+reading a build can show: the rail item, the sidebar entry and the Feature Previews
+card read "Crewmates", and `members-dm-hello` asks for the preview "whose title starts
+with `Crewmates`" while naming the older "Crew Members" readings, so it reads the same
+on either build. When a scenario does need to move with the product, change the YAML
+in the same PR as the UI and re-run it on demand (below) before merging.
 
 ### Seeds: one home per run, plus a fixed sample folder
 
@@ -219,7 +218,9 @@ the whole root, sample project included.
 One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
 plus whatever an earlier scenario created, so a flow that exists only for an EMPTY
 roster -- the "Meet CrewMates" first-run chapter, offered while `config.agents` holds
-nothing beyond `default` -- cannot be reached in this lane and has no scenario. Giving
+nothing beyond `default` -- cannot be reached in this lane and has no scenario;
+`seed_home.py` also sets `dashboard.crewmates_onboarded`, so that chapter never opens
+over a Crewmates page visit in a run. Giving
 it one needs a second gateway boot per run (a scenario-level reseed), which is
 per-scenario isolation work for the tracking issue, not a YAML change.
 
@@ -238,7 +239,7 @@ the run. The same boot also serves every LATER scenario in the run, through one 
 profile, so a per-device switch (Developer Mode, Show Timestamps, a feature preview)
 that a scenario flips is still flipped when the next scenario starts. A scenario that
 flips one either puts it back before it ends or leaves a state nothing later depends on
-(the members scenarios leave the Crew Members preview on), and it words each switch step
+(the members scenarios leave the Crewmates preview on), and it words each switch step
 as the position to leave the switch in ("make sure it is ON -- click it once if it is
 off") rather than as a click, so a retry that starts from a half-finished attempt
 converges instead of inverting it.
@@ -270,13 +271,12 @@ logged, or fail with none.
 - **Identity across nights.** `friction.entry_key(feature, element)`
   after case / whitespace / punctuation normalization -- which control, on which
   feature. `what_confused` is deliberately not part of it: it is the tester's
-  first-person narration, written fresh every run, and keying on it made one folder
-  row file seven issues across five nights (#11269, #11503, #11504, #11761, #12000,
-  #12261, #12262) including two on a single night from attempt 1 and attempt 2 of
-  the same scenario. Two testers stalling on the same control for different reasons
+  first-person narration, written fresh every run, so keying on it would file a new
+  issue for the same control on every night and on each attempt of one scenario.
+  Two testers stalling on the same control for different reasons
   is one issue about that control; each narration still arrives, as the row's
-  current wording and as a recurrence comment. A ledger written before this change
-  (`version: 1`) is re-keyed on load by `friction.migrate_ledger`, which folds the
+  current wording and as a recurrence comment. A `version: 1` ledger, keyed on the
+  narration, is re-keyed on load by `friction.migrate_ledger`, which folds the
   rows that now collide -- earliest `first_seen`, latest `last_seen`, worst
   severity, newest evidence, the first-filed issue as the survivor and the others
   recorded in `merged_from`; `count` becomes the number of distinct dates the
@@ -336,11 +336,9 @@ logged, or fail with none.
   leave the summary. Closing an issue is a human call; the lane never reopens one.
 - **Cost.** The persona adds about 450 input tokens to every model call and each
   `report_friction` call is one extra round trip (~7k input, ~150 output tokens);
-  two to four per scenario in practice. Roughly +$0.10 per scenario, or about
-  +$2.70 if all 27 current scenarios run, inside the $10 ceiling. If the ceiling
-  is ever
-  the problem, set `persona: none` on the low-priority scenarios first rather than
-  dropping the channel.
+  two to four per scenario in practice. Roughly +$0.10 per scenario, inside the
+  run's `--budget-usd` cap. If the cap is ever the problem, set `persona: none` on
+  the low-priority scenarios first rather than dropping the channel.
 
 ## Running it
 
@@ -391,12 +389,10 @@ owning server is not a virtual one.
   scenario on Opus and the smoke tier at about $0.80. The run stops at
   `--budget-usd` (default $60 everywhere: the `budget_usd` dispatch input, the
   nightly schedule's fixed value, and the harness's own fallback when the flag is
-  omitted -- the 40-scenario nightly tier on Opus spends about $45 with retries;
-  the earlier $5 / $8 / $20 / $40 caps all tripped mid-run and skipped the tail
-  of the tier) and
+  omitted -- the full nightly tier on Opus spends about $45 with retries) and
   marks the remaining scenarios `SKIPPED`; the job's 90-minute timeout is the
   backstop for a hung target, not the budget. Keep the nightly bill well under the
-  $20 cap: when a new batch would push a night toward it, move the lowest-value
+  $60 cap: when a new batch would push a night toward it, move the lowest-value
   scenarios to a cheaper cadence (a `weekly` tier is a schema + workflow change)
   rather than raising the budget again.
 - Pixel tests are stochastic. One retry absorbs a mis-click; a scenario that flips
@@ -432,5 +428,7 @@ typed text is capped at 400 characters. The system prompt declares on-screen tex
 be data, never instructions. The target holds nothing worth stealing: a seeded
 fixture, the fake backend, and a one-time token for a gateway that dies with the job
 (scrubbed from the uploaded logs). The checkout uses `persist-credentials: false`,
-and the Bedrock role is the review lanes' existing least-privilege role. Fork pull
-requests never run the lane.
+and the harness assumes `GUI_TEST_BEDROCK_ROLE_ARN` when set, else
+`SHIP_REPORT_BEDROCK_ROLE_ARN` (`bedrock:InvokeModel` only); the review lanes'
+`AWS_BEDROCK_ROLE_ARN` is not used (see "The model and the tool shape" above). Fork
+pull requests never run the lane.

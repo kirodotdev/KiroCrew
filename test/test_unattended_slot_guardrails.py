@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import inspect
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,10 +41,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from turn_harness import REJECTED, SlotSpec, TurnScript, run_turn
 
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    STOP_REASON_END_TURN,
+    AcpEvent,
+)
+from kiro_crew.constants import TOOL_APPROVAL_TIMEOUT
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.safety_override import safety_override
+
+_DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+
+def _untrusted_prompt(request_id: str, *, command: str = "touch out.txt") -> AcpEvent:
+    """A shell prompt only the branch under test can approve (not read-only by default)."""
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=request_id,
+        title=command,
+        tool_name="shell",
+        tool_kind="execute",
+        is_shell=True,
+        tool_input=json.dumps({"command": command}),
+    )
+
 
 # ── FIX 1 ────────────────────────────────────────────────────────────────────
 
@@ -71,17 +97,31 @@ class TestUnattendedApprovalWindow:
         assert state.approval_timeout_for(human) == float(DashboardState._APPROVAL_TIMEOUT)
         assert state.approval_timeout_for(worker) < state.approval_timeout_for(human)
 
-        # …and the runner must USE it. Without this assertion the fix could be
-        # reverted at the call site (back to a hardcoded 7200.0) while the
-        # method above still answered correctly, and nothing would fail.
-        from kiro_crew.dashboard import chat_runner
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot", "window"),
+        [
+            (
+                SlotSpec(key="worker-1", app="issue-radar", autonudge=True),
+                DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS,
+            ),
+            (SlotSpec(key="chat-1-1785", autonudge=True), TOOL_APPROVAL_TIMEOUT),
+        ],
+        ids=["unattended", "attended"],
+    )
+    async def test_the_runner_waits_the_slots_own_window(
+        self, slot: SlotSpec, window: float
+    ) -> None:
+        """…and the runner USES it: an unanswered prompt is declined on time.
 
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "state.approval_timeout_for(slot)" in src, (
-            "the runner's approval await must take its window from DashboardState"
-        )
-        assert "timeout=_approval_window" in src
-        assert "timeout=7200.0" not in src, "the hardcoded 2h window is back"
+        Without this the decision above could be right while the runner's own
+        await went back to a hardcoded window. The attended slot waits the
+        configured window (600 s by default), which bounds the slot's 2h one.
+        """
+        record = await run_turn(TurnScript(events=[_untrusted_prompt("r1"), _DONE]), slot=slot)
+        [reject] = record.calls("reject_tool")
+        assert (reject.args, reject.at) == (("r1",), float(window))
+        assert record.notify_approval_stalled == [(slot.key, float(window))]
 
     def test_a_human_typing_into_an_app_tab_restores_the_full_window(self, tmp_path) -> None:
         """``_human_seen`` is the escape hatch, and only a dashboard user sets it."""
@@ -451,9 +491,6 @@ def _bg_slot(key: str) -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = False
-    # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy Mock
-    # and would trip the nudge busy guard (running or _in_stage_execution).
-    slot._in_stage_execution = False
     return slot
 
 
@@ -778,6 +815,7 @@ class TestIdleCleanupSparesArmedLoops:
 
 
 _SCOPE = "issue-radar:crew:c_1a2b3c4d:autoapprove"
+_CREW_SLOT = SlotSpec(key="crew-c_1a2b3c4d", app="issue-radar", trust_scope=_SCOPE)
 
 
 def _trust_slot(*, trust: bool = False, scope: str = "") -> SimpleNamespace:
@@ -889,25 +927,87 @@ class TestScopedGrantIsNeverPersisted:
             assert chat_runner._slot_is_trusted(slot) is True
             assert chat_runner._native_crew_should_auto_approve({"s1": {"done": False}}, state, slot)
 
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "slot_trusted = _slot_is_trusted(slot)" in src
-        # The trust/YOLO gate still branches on _slot_is_trusted's verdict; the
-        # grant-eligibility qualifier only excludes backend-subagent events
-        # whose command bytes never reached the caches AND whose canonical MCP
-        # identity did not resolve either (see chat_runner — a verified
-        # identity keeps the unconditional grant honored).
-        assert "if (slot_trusted or yolo_active) and _child_grant_eligible:" in src
+    @pytest.mark.asyncio
+    async def test_a_scope_trusted_crew_turn_approves_its_tool_call_at_once(self) -> None:
+        """Through the runner: the crew's prompt is approved, not shown and timed out.
 
-    def test_the_runner_writes_the_policy_through_the_helper(self) -> None:
-        """Pins the call site, not just the helper.
-
-        Without this the helper could be correct while ``_run_chat`` went on
-        deriving the stored policy from ``_slot_is_trusted`` itself, and every
-        assertion above would still pass.
+        The trust/YOLO gate branches on ``_slot_is_trusted``'s verdict, which
+        is what sees the scoped grant; reading ``slot._trust`` alone would stall
+        every crew on a card no one is there to answer.
         """
-        src = inspect.getsource(chat_runner._run_chat)
-        assert "_persistable_session_policy(slot, state.is_yolo_active())" in src
-        assert "_slot_is_trusted(slot) or state.is_yolo_active()" not in src
-        # Assigned unconditionally, so a turn starting after the grant went away
-        # clears a policy an earlier turn stored.
-        assert 'set_approval_policy(session_key, "auto")' not in src
+        with patch.object(type(safety_override()), "is_scope_active", return_value=True):
+            record = await run_turn(
+                TurnScript(events=[_untrusted_prompt("r1"), _DONE], user_row=False),
+                slot=_CREW_SLOT,
+            )
+        assert [(call.name, call.args, call.at) for call in record.calls("approve_tool")] == [
+            ("approve_tool", ("r1",), 0.0)
+        ]
+        assert record.approval_cards == []
+        assert record.audits(request_id="r1", outcome="auto_approved")[0]["metadata"] == {
+            "reason": "trust_scope"
+        }
+
+    @pytest.mark.asyncio
+    async def test_one_scope_check_decides_both_trust_branches(self) -> None:
+        """The grant is read ONCE per request, for the trust-reads and trust gates both.
+
+        Two separate checks can straddle the grant's expiry and disagree; here
+        the grant lapses right after its first read, and the request must still
+        be decided by that one verdict.
+        """
+        reads = iter([True] + [False] * 8)
+        with patch.object(
+            type(safety_override()), "is_scope_active", side_effect=lambda _scope: next(reads)
+        ) as is_scope_active:
+            record = await run_turn(
+                TurnScript(events=[_untrusted_prompt("r1", command="ls"), _DONE], user_row=False),
+                slot=dataclasses.replace(_CREW_SLOT, trust_reads=True),
+            )
+        assert record.calls("approve_tool")[0].args == ("r1",)
+        assert record.approval_cards == []
+        assert is_scope_active.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_trusted_slot_still_asks_about_an_unverified_child_request(self) -> None:
+        """Trust grants only what was verified: a backend-subagent request whose
+        command bytes and MCP identity never reached the gateway gets the card."""
+        child = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="r2",
+            title="write notes",
+            tool_kind="edit",
+            sub_session_id="sub-1",
+        )
+        record = await run_turn(
+            TurnScript(events=[child, _DONE], answers={"r2": REJECTED}),
+            slot=SlotSpec(key="chat-1-1785", trust=True),
+        )
+        assert len(record.approval_cards) == 1
+        assert record.calls("approve_tool") == []
+        assert record.audits(request_id="r2", outcome="auto_approved") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot", "scope_active", "policy"),
+        [
+            (_CREW_SLOT, True, ""),
+            (SlotSpec(key="chat-1-1785", trust=True), False, "auto"),
+            (SlotSpec(key="chat-1-1785", yolo=True), False, "auto"),
+            (SlotSpec(key="chat-1-1785"), False, ""),
+        ],
+        ids=["scoped-grant", "interactive-trust", "yolo", "untrusted"],
+    )
+    async def test_the_turn_stores_only_a_policy_that_cannot_lapse(
+        self, slot: SlotSpec, scope_active: bool, policy: str
+    ) -> None:
+        """Through the runner: exactly one write, of the helper's verdict.
+
+        Unconditional, so a turn that starts after a grant went away clears the
+        policy an earlier turn stored; and never ``auto`` off a scoped grant,
+        which the subagent spawn gate would read with no re-check.
+        """
+        with patch.object(type(safety_override()), "is_scope_active", return_value=scope_active):
+            record = await run_turn(TurnScript(events=[_DONE]), slot=slot)
+        writes = [call.args for call in record.session_calls if call.name == "set_approval_policy"]
+        assert writes == [(f"dashboard:{slot.key}", policy)]
