@@ -125,7 +125,7 @@ describe('scroll shell: element order inside the scroller', () => {
       '<div className="h-16" />',
       'ref={virt.topSentinelRef}',
       'data-testid="older-messages-loading"',
-      'height: virt.offsetBefore',
+      'height: Math.round(virt.offsetBefore)',
       'height: virt.offsetAfter',
       'ref={virt.bottomSentinelRef}',
     ]
@@ -154,7 +154,12 @@ describe('scroll shell: element order inside the scroller', () => {
     // They also carry the skeleton class and the transcript's own column
     // width: an unmounted region rendered as a blank void reads as content
     // that vanished rather than content not yet drawn.
-    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetBefore, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
+    // The top spacer renders at a whole pixel: Chromium's scroll anchoring
+    // moves scrollTop only by whole pixels, so a fractional re-price above a
+    // reader sitting still (the measure farm's sweep) would shift the text by
+    // the remainder. Below the reader nothing on screen moves, so the bottom
+    // one stays exact.
+    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: Math.round(virt.offsetBefore), maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
     expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetAfter, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
   })
 
@@ -212,7 +217,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   // accepts a shell that ignores a prop — but the transcript then breaks at
   // runtime (no rows, no follow, no paging). The pins make every seam a test.
   it('shell renders all three slots in skeleton order and spreads host geometry', () => {
-    const shellOrder = ['{aboveRows}', 'height: virt.offsetBefore', '{children}', 'height: virt.offsetAfter', '{belowRows}']
+    const shellOrder = ['{aboveRows}', 'height: Math.round(virt.offsetBefore)', '{children}', 'height: virt.offsetAfter', '{belowRows}']
     let cursor = -1
     for (const a of shellOrder) {
       const idx = SHELL.indexOf(a, cursor + 1)

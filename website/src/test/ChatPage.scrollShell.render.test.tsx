@@ -75,6 +75,28 @@ describe('TranscriptScrollShell DOM contract', () => {
     expect(new Set(order).size).toBe(order.length)
   })
 
+  it('renders the top spacer at a whole-pixel height within half a pixel of the virtualizer offset', () => {
+    // Chromium's scroll anchoring moves scrollTop only by whole pixels. A
+    // fractional top spacer lets each re-price of unmounted rows above a reader
+    // sitting still (a measure-farm batch) shift the visible text by the
+    // leftover fraction.
+    const scrollerRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 19479.75, offsetAfter: 0 }}
+        loadingOlder={false}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    const topSpacer = scrollerRef.current!.querySelector('.vc-spacer-skeleton') as HTMLElement
+    const height = Number.parseFloat(topSpacer.style.height)
+    expect(Number.isInteger(height)).toBe(true)
+    expect(Math.abs(height - 19479.75)).toBeLessThanOrEqual(0.5)
+  })
+
   it('hands the trailing wrapper to the virtualizer through virt.trailingRef', () => {
     const scrollerRef = ref()
     const trailingRef = ref()
