@@ -372,12 +372,14 @@ export interface AssistantBubbleOptions {
    *  another reply, which the SDK's own rule reads as "the turn goes on".
    *  Streaming rows never draw a footer, whatever this says. */
   forceFooter?: boolean
-  /** Decide the steer-chip suppression against a transcript the host holds
-   *  instead of `ctx.messages`. A host that FILTERS the list before rendering
-   *  (a crewmate's chat drops the `inject` rows) must pass the unfiltered one,
-   *  or the policy-block marker is never found and a system-forced
-   *  continuation is credited to the user. */
-  policyBlockTranscript?: { messages: ChatMessage[]; index: number }
+  /** Never draw the "Steered" chip, whatever the reply's `[STEERING …]` ack
+   *  says. A host whose every busy send IS a steer (a crewmate's chat: one
+   *  named peer, no queue) sets it — there the chip would end nearly every
+   *  reply with the very mechanics the surface hides (#17838). Off (default)
+   *  the SDK rule applies: the chip draws unless the turn's steer was a
+   *  system policy notice rather than the user's (`turnHadPolicyBlock`). The
+   *  raw marker is stripped from the prose either way. */
+  suppressSteerAck?: boolean
   /** Session routing for the reply's markdown: open a session chip, plus the
    *  roster and the active key the chip resolver needs. All three or none — the
    *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
@@ -477,11 +479,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
-      suppressSteerAck={
-        opts.policyBlockTranscript
-          ? turnHadPolicyBlock(opts.policyBlockTranscript.messages, opts.policyBlockTranscript.index)
-          : turnHadPolicyBlock(ctx.messages, ctx.index)
-      }
+      suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
       onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}

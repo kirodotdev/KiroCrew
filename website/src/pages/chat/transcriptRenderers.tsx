@@ -164,9 +164,10 @@ export interface TranscriptRendererOptions {
    *  drawn. */
   crewmate?: CrewmateIdentity
   /** The UNFILTERED transcript behind a crewmate's chat. The rows the pane
-   *  draws are `ctx.messages`; the rows the pane dropped (the `inject` row a
-   *  policy block writes among them) are only here. Read for the steer-chip
-   *  decision, never for layout. Meaningless without `crewmate`. */
+   *  draws are `ctx.messages`; the turn boundaries the pane dropped (a patrol
+   *  wake, a cron or sub-agent envelope between two replies) are only here.
+   *  Read for the run position, never for layout. Meaningless without
+   *  `crewmate`. */
   crewmateTranscript?: ChatMessage[]
 }
 
@@ -466,14 +467,14 @@ export function createTranscriptRenderers(
             const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscript)
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that
-            // carries the hover actions. The policy-block read goes to
-            // the unfiltered transcript — see `crewmateTranscript`; the row is
-            // located by identity, since the filter keeps the same objects.
-            const full = crewmateTranscript
-            const fullIndex = full ? full.indexOf(m) : -1
+            // carries the hover actions. No "Steered" chip on any bubble: in a
+            // DM with one named peer every send while it works is a steer, so
+            // the ack kiro-cli emits would close nearly every reply with the
+            // mechanics this surface hides (#17838). The marker is still
+            // stripped from the prose.
             const bubble = renderAssistantBubble(m, ctx, crewmateBubbleClass(pos), {
               forceFooter: pos === 'single' || pos === 'end',
-              policyBlockTranscript: full && fullIndex >= 0 ? { messages: full, index: fullIndex } : undefined,
+              suppressSteerAck: true,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves

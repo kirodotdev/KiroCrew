@@ -1582,14 +1582,16 @@ the bubble surface passed in as `bubbleClassName`; the SDK's footer rule
 run's last bubble (`single` / `end`) always carries the footer and its hover
 actions — the SDK's own rule would withhold it when the next drawn row is
 another reply, but in this chat a run only ends on a boundary the user sees,
-so the run end IS the turn end — and the steer-chip
-suppression (`turnHadPolicyBlock`) reads the UNFILTERED transcript the pane
-passes as `crewmateTranscript`, because the policy-block marker lives on an
-`inject` row the filter drops, and reading the filtered list would credit a
-system-forced continuation to the user. User messages keep their existing
-rendering apart from the accent fill above. The run position is exported (`crewmateRunPosition`) for a
-reply-thread footer to reuse; no DOM attribute is stamped until that reader
-exists. The reply thread's own panel
+so the run end IS the turn end — and the "Steered" chip never draws
+(`suppressSteerAck: true`): in a DM with one named peer every send while it
+works is a steer, so the `[STEERING …]` ack kiro-cli emits would close nearly
+every reply with the mechanics this surface hides (#17838); the marker is still
+stripped from the prose, and the main chat keeps its chip with the SDK's own
+policy-block rule. The UNFILTERED transcript the pane passes as
+`crewmateTranscript` is read for the run position only. User messages keep
+their existing rendering apart from the accent fill above. The run position is exported
+(`crewmateRunPosition`) for a reply-thread footer to reuse; no DOM attribute is
+stamped until that reader exists. The reply thread's own panel
 (`pages/members/ThreadPanel`, see history.md) is that reader: it draws the
 crewmate's replies on the same `crewmateRunPosition` / `crewmateBubbleClass`
 rule; the user's replies are always singles.

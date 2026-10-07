@@ -8,7 +8,10 @@
  * second user message carries inline code, a bare URL and a quote of the
  * crewmate's reply, so the page also proves the iMessage colouring (#17839): the user's bubble filled with the
  * theme accent, code, link and the quote card recoloured onto `--accent-fg`,
- * the crewmate's bubble the neutral `--bg-hover` gray with no border.
+ * the crewmate's bubble the neutral `--bg-hover` gray with no border. The
+ * last reply carries the `[STEERING …]` ack kiro-cli emits when a send landed
+ * mid-turn, so the same page also proves whether a "Steered" chip closes a
+ * crewmate's bubble (#17838).
  *
  * Query string: ?theme=dark|light
  *
@@ -62,7 +65,9 @@ const TRANSCRIPT: ChatMessage[] = [
     ...row('user', 'Good. And the dispatcher? Check `push_slot.py` first, then https://github.com/kirodotdev/KiroCrew/issues/17839', '2026-10-05T07:52:00Z', 'm4'),
     meta: { mid: 'm4', quote: { role: 'assistant', text: 'Filed it as #16628 with the `asyncio.to_thread` fix sketched. Waiting on triage.', ts: '2026-10-05T07:40:24Z', mid: 'm3' } },
   },
-  row('assistant', 'Back up since 08:22Z: it no longer mints an owner token, it presents the cron\'s own credential. First cycle dispatched 4 of the backlog.', '2026-10-05T08:24:02Z', 'm5'),
+  // "And the dispatcher?" landed while the crewmate was still working, so its
+  // reply carries kiro-cli's inline steer acknowledgement.
+  row('assistant', 'Back up since 08:22Z: it no longer mints an owner token, it presents the cron\'s own credential. First cycle dispatched 4 of the backlog.\n\n[STEERING steer-4f2a: answered the dispatcher question first]', '2026-10-05T08:24:02Z', 'm5'),
 ]
 
 function Scene() {
