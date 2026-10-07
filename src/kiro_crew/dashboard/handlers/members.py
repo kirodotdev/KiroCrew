@@ -887,14 +887,15 @@ def _seed_from_dm_threads(
     thread could not be read (no log, a busy or unreadable transcript), so the
     seed runs again on a later read; a withheld (restricted) thread is skipped.
 
-    Typed = a user-role speech row that is not an injected envelope. Everything
-    the gateway writes into a thread under the user role (a peer's
-    `[sent by session ...]`, a workflow or wake notice) opens with `[`, so such
-    rows are skipped. Runs once per data home (`crew_recency.needs_seed`).
+    Typed = a user-role speech row carrying `history.HUMAN_TURN_META_KEY`, the
+    allowlist marker the human send paths set; in a thread with any marked row,
+    an unmarked row (a peer's delivery, a wake, a heartbeat) never counts. A
+    thread with no marked row predates the marker and falls back to "does not
+    open with `[`". Runs once per data home (`crew_recency.needs_seed`).
     """
     from kiro_crew.dashboard.system_notices import is_speech_row
     from kiro_crew.eventlog.members_projections import _parse_ts
-    from kiro_crew.history import TranscriptBusy, TranscriptWithheld
+    from kiro_crew.history import HUMAN_TURN_META_KEY, TranscriptBusy, TranscriptWithheld
 
     log = getattr(state, "conversation_log", None)
     found: dict[str, float] = {}
@@ -915,13 +916,20 @@ def _seed_from_dm_threads(
         except Exception:
             logger.debug("crew recency seed could not read %r", key, exc_info=True)
             return None
+        # A thread written before the marker existed carries it on no row: there
+        # the old rule (a user speech row not opening with `[`, the shape every
+        # gateway-injected user row takes) is the only reading available.
+        marked = any(_is_human_row(msg, HUMAN_TURN_META_KEY) for msg in messages)
         for msg in reversed(messages):
             content = msg.get("content")
             if msg.get("role") != "user" or not isinstance(content, str):
                 continue
-            if content.lstrip().startswith("[") or not is_speech_row(
-                "user", content, msg.get("meta")
-            ):
+            meta = msg.get("meta")
+            if marked and not _is_human_row(msg, HUMAN_TURN_META_KEY):
+                continue
+            if not marked and content.lstrip().startswith("["):
+                continue
+            if not is_speech_row("user", content, meta):
                 continue
             raw_ts = msg.get("ts")
             try:
@@ -932,6 +940,11 @@ def _seed_from_dm_threads(
                 found[row["name"]] = max(found.get(row["name"], 0.0), ts)
             break
     return found
+
+
+def _is_human_row(msg: dict, marker: str) -> bool:
+    meta = msg.get("meta")
+    return isinstance(meta, dict) and bool(meta.get(marker))
 
 
 def _recency_for_row(block: dict, transcript_ts: Any) -> float:

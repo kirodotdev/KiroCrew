@@ -846,8 +846,10 @@ still counts as the user chatting with that crew. The client stamps the same
 value on the row bound to the sending slot (`noteUserChat`), so a crewmate the
 user just messaged stays listed after they switch away. On the first roster read
 of a data home, a one-time seed (`seeded` in the file) fills the record from each
-bound DM thread's newest user-role speech row that does not open with `[` (every
-row the gateway injects under the user role does); a seed that cannot read a
+bound DM thread's newest user-role speech row carrying the human-turn marker
+(`history.HUMAN_TURN_META_KEY`, the allowlist the human send paths set); a thread
+where no row carries the marker predates it, and there a user speech row that
+does not open with `[` counts; a seed that cannot read a
 thread (no log, a busy transcript) is not marked done and runs again on a later
 read. Every writer refuses to
 replace a file it cannot read. Every other row is hidden and appears when the

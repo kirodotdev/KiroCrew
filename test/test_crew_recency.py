@@ -9,7 +9,7 @@ write there too. ``crew_recency`` records exactly that, at the one place that kn
 * the store (round trip, write granularity, junk, the one-time seed),
 * who records (the dashboard user does; an app token and a cron do not),
 * the roster field, the default crew's ``""`` record, and the seed's reading of
-  a DM thread (typed rows count, injected envelopes and replies do not).
+  a DM thread (rows carrying the human marker count, unmarked rows do not).
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from kiro_crew import crew_recency
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.dashboard.chat_handlers import api_chat
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.history import HUMAN_TURN_META_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -241,9 +242,10 @@ async def test_seed_reads_only_what_the_user_typed_in_a_dm_thread(tmp_path):
             for n in ("typed", "peer", "replied")
         }
         log = state.conversation_log
-        log.append(key["typed"], "user", "hello there")
+        human = {HUMAN_TURN_META_KEY: True}
+        log.append(key["typed"], "user", "[1, 2, 3] is the list", extra_meta=human)
         log.append(key["typed"], "user", "[sent by session member-x via session_send]\n\ndo it")
-        # A peer's delivery and an agent's own speech are not the user chatting.
+        # A peer delivery and an agent's own speech are not the user chatting.
         log.append(key["peer"], "user", "[sent by session member-x via session_send]\n\nwork")
         log.append(key["replied"], "assistant", "a patrol said something")
     rows = await _roster(state, fake)
@@ -263,7 +265,12 @@ async def test_a_seed_that_could_not_read_a_thread_runs_again_later(tmp_path):
     with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
         slug = members_mod.member_slug("typed", fake)
         members_mod.write_dm_binding(slug, member="typed", slot_key=f"member-{slug}")
-        state.conversation_log.append(members_mod.member_thread_session_alias(slug), "user", "hi")
+        state.conversation_log.append(
+            members_mod.member_thread_session_alias(slug),
+            "user",
+            "hi",
+            extra_meta={HUMAN_TURN_META_KEY: True},
+        )
     with patch.object(
         state.conversation_log, "derive_messages", side_effect=TranscriptBusy("busy")
     ):
@@ -309,3 +316,34 @@ async def test_a_cron_attested_create_records_nothing():
         )
     assert status == 200
     assert crew_recency.read_recency() == {}
+
+
+@pytest.mark.asyncio
+async def test_seed_reads_a_thread_from_before_the_marker_by_the_old_rule(tmp_path):
+    """A thread with no marked row predates the marker: a typed row still
+    counts and a `[` envelope does not. In a marked thread a newer unmarked
+    heartbeat is skipped, so that crew ranks by its typed row. Row stamps are
+    monotonic per thread only, so the heartbeat is told apart by its own
+    thread's stamps, never by comparing two threads (a coarse Windows clock)."""
+    from kiro_crew import members as members_mod
+    from kiro_crew.eventlog.members_projections import _parse_ts
+
+    state = _make_state(tmp_path)
+    fake = _fake_config("legacy", "marked")
+    with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
+        key = {}
+        for name in ("legacy", "marked"):
+            slug = members_mod.member_slug(name, fake)
+            members_mod.write_dm_binding(slug, member=name, slot_key=f"member-{slug}")
+            key[name] = members_mod.member_thread_session_alias(slug)
+        human = {HUMAN_TURN_META_KEY: True}
+        log = state.conversation_log
+        log.append(key["legacy"], "user", "an old typed hello")
+        log.append(key["legacy"], "user", "[sent by session member-x via session_send]\n\nlater")
+        log.append(key["marked"], "user", "typed", extra_meta=human)
+        log.append(key["marked"], "user", "\U0001f493 Heartbeat: anything to do?")
+        stamps = [_parse_ts(m["ts"]) for m in log.read_messages(key["marked"])]
+    rows = await _roster(state, fake)
+    assert rows["legacy"]["last_chat_ts"] > 0
+    assert stamps[0] < stamps[1]
+    assert rows["marked"]["last_chat_ts"] == stamps[0]
