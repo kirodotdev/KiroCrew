@@ -746,6 +746,137 @@ def test_private_target_emits_no_audit_event(monkeypatch, tmp_path):
     assert events == []
 
 
+def test_derived_spec_write_outside_a_rebuild_records_the_allowed_event(monkeypatch, tmp_path):
+    """A per-dispatch derived-spec write admitted OUTSIDE an admitted rebuild
+    records an ``agent_home_write`` / ``allowed`` SEL event.
+
+    The motivating gap: an app deregistration leaves the worker mirror stale, and
+    the next spawn re-derives it through ``_declined_foreign_spec_write`` -- which
+    is reached per dispatch, not inside the boot-time rebuild that audits its own
+    grant. Without this, that admitted write left no SEL trail, so "no event" was
+    ambiguous between "permitted" and "never attempted" for exactly the writers
+    that run most often.
+    """
+    from kiro_crew import agent
+
+    events = _capture_sel(monkeypatch, agent)
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    # A NON-DEFAULT data home: the attribution the event buys only matters when
+    # instances coexist, so the audit is scoped to a non-default home.
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "relocated-home"))
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    # A durable owner (not a worktree) is admitted to write the shared agents
+    # dir; the path need not exist (predicates are lexical on the resolved path).
+    durable = Path("/durable-install/KiroCrew/src/kiro_crew/agent.py")
+    monkeypatch.setattr(agent, "__file__", str(durable))
+    agents_dir = tmp_path / "agents"
+    _pretend_target_is_shared(monkeypatch, agent, agents_dir)
+    # Not inside an admitted rebuild, so the grant is this writer's to record.
+    agent._rebuild_spec_install_admitted.set(False)
+
+    declined = agent._declined_foreign_spec_write(agents_dir / "kirocrew-worker.json")
+
+    assert declined is False  # the write is admitted
+    allowed = [e for e in events if e.get("outcome") == "allowed"]
+    assert len(allowed) == 1, f"expected exactly one allowed event, got {events}"
+    assert allowed[0]["operation"] == "agent_home_write"
+    assert allowed[0]["source"] == "derived-spec"
+    assert str(agents_dir) in allowed[0]["resources"]
+
+
+def test_default_home_derived_spec_write_records_the_allowed_event(monkeypatch, tmp_path):
+    """A default-home admitted write outside a rebuild still records the grant.
+
+    The write is admitted with ``audit=False`` passed to the shared decision, so
+    nothing else records it. Suppressing the event on the default home would leave
+    that permission decision unaudited, so every admitted shared-home write made
+    outside a rebuild records its grant regardless of which home made it. Only a
+    private redirected target stays silent.
+    """
+    from kiro_crew import agent
+
+    events = _capture_sel(monkeypatch, agent)
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)  # default home
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    durable = Path("/durable-install/KiroCrew/src/kiro_crew/agent.py")
+    monkeypatch.setattr(agent, "__file__", str(durable))
+    agents_dir = tmp_path / "agents"
+    _pretend_target_is_shared(monkeypatch, agent, agents_dir)
+    agent._rebuild_spec_install_admitted.set(False)
+
+    declined = agent._declined_foreign_spec_write(agents_dir / "kirocrew-worker.json")
+
+    assert declined is False  # admitted
+    allowed = [e for e in events if e.get("outcome") == "allowed"]
+    assert len(allowed) == 1, f"expected the default-home grant to be audited, got {events}"
+    assert allowed[0]["operation"] == "agent_home_write"
+    assert allowed[0]["source"] == "derived-spec"
+
+
+def test_derived_spec_write_to_a_private_dir_emits_no_event(monkeypatch, tmp_path):
+    """The private-directory exemption through the primitive stays silent.
+
+    When the agents dir is redirected somewhere the ambient environment would
+    never produce, the write is admitted but it is not a decision ABOUT the shared
+    resource, so -- like ``_decline_shared_agent_home``'s own private-target
+    returns -- it records nothing.
+    """
+    from kiro_crew import agent
+
+    events = _capture_sel(monkeypatch, agent)
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    # Non-default home, so the default-home short-circuit does not hide the
+    # private-redirect branch this test is about.
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "relocated-home"))
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    durable = Path("/durable-install/KiroCrew/src/kiro_crew/agent.py")
+    monkeypatch.setattr(agent, "__file__", str(durable))
+    # Target is a private redirect: the configured agents dir is NOT what the
+    # ambient environment resolves, so the write is admitted but silent.
+    private_dir = tmp_path / "private" / "agents"
+    monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", private_dir)
+    monkeypatch.setattr(agent, "ambient_agents_dir", lambda: tmp_path / "elsewhere" / "agents")
+    agent._rebuild_spec_install_admitted.set(False)
+
+    declined = agent._declined_foreign_spec_write(private_dir / "kirocrew-worker.json")
+
+    assert declined is False  # admitted (private target)
+    assert events == []
+
+
+def test_unresolvable_parent_fails_closed(monkeypatch, tmp_path):
+    """An OSError resolving the write's parent is REFUSED, not admitted.
+
+    ``_declined_foreign_spec_write`` compares ``path.parent.resolve()`` to the
+    shared agents dir to decide whether the write even touches the guarded
+    directory. When that ``resolve()`` raises ``OSError`` (a broken symlink loop,
+    a vanished mount, a permission wall) the write cannot be PROVEN to land
+    outside the shared dir, so the guard fails closed and refuses it rather than
+    waving it through on the unproven assumption it is private.
+    """
+    from kiro_crew import agent
+
+    agents_dir = tmp_path / "agents"
+    target = agents_dir / "kirocrew-worker.json"
+
+    real_resolve = Path.resolve
+
+    def resolve_raising(self, *args, **kwargs):
+        # Only the write's parent is unresolvable; everything else resolves
+        # normally so the failure under test is the parent-resolve, not a
+        # blanket break of resolve().
+        if self == target.parent:
+            raise OSError("parent is unresolvable")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_raising)
+
+    assert (
+        agent._declined_foreign_spec_write(target) is True
+    ), "an unresolvable parent must fail closed (refuse the write), not be admitted"
+
+
 # --------------------------------------------------------------------------
 # Pods get their own agent home
 # --------------------------------------------------------------------------
@@ -2623,12 +2754,16 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
                 "assertion below cannot tell the fix from no guard at all"
             )
 
-            monkeypatch.setattr(agent, "_rebuild_spec_install_admitted", True)
-            assert agent._declined_foreign_spec_write(target) is False, (
-                "a derived spec was refused inside the rebuild that was already "
-                "admitted, so a fresh temp-checkout install writes its main spec and "
-                "none of its derived ones"
-            )
+            _rebuild_prev = agent._rebuild_spec_install_admitted.get()
+            agent._rebuild_spec_install_admitted.set(True)
+            try:
+                assert agent._declined_foreign_spec_write(target) is False, (
+                    "a derived spec was refused inside the rebuild that was already "
+                    "admitted, so a fresh temp-checkout install writes its main spec and "
+                    "none of its derived ones"
+                )
+            finally:
+                agent._rebuild_spec_install_admitted.set(_rebuild_prev)
 
     def test_the_admission_does_not_outlive_a_raising_rebuild(self, monkeypatch, tmp_path):
         """A rebuild that raises mid-install must not leave the guard exempted.
@@ -2655,13 +2790,59 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
         with pytest.raises(RuntimeError):
             agent.rebuild_agent_config()
 
-        assert agent._rebuild_spec_install_admitted is False, (
+        assert agent._rebuild_spec_install_admitted.get() is False, (
             "the rebuild's admission survived an exception, so every later shared "
             "write in this process is exempt from the ownership guard"
         )
         # And the guard is demonstrably live again, not merely flagged off.
         monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda **_k: shared)
         assert agent._declined_foreign_spec_write(shared / WORKER_AGENT_FILENAME) is True
+
+    def test_the_admission_does_not_cross_into_another_threads_write(self, monkeypatch, tmp_path):
+        """A concurrent write on another thread still consults the guard.
+
+        The exemption is a ``ContextVar``, so a value set while the rebuild runs
+        is confined to the rebuild's own context. ``rebuild_agent_config`` is
+        synchronous and the dashboard/dispatch writers reach the guard on worker
+        threads (``asyncio.to_thread`` runs the target in a copy of the context
+        taken at submit time). This asserts Design's clear condition: with the
+        rebuild's admission set on THIS stack, a write issued from a separate
+        thread sees the default and is still refused by the guard.
+        """
+        import threading
+
+        from kiro_crew import agent
+        from kiro_crew.agent_files import WORKER_AGENT_FILENAME
+
+        shared = self._foreign_shared_dir_for_rebuild(monkeypatch, agent, tmp_path)
+        monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda **_k: shared)
+        target = shared / WORKER_AGENT_FILENAME
+
+        # Simulate being mid-rebuild on this stack: the exemption is set here.
+        _rebuild_prev = agent._rebuild_spec_install_admitted.get()
+        agent._rebuild_spec_install_admitted.set(True)
+        try:
+            # On this stack the exemption holds -- the rebuild's own writes pass.
+            assert agent._declined_foreign_spec_write(target) is False
+
+            # A write dispatched to another thread (as a dashboard/dispatch
+            # writer would be) must NOT inherit the exemption set after the
+            # thread began: it sees the default False and the guard refuses it.
+            result: dict[str, bool] = {}
+
+            def _write_from_other_thread() -> None:
+                result["declined"] = agent._declined_foreign_spec_write(target)
+
+            worker = threading.Thread(target=_write_from_other_thread)
+            worker.start()
+            worker.join()
+
+            assert result["declined"] is True, (
+                "a concurrent write on another thread was exempted by a rebuild's "
+                "admission; the exemption leaked past the rebuild's own context"
+            )
+        finally:
+            agent._rebuild_spec_install_admitted.set(_rebuild_prev)
 
     @staticmethod
     def _foreign_shared_dir_for_rebuild(monkeypatch, agent_mod, tmp_path) -> Path:

@@ -266,7 +266,7 @@ class TestTheClaimFollowsPublication:
             encoding="utf-8",
         )
         monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: agents_dir)
-        monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda: None)
+        monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda **_k: None)
 
     def test_a_failed_spec_write_leaves_a_legacy_spec_unclaimed(
         self, shipped, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

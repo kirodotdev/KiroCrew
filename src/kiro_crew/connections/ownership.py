@@ -432,10 +432,21 @@ async def remove_provider_entry(
             # raises it for a screened provable-charset string.
             return None
 
-    def _judge(
-        configured: list, specs: dict
-    ) -> tuple[tuple[str, ...], dict[str, set[str]], tuple[str, ...], dict[str, str]]:
-        """``(owned scopes, sharers PER KEY, unprovable names, owned url per key)``.
+    def _judge(configured: list, specs: dict) -> tuple[
+        tuple[str, ...],
+        dict[str, set[str]],
+        tuple[str, ...],
+        dict[str, str],
+        dict[str, set[str]],
+        tuple[str, ...],
+    ]:
+        """``(owned scopes, sharers PER KEY, unprovable names, owned url per key,
+        mirrored-slug sharers PER KEY, mirrored-slug unprovable names)``.
+
+        The last two elements name the mirrored ``slug`` entries left out of the
+        sharer set because the purge is expected to remove them; the caller folds
+        them back in (as sharers, and as unprovable holders) when the purge is
+        refused and they survive.
 
         All answers come out of the same walk over the same census, so they
         cannot be taken from two different readings of the store. Only mcp.json
@@ -529,15 +540,37 @@ async def remove_provider_entry(
         # slash-insensitive while the pair is not, so a mirrored variant spelling
         # owns a pair that would otherwise be purged and never revoked.
         purge_will_run = bool(owned)
+        # Mirrored ``slug`` entries that the purge is EXPECTED to remove, keyed by
+        # the artifact pair they hold. They are left out of the sharer set below
+        # on the assumption the purge removes them -- but a purge REFUSED by a
+        # foreign-owned agents dir leaves them on disk still holding the grant, so
+        # the caller folds these back into the sharer set when the purge refused.
+        #
+        # The artifact key is taken for EVERY mirrored entry, not only one whose
+        # endpoint equals ``wanted``: ``grant_key`` drops the query string, so a
+        # mirror at ``?workspace=other`` fails the query-sensitive endpoint test
+        # yet holds the SAME artifact pair -- and if the purge is refused it is a
+        # surviving holder of that pair, so a revoke that skipped it would delete a
+        # token the survivor still needs. ``_UNPROVABLE`` mirrors are tracked too,
+        # so a refusal keeps every owned pair the census could not clear them from.
+        mirror_sharers_by_key: dict[str, set[str]] = {}
+        mirror_unprovable: set[str] = set()
         for label, name, url in mirrored_slug:
             if not purge_will_run:
                 others.append((label, name, url))  # nothing purges it; a real holder
                 continue
+            holder = f"{label}/{name}"
             candidate = url.strip() if isinstance(url, str) else url
             if normalized_endpoint(candidate) == wanted:
-                _collect_owned(url, f"{label}/{name}")
-            # A mirrored slug entry pointing somewhere else is removed by the purge
-            # and names no pair of ours: neither owned nor a sharer.
+                _collect_owned(url, holder)
+            key = _artifact_key(url)
+            if key == _UNPROVABLE:
+                mirror_unprovable.add(holder)
+            elif key is not None:
+                # A would-be survivor of this pair if the purge is refused. Recorded
+                # regardless of the endpoint test above, since the pair is keyed
+                # query-insensitively.
+                mirror_sharers_by_key.setdefault(key, set()).add(holder)
 
         sharers_by_key: dict[str, set[str]] = {}
         for label, name, url in others:
@@ -554,12 +587,21 @@ async def remove_provider_entry(
             sharers_by_key,
             tuple(sorted(unprovable)),
             owned_urls,
+            mirror_sharers_by_key,
+            tuple(sorted(mirror_unprovable)),
         )
 
     async with _get_mcp_lock():
         configured = await asyncio.to_thread(list_servers)
         specs, unreadable = await asyncio.to_thread(spec_census, project_dirs)
-        owned_scopes, sharers_by_key, unprovable, owned_urls = _judge(configured, specs)
+        (
+            owned_scopes,
+            sharers_by_key,
+            unprovable,
+            owned_urls,
+            mirror_sharers_by_key,
+            mirror_unprovable,
+        ) = _judge(configured, specs)
         census_gap = bool(unreadable or unprovable)
         shared = tuple(sorted({name for names in sharers_by_key.values() for name in names}))
         # Whether the config purge was REFUSED. The revoke below proceeds either way
@@ -587,6 +629,24 @@ async def remove_provider_entry(
                     "shared agent specs, so that entry stays until its owner rewrites it; "
                     "revoking the grant anyway",
                     slug,
+                )
+                # The purge was assumed to remove the mirrored ``slug`` entries, so
+                # _judge left them out of the sharer set. The refusal leaves them on
+                # disk still holding their grant, so a revoke that ignored them would
+                # unlink the OAuth artifacts the surviving owner's server still needs
+                # and deauthorize a server this disconnect was never asked to touch.
+                # Fold them back in as sharers of their pairs so those pairs are kept.
+                # A surviving mirror whose pair could not be proven is folded into the
+                # unprovable set instead, which makes census_gap keep EVERY owned pair
+                # -- the fail-safe reading when we cannot say the survivor is not a
+                # holder.
+                for key, holders in mirror_sharers_by_key.items():
+                    sharers_by_key.setdefault(key, set()).update(holders)
+                if mirror_unprovable:
+                    unprovable = tuple(sorted(set(unprovable) | set(mirror_unprovable)))
+                    census_gap = True
+                shared = tuple(
+                    sorted({name for names in sharers_by_key.values() for name in names})
                 )
         else:
             logger.info(

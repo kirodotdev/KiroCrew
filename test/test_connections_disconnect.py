@@ -628,6 +628,95 @@ async def test_a_custom_agent_config_sharing_the_endpoint_blocks_the_revoke(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_purge_keeps_the_surviving_mirrors_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A purge refused by a foreign-owned agents dir must not revoke the grant the
+    surviving mirror still holds.
+
+    The owned ``slug`` scope is mirrored into a shared agent file this data home
+    does not own. _judge leaves the mirror out of the sharer set on the assumption
+    the purge removes it -- but the purge is refused, so the mirror stays on disk
+    still using the one artifact pair the endpoint names. Revoking it would
+    unlink the OAuth artifacts the surviving owner's server needs and deauthorize
+    a server this disconnect never meant to touch, with no local recovery. So the
+    grant must be KEPT, and the entry reported as not removed.
+    """
+    revoked: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=["token", "registration"],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        revoked=revoked,
+        raw_specs={
+            # Owned registry scope (a purge target) ...
+            "kirocrew": {_SLUG: {"url": _provider_url()}},
+            # ... mirrored into a shared agent file another data home owns, at the
+            # same endpoint, so it holds the same artifact pair.
+            f"{ownership._MIRROR_PREFIX}kiroGlobal": {_SLUG: {"url": _provider_url()}},
+        },
+    )
+
+    # The config purge is refused because the shared agents dir is foreign-owned.
+    def _refuse(_name: str, *, scopes: tuple[str, ...] | None = None) -> dict:
+        raise agent_mod.SharedAgentHomeRefused("foreign data home owns the shared agent specs")
+
+    monkeypatch.setattr(mcp_handlers, "_purge_server_config", _refuse)
+
+    body = await _disconnect()
+
+    assert revoked == [], "revoked a grant the surviving mirror still holds after a refused purge"
+    assert body["grantRemoved"] is False
+    # The entry was not actually removed (the purge was refused).
+    assert body["entryRemoved"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_refused_purge_keeps_a_query_variant_mirrors_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused purge must keep the grant of a surviving mirror even when the
+    mirror's URL carries a query the owned endpoint does not.
+
+    The artifact pair is keyed query-insensitively, so a mirror at
+    ``?workspace=other`` holds the SAME pair as the owned entry while failing the
+    query-sensitive endpoint test. If the purge is refused it survives still using
+    that pair, so it must be counted as a holder and the grant kept -- a revoke
+    that skipped it would deauthorize the surviving server with no local recovery.
+    """
+    revoked: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=["token", "registration"],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        revoked=revoked,
+        raw_specs={
+            "kirocrew": {_SLUG: {"url": _provider_url()}},
+            # Same artifact pair, different (query-qualified) endpoint, in a shared
+            # agent file another data home owns.
+            f"{ownership._MIRROR_PREFIX}kiroGlobal": {
+                _SLUG: {"url": _provider_url() + "?workspace=other"}
+            },
+        },
+    )
+
+    def _refuse(_name: str, *, scopes: tuple[str, ...] | None = None) -> dict:
+        raise agent_mod.SharedAgentHomeRefused("foreign data home owns the shared agent specs")
+
+    monkeypatch.setattr(mcp_handlers, "_purge_server_config", _refuse)
+
+    body = await _disconnect()
+
+    assert revoked == [], "revoked a grant a surviving query-variant mirror still holds"
+    assert body["grantRemoved"] is False
+    assert body["entryRemoved"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_mismatched_entry_in_another_scope_survives_the_purge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

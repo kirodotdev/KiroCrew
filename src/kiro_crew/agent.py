@@ -35,6 +35,7 @@ Every moved name is re-exported here, so reading or patching
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import importlib
 import json
 import logging
@@ -414,31 +415,50 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     :func:`kiro_agents_dir_path`, so this primitive's other callers — notably a
     ``config.json`` write — are untouched. ``audit=False`` is passed to the
     shared decision so it does not emit the rebuild's own boot-path event under
-    a source that did not make this call; the REFUSAL is recorded here instead,
-    under this source. Only the refusal: the rebuild already audits its own
-    grant over this directory once per rebuild, and a derived spec is written
-    per dispatch, so recording each permitted write would add volume to the
-    trail without adding a decision to it -- the same reason
-    :func:`_decline_shared_agent_home` gives for not auditing its private-target
-    returns. It would also fire on a single-gateway install, which this change
-    is not meant to alter. The denial is the half with no other record and is
-    never throttled; the dedupe below covers the operator-facing WARNING only,
-    which repeats ~1/min for the process lifetime.
+    a source that did not make this call; both halves are recorded here instead,
+    under this source. The REFUSAL is recorded via the ``denied`` branch below;
+    an ADMITTED write that is not inside an already-admitted rebuild is recorded
+    via :func:`_audit_allowed_shared_write`. EVERY admitted shared-home write is
+    audited this way, including on a single-gateway (default-home) install -- the
+    permission grant for a per-dispatch write made outside the boot rebuild has
+    no other record, so leaving it unaudited would be a gap in the SEL trail. The
+    one admitted case that stays silent is a PRIVATE redirected target, which is
+    not a decision about the shared resource (the same reason
+    :func:`_decline_shared_agent_home` does not audit its private-target
+    returns). The rebuild's own grant is still audited once per rebuild and does
+    not reach the allowed branch (the ``_rebuild_spec_install_admitted`` arm
+    returns first), so there is no double-record. Neither half is throttled; the
+    dedupe below covers the operator-facing WARNING only, which repeats ~1/min
+    for the process lifetime.
     """
     try:
         if path.parent.resolve() != kiro_agents_dir_path().resolve():
             return False
     except OSError:
-        # An unresolvable parent is not a shared-dir write we can prove; the
-        # write below will fail on its own terms rather than be refused here.
-        return False
-    if _rebuild_spec_install_admitted:
+        # The parent could not be resolved, so we cannot PROVE this write lands
+        # outside the shared agents directory. Fail closed: a write we cannot
+        # clear is treated as a non-owned shared-home write and refused, rather
+        # than admitted on the unproven assumption it is private.
+        return True
+    if _rebuild_spec_install_admitted.get():
         # Inside a rebuild the guard already admitted. Asking again per write
         # would answer a DIFFERENT question than the rebuild's, because the
         # rebuild's own first spec changes what the temp-checkout arm sees --
-        # see ``_rebuild_spec_install_admitted``.
+        # see ``_rebuild_spec_install_admitted``. The rebuild has already emitted
+        # its own "allowed" agent_home_write event once, so emitting here too
+        # would double-count the same admitted transaction.
         return False
     if _decline_shared_agent_home(audit=False) is None:
+        # The write is admitted. Record the "allowed" half for the shared agents
+        # directory, so a derived-spec write admitted OUTSIDE a rebuild (e.g. a
+        # worker mirror re-derived on spawn after an app deregistration left it
+        # stale) is not a silent gap in the SEL trail -- the rebuild audits its
+        # own grant, but these per-dispatch writers reach this primitive on their
+        # own. A PRIVATE redirected target is exempt, not a decision about the
+        # shared resource, so it emits nothing (mirrors _decline_shared_agent_home,
+        # which does not audit its private-target returns). Best-effort: a lost
+        # audit record must never turn an allowed write into a failure.
+        _audit_allowed_shared_write(path)
         return False
     _warn_declined_home_once(
         "derived-spec",
@@ -463,6 +483,55 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     except Exception:  # noqa: BLE001 — a lost record must not turn a refusal into a write
         logger.debug("SEL audit unavailable for a refused shared write", exc_info=True)
     return True
+
+
+def _audit_allowed_shared_write(path: Path) -> None:
+    """Record the "allowed" half of an admitted derived-spec write, best-effort.
+
+    Called only from :func:`_declined_foreign_spec_write` when the write is
+    admitted (``_decline_shared_agent_home`` returned ``None``) and NOT inside an
+    already-admitted rebuild. It closes the audit gap a per-dispatch writer leaves
+    when it is admitted OUTSIDE the boot rebuild -- the worker mirror re-derived
+    on spawn after an app deregistration left it stale is the motivating case --
+    so that write carries an ``agent_home_write`` / ``allowed`` event under its
+    own source, matching the ``denied`` half this guard already records.
+
+    EVERY admitted shared-home write is recorded, including the default home.
+    This path is reached with ``audit=False`` passed to the shared decision, so
+    the decision itself emits nothing -- without this call the permission grant
+    for an admitted write made outside a rebuild would be unaudited, which is a
+    gap in the trail whether or not the home is the default one. The rebuild
+    already audits its own grant once per rebuild and does not reach here (the
+    ``_rebuild_spec_install_admitted`` arm returns earlier), so there is no
+    double-record.
+
+    A PRIVATE target is the one case that stays silent: ``_decline_shared_agent_home``
+    returns ``None`` for a redirected target the ambient environment would never
+    produce (a test ``tmp_path``, a relocated agents dir), and that is not a
+    decision about the shared resource -- the same reason that function does not
+    audit its private-target returns. The target is the shared one only when the
+    configured agents dir resolves to the ambient one; otherwise it is a private
+    redirect and we emit nothing.
+
+    Best-effort: any failure (an unresolvable path, an unavailable audit sink) is
+    swallowed, because an allowed write must never be turned into a failure by a
+    lost record -- the same contract the ``denied`` branch keeps.
+    """
+    try:
+        if kiro_agents_dir_path().resolve() != ambient_agents_dir().resolve():
+            # A private redirect, not the shared directory: no shared-resource
+            # decision was made here, so (like _decline_shared_agent_home's own
+            # private-target returns) emit nothing.
+            return
+        sel().log_api_access(
+            caller="system",
+            operation="agent_home_write",
+            outcome="allowed",
+            source="derived-spec",
+            resources=str(path.parent),
+        )
+    except Exception:  # noqa: BLE001 — a lost record must not turn an allowed write into a failure
+        logger.debug("SEL audit unavailable for an allowed shared write", exc_info=True)
 
 
 def write_owner_derived_spec(path: Path, data: dict) -> None:
@@ -3273,7 +3342,7 @@ def _existing_specs_are_mine(target: Path, own_home: Path | None) -> bool | None
 #: mirroring session_pid_sig's _report_signing_unavailable.
 _declined_home_warned: set[tuple[str, str]] = set()
 
-#: True only while a ``rebuild_agent_config`` call that the shared-home guard
+#: Set only while a ``rebuild_agent_config`` call that the shared-home guard
 #: ALREADY ADMITTED is still installing its specs. Read by
 #: :func:`_declined_foreign_spec_write` so the derived writes inside that
 #: rebuild are covered by the rebuild's own decision instead of re-deriving one
@@ -3289,11 +3358,22 @@ _declined_home_warned: set[tuple[str, str]] = set()
 #:
 #: This cannot widen the guard, because it is only ever set on the ALLOWED path:
 #: a rebuild the guard declines returns before reaching the flag and writes
-#: nothing. Cleared in a ``finally``, so it never outlives its own call and
-#: never leaks into a write made outside one -- a worker dispatch, a dashboard
-#: edit and the Connections mint all still ask the guard for themselves, which
-#: is the whole point of asking it at the primitive.
-_rebuild_spec_install_admitted = False
+#: nothing. Reset via its token in a ``finally``, so it never outlives its own
+#: call and never leaks into a write made outside one -- a worker dispatch, a
+#: dashboard edit and the Connections mint all still ask the guard for
+#: themselves, which is the whole point of asking it at the primitive.
+#:
+#: A ``ContextVar``, not a module global, so the exemption is scoped to the
+#: rebuild's OWN call stack rather than the whole process. ``rebuild_agent_config``
+#: is synchronous and the dashboard/dispatch writers reach the guard on worker
+#: threads via ``asyncio.to_thread``; each ``to_thread`` call runs the target in
+#: a COPY of the context taken when it was submitted, so a value set inside the
+#: rebuild's execution is confined to the rebuild's context and is NOT observed
+#: by a concurrent threaded writer -- that writer sees the default and consults
+#: the guard for itself, even if a config-watcher rebuild is in flight.
+_rebuild_spec_install_admitted: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_rebuild_spec_install_admitted", default=False
+)
 
 
 def _warn_declined_home_once(arm: str, target: Path, msg: str, *args: object) -> None:
@@ -3966,8 +4046,7 @@ def rebuild_agent_config(
     # write in the process -- a worker dispatch, a dashboard edit -- from the
     # guard this change exists to add.
     global _conductor_spec_held
-    global _rebuild_spec_install_admitted
-    _rebuild_spec_install_admitted = True
+    _rebuild_admitted_token = _rebuild_spec_install_admitted.set(True)
     try:
         # Install Kiro Crew AIM capabilities package (includes kirocrew-lite)
         _install_aim_capabilities()
@@ -4120,7 +4199,7 @@ def rebuild_agent_config(
         # Security: sanitize invalid hook keys in agent configs
         repair_agent_configs()
     finally:
-        _rebuild_spec_install_admitted = False
+        _rebuild_spec_install_admitted.reset(_rebuild_admitted_token)
 
     if dashboard_author_install_error is not None:
         # The independent repairs have run; now fail the rebuild. ``_wrote_out`` is left
