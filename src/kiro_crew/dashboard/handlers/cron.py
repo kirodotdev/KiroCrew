@@ -2924,6 +2924,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule_emb_generation,
             repo_scope,
             applies=applies,
+            # Stored lessons that still lack a vector are the standing repair
+            # sweep's to fill. Embedding them here is PRIORITY_BULK work with no
+            # deadline, queued behind every other bulk job, so it can hold this
+            # request past the MCP client's read timeout (``mcp_core._post``) while
+            # the write still lands later. Until the sweep fills such a row, both
+            # semantic checks (dedup here, the contradiction scan below) pass it
+            # over; the exact-rule, substring and keyword-overlap rules still apply
+            # to it.
+            defer_backfills=True,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and

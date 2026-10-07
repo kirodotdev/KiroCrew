@@ -1355,9 +1355,9 @@ def _transport_failure(message: str, mark: bool) -> dict:
     ``transport_error`` means acceptance is undetermined — the request may have
     reached the gateway before the response failed (a read timeout after spawn
     acceptance, say), so the caller must not declare a definite rejection nor
-    retry on its own. Only spawn_run's batch reconcile consumes it, and it only
-    ever posts, so the flag stays opt-in per verb rather than becoming a new field
-    on every reply.
+    retry on its own. Its readers (spawn_run's batch reconcile, the cron tool
+    proxy, learn_add) all post, so the flag stays opt-in per verb rather than
+    becoming a new field on every reply.
     """
     out: dict[str, object] = {"error": message}
     if mark:
@@ -1591,9 +1591,10 @@ def _post(
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    # ``transport_error`` is consumed only by spawn_run's batch reconcile: it
-    # means acceptance is unknown, so that member must not be declared lost.
-    # Other _post callers should treat the payload as a normal error.
+    # ``transport_error`` means acceptance is unknown. A caller that reads it
+    # (spawn_run's batch reconcile, the cron tool proxy, learn_add) must not
+    # report a definite failure; other _post callers treat the payload as a
+    # normal error.
     return _send(
         path,
         data=data,
