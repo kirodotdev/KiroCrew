@@ -10369,7 +10369,7 @@
         "model_downgraded": "要求 {{requested}}、実行 {{resolved}}",
         "model_effective": "{{model}} で実行中（バックエンドがモデルを選択）",
         "tool_calls": "ツール呼び出し",
-        "tool_calls_not_listed": "ほか {{count}} 件は表示されていません",
+        "tool_calls_not_listed_other": "以前の {{count}} 件の呼び出しは表示されていません",
         "waiting_for_output": "出力待機中…",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始を待機中 — 同時実行制限の後ろのキューに入っています",
         "workflows": "ワークフロー",

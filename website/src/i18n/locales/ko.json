@@ -10369,7 +10369,7 @@
         "model_downgraded": "요청 {{requested}}, 실제 {{resolved}}",
         "model_effective": "{{model}} 에서 실행 중 (백엔드가 모델 선택)",
         "tool_calls": "도구 호출",
-        "tool_calls_not_listed": "표시되지 않은 항목 {{count}}개",
+        "tool_calls_not_listed_other": "표시되지 않은 이전 호출 {{count}}개",
         "waiting_for_output": "출력 대기 중…",
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다",
         "workflows": "워크플로",
