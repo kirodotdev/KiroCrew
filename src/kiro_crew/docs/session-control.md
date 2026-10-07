@@ -859,6 +859,48 @@ Rate limits are per caller, per verb, over a 300-second window: **20** session
 creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
 them: 500 live sessions, 50 per creator, 500 folders.
 
+## Combining two chats
+
+There is no Combine button. Two chats are combined by one of them, the
+**giver**, handing its context to a fork of the other, the **taker**, with the
+tools above. The giver curates what to pass on instead of pasting a transcript,
+so the result costs the taker a few turns, not the giver's whole history.
+
+The person starts it by asking in the giver chat, for example: *"Combine what
+you know into `chat-3`. Fork it and tell the fork what it needs."* The giver
+then runs:
+
+1. `session_fork(source=<taker>, title="Merged: …")` — a new third session
+   holding a copy of the taker's transcript. Both source chats stay as they are.
+2. `session_send(target=<fork>, message=…)` — the giver introduces itself and
+   hands over the first part of what it judges relevant. The fork reads it as a
+   user turn tagged with the giver's session.
+3. `session_read_message(target=<fork>, since=…)` — read the reply, answer its
+   questions, and send the next part. Repeat 2 and 3 until nothing relevant is
+   left, then tell the person the fork's key.
+
+To combine more than two chats, combine pairwise: a merged session is an
+ordinary session, so it can be the `source` of the next fork. Nothing automates
+the tree; each merge is one giver running the three steps.
+
+What carries over is **conversation only**:
+
+- The fork is bound to the **taker's** agent, model and memory store (see
+  `session_fork` above). Nothing is copied from the giver's memory store or
+  lessons, and no tool does that.
+- What the giver writes in its messages becomes part of the fork's transcript,
+  so anything it shares is readable there, under the taker's memory boundary.
+  Hand over the work, not secrets or another store's private notes.
+- Two chats on the same agent already share one memory store, so for them
+  conversation is the only thing that was ever separate.
+
+The giver's agent must mount `kirocrew-dashboard` (see the top of this page).
+The usual reach rules apply, because forking is a read of the taker: same
+workspace, a source that is not incognito, temporary, app-scoped or
+channel-linked, and a giver that is an eligible creator. A crew member's DM
+session reaches only sessions it created, so it cannot be the giver for an
+unrelated chat.
+
 ## This or `spawn_run`?
 
 Both run work in parallel. They differ in who owns the result and whether the
