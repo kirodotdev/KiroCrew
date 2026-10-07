@@ -77,15 +77,15 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // Recorded whether or not the thread is on screen: the `chat_done`
       // badge for a member thread asks "did this turn say anything", and a
       // row the user watched arrive still counts as said.
-      if (data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)) noteMemberThreadRow(data.slot, data.role)
+      if (data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)) noteMemberThreadRow(data.slot, data.role, data.meta?.notice)
       // Recorded on or off screen, like the member record: the turn's
       // `chat_done` reads it to exempt a failed turn from the mute.
       if (data.slot) noteTurnErrorRow(data.slot, data)
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
         const slots = store.getState().dashboard.slots
         const marks = isMemberThreadSlot(slot, slots)
-          ? memberThreadRowMarksUnread(data.role)
-          : chatMessageMarksUnread(data.role)
+          ? memberThreadRowMarksUnread(data.role, data.meta?.notice)
+          : chatMessageMarksUnread(data.role, data.meta?.notice)
         // Criterion 7: a session muted by its creator never becomes
         // unread from its own activity. This is the chat_message half of the
         // two automatic markSlotUnread sites; turnCompletion.ts has the other.
