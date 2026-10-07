@@ -79,14 +79,14 @@ describe('JobForm reconciles the agent picker when the project directory switche
       .mockResolvedValueOnce({
         agents: [{
           name: 'repo-a-bot', kiro_agent: 'repo-a-bot', workspace: 'repo-a', memory_store: 'repo-a',
-          description: 'repo A agent', source: 'project',
+          description: 'repo A agent', source: 'project', scope: 'project',
         }],
         default_agent: '',
       })
       .mockResolvedValueOnce({
         agents: [{
           name: 'repo-b-bot', kiro_agent: 'repo-b-bot', workspace: 'repo-b', memory_store: 'repo-b',
-          description: 'repo B agent', source: 'project',
+          description: 'repo B agent', source: 'project', scope: 'project',
         }],
         default_agent: '',
       })
@@ -220,6 +220,75 @@ describe('JobForm reconciles the agent picker when the project directory switche
       expect(screen.getByLabelText('Switch agent')).not.toHaveTextContent('repo-a-bot'),
     )
     expect(screen.getByTestId('jobform-agent-reset-note')).toHaveTextContent('repo-a-bot')
+  })
+
+  /** The project roster for `/Users/you/projects/repo`: one folder agent, and no
+   *  installed shared template, which the project endpoint never lists. */
+  function mockRepoRoster() {
+    vi.mocked(api.kirocrewAgents).mockResolvedValue({
+      agents: [{
+        name: 'repo-bot', kiro_agent: 'repo-bot', workspace: 'repo', memory_store: 'repo',
+        description: 'repo agent', source: 'project', scope: 'project',
+      }],
+      default_agent: '',
+    })
+  }
+
+  /** Waits until the project roster has reached the picker, which happens in the
+   *  same effect run that reconciles the saved pick against it. */
+  async function waitForProjectRoster() {
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+    await waitFor(() => expect(screen.getByRole('option', { name: /repo-bot/ })).toBeInTheDocument())
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
+  }
+
+  const sharedTemplate: KiroCrewAgent = {
+    name: 'shared-tpl', kiro_agent: 'shared-tpl', workspace: 'default', memory_store: 'default',
+    description: 'installed template', source: 'kirocrew',
+  }
+  const boundJob = () => messageJob({ agent: 'shared-tpl', project_path: '/Users/you/projects/repo' })
+  const formProps = (overrides: Partial<ComponentProps<typeof JobForm>>) => ({
+    job: boundJob(), defaultAgent: '', onSaved: () => {}, layout: 'vertical' as const, ...overrides,
+  })
+
+  it('keeps a saved template while the global catalog is pending, and after it then fails', async () => {
+    // GPT 6.1 Review: the project roster settled before the global catalog,
+    // omitted the template, and the pick was cleared; a later catalog failure
+    // left it cleared, so saving any unrelated edit stored the default agent.
+    mockRepoRoster()
+    const { rerender } = renderWithProviders(<JobForm {...formProps({ agents: [] })} />)
+    await waitForProjectRoster()
+
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+
+    const failure = { reloading: false, onReload: () => {} }
+    rerender(<JobForm {...formProps({ agents: [], rosterFailure: failure })} />)
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+
+    rerender(<JobForm {...formProps({ agents: [sharedTemplate] })} />)
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('shared-tpl')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+  })
+
+  it('keeps and saves a runtime-owned template that no loaded catalog lists', async () => {
+    // GPT 6.1 Review: an installed runtime-owned template (`kirocrew-lite`) is
+    // accepted by the backend resolver but omitted by both pickers' catalogs,
+    // so catalog absence cleared it and an unrelated save stored `agent_id: ''`.
+    // Catalog absence is not a resolution failure; only a pick the previous
+    // folder defined is cleared.
+    mockRepoRoster()
+    vi.mocked(api.updateCron).mockResolvedValue({} as never)
+    const job = messageJob({ agent: 'kirocrew-lite', project_path: '/Users/you/projects/repo' })
+    renderWithProviders(<JobForm {...formProps({ job, agents: [builtInAgent] })} />)
+    await waitForProjectRoster()
+
+    expect(screen.getByLabelText('Switch agent')).toHaveTextContent('kirocrew-lite')
+    expect(screen.queryByTestId('jobform-agent-reset-note')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(api.updateCron).toHaveBeenCalledWith('j1', expect.objectContaining({ agent: 'kirocrew-lite' }))
   })
 
   it('keeps a globally valid pick when the global catalog fails but project B loads it', async () => {

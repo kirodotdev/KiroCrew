@@ -378,15 +378,11 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // JobForm's roster work even for the common case of no project_path set.
   // This only does anything once a path is actually present.
   const [projectAgents, setProjectAgents] = useState<KiroCrewAgent[]>([])
-  // Mirror of `projectAgents` for the clear-on-unbind effect below. That effect
-  // must know which names the FOLDER contributed, but it cannot depend on the
-  // state: its `!projectPath` branch calls `setProjectAgents([])` with a fresh
-  // array every run, so listing `projectAgents` as a dependency would re-fire
-  // it forever. A ref is never stale and needs no dependency entry.
-  const projectAgentsRef = useRef<KiroCrewAgent[]>([])
-  useEffect(() => {
-    projectAgentsRef.current = projectAgents
-  }, [projectAgents])
+  // Keep successful scope evidence across loading/error gaps, which empty the
+  // displayed roster. The pickers' catalogs are not the resolver: they omit
+  // runtime-owned templates the backend still runs, so absence from them proves
+  // nothing. Only a loaded project row establishes folder dependence.
+  const lastLoadedProjectAgentsRef = useRef<KiroCrewAgent[]>([])
   // Separate from the form-wide `error` (validation failures on Save): a
   // background roster fetch failing must not borrow that channel, which
   // (1) auto-scrolls the page to the bottom-of-form notice on every set,
@@ -430,7 +426,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // anyway, since an unusable path and a usable one with no agents are the same
   // 200 -- only that the name is resolvable again and the user has not chosen
   // since. A ref rather than state: the effect that writes it must not re-run on
-  // it, exactly as `projectAgentsRef` above.
+  // it, exactly as `lastLoadedProjectAgentsRef` above.
   const editClearedAgentRef = useRef('')
   // A deliberate pick supersedes the reset bookkeeping above: the notice now
   // describes nothing the user can still act on, and the remembered name is no
@@ -492,21 +488,22 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       // without the folder the name resolves to nothing and the run would
       // silently take the default agent's prompt, tools, and permissions.
       //
-      // Decide on POSITIVE knowledge, not absence: clear the name when
-      // `projectAgents` -- the folder's own roster, still holding its
-      // pre-clear value on this render because React state updates are not
-      // synchronous -- is what contributed it. Testing "not in the global
-      // roster" instead was wrong twice over: an empty global roster is
+      // Decide on POSITIVE knowledge, not absence: clear the name only when
+      // the last successfully loaded folder roster contributed it as a
+      // project row. The displayed roster can be empty while a directory
+      // query is in flight, so it is not the evidence. Absence from the
+      // global roster proves nothing either: an empty global roster is
       // legitimate (a project-only install, and `CrewWakeSection` passes
       // `agents={[]}` deliberately), and app agents under `~/.kiro/agents/`
-      // are dispatchable without ever appearing in it, so absence proves
-      // nothing. A project agent that shares a global agent's name is left
-      // alone -- the global one survives the folder being cleared, matching
-      // effectiveAgents' own dedup-by-name rule.
+      // are dispatchable without ever appearing in it. A project agent that
+      // shares a global agent's name is left alone -- the global one survives
+      // the folder being cleared, matching effectiveAgents' dedup-by-name rule.
+      const lastLoadedProjectAgents = lastLoadedProjectAgentsRef.current
+      lastLoadedProjectAgentsRef.current = []
       setAgent(a => {
         const cleared = !!(
           a
-          && projectAgentsRef.current.some(p => p.scope === 'project' && p.name === a)
+          && lastLoadedProjectAgents.some(p => p.scope === 'project' && p.name === a)
           && !agents.some(g => g.name === a)
         )
         setAgentResetReason('project-cleared')
@@ -578,20 +575,18 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     setProjectRosterError('')
     // Switching from folder A to folder B: the agent selected under A may
     // not exist under B at all. Reconcile against the union of the NEW
-    // project roster and the global roster (mirrors the `!projectPath`
-    // branch's own rule above) -- a name recognized by either is left
-    // alone, everything else is cleared back to default. Without this,
-    // save persists an agent name B's project cannot resolve, and the
-    // scheduled fire silently falls back to the default agent's prompt,
-    // tools, and permissions with no error surfaced anywhere.
+    // project roster and the global roster -- a name recognized by either is
+    // left alone. Without this, save persists an agent name B's project
+    // cannot resolve, and the scheduled fire silently falls back to the
+    // default agent's prompt, tools, and permissions with no error surfaced.
+    // Absence from both proves nothing (neither catalog lists every template
+    // the resolver accepts), so only a pick with positive evidence of depending
+    // on the previous folder is cleared.
+    const previousProjectAgents = lastLoadedProjectAgentsRef.current
+    lastLoadedProjectAgentsRef.current = newProjectAgents
     setAgent(a => {
-      // A name either roster recognizes is resolvable under this project --
-      // `newProjectAgents` is the successfully loaded WHOLE roster for it,
-      // including global rows, so this also preserves a valid global pick when
-      // the separate global-catalog request failed and the `agents` prop is
-      // empty. The old `agents.length > 0` guard tried to protect that transient
-      // failure, but also retained a project-A-only pick after project B had
-      // authoritatively loaded without it.
+      // A loaded roster proves presence. The project endpoint lists configured
+      // members and project definitions, not every installed global template.
       const known = (n: string) =>
         agents.some(g => g.name === n) || newProjectAgents.some(g => g.name === n)
       const restorable = editClearedAgentRef.current
@@ -608,7 +603,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         setAgentResetFrom('')
         return restorable
       }
-      const cleared = !!(a && !known(a))
+      const dependedOnProject = previousProjectAgents.some(p => p.scope === 'project' && p.name === a)
+      const cleared = !!(a && !known(a) && dependedOnProject)
       if (cleared) editClearedAgentRef.current = a
       setAgentResetReason('not-in-project')
       // Announced, not just performed (UX Review): the reset is correct, but
@@ -1340,11 +1336,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       <div ref={errorRef}>
         <ErrorNotice message={error} />
       </div>
-      {/* Portals at z-[9999] via createPortal — reused rather than
-       *  reimplemented so this folder picker is IDENTICAL to every other
-       *  project-directory picker in the app (chat's own, FolderConfigModal's). */}
+      {/* Share the directory picker while joining the host dialog's layer stack. */}
       {pickerOpen && (
         <ProjectPicker
+          modal
           open={true}
           onOpenChange={o => { if (!o) setPickerOpen(false) }}
           anchorRef={browseRef}

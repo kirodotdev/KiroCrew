@@ -892,6 +892,22 @@ restore is pending the notice is WITHHELD from the `''` write rather than erased
 erasing it is the same defect as the double-run above, leaving an operator whose
 finished path never does define the name with no acknowledgment at all.
 
+**Catalog absence does not invalidate a saved pick.** Neither picker catalog is
+the resolver: the project roster endpoint omits installed templates, and the
+global catalog omits runtime-owned templates the backend still runs. So whether
+the global catalog is pending, failed or loaded, a directory change clears a pick
+only when a successfully loaded project roster positively identified it as
+`scope: "project"` and neither current roster resolves it. The form retains that
+scope evidence across loading and error gaps, independently of the displayed
+roster. A same-named global entry keeps the selection valid.
+
+**The directory picker joins the schedule dialog's modal layer.** In this form
+it uses a modal Radix Popover, with a viewport-positioned portal outside the
+translated dialog content. Pointer input, focus and dismissal belong to the
+picker while it is open: a directory icon or row can be selected even where it
+extends beyond the dialog, without closing the dialog or discarding its draft.
+Standalone and non-Radix-modal ProjectPicker callers retain their own layer.
+
 **Session reuse tracks which definition won.** A persistent job reuses its
 session, so `_cron_session_binding` records the resolved identity — the folder,
 the resolved agent, the crew alias, and which source answered — and resets the
