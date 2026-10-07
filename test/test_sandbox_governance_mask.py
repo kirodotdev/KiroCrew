@@ -354,6 +354,8 @@ class TestSecretsAreMaskedInEveryMode:
         "data.sqlite3-wal",
         "data.sqlite3-shm",
         "data.sqlite3-journal",
+        # Executable hook state: no in-sandbox reader, gateway fires it.
+        "hooks.json",
     )
 
     @_POSIX_ONLY
