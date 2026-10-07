@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
-import BranchSwitcher from './BranchSwitcher'
+import BranchSwitcher from './LazyBranchSwitcher'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import { errMessage } from '../utils/thunkError'
@@ -144,7 +144,8 @@ interface GitPanelProps {
    *  collapsed section; the open state itself stays here, since it is partly
    *  derived from this section's own status query. */
   onOpenChange?: (projectDir: string, open: boolean) => void
-  /** True while this chat's response runs: a checkout would change files under the turn. */
+  /** True while this chat's response runs: a checkout would change files under
+   *  the turn, so the header branch control copies the name instead of switching. */
   busy?: boolean
 }
 
@@ -332,7 +333,7 @@ export default function GitPanel({ projectDir, onFileOpen, section, onOpenChange
                   <BranchSwitcher
                     projectDir={projectDir}
                     branch={status?.branch}
-                    disabledReason={busy ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
+                    switchBlocked={busy}
                   />
                 </span>
               ) : (

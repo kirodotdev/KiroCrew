@@ -23,6 +23,10 @@ vi.mock('../api/client', () => ({ api: H.api }))
 import GitPanel from '../components/GitPanel'
 import { namedCeiling } from './namedCeiling'
 
+// The header trigger sits behind LazyBranchSwitcher's import() boundary, which a cold,
+// coverage-instrumented run can take well past the 1s default to resolve.
+const LAZY_SWITCHER_TIMEOUT = { timeout: 5000 }
+
 const PROJECT = '/workspace/project'
 
 /** One open section, as the Git tab's list renders a repository the user is
@@ -237,24 +241,31 @@ describe('GitPanel repository state', () => {
     expect(screen.queryByText('Not a Git repository')).toBeNull()
   })
 
-  it('turns the header branch switcher off while the chat response runs', async () => {
+  it('keeps the header branch copyable, not switchable, while the chat response runs', async () => {
     mount(true, { busy: true, branchSwitch: true })
 
-    const trigger = await screen.findByTestId('branch-switcher-trigger')
-    expect(trigger).toBeDisabled()
-    expect(trigger).toHaveAttribute('title', 'Stop the current response to switch branch')
+    // Waits for the status query, then React.lazy -> import('./BranchSwitcher') -> the trigger.
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    expect(trigger).toHaveAccessibleDescription('Copy branch name. To switch branch, first stop the response with ■ next to Send.')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
   })
 
   it('leaves the header branch switcher on when the chat is idle', async () => {
     mount(true, { branchSwitch: true })
 
-    expect(await screen.findByTestId('branch-switcher-trigger')).toBeEnabled()
+    // Waits for the status query, then React.lazy -> import('./BranchSwitcher') -> the trigger.
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'switch')
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox')
   })
 
   it('keeps the switcher out of the toggle, which still covers and describes the status line', async () => {
     mount(false, { branchSwitch: true })
 
-    const trigger = await screen.findByTestId('branch-switcher-trigger')
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
     const toggle = screen.getByTestId('git-repo-toggle')
     // A button cannot nest in a button: the switcher is the toggle's sibling.
     expect(toggle).not.toContainElement(trigger)
