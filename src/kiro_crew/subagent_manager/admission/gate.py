@@ -1094,16 +1094,15 @@ class _GateMixin(ManagerComponent):
                     **_task_audit,
                 },
             )
-            memory_detail = (
-                unknown_note
-                if lane_held
-                else (
-                    f"{unknown_note}; need {min_mem:.1f} GB"
-                    if unknown_usage
-                    else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
+            if lane_held:
+                memory_detail = unknown_note
+            elif unknown_usage:
+                memory_detail = f"{unknown_note}; need {min_mem:.1f} GB"
+            else:
+                memory_detail = (
+                    f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
                     f"({candidate_price or 0.0:.2f} GB for this start)"
                 )
-            )
             # A floor wait carries no pressure clock (the hold below is not
             # evaluated for it): one an earlier hold started is dropped, so time
             # spent below the floor never counts toward the hold's bound.
