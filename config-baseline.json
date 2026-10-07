@@ -8812,6 +8812,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.approval_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Approval Mode",
+      "help": "Tool approval for this crewmate's own Crewmates-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.display_name",
       "kind": "core",
       "type": "string",

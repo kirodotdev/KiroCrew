@@ -72,6 +72,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
         "starred",
+        # Shipped on GET /api/members (the profile card's own read), not here:
+        # the crew editor echoes this row back, and must not round-trip it.
+        "approval_mode",
     }
 )
 

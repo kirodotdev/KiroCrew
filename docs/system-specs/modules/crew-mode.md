@@ -1068,6 +1068,29 @@ per-visit flag that starts closed and is reset whenever the panel docks, and
 the opener always stays. The panel chord toggles only while a crewmate is
 open.
 
+The Profile tab holds the crewmate's own settings (`CrewProfileSettings`):
+permission (Normal / Reads / Trust), model and effort. They are changed there,
+never in the chat. Each pick writes the crew record (`approval_mode`, `model`,
+`reasoning_effort` on `PUT /api/agents/{name}`) and then the live DM slot, so
+the open thread follows at once. `approval_mode` is `""` until the user picks
+one; only then does `POST /api/members/{slug}/thread` open the thread in
+`trust`. A stored choice is applied as stored, a grant already on the slot is
+kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
+YOLO is never a crewmate setting: it is process-global.
+The permission PUT is compare-and-set: the profile sends
+`expected_approval_mode` (the value it last read), and the server refuses a
+stale write with 409 `approval_mode_conflict` carrying the stored value, which
+the profile then shows. An applied write also moves the crewmate's live DM
+slot, in the same handler and under the same config lock, through
+`apply_approval_mode` (the mutation half of `POST /api/chat/mode`); the browser
+never writes a thread's permission. The profile locks its pickers while the
+thread is opening or refused.
+
+The DM's composer is `CrewComposer`, handed to `ChatPane` as `composerInput`.
+It is the shared `ChatInput` (text, attachments, send / stop / steer, queue)
+without the session toolbar line: no agent, model or effort chip, no context
+meter, no approval picker. The ordinary chat composer is unchanged.
+
 Placement is decided when the card opens, and two things revisit it. A window
 that crosses below `md` while the card holds its column re-places it as the
 floating card — kept open, not dropped — so no fixed-width aside stands on a

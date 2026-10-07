@@ -449,6 +449,11 @@ async def api_members(request: web.Request) -> web.Response:
                 "memory_version": version,
                 "memory_owner": _roster_mask(owner),
                 "model": _roster_mask(agent_cfg.model),
+                # The profile card's own settings. The effort is free text like
+                # the model; the approval mode is load-time coerced to a fixed
+                # vocabulary ("" = never chosen, which opens the thread in trust).
+                "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
+                "approval_mode": agent_cfg.approval_mode,
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than
@@ -1460,7 +1465,50 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
         await asyncio.to_thread(_emit_binding)
 
+    if not slot._member_approval_seeded:
+        # Re-read, not the snapshot loaded at entry: a profile pick saved during
+        # the awaits above must decide the seed. No await between this read and
+        # the seed, so a later pick's slot write always lands after it.
+        fresh = await asyncio.to_thread(KiroCrewConfig.load)
+        crew = fresh.agents.get(member_name)
+        if crew is not None:
+            _seed_member_approval(state, slot, crew.approval_mode)
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
+
+
+def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
+    """Give a crewmate's thread the approval mode its profile names, once per live slot.
+
+    ``mode`` is the crew record's ``approval_mode``; ``""`` means the user never
+    chose one, and the thread opens in ``trust``. A slot that already holds a
+    grant keeps it, and the seed runs once per in-memory slot, so a later change
+    on this slot (the profile's own write, an approval card's "trust this
+    session") stands. Slot trust is not persisted: a restart seeds again from
+    the record, which is where the profile writes the user's choice.
+    """
+    if slot._member_approval_seeded:
+        return
+    slot._member_approval_seeded = True
+    effective = mode or "trust"
+    if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
+        return
+    key = effective_session_key(slot)
+    for sharing in state._slots.values():
+        if effective_session_key(sharing) == key:
+            if effective == "trust":
+                sharing._trust = True
+            else:
+                sharing._trust_reads = True
+    state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
+    try:
+        _sel().log_api_access(
+            caller="dashboard:member_profile",
+            operation=f"mode_change:{effective}",
+            outcome="enabled",
+            resources=slot.key,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.warning("SEL audit failed for member approval seed", exc_info=True)
 
 
 async def api_member_projections(request: web.Request) -> web.Response:

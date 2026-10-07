@@ -123,7 +123,7 @@ describe('CrewProfilePanel rail (Tablist labels="active")', () => {
 })
 
 describe('CrewProfilePanel Profile tab', () => {
-  it('is a summary with doors: description, memory, workspace folder, notes, permissions, model', () => {
+  it('is a summary with doors: description, memory, workspace folder, notes', () => {
     const h = setup()
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
     expect(screen.getByTestId('crew-profile-description')).toHaveTextContent(/Watches the on-call queue/)
@@ -132,7 +132,6 @@ describe('CrewProfilePanel Profile tab', () => {
     // NAME, not a path, so nothing is taken off it.
     expect(screen.getByTestId('crew-profile-workspace')).toHaveTextContent('oncall-desk')
     expect(within(screen.getByTestId('crew-profile-workspace')).getByTitle('oncall-desk')).toBeInTheDocument()
-    expect(screen.getByTestId('crew-profile-model')).toHaveTextContent('Auto')
 
     const memory = screen.getByTestId('crew-profile-memory')
     const workspace = screen.getByTestId('crew-profile-workspace')
@@ -147,10 +146,16 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(workspace).not.toHaveClass('border-dashed')
     fireEvent.click(workspace)
     expect(h.onOpenFiles).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByTestId('crew-profile-permissions'))
-    fireEvent.click(screen.getByTestId('crew-profile-model'))
     fireEvent.click(screen.getByRole('button', { name: 'Edit crewmate' }))
-    expect(h.onEdit).toHaveBeenCalledTimes(3)
+    expect(h.onEdit).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws the host settings (permission, model, effort) in place of editor doors', () => {
+    setup({ settingsBody: <div data-testid="host-settings">host settings</div> })
+    expect(within(screen.getByTestId('crew-profile-pane-profile')).getByTestId('host-settings')).toBeInTheDocument()
+    // Changed right here now, so the card no longer sends them to the editor.
+    expect(screen.queryByTestId('crew-profile-permissions')).toBeNull()
+    expect(screen.queryByTestId('crew-profile-model')).toBeNull()
   })
 
   it('says there is no description instead of rendering an empty card', () => {

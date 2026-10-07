@@ -194,12 +194,21 @@ vi.mock('../../utils/terminalRegistry', () => ({
 }))
 vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
+// The profile settings write the live slot; the stub shows which slot the page
+// handed it, so a refused thread is proven to get none.
+vi.mock('./CrewProfileSettings', () => ({
+  default: ({ slotKey, waiting }: { slotKey?: string | null; waiting?: boolean }) => (
+    <div data-testid="profile-settings-slot" data-waiting={waiting ? '1' : '0'}>{slotKey ?? ''}</div>
+  ),
+}))
+/** The page's own composer, read lazily so the ChatPane stub can compare identity. */
+const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 /* ChatPane is the full chat stack (WS, Redux slot machinery). The page's own
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void }) => (
-    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter, composerInput }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void; composerInput?: unknown }) => (
+    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
       {slotKey}
       {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
     </div>
@@ -825,6 +834,7 @@ describe('MembersPage thread', () => {
   })
 
   it('opens the pinned DM thread on click: creates the thread and mounts the chat stack on its slot', async () => {
+    CrewComposerRef.current = (await import('./CrewComposer')).default
     await renderPage()
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
@@ -843,6 +853,9 @@ describe('MembersPage thread', () => {
     // A send while the member is working gets the main chat's Steer / Queue /
     // Jev auto split, so the Members page must NOT ask for 'steer-only'.
     expect(pane).toHaveAttribute('data-busy-mode', 'split')
+    // The Crew page draws its own composer (no model / effort / permission /
+    // context toolbar), not the ordinary chat one.
+    expect(pane).toHaveAttribute('data-crew-composer', '1')
     // The pin is an invariant of every member thread, so the header does NOT
     // announce it — no chip, no term for a state that cannot be otherwise.
     expect(screen.queryByTestId('member-pin-chip')).toBeNull()
@@ -1236,6 +1249,50 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await waitFor(() => expect(screen.getByTestId('member-identity-pill')).toHaveTextContent('research'))
     expect(screen.queryByTestId('crew-face-flight')).toBeNull()
     expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('the profile settings write only the confirmed thread slot', async () => {
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    // The card opens on Sessions (#18245); the settings live on the Profile tab.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profile' }))
+    // Awaits the lazy CrewProfileSettings import under the opened Profile card.
+    const settings = await screen.findByTestId('profile-settings-slot', undefined, PANE_READY)
+    expect(settings).toHaveTextContent('member-oncall')
+    expect(settings).toHaveAttribute('data-waiting', '0')
+  })
+
+  it('a refused thread hands the profile settings no slot, even with a cached key', async () => {
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('member_slot_conflict') })
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    // The card opens on Sessions (#18245); the settings live on the Profile tab.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profile' }))
+    // Awaits the lazy CrewProfileSettings import, then the refused POST.
+    await screen.findByTestId('profile-settings-slot', undefined, PANE_READY)
+    await waitFor(() => expect(screen.getByTestId('profile-settings-slot')).toBeEmptyDOMElement(), PANE_READY)
+    // No confirmed thread, so the pickers wait instead of saving a record the
+    // thread would not follow.
+    expect(screen.getByTestId('profile-settings-slot')).toHaveAttribute('data-waiting', '1')
+  })
+
+  it('a first open still in flight makes the profile settings wait', async () => {
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    // Never answers: the thread stays unconfirmed for the whole test.
+    const pending = new Promise<never>(() => {})
+    await renderPage([row({ bound: false, slot_key: '' })], 'kirocrew', { thread: pending as unknown as Record<string, unknown> })
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    // The card opens on Sessions (#18245); the settings live on the Profile tab.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profile' }))
+    // Awaits the lazy CrewProfileSettings import under the opened Profile card.
+    const settings = await screen.findByTestId('profile-settings-slot', undefined, PANE_READY)
+    expect(settings).toBeEmptyDOMElement()
+    expect(settings).toHaveAttribute('data-waiting', '1')
   })
 
   it('opening the side panel folds a docked profile away and restores the pill', async () => {

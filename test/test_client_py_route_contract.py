@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_approve
+from kiro_crew.dashboard.chat_handlers import (
+    api_chat_mode,
+    api_chat_slot_approve,
+    apply_approval_mode,
+)
 from kiro_crew.dashboard.handlers.cron import api_crons, api_lessons
 from kiro_crew.dashboard.handlers.memory import api_memory_episodic_search
 from kiro_crew.dashboard.handlers.messaging import api_spawn_list
@@ -246,10 +250,14 @@ def test_gateway_response_envelopes_match_client_reads(handler: object, key: str
     ("client_constant", "handler"),
     [
         ("_SLOT_APPROVAL_ACTIONS", api_chat_slot_approve),
-        ("_APPROVAL_MODES", api_chat_mode),
+        # The handler checks the caller, then hands the mutation to
+        # apply_approval_mode (shared with the crewmate profile write).
+        ("_APPROVAL_MODES", (api_chat_mode, apply_approval_mode)),
     ],
 )
 def test_gateway_approval_vocabulary_matches_client(client_constant: str, handler: object) -> None:
     client_values = _client_frozenset(client_constant)
-    missing = client_values - _executable_string_literals(handler)
+    handlers = handler if isinstance(handler, tuple) else (handler,)
+    handled = set().union(*(_executable_string_literals(h) for h in handlers))
+    missing = client_values - handled
     assert not missing, f"{client_constant} values missing from Gateway handler: {sorted(missing)}"

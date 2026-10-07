@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
@@ -11,6 +11,7 @@ import type { ThreadHooks } from '../app-sdk/messageRenderers'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
+import type { ChatInputProps } from './chat-input/props'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat } from './chat/crewmateBubbles'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
@@ -132,6 +133,7 @@ export default function ChatPane({
   onSplitDown,
   onOpenFull,
   agentLocked,
+  composerInput: ComposerInput = ChatInput,
   frameless,
   followContentWidth,
   hideEmptyHint,
@@ -162,6 +164,10 @@ export default function ChatPane({
    *  the agent picker is not offered at all, instead of offering a control
    *  whose every selection the backend 409s. */
   agentLocked?: boolean
+  /** The input the pane's composer draws, fed every ChatInput prop. Absent:
+   *  the ordinary ChatInput. The Crewmates page passes its own CrewComposer,
+   *  which reuses ChatInput without the session toolbar line. */
+  composerInput?: ComponentType<ChatInputProps>
   /** Split view: this pane owns the surface's top-left corner, where the shell
    *  keeps the sessions-sidebar toggle. `inset` reserves that toggle's column
    *  (desktop: the toggle is the shell's absolutely positioned button, and the
@@ -2025,7 +2031,7 @@ export default function ChatPane({
           voice={composerVoiceOptions}
           pastes={composerPastes}
         >
-        <ChatInput
+        <ComposerInput
           value={input}
           onChange={handleUserInput}
           onSend={doSend}

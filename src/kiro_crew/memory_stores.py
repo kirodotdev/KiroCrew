@@ -1466,6 +1466,14 @@ def retire_unpublished_allocation(
     return removed
 
 
+class MemberApprovalConflict(Exception):
+    """The stored ``approval_mode`` is not the one the writer read."""
+
+    def __init__(self, current: str) -> None:
+        super().__init__("the permission changed since it was read")
+        self.current = current
+
+
 @memory_store_namespace_lock()
 def persist_member_config(
     config,
@@ -1474,6 +1482,7 @@ def persist_member_config(
     create: bool = False,
     expected_store=None,
     changed_fields: set[str] | None = None,
+    expected_approval_mode: str | None = None,
 ) -> None:
     """Atomically publish a member and its ownership while retaining other writes.
 
@@ -1548,6 +1557,17 @@ def persist_member_config(
                 raise UnknownMemoryStore(
                     f"Crew Member {member!r} memory changed concurrently; reload the roster"
                 )
+        if expected_approval_mode is not None and not create:
+            # Compare-and-set against the record on disk, inside the
+            # cross-process lock: a CLI or other-process write that landed
+            # after the caller loaded its snapshot wins, and this one is refused.
+            from kiro_crew.config.sections import coerce_member_approval_mode
+
+            stored_mode = coerce_member_approval_mode(
+                current.get("approval_mode") if isinstance(current, dict) else None
+            )
+            if stored_mode != expected_approval_mode:
+                raise MemberApprovalConflict(stored_mode)
         if (
             isinstance(current, dict)
             and current.get("member_id")

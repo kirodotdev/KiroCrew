@@ -5415,6 +5415,7 @@ def build_config(
                     # collapse to "" (inherit) rather than travel to the
                     # provider, where kiro-cli rejects the whole overlay.
                     reasoning_effort=coerce_effort(crew.get("reasoning_effort")),
+                    approval_mode=_sections.coerce_member_approval_mode(crew.get("approval_mode")),
                     display_name=(
                         raw_display_name
                         if isinstance(raw_display_name, str)

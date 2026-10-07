@@ -2773,6 +2773,7 @@ class _ChatSlot:
         "_trust",
         "_trust_scope",
         "_trust_reads",
+        "_member_approval_seeded",
         "_trusted_patterns",
         "_titled",
         "_title_origin",
@@ -3230,6 +3231,8 @@ class _ChatSlot:
         # the decision — ``safety_override().is_scope_active()`` is.
         self._trust_scope: str = ""
         self._trust_reads: bool = False  # auto-approve read-only bash commands
+        # A crewmate thread took its profile's approval mode (members handler).
+        self._member_approval_seeded: bool = False
         self._trusted_patterns: set[str] = set()  # session-scoped fnmatch globs
         self._titled: bool = False  # True once a title has been assigned
         # Provenance of the current title: "auto" (LLM auto-titler or its

@@ -9293,6 +9293,34 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
 
+    return await apply_approval_mode(
+        state,
+        mode=mode,
+        slot=slot,
+        slot_key=slot_key,
+        request_app=request_app,
+        cron_creator=cron_creator,
+        audit_caller=audit_caller,
+    )
+
+
+async def apply_approval_mode(
+    state: DashboardState,
+    *,
+    mode: str,
+    slot: _ChatSlot | None,
+    slot_key: str | None,
+    request_app: str,
+    cron_creator: str,
+    audit_caller: Callable[[str], str],
+) -> web.Response:
+    """Apply an approval mode to ONE resolved slot (or every slot when ``slot`` is None).
+
+    The mutation half of ``POST /api/chat/mode``, after every caller check has
+    passed. Shared with the crewmate profile write (``PUT /api/agents/{name}``),
+    which applies the stored permission to the crewmate's live DM slot through
+    this same path rather than a copy of it.
+    """
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
     # every OTHER slot out of YOLO too. That is how a programmatic per-slot

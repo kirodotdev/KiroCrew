@@ -472,6 +472,16 @@ def coerce_fallback_model(raw: object) -> str:
     return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
 
 
+#: The approval modes a crewmate's own record may pin. ``yolo`` is absent on
+#: purpose: it is process-global, never a property of one crewmate.
+MEMBER_APPROVAL_MODES = ("normal", "trust_reads", "trust")
+
+
+def coerce_member_approval_mode(raw: object) -> str:
+    """Normalize ``agents.<name>.approval_mode``: a known mode, else ``""`` (unset)."""
+    return raw if isinstance(raw, str) and raw in MEMBER_APPROVAL_MODES else ""
+
+
 def coerce_refusal_fallback_model(raw: object) -> str:
     """Normalize the content-filter fallback model (agent.refusal_fallback_model).
 
@@ -3544,6 +3554,15 @@ class KiroCrewAgentConfig:
             "its role effort). A per-session pick still overrides this. Only "
             "reasoning-capable models accept a level; on any other model the pin "
             "is ignored, exactly as the global default is.",
+        ),
+    )
+    approval_mode: str = field(
+        default="",
+        metadata=_meta(
+            "Approval Mode",
+            "Tool approval for this crewmate's own Crewmates-page thread: normal, "
+            "trust_reads or trust. Empty means the user never chose one, and the "
+            "thread opens in trust.",
         ),
     )
     display_name: str = field(

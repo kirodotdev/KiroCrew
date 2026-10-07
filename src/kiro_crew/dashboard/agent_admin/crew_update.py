@@ -68,6 +68,38 @@ def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
     return (crew.kiro_agent, coerce_effort(crew.reasoning_effort))
 
 
+async def _apply_member_approval_to_live_thread(request: web.Request, name: str, mode: str) -> None:
+    """Put crewmate ``name``'s live DM slot on ``mode`` through ``/api/chat/mode``'s path."""
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard.chat_handlers import apply_approval_mode
+
+    state = request.app.get("state")
+    if state is None:
+        return
+    slot = next(
+        (
+            s
+            for s in list(state._slots.values())
+            if s.mode == members_mod.DM_SLOT_MODE and s.agent == name
+        ),
+        None,
+    )
+    if slot is None:
+        # No live thread: the next thread open seeds from the record.
+        return
+    await apply_approval_mode(
+        state,
+        mode=mode,
+        slot=slot,
+        slot_key=slot.key,
+        request_app="",
+        cron_creator="",
+        audit_caller=lambda label: "dashboard:member_profile",
+    )
+    # The thread now holds the record's choice; the open-time seed must not redo it.
+    slot._member_approval_seeded = True
+
+
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     """PUT /api/agents/{name} — update a Kiro Crew agent."""
 
@@ -204,6 +236,26 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     # bad `starred` with an avatar promotion would otherwise move the staged
     # picture and then 400 without rolling it back. Strictly a bool: a string
     # "false" from a hand-typed request must not read as truthy and star the crew.
+    # Local: ``compose`` rebinds this module's functions onto the agents
+    # handler namespace, so a module-level import here is not in scope.
+    from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+
+    if "approval_mode" in body and body["approval_mode"] not in MEMBER_APPROVAL_MODES:
+        return web.json_response(
+            {
+                "error": "approval_mode must be one of " + ", ".join(MEMBER_APPROVAL_MODES),
+                "code": "invalid_approval_mode",
+            },
+            status=400,
+        )
+    if "expected_approval_mode" in body and not isinstance(body["expected_approval_mode"], str):
+        return web.json_response(
+            {
+                "error": "expected_approval_mode must be a string",
+                "code": "invalid_expected_approval_mode",
+            },
+            status=400,
+        )
     if "starred" in body and not isinstance(body["starred"], bool):
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
@@ -323,6 +375,25 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above; "" is the inherit sentinel and clears a pin.
             agent.reasoning_effort = body["reasoning_effort"].strip()
             changed.append("reasoning_effort")
+        if "approval_mode" in body:
+            # Compare-and-set: the profile sends the value it last read, and a
+            # write made from a stale read is refused with the current value,
+            # so the server, not the browser, decides which pick wins. Checked
+            # under the config lock against the record loaded inside it.
+            expected_mode = body.get("expected_approval_mode")
+            if expected_mode is not None and expected_mode != agent.approval_mode:
+                return web.json_response(
+                    {
+                        "error": "the permission changed since it was read",
+                        "code": "approval_mode_conflict",
+                        "approval_mode": agent.approval_mode,
+                    },
+                    status=409,
+                )
+            # Validated above. Only ever a real choice: the profile never sends
+            # "" back, so a pinned mode cannot fall back to the trust default.
+            agent.approval_mode = body["approval_mode"]
+            changed.append("approval_mode")
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
@@ -467,11 +538,31 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         # arrive after the drained worker published the new avatar pin. Store
         # cleanup independently checks the current locked config, so a landed
         # memory binding survives even when the request was cancelled.
+        from kiro_crew.memory_stores import MemberApprovalConflict
+
+        expected_on_disk = body.get("expected_approval_mode") if "approval_mode" in body else None
         try:
             await _drained_to_thread(
                 lambda: persist_member_config(
-                    cfg, name, expected_store=prior_memory_store, changed_fields=set(changed)
+                    cfg,
+                    name,
+                    expected_store=prior_memory_store,
+                    changed_fields=set(changed),
+                    expected_approval_mode=expected_on_disk,
                 )
+            )
+        except MemberApprovalConflict as conflict:
+            # Lost to a write from another process: nothing was saved and the
+            # live thread is not touched.
+            if _avatar_promoted:
+                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
+            return web.json_response(
+                {
+                    "error": "the permission changed since it was read",
+                    "code": "approval_mode_conflict",
+                    "approval_mode": conflict.current,
+                },
+                status=409,
             )
         except BaseException as exc:
             if isinstance(exc, Exception) and _avatar_promoted:
@@ -481,6 +572,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
         if _remove_files_after_save:
             await _drained_to_thread(_remove_avatar_files, name)
+        if "approval_mode" in changed:
+            # The server owns both writes: the crewmate's live DM thread takes
+            # the saved permission here, under the same config lock as the
+            # compare-and-set above, so no browser write can land out of order.
+            await _apply_member_approval_to_live_thread(request, name, agent.approval_mode)
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:
