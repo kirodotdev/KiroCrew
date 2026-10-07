@@ -182,6 +182,7 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
         return refusal
     visible_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
     data["runs"] = [r for r in data["runs"] if r.get("source") in visible_sources]
+    data["running"] = any(row.get("running") for row in data["runs"])
     for run in data["runs"]:
         if run.get("error"):
             run["error"] = redact_exfiltration_urls(run["error"])[0]
