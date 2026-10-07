@@ -66,9 +66,10 @@ export function fileDownloadUrl(filePath: string): string {
 
 /** Fetch a file's raw bytes through /api/file-download and hand them to the
  * browser as a save-to-disk. THE ONE transport for retrieving a project file
- * onto the machine running the dashboard: the markdown panel's Download and
- * the file-tree row's Download both call it, so the browser-download dance has
- * one owner.
+ * onto the machine running the dashboard. The markdown panel, file tree,
+ * transcript diffs and file-path menus all call it, so the credential gate the
+ * endpoint applies (a positive scan aborts with 400) covers every caller, and
+ * the browser-download dance has one owner.
  *
  * The failure copy lives HERE, not in each caller: both passed the identical
  * string, so the helper owns it. Any non-2xx answer (an invalid or
