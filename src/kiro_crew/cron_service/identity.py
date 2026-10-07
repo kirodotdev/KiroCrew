@@ -61,7 +61,10 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """
     if job.persistent_session:
         msg = job.message
-        if job.last_result:
+        # A result composed inside a project may carry private content. Once
+        # unbound, seeding the next prompt would stamp derived output unbound,
+        # so only a real False carries; malformed or unknown is withheld.
+        if job.last_result and (job.project_path or job.last_result_project_bound is False):
             last = job.last_result
             if job.minimal_context and len(last) > 2000:
                 last = "[truncated]…" + last[-2000:]

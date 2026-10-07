@@ -1627,11 +1627,28 @@ template namespace even if discovery has imported a same-named member.
 `selection_kind="member"` requires the configured alias instead of falling back
 to a same-named template. Both still report an unavailable explicit selection
 through `requested_resolved=False`; neither flag authorizes member memory.
+Neither flag is the member opt-out from the project override: within a bound
+`project_dir` a project's own `.kiro/agents` definition of an alias's
+`kiro_agent` TEMPLATE beats that alias for a `"member"` selection exactly as for
+an unqualified one (a file sharing only the alias's NAME displaces nothing: the
+alias dispatches its template, the only name kiro-cli resolves), and the winner
+resolves as a project-only agent (`requested_resolved=True`,
+`resolved_source="project"`, `selection_kind="template"`, `default_agent`'s
+bindings on the Global store — never the shadowed member's private store). Only
+`allow_project_override=False`, which member-bound cron jobs pass, opts out of
+that override. A project file colliding with either the selected alias or its
+effective provider-template name is then a named refusal rather than a
+resolution (see [learn-cron-dashboard](learn-cron-dashboard.md)).
 Dashboard callers obtain this choice from the canonical session execution record
 described in [session](session.md#agent-selection-provenance).
 The session resolver rejects a different agent name when a execution record
 exists. Live provider switches publish their validated template choice before
 history changes; ordinary resolution cannot replace provenance from metadata.
+
+An ordinary caller's probe therefore judges the alias's template alone, and the
+member opt-out judges the alias name and its template together. The cron fire
+also re-checks the template it DISPATCHES off its carrier; see
+[learn-cron-dashboard](learn-cron-dashboard.md).
 
 Rung 2 exists because an app's agents are materialized into `~/.kiro/agents/` by
 `bridges._register_agents` under a namespaced FILENAME (`<app>--<agent>.json`)

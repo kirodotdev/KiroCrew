@@ -1206,6 +1206,7 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
     "kiro_crew/dashboard/chat_threads.py": [("thread_reply", "dashboard")],
     "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
+    "kiro_crew/slack/gateway.py": [("cron_fire", "cron"), ("cron_fire", "cron")],
     "kiro_crew/spawn_warm.py": [("spawn_warm", "unknown")],
 }
 

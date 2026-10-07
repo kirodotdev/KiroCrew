@@ -1608,21 +1608,39 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
                 FAILED), so it takes the shared surface with the 'Last Error'
                 label as its title. `whitespace-pre-wrap` on the notice body
                 keeps the log's line structure; `font-mono` keeps it reading as
-                output rather than prose.
+                output rather than prose -- styling that applies to a script's
+                captured output, while a skip reason is one prose sentence and is
+                left as prose.
 
-                NOT gated on `script`: a `command` job fails the same way and
-                carries the same `last_error`, and gating the only in-page
-                surface on the job's TYPE left that reader with the row's
-                `title=` tooltip alone -- invisible on touch, unreadable to a
-                screen reader, and no hand-off. The failure decides the
-                surface, never the shape of the job that produced it. */}
+                NOT gated on `script`, for two reasons. A `command` job fails the
+                same way and carries the same `last_error`. And a message job's
+                skip reason -- an agent that no longer resolves, a bound directory
+                that vanished, a project file shadowing a Crew Member -- is written
+                to this same field and is the only signal the operator gets, since
+                those skips deliberately spend no auto-pause strike. Gated on the
+                job's TYPE, the only in-page surface collapsed to the row's
+                `title=` tooltip: invisible on touch, unreadable to a screen
+                reader, no signal at all in the desktop app, and no hand-off. The
+                failure decides the surface, never the shape of the job that
+                produced it. */}
             {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  // `shrink-0` is load-bearing, not cosmetic: `DialogBody` is a
+                  // scrolling flex column, and per the flexbox spec a flex item
+                  // whose `overflow` is not `visible` gets an automatic minimum
+                  // size of ZERO — so this notice's own `overflow-y-auto` let the
+                  // form above it squeeze it to a single clipped 18px line. The
+                  // screenshot harness caught that; it renders its full height
+                  // now and scrolls within its own 200px cap as intended.
+                  className={
+                    job.script
+                      ? 'shrink-0 max-h-[200px] overflow-y-auto font-mono'
+                      : 'shrink-0 max-h-[200px] overflow-y-auto'
+                  }
                   testId="schedule-job-last-error"
                 />
               </>

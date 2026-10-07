@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, resolve_agent_bindings
 from kiro_crew.context import ContextBuilder
 from kiro_crew.cron import (
+    _UNSET,
     CronPendingMismatch,
+    CronProjectBoundDenied,
     CronStoreBusy,
     CronStoreUnreadable,
     is_valid_timezone,
@@ -49,11 +51,14 @@ from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     require_owner_dashboard_request,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    project_output_visible_to_non_owner,
+)
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
-from kiro_crew.history import is_incognito_transcript
+from kiro_crew.history import is_incognito_transcript, transcript_sort_key
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -74,7 +79,12 @@ from kiro_crew.project_scope import (
     scope_selector_is_inadmissible,
 )
 from kiro_crew.secrets import SecretVault
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+    resolve_project_path,
+)
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
     ALLOWED_LESSON_SCOPES,
@@ -110,6 +120,7 @@ from ._shared import (
 )
 
 if TYPE_CHECKING:
+    from kiro_crew.cron import CronJob
     from kiro_crew.learn import Lesson, LessonStore
 
 _T = TypeVar("_T")
@@ -201,6 +212,197 @@ def _redacted_grant_map(m: dict[str, str]) -> dict[str, str] | None:
         )[0]
         for k, v in m.items()
     }
+
+
+def _redacted_run_text(value: str, *, owner_view: bool, withhold: bool = False) -> str:
+    """Redact — or, for ``withhold``, fully clear — a run-outcome free-text
+    field for the reader who will see it.
+
+    ``last_error`` / ``last_result`` and the history rows built from them
+    (``summary`` / ``error`` / ``trace``) are the one family of serialized cron
+    fields whose content the fire does not compose: the LLM path stores
+    ``str(exc)`` verbatim and the agent's own reply verbatim. The
+    credential/exfiltration passes every sibling field takes do not strip a
+    local filesystem path, and one writer genuinely composes one — the
+    fail-closed macOS voice-runtime spawn guard
+    (:func:`sandbox.assert_voice_runtime_outside_agent_workspace`) raises a
+    ``RuntimeError`` naming the agent's workspace, which for a project-bound
+    job IS ``job.project_path``. So the folder the project-path owner gate
+    exists to keep from a non-owner rode out through this field instead
+    (CWE-209).
+
+    A skip REASON (``last_error`` / history ``error``) stays READABLE to a
+    non-owner rather than being owner-gated: for the three project-bound skips
+    it is the only diagnosis there is, and those skips deliberately spend no
+    auto-pause strike, so nothing else escalates (see the disclosure table in
+    ``docs/system-specs/modules/learn-cron-dashboard.md``). Only the host
+    paths inside it are stripped, and only for a non-owner — the owner is the
+    operator, whose own surfaces (owner view's ``project_path``, the log line,
+    the SEL record) already carry the folder, and whose script-job traceback
+    would lose its most useful line to an unconditional pass.
+
+    An agent REPLY (``last_result`` / history ``summary`` / ``trace``) is a
+    different risk: it is not composed by the fire path at all, so it can
+    quote arbitrary content the agent read while running inside a private
+    project directory — a path-only strip leaves that content on the wire.
+    ``withhold=True`` (passed by the caller when the reply was produced by a
+    project-bound run — decided from the run's own persisted ``project_bound``
+    provenance, OR-ed with the live binding for a still-live job, NEVER from
+    ``job.project_path`` alone, which the owner can clear while the reply
+    survives) clears the text to empty for a non-owner instead of merely
+    stripping paths from it, on the same reasoning ``project_path`` itself is
+    owner-gated rather than redacted. It has no effect for the owner, who
+    still gets the text verbatim.
+    """
+    if withhold and not owner_view:
+        return ""
+    text, _ = redact_exfiltration_urls(value)
+    text, _ = redact_credentials(text)
+    if not owner_view:
+        text, _ = redact_local_paths(text)
+    return text
+
+
+def _live_job_result_is_project_bound(job: "CronJob") -> bool:
+    """Whether a LIVE job's retained ``last_result`` is project-bound for a
+    non-owner disclosure gate.
+
+    The live ``project_path`` alone is the WRONG source: the retained reply was
+    composed by the run that produced it, and the owner can clear the binding
+    on the still-live job while that reply — which may quote content read from
+    the now-unbound private directory — survives. Gating on the live field
+    un-withholds it the instant the binding is cleared (CWE-209).
+
+    The newest HISTORY ROW is the wrong source for the mirror reason: a row
+    describes its OWN run, while ``last_result`` can outlive the run that
+    produced it. A result-less AGENT run carries the prior reply forward
+    (``clear_carried_result`` clears only for ``command``/``script``) and stamps
+    its own row from the live, by-then-unbound job, so a newest-row read answers
+    unbound while the retained text is still a bound run's reply — with no
+    recovery, since every later poll reads that same row.
+
+    The answer comes from the stamp that travels WITH the text:
+    ``CronJob.last_result_project_bound``, written by ``set_run_result`` under
+    the binding the result was produced under, carried through the merge beside
+    ``last_result``, and cleared with it. Bound if the job is currently
+    project-bound OR its retained result was produced bound. This reads one
+    in-memory field, so it is safe on the event loop and cannot be defeated by
+    a missing, pruned or aged-out history row.
+    """
+    return bool(job.project_path) or bool(job.last_result_project_bound)
+
+
+#: How many of a job's newest run records the per-entry transcript filter reads.
+#: Generous against the store's own per-job retention so an ordinary job is
+#: covered whole. A transcript row older than the oldest record this page can
+#: see is unattributable and therefore WITHHELD, so a page shorter than the
+#: retention only ever withholds MORE than a longer one would -- never less.
+_TRANSCRIPT_PROVENANCE_RUN_PAGE = 500
+
+
+def _run_window_ts(value: Any) -> float:
+    """A run record's window bound as a float, or ``0.0`` when it is not one.
+
+    The records are JSON, so a field can hold anything; ``bool`` is excluded
+    because it is an ``int`` subclass and ``True`` would otherwise read as the
+    epoch one second after 1970.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+async def _non_owner_transcript_rows(
+    state: "DashboardState",
+    job_id: str,
+    history: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """The rows of a cron transcript a NON-OWNER may be replayed, and whether
+    this job has any project-bound run on record.
+
+    ``to-chat`` replays the whole ``cron:{id}`` transcript, which is
+    CUMULATIVE, while the result gate above it answers for the LATEST result
+    only. A job that ran project-bound, had its binding cleared, then ran
+    unbound passes that gate -- and the replay still carries the bound run's
+    output. Provenance is per-run, so the replay is filtered per-run rather
+    than gated as a whole.
+
+    The transcript rows carry no provenance of their own, and none can be
+    back-filled onto rows already written. It is DERIVED instead: a run record
+    states its own ``started_at``/``finished_at`` window and whether it fired
+    bound (``CronRunRecord.project_bound``), so a row whose timestamp falls
+    inside an UNBOUND run's window is that run's output and may be served.
+    Timestamps are read through :func:`transcript_sort_key`, the same primitive
+    every other consumer orders a transcript by, so this filter and the renderer
+    agree on what a stamp means -- including a legacy naive value, which it
+    resolves to its local offset exactly as the writer that produced it did.
+
+    Fail-closed in the same direction as the gate above: the kept set is what
+    this read can PROVE unbound, never what it fails to prove bound. So a row
+    is withheld when it falls inside a bound window, when it falls in NO window
+    at all (slot chatter no run accounts for), when its stamp will not parse,
+    and when it predates the oldest record this read can see. An empty or
+    degraded run read proves nothing either way, so it withholds everything,
+    and a transcript is NEVER served whole: with no bound window on record the
+    rows a retained unbound window covers are still all that is served, because
+    retention prunes a bound RECORD while its rows survive. A bound run whose
+    window cannot be placed could account for any row, so it too withholds
+    everything.
+
+    The second return value says whether a bound run is on record, which the
+    deleted-job branch needs: with the job gone its notification body is the
+    one payload carrying no provenance at all and no live stamp to consult, so
+    "cannot tell" has to mean withhold there too. An EMPTY transcript is not
+    exempt: a ``hide_in_chat`` job writes none, yet its bound runs still left a
+    notification body behind, so it reports the run records' own verdict.
+    """
+    runs, _total = await state.crons.get_history().get_job_history(
+        job_id, limit=_TRANSCRIPT_PROVENANCE_RUN_PAGE, offset=0
+    )
+    if not runs:
+        # Not evidence of a job that never ran bound: the records are capped
+        # per job and the read degrades to empty on an unreadable store, while
+        # the transcript survives either way.
+        return [], True
+    bound_windows: list[tuple[float, float]] = []
+    unbound_windows: list[tuple[float, float]] = []
+    for run in runs:
+        started = _run_window_ts(run.get("started_at"))
+        finished = _run_window_ts(run.get("finished_at"))
+        project_bound = run.get("project_bound", False)
+        if not isinstance(project_bound, bool):
+            # A disclosure bit the writer cannot produce is not evidence that
+            # any transcript row is safe.
+            return [], True
+        if project_bound:
+            if started <= 0:
+                return [], True
+            # An unfinished bound run is open-ended rather than empty: its
+            # output is still arriving, so everything at or after its start is
+            # withheld until a finish is on record.
+            bound_windows.append((started, finished if finished >= started else float("inf")))
+        elif started > 0 and finished >= started:
+            unbound_windows.append((started, finished))
+    if not history:
+        return [], bool(bound_windows)
+    kept: list[dict[str, Any]] = []
+    for row in history:
+        # Explicit row provenance outranks the run-window fallback: a current
+        # timestamp cannot relabel retained bound content as unbound. Only a
+        # dict can carry the marker.
+        if isinstance(row, dict) and not project_output_visible_to_non_owner(row):
+            continue
+        bucket, epoch = transcript_sort_key(str(row.get("ts") or ""))
+        if bucket != 0:
+            continue
+        if any(start <= epoch <= end for start, end in bound_windows):
+            continue
+        if any(start <= epoch <= end for start, end in unbound_windows):
+            kept.append(row)
+    # Same verdict as the empty-transcript exit: the flag says whether a BOUND
+    # run is on record. A read that saw runs and found none bound must not
+    # refuse -- the fail-closed cases already returned early.
+    return kept, bool(bound_windows)
 
 
 def _cron_unreadable_response(exc: CronStoreUnreadable) -> web.Response:
@@ -792,6 +994,76 @@ async def _refuse_foreign_app_job(
     return None
 
 
+async def _agent_unresolvable_response(
+    agent_id: str,
+    project_path: str,
+    member_id: str,
+) -> web.Response | None:
+    """400 when *agent_id* names an agent nothing can dispatch, else ``None``.
+
+    The save-time half of the twice-checked rule: a job whose agent cannot be
+    resolved is refused here, and re-checked at every fire (both cron paths in
+    ``slack/gateway.py``), so a name that was valid at save and later removed is a
+    skipped run with an error rather than a silent fall back to the default agent.
+
+    Resolved through the SAME resolver dispatch uses, deliberately NOT the
+    ``/api/agents`` roster listing: that listing is ``config.agents`` plus a
+    project's own files, and it OMITS app-registered agents (materialized into
+    ``~/.kiro/agents/`` under a namespaced filename and never added to
+    ``config.agents``), so a roster-membership test would reject a perfectly
+    dispatchable app-bound job.
+
+    Three shapes stay deliberately valid:
+
+    * **An empty agent** means "the default", which always resolves.
+    * **A member-bound job** is skipped entirely -- its ``agent_id`` is the crew
+      member's PROVIDER TEMPLATE rather than a selectable name, and the member
+      itself is validated against ``config.agents`` by ``resolve_cron_memory``
+      before the job can ever persist.
+    * **``agent_sequence``** is not settable through these handlers (it is
+      response-only here), so it is validated at fire time only.
+
+    ``allow_project_override`` mirrors the fire path so save and fire agree on
+    which definition answers; the resolver call does filesystem I/O and is
+    therefore offloaded off the event loop. The folder is resolved through
+    ``resolve_project_path`` first -- the same ``realpath(expanduser)`` the store
+    persists and ``GET /api/agents?project_path=`` lists from -- because the raw
+    value may be ``~``-prefixed, and the discovery layer joins ``.kiro/agents``
+    onto whatever string it is handed: a literal ``~/...`` becomes a relative
+    directory named ``~`` and refuses the very agent the picker just offered.
+    """
+    if not agent_id or member_id:
+        return None
+
+    def _resolves() -> bool:
+        cfg = KiroCrewConfig.load()
+        project_dir = resolve_project_path(project_path).resolved if project_path else None
+        return resolve_agent_bindings(
+            cfg,
+            agent_id,
+            project_dir,
+            validate_memory_files=False,
+            allow_project_override=not member_id,
+        ).requested_resolved
+
+    try:
+        if await asyncio.to_thread(_resolves):
+            return None
+    except Exception:
+        # A probe failure must not block a save: the fire-time check is the
+        # guarantee, and refusing a legitimate edit because a config read
+        # transiently failed is the worse failure mode.
+        logger.debug("Save-time agent validation failed for %r", agent_id, exc_info=True)
+        return None
+    safe_agent, _ = redact_credentials(redact_exfiltration_urls(agent_id)[0])
+    if project_path:
+        safe_path, _ = redact_credentials(redact_exfiltration_urls(project_path)[0])
+        detail = f"Agent {safe_agent!r} not found in project directory {safe_path!r}"
+    else:
+        detail = f"Agent {safe_agent!r} is not a configured agent"
+    return web.json_response({"error": detail, "code": "unknown_agent"}, status=400)
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
@@ -838,10 +1110,53 @@ async def api_crons_create(request: web.Request) -> web.Response:
             body, "source_template_prompt", max_len=MAX_CRON_MESSAGE
         )
         member_id = validate_string_field(body, "member_id", max_len=MAX_SHORT_STRING)
+        project_path = validate_string_field(body, "project_path", max_len=MAX_SHORT_STRING)
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     if not name or not message:
         return web.json_response({"error": "name and message required"}, status=400)
+    # project_path binds the job's agent to an arbitrary cwd at fire time, so
+    # it carries the same owner-authorization boundary as the agents-roster
+    # `project_path` query param (handlers/agents.py): an allow-listed
+    # non-owner dashboard token (app == "", which sails through every app-
+    # token check) must not be able to create a job that later reads and
+    # returns another project's files just by naming its path. Both the
+    # denial and the allowed owner decision are audited -- an unaudited
+    # allow is indistinguishable from a gate that was never evaluated, and
+    # the allowed path is the common case a real owner takes every day.
+    if project_path:
+        if not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.create.project_path",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=project_path,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron create project_path denial", exc_info=True
+                )
+            return web.json_response(
+                {
+                    "error": "project_path requires owner authorization",
+                    "code": "project_path_owner_required",
+                },
+                status=403,
+            )
+        else:
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.create.project_path",
+                    outcome="allowed",
+                    source="dashboard",
+                    resources=project_path,
+                )
+            except Exception:
+                logger.debug("SEL logging failed for cron create project_path allow", exc_info=True)
     every = body.get("every")
     if not every and not cron_expr and schedule:
         # Treat schedule string as cron expr if 5-field, else as interval
@@ -912,6 +1227,14 @@ async def api_crons_create(request: web.Request) -> web.Response:
             # "auto" sentinel (canonical key with no pinned provider id):
             # explicit inherit — same as leaving model unset.
             model_val = ""
+    # Validate the agent BEFORE add_job, for the same reason as model above: a
+    # rejected value must not leave an orphaned job that a retried create would
+    # duplicate. Resolved through the resolver, not the roster -- see the helper.
+    _agent_err = await _agent_unresolvable_response(
+        agent_id or "", project_path or "", member_id or ""
+    )
+    if _agent_err is not None:
+        return _agent_err
     # Build the job FULLY-FORMED in a single locked add_job_async transaction.
     # Passing every optional field into the locked build+persist (rather than
     # mutating the returned job and calling a bare, unlocked `_save()`) closes
@@ -937,6 +1260,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         # own copy. Both "" for a blank create. Never gate execution.
         "source_preset": (source_preset or ""),
         "source_template_prompt": (source_template_prompt or ""),
+        "project_path": (project_path or ""),
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
@@ -1126,6 +1450,35 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # A project-bound job's message/agent/schedule can be rewritten and later
+    # fired with `job.project_path` as its execution cwd -- gating only the
+    # `project_path` field itself (below) protected the BINDING but not the
+    # already-bound JOB: a non-owner could edit an owner-bound job's message
+    # (ungated) or trigger it (api_cron_run, also ungated) and read that
+    # project's files without ever touching project_path. So this checks the
+    # PERSISTED job's binding up front, before any field is applied, and
+    # requires owner authorization for the update AS A WHOLE whenever a
+    # binding already exists -- caught by review. The case where THIS body
+    # is newly requesting a project_path is checked separately below, AFTER
+    # validate_string_field, so a malformed (non-string) project_path from a
+    # non-owner still surfaces its proper 400 rather than being masked by
+    # this 403 -- the stored `project_path` is always a validated string
+    # already, so no such ordering hazard applies to it.
+    #
+    # Decided by the STORE, under the same lock as the write
+    # (``refuse_project_bound`` -> CronProjectBoundDenied -> the 403 below),
+    # not from a read here. Two reasons, and the weaker one is the contract:
+    # test_cron_chat_folder.py::test_the_handler_makes_no_extra_read_of_its_own
+    # pins that this handler issues no query of its own, because a second read
+    # re-opens the race the locked update's transition sink exists to close. The
+    # stronger one is that the authorization itself is sounder atomically: a
+    # caller-side snapshot is decided outside the lock the mutation later takes,
+    # so a concurrent owner bind landing in that gap let a non-owner's
+    # already-cleared request execute against a binding nobody checked it
+    # against. That is a TOCTOU the precondition removes outright rather than
+    # patching with a compare-and-swap.
+    _is_owner_request = is_owner_dashboard_request(request)
+    existing_job = None
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -1232,8 +1585,120 @@ async def api_cron_update(request: web.Request) -> web.Response:
             safe_tz, _ = redact_credentials(redact_exfiltration_urls(tz_val)[0])
             return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
         kwargs["timezone"] = tz_val
+    if "project_path" in body:
+        # Same validator as create (isinstance(str) + sanitize + length cap)
+        # so PATCH cannot diverge from POST: a non-string JSON project_path
+        # (array/object/number) would otherwise reach `.strip()` unguarded
+        # here and raise AttributeError -> HTTP 500 instead of a clean 400.
+        # Deliberately validated BEFORE the owner check below: a malformed
+        # non-owner request must still surface its proper 400, not a 403
+        # that masks the real problem.
+        try:
+            validated_project_path = validate_string_field(
+                body, "project_path", max_len=MAX_SHORT_STRING
+            )
+        except ValidationError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_project_path"}, status=400
+            )
+        # The job-level gate above already covers a job with an EXISTING
+        # binding. This covers the other half: a non-owner newly SETTING a
+        # binding on a job that has none yet. An owner's field submission is
+        # audited by PRESENCE, not by the validated value's truthiness, because
+        # an empty string clears the existing project scope and is the same
+        # privileged field transition as setting one.
+        if validated_project_path and not _is_owner_request:
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.update.project_path",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=validated_project_path,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron update project_path denial", exc_info=True
+                )
+            return web.json_response(
+                {
+                    "error": "project_path requires owner authorization",
+                    "code": "project_path_owner_required",
+                },
+                status=403,
+            )
+        if _is_owner_request:
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.update.project_path",
+                    outcome="allowed",
+                    source="dashboard",
+                    resources=validated_project_path,
+                )
+            except Exception:
+                logger.debug("SEL logging failed for cron update project_path allow", exc_info=True)
+        kwargs["project_path"] = validated_project_path
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
+    # Re-validate the agent only when THIS edit moves the binding (the agent
+    # itself or the folder it resolves against). Validating every edit would trap
+    # a job whose agent was deleted out from under it: renaming it, or clearing
+    # the stale agent, would be refused by the stale agent it is trying to fix.
+    # Effective values merge the patch over the stored job, since a PATCH is
+    # partial and either half may be the unchanged one.
+    binding_field_submitted = "agent_id" in kwargs or "project_path" in kwargs
+    binding_moved = False
+    if binding_field_submitted:
+        # A PATCH is partial, so compare each submitted binding component with
+        # the persisted value before deciding whether this edit changes what
+        # resolves. The dashboard submits the selected agent on every edit;
+        # equality is not a binding move and must not make an unrelated edit
+        # depend on a stale agent still resolving.
+        existing_job = await state.crons.get_job_async(job_id)
+        if existing_job is None:
+            return web.json_response(
+                {"error": "job not found", "code": "job_not_found"}, status=404
+            )
+        binding_moved = (
+            "agent_id" in kwargs and kwargs["agent_id"] != (existing_job.agent_id or "")
+        ) or (
+            "project_path" in kwargs and kwargs["project_path"] != (existing_job.project_path or "")
+        )
+    # The probe's refusal names the folder it resolved against, and a non-owner
+    # is refused any edit of a bound job by the store below (403) -- so for that
+    # caller the probe must not run at all: answered first, its 400 hands over
+    # the very `project_path` the list endpoint withholds from a non-owner, and
+    # its 400-vs-403 split answers whether the folder declares the submitted
+    # name. A non-owner's edit of an UNBOUND job is still probed: there is no
+    # folder in play, and the wording has none. The store re-decides the binding
+    # under its lock either way, so a bind landing between this read and the
+    # write is refused there, and an unbind landing in that gap leaves the edit
+    # to the fire-time check, which is the guarantee (see the helper).
+    if binding_moved:
+        assert existing_job is not None
+        if _is_owner_request or not existing_job.project_path:
+            _agent_err = await _agent_unresolvable_response(
+                kwargs.get("agent_id", existing_job.agent_id or "") or "",
+                kwargs.get("project_path", existing_job.project_path or "") or "",
+                kwargs.get("member_id", existing_job.member_id or "") or "",
+            )
+            if _agent_err is not None:
+                return _agent_err
+    # The owner-authorization decisions above were made against a SNAPSHOT
+    # (`existing_job`) read outside any lock; the actual mutation below
+    # acquires the store's lock separately. A concurrent owner bind/unbind
+    # landing in that gap would let a non-owner's already-cleared request
+    # execute against a binding it was never actually checked against --
+    # closed by re-verifying the same field atomically, under the lock,
+    # immediately before the write: an owner's own request needs no such
+    # guard (their authorization does not depend on the binding's value).
+    if not _is_owner_request:
+        # A precondition rather than a compare-and-swap: with no caller-side read
+        # there is no snapshot to swap against, and the store decides the refusal
+        # under its own lock. See the note at the top of this handler.
+        kwargs["refuse_project_bound"] = True
     try:
         job = await _persist_holding_folder(
             state,
@@ -1242,6 +1707,28 @@ async def api_cron_update(request: web.Request) -> web.Response:
         )
     except _ChatFolderGone:
         return _unknown_chat_folder_response()
+    except CronProjectBoundDenied:
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.update.project_bound_job",
+                outcome="denied",
+                source="dashboard",
+                resources=job_id,
+                error="not owner",
+            )
+        except Exception:
+            logger.debug(
+                "SEL logging failed for cron update project-bound-job denial",
+                exc_info=True,
+            )
+        return web.json_response(
+            {
+                "error": "updating a project-bound job requires owner authorization",
+                "code": "project_bound_job_owner_required",
+            },
+            status=403,
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -1250,6 +1737,27 @@ async def api_cron_update(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    if _is_owner_request and job.project_path:
+        # The allow half of the project-bound gate, which SEL records on BOTH
+        # outcomes so the trail shows who was permitted and not only who was
+        # refused (sel.md). Read off the COMMITTED job rather than a pre-read
+        # snapshot -- the binding it names is the one the update actually ran
+        # against, and no query of this handler's own is needed for it. An edit
+        # that CLEARS the binding is audited by the project_path branch above
+        # instead, which owns every change to the field itself.
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.update.project_bound_job",
+                outcome="allowed",
+                source="dashboard",
+                resources=job_id,
+            )
+        except Exception:
+            logger.debug(
+                "SEL logging failed for cron update project-bound-job allow",
+                exc_info=True,
+            )
     # The job's chat tab follows a folder change, AFTER the store commits -- so a
     # refused or busy save never moves a tab for a change that did not land. The
     # sink is filled only when this update actually changed the field, so an
@@ -1978,6 +2486,50 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    # A project-bound job fires with `job.project_path` as its execution
+    # cwd, reading and potentially returning that project's files. The
+    # route's own owner gate above runs only for a browser/dashboard-token
+    # request (`request.get("app") == ""`), so an app-token caller reaches
+    # here ungated -- and `is_owner_dashboard_request` is False for every
+    # app-token request, so this narrower check is what keeps a non-owner
+    # allow-listed app token from firing an owner-bound job on demand and
+    # exfiltrating the project's data. Same class of finding as the
+    # PATCH-time gate above (`api_cron_update`) but for the run path.
+    if job.project_path:
+        if not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.run.project_bound_job",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=job_id,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron run project-bound-job denial", exc_info=True
+                )
+            return web.json_response(
+                {
+                    "error": "triggering a project-bound job requires owner authorization",
+                    "code": "project_bound_job_owner_required",
+                },
+                status=403,
+            )
+        else:
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.run.project_bound_job",
+                    outcome="allowed",
+                    source="dashboard",
+                    resources=job_id,
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron run project-bound-job allow", exc_info=True
+                )
     # Reject if a run is already in flight: a second overlapping run would
     # orphan the prior task's handle (nothing could track, cancel
     # or join it). The check-and-claim below is atomic: there is no await between
@@ -2001,7 +2553,19 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # run_job claims the job synchronously while the call is evaluated; the
     # wrapper task is handed to the claim on the same line so cancel() can
     # reach a run still parked in its store refresh.
-    task = asyncio.create_task(state.crons.run_job(job_id))
+    #
+    # The owner-authorization decision above used a snapshot read outside any
+    # lock; `run_job` independently re-syncs its OWN fresh snapshot from disk
+    # once the task actually starts, well after this handler has returned.
+    # An owner binding the project in that gap would let this already-
+    # authorized (against the stale, unbound snapshot) non-owner's dispatch
+    # execute against the newly-bound project -- closed by passing the same
+    # field forward so `run_job` can re-verify it itself; an owner's own
+    # request needs no such guard.
+    run_kwargs: dict[str, Any] = {}
+    if not is_owner_dashboard_request(request):
+        run_kwargs["expect_project_path"] = job.project_path
+    task = asyncio.create_task(state.crons.run_job(job_id, **run_kwargs))  # type: ignore[arg-type]
     state.crons.attach_run_task(job_id, task)
     state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
@@ -2033,6 +2597,75 @@ async def api_cron_cancel(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": safe_name})
 
 
+async def _cron_to_chat_project_bound_refusal(
+    state: DashboardState,
+    request: web.Request,
+    job_id: str,
+    job: "CronJob | None",
+) -> web.Response | None:
+    """Owner gate for POST /api/crons/{id}/to-chat on a project-bound job.
+
+    ``to-chat`` injects a job's retained result (or replays its transcript)
+    straight into a shared dashboard chat slot with no redaction chokepoint of
+    its own -- unlike the history routes' ``summary``/``trace``/``error``
+    fields, the content this route moves has no single field the reader-aware
+    ``_redacted_run_text`` pass can intercept (a fresh run's prompt+result
+    pair, a replayed transcript, or a notification body). So a non-owner is
+    refused OUTRIGHT here rather than served a partially-scrubbed slot.
+
+    Bound decided the same way the history routes now decide it (see
+    ``CronRunRecord.project_bound``), never from ``job.project_path`` alone:
+    a project-bound run's retained result can outlive that binding (the owner
+    clears it, or the job is a one-shot deleted via ``delete_after_run``).
+    A LIVE job is bound-for-disclosure if EITHER its current binding OR the
+    stamp travelling with its retained text says so
+    (``_live_job_result_is_project_bound``); reading only the live field would
+    un-gate a run whose binding was cleared after it fired, and reading the
+    newest history row would un-gate a retained reply that a later result-less
+    run outlived. A DELETED job has no live record left, so its per-run history
+    file -- keyed by ``job_id``, untouched by job deletion -- is the only
+    source, and both an absent stamp on that row and an empty read default to
+    bound: with the job gone there is no second source, so "cannot tell" has to
+    mean withhold.
+    """
+    if is_owner_dashboard_request(request):
+        return None
+    if job is not None:
+        bound = _live_job_result_is_project_bound(job)
+    else:
+        # Job deleted: the live field is gone, so ask the one thing that
+        # survives deletion -- this job's own history file -- rather than
+        # treat "no live job" as "never bound". A read that yields NO row is
+        # not evidence of an unbound run: the rows are capped per job and the
+        # file can be pruned or unreadable while the transcript survives, and
+        # with the job gone there is no second source to fall back on. So an
+        # empty read defaults to bound for the same reason an absent stamp
+        # does -- the answer is unknown, and the unknown side of a disclosure
+        # gate is withhold.
+        runs, _total = await state.crons.get_history().get_job_history(job_id, limit=1, offset=0)
+        bound = runs[0].get("project_bound", True) if runs else True
+    if not bound:
+        return None
+    try:
+        _sel().log_api_access(
+            caller="dashboard",
+            operation="cron.to_chat.project_bound_job",
+            outcome="denied",
+            source="dashboard",
+            resources=job_id,
+            error="not owner",
+        )
+    except Exception:
+        logger.debug("SEL logging failed for cron to-chat project-bound-job denial", exc_info=True)
+    return web.json_response(
+        {
+            "error": "opening a project-bound job's result requires owner authorization",
+            "code": "project_bound_job_owner_required",
+        },
+        status=403,
+    )
+
+
 async def api_cron_to_chat(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/to-chat — open last result in a chat session."""
     state: DashboardState = request.app["state"]
@@ -2051,12 +2684,19 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         )
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
+    if (_e := await _cron_to_chat_project_bound_refusal(state, request, job_id, job)) is not None:
+        return _e
+    # The gate above answers for the LATEST result; the replay below is
+    # cumulative, so a non-owner's transcript is additionally filtered per run.
+    _owner_view = is_owner_dashboard_request(request)
     if job:
         history = (
             await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job.id}")
             if state.conversation_log
             else []
         )
+        if not _owner_view:
+            history, _ = await _non_owner_transcript_rows(state, job.id, history)
         # Re-surfacing a stored result, not delivering a fresh run: the prompt
         # that produced it is not recoverable from live config -- see
         # inject_cron_result_to_dashboard's ``include_prompt``.
@@ -2076,6 +2716,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if state.conversation_log
             else []
         )
+        _any_bound_run = False
+        if not _owner_view:
+            history, _any_bound_run = await _non_owner_transcript_rows(state, job_id, history)
         if history:
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             if not slot.linked_session_key:
@@ -2115,8 +2758,45 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                         _restore_dismissed_source_links(slot, _meta.get("dismissed_source_links"))
         else:
             # No session log — fall back to notification body.
+            #
+            # Withheld from a non-owner once this job has any bound run on
+            # record: the job is deleted, so there is no live stamp to consult,
+            # and the body carries no provenance of its own to filter on. The
+            # transcript filter has already withheld every row it could not
+            # prove unbound, so reaching here with a bound run on record means
+            # there is nothing this caller may be shown.
+            if _any_bound_run:
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="cron.to_chat.project_bound_notification",
+                        outcome="denied",
+                        source="dashboard",
+                        resources=job_id,
+                        error="not owner",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for cron to-chat project-bound notification denial",
+                        exc_info=True,
+                    )
+                return web.json_response(
+                    {
+                        "error": "opening a project-bound job's result requires owner authorization",
+                        "code": "project_bound_job_owner_required",
+                    },
+                    status=403,
+                )
+            # Newest first, and for a non-owner only a note whose own stamp
+            # proves an unbound run: the log is append-ordered and also keeps
+            # the bound runs' bodies.
             notif = next(
-                (n for n in state._notification_log if n.get("job_id") == job_id),
+                (
+                    n
+                    for n in reversed(state._notification_log)
+                    if n.get("job_id") == job_id
+                    and (_owner_view or project_output_visible_to_non_owner(n))
+                ),
                 None,
             )
             if not notif:
@@ -2153,8 +2833,94 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"},
+            status=400,
+        )
+    # Re-enabling an owner-disabled project-bound job hands it back to the
+    # scheduler, which fires it against `job.project_path` the same as a
+    # manual trigger -- unlike run, this route had NO owner gate at all
+    # (create/update/run all do, per the same class of finding). Only the
+    # RE-ENABLE direction needs the check: disabling one's own or anyone
+    # else's job stops execution rather than starting it, so it carries no
+    # equivalent exfiltration risk.
+    if enabled:
+        job = await state.crons.get_job_async(job_id)
+        if job and job.project_path:
+            if not is_owner_dashboard_request(request):
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="cron.enable.project_bound_job",
+                        outcome="denied",
+                        source="dashboard",
+                        resources=job_id,
+                        error="not owner",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for cron enable project-bound-job denial",
+                        exc_info=True,
+                    )
+                return web.json_response(
+                    {
+                        "error": "enabling a project-bound job requires owner authorization",
+                        "code": "project_bound_job_owner_required",
+                    },
+                    status=403,
+                )
+            else:
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="cron.enable.project_bound_job",
+                        outcome="allowed",
+                        source="dashboard",
+                        resources=job_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for cron enable project-bound-job allow",
+                        exc_info=True,
+                    )
+        # Same TOCTOU close as api_cron_update: the owner-authorization
+        # decision above used a snapshot read outside any lock, so
+        # re-verify the same field atomically under the lock right before
+        # the actual toggle -- an owner's own request needs no such guard.
+        expect_project_path = (
+            job.project_path if job and not is_owner_dashboard_request(request) else _UNSET
+        )
+    else:
+        expect_project_path = _UNSET
     try:
-        ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+        ok = await state.crons.enable_job_async(
+            job_id, enabled=enabled, expect_project_path=expect_project_path
+        )
+    except CronPendingMismatch:
+        # GPT 5.6 Review F2: same audit gap as api_cron_update's identical
+        # CAS re-check -- see its comment. The sibling denial above
+        # (`cron.enable.project_bound_job`) logs one; this authorization-
+        # relevant race must too.
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.enable.project_bound_job",
+                outcome="denied",
+                source="dashboard",
+                resources=job_id,
+                error="stale project binding",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for cron enable stale-binding denial", exc_info=True)
+        return web.json_response(
+            {
+                "error": "the job's project binding changed after it was checked — "
+                "reload and try again",
+                "code": "stale_project_binding",
+            },
+            status=409,
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -2223,10 +2989,43 @@ async def api_cron_history(request: web.Request) -> web.Response:
     runs, total = await state.crons.get_history().get_job_history(
         job_id, limit=limit, offset=offset
     )
+    # A failed or skipped run's row is BUILT from `last_error`
+    # (`cron.py`'s `error=terminal.last_error`, and the reaper/cancel paths'
+    # `summary=`/`error=`), so this route carries the same string the list
+    # serializer does and takes the same reader-aware pass — gating only the
+    # list would leave the folder reachable one route over. `summary` also
+    # carries a successful run's `run_result` verbatim (cron.py's
+    # `summary=run_result or terminal.last_error or ""`), so it takes the
+    # same withhold pass `last_result` does in the list serializer; `error`
+    # stays on the path-strip-only pass a skip reason keeps everywhere else.
+    #
+    # Withheld on the RUN's own persisted `project_bound` stamp (see
+    # CronRunRecord.project_bound), never on the live job's current
+    # `project_path`. The live field is the wrong source: an owner can clear
+    # a job's binding, or the job can be deleted (one-shot with
+    # delete_after_run), while rows a project-bound fire already wrote
+    # survive on disk. Deriving `_withhold` from `job` there would silently
+    # un-protect every one of them for a non-owner. A row with no
+    # `project_bound` key reads as NOT bound: every row this code writes
+    # carries the key (``asdict``), so an absent one predates the field --
+    # and ``project_path`` arrives in the same change, so such a row cannot
+    # have fired project-bound. Defaulting it to bound would withhold all
+    # pre-existing history from a legitimate non-owner to guard a case that
+    # cannot exist.
+    _owner_view = is_owner_dashboard_request(request)
     for run in runs:
-        for key in ("summary", "error"):
-            if run.get(key):
-                run[key] = redact_credentials(redact_exfiltration_urls(run[key])[0])[0]
+        _withhold = bool(run.get("project_bound", False))
+        if not _owner_view:
+            # The stamp itself is owner-only, on the same boundary
+            # `project_path` is: telling a non-owner a job runs against SOME
+            # project directory is the same class of fact as naming it.
+            run.pop("project_bound", None)
+        if run.get("summary"):
+            run["summary"] = _redacted_run_text(
+                run["summary"], owner_view=_owner_view, withhold=_withhold
+            )
+        if run.get("error"):
+            run["error"] = _redacted_run_text(run["error"], owner_view=_owner_view)
     return web.json_response({"runs": runs, "total": total})
 
 
@@ -2242,9 +3041,28 @@ async def api_cron_history_detail(request: web.Request) -> web.Response:
     detail = await state.crons.get_history().get_run_detail(job_id, run_id)
     if not detail:
         return web.json_response({"error": "run not found"}, status=404)
-    for key in ("summary", "trace", "error"):
+    # Same reader-aware pass as the list and the paginated history: `error` is
+    # `last_error` verbatim and `trace`/`summary` are the agent's own output,
+    # so they take the withhold pass `last_result` does in the list
+    # serializer rather than the path-strip-only pass `error` keeps.
+    #
+    # Withheld on this run's own persisted `project_bound` stamp (see
+    # CronRunRecord.project_bound and api_cron_history's identical comment),
+    # never on the live job -- which can be unbound or deleted by the time
+    # this route is read. A row with no `project_bound` key reads as NOT
+    # bound -- see api_cron_history for why that cannot hide a bound run.
+    _owner_view = is_owner_dashboard_request(request)
+    _withhold = bool(detail.get("project_bound", False))
+    if not _owner_view:
+        # Owner-only stamp — see api_cron_history.
+        detail.pop("project_bound", None)
+    for key in ("summary", "trace"):
         if detail.get(key):
-            detail[key] = redact_credentials(redact_exfiltration_urls(detail[key])[0])[0]
+            detail[key] = _redacted_run_text(
+                detail[key], owner_view=_owner_view, withhold=_withhold
+            )
+    if detail.get("error"):
+        detail["error"] = _redacted_run_text(detail["error"], owner_view=_owner_view)
     return web.json_response(detail)
 
 
@@ -2454,13 +3272,30 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     )
     # Enrich with job_name
     jobs_by_id = {j.id: j for j in state.crons.list_jobs(include_disabled=True)}
+    _owner_view = is_owner_dashboard_request(request)
     for run in runs:
         jid = run.get("job_id", "")
         job = jobs_by_id.get(jid)
         run["job_name"] = job.name if job else jid
-        for key in ("job_name", "summary", "trace", "error"):
+        if run["job_name"]:
+            # Owner-authored, not run-outcome text: stays on the sibling pass
+            # every other user-settable field takes.
+            run["job_name"] = redact_credentials(redact_exfiltration_urls(run["job_name"])[0])[0]
+        # Withheld on this run's own persisted `project_bound` stamp (see
+        # CronRunRecord.project_bound), never on the live `job` -- which this
+        # loop already looks up only for its (unrelated) display name, and
+        # which can be unbound or missing entirely for a row whose job was
+        # deleted. A row with no `project_bound` key reads as NOT bound -- see
+        # api_cron_history.
+        _withhold = bool(run.get("project_bound", False))
+        if not _owner_view:
+            # Owner-only stamp — see api_cron_history.
+            run.pop("project_bound", None)
+        for key in ("summary", "trace"):
             if run.get(key):
-                run[key] = redact_credentials(redact_exfiltration_urls(run[key])[0])[0]
+                run[key] = _redacted_run_text(run[key], owner_view=_owner_view, withhold=_withhold)
+        if run.get("error"):
+            run["error"] = _redacted_run_text(run["error"], owner_view=_owner_view)
     return web.json_response({"runs": runs, "total": total})
 
 
@@ -3234,6 +4069,26 @@ async def api_crons(request: web.Request) -> web.Response:
     # privileged grant MUTATION (request, approve, deny, revoke, and both
     # denial branches) writes its own SEL event.
     _owner_view = is_owner_dashboard_request(request)
+    # `last_result` withholding on a non-owner poll must not read the live
+    # `project_path` alone: the owner can clear a job's binding while its
+    # retained reply — composed inside the once-bound private directory —
+    # stays in `last_result`, so the field's own gate would un-withhold it the
+    # moment the binding is cleared (a CWE-209 hole). Decide EITHER/OR from the
+    # live binding OR the stamp travelling with the retained text.
+    #
+    # Cost: one in-memory field read per job carrying a retained reply, and no
+    # history read on any path. The stamp is `last_result_project_bound`,
+    # written where the result is produced and round-tripped with it, so the
+    # question is answered by the same record that holds the text rather than by
+    # a row describing a different run — see
+    # `_live_job_result_is_project_bound` for why the newest row is the wrong
+    # source.
+    _withhold_result_by_id: dict[str, bool] = {}
+    if not _owner_view:
+        for _j in jobs:
+            if not _j.last_result:
+                continue
+            _withhold_result_by_id[_j.id] = _live_job_result_is_project_bound(_j)
     data = [
         {
             "id": j.id,
@@ -3337,6 +4192,17 @@ async def api_crons(request: web.Request) -> web.Response:
             ),
             "script": redact_credentials(redact_exfiltration_urls(j.script or "")[0])[0] or None,
             "command": redact_credentials(redact_exfiltration_urls(j.command or "")[0])[0] or None,
+            # The project directory a project-scoped job resolves its agent and
+            # cwd against. Owner view keeps it so the Schedule page can reopen a
+            # job with its real value (JobForm.parseJobDefaults reads
+            # `job.project_path`). Non-owner view returns null on the same
+            # boundary as the secret-grant metadata below; the form already
+            # maps null or absence to its normal empty projectPath default.
+            "project_path": (
+                redact_credentials(redact_exfiltration_urls(j.project_path or "")[0])[0] or None
+                if _owner_view
+                else None
+            ),
             # Grant metadata only — env-var names and vault secret NAMES;
             # plaintext values never leave the vault. Owner-only even so: a
             # non-owner dashboard token (an allowed Slack user's !dashboard
@@ -3351,10 +4217,26 @@ async def api_crons(request: web.Request) -> web.Response:
                 _redacted_grant_map(j.secret_env_pending) if _owner_view else None
             ),
             "secret_env_pending_ts": (j.secret_env_pending_ts or None) if _owner_view else None,
-            "last_result": redact_credentials(redact_exfiltration_urls(j.last_result or "")[0])[0]
+            # The run-outcome free-text pair. Unlike every sibling field these
+            # two carry text the fire does not compose (`str(exc)` and the
+            # agent's own reply), so they take one extra pass for a non-owner:
+            # see _redacted_run_text. `last_result` is withheld outright (not
+            # merely path-stripped) for a non-owner whenever the retained reply
+            # was produced by a project-bound run — decided EITHER from the
+            # live binding OR the run's own persisted stamp (see
+            # `_withhold_result_by_id` above and `_live_job_result_is_project_bound`),
+            # never from `j.project_path` alone, which the owner can clear
+            # while the reply survives. The agent's reply can quote arbitrary
+            # content read from that private directory, unlike a skip reason,
+            # which stays readable per the disclosure table in
+            # learn-cron-dashboard.md.
+            "last_result": _redacted_run_text(
+                j.last_result or "",
+                owner_view=_owner_view,
+                withhold=_withhold_result_by_id.get(j.id, False),
+            )
             or None,
-            "last_error": redact_credentials(redact_exfiltration_urls(j.last_error or "")[0])[0]
-            or None,
+            "last_error": _redacted_run_text(j.last_error or "", owner_view=_owner_view) or None,
             "is_running": state.crons.is_running(j.id),
             "running_since": state.crons.running_since(j.id),
         }

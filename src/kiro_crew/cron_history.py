@@ -172,9 +172,7 @@ def truncate_summary(text: str, cap: int) -> str:
 
     # The marker gets its own line so it never fuses onto the end of a kept
     # URL — "<url>..." reads as a longer, dead link.
-    parts = ([head] if head else []) + ([_CUT_MARKER] if marked else []) + (
-        [body] if body else []
-    )
+    parts = ([head] if head else []) + ([_CUT_MARKER] if marked else []) + ([body] if body else [])
     return "\n".join(parts)
 
 
@@ -355,6 +353,27 @@ class CronRunRecord:
     summary: str = ""
     trace: str = ""
     error: str = ""
+    # Whether THIS run fired with a project-bound cwd (``job.project_path`` set
+    # at fire time), persisted independently of the job's current state. The
+    # dashboard's non-owner withhold pass on ``summary``/``trace`` reads this
+    # rather than the live job's ``project_path`` (see ``handlers/cron.py``'s
+    # ``_redacted_run_text``), because the live value is unprotected the moment
+    # the owner clears the binding or deletes the job while this row survives
+    # on disk -- and the agent reply a project-bound run may quote would then
+    # read back to a non-owner with no gate at all. Stamped once, at write
+    # time, by the one caller that knows what cwd the run used (``cron.py``'s
+    # three ``CronRunRecord(...)`` sites), so it cannot drift from the run it
+    # describes. Defaults False, which is sound for a row written before this
+    # field existed: ``project_path`` itself is new in the same change, so no
+    # such row can have fired project-bound.
+    #
+    # The completion site reads the FIRING job, so its stamp is the fire-time
+    # value. The cancel and reaper sites read the live job, because no captured
+    # cwd reaches them -- so a binding cleared BETWEEN a run starting and that
+    # run being cancelled or reaped stamps False and under-protects that one
+    # row. Narrower than the hole this field closes, and the direction a
+    # captured fire-time cwd would have to fix.
+    project_bound: bool = False
 
     def to_dict(self, include_trace: bool = True) -> dict[str, Any]:
         d = asdict(self)
@@ -569,7 +588,7 @@ class CronHistoryStore:
         # from. Lifting that cap belongs to whoever owns the registry's size.
         record.summary = truncate_summary(record.summary, self._summary_cap)
         if len(record.trace) > self._trace_cap:
-            record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
+            record.trace = record.trace[: self._trace_cap] + "\n...[truncated]"
 
         if not self._enabled:
             return

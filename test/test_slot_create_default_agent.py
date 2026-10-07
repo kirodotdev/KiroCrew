@@ -303,10 +303,16 @@ class TestSameBindingGuard:
         monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
         # The project declares "proj-agent"; resolution must see it ONLY when
         # the guard passes the slot's project scope through.
+        # ``effective_name`` mirrors the production pair check: a member opt-out
+        # asks about an alias AND the template it dispatches, so the stub answers
+        # for either name rather than dropping the keyword and raising a TypeError
+        # the caller reports as a resolution failure.
         monkeypatch.setattr(
             loader_mod,
             "_project_declares_agent",
-            lambda name, project: name == "proj-agent" and project == "/proj",
+            lambda name, project, *, effective_name="": (
+                project == "/proj" and "proj-agent" in {name, effective_name}
+            ),
         )
 
         async def _noop_warm(project: Any, **kw: Any) -> None:

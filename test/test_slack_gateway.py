@@ -33,6 +33,7 @@ from kiro_crew.slack.gateway import (
     _SUCCESS_REMINDER_SECS,
     _VOLATILE_RE,
     GatewayOrchestrator,
+    _cron_crew_alias,
     _result_hash,
 )
 
@@ -1820,6 +1821,7 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -1895,6 +1897,7 @@ class TestInitCron:
         job.consecutive_failures = 0
         job.member_id = ""
         job.memory_store = ""
+        job.project_path = ""
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -1910,6 +1913,694 @@ class TestInitCron:
         positional, keywords = orch.ctx_builder.build_message.call_args
         assert positional[1] is False
         assert keywords.get("resumed") is True
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_single_agent_resets_stale_session_on_binding_change(self):
+        """A live persistent session is reused as-is by
+        SessionManager.get_or_create regardless of the cwd/agent passed to
+        it -- so a job whose project_path (or resolved agent) changed since
+        its session was last acquired must have that session explicitly
+        RESET first, or it silently keeps running under the OLD cwd and the
+        OLD agent's permissions until an idle eviction or gateway restart.
+        First fire (binding A) must NOT reset (nothing to reset yet); second
+        fire with the SAME binding must not reset either; a third fire with
+        a DIFFERENT binding (B) must reset before acquiring.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jbinding", name="binding-change", agent_id="ea-dev", project_path="/tmp/project-a"
+        )
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="agent result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jbinding", "run"),
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway._project_path_still_canonical",
+                    return_value=True,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.warm_project_agent_names",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.resolve_agent_bindings",
+                            return_value=MagicMock(
+                                requested_resolved=True,
+                                kiro_agent="ea-dev",
+                                model="",
+                                memory_store_name="",
+                                execution_context=None,
+                                resolved_alias="",
+                                resolved_source="alias",
+                            ),
+                        ):
+                            # No subagents pending in any of these scenarios --
+                            # this test is about the BINDING-change reset, not
+                            # the sibling reset the run's own `finally` issues
+                            # once a turn completes; both share the same
+                            # has_pending_work_for/_cron_injecting guard, so
+                            # both must see "nothing pending" for the binding
+                            # reset to fire on the intended fire alone.
+                            orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
+                                return_value=False
+                            )
+
+                            # First fire: no prior binding recorded, so the
+                            # binding-change reset does not fire; the run's
+                            # own completion still resets via the `finally`
+                            # path (same guarded call).
+                            result1 = await callback(job)
+                            assert result1 == "agent result"
+                            assert orch.sessions.reset.await_count == 1
+
+                            # Second fire: SAME binding, so the binding-change
+                            # reset still does not fire on that account; the
+                            # completion reset fires again as before.
+                            result2 = await callback(job)
+                            assert result2 == "agent result"
+                            assert orch.sessions.reset.await_count == 2
+
+                            # Third fire: project_path changed -- the
+                            # binding-change reset fires FIRST (in addition to
+                            # the completion reset), so the count advances by
+                            # two on this fire alone.
+                            job.project_path = "/tmp/project-b"
+                            result3 = await callback(job)
+                            assert result3 == "agent result"
+                            assert orch.sessions.reset.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_single_agent_binding_change_detects_a_crew_alias_switch(self):
+        """GPT 5.6 Review F1 (follow-up): the binding identity must include
+        the resolved CREW alias, not just (project_path, kiro_agent). Two
+        distinct crew names (selected here through two different persisted
+        job.member_id values) can resolve to the SAME kiro_agent template --
+        without the name in
+        the tuple, switching between them produces an IDENTICAL binding,
+        "no mismatch", and skips the reset entirely: the new alias's turn
+        would run on the old alias's still-live session, inheriting its
+        memory/effort/crew-identity namespace."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig(
+            agents={
+                "Alias A": KiroCrewAgentConfig(kiro_agent="shared-template", member_id="alias-a"),
+                "Alias B": KiroCrewAgentConfig(kiro_agent="shared-template", member_id="alias-b"),
+            }
+        )
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(return_value=False)
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jalias",
+            name="alias-switch",
+            agent_id="shared-template",
+            project_path="/tmp/shared-project",
+        )
+        # Same project_path and same kiro_agent (via resolve_agent_bindings
+        # below) across all fires -- only the persisted member identity
+        # changes, mapping from Alias A to Alias B while both share one template.
+        job.member_id = "alias-a"
+        job.memory_store = ""
+        job.execution_context = None
+        job.model = None
+
+        with (
+            patch(
+                "kiro_crew.cron.resolve_cron_memory",
+                return_value=("default", "shared-template"),
+            ),
+            patch("kiro_crew.slack.gateway.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jalias", "run"),
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway._project_path_still_canonical",
+                    return_value=True,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.warm_project_agent_names",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.resolve_agent_bindings",
+                            return_value=MagicMock(
+                                requested_resolved=True,
+                                kiro_agent="shared-template",
+                                model="",
+                                memory_store_name="",
+                                execution_context=None,
+                                resolved_alias="",
+                                resolved_source="alias",
+                            ),
+                        ):
+                            # First fire: alias-a. Nothing recorded yet, so
+                            # no binding-change reset -- only the run's own
+                            # completion reset.
+                            result1 = await callback(job)
+                            assert result1 == "agent result"
+                            assert orch.sessions.reset.await_count == 1
+
+                            # Second fire: SAME member_id (alias-a), same
+                            # kiro_agent, same project_path -- no mismatch,
+                            # so still just the completion reset.
+                            result2 = await callback(job)
+                            assert result2 == "agent result"
+                            assert orch.sessions.reset.await_count == 2
+
+                            # Third fire: SWITCH to alias-b. kiro_agent and
+                            # project_path are UNCHANGED -- only the crew
+                            # alias differs. Without the alias in the
+                            # identity tuple, (project_path, kiro_agent)
+                            # alone would see no mismatch and skip the
+                            # binding-change reset. With it, the mismatch is
+                            # detected and the reset fires (in addition to
+                            # the completion reset), so the count advances by
+                            # two on this fire alone.
+                            job.member_id = "alias-b"
+                            result3 = await callback(job)
+                            assert result3 == "agent result"
+                            assert orch.sessions.reset.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_single_agent_fire_skipped_while_binding_changed_and_subagents_pending(
+        self,
+    ):
+        """The binding-change check (project_path/agent_id edited between
+        fires) must SKIP THE WHOLE FIRE when a prior fire's sub-agent
+        completion is still queued/running/mid-injection into this exact
+        session_key, not merely defer the reset and proceed to acquire the
+        stale session anyway.
+
+        Deferring only the reset (the original fix for GPT 5.6 Review F2)
+        left a real residual: this fire would still run under the OLD
+        cwd/agent permissions for its own duration -- a genuine, irreversible
+        exposure window, not just something a later fire self-corrects
+        (GPT 5.6 Review F1, UPHOLD-FENCED). Skipping the fire entirely closes
+        that window: nothing runs under the stale binding, and the job
+        retries on its next natural fire once the pending work has drained
+        and the reset can actually happen."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = None
+        orch.slack = None
+
+        # A sub-agent is still running for this exact cron session key when
+        # the SECOND fire arrives with a changed project_path.
+        pending = MagicMock()
+        pending.parent_session_key = "cron:jbinding2"
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = [pending]
+        orch.subagent_mgr.has_pending_work_for = MagicMock(
+            side_effect=AssertionError("sync pending probe called")
+        )
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
+            side_effect=lambda key: any(
+                a.parent_session_key == key for a in orch.subagent_mgr.running
+            )
+        )
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jbinding2",
+            name="binding-change-deferred",
+            agent_id="ea-dev",
+            project_path="/tmp/project-a",
+        )
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="agent result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jbinding2", "run"),
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway._project_path_still_canonical",
+                    return_value=True,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.warm_project_agent_names",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.resolve_agent_bindings",
+                            return_value=MagicMock(
+                                requested_resolved=True,
+                                kiro_agent="ea-dev",
+                                model="",
+                                memory_store_name="",
+                                execution_context=None,
+                                resolved_alias="",
+                                resolved_source="alias",
+                            ),
+                        ):
+                            # First fire records the binding; no subagent
+                            # work is pending yet for this key on this fire
+                            # since `running` is populated but the fire
+                            # itself hasn't happened -- the completion reset
+                            # in `finally` is deferred too, since the guard
+                            # is unconditional on the key, not the fire.
+                            result1 = await callback(job)
+                            assert result1 == "agent result"
+                            orch.sessions.reset.assert_not_awaited()
+
+                            # Second fire: project_path changed AND a
+                            # sub-agent is still pending for this session key
+                            # -- GPT 5.6 Review F1: merely deferring the
+                            # RESET and proceeding to acquire the stale
+                            # session would run this whole fire under the
+                            # OLD (project-a) cwd/agent binding, a real
+                            # exposure window. The fire itself must be
+                            # skipped instead: no reset, no acquisition, no
+                            # dispatched turn -- the job is retained
+                            # undispatched (run_never_started) so it retries
+                            # on its next natural fire.
+                            job.project_path = "/tmp/project-b"
+                            result2 = await callback(job)
+                            assert result2 is None
+                            orch.subagent_mgr.has_pending_work_for.assert_not_called()
+                            orch.subagent_mgr.has_pending_work_for_async.assert_any_await(
+                                "cron:jbinding2"
+                            )
+                            orch.sessions.reset.assert_not_awaited()
+                            job.clear_carried_result.assert_called_once()
+                            assert job.last_status == "error"
+                            assert job.run_never_started is True
+
+                            # Third fire: the subagent has finished, so
+                            # nothing is pending any more. The SKIPPED fire
+                            # above never acquired a session and never
+                            # recorded a binding, so this fire still compares
+                            # against the pre-deferral binding (project-a) --
+                            # the reset fires on THIS fire (in addition to
+                            # the `finally`-block completion reset that now
+                            # also runs since nothing is pending), so the
+                            # count advances by two on this fire alone, from
+                            # 0 (first fire deferred, second fire skipped
+                            # entirely) to 2.
+                            orch.subagent_mgr.running = []
+                            result3 = await callback(job)
+                            assert result3 == "agent result"
+                            assert orch.sessions.reset.await_count == 2
+                            orch.sessions.reset.assert_any_await("cron:jbinding2")
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_single_agent_threads_resolved_alias_as_crew_agent(self):
+        """A project-scoped single-agent job whose alias resolves to a
+        DIFFERENT kiro_agent name must have get_or_create's ``crew_agent=``
+        kwarg carry ``ResolvedBindings.resolved_alias`` -- the same pattern
+        dashboard/chat_runner.py already uses for a live chat slot
+        (``crew_agent=crew_alias`` where ``crew_alias = bindings.
+        resolved_alias``). Without it, crew_pinned_effort/
+        resolve_session_effort/rebind_watchdog all resolve against the wrong
+        (or no) crew identity, running a project-bound global alias under
+        the wrong crew-specific reasoning effort and watchdog settings.
+        """
+        from kiro_crew.config.sections import ResolvedBindings
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jsingle-alias",
+            name="single-agent-alias",
+            agent_id="review-alias",
+            project_path="/tmp/some-project",
+        )
+
+        resolved = ResolvedBindings(
+            workspace_dir=object(),
+            memory_store_name="default",
+            effective_memory_config={},
+            kiro_agent="claude-opus-reviewer",
+            model="",
+            requested_resolved=True,
+            resolved_alias="reviewer-crew",
+        )
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="agent result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jsingle-alias", "run"),
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway._project_path_still_canonical",
+                    return_value=True,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.warm_project_agent_names",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.resolve_agent_bindings",
+                            return_value=resolved,
+                        ):
+                            result = await callback(job)
+
+        assert result == "agent result"
+        get_or_create_calls = orch.sessions.get_or_create.await_args_list
+        assert len(get_or_create_calls) == 1
+        assert get_or_create_calls[0].kwargs["agent"] == "claude-opus-reviewer"
+        assert get_or_create_calls[0].kwargs["crew_agent"] == "reviewer-crew"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sequence", [False, True], ids=["single", "sequence"])
+    @pytest.mark.parametrize(
+        ("member_id", "expected_crew"),
+        [
+            pytest.param("research-bot", "Research Bot", id="persisted-id"),
+            pytest.param("deleted-member", "reviewer-crew", id="missing-id-fallback"),
+        ],
+    )
+    async def test_member_id_dispatches_with_crew_name_or_alias_fallback(
+        self, sequence, member_id, expected_crew
+    ):
+        """Both cron paths translate persisted member IDs to config names."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.config.sections import ResolvedBindings
+
+        cfg = KiroCrewConfig(
+            agents={
+                # Deliberately not slug-shaped: using ``research-bot`` as both
+                # the key and ID would make this regression test vacuous.
+                "Research Bot": KiroCrewAgentConfig(
+                    kiro_agent="shared-template", member_id="research-bot"
+                )
+            }
+        )
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+        job = _default_job(
+            id=f"j-member-keyspace-{sequence}-{member_id}",
+            name="member-keyspace",
+            agent_sequence=["review-alias", "agent-b"] if sequence else [],
+            agent_id="review-alias",
+            delete_after_run=False,
+            project_path="/tmp/some-project",
+            member_id=member_id,
+            memory_store="default",
+        )
+
+        resolved = ResolvedBindings(
+            workspace_dir=object(),
+            memory_store_name="default",
+            effective_memory_config={},
+            kiro_agent="shared-template",
+            model="",
+            requested_resolved=True,
+            resolved_alias="reviewer-crew",
+        )
+
+        with (
+            patch(
+                "kiro_crew.cron.resolve_cron_memory",
+                return_value=("default", "shared-template"),
+            ),
+            patch("kiro_crew.slack.gateway.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", "run"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.warm_project_agent_names",
+                new_callable=AsyncMock,
+            ),
+            patch("kiro_crew.slack.gateway.resolve_agent_bindings", return_value=resolved),
+        ):
+            result = await callback(job)
+
+        assert result == "agent result"
+        calls = orch.sessions.get_or_create.await_args_list
+        assert len(calls) == (2 if sequence else 1)
+        assert {call.kwargs["crew_agent"] for call in calls} == {expected_crew}
+
+    def test_cron_crew_alias_accepts_name_before_id_lookup(self):
+        """A member name wins even when the same text is an ambiguous ID."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig(
+            agents={
+                "Research Bot": KiroCrewAgentConfig(member_id="research-bot"),
+                "Other Bot": KiroCrewAgentConfig(member_id="Research Bot"),
+            }
+        )
+        assert _cron_crew_alias(cfg, "Research Bot", "fallback") == "Research Bot"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sequence", [False, True], ids=["single", "sequence"])
+    async def test_project_override_dispatch_uses_resolved_store(self, tmp_path, sequence):
+        """A winning project definition runs with its resolved memory store."""
+        from kiro_crew.config.loader import (
+            KiroCrewAgentConfig,
+            MemoryStoreConfig,
+            WorkspaceConfig,
+        )
+        from kiro_crew.execution_context import read_session_execution
+
+        project = tmp_path / "project"
+        project_agents = project / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / "dev.json").write_text(json.dumps({"name": "dev"}), encoding="utf-8")
+        cfg = KiroCrewConfig(
+            agents={
+                "default": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+                "dev": KiroCrewAgentConfig(kiro_agent="dev", memory_store="dev-private"),
+                "helper": KiroCrewAgentConfig(kiro_agent="helper"),
+            },
+            default_agent="default",
+            workspaces={"default": WorkspaceConfig(dir=str(tmp_path / "workspace"))},
+            default_workspace="default",
+            memory_stores={
+                "default": MemoryStoreConfig(),
+                "dev-private": MemoryStoreConfig(),
+            },
+            default_memory_store="default",
+        )
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+        job = _default_job(
+            chat_folder_id="",
+            memory_store="dev-private",
+            id=f"j-project-store-{sequence}",
+            name="project-store",
+            agent_sequence=["dev", "helper"] if sequence else [],
+            agent_id="dev",
+            project_path=str(project),
+            minimal_context=False,
+        )
+
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", "run"),
+            ),
+        ):
+            result = await callback(job)
+
+        assert result == "agent result"
+        first_dispatch = orch.ctx_builder.build_message.call_args_list[0].kwargs
+        execution = first_dispatch["execution_context"]
+        assert execution.store.store_id == "default"
+        assert execution.template_id == "dev"
+        assert first_dispatch["memory_store"] is None
+        session_key = f"cron:{job.id}:dev" if sequence else f"cron:{job.id}"
+        bound = await asyncio.to_thread(read_session_execution, session_key, required=True)
+        assert bound == execution
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_single_agent_member_bound_job_keeps_its_own_member_as_crew_agent(
+        self,
+    ):
+        """GPT 5.6 Review: a member-bound job (``job.member_id`` set) whose
+        own ``kiro_agent`` resolves through a project-materialized agent
+        (``.kiro/agents/`` under ``job.project_path``) rather than the global
+        ``config.agents`` alias table gets ``resolve_agent_bindings``'s
+        ``alias_hit=False`` branch, which falls back to ``config.
+        default_agent``'s alias -- a DIFFERENT member. Using
+        ``resolved_alias`` unconditionally as ``crew_agent`` would then apply
+        that OTHER member's crew-scoped effort/watchdog settings and memory
+        namespace to this job's turn. The persisted ``job.member_id`` must be
+        mapped back to its unique ``config.agents`` name before that name is
+        passed as ``crew_agent``.
+        """
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.config.sections import ResolvedBindings
+
+        cfg = KiroCrewConfig(
+            agents={
+                "The Right Member": KiroCrewAgentConfig(
+                    kiro_agent="project-scoped-name", member_id="the-right-member"
+                )
+            }
+        )
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jmember-alias",
+            name="member-bound-alias",
+            agent_id="project-scoped-name",
+            project_path="/tmp/some-project",
+        )
+        # The job stores the member's persisted ID, not its config.agents name.
+        job.member_id = "the-right-member"
+        job.memory_store = ""
+        job.execution_context = None
+        job.model = None
+
+        # Simulates the bug: the project-materialized agent name resolved
+        # through requested_resolved=True/alias_hit=False, so
+        # resolve_agent_bindings's OWN resolved_alias field names the WRONG
+        # member (the global default), not the job's own member_id.
+        resolved = ResolvedBindings(
+            workspace_dir=object(),
+            memory_store_name="default",
+            effective_memory_config={},
+            kiro_agent="project-scoped-name",
+            model="",
+            requested_resolved=True,
+            resolved_alias="wrong-default-member",
+        )
+
+        with (
+            patch(
+                "kiro_crew.cron.resolve_cron_memory",
+                return_value=("default", "project-scoped-name"),
+            ),
+            patch("kiro_crew.slack.gateway.KiroCrewConfig.load", return_value=cfg),
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:jmember-alias", "run"),
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway._project_path_still_canonical",
+                        return_value=True,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.warm_project_agent_names",
+                            new_callable=AsyncMock,
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                                return_value=resolved,
+                            ):
+                                result = await callback(job)
+
+        assert result == "agent result"
+        get_or_create_calls = orch.sessions.get_or_create.await_args_list
+        assert len(get_or_create_calls) == 1
+        assert get_or_create_calls[0].kwargs["agent"] == "project-scoped-name"
+        # The job's OWN member NAME, never its persisted ID or resolved_alias's
+        # wrong fallback.
+        assert get_or_create_calls[0].kwargs["crew_agent"] == "The Right Member"
 
     @pytest.mark.asyncio
     async def test_cron_callback_publishes_turn_identity(self):
@@ -1971,6 +2662,7 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         publish_events: list[str] = []
 
@@ -2047,19 +2739,35 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         publish = AsyncMock()
         with patch("kiro_crew.slack.gateway.publish_turn_identity", publish):
             with patch(
-                "kiro_crew.slack.gateway.stream_and_collect",
-                new_callable=AsyncMock,
-                return_value="cron result",
+                # The fire path validates EVERY job's agent now, not just a
+                # project-bound one, so an agent_sequence naming agents that are
+                # not real config aliases would skip the run before any identity
+                # was published. This test is about per-agent identity, not
+                # resolution.
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
             ):
                 with patch(
-                    "kiro_crew.slack.gateway.build_cron_session_context",
-                    return_value=("cron:j1", "run task"),
+                    "kiro_crew.slack.gateway.stream_and_collect",
+                    new_callable=AsyncMock,
+                    return_value="cron result",
                 ):
-                    await callback(job)
+                    with patch(
+                        "kiro_crew.slack.gateway.build_cron_session_context",
+                        return_value=("cron:j1", "run task"),
+                    ):
+                        await callback(job)
 
         assert publish.await_count == 2
         published_keys = [c.args[1] for c in publish.await_args_list]
@@ -2139,8 +2847,24 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
-        with patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock):
+        with (
+            patch(
+                # Every job's agent is validated at fire time now, not just a
+                # project-bound one, so an agent_sequence naming non-alias agents would
+                # skip the run before the deferral under test could be reached.
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
+            ),
+            patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock),
+        ):
             with patch(
                 "kiro_crew.slack.gateway.stream_and_collect",
                 new_callable=AsyncMock,
@@ -2189,6 +2913,197 @@ class TestInitCron:
             side_effect=lambda key: key == "cron:j1:planner"
         )
 
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(agent_sequence=["planner", "worker"], created_by="U1")
+
+        with (
+            patch(
+                # Every job's agent is validated at fire time now, not just a
+                # project-bound one, so an agent_sequence naming non-alias agents would
+                # skip the run before the deferral under test could be reached.
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
+            ),
+            patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock),
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="cron result",
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:j1", "run task"),
+                ):
+                    await callback(job)
+
+        reset_keys = [c.args[0] for c in orch.sessions.reset.await_args_list]
+        assert "cron:j1:planner" not in reset_keys
+        assert "cron:j1:worker" in reset_keys
+
+    @pytest.mark.asyncio
+    async def test_sequence_fire_skipped_while_binding_changed_and_subagents_pending(self):
+        """The sequential path's binding-change check must SKIP THE WHOLE
+        FIRE -- not just the reset -- when a prior fire's sub-agent
+        completion is still pending for the FIRST agent's session key,
+        mirroring the single-agent path's fix for GPT 5.6 Review F1.
+
+        Deferring only the reset would let this fire proceed to acquire and
+        run planner (and worker after it) under the OLD (pre-edit) cwd/agent
+        binding -- a real exposure window for the whole multi-agent turn, not
+        something a later fire can retroactively undo."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.sessions.reset = AsyncMock()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for = MagicMock(
+            side_effect=AssertionError("sync pending probe called")
+        )
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
+            side_effect=lambda key: any(
+                a.parent_session_key == key for a in orch.subagent_mgr.running
+            )
+        )
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = _default_job(
+            agent_sequence=["planner", "worker"], created_by="U1", project_path="/tmp/project-a"
+        )
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.warm_project_agent_names",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    memory_store_name="",
+                    execution_context=None,
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
+            ),
+            patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="cron result",
+            ),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:j1", "run task"),
+            ),
+        ):
+            # First fire: records the binding for both agent keys. No prior
+            # binding exists yet, so the binding-change check itself never
+            # fires -- but each agent's own completion reset in `finally`
+            # still runs normally since nothing is pending.
+            result1 = await callback(job)
+            assert result1 == "cron result"
+            assert orch.sessions.reset.await_count == 2
+            orch.sessions.reset.reset_mock()
+
+            # Second fire: project_path changed AND a sub-agent from the
+            # FIRST fire is still pending for planner's key -- the whole
+            # fire must be skipped, including worker, rather than running
+            # planner (or worker) stale.
+            job.project_path = "/tmp/project-b"
+            pending = MagicMock()
+            pending.parent_session_key = "cron:j1:planner"
+            orch.subagent_mgr.running = [pending]
+            result2 = await callback(job)
+            assert result2 is None
+            orch.subagent_mgr.has_pending_work_for.assert_not_called()
+            orch.subagent_mgr.has_pending_work_for_async.assert_any_await("cron:j1:planner")
+            orch.sessions.reset.assert_not_awaited()
+            job.clear_carried_result.assert_called_once()
+            assert job.run_never_started is True
+
+            # Third fire: pending work has drained. The skipped fire never
+            # recorded project-b, so this fire still compares against
+            # project-a and the reset fires for planner (the first agent to
+            # mismatch).
+            orch.subagent_mgr.running = []
+            result3 = await callback(job)
+            assert result3 == "cron result"
+            reset_keys = [c.args[0] for c in orch.sessions.reset.await_args_list]
+            assert "cron:j1:planner" in reset_keys
+
+    @pytest.mark.asyncio
+    async def test_sequence_fire_skipped_before_earlier_agent_runs_when_a_later_agent_mismatches(
+        self,
+    ):
+        """GPT 5.6 Review F2: the binding-change/pending-work check must be
+        preflighted for EVERY sequence member BEFORE the first agent's turn
+        runs, not checked one agent at a time inside the dispatch loop.
+
+        Checking inside the loop let planner (the FIRST agent) run a real
+        turn and complete, and only THEN discover worker (the LATER agent)
+        has a stale-binding mismatch with pending work -- deferring the
+        whole fire at that point discards planner's already-completed
+        result via job.clear_carried_result(), even though planner itself
+        was never affected by the mismatch at all."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.sessions.reset = AsyncMock()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for = MagicMock(
+            side_effect=AssertionError("sync pending probe called")
+        )
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
+            side_effect=lambda key: any(
+                a.parent_session_key == key for a in orch.subagent_mgr.running
+            )
+        )
+
         with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
             mock_cs_inst = MagicMock()
             mock_cs_inst.start = AsyncMock()
@@ -2202,9 +3117,9 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
-        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
+        job.execution_context = None
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -2225,22 +3140,62 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = "/tmp/project-a"
 
-        with patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock):
-            with patch(
+        with (
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.warm_project_agent_names",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    memory_store_name="",
+                    execution_context=None,
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
+            ),
+            patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock),
+            patch(
                 "kiro_crew.slack.gateway.stream_and_collect",
                 new_callable=AsyncMock,
                 return_value="cron result",
-            ):
-                with patch(
-                    "kiro_crew.slack.gateway.build_cron_session_context",
-                    return_value=("cron:j1", "run task"),
-                ):
-                    await callback(job)
+            ) as stream_and_collect_mock,
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:j1", "run task"),
+            ),
+        ):
+            # First fire: records the binding for both agent keys.
+            result1 = await callback(job)
+            assert result1 == "cron result"
 
-        reset_keys = [c.args[0] for c in orch.sessions.reset.await_args_list]
-        assert "cron:j1:planner" not in reset_keys
-        assert "cron:j1:worker" in reset_keys
+            # Second fire: project_path changed, and a sub-agent is pending
+            # for WORKER's key specifically (the SECOND/LATER agent) --
+            # planner itself has no mismatch-with-pending issue at all. The
+            # preflight must catch worker's mismatch BEFORE planner ever
+            # runs, so planner's turn (and its result) is never started in
+            # the first place -- not discarded after the fact.
+            job.project_path = "/tmp/project-b"
+            pending = MagicMock()
+            pending.parent_session_key = "cron:j1:worker"
+            orch.subagent_mgr.running = [pending]
+            result2 = await callback(job)
+            assert result2 is None
+            job.clear_carried_result.assert_called_once()
+            assert job.run_never_started is True
+            # Nothing dispatched for either agent this fire -- the build
+            # step (stream_and_collect) was never invoked again beyond the
+            # first fire's two calls (one per agent in the sequence).
+            assert stream_and_collect_mock.await_count == 2
 
     @pytest.mark.asyncio
     async def test_cron_name_is_redacted_before_delivery(self):
@@ -2303,6 +3258,7 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -2372,6 +3328,7 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -2440,6 +3397,7 @@ class TestInitCron:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -3312,6 +4270,7 @@ class TestCronFailurePaths:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
         job.auto_paused = False
         job._acp_retried = False
 
@@ -3388,6 +4347,7 @@ class TestCronFailurePaths:
         job.consecutive_failures = 1
         job.auto_paused = False
         job._acp_retried = False
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -3458,11 +4418,27 @@ class TestCronFailurePaths:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
-        with patch(
-            "kiro_crew.slack.gateway.stream_and_collect",
-            new_callable=AsyncMock,
-            return_value="agent result",
+        with (
+            patch(
+                # The fire path validates every job's agent now, not just a
+                # project-bound one; this test's sequence names agents that are not
+                # config aliases, and it is about sequential dispatch, not resolution.
+                "kiro_crew.slack.gateway.resolve_agent_bindings",
+                return_value=MagicMock(
+                    requested_resolved=True,
+                    kiro_agent="",
+                    model="",
+                    resolved_alias="",
+                    resolved_source="alias",
+                ),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
         ):
             with patch(
                 "kiro_crew.slack.gateway.build_cron_session_context",
@@ -3474,6 +4450,268 @@ class TestCronFailurePaths:
         job.set_run_result.assert_called_once_with("agent result")
         # get_or_create called twice (once per agent)
         assert orch.sessions.get_or_create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cron_multi_agent_sequence_build_message_uses_resolved_agent(self):
+        """A project-scoped sequence member whose alias resolves to a
+        DIFFERENT kiro_agent name must have build_message's ``agent=``
+        kwarg carry the resolved kiro_agent, not the raw alias -- the same
+        mismatch already fixed on the single-agent path. build_message's own
+        agent lookup (_load_agent_prompt) matches a config file by
+        name/stem, so passing the raw alias here would build the system
+        prompt for the wrong (or nonexistent) agent while the session
+        acquired via _acquire_with_model_fallback runs under the resolved
+        name.
+        """
+        from kiro_crew.config.sections import ResolvedBindings
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jmulti-alias",
+            name="multi-agent-alias",
+            agent_sequence=["review-alias", "agent-b"],
+            project_path="/tmp/some-project",
+        )
+
+        resolved = ResolvedBindings(
+            workspace_dir=object(),
+            memory_store_name="default",
+            effective_memory_config={},
+            kiro_agent="claude-opus-reviewer",
+            model="",
+            requested_resolved=True,
+            resolved_alias="reviewer-crew",
+        )
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="agent result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jmulti-alias", "run"),
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway._project_path_still_canonical",
+                    return_value=True,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.warm_project_agent_names",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch(
+                            "kiro_crew.slack.gateway.resolve_agent_bindings",
+                            return_value=resolved,
+                        ):
+                            result = await callback(job)
+
+        assert result == "agent result"
+        # build_message must have been called with the RESOLVED kiro_agent
+        # name, not the raw "review-alias"/"agent-b" sequence-member names --
+        # once per sequence member.
+        build_message_calls = orch.ctx_builder.build_message.call_args_list
+        assert len(build_message_calls) == 2
+        for bm_call in build_message_calls:
+            assert bm_call.kwargs["agent"] == "claude-opus-reviewer"
+        # The session itself must also have been acquired with that same
+        # resolved name (already correct before this fix; pinned here too
+        # so a future regression can't silently diverge the two again).
+        get_or_create_calls = orch.sessions.get_or_create.await_args_list
+        assert len(get_or_create_calls) == 2
+        for goc_call in get_or_create_calls:
+            assert goc_call.kwargs["agent"] == "claude-opus-reviewer"
+            # crew_agent must carry ResolvedBindings.resolved_alias -- not
+            # threading it would run this project-bound global alias under
+            # the wrong crew-specific reasoning effort and watchdog settings
+            # (crew_pinned_effort/resolve_session_effort/rebind_watchdog all
+            # key off crew_agent, same as dashboard/chat_runner.py's
+            # crew_agent=crew_alias pattern for a live chat slot).
+            assert goc_call.kwargs["crew_agent"] == "reviewer-crew"
+
+    @pytest.mark.asyncio
+    async def test_each_sequence_member_dispatches_its_own_template(self, tmp_path):
+        """Two sequence members with DIFFERENT aliases must dispatch two
+        DIFFERENT kiro agents.
+
+        Deliberately does NOT patch ``resolve_agent_bindings``: every other
+        sequence test stubs it with ONE return value, so each member is handed
+        the same answer and a per-member resolution bug is invisible to them.
+        Here the real resolver runs against a real two-alias config, so the
+        assertion can only pass if each member's OWN alias answered.
+
+        The regression this pins: handing the per-member resolve call the
+        JOB-level ``execution_context`` made ``resolve_agent_bindings`` return
+        ``execution_context.template_id`` for every member (loader.py's
+        ``kiro_agent = execution_context.template_id if execution_context is not
+        None else ...``), which for a sequence job is ``job.agent_id or
+        "kirocrew"`` -- so both members ran as the default agent, under its
+        tools and permissions, with the member's own alias silently discarded.
+        """
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        project_dir = tmp_path / "checkout"
+        project_dir.mkdir()
+
+        # A real config with two aliases whose kiro_agent names differ from
+        # the alias names AND from each other. Both stay on the Global store,
+        # so require_member_memory_store needs no provisioned member silo.
+        cfg = KiroCrewConfig.load()
+        cfg.agents["planner"] = KiroCrewAgentConfig(kiro_agent="planner-template")
+        cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="writer-template")
+        cfg.save()
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jseq-own-template",
+            name="seq-own-template",
+            agent_sequence=["planner", "writer"],
+            delete_after_run=False,
+            project_path=str(project_dir),
+        )
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jseq-own-template", "run"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.warm_project_agent_names",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await callback(job)
+
+        assert result == "agent result"
+        dispatched = [c.kwargs["agent"] for c in orch.sessions.get_or_create.await_args_list]
+        assert dispatched == ["planner-template", "writer-template"]
+        built = [c.kwargs["agent"] for c in orch.ctx_builder.build_message.call_args_list]
+        assert built == ["planner-template", "writer-template"]
+        # Crew identity follows the member's own alias for the same reason.
+        crews = [c.kwargs["crew_agent"] for c in orch.sessions.get_or_create.await_args_list]
+        assert crews == ["planner", "writer"]
+
+    @pytest.mark.asyncio
+    async def test_a_project_won_sequence_member_keeps_the_unowned_execution(self, tmp_path):
+        """A sequence member a project file WON must dispatch as an unowned
+        template, never on the job's own execution.
+
+        The per-member resolve call passes no ``execution_context`` (a job-level
+        carrier cannot speak for one member), so ``resolve_agent_bindings``
+        cannot run its own project-override projection -- the one that puts a
+        project-defined template on Global memory as an unowned template.
+        ``_project_dispatch_execution`` re-applies it. Without that, the member
+        would fall through to ``cron_execution``, and a job's execution can name
+        a Crew Member's PRIVATE store while a project's ``.kiro/agents`` file is
+        writable by anyone who can land a branch in that checkout.
+        """
+        import json as _json
+
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        project_dir = tmp_path / "checkout"
+        agents_dir = project_dir / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        # The project declares "planner", so the same-named alias loses to it.
+        (agents_dir / "planner.json").write_text(_json.dumps({"name": "planner"}), encoding="utf-8")
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["planner"] = KiroCrewAgentConfig(kiro_agent="planner")
+        cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="writer-template")
+        cfg.save()
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        callback, mock_cs, mock_cs_inst = await _cron_callback(orch)
+
+        job = _default_job(
+            id="jseq-project-won",
+            name="seq-project-won",
+            agent_sequence=["planner", "writer"],
+            delete_after_run=False,
+            project_path=str(project_dir),
+        )
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="agent result",
+            ),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jseq-project-won", "run"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway._project_path_still_canonical",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.warm_project_agent_names",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await callback(job)
+
+        assert result == "agent result"
+        executions = {
+            c.kwargs["agent"]: c.kwargs["execution_context"]
+            for c in orch.ctx_builder.build_message.call_args_list
+        }
+        # The project file won for "planner", so its dispatch execution is the
+        # projected unowned template on Global -- NOT the job's execution, whose
+        # template_id is the job-level "kirocrew" fallback.
+        assert set(executions) == {"planner", "writer-template"}
+        won = executions["planner"]
+        assert won.template_id == "planner"
+        assert won.member_id is None
+        assert won.store.store_id == "default"
+        assert won.selection_kind == "template"
+        # The alias member, which no project file displaced, keeps the job's
+        # store but dispatches under its OWN template, which its spawn
+        # allowlist is read from -- never the job-level "kirocrew" fallback.
+        writer = executions["writer-template"]
+        assert writer.template_id == "writer-template"
+        assert writer.selection_kind == "template"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4190,6 +5428,7 @@ class TestCronSuccessReminder:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -6750,6 +7989,7 @@ class TestCronAcpRetry:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
         job._acp_retried = False
 
         from kiro_crew.acp.client import AcpError
@@ -7132,6 +8372,7 @@ class TestCronAckedItems:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -7974,6 +9215,7 @@ class TestCronSlackDeliveryFailure:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.project_path = None
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -11263,3 +12505,63 @@ class TestAutoApplyUpdatePreconditions:
 
         assert not any("fetch" in a for a in argvs), argvs
         assert not any("reset" in a for a in argvs), argvs
+
+
+async def _cron_callback(orch, *, session_keys=True):
+    """Hoisted CronService + _init_cron + callback-extraction boilerplate
+    shared by the cron callback tests; ``session_keys=False`` matches
+    callers that never set ``register_active_session_key``/
+    ``clear_active_session_key`` on the mock instance.
+    """
+    patcher = patch("kiro_crew.slack.gateway.CronService")
+    mock_cs = patcher.start()
+    mock_cs_inst = MagicMock()
+    mock_cs_inst.start = AsyncMock()
+    mock_cs_inst.start_reaper = MagicMock()
+    if session_keys:
+        mock_cs_inst.register_active_session_key = MagicMock()
+        mock_cs_inst.clear_active_session_key = MagicMock()
+    mock_cs.return_value = mock_cs_inst
+    mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+    await orch._init_cron()
+    patcher.stop()
+    callback = mock_cs.create.call_args[1]["on_job"]
+    return callback, mock_cs, mock_cs_inst
+
+
+def _default_job(**overrides):
+    """Return a cron-job ``MagicMock`` with the attribute defaults shared
+    by the ``_init_cron`` callback tests, with ``overrides`` applied on
+    top. Every value here matches what every one of those tests already
+    set explicitly; a test that needs a different value passes it as a
+    keyword and keeps every other default unchanged.
+    """
+    job = MagicMock()
+    job.script = ""
+    job.command = ""
+    job.id = "j1"
+    job.name = "test-job"
+    job.persistent_session = True
+    job.agent_sequence = []
+    job.agent_id = None
+    job.channel = ""
+    job.created_by = ""
+    job.approval_mode = "auto"
+    job.env = None
+    job.acked_items = []
+    job.silent = False
+    job.thread_ts = None
+    job.last_posted_hash = ""
+    job.consecutive_dupes = 0
+    job.last_posted_at = 0.0
+    job.last_failure_hash = ""
+    job.last_failure_at = 0.0
+    job.consecutive_failures = 0
+    job.project_path = None
+    job.member_id = ""
+    job.memory_store = ""
+    job.execution_context = None
+    job.model = None
+    for key, value in overrides.items():
+        setattr(job, key, value)
+    return job
