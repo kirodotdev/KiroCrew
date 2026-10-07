@@ -1716,6 +1716,140 @@ def test_prune_never_touches_another_homes_alias(native_tree):
     assert foreign.exists()
 
 
+@pytest.mark.skipif(
+    projection.platform_compat.IS_WINDOWS,
+    reason="the resolved-path match is POSIX-only; on Windows _same_crew_home does not resolve",
+)
+@requires_symlinks
+def test_same_crew_home_matches_across_symlinked_home_spellings(tmp_path):
+    """`/home/<u>` (a symlink) and `/local/home/<u>` are the one data home.
+
+    A sidecar recorded under one spelling and read under the other looked
+    foreign, so nothing ever reclaimed it. The comparison is by resolved path,
+    so both spellings -- in either role -- are the same home.
+    """
+    real = tmp_path / "local" / "home"
+    real.mkdir(parents=True)
+    linked = tmp_path / "home"
+    linked.symlink_to(real, target_is_directory=True)
+
+    recorded = (linked / ".kirocrew").as_posix()
+    current = (real / ".kirocrew").as_posix()
+    assert recorded != current, "the two spellings must be literally distinct for the test"
+
+    assert projection._same_crew_home(recorded, current)
+    assert projection._same_crew_home(current, recorded)
+
+
+def test_same_crew_home_keeps_a_genuinely_different_home_foreign(tmp_path):
+    """A real other home resolves to a different path and stays foreign."""
+    mine = tmp_path / "crew-mine"
+    mine.mkdir()
+    theirs = tmp_path / "crew-theirs"
+    theirs.mkdir()
+
+    assert not projection._same_crew_home(theirs.as_posix(), mine.as_posix())
+    # A non-string recorded value (a corrupt or absent record) is never a match.
+    assert not projection._same_crew_home(None, mine.as_posix())
+    assert not projection._same_crew_home(123, mine.as_posix())
+
+
+def test_same_crew_home_never_resolves_an_untrusted_path_on_windows(monkeypatch):
+    """On Windows the untrusted recorded path is never resolved, so no SMB touch.
+
+    ``os.path.realpath`` on Windows reaches the filesystem, so resolving an
+    attacker-planted value -- a bare ``\\\\host\\share`` OR a local ``C:\\link``
+    that is a directory junction to one -- could open the remote host and leak
+    SMB credentials. The converging property is "never resolve on Windows", not
+    a per-spelling screen, so no realpath call happens for any unequal value.
+    """
+    monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", True)
+    calls = []
+    real_realpath = projection.os.path.realpath
+
+    def _tracking(path):
+        calls.append(path)
+        return real_realpath(path)
+
+    monkeypatch.setattr(projection.os.path, "realpath", _tracking)
+
+    # A bare UNC spelling, a local path that could be a junction to UNC, and an
+    # ordinary differing local path: none is resolved, each stays foreign.
+    assert not projection._same_crew_home(r"\\attacker\share\.kirocrew", r"C:\Users\u\.kirocrew")
+    assert not projection._same_crew_home(r"C:\local-link\.kirocrew", r"C:\Users\u\.kirocrew")
+    assert not projection._same_crew_home(r"C:\other\.kirocrew", r"C:\Users\u\.kirocrew")
+    # A literally identical value still matches without resolving.
+    assert projection._same_crew_home(r"C:\Users\u\.kirocrew", r"C:\Users\u\.kirocrew")
+    assert calls == [], "no untrusted path may reach os.path.realpath on Windows"
+
+
+def test_same_crew_home_falls_back_to_literal_comparison_when_resolution_fails(monkeypatch):
+    """A realpath that raises leaves the old exact-string behaviour in place."""
+
+    def _boom(_path):
+        raise OSError("resolution failed")
+
+    monkeypatch.setattr(projection.os.path, "realpath", _boom)
+
+    # Identical strings still match without ever reaching realpath.
+    assert projection._same_crew_home("/home/u/.kirocrew", "/home/u/.kirocrew")
+    # Different strings cannot be proven equal once resolution is unavailable, so
+    # they stay foreign -- the pre-fix behaviour, which never widens this home.
+    assert not projection._same_crew_home("/home/u/.kirocrew", "/local/home/u/.kirocrew")
+
+
+@pytest.mark.skipif(
+    projection.platform_compat.IS_WINDOWS,
+    reason="the resolved-path match is POSIX-only; on Windows _same_crew_home does not resolve",
+)
+@requires_symlinks
+def test_prune_reclaims_an_alias_recorded_under_a_symlinked_home_spelling(
+    native_tree, monkeypatch, tmp_path
+):
+    """End to end: a dead alias whose sidecar names the other spelling drains.
+
+    Before the fix the sidecar's recorded home (the ``/home`` symlink spelling)
+    did not equal this process's resolved ``/local/home`` spelling, so the
+    reclaim treated it as another home's and left it forever.
+    """
+    _home, agents, _project = native_tree
+    real_home = tmp_path / "realhome" / "crew"
+    real_home.mkdir(parents=True)
+    linked_home = tmp_path / "linkhome"
+    (tmp_path / "linkhome").symlink_to(tmp_path / "realhome", target_is_directory=True)
+    linked_crew = linked_home / "crew"
+    assert linked_crew.as_posix() != real_home.as_posix()
+
+    # This process runs under the RESOLVED spelling.
+    monkeypatch.setattr(projection, "data_home", lambda: real_home)
+
+    # A dead alias (no agent file, no live lease) whose sidecar records the
+    # OTHER spelling of the same home.
+    alias = f"{projection.NATIVE_SKILL_ALIAS_PREFIX}aaaaaaaaaaaaaaaaaaaaaaaa"
+    alias_path = agents / f"{alias}.json"
+    alias_path.write_text(json.dumps({"name": alias}), encoding="utf-8")
+    metadata_dir = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / f"{alias}.json").write_text(
+        json.dumps(
+            {
+                projection._MANAGED_MARKER: projection._MANAGED_MARKER_VALUE,
+                projection._MANAGED_CREW_HOME: linked_crew.as_posix(),
+                projection._MANAGED_AGENT: "ghost",
+                projection._MANAGED_SOURCE: "/nonexistent/.kiro/agents/ghost.json",
+                projection._MANAGED_ALIAS_SHA256: hashlib.sha256(
+                    alias_path.read_bytes()
+                ).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    projection._prune_stale_managed_aliases(agents, real_home.absolute().as_posix(), keep=set())
+
+    assert not alias_path.exists(), "the same-home alias under the other spelling was not reclaimed"
+
+
 def test_prune_keeps_other_crew_homes_alias_after_its_work_dir_disappears(
     native_tree, monkeypatch, tmp_path
 ):

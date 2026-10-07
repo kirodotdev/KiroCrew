@@ -29,6 +29,7 @@ DECLARED_SITES = frozenset(
         ("acp/prompt_blocks.py", "build_prompt_blocks"),
         ("acp/skill_projection.py", "_acquire_projection_lease"),
         ("acp/skill_projection.py", "_ensure_projection_metadata_directory"),
+        ("acp/skill_projection.py", "_is_current_publication"),
         ("acp/skill_projection.py", "_probe_orphan_projection_holder"),
         ("acp/skill_projection.py", "_probe_projection_lease"),
         ("acp/skill_projection.py", "_projection_alias_lock"),

@@ -182,6 +182,54 @@ _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
 # alone does not. Sidecars written without this key carry only the byte digest
 # and are judged by it.
 _MANAGED_VIEW_SHA256 = "x-kirocrew-view-sha256"
+
+
+def _same_crew_home(recorded: object, current: str) -> bool:
+    """Whether a sidecar's recorded data home is THIS process's own data home.
+
+    The ONE ownership-home comparison. The recorded value is the string a
+    publisher stored (``data_home().absolute().as_posix()``) and *current* is the
+    same string for this process; the stored value and the alias name hash are
+    never touched, so no file is renamed or re-hashed by this.
+
+    The strings are compared by their RESOLVED paths rather than literally, but
+    ONLY on POSIX. One data home reaches disk under more than one spelling there:
+    on a cloud desktop ``/home/<u>`` is a symlink to ``/local/home/<u>``, so a
+    launch that uses the other spelling, a pod sharing ``~/.kiro``, or a moved
+    home records ownership under one spelling and reads it under another. Compared
+    literally those look like two homes and neither reclaim nor prune nor drain
+    ever cleans up the other's views; compared by realpath they are the one home
+    they are. ``os.path.realpath`` is best-effort and does not raise for an absent
+    path, but a symlink loop can raise ``OSError`` (and ``ValueError`` for an
+    embedded NUL); on any such failure this falls back to the exact literal
+    comparison -- never widening what counts as this home.
+
+    On Windows the resolution is NOT done at all. The two-spelling problem is a
+    POSIX ``/home`` -> ``/local/home`` phenomenon that does not arise on Windows,
+    while *recorded* is untrusted sidecar content, and ``os.path.realpath`` on
+    Windows reaches the filesystem: an attacker-planted value that IS or RESOLVES
+    THROUGH a UNC/junction target (a bare ``\\\\host\\share``, or a local
+    ``C:\\link`` that is a directory junction to one) would make resolution open
+    the remote host and leak SMB credentials. Enumerating those spellings one at
+    a time does not converge -- the property that does is "never resolve the
+    untrusted path on Windows", so Windows keeps the pre-fix literal comparison,
+    which touched the filesystem for neither side. A legitimate Windows home is
+    recorded and read under one spelling, so this loses no real match.
+    """
+    if not isinstance(recorded, str):
+        return False
+    if recorded == current:
+        return True
+    if platform_compat.IS_WINDOWS:
+        # Resolution here would be filesystem I/O on an untrusted path; the
+        # literal comparison above already failed, so the home stays foreign.
+        return False
+    try:
+        return os.path.realpath(recorded) == os.path.realpath(current)
+    except (OSError, ValueError):
+        return False
+
+
 # Ownership sidecars one prune may reclaim when their alias is already gone.
 # Metadata only -- no kiro-cli cost rides on it -- so a modest ceiling that the
 # boot drain multiplies by its batch count is enough to retire a backlog.
@@ -571,7 +619,9 @@ class _ViewLedgerWrites:
         views: dict[str, str] = {}
         for candidate in window:
             record, _path, _identity = _sidecar_record(self._directory, candidate.stem)
-            if record is None or record.get(_MANAGED_CREW_HOME) != self._crew_home_id:
+            if record is None or not _same_crew_home(
+                record.get(_MANAGED_CREW_HOME), self._crew_home_id
+            ):
                 continue
             agent_name = record.get(_MANAGED_AGENT)
             if _admissible_source_agent(agent_name):
@@ -1877,7 +1927,11 @@ def _sweep_orphan_sidecars(
         if _path_exists(directory / f"{stem}.json"):
             continue
         record, path, identity = _sidecar_record(directory, stem)
-        if record is None or identity is None or record.get(_MANAGED_CREW_HOME) != crew_home_id:
+        if (
+            record is None
+            or identity is None
+            or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
+        ):
             continue
         doomed.append((stem, record, path, identity))
     # The sidecar is the last record of which agent a view with no alias was
@@ -2251,7 +2305,7 @@ def _reclaim_prune_candidate(
             # that is not provably ours) keeps the alias.
             if (
                 record is None
-                or record.get(_MANAGED_CREW_HOME) != crew_home_id
+                or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
                 or not _is_legacy_projected_view(path, raw)
             ):
                 return False
@@ -2305,7 +2359,7 @@ def _reclaim_prune_candidate(
             logger.debug("skill projection: legacy alias changed before removal: %s", path)
         return False
     metadata, metadata_path, metadata_identity, metadata_raw = managed
-    if metadata.get(_MANAGED_CREW_HOME) != crew_home_id:
+    if not _same_crew_home(metadata.get(_MANAGED_CREW_HOME), crew_home_id):
         return False
 
     # Re-open and revalidate the exact alias and ownership sidecar at
@@ -2331,7 +2385,7 @@ def _reclaim_prune_candidate(
         or current_metadata_path != metadata_path
         or current_metadata_identity != metadata_identity
         or current_metadata_raw != metadata_raw
-        or current_metadata.get(_MANAGED_CREW_HOME) != crew_home_id
+        or not _same_crew_home(current_metadata.get(_MANAGED_CREW_HOME), crew_home_id)
     ):
         return False
     recorded = ledger.retain(path.stem, current_metadata)
@@ -2474,7 +2528,7 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         if (
             _managed_marker(metadata)
             and isinstance(metadata.get(_MANAGED_CREW_HOME), str)
-            and metadata[_MANAGED_CREW_HOME] != crew_home_id
+            and not _same_crew_home(metadata[_MANAGED_CREW_HOME], crew_home_id)
         ):
             counts["foreign_leased" if stem in named else "foreign_home"] += 1
     return counts
@@ -2682,7 +2736,7 @@ def _is_current_publication(
         if parsed is None or _canonical_json(parsed) != _canonical_json(json.loads(alias_raw)):
             return False
     managed = _managed_metadata_for_alias(directory, alias_path, existing)
-    return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
+    return managed is not None and _same_crew_home(managed[0].get(_MANAGED_CREW_HOME), crew_home_id)
 
 
 def _alias_identity(view: dict[str, Any]) -> dict[str, Any]:
