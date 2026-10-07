@@ -10650,7 +10650,15 @@ async def _run_chat(
         # below); minted after the egress scrub.
         _interrupted_turn_preamble = ""
         _provider_has_history = resumed
-        if not _provider_has_history:
+        if _replay_pending:
+            # A replay lease means the native session does NOT hold this
+            # conversation: allocation arms it only when the provider started
+            # fresh (a Tool Search resume that replaced session/load, a failed
+            # load, or a provider switch). A ``resumed`` observation cannot
+            # outrank it, or the turn takes the slim-resume path, drops the owed
+            # replay, and tells the model its history was restored.
+            _provider_has_history = False
+        elif not _provider_has_history:
             # An ACP provider exposes its native client; ``resumed`` is True only
             # after a successful session/load. ``is True`` keeps a mock's truthy
             # attribute from counting as a resume.

@@ -9752,6 +9752,77 @@ class TestRuntimeWiring:
         assert len(agent_spawn_calls) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("native_flag", [False, True])
+    async def test_resumed_observation_does_not_drop_an_owed_replay(
+        self, tmp_path, monkeypatch, native_flag
+    ):
+        """A replay lease outranks a ``resumed`` observation.
+
+        Allocation arms the lease only when the native session started fresh, as
+        a Tool Search resume does when it replaces ``session/load``. If the turn
+        also reads ``resumed=True`` (from the allocation tuple or the native
+        client flag) it must still build a full first turn with the replay, not
+        the slim resume that claims the history was restored.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        build_message_calls: list[dict] = []
+
+        def mock_build_message(text, context_is_new, session_key=None, **kwargs):
+            build_message_calls.append({"context_is_new": context_is_new, "kwargs": kwargs})
+            return text, MagicMock(action=None, text="")
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        ctx_builder.conversation_log = MagicMock()
+        monkeypatch.setattr(ctx_builder, "build_message", mock_build_message)
+        monkeypatch.setattr(
+            "kiro_crew.context.build_session_replay",
+            lambda *args, **kwargs: "retained conversation replay",
+        )
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        hook_store = MagicMock()
+        hook_store.fire = AsyncMock(return_value=[])
+        state._hook_store = hook_store
+        slot = state.get_or_create_slot("resume-replay")
+
+        async def stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        mock_client = MagicMock()
+        mock_client.stream = stream
+        mock_client.stream_command = stream
+        mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        mock_client.client.resumed = native_flag
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, not native_flag))
+        state.sessions.get_pid = MagicMock(return_value=None)
+        state.sessions.record_failure = AsyncMock()
+        state.sessions.consume_replay_suppression = MagicMock(return_value=False)
+        state.sessions.provider_switch_replay_pending = MagicMock(return_value=True)
+        state.sessions.consume_provider_switch_replay = MagicMock(return_value=True)
+        state.sessions.mark_provider_switch_replay = MagicMock(return_value=True)
+        state.sessions.commit_provider_switch_replay_sid = MagicMock(return_value=True)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "what were we doing?")
+
+        assert len(build_message_calls) == 1
+        call = build_message_calls[0]
+        assert call["context_is_new"] is True
+        assert call["kwargs"]["resumed"] is False
+        assert call["kwargs"]["compressed_history"] == "retained conversation replay"
+
+    @pytest.mark.asyncio
     async def test_run_chat_forwards_and_clears_the_reinjection_flag(self, tmp_path, monkeypatch):
         """A compaction flags the session; the NEXT _run_chat must forward
         needs_reinjection=True to build_message and clear the flag so the turn
