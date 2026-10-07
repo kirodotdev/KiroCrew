@@ -49,7 +49,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, session_key: 'str', approval_id: 'str', approved: "
-        "'bool', decision: 'str' = '') -> 'None'",
+        "'bool', decision: 'str' = '', *, instance: 'str' = '') -> 'None'",
     ),
     "_audit_approval": (
         "function",

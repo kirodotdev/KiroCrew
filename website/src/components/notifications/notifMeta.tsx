@@ -271,3 +271,27 @@ export function fmtRelativeMinute(ts: string): string {
  *  token leads because the i18n lint recognises an arbitrary-value class
  *  cluster by its FIRST bracketed token carrying a comma or underscore. */
 export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
+
+/** The sentence a failed Approve/Reject press shows, on a feed row and in the
+ *  detail panel alike, both while the row still offers Approve and Reject and
+ *  after a frame ended its request meanwhile (`retiredApprovals`' `{ failed }`,
+ *  shown beside "no longer pending"). A quoted reason is the decide route's
+ *  own sentence. Anything else (a 5xx, or no response) may have landed, so it
+ *  hedges with the approval card's `decision_failed`, the sentence the chat
+ *  approval surfaces fall back to when they have no message to quote. */
+export function decisionFailedCopy(reason: string): string {
+  if (reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+  return i18nT('components.approvalCard.decision_failed')
+}
+
+/** The sentence a stored note whose DELETE failed after a landed decision
+ *  shows, in the feed row and the detail panel alike. The retry is the
+ *  row's dismiss control in the feed, so the sentence names it by that
+ *  control's own accessible name, interpolated rather than written into
+ *  each catalog: it is what a screen reader announces for the control, and
+ *  it cannot drift from it. */
+export function decidedClearFailedCopy(): string {
+  return i18nT('components.notifications.notificationFeed.decided_clear_failed', {
+    button: i18nT('components.notifications.notificationFeed.dismiss_notification'),
+  })
+}
