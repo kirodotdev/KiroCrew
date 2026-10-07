@@ -51,10 +51,11 @@ Which destinations a grant can EVER cover
 rather than a starting point.
 
 * ``owner_dashboard`` -- the outbox file on the owner's own disk, the chat file
-  card, and the authenticated ``GET /api/outbox/{filename}`` download. The
-  audience is the owner's own machine and their own authenticated browser (no
-  entry in any ``dashboard.token_auth`` bypass list reaches that route). An owner
-  seeing their own secret is not a leak.
+  card, the authenticated ``GET /api/outbox/{filename}`` download, and the
+  dashboard's owner-gated ``GET /api/file-download``. The audience is the owner's
+  own machine and their own authenticated browser (no entry in any
+  ``dashboard.token_auth`` bypass list reaches those routes, and both downloads
+  also require owner identity). An owner seeing their own secret is not a leak.
 
 Deliberately absent, and named in :data:`NEVER_GRANTABLE_CLASSES` so a reader can
 see the omission is a decision:

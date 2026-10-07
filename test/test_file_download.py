@@ -9,14 +9,20 @@ and the text-redaction defense in depth.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
-from unittest.mock import MagicMock, patch
+import random
+import string
+import urllib.parse
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
-from dashboard_owner_helpers import as_owner
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 
+from kiro_crew import file_delivery_consent
 from kiro_crew.dashboard.handlers import api_file_download
 
 
@@ -242,3 +248,137 @@ async def test_resolve_relative_path_outside_project_rejected(tmp_path, mock_sel
         # ../../etc/passwd would resolve outside proj
         resp = await client.get("/api/file-download?path=../../etc/passwd&resolve=1")
         assert resp.status == 400
+
+
+# --- Flagged content: the owner's file-delivery grant releases it ---
+
+
+def _owner_request(path, *, user: str = "local-app"):
+    """A mocked GET with the claims the token middleware would install."""
+    app = web.Application()
+    app["state"] = NoConfiguredOwner()
+    req = make_mocked_request(
+        "GET", f"/api/file-download?path={urllib.parse.quote(str(path))}", app=app
+    )
+    req["user"] = user
+    req["app"] = ""
+    return req
+
+
+def _key_shaped(seed: int, length: int = 40) -> str:
+    """A key-shaped run, generated so no literal secret sits in the source."""
+    alphabet = string.ascii_letters + string.digits + "+/"
+    rng = random.Random(seed)
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
+def _inline_png_html() -> bytes:
+    """A self-contained HTML page with a base64 PNG, the reported file shape."""
+    rng = random.Random(17404)
+    pixels = b"\x89PNG\r\n\x1a\n" + bytes(rng.randrange(256) for _ in range(900))
+    b64 = base64.b64encode(pixels).decode("ascii")
+    return f'<html><body><img src="data:image/png;base64,{b64}"></body></html>'.encode()
+
+
+def _grant() -> None:
+    file_delivery_consent.record_grant(
+        file_delivery_consent.CLASS_OWNER_DASHBOARD, granted_at="2026-10-07T00:00:00+00:00"
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolated_consent_store(tmp_path, _floor_monkeypatch):
+    """Point the consent store at a tmp file so the host's real grant cannot leak in."""
+    store = tmp_path / "consent" / "file_delivery_consent.json"
+    store.parent.mkdir()
+    _floor_monkeypatch.setattr(
+        file_delivery_consent, "file_delivery_consent_path", lambda: store, raising=True
+    )
+    return store
+
+
+async def _download(path, **kwargs):
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(path)):
+        return await api_file_download(_owner_request(path, **kwargs))
+
+
+class TestFlaggedDownloadHonoursOwnerGrant:
+    """A flagged file is refused by default and released to the owner by the grant."""
+
+    @pytest.mark.asyncio
+    async def test_inline_png_html_is_refused_without_a_grant(self, tmp_path, mock_sel):
+        f = tmp_path / "report.html"
+        f.write_bytes(_inline_png_html())
+        resp = await _download(f)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
+
+    @pytest.mark.asyncio
+    async def test_inline_png_html_is_delivered_to_the_owner_under_a_grant(
+        self, tmp_path, mock_sel
+    ):
+        f = tmp_path / "report.html"
+        raw = _inline_png_html()
+        f.write_bytes(raw)
+        _grant()
+        with patch.object(file_delivery_consent, "audit_decision") as audit:
+            resp = await _download(f)
+        assert resp.status == 200
+        assert resp.body == raw
+        audit.assert_called_once_with(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            outcome="delivered",
+            detail="download: report.html",
+        )
+
+    @pytest.mark.asyncio
+    async def test_grant_does_not_release_to_a_non_owner(self, tmp_path, mock_sel):
+        """The grant's own owner conjunct refuses, even past an admitting front gate."""
+        f = tmp_path / "report.html"
+        f.write_bytes(_inline_png_html())
+        _grant()
+        with patch(
+            "kiro_crew.dashboard.handlers.files.require_owner_dashboard_request",
+            new=AsyncMock(return_value=None),
+        ), patch.object(file_delivery_consent, "audit_refusal") as refusal:
+            resp = await _download(f, user="slack-user-7")
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
+        assert refusal.call_args.kwargs["reason"] == "flagged content, non-owner caller"
+        assert refusal.call_args.kwargs["caller"] == "slack-user-7"
+
+    @pytest.mark.asyncio
+    async def test_non_owner_is_still_stopped_at_the_front_gate(self, tmp_path, mock_sel):
+        f = tmp_path / "report.html"
+        f.write_bytes(_inline_png_html())
+        _grant()
+        resp = await _download(f, user="slack-user-7")
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_real_key_is_refused_without_a_grant(self, tmp_path, mock_sel):
+        f = tmp_path / "env.txt"
+        f.write_text(f"aws_secret_access_key = {_key_shaped(1)}\n")
+        with patch.object(file_delivery_consent, "audit_refusal") as refusal:
+            resp = await _download(f)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
+        assert refusal.call_args.kwargs["reason"] == "flagged content, no grant"
+
+    @pytest.mark.asyncio
+    async def test_wide_encoded_key_is_refused_without_a_grant(self, tmp_path, mock_sel):
+        """The wide pass: a UTF-16 key decodes cleanly yet matches no narrow detector."""
+        f = tmp_path / "notes.txt"
+        f.write_bytes(f"aws_secret_access_key = {_key_shaped(2)}".encode("utf-16-le"))
+        resp = await _download(f)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
+
+    @pytest.mark.asyncio
+    async def test_clean_file_never_reads_the_grant(self, tmp_path, mock_sel):
+        f = tmp_path / "notes.txt"
+        f.write_text("hello world")
+        with patch.object(file_delivery_consent, "is_granted") as is_granted:
+            resp = await _download(f)
+        assert resp.status == 200
+        is_granted.assert_not_called()

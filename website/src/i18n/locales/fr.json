@@ -7396,7 +7396,7 @@
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
       "download": "Télécharger",
       "download_failed": "Échec du téléchargement",
-      "download_blocked_credentials": "Téléchargement bloqué : le contenu de ce fichier a été signalé par l'analyse des identifiants. Supprimez le secret et réessayez.",
+      "download_blocked_credentials": "Téléchargement bloqué : l'analyse des identifiants a signalé le contenu de ce fichier. Si le fichier t'appartient, autorise-le dans Paramètres → Sécurité → Livraison des fichiers signalés, puis réessaie.",
       "edit": "Modifier",
       "exit_full_screen": "Quitter le plein écran",
       "exit_full_screen_esc": "Quitter le plein écran (Esc)",

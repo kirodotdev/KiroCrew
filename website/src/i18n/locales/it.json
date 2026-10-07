@@ -7396,7 +7396,7 @@
       "discard_unsaved_changes": "Scartare le modifiche non salvate?",
       "download": "Scarica",
       "download_failed": "Download non riuscito",
-      "download_blocked_credentials": "Download bloccato: la scansione delle credenziali ha contrassegnato il contenuto di questo file. Rimuovi il segreto e riprova.",
+      "download_blocked_credentials": "Download bloccato: la scansione delle credenziali ha contrassegnato il contenuto di questo file. Se il file è tuo, consentilo in Impostazioni → Sicurezza → Consegna dei file segnalati, poi riprova.",
       "edit": "Modifica",
       "exit_full_screen": "Esci dalla modalità a schermo intero",
       "exit_full_screen_esc": "Esci dalla modalità a schermo intero (Esc)",

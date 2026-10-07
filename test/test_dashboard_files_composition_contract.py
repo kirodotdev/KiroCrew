@@ -253,6 +253,9 @@ _FACADE_DEFS = (
     "api_reveal_path",
     "_read_outbox_file",
     "api_outbox_notify",
+    "_owner_grant_releases_flagged",
+    "_audit_owner_grant_refusal",
+    "_audit_consented_download",
     "api_outbox_download",
     "api_outbox_list",
     "_gate_upload_file",
@@ -550,7 +553,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     }
     assert defined == set(_FACADE_DEFS)
     moved = {name for names in _BASE_OWNERS.values() for name in names}
-    assert len(defined | moved) == len(defined) + len(moved) == 134
+    assert len(defined | moved) == len(defined) + len(moved) == 137
 
 
 def test_the_owners_log_as_the_facade() -> None:

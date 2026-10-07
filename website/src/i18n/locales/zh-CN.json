@@ -7174,7 +7174,7 @@
       "discard_unsaved_changes": "放弃未保存的更改？",
       "download": "下载",
       "download_failed": "下载失败",
-      "download_blocked_credentials": "下载已阻止：此文件的内容被凭据扫描标记。请删除密钥后重试。",
+      "download_blocked_credentials": "下载已阻止：凭据扫描标记了此文件的内容。如果这是你自己的文件，请在“设置 → 安全 → 被标记文件的投递”中允许后重试。",
       "edit": "编辑",
       "exit_full_screen": "退出全屏",
       "exit_full_screen_esc": "退出全屏（Esc）",

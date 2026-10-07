@@ -2156,7 +2156,9 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
       fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
 
       const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
-      expect(notice).toHaveTextContent('flagged by the credential scan')
+      expect(notice).toHaveTextContent('the credential scan flagged')
+      // The copy points the owner at the setting that releases their own file.
+      expect(notice).toHaveTextContent('Settings → Security → Flagged-file delivery')
       expect(URL.createObjectURL).not.toHaveBeenCalled()
       expect(cap.names).toEqual([])
     } finally {

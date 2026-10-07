@@ -7174,7 +7174,7 @@
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "download": "ダウンロード",
       "download_failed": "ダウンロードに失敗しました",
-      "download_blocked_credentials": "ダウンロードがブロックされました。このファイルの内容が資格情報スキャンで検出されました。シークレットを削除して再度お試しください。",
+      "download_blocked_credentials": "ダウンロードがブロックされました。このファイルの内容が資格情報スキャンで検出されました。ご自身のファイルであれば、設定 → セキュリティ → フラグ付きファイルの配信 で許可してから再度お試しください。",
       "edit": "編集",
       "exit_full_screen": "フルスクリーンを終了",
       "exit_full_screen_esc": "フルスクリーンを終了 (Esc)",

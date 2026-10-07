@@ -7396,7 +7396,7 @@
       "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
       "download": "Descargar",
       "download_failed": "La descarga ha fallado",
-      "download_blocked_credentials": "Descarga bloqueada: el análisis de credenciales marcó el contenido de este archivo. Elimina el secreto e inténtalo de nuevo.",
+      "download_blocked_credentials": "Descarga bloqueada: el análisis de credenciales marcó el contenido de este archivo. Si el archivo es tuyo, permítelo en Ajustes → Seguridad → Entrega de archivos marcados e inténtalo de nuevo.",
       "edit": "Editar",
       "exit_full_screen": "Salir de pantalla completa",
       "exit_full_screen_esc": "Salir de pantalla completa (Esc)",

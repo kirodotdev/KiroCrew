@@ -7396,7 +7396,7 @@
       "discard_unsaved_changes": "Descartar alterações não salvas?",
       "download": "Baixar",
       "download_failed": "Falha ao baixar",
-      "download_blocked_credentials": "Download bloqueado: o conteúdo deste arquivo foi sinalizado pela verificação de credenciais. Remova o segredo e tente novamente.",
+      "download_blocked_credentials": "Download bloqueado: a verificação de credenciais sinalizou o conteúdo deste arquivo. Se o arquivo for seu, permita-o em Configurações → Segurança → Entrega de arquivos sinalizados e tente novamente.",
       "edit": "Editar",
       "exit_full_screen": "Sair da tela cheia",
       "exit_full_screen_esc": "Sair da tela cheia (Esc)",
