@@ -5230,6 +5230,7 @@
         "backup_nightly_failed": "„{{setting}}“ konnte nicht geändert werden. Die Einstellung ist unverändert.",
         "backup_restore_failed": "Diese Sicherung konnte nicht wiederhergestellt werden. Es wurde nichts geschrieben.",
         "backup_restored_note": "Ihre aktuellen Daten wurden nicht ersetzt. Die Sicherung wurde in einen Zwischenordner unter dem folgenden Pfad heruntergeladen.",
+        "backup_restore_recovered_note": "Der eigene Upload dieser Installation wurde heruntergeladen und mit ihrer Aufzeichnung abgeglichen. Etwas anderes hatte ihn auf dem Laufwerk überschrieben und kann dasselbe mit deinem nächsten Upload tun. Fang bei den anderen Installationen an, die diese Seite als Sicherungen auf dieses Laufwerk auflistet.",
         "backup_install": "Diese Installation",
         "backup_install_hint": "Jede Installation speichert ihre Sicherungen unter ihrem eigenen Namen, damit eine Wiederherstellung die Archive dieser Installation von denen einer anderen Installation unterscheiden kann.",
         "backup_install_rename": "Umbenennen",

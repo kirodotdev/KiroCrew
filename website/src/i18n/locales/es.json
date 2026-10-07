@@ -5311,6 +5311,7 @@
         "backup_nightly_failed": "No se pudo cambiar «{{setting}}». Sigue igual.",
         "backup_restore_failed": "No se pudo restaurar esa copia. No se escribió nada.",
         "backup_restored_note": "Tus datos actuales no se sustituyeron. La copia se descargó a una carpeta de preparación en la ruta de abajo.",
+        "backup_restore_recovered_note": "Se descargó la subida de esta misma instalación y se comprobó contra lo que registró. Otra cosa la había sobrescrito en la unidad y puede hacer lo mismo con tu próxima subida. Empieza por las otras instalaciones que esta página muestra haciendo copias en esta unidad.",
         "backup_install": "Esta instalación",
         "backup_install_hint": "Cada instalación guarda sus copias con su propio nombre, para que una restauración pueda distinguir los archivos de esta instalación de los de otra instalación.",
         "backup_install_rename": "Cambiar nombre",

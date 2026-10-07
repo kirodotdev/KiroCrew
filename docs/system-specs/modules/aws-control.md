@@ -1282,6 +1282,14 @@ fetching them, so it sits inside the same guard as the transfer rather than esca
 a helper whose every non-matching outcome is that refusal. The recovery can only
 find bytes that already pass; it can never widen what a restore accepts.
 
+A successful recovery still means a co-writer overwrote the key, and that outlives
+the restore: the next upload to it can be overwritten the same way. The reply
+therefore carries `recovered` (true only when the bytes handed back are the recorded
+version, false on every other success, including one under `foreign_ok`), and the
+Drive page's restore success block shows `backup_restore_recovered_note` when it is
+set. Neither the overwritten-copy confirm nor its refusal sentence can say it, since
+both are reached only through the refusal the recovery removes.
+
 The extra read is also the one AWS call in a restore the caller did not ask for, so
 `backup._authorize_recovery_read` authorizes it again immediately before it is made,
 asking the same four questions `backup._authorize_upload` asks of the paid upload and

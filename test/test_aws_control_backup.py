@@ -5688,6 +5688,30 @@ class TestRecordedVersionRecovery:
         # would report the overwriting object's size.
         assert result["bytes"] == len(RECOVERED_BYTES)
 
+    def test_a_recovered_restore_says_so_in_its_reply(self):
+        # The overwrite is the operator's to know about: it outlives this restore,
+        # and the next upload to the key can be overwritten the same way. The reply
+        # is the only surface the dashboard reads, so it carries the fact.
+        key = self._recorded(RECOVERED_FINGERPRINT, "v-ours")
+        result, _asked = self._download(
+            key, current=b"somebody elses archive", by_version=RECOVERED_BYTES
+        )
+        assert result["recovered"] is True
+
+    def test_a_restore_that_needed_no_recovery_does_not_claim_one(self):
+        key = self._recorded(ARCHIVE_FINGERPRINT, "v-current")
+        result, asked = self._download(key, current=ARCHIVE_BYTES)
+        assert asked == [""]
+        assert result["recovered"] is False
+
+    def test_an_overridden_overwrite_is_not_reported_as_recovered(self):
+        # Under the override the current bytes are handed back unverified, so no
+        # recorded version was fetched and the reply must not say one was.
+        key = self._recorded(RECOVERED_FINGERPRINT, "v-ours")
+        result, asked = self._download(key, current=b"somebody elses archive", foreign_ok=True)
+        assert asked == [""]
+        assert result["recovered"] is False
+
     def test_a_recorded_version_that_is_gone_returns_the_existing_refusal(self):
         key = self._recorded(RECOVERED_FINGERPRINT, "v-ours")
         exc, asked = self._download(

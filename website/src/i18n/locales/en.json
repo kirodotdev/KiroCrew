@@ -3806,6 +3806,7 @@
         "backup_nightly_failed": "Couldn’t change “{{setting}}”. It is unchanged.",
         "backup_restore_failed": "Couldn't restore that backup. Nothing was written.",
         "backup_restored_note": "Your current data was not replaced. The backup was downloaded to a staging folder at the path below.",
+        "backup_restore_recovered_note": "This install's own upload was downloaded and checked against what it recorded. Something else had written over it on the drive, and can do the same to your next upload. Start with the other installs this page lists as backing up to this drive.",
         "backup_install": "This install",
         "backup_install_hint": "Each install stores its backups under its own name, so a restore can tell this install's archives from another install's.",
         "backup_install_rename": "Rename",

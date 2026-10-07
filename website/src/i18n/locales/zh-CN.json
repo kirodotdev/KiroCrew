@@ -5149,6 +5149,7 @@
         "backup_nightly_failed": "无法更改“{{setting}}”。设置保持不变。",
         "backup_restore_failed": "无法恢复该备份。没有写入任何内容。",
         "backup_restored_note": "你当前的数据没有被替换。备份已下载到下方路径的暂存文件夹中。",
+        "backup_restore_recovered_note": "已下载此安装实例自己上传的版本，并已与它的上传记录核对一致。云盘上的这份存档曾被其他数据覆盖，你下次上传的内容也可能这样被覆盖。请先查看本页列出的、同样备份到此云盘的其他安装实例。",
         "backup_install": "此安装实例",
         "backup_install_hint": "每个安装实例都用自己名字存放备份，这样恢复时就能区分此安装实例的存档和另一个安装实例的存档。",
         "backup_install_rename": "重命名",

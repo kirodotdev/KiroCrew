@@ -5311,6 +5311,7 @@
         "backup_nightly_failed": "Impossible de modifier « {{setting}} ». Le réglage est inchangé.",
         "backup_restore_failed": "Impossible de restaurer cette sauvegarde. Rien n'a été écrit.",
         "backup_restored_note": "Vos données actuelles n’ont pas été remplacées. La sauvegarde a été téléchargée dans un dossier de transit au chemin ci-dessous.",
+        "backup_restore_recovered_note": "L’envoi de cette installation a été téléchargé et vérifié par rapport à ce qu’elle avait enregistré. Autre chose l’avait écrasé sur le lecteur et peut faire de même avec ton prochain envoi. Commence par les autres installations que cette page indique comme sauvegardant sur ce lecteur.",
         "backup_install": "Cette installation",
         "backup_install_hint": "Chaque installation stocke ses sauvegardes sous son propre nom, pour qu’une restauration puisse distinguer les archives de cette installation de celles d'une autre installation.",
         "backup_install_rename": "Renommer",

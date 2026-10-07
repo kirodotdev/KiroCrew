@@ -2024,6 +2024,11 @@ def restore_download(
     fd, tmp_name = tempfile.mkstemp(prefix=".kc-restore-", dir=str(staging))
     os.close(fd)
     tmp = Path(tmp_name)
+    # True only when a co-writer had overwritten the key and the bytes handed back
+    # are this install's recorded version. The reply carries it because the
+    # overwrite outlives this restore: the next upload to the key can be
+    # overwritten the same way, and the gateway log is not where an operator looks.
+    recovered_version = False
     try:
         storage.get_file(profile, region, bucket, "backup", key, str(tmp), account=account)
         size = tmp.stat().st_size
@@ -2078,6 +2083,7 @@ def restore_download(
                     # Re-read: `size` was measured on the overwriting object, and
                     # the reply reports the length of the bytes being handed back.
                     size = tmp.stat().st_size
+                    recovered_version = True
         if origin != ORIGIN_SELF and not foreign_ok:
             # Refused after the transfer, which only an overwritten own-archive
             # reaches. The staged bytes are discarded and the destination is never
@@ -2097,6 +2103,7 @@ def restore_download(
         "bytes": size,
         "origin": origin,
         "install": owner,
+        "recovered": recovered_version,
     }
 
 

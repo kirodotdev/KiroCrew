@@ -5311,6 +5311,7 @@
         "backup_nightly_failed": "Não foi possível alterar “{{setting}}”. Ela permanece inalterada.",
         "backup_restore_failed": "Não foi possível restaurar esse backup. Nada foi gravado.",
         "backup_restored_note": "Seus dados atuais não foram substituídos. O backup foi baixado para uma pasta de preparação no caminho abaixo.",
+        "backup_restore_recovered_note": "O envio desta própria instalação foi baixado e conferido com o que ela registrou. Outra coisa o havia sobrescrito no drive e pode fazer o mesmo com seu próximo envio. Comece pelas outras instalações que esta página lista fazendo backup neste drive.",
         "backup_install": "Esta instalação",
         "backup_install_hint": "Cada instalação guarda seus backups com um nome próprio, para que uma restauração consiga distinguir os arquivos desta instalação dos de outra instalação.",
         "backup_install_rename": "Renomear",

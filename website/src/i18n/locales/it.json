@@ -5311,6 +5311,7 @@
         "backup_nightly_failed": "Impossibile modificare “{{setting}}”. L’impostazione è rimasta invariata.",
         "backup_restore_failed": "Impossibile ripristinare quel backup. Non è stato scritto nulla.",
         "backup_restored_note": "I tuoi dati attuali non sono stati sostituiti. Il backup è stato scaricato in una cartella di staging al percorso qui sotto.",
+        "backup_restore_recovered_note": "È stato scaricato il caricamento di questa stessa installazione, verificato rispetto a ciò che aveva registrato. Qualcos'altro l'aveva sovrascritto sul drive e può fare lo stesso con il tuo prossimo caricamento. Parti dalle altre installazioni che questa pagina indica come in backup su questo drive.",
         "backup_install": "Questa installazione",
         "backup_install_hint": "Ogni installazione salva i propri backup con un nome proprio, così un ripristino può distinguere gli archivi di questa installazione da quelli di un'altra installazione.",
         "backup_install_rename": "Rinomina",

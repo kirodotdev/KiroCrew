@@ -4556,6 +4556,15 @@ export function BackupSection({ account }: { account: string }) {
 
       {restoreMut.data && (
         <div className="mt-2 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="backup-restored">
+          {/* First and WARN-toned: in the same muted style as the note below it,
+            * this reads as one more line of a normal restore and gets skimmed.
+            * Above the note, so "the path below" there still points at the path. */}
+          {restoreMut.data.recovered && (
+            <p className="mb-2 flex items-start gap-1.5 text-warn" data-testid="backup-restore-recovered">
+              <AlertTriangle className="lucide-inline" />
+              <span>{i18nT('apps.awsControl.console.backup_restore_recovered_note')}</span>
+            </p>
+          )}
           <div className="mb-1 text-muted">{i18nT('apps.awsControl.console.backup_restored_note')}</div>
           <div className="flex items-center gap-2">
             <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">{restoreMut.data.path}</code>
