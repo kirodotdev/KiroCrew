@@ -5634,6 +5634,11 @@
       "blocked": "Le navigateur a bloqué la lecture automatique. Ouvre « {{moreActions}} » sous la réponse terminée, puis sélectionne « {{speak}} ».",
       "settings": "Paramètres de « {{speak}} » (synthèse vocale)"
     },
+    "voicePlaybackBar": {
+      "preparing": "Préparation de l’audio…",
+      "playing": "Lecture à voix haute",
+      "stop": "Arrêter la lecture"
+    },
     "avatarBuilder": {
       "apply": "Appliquer",
       "apply_hint": "Appliquer conserve ces modifications ici ; appuyez sur « Enregistrer les modifications » dans l’éditeur d’équipe pour les garder. Annuler abandonne tout ce que vous avez modifié ici, y compris une réinitialisation.",

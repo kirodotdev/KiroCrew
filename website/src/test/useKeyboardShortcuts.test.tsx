@@ -1524,11 +1524,14 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
   const onToggleShortcutsModal = vi.fn()
   const onNewChat = vi.fn()
 
-  function setup(opts: { voicePlaying?: boolean; enabled?: boolean; disabled?: boolean } = {}) {
+  function setup(opts: { voicePlaying?: boolean; voicePreparing?: boolean; enabled?: boolean; disabled?: boolean } = {}) {
     if (opts.enabled === false) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
     const store = createTestStore({
       dashboard: { slots: [] } as unknown as RootState['dashboard'],
-      chat: { activeSlot: null, slotHistory: [], voicePlaying: opts.voicePlaying ?? false } as unknown as RootState['chat'],
+      chat: {
+        activeSlot: null, slotHistory: [],
+        voicePlaying: opts.voicePlaying ?? false, voicePreparing: opts.voicePreparing ?? false,
+      } as unknown as RootState['chat'],
     })
     renderHookWithProviders(
       () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, disabled: opts.disabled }),
@@ -1548,6 +1551,15 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
     const spy = vi.fn()
     window.addEventListener('voice-stop', spy)
     setup({ voicePlaying: true })
+    pressEscape()
+    window.removeEventListener('voice-stop', spy)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires voice-stop on Escape while speech is still being prepared', () => {
+    const spy = vi.fn()
+    window.addEventListener('voice-stop', spy)
+    setup({ voicePreparing: true })
     pressEscape()
     window.removeEventListener('voice-stop', spy)
     expect(spy).toHaveBeenCalledTimes(1)

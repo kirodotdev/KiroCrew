@@ -5452,6 +5452,11 @@
       "blocked": "浏览器阻止了自动播放。回复完成后，打开回复下方的“{{moreActions}}”，然后选择“{{speak}}”。",
       "settings": "{{speak}}设置（文字转语音）"
     },
+    "voicePlaybackBar": {
+      "preparing": "正在准备音频…",
+      "playing": "正在朗读",
+      "stop": "停止朗读"
+    },
     "avatarBuilder": {
       "apply": "应用",
       "apply_hint": "“应用”会把这些改动保留在这里；在小队编辑器中按“保存更改”才会真正保存。取消会丢弃你在这里改动的全部内容，包括重置。",

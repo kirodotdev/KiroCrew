@@ -312,6 +312,8 @@ export interface ChatState {
    *  rather than asserting a precise figure. */
   slotContextTokens: Record<string, { used?: number; window: number }>
   voicePlaying: boolean
+  /** A speech request for the active slot is waiting for its first audio. */
+  voicePreparing: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
   /** Aggregate "waiting to start" count per slot — agents accepted but queued
@@ -572,6 +574,7 @@ export const initialState: ChatState = {
   slotContextPct: {},
   slotContextTokens: {},
   voicePlaying: false,
+  voicePreparing: false,
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},

@@ -2311,6 +2311,60 @@ describe('useWebSocket frame router', () => {
     expect(chat().voicePlaying).toBe(false)
   })
 
+  it('marks the viewed slot as preparing until its first voice chunk arrives', async () => {
+    vi.stubGlobal('Audio', MockAudio)
+    const { ws } = mount()
+    expect(chat().voicePreparing).toBe(true)
+    expect(chat().voicePlaying).toBe(false)
+
+    await act(async () => {
+      ws.simulateMessage({ type: 'voice_chunk', data: { request_id: 'test-voice', slot: ACTIVE, audio: btoa('first') } })
+    })
+    expect(chat().voicePreparing).toBe(false)
+    expect(chat().voicePlaying).toBe(true)
+  })
+
+  it('ends preparing when synthesis errors, fails over HTTP or is stopped, and ignores a background slot', () => {
+    const { ws } = mount()
+    const start = (slot: string, request_id: string) => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id } }))
+    }
+
+    act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'test-voice', code: 'voice_unavailable' } }) })
+    expect(chat().voicePreparing).toBe(false)
+
+    act(() => { start(ACTIVE, 'http') })
+    expect(chat().voicePreparing).toBe(true)
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot: ACTIVE, request_id: 'http', code: 'voice_unavailable' } }))
+    })
+    expect(chat().voicePreparing).toBe(false)
+
+    act(() => { start(ACTIVE, 'stopped') })
+    expect(chat().voicePreparing).toBe(true)
+    act(() => { window.dispatchEvent(new Event('voice-stop')) })
+    expect(chat().voicePreparing).toBe(false)
+
+    act(() => { start(BACKGROUND, 'other') })
+    expect(chat().voicePreparing).toBe(false)
+  })
+
+  it('ends preparing when the user switches chats, so a late chunk for the old chat cannot strand it', async () => {
+    vi.stubGlobal('Audio', MockAudio)
+    const { ws } = mount()
+    expect(chat().voicePreparing).toBe(true)
+
+    act(() => { globalStore.dispatch(setActiveSlot(BACKGROUND)) })
+    expect(chat().voicePreparing).toBe(false)
+
+    await act(async () => {
+      ws.simulateMessage({ type: 'voice_chunk', data: { request_id: 'test-voice', slot: ACTIVE, audio: btoa('late') } })
+      ws.simulateMessage({ type: 'voice_complete', data: { request_id: 'test-voice', slot: ACTIVE } })
+    })
+    expect(chat().voicePreparing).toBe(false)
+    expect(chat().voicePlaying).toBe(false)
+  })
+
   it('uses the WAV MIME type supplied with a local voice chunk', async () => {
     const blobs: Blob[] = []
     URL.createObjectURL = vi.fn((blob: Blob) => {

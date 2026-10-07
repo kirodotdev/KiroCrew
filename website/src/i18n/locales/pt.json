@@ -5634,6 +5634,11 @@
       "blocked": "O navegador bloqueou a reprodução automática. Abra “{{moreActions}}” abaixo da resposta concluída e selecione “{{speak}}”.",
       "settings": "Configurações de “{{speak}}” (texto para fala)"
     },
+    "voicePlaybackBar": {
+      "preparing": "Preparando o áudio…",
+      "playing": "Lendo em voz alta",
+      "stop": "Parar a leitura"
+    },
     "avatarBuilder": {
       "apply": "Aplicar",
       "apply_hint": "Aplicar mantém estas alterações aqui; pressione “Salvar alterações” no editor da equipe para mantê-las. Cancelar descarta tudo o que você alterou aqui, incluindo uma redefinição.",

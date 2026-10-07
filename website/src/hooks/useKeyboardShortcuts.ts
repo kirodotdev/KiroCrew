@@ -1131,8 +1131,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   // speech kept playing. Does NOT preventDefault/stopPropagation: Escape must
   // still close whatever it normally closes. Fires the existing `voice-stop`
   // window event (handled by useWebSocket's stopVoice: pause active <audio>,
-  // drop queued chunks, clear voicePlaying). No-op unless audio is actually
-  // playing and shortcuts are enabled; voicePlaying is read live from the store,
+  // drop queued chunks, clear voicePlaying). No-op unless speech is being
+  // prepared or played and shortcuts are enabled; both flags are read live from the store,
   // and this hook mounts once at the App root, so one listener covers every page.
   // Deliberately ignores `disabled` (set while the shortcuts modal is open):
   // Escape should stop speech consistently from any overlay, including the
@@ -1141,7 +1141,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (!enabled) return
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (!appStore.getState().chat.voicePlaying) return
+      const { voicePlaying, voicePreparing } = appStore.getState().chat
+      if (!voicePlaying && !voicePreparing) return
       window.dispatchEvent(new Event('voice-stop'))
     }
     document.addEventListener('keydown', onEsc, true)

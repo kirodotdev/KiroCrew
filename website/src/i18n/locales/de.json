@@ -5543,6 +5543,11 @@
       "blocked": "Dein Browser hat die automatische Wiedergabe blockiert. Öffne unter der abgeschlossenen Antwort „{{moreActions}}“ und wähle „{{speak}}“ aus.",
       "settings": "Einstellungen für „{{speak}}“ (Text zu Sprache)"
     },
+    "voicePlaybackBar": {
+      "preparing": "Audio wird vorbereitet…",
+      "playing": "Wird vorgelesen",
+      "stop": "Vorlesen stoppen"
+    },
     "avatarBuilder": {
       "apply": "Übernehmen",
       "apply_hint": "Anwenden behält diese Änderungen hier; drücke „Änderungen speichern“ im Crew-Editor, um sie zu behalten. Abbrechen verwirft alles, was du hier geändert hast – einschließlich eines Zurücksetzens.",

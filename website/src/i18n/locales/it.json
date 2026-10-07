@@ -5634,6 +5634,11 @@
       "blocked": "Il browser ha bloccato la riproduzione automatica. Apri «{{moreActions}}» sotto la risposta completata, poi seleziona «{{speak}}».",
       "settings": "Impostazioni di «{{speak}}» (Da testo a voce)"
     },
+    "voicePlaybackBar": {
+      "preparing": "Preparazione dell’audio…",
+      "playing": "Lettura ad alta voce",
+      "stop": "Interrompi la lettura"
+    },
     "avatarBuilder": {
       "apply": "Applica",
       "apply_hint": "Applica mantiene queste modifiche qui; premi «Salva modifiche» nell’editor della squadra per conservarle. Annulla scarta tutto ciò che hai modificato qui, compreso un ripristino.",

@@ -1594,6 +1594,11 @@
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
       "settings": "{{speak}} settings (Text-to-speech)"
     },
+    "voicePlaybackBar": {
+      "preparing": "Preparing audio…",
+      "playing": "Reading aloud",
+      "stop": "Stop reading"
+    },
     "avatarBuilder": {
       "apply": "Apply",
       "apply_hint": "Apply keeps these changes here; press “Save changes” in the crew editor to keep them. Cancel discards everything you changed here, including a reset.",

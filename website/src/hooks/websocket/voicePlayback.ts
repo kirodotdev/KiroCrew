@@ -6,7 +6,7 @@
  *  transcript's stream and turn boundaries here. */
 import { useMemo, useRef } from 'react'
 import { store, type AppDispatch } from '../../store'
-import { setVoicePlaying, setVoiceAudio } from '../../store/chatSlice'
+import { setVoicePlaying, setVoicePreparing, setVoiceAudio } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
@@ -59,6 +59,8 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const pcmPlayerRef = useRef<VoicePcmPlayer | null>(null)
   const voiceEpochRef = useRef(0)
   const voiceRequestsRef = useRef(new Map<string, string>())
+  // Active-slot requests that have not delivered audio yet, behind `voicePreparing`.
+  const awaitingAudioRef = useRef(new Set<string>())
   const pendingVoiceRef = useRef<{ slot: string; text: string; request_id: string } | null>(null)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
@@ -70,6 +72,17 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
 
   return useMemo<VoicePlayback>(() => {
+    const awaitAudio = (requestId: string) => {
+      const wasPreparing = awaitingAudioRef.current.size > 0
+      awaitingAudioRef.current.add(requestId)
+      if (!wasPreparing) dispatch(setVoicePreparing(true))
+    }
+    const audioSettled = (requestId: string) => {
+      if (awaitingAudioRef.current.delete(requestId) && awaitingAudioRef.current.size === 0) {
+        dispatch(setVoicePreparing(false))
+      }
+    }
+
     const stopVoice = () => {
       voiceMutedRef.current = true
       voiceEpochRef.current++
@@ -77,6 +90,10 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         void api.voiceCancel?.(slot, requestId).catch(() => {})
       }
       voiceRequestsRef.current.clear()
+      if (awaitingAudioRef.current.size) {
+        awaitingAudioRef.current.clear()
+        dispatch(setVoicePreparing(false))
+      }
       pendingVoiceRef.current = null
       synthChainRef.current = Promise.resolve()
       pcmPlayerRef.current?.stop()
@@ -140,6 +157,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       const request = { slot, text, request_id }
       pendingVoiceRef.current = request
       voiceRequestsRef.current.set(request_id, slot)
+      awaitAudio(request_id)
       synthChainRef.current = synthChainRef.current.then(async () => {
         if (pendingVoiceRef.current === request) pendingVoiceRef.current = null
         if (epoch !== voiceEpochRef.current || voiceMutedRef.current) return
@@ -147,6 +165,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           await api.voiceSynthesize(slot, request.text, { request_id })
         } catch {
           if (!voiceRequestsRef.current.delete(request_id)) return
+          audioSettled(request_id)
           if (epoch === voiceEpochRef.current && slot === store.getState().chat.activeSlot) {
             reportVoiceFailure({ slot, request_id, code: 'voice_synthesis_failed' })
           }
@@ -270,16 +289,19 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
             reportVoiceFailure({ slot: data.slot, request_id, code: 'voice_playback_failed' })
           }
         }
+        audioSettled(request_id)
       },
       onVoiceComplete(data) {
         const { audio: b64, request_id } = data as { audio?: string; request_id?: string }
         if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot) return
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
+        audioSettled(request_id)
         if (b64) dispatch(setVoiceAudio(b64))
       },
       onVoiceError(data) {
         const { request_id, code } = data as { request_id?: string; code?: string }
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
+        audioSettled(request_id)
         if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot || code === 'voice_cancelled') return
         reportVoiceFailure({ slot: data.slot, request_id, code: code || 'voice_synthesis_failed' })
       },
@@ -293,12 +315,14 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           voiceRequestsRef.current.set(request_id, slot)
           if (slot === store.getState().chat.activeSlot) {
             voiceMutedRef.current = false
+            awaitAudio(request_id)
             if (typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
           }
         }
         const onVoiceFailed = (event: Event) => {
           const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string }>).detail
           if (!voiceRequestsRef.current.delete(detail.request_id)) return
+          audioSettled(detail.request_id)
           if (!voiceMutedRef.current && detail.slot === store.getState().chat.activeSlot) {
             reportVoiceFailure(detail)
           }

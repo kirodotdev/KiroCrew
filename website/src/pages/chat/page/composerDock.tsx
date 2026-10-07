@@ -3,16 +3,17 @@ import { AnimatePresence } from 'framer-motion'
 
 import ErrorNotice from '../../../components/ErrorNotice'
 import { TipCard, type useTipTrigger } from '../../../components/TipCard'
+import VoicePlaybackBar from '../../../components/VoicePlaybackBar'
 import { i18nT } from '../../../i18n/t'
 import type { RootState } from '../../../store'
 import FolderSuggestionCard from '../FolderSuggestionCard'
 import type { useComposerSessionControls } from './sessionControls'
 
 /**
- * The memoized band the composer dock shows above the composer
- * (session-control failures, the folder-suggestion card, the ambient tip).
- * The dock's own measurement — the clearance the scroller underneath pays —
- * is `pages/chat/composerDockMetrics.ts`, shared with the pane.
+ * The memoized band the composer dock shows above the composer (read-aloud
+ * playback, session-control failures, the folder-suggestion card, the ambient
+ * tip). The dock's own measurement — the clearance the scroller underneath
+ * pays — is `pages/chat/composerDockMetrics.ts`, shared with the pane.
  */
 
 interface ComposerAboveBandOptions {
@@ -50,6 +51,7 @@ export function useComposerAboveBand({
     void langGen
     return (
     <>
+      <VoicePlaybackBar />
       {/* Session-control failures surface HERE, beside the chips they
           are about, rather than on the chat. Both hooks fail closed —
           a failed `/api/apps` renders no chips, a failed status probe
