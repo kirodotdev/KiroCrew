@@ -30,8 +30,13 @@ const CRED_PATTERNS: RegExp[] = [
   // The residual false positive is therefore shared with the backend rather than
   // unique to this mirror, which keeps it ONE defect to fix in one place. Closing
   // it needs a structural test, not a boundary: decode segment one as a JOSE
-  // header and require `alg`/`enc`. That belongs in the backend first, with this
-  // mirror following, so it is deliberately out of scope here.
+  // header and require a JSON object. The backend carries that check at every
+  // consumer of the shared spelling (`src/kiro_crew/jwt_header.py`, applied by
+  // the scrubber, the log floor and the decisions gate), so a backend surface no
+  // longer mangles `honeyJar.atlassian.net` (#8476). This mirror still matches
+  // on shape alone -- deliberately a separate change, pinned as the current
+  // behaviour in `sanitizeCredentials.test.ts` -- and the pattern text stays
+  // byte-identical to the backend's so the parity test keeps holding.
   /eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}/g,
   // Two-segment dashboard link token (`base64url(payload).base64url(hmac_sig)`).
   // `security.py` carries the full derivation of both bounds and is the single

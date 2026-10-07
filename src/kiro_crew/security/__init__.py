@@ -44,6 +44,7 @@ from kiro_crew.identity_stores import (
     AUTH_SQLITE_SIDECAR_SUFFIXES,
     fenced_home_dirs,
 )
+from kiro_crew.jwt_header import is_json_object_segment
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MEMORY_STORES_DIR_NAME,
@@ -494,7 +495,7 @@ def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
     m = _PARTIAL_JWT_TAIL_RE.search(buf)
     while m is not None and "." in m.group():
         header = m.group().split(".", 1)[0]
-        if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
+        if header.find("eyJ", 1) != -1 or is_json_object_segment(header):
             break
         m = _PARTIAL_JWT_TAIL_RE.search(buf, m.start() + 1)
     return m

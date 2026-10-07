@@ -66,6 +66,7 @@ from kiro_crew.decisions.types import (
     is_model_id,
     question_texts,
 )
+from kiro_crew.jwt_header import jwt_matches
 
 logger = logging.getLogger(__name__)
 
@@ -197,13 +198,20 @@ SCRUB_ERRORS = (
 #: here because ``credential_patterns`` exports pattern SOURCE strings. This is the
 #: scrubber-side AWS spelling, not the wider redaction one, and not the whole of
 #: the scrub: ``VENDOR_TOKEN_PATTERNS`` carries a generic ``sk-`` form that
-#: ``redact_credentials`` does not, which is why both run.
+#: ``redact_credentials`` does not, which is why both run. The JWT spelling is
+#: NOT in this alternation: it is shape-only, so its hits need a JSON-object
+#: header before they refuse, and a plain ``search`` with it is quadratic on a
+#: dot-less run of ``eyJ``. ``jwt_header.jwt_matches`` scans it instead -- the
+#: same check the scrubber applies -- so a state that merely names
+#: ``honeyJar.atlassian.net`` is not a credential.
 _CREDENTIAL_RE = re.compile(
-    "|".join(
-        [_cred.AWS_KEY_ID, _cred.JWT_MULTI_SEGMENT]
-        + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS]
-    )
+    "|".join([_cred.AWS_KEY_ID] + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS])
 )
+
+
+def _holds_local_credential(text: str) -> bool:
+    """Whether :data:`_CREDENTIAL_RE` or the validated JWT scan finds a credential."""
+    return _CREDENTIAL_RE.search(text) is not None or next(jwt_matches(text), None) is not None
 
 
 def _probability(value: object) -> bool:
@@ -838,7 +846,7 @@ def scrub_reason(
     if not is_model_id(model):
         return ERROR_SCRUBBED_MODEL
     text = _scan_text(state, questions, model)
-    if _CREDENTIAL_RE.search(text) is not None:
+    if _holds_local_credential(text):
         return ERROR_SCRUBBED_CREDENTIAL
     try:
         from kiro_crew.security.redaction import redact_credentials
