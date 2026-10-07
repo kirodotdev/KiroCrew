@@ -965,6 +965,14 @@ def test_member_session_cannot_be_rebound_and_malformed_carrier_refuses(member_s
         store_of_session(ConversationLog(), key)
 
 
+#: Lost-run ceiling for the allocation below, not a race to tune. MEASURED: the work
+#: before the patched native start takes 4-9 ms idle and 10-24 ms with every core of
+#: a 32-core host busy, and over 5 s on a loaded Windows CI shard.
+#: 60 s is over 10x that worst case and half the suite's 120 s ``--timeout``, so a
+#: hung allocation still fails here by name instead of killing the xdist worker.
+_ALLOCATION_LOST_RUN_CEILING_SECS = 60.0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
 async def test_session_allocation_sets_member_context_and_mode_before_native_start(
@@ -997,7 +1005,8 @@ async def test_session_allocation_sets_member_context_and_mode_before_native_sta
     try:
         with pytest.raises(RuntimeError, match="observed admitted native launch"):
             await asyncio.wait_for(
-                manager.get_or_create(key, agent="kirocrew", model="auto", cwd=str(tmp_path)), 5
+                manager.get_or_create(key, agent="kirocrew", model="auto", cwd=str(tmp_path)),
+                _ALLOCATION_LOST_RUN_CEILING_SECS,
             )
         assert key not in manager._sessions
         claim.assert_not_awaited()
