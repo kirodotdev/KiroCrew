@@ -80,20 +80,17 @@ const SEED_FOCUS_WAIT_MS = 5000
 export default function SideChat({ slot }: { slot: string }) {
   const connected = useConnected()
   const dispatch = useAppDispatch()
-  // The footer describes what the backend enforces, so it follows the selected
-  // harness: the derived `<agent>--readonly` spec is a kiro-cli mechanism, and on
-  // any other backend the side turn runs with no tools at all (REJECT_ALL). The
-  // kiro backend is the empty string (`ACP_BACKEND_KIRO`), so an unloaded or
-  // absent value reads as kiro — the default the gateway itself falls back to.
-  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
-    queryKey: ['kirocrewConfig'],
-    queryFn: () => api.kirocrewConfig(),
+  // The footer describes what the backend enforces, so it asks the gateway the
+  // question the side turn asks itself: the selected harness, and on claude
+  // whether the installed adapter honours the read-only session options. Keyed
+  // under `kirocrewConfig` so a config change, which invalidates that prefix,
+  // asks again. The footer claims nothing until the answer arrives and says so
+  // when it cannot.
+  const sideToolsQ = useQuery({
+    queryKey: ['kirocrewConfig', 'sideTools'],
+    queryFn: () => api.sideTools(),
   })
-  // Mirrors the backend: the read-only allowance is granted only when the
-  // loaded config names the kiro backend; a turn whose config cannot load runs
-  // with no tools, so the footer claims nothing until the config is loaded and
-  // says so when the load failed.
-  const readOnlyToolsAvailable = cfgQ.isSuccess && !(cfgQ.data?.agent?.acp_backend ?? '')
+  const readOnlyToolsAvailable = sideToolsQ.data?.read_only_tools === true
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
     s.chat.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -877,21 +874,24 @@ export default function SideChat({ slot }: { slot: string }) {
             promptOptimizer={false}
             connected={connected}
           />
-          {cfgQ.isError ? (
-            // No agent hand-off: the composer above still works (the turn runs
-            // without tools), so there is nothing for the agent to take over.
+          {sideToolsQ.isError ? (
+            // No hand-off: the unsent Side Chat question in the composer above
+            // is kept only in memory. The turn still runs, without tools, so
+            // there is nothing for the agent to take over.
             <ErrorNotice
               variant="inline"
               className="px-1 pt-1.5 text-[11px] leading-4"
               message={i18nT('pages.chat.sideChat.context_only_config_unavailable')}
               testId="side-chat-config-error"
             />
-          ) : cfgQ.isSuccess ? (
+          ) : sideToolsQ.isSuccess ? (
             <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
               {i18nT(
                 readOnlyToolsAvailable
                   ? 'pages.chat.sideChat.context_only_tools_unavailable'
-                  : 'pages.chat.sideChat.context_only_tools_unavailable_backend',
+                  : sideToolsQ.data?.claude_adapter_outdated === true
+                    ? 'pages.chat.sideChat.context_only_claude_adapter_outdated'
+                    : 'pages.chat.sideChat.context_only_tools_unavailable_backend',
               )}
             </div>
           ) : null}

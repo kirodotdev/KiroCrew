@@ -2037,8 +2037,9 @@ as the dashboard surface and `messaging.link._TELEMETRY_LOCAL_PREFIXES` labels
 it `thread`), and stream through `stream_and_collect`. The tool
 posture is the side chat's, for the side chat's reason -- the thread panel has
 no approval card to fall back to: on a harness in `ACP_BACKENDS_SIDE_READONLY`
-the turn runs the derived `<agent>--readonly` spec under `READ_ONLY`; elsewhere
-`REJECT_ALL`. Actions go through the main chat, and the boundary prompt says so.
+the turn runs under `READ_ONLY` on the side chat's confinement (kiro-cli: the
+derived `<agent>--readonly` spec; claude: a `side_read_only` session and the
+no-shell boundary `THREAD_BOUNDARY_PROMPT_NO_SHELL`); elsewhere `REJECT_ALL`. Actions go through the main chat, and the boundary prompt says so.
 The envelope (`build_thread_message`) is always sent whole (the
 instructions, up to 6 chat messages before the parent as background, the parent
 itself, the thread so far as its newest 40 replies plus a count of the earlier

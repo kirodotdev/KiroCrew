@@ -1485,6 +1485,44 @@ async def test_turn_without_tools_uses_reject_all_and_the_no_tools_boundary(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_claude_turn_runs_read_only_on_a_confined_session(tmp_path, monkeypatch):
+    """On claude the thread gets the Side Chat's claude shape: the base agent's
+    session requested with ``side_read_only``, READ_ONLY, and a boundary that
+    names no shell."""
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="claude")
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: True)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["agent"] == "kirocrew"
+    assert acquired["side_read_only"] is True
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_turn_on_an_unverified_adapter_runs_no_tools(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="claude")
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: False)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert "side_read_only" not in acquired
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
+    assert THREAD_BOUNDARY_PROMPT_NO_TOOLS in streamed["message"]
+
+
+@pytest.mark.asyncio
 async def test_empty_answer_becomes_the_visible_boundary_line(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)

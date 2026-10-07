@@ -525,6 +525,7 @@ class TestHookGateKwargs:
         "mcp_server_name": "mcp_server_name",
         "mcp_tool_name": "tool_name",
         "mcp_identity_trusted": "mcp_identity_trusted",
+        "harness_builtin_tool": "harness_builtin_tool",
         "spawn_target": "spawn_target",
     }
 
@@ -546,6 +547,7 @@ class TestHookGateKwargs:
             mcp_server_name="ops",
             tool_name="execute_bash",
             mcp_identity_trusted=True,
+            harness_builtin_tool="web_fetch",
             spawn_target="helper",
         )
         kwargs = hook_gate_kwargs(event)
@@ -558,6 +560,7 @@ class TestHookGateKwargs:
             "mcp_server_name": "ops",
             "mcp_tool_name": "execute_bash",
             "mcp_identity_trusted": True,
+            "harness_builtin_tool": "web_fetch",
             "spawn_target": "helper",
         }
         assert set(kwargs) == set(self.EVENT_FIELD_BY_KWARG)
@@ -583,6 +586,7 @@ class TestHookGateKwargs:
             "mcp_server_name": "",
             "mcp_tool_name": "",
             "mcp_identity_trusted": False,
+            "harness_builtin_tool": "",
             "spawn_target": "",
         }
         noisy = hook_gate_kwargs(
@@ -595,6 +599,7 @@ class TestHookGateKwargs:
                 mcp_server_name=None,
                 tool_name=None,
                 mcp_identity_trusted=None,
+                harness_builtin_tool=None,
                 spawn_target=None,
             )
         )

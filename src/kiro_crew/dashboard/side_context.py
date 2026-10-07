@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from kiro_crew.dashboard.side_prompts import (
-    SIDE_BOUNDARY_PROMPT,
-    SIDE_BOUNDARY_PROMPT_NO_TOOLS,
-    build_side_system_prompt,
-)
+from kiro_crew.dashboard.side_prompts import build_side_system_prompt, side_boundary_prompt
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -109,12 +105,13 @@ def build_side_message(
     *,
     is_first_turn: bool,
     tools_available: bool = True,
+    shell_available: bool = True,
 ) -> str:
     """First turn: full envelope (instructions + parent + side history + question).
     Subsequent turns: bare question (kiro-cli session retains framing).
 
-    ``tools_available`` picks the boundary prompt for the harness the turn runs
-    on: the read-only allowance (kiro-cli) or no tools at all (other backends).
+    ``tools_available`` and ``shell_available`` pick the boundary prompt for the
+    harness the turn runs on (:func:`side_prompts.side_boundary_prompt`).
 
     The first-turn envelope states that boundary TWICE on purpose: once inside
     the system envelope and again right before ``User:``, so the boundary is
@@ -124,13 +121,18 @@ def build_side_message(
     question = question.strip()
     if not is_first_turn:
         return question
-    parts: list[str] = [build_side_system_prompt(tools_available=tools_available)]
+    boundary = side_boundary_prompt(
+        tools_available=tools_available, shell_available=shell_available
+    )
+    parts: list[str] = [
+        build_side_system_prompt(tools_available=tools_available, shell_available=shell_available)
+    ]
     parent_block = _format_parent_snapshot(slot)
     if parent_block:
         parts.append(parent_block)
     side_block = _format_side_history(slot)
     if side_block:
         parts.append(side_block)
-    parts.append(SIDE_BOUNDARY_PROMPT if tools_available else SIDE_BOUNDARY_PROMPT_NO_TOOLS)
+    parts.append(boundary)
     parts.append(f"User: {question}")
     return "\n\n".join(parts)

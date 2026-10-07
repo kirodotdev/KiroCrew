@@ -104,6 +104,7 @@ from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
+from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.liveness import (
     EVIDENCE_SAMPLING,
@@ -751,6 +752,11 @@ _CLAUDE_PINNED_MODE = "default"
 #: pre-approved (the SDK's own contract: "deny if not pre-approved"), so it runs
 #: nothing ``default`` would not.
 _CLAUDE_GATE_ESCAPING_MODES = frozenset({"bypassPermissions", "auto"})
+
+#: The ``permissions.ask`` rules a claude Side Chat session carries inline. They
+#: send every web call to the host gate even where the user's own allow rule would
+#: pre-approve it, so an operator's deny on ``web_fetch`` / ``web_search`` binds.
+_CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = ("WebFetch", "WebSearch")
 
 #: The project settings files whose ``permissions.deny`` the exclusion carries
 #: inline: the project's own ``settings.local.json`` and a checked-in
@@ -1866,6 +1872,7 @@ class AcpClient:
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         shared_scratch: Path | None = None,
+        side_read_only: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -1886,6 +1893,12 @@ class AcpClient:
         # what _write_claude_local_settings leaves in place when nothing asked
         # for a mode.
         self._permission_mode = permission_mode
+        # A Side Chat session that may run read-only tools. On claude it starts
+        # with only the read built-ins and no MCP server, and its mode is pinned
+        # to ``default`` (_claude_session_meta, _pin_claude_starting_mode). Inert
+        # on the kiro-cli path, where the derived ``<agent>--readonly`` spec
+        # confines the session instead.
+        self._side_read_only = side_read_only
         # The session tree's work directory when this client is a DEDICATED
         # subagent process spawned on a parent's behalf: re-validated at spawn
         # (``agent_scratch.shared_scratch_window``) and mounted as a second
@@ -3810,6 +3823,12 @@ class AcpClient:
         projection's record as well as the live flag, so an array delivered
         under it always ships beside it; excluding the tier is never the
         widening direction.
+
+        A Side Chat session (``side_read_only``) also gets the read-only shape:
+        ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
+        and inline settings that add the web ``ask`` rules and turn settings
+        hooks off. Its setting sources are not narrowed further, because the
+        user's settings carry the provider routing and model ids the session needs.
         """
         options: dict[str, Any] = {}
         excluded = getattr(self, "_claude_local_settings_excluded", False) or getattr(
@@ -3823,6 +3842,24 @@ class AcpClient:
                 inline = getattr(self, "_session_mcp_inline_settings", None)
             if isinstance(inline, dict) and inline:
                 options["settings"] = dict(inline)
+        if getattr(self, "_side_read_only", False):
+            # A Side Chat session: only the read built-ins exist, so no allow rule
+            # in the user's settings can pre-approve a write. No MCP server either
+            # (the wire array is empty, and strictMcpConfig keeps out the user's,
+            # the project's and plugins' servers). Settings and plugin hooks are
+            # shell commands claude runs unprompted, so they are off, as in the
+            # kiro-cli derived spec. A user's PreToolUse deny hook is off with them.
+            options["tools"] = list(CLAUDE_READ_ONLY_BUILTINS)
+            options["strictMcpConfig"] = True
+            options["allowDangerouslySkipPermissions"] = False
+            side_settings = dict(options.get("settings") or {})
+            side_permissions = dict(side_settings.get("permissions") or {})
+            ask = list(side_permissions.get("ask") or [])
+            ask.extend(rule for rule in _CLAUDE_SIDE_READ_ONLY_ASK_RULES if rule not in ask)
+            side_permissions["ask"] = ask
+            side_settings["permissions"] = side_permissions
+            side_settings["disableAllHooks"] = True
+            options["settings"] = side_settings
         # What this envelope ships, recorded as it is built: the session freezes
         # these deny and ask rules at creation, and a later re-seed (``_reseed_after_capture``)
         # moves the live inline settings without reaching the session.
@@ -3892,15 +3929,16 @@ class AcpClient:
         between. A pin that fails stops the harness: the session never runs with
         Crew's tools under a mode that approves on its own.
 
-        Runs only on the exclusion path (:meth:`_claude_session_excludes_local`),
-        the one shape this change opens. A session whose settings file Crew
-        wrote is not pinned: a user ``~/.claude`` mode reaching it is the
-        inherited-config gap the spec names, not something this path adds. The
-        exclusion is never taken when Crew requested a mode of its own, or when
-        the installed adapter is below :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`;
-        if the adapter that answered the handshake reports a version below it
-        anyway, the session is stopped here. A session without the exclusion
-        gains no call (harness-parity H13).
+        Runs only on the exclusion path (:meth:`_claude_session_excludes_local`)
+        and on a Side Chat session (``side_read_only``), whose READ_ONLY gate
+        has no approver behind it. A session whose settings file Crew wrote is
+        not pinned: a user ``~/.claude`` mode reaching it is the inherited-config
+        gap the spec names, not something this path adds. The exclusion is never
+        taken when Crew requested a mode of its own, or when the installed adapter
+        is below :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, and Side Chat
+        runs no tools on such an adapter; if the adapter that answered the
+        handshake reports a version below it anyway, the session is stopped here.
+        Any other session gains no call (harness-parity H13).
 
         Observed on claude-agent-acp 0.84.0
         (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -3913,18 +3951,20 @@ class AcpClient:
         re-read (:meth:`_verify_claude_project_denies_unchanged`), closing the
         window between the writer's read and the session's creation.
         """
-        if not self._claude_session_excludes_local():
+        excludes_local = self._claude_session_excludes_local()
+        if not (excludes_local or getattr(self, "_side_read_only", False)):
             return
         if self._claude_adapter_below_setting_sources_floor():
             # The installed package passed the floor, but the adapter that answered
-            # the handshake did not: it may have loaded the project tiers anyway.
+            # the handshake did not: it may have ignored the session's options.
             await self._kill_process(force=True)
             raise AcpError(
                 "the claude-agent-acp that answered the handshake is not verified to "
-                "honour settingSources, so a session that leaves the project's settings "
-                "out was stopped before its first prompt"
+                "honour settingSources or the other session options, so a session "
+                "that depends on them was stopped before its first prompt"
             )
-        await self._verify_claude_project_denies_unchanged()
+        if excludes_local:
+            await self._verify_claude_project_denies_unchanged()
         session_id = resp.get("sessionId") or self._session_id
         modes = resp.get("modes")
         current = modes.get("currentModeId") if isinstance(modes, dict) else None
@@ -6991,8 +7031,16 @@ class AcpClient:
             # kiro-cli, and adapter work must not add a scheduling or failure
             # point to that backend's construction path (harness-parity H13).
             # The pooled read stays off the loop, as it already was.
+            # A claude Side Chat session mounts no server: READ_ONLY refuses every
+            # MCP call, and a tool that is not mounted cannot be pre-approved by
+            # a settings allow rule. Checked at the splice, not in the seam, so
+            # an edition's override of the seam cannot mount servers there.
             "mcpServers": [
-                *(self._claude_session_mcp_servers() if self._is_claude else []),
+                *(
+                    self._claude_session_mcp_servers()
+                    if self._is_claude and not getattr(self, "_side_read_only", False)
+                    else []
+                ),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -7060,7 +7108,11 @@ class AcpClient:
             resolved_mcp = await asyncio.to_thread(self._resolve_session_mcp_servers)
             self._session_mcp_cache = resolved_mcp
             new_params["mcpServers"] = [
-                *(self._claude_session_mcp_servers() if self._is_claude else []),
+                *(
+                    self._claude_session_mcp_servers()
+                    if self._is_claude and not getattr(self, "_side_read_only", False)
+                    else []
+                ),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -7213,7 +7265,11 @@ class AcpClient:
                         # broker. Gated per backend, and in-memory here vs
                         # off-loop there, for the same reasons as session/new.
                         "mcpServers": [
-                            *(self._claude_session_mcp_servers() if self._is_claude else []),
+                            *(
+                                self._claude_session_mcp_servers()
+                                if self._is_claude and not getattr(self, "_side_read_only", False)
+                                else []
+                            ),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -11528,6 +11584,7 @@ class AcpClient:
             kas_consent_meta=self.backend == ACP_BACKEND_KAS,
             harness_backend=self.backend,
             harness_mcp_servers=self._harness_mcp_server_names(),
+            side_read_only=getattr(self, "_side_read_only", False),
         )
         if event is None:
             return None

@@ -1046,6 +1046,77 @@ async def test_read_only_policy_rejects_a_read_looking_title_alone():
     assert provider.approved == []
 
 
+# claude-agent-acp stamps no `_meta.kiro` identity. Its read built-ins are named
+# by `harness_builtin_tool`, mapped from the tool name the adapter stamped on the
+# preceding tool_call frame, and the same kind narrowing applies.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("builtin", "kind", "title"),
+    [
+        ("web_search", "fetch", 'Search "release notes"'),
+        ("web_fetch", "fetch", "Fetch https://example.com/changelog"),
+        ("fs_read", "read", "Read /etc/hosts"),
+    ],
+    ids=["WebSearch", "WebFetch", "Read"],
+)
+async def test_read_only_policy_approves_a_claude_read_tool(builtin, kind, title):
+    provider = await _run_read_only(
+        _read_only_event(title=title, tool_kind=kind, harness_builtin_tool=builtin)
+    )
+    assert provider.approved == ["r1"]
+    assert provider.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_rejects_a_claude_search_kind():
+    """claude's Grep and Glob are kind ``search``. The kind may only narrow, so
+    the one that reaches the gate (outside the work dir) is refused."""
+    provider = await _run_read_only(
+        _read_only_event(title="grep TODO", tool_kind="search", harness_builtin_tool="grep")
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_rejects_a_claude_builtin_name_with_a_server():
+    provider = await _run_read_only(
+        _read_only_event(
+            tool_kind="fetch", harness_builtin_tool="web_fetch", mcp_server_name="files:srv"
+        )
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_denies_a_claude_web_tool_an_operator_denied():
+    """A deny on the kiro-cli name binds claude's tool too: the mapped name is a
+    deny target, so the read-only proof never runs."""
+    from kiro_crew.hooks import HookManager, HooksConfig
+
+    provider = _ScriptedProvider(
+        _permission_script(
+            _read_only_event(
+                title="Fetch https://example.com",
+                tool_kind="fetch",
+                harness_builtin_tool="web_fetch",
+            )
+        )
+    )
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.READ_ONLY,
+        hooks=HookManager(HooksConfig(auto_deny_tools=["web_fetch"])),
+        retry_transient=False,
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
 @pytest.mark.asyncio
 async def test_hook_based_policy_still_approves_a_read_kind_tool():
     """HOOK_BASED is unchanged: a `read`-kind call with no host identity is

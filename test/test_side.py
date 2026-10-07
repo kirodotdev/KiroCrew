@@ -32,6 +32,7 @@ from kiro_crew.dashboard.handlers.side import (
     api_side_close,
     api_side_open,
     api_side_stop,
+    api_side_tools,
     api_side_turn,
 )
 from kiro_crew.dashboard.side_prompts import SIDE_BOUNDARY_PROMPT
@@ -71,6 +72,7 @@ def _make_side_app(
     app.router.add_post("/api/chat/slots/{slot}/side/turn", api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/stop", api_side_stop)
     app.router.add_post("/api/chat/slots/{slot}/side/close", api_side_close)
+    app.router.add_get("/api/chat/side/tools", api_side_tools)
     return app
 
 
@@ -995,6 +997,54 @@ def test_dashboard_bound_profile_governs_a_side_turn(tmp_path, monkeypatch):
         gp.reset_store()
 
 
+def test_dashboard_bound_profile_governs_a_claude_side_read(tmp_path, monkeypatch):
+    """A profile that denies ``web_search`` refuses claude's WebSearch on a side
+    turn too. claude states no ``_meta.kiro`` identity and its title is prose
+    (``Search "…"``), so only the mapped ``harness_builtin_tool`` can meet the
+    rule; without it the read-only proof would approve the denied search."""
+    import json
+
+    from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, HookManager
+    from kiro_crew.platform import governance_profiles as gp
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+    gp.reset_store()
+    try:
+        gate = HookManager()
+
+        def _claude_search():
+            return gate.on_tool_call(
+                'Search "release notes"',
+                session_key="side:parent",
+                agent="kirocrew",
+                tool_kind="fetch",
+                harness_builtin_tool="web_search",
+                classifier_only=True,
+            )
+
+        unbound = _claude_search()
+        assert unbound.action == TOOL_AUTO_APPROVE and unbound.read_only
+
+        (profiles / "no-web-search.json").write_text(
+            json.dumps(
+                {
+                    "name": "no-web-search",
+                    "bind": {"type": "surface", "id": "dashboard"},
+                    "tools": {"mode": "deny", "deny": ["web_search"]},
+                }
+            )
+        )
+        gp.reset_store()
+
+        denied = _claude_search()
+        assert denied.action == TOOL_DENY
+        assert "governance" in (denied.reason or "").lower()
+    finally:
+        gp.reset_store()
+
+
 @pytest.mark.asyncio
 async def test_side_turn_binds_its_session_to_the_derived_readonly_agent(
     tmp_path, monkeypatch, _published_readonly_spec
@@ -1375,7 +1425,7 @@ def _configure_backend(monkeypatch, backend: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_side_turn_grants_read_only_tools_only_on_the_kiro_backend(
+async def test_side_turn_on_the_kiro_backend_derives_the_read_only_spec(
     tmp_path, monkeypatch, _published_readonly_spec
 ):
     """On kiro-cli (``ACP_BACKENDS_SIDE_READONLY``) the turn derives the read-only
@@ -1411,24 +1461,15 @@ async def test_side_turn_grants_read_only_tools_only_on_the_kiro_backend(
     assert "lookups work here, but changes don't" in stream_mock.await_args.args[1]
 
 
-@pytest.mark.asyncio
-async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
-    tmp_path, monkeypatch, _published_readonly_spec
-):
-    """Off the capability set (claude-agent-acp here) the harness has its own
-    pre-approval surface the gate cannot see, so the turn keeps the pre-allowance
-    posture: the base agent under REJECT_ALL, no derived spec, and a prompt and
-    fallback that say tools are unavailable."""
-    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
-    from kiro_crew.llm_helpers import ToolApprovalPolicy
-
-    _configure_backend(monkeypatch, ACP_BACKEND_CLAUDE)
+def _side_turn_fixture(tmp_path, run_id: str):
+    """A state whose parent slot has an open sidecar with one pending question,
+    plus the list the fake ``get_or_create`` records each call's kwargs into."""
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user(_SIDE_QUESTION)
-    parent._side.last_run_id = "run-claude"
+    parent._side.last_run_id = run_id
     parent._side.is_complete = False
     created: list[dict] = []
 
@@ -1438,14 +1479,31 @@ async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
 
     state.sessions.get_or_create = _fake_get_or_create
     state.sessions.release = MagicMock()
+    return state, parent, events, created
+
+
+@pytest.mark.asyncio
+async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """Off the capability set (opencode here) the harness has its own
+    pre-approval surface the gate cannot see, so the turn keeps the pre-allowance
+    posture: the base agent under REJECT_ALL, no derived spec, and a prompt and
+    fallback that say tools are unavailable."""
+    from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    _configure_backend(monkeypatch, ACP_BACKEND_OPENCODE)
+    state, parent, events, created = _side_turn_fixture(tmp_path, "run-opencode")
     # An empty answer exercises the fallback copy for this branch.
     stream_mock = AsyncMock(return_value="")
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
 
-    await _run_side_turn(state, parent, "run-claude", _SIDE_QUESTION, is_first_turn=True)
+    await _run_side_turn(state, parent, "run-opencode", _SIDE_QUESTION, is_first_turn=True)
 
     assert _published_readonly_spec == [], "no derived spec on a non-kiro backend"
     assert not (created[0]["agent"] or "").endswith("--readonly")
+    assert "side_read_only" not in created[0]
     assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.REJECT_ALL
     prompt = stream_mock.await_args.args[1]
     assert "tools are unavailable here" in prompt
@@ -1453,6 +1511,113 @@ async def test_side_turn_on_another_backend_runs_no_tools_and_derives_nothing(
     last = [d for t, d in events if d.get("role") == "assistant" and d.get("final")][-1]
     assert "can't use tools on this agent backend" in last["content"]
     assert parent._side.binding == (created[0]["agent"] or "", "", "reject_all")
+
+
+@pytest.mark.asyncio
+async def test_side_turn_on_claude_runs_read_only_on_a_confined_session(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """On claude the confinement is the session's own options, not a kiro agent
+    spec: nothing is derived, the base agent's session is requested with
+    ``side_read_only`` (which the claude client turns into the read-only shape),
+    the turn streams READ_ONLY, and the prompt names no shell, because the
+    session has none."""
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.dashboard.handlers import side as side_mod
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    _configure_backend(monkeypatch, ACP_BACKEND_CLAUDE)
+    monkeypatch.setattr(side_mod, "claude_adapter_honours_session_options", lambda: True)
+    state, parent, _events, created = _side_turn_fixture(tmp_path, "run-claude")
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+
+    await _run_side_turn(state, parent, "run-claude", _SIDE_QUESTION, is_first_turn=True)
+
+    assert _published_readonly_spec == [], "claude reads no kiro agent spec"
+    assert created[0]["side_read_only"] is True
+    assert not (created[0]["agent"] or "").endswith("--readonly")
+    assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
+    prompt = stream_mock.await_args.args[1]
+    assert "lookups work here, but changes don't" in prompt
+    assert "There is no shell here" in prompt
+    assert "git status" not in prompt
+    assert parent._side.binding == (created[0]["agent"] or "", "", "claude_read_only")
+
+
+@pytest.mark.asyncio
+async def test_side_turn_on_claude_with_an_unverified_adapter_runs_no_tools(
+    tmp_path, monkeypatch, _published_readonly_spec
+):
+    """An adapter below the verified options floor may ignore the read-only
+    shape, so the turn runs REJECT_ALL on an ordinary session instead."""
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.dashboard.handlers import side as side_mod
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    _configure_backend(monkeypatch, ACP_BACKEND_CLAUDE)
+    monkeypatch.setattr(side_mod, "claude_adapter_honours_session_options", lambda: False)
+    state, parent, _events, created = _side_turn_fixture(tmp_path, "run-old-claude")
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream_mock)
+
+    await _run_side_turn(state, parent, "run-old-claude", _SIDE_QUESTION, is_first_turn=True)
+
+    assert "side_read_only" not in created[0]
+    assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.REJECT_ALL
+    assert "tools are unavailable here" in stream_mock.await_args.args[1]
+    assert parent._side.binding == (created[0]["agent"] or "", "", "reject_all")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "adapter_verified", "read_only_tools", "claude_adapter_outdated"),
+    [
+        ("kiro", False, True, False),
+        ("claude", True, True, False),
+        ("claude", False, False, True),
+        ("opencode", True, False, False),
+    ],
+)
+async def test_side_tools_answers_what_a_side_turn_runs(
+    tmp_path, monkeypatch, backend, adapter_verified, read_only_tools, claude_adapter_outdated
+):
+    """The footer reads this, so it must give the turn's answer, adapter floor
+    included: an old claude adapter must not show a footer that promises lookups,
+    and is named as the reason so the footer can say to update it."""
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, ACP_BACKEND_OPENCODE
+    from kiro_crew.dashboard.handlers import side as side_mod
+
+    backends = {
+        "kiro": ACP_BACKEND_KIRO,
+        "claude": ACP_BACKEND_CLAUDE,
+        "opencode": ACP_BACKEND_OPENCODE,
+    }
+    _configure_backend(monkeypatch, backends[backend])
+    monkeypatch.setattr(
+        side_mod, "claude_adapter_honours_session_options", lambda: adapter_verified
+    )
+    async with TestClient(TestServer(_make_side_app(_make_state(tmp_path)))) as client:
+        resp = await client.get("/api/chat/side/tools")
+        assert resp.status == 200
+        assert await resp.json() == {
+            "read_only_tools": read_only_tools,
+            "claude_adapter_outdated": claude_adapter_outdated,
+        }
+
+
+@pytest.mark.asyncio
+async def test_side_tools_is_false_when_the_config_does_not_load(tmp_path, monkeypatch):
+    """A turn whose config cannot load runs no tools, so the footer says so too."""
+    from kiro_crew.dashboard.handlers import side as side_mod
+
+    def _unreadable(*args, **kwargs):
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(side_mod.KiroCrewConfig, "load", staticmethod(_unreadable))
+    async with TestClient(TestServer(_make_side_app(_make_state(tmp_path)))) as client:
+        resp = await client.get("/api/chat/side/tools")
+        assert await resp.json() == {"read_only_tools": False, "claude_adapter_outdated": False}
 
 
 @pytest.mark.asyncio

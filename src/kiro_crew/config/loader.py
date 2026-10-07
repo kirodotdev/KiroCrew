@@ -4711,6 +4711,10 @@ class KiroCrewConfig:
             # watchdog, which is the exact defect the callback exists to end.
             on_gate_acquired: Callable[..., None] | None = None,
             on_gate_queued: Callable[..., None] | None = None,
+            # A Side Chat session allowed read-only tools. NAMED for the same
+            # reason: swallowed by the catch-all, a claude side session would
+            # start with the user's full tool set under READ_ONLY.
+            side_read_only: bool = False,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -4852,6 +4856,7 @@ class KiroCrewConfig:
                 shared_scratch=shared_scratch,
                 on_gate_acquired=on_gate_acquired,
                 on_gate_queued=on_gate_queued,
+                side_read_only=side_read_only,
                 # Only a work dir DERIVED from a one-run key is the provider's
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).

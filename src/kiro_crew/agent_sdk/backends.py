@@ -2152,17 +2152,25 @@ ACP_BACKENDS_CLIENT_META_SETTINGS = frozenset({ACP_BACKEND_KAS})
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
-# ``ToolApprovalPolicy.READ_ONLY``. The allowance rests on a kiro-cli agent-spec
-# mechanism: the side session is bound to a derived ``<agent>--readonly`` spec
-# (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
-# raise a permission request the host gate judges. Another harness has its own
-# pre-approval surface — claude-agent-acp's ``permissions.allow`` /
-# ``bypassPermissions``, KAS ``permissions`` rules read from its own store — that
-# neither the derived spec nor the gate can see, so a call it pre-approves would
-# run with no READ_ONLY decision and no SEL row. Off this set the side turn runs
-# ``REJECT_ALL``, the pre-allowance posture, and its footer says tools are
-# unavailable there. A harness joins by demonstrating that every tool call it
-# serves reaches ``session/request_permission`` under the derived spec.
+# ``ToolApprovalPolicy.READ_ONLY``. A harness has its own pre-approval surface
+# (claude-agent-acp's ``permissions.allow`` / ``bypassPermissions``, KAS
+# ``permissions`` rules read from its own store) that the host gate cannot see,
+# so a call it pre-approves would run with no READ_ONLY decision and no SEL row.
+# A member therefore starts its side session in a shape where no pre-approval can
+# reach a write, and every call it does not run natively as a read raises a
+# permission request the gate judges:
+#
+# * kiro-cli: the session is bound to a derived ``<agent>--readonly`` spec
+#   (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
+#   raise a permission request.
+# * claude-agent-acp: its settings cannot be emptied from outside, so the session
+#   is started with only the read built-ins, no MCP server, settings hooks
+#   disabled and an ``ask`` rule on the web tools, then pinned to ``default``
+#   mode (``AcpClient._claude_session_meta``, ``_pin_claude_starting_mode``). No
+#   write tool exists there for an allow rule to pre-approve.
+#
+# Off this set the side turn runs ``REJECT_ALL``, the pre-allowance posture, and
+# its footer says tools are unavailable there.
 #
 # opencode is NOT a member. Its tool calls do reach ``session/request_permission``
 # (captured live), but that is by way of its own ``permission`` setting, not the
@@ -2180,7 +2188,7 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # see: that posture is enforced by the harness's own sandbox, which denies rather
 # than asks, so no call reaches the host gate and no SEL row is written. A side turn
 # on it runs ``REJECT_ALL``.
-ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
+ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 
 # Backends whose process answers ``session/new``, ``session/load`` and
 # ``session/set_mode`` one at a time, so a session start sent while one of those is

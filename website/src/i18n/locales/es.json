@@ -10932,6 +10932,7 @@
         "off_record_marker": "Chat lateral · no se guarda en la conversación",
         "context_only_tools_unavailable": "Solo lectura · Aquí se puede consultar información, pero no hacer cambios. Usa el chat principal para realizar acciones.",
         "context_only_tools_unavailable_backend": "Solo contexto · Con este backend de agente, las herramientas no están disponibles aquí. Usa el chat principal para realizar acciones.",
+        "context_only_claude_adapter_outdated": "Solo contexto · Actualiza claude-agent-acp para usar aquí herramientas de solo lectura. Usa el chat principal para realizar acciones.",
         "context_only_config_unavailable": "No se pudo cargar la configuración del agente, así que el chat lateral funciona sin herramientas. Usa el chat principal para realizar acciones.",
         "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "question_too_long_with_paste": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}}, contando el texto pegado contraído). Selecciona la píldora del pegado y pulsa Retroceso para quitarla, o pega un fragmento más corto.",

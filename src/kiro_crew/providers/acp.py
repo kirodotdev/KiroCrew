@@ -471,6 +471,7 @@ class AcpProvider(LLMProvider):
         on_gate_acquired: Callable[..., None] | None = None,
         on_gate_queued: Callable[..., None] | None = None,
         disposable_work_dir: bool = False,
+        side_read_only: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -497,6 +498,9 @@ class AcpProvider(LLMProvider):
             # The parent session tree's work directory for a dedicated subagent
             # process; None for a session that starts its own tree.
             "shared_scratch": shared_scratch,
+            # A Side Chat session that may run read-only tools; the claude client
+            # starts it confined (AcpClient._claude_session_meta). Inert on kiro-cli.
+            "side_read_only": side_read_only,
         }
         if agent:
             kwargs["agent"] = agent
@@ -2499,6 +2503,9 @@ class AcpProvider(LLMProvider):
             # The harness's own tool id for a permission request. Dropping it
             # leaves every KAS call unnamed, so no tool-scoped spec hook fires.
             harness_tool_id=e.harness_tool_id,
+            # Dropping it leaves a claude read tool unprovable under READ_ONLY,
+            # so every Side Chat lookup on claude is refused.
+            harness_builtin_tool=e.harness_builtin_tool,
             # Canonical, non-model-authored tool identity (_meta.kiro). The
             # session-directive forgery gate in chat_runner keys on THESE, so
             # dropping them here silently discards every session-bound tool's

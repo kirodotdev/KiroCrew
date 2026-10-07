@@ -613,6 +613,22 @@ class TestGetOrCreatePoolIntegration:
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
 
     @pytest.mark.asyncio
+    async def test_skips_pool_for_a_side_read_only_session(self):
+        """A pooled child was started without the Side Chat read-only shape. A
+        side key is stateless, so the session cold-starts and the factory
+        receives the flag."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+
+        await mgr.get_or_create("side:parent:1", agent="kirocrew", side_read_only=True)
+
+        mgr._drain_and_claim.assert_not_awaited()
+        factory.assert_called_once()
+        assert factory.call_args.kwargs.get("side_read_only") is True
+
+    @pytest.mark.asyncio
     async def test_claims_pool_with_model_override_and_switches(self):
         """get_or_create claims pool even with model_override, then calls set_model."""
         from kiro_crew.providers.acp import AcpProvider

@@ -165,6 +165,13 @@ class TestFactoryThreadsTheMode:
         monkeypatch.setenv(CC_PERMISSION_MODE_ENV, CC_PERMISSION_MODE_AUTO)
         assert self._captured(ACP_BACKEND_KIRO, tmp_path)["permission_mode"] is None
 
+    def test_the_side_read_only_flag_reaches_the_provider(self, tmp_path: Path) -> None:
+        # Swallowed by the catch-all, a claude Side Chat session would start with
+        # the user's full tool set under READ_ONLY.
+        got = self._captured(ACP_BACKEND_CLAUDE, tmp_path, side_read_only=True)
+        assert got["side_read_only"] is True
+        assert self._captured(ACP_BACKEND_CLAUDE, tmp_path)["side_read_only"] is False
+
 
 class TestSeedOnDisk:
     """End to end: what the factory resolved is what the settings file carries.

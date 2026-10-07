@@ -140,3 +140,18 @@ def test_first_turn_states_the_boundary_again_right_before_the_question():
         )
         assert out.count(boundary) == 2
         assert out.endswith(f"{boundary}\n\nUser: and beta?")
+
+
+def test_side_prompt_names_no_shell_on_a_read_only_session_without_one():
+    """claude's side session has only the read built-ins: the prompt keeps the
+    read-only allowance but names no shell commands, so the model does not go
+    looking for a tool the session does not have."""
+    prompt = sc.build_side_message(
+        _slot([]), "where is the router?", is_first_turn=True, shell_available=False
+    )
+
+    assert "lookups work here, but changes don't" in prompt
+    assert "There is no shell here" in prompt
+    assert "git status" not in prompt
+    assert "Never claim that a tool is unconfigured" in prompt
+    assert "use the main chat to take action" in prompt

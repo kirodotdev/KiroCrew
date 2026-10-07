@@ -957,6 +957,12 @@ class AcpEvent:
     #: on a permission event, and only from that engine-written field, never from
     #: the title or the model's arguments. Empty when the frame carries none.
     harness_tool_id: str = ""
+    #: The kiro-cli read built-in (``fs_read``, ``web_fetch``, ...) a claude
+    #: permission request is for, mapped from the ``_meta.claudeCode.toolName``
+    #: claude-agent-acp stamped on the preceding ``tool_call`` frame. Set only on
+    #: a permission event and only from that cached stamp; empty on every other
+    #: backend and for every other tool.
+    harness_builtin_tool: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the
