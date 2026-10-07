@@ -138,24 +138,24 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 #   ``src/environment`` and ``settings.py`` are not dumps. A ``.`` or ``/`` before
 #   the verb is deliberately allowed: ``/usr/bin/env``, ``/bin/printenv`` and
 #   ``/proc/self/environ`` are the same dumps under a path and are the most
-#   ordinary spelling of the command. The filter word is bounded on its right the
-#   same way, so a quoted filter (``env | 'grep' AWS_SECRET``) still counts while
-#   ``grepfoo`` does not;
+#   ordinary spelling of the command. The filter word is bounded on BOTH sides, so
+#   ``'grep'`` and ``/usr/bin/grep`` count while ``grepfoo`` and the ``sed`` in ``used``
+#   do not; the prefixed spellings (``egrep``, ``gawk``, ``gsed``) are listed for it;
 # * the selector must be a name whose selection can PRINT a credential
 #   (``_AWS_VAR_SELECTOR``) -- ``env | grep AWS_REGION`` cannot, and is allowed.
 # A ``|`` must appear between the dump and the filter, which is what keeps ``env``
 # as a wrapper (``env FOO=1 cmd``), ``set -e; grep AWS_ file.txt`` and
 # ``cat .env; grep AWS_ config.py`` out.
 #
-# The gaps are deliberately plain ``.*`` -- ordered existence within one LINE, with
-# no attempt to confine the match to a single shell statement or pipeline stage.
+# The gaps are deliberately plain ``.*`` -- ordered existence across the text (the
+# matcher crosses line breaks), with no statement or pipeline-stage scoping.
 # A statement-scoped span has to treat ``;`` and ``&`` as separators, and a regex
 # cannot tell a separator from the identical character inside a quoted argument:
 # ``env | sed 's/;/x/' | grep AWS_SECRET_ACCESS_KEY`` and
 # ``env | grep -E 'a&b|AWS_SECRET'`` are ordinary credential dumps whose only
 # unusual feature is a quoted separator, and a span that stops there fails OPEN.
 # Guessing the other way costs an over-block instead: a ``set …`` earlier in the
-# line makes any later ``… | grep AWS_`` in the same line a match. That is the
+# text makes any later ``… | grep AWS_`` a match. That is the
 # residual, it is the safe direction, and it is the reason the gaps are not spans.
 #
 # What this rule does NOT cover, on purpose: a dump REDIRECTED to a file and read
@@ -169,7 +169,7 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 _ENV_DUMP_GREP_AWS_PATTERN = (
     rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
     + r".*\|.*"
-    + r"(?:grep|awk|sed)(?!\w)"
+    + r"(?<![\w-])(?:[a-z0-9]{0,5}grep|[gmn]?awk|g?sed|ssed)(?!\w)"
     + r".*"
     + _AWS_VAR_SELECTOR
 )

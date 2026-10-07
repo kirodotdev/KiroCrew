@@ -7346,6 +7346,26 @@ class TestEnvDumpGrepAwsNarrowing:
         # dump under another name -- named for the same reason ``environ`` is.
         "typeset | grep AWS_SECRET",
         "typeset | grep AWS_",
+        # Every filter spelling, prefixed or not. The filter word is bounded on its
+        # left so prose ending in ``sed`` is not a filter, which is exactly the bound
+        # that would drop these if the spellings were not listed.
+        "env | egrep AWS_",
+        "env | fgrep AWS_",
+        "env | zgrep AWS_",
+        "env | zegrep AWS_SECRET",
+        "env | rgrep AWS_",
+        "env | ugrep AWS_",
+        "env | ggrep AWS_",
+        "env | pcre2grep AWS_",
+        "env | gawk /AWS_/",
+        "env | mawk /AWS_/",
+        "env | nawk /AWS_/",
+        "env | gsed -n /AWS_/p",
+        "env | /usr/bin/grep AWS_",
+        "env | /usr/bin/gawk /AWS_/",
+        "env | xargs grep AWS_",
+        "env | xargs -0 grep AWS_",
+        "env | busybox grep AWS_",
     )
 
     # What refusing to guess at statement boundaries costs. Every one of these was
@@ -7411,6 +7431,17 @@ class TestEnvDumpGrepAwsNarrowing:
         "grep -rn AWS_SECRET_ACCESS_KEY src/",
         "cat .github/workflows/ci.yml | grep AWS_",
         "docker inspect x | grep AWS_REGION",
+        # Prose and markdown that merely END a word in a filter name. ``used``,
+        # ``closed``, ``proposed`` and ``caused`` are not ``sed``, across lines and
+        # in either case.
+        "We set goals | then used AWS tools",
+        "We set goals | then used aws",
+        "set\n|\nused\nAWS",
+        "env vars | the outage caused aws alarms",
+        "set the table | closed the AWS ticket",
+        # ``rg`` is not a listed filter, so a resource-group column beside AWS is prose.
+        "| Set up | RG | AWS |",
+        "| Status | Item |\n|---|---|\n| Closed | env work |\n| Proposed | set up AWS |",
     )
 
     # ``printenv NAME`` prints a value directly -- its own catalog rule, no pipe.
@@ -7552,6 +7583,31 @@ class TestEnvDumpGrepAwsNarrowing:
     def test_benign_commands_pass_both_tiers(self, cmd: str) -> None:
         assert not self._keystone(cmd), cmd
         assert not self._catalog_matcher().match(cmd), cmd
+
+    # A markdown body handed to a non-shell MCP tool is scanned with the command
+    # rules, so prose that reads as a filter would refuse the whole call.
+    MARKDOWN_TOOL_BODY = (
+        "## Weekly briefing\n\n"
+        "We set the agenda for the env cleanup.\n\n"
+        "| Item | Status |\n"
+        "|------|--------|\n"
+        "| Closed | the old pipeline |\n"
+        "| Proposed | move to AWS Lambda |\n"
+        "| Used | aws cli v2 |\n"
+    )
+
+    def test_a_markdown_tool_body_passes_the_command_rules(self) -> None:
+        from kiro_crew.llm_helpers import _first_tool_input_denial
+
+        assert _first_tool_input_denial([self.MARKDOWN_TOOL_BODY], None, command_rules=True) is None
+
+    def test_a_dump_in_a_tool_argument_is_still_refused(self) -> None:
+        from kiro_crew.llm_helpers import _first_tool_input_denial
+        from kiro_crew.security import _ENV_CRED_DENIAL_REASON
+
+        denial = _first_tool_input_denial(["env | egrep AWS_SECRET"], None, command_rules=True)
+        assert denial is not None
+        assert _ENV_CRED_DENIAL_REASON in denial
 
     @pytest.mark.parametrize("cmd", PRINTENV_DENIED)
     def test_printenv_of_a_secret_is_denied(self, cmd: str) -> None:
