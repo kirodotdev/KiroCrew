@@ -174,6 +174,7 @@ DECLARED_SITES = frozenset(
         ("session_storage.py", "_unit_paths"),
         ("session_storage.py", "_unlisted_crew_staging"),
         ("session_storage.py", "list_trash"),
+        ("session_work_dir.py", "_by_name_holds_only_residue"),
         ("session_work_dir.py", "_read_marker_by_name"),
         ("session_work_dir.py", "_read_run_dir_marker"),
         ("session_work_dir.py", "_reclaim_by_name"),

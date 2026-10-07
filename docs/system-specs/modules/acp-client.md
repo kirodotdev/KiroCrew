@@ -276,9 +276,13 @@ touched whatever its pid is doing, and an unreadable ledger sweeps nothing. Each
 wake is bounded by entries and wall clock, and streams the listing so a root of
 any size costs it counters, not a list. Directories older builds left carry no
 marker and are never reclaimed automatically; `kirocrew doctor` prints one line
-with two figures from one bounded walk judged by the sweep's own rule -- unmarked
-directories, and marked ones this data home cannot reclaim (another home's, an
-unreadable marker, or a gateway the ledger still retains) -- resolving the
+with three figures from one bounded walk judged by the sweep's own rule --
+unmarked directories, marked ones this data home cannot reclaim (another home's,
+an unreadable marker, or a gateway the ledger still retains), and marked ones the
+rule permits yet the sweep keeps for their contents (counted by a read-only
+residue probe that mirrors the sweep's keep rule -- the by-name walk keeping
+kiro-cli's `.kiro/agents`, or any marked folder that gained a file beyond Crew's
+residue) -- resolving the
 workspace root without creating it (`workspace_root(create=False)`) so the
 read-only report leaves no tree behind on a host where no gateway ever ran, and
 naming the manual remedy for an unmarked backlog. The doctor deletes nothing.

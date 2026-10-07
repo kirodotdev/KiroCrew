@@ -110,6 +110,15 @@ AGENTS_NOT_RESIDUE = pytest.mark.parametrize(
     ids=["a spec inside", "a folder inside", "a file named agents"],
 )
 
+# Which walks a test may force. Forcing ``supports_pinned_walk`` to True on a
+# platform that has no pinned walk drives the pinned open into ``pin_parent``,
+# which reads ``os.O_DIRECTORY`` -- absent on Windows -- and raises an uncaught
+# AttributeError. So the pinned case is offered only where production could
+# really take it; the by-name case runs everywhere.
+_PINNED_WALK_PARAMS = (
+    [True, False] if session_work_dir.pinned_fs.supports_pinned_walk() else [False]
+)
+
 
 class TestDisposableSessionKey:
     @pytest.mark.parametrize(
@@ -489,7 +498,7 @@ class TestReclaimRule:
         assert census == session_work_dir.RunDirCensus(kept=1)
         assert _tree(work_dir) == before
 
-    @pytest.mark.parametrize("pinned", [True, False])
+    @pytest.mark.parametrize("pinned", _PINNED_WALK_PARAMS)
     def test_kiro_clis_empty_agents_is_kept_only_on_the_by_name_walk(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned: bool
     ) -> None:
@@ -518,6 +527,44 @@ class TestReclaimRule:
         _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
         census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
         assert census == session_work_dir.RunDirCensus()
+
+    @pytest.mark.parametrize("pinned", _PINNED_WALK_PARAMS)
+    @pytest.mark.parametrize(
+        "plant",
+        [None, _spec_inside_agents, _folder_inside_agents, _file_named_agents],
+        ids=["residue only", "a spec inside", "a folder inside", "a file named agents"],
+    )
+    def test_the_probe_and_the_sweep_agree_on_every_tree(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        pinned: bool,
+        plant: Callable[[Path], None] | None,
+    ) -> None:
+        """The read-only probe and the sweep's reclaim never disagree on one tree.
+
+        The census mirrors the sweep's residue rule in its own read-only walk, so
+        the two could drift if a later change touches one copy and not the other.
+        This runs both over identical fixtures -- residue-only, and residue plus
+        each non-residue shape -- on each walk the platform offers, and asserts
+        ``_run_dir_holds_only_residue`` says *keep* exactly when
+        ``reclaim_session_work_dir`` leaves the directory. If they ever disagree,
+        this goes red.
+        """
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        probed = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        reclaimed = _residue_dir(tmp_path, "subagent_000000000000000a", owner_pid=PREDECESSOR_PID)
+        if plant is not None:
+            plant(probed)
+            plant(reclaimed)
+        probe_keeps = not session_work_dir._run_dir_holds_only_residue(probed)
+        # A permissive marker rule and no age gate isolate the residue decision,
+        # which is the only thing the probe judges.
+        swept = session_work_dir.reclaim_session_work_dir(
+            reclaimed, marker_permits=lambda _record: True
+        )
+        sweep_keeps = not swept
+        assert probe_keeps == sweep_keeps
 
     def test_kiro_clis_empty_agents_folder_is_residue(self, tmp_path: Path) -> None:
         """kiro-cli creates ``.kiro/agents`` in the folder it starts in; it must not pin the run."""
