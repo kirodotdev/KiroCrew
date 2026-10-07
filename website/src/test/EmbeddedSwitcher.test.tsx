@@ -243,20 +243,40 @@ describe('EmbeddedHostBridge (option B relay)', () => {
   })
 
   it('keeps the embedded Windows reserves in lock-step with the local .win-electron rule (CSS pin)', () => {
-    // jsdom applies no stylesheet, so the widths are pinned against the
+    // jsdom applies no stylesheet, so the reserve is pinned against the
     // index.css source, the same way App.focusMode.test.tsx pins the local
-    // pair. 142 lives in four rules; the local two already have a drift check,
-    // and this is the drift check for the embedded two.
+    // pair. The caption reserve is now zoom-aware: all four
+    // .win-electron/.embedded-win-inset rules reference the single
+    // --mc-win-caption-reserve custom property, so they cannot drift by
+    // construction. The main process sets that property inline on <html>
+    // (= :root) from its own zoom factor (142/zoom px); the static 142px
+    // default on :root covers the first paint, non-Electron contexts, and the
+    // cross-origin embedded pane (where the host var is not inherited — the
+    // pane's own :root default supplies the prior static reserve, unchanged by
+    // this change). This asserts both halves: the shared variable is used
+    // everywhere, and the 142px default lives on :root (NOT on .win-electron,
+    // which sits on the inner shell div and would shadow the inline <html>
+    // value for the header subtree). */
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.css'), 'utf8')
-    const localHeader = css.match(/\.win-electron header\.topbar-glass\{[\s\S]*?padding-right:(\d+)px/)
-    const embeddedHeader = css.match(/\.embedded-win-inset header\.topbar-glass\{padding-right:(\d+)px\}/)
-    const embeddedReserve = css.match(/\.embedded-win-inset \.mc-focus-mode \.focus-caption-reserve\{padding-right:(\d+)px\}/)
-    expect(embeddedHeader).not.toBeNull()
-    expect(embeddedReserve).not.toBeNull()
-    // Same band the LOCAL header clears: the embedded header is the same
-    // surface rendered by a different document, so the two must not drift.
-    expect(embeddedHeader![1]).toBe(localHeader![1])
-    expect(embeddedReserve![1]).toBe(embeddedHeader![1])
+    const reserveRule = /padding-right:var\(--mc-win-caption-reserve\)/g
+    const rootDefault = css.match(/:root\{--mc-win-caption-reserve:142px\}/)
+    const localHeader = css.match(/\.win-electron header\.topbar-glass\{\s*padding-right:var\(--mc-win-caption-reserve\)/)
+    const embeddedHeader = css.match(/\.embedded-win-inset header\.topbar-glass\{padding-right:var\(--mc-win-caption-reserve\)\}/)
+    const embeddedReserve = css.match(/\.embedded-win-inset \.mc-focus-mode \.focus-caption-reserve\{padding-right:var\(--mc-win-caption-reserve\)\}/)
+    expect(rootDefault, 'the 142px default is on :root, not .win-electron (so the inline <html> value is not shadowed)').not.toBeNull()
+    // The property must be DECLARED exactly once, and on :root — not
+    // re-declared on .win-electron / .embedded-win-inset, which would shadow
+    // the inherited <html> value for the header subtree.
+    const declarations = css.match(/\{--mc-win-caption-reserve:/g) || []
+    expect(declarations.length, 'the reserve property is declared exactly once').toBe(1)
+    expect(css).toMatch(/:root\{--mc-win-caption-reserve:142px\}/)
+    expect(localHeader, 'local .win-electron header uses the shared reserve var').not.toBeNull()
+    expect(embeddedHeader, 'embedded header uses the shared reserve var').not.toBeNull()
+    expect(embeddedReserve, 'embedded focus reserve uses the shared reserve var').not.toBeNull()
+    // Every reserve rule reads the bare shared variable; the single :root
+    // default (asserted above) means a context without the main-process var
+    // lays out exactly as the previous static rule did.
+    expect((css.match(reserveRule) || []).length, 'all reserve rules read the shared var').toBeGreaterThanOrEqual(3)
   })
 
   it('reads a model without winInset as false — an older host has no Windows inset to relay', async () => {

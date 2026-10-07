@@ -184,6 +184,7 @@ function createWindowLifecycle(options) {
   const {
     syncNativeTheme,
     positionTrafficLights,
+    reconcileZoomChrome,
     trackZoomChrome,
     setThemeAccent,
     handleFocusMode,
@@ -1288,9 +1289,10 @@ function createWindowLifecycle(options) {
       if (!wc) return;
       apply(wc);
       // Chromium applies zoom per-origin, so same-origin sibling windows move
-      // together and every traffic-light inset must be reconciled.
+      // together and every native caption inset must be reconciled — the macOS
+      // traffic lights AND the Windows overlay height, both of which track zoom.
       for (const win of BaseWindow.getAllWindows()) {
-        if (win._mcView) positionTrafficLights(win);
+        reconcileZoomChrome(win);
       }
     };
   }

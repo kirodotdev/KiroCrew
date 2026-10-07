@@ -19,10 +19,15 @@ const PROMPTS_SOURCE = fs.readFileSync(path.join(RUNTIME_DIR, "prompts.js"), "ut
   .replace(/\r\n/g, "\n");
 const {
   BROWSER_PARTITION,
+  HEADER_CSS_PX,
   createWindowLifecycle,
 } = require("../window-lifecycle");
 const { registerCaptureSurface } = require("../capture-trust");
 const { setRemoteHostConfig } = require("../host-config");
+const {
+  WIN_CAPTION_RESERVE_CSS_PX,
+  winCaptionReserveForZoom,
+} = require("../runtime/window/chrome");
 
 function validOptions(overrides = {}) {
   return {
@@ -1305,6 +1310,106 @@ describe("window chrome controls", () => {
     assert.equal(lifecycle.chrome.setZoom(sender, 100), zoom, "setZoom returns the clamped factor");
     assert.ok(zoom < 100);
     assert.equal(placed.length, 2, "only windows carrying a dashboard view are reconciled");
+  });
+
+  it("repaints the Windows caption overlay and pushes the zoom-aware reserve var", () => {
+    // Regression for the reported bug. Secondary half: Ctrl+/- and the Settings
+    // "Zoom Level" stepper changed the renderer zoom but never repainted the
+    // Windows title-bar overlay, so its HEIGHT (which scales with zoom) stayed
+    // at the old zoom and the native caption buttons were no longer centred in
+    // the 42px header. Primary half: the header's right RESERVE is in CSS px,
+    // which paints to reserve*zoom DIP, so a static reserve stopped clearing
+    // the fixed-DIP caption buttons below 100% and the bell slid under
+    // Minimize. applyZoom now reconciles the Windows overlay AND pushes
+    // --mc-win-caption-reserve = round(142/zoom)px (so it paints to a constant
+    // 142 DIP) at the window's own new zoom factor, the same path that already
+    // scales the overlay height.
+    let zoom = 1;
+    const painted = [];
+    const injected = [];
+    const dashboard = {
+      _mcView: {
+        webContents: {
+          isDestroyed: () => false,
+          getZoomFactor: () => zoom,
+          executeJavaScript: (code) => { injected.push(code); return Promise.resolve(); },
+        },
+      },
+      isDestroyed: () => false,
+      setTitleBarOverlay: (opts) => painted.push(opts),
+    };
+    const lifecycle = createWindowLifecycle(validOptions({
+      platform: "win32",
+      electron: {
+        nativeTheme: { shouldUseDarkColors: true },
+        BaseWindow: { getAllWindows: () => [dashboard, { isDestroyed: () => false }] },
+      },
+    }));
+    const sender = {
+      getZoomFactor: () => zoom,
+      setZoomFactor: (factor) => { zoom = factor; },
+    };
+
+    const reserveFor = (z) => Math.round(WIN_CAPTION_RESERVE_CSS_PX / z);
+
+    const stepped = lifecycle.chrome.stepZoom(sender, 1);
+    assert.ok(stepped > 1, "a step-in raises the zoom factor");
+    assert.equal(painted.length, 1, "only the dashboard window carries an overlay to repaint");
+    // The overlay height tracks the NEW zoom factor (HEADER_CSS_PX * zoom).
+    assert.equal(painted[0].height, Math.round(HEADER_CSS_PX * zoom));
+    // The reserve var is set from the same new zoom factor: 142/zoom CSS px, so
+    // it paints to a constant 142 DIP. Zoomed IN (>1), the CSS-px reserve shrinks.
+    assert.ok(
+      injected.some((c) => c.includes(`'--mc-win-caption-reserve', '${reserveFor(zoom)}px'`)),
+      "the zoom-aware reserve var is pushed at the stepped-in zoom",
+    );
+
+    painted.length = 0;
+    injected.length = 0;
+    lifecycle.chrome.setZoom(sender, 0.8);
+    assert.equal(zoom, 0.8);
+    assert.equal(painted.length, 1);
+    assert.equal(painted[0].height, Math.round(HEADER_CSS_PX * 0.8));
+    // Zoomed OUT (0.8), the CSS-px reserve GROWS to 178 so it still paints to
+    // 142 DIP — the fix for the reported overlap.
+    assert.equal(reserveFor(0.8), 178);
+    assert.ok(
+      injected.some((c) => c.includes("'--mc-win-caption-reserve', '178px'")),
+      "the reserve grows below 100% zoom so it still clears the fixed-DIP buttons",
+    );
+  });
+
+  it("re-pushes the Windows caption reserve on every reload, not only when the theme resolves", async (t) => {
+    // A reload replaces the document and wipes the inline --mc-win-caption-reserve
+    // from <html>. The only re-push NOT gated on the theme mode resolving
+    // (syncNativeTheme repaints only when data-mode is dark/light) is the one
+    // trackZoomChrome wires to did-finish-load — so the header's zoom-correct
+    // reserve survives a reload even before the SPA sets its mode. The harness
+    // emits did-finish-load (first load); a second emit simulates a reload.
+    const { harness } = await (async () => {
+      const h = await wireDashboardWindow(t, { platform: "win32" });
+      return { harness: h };
+    })();
+    harness.log.splice(0);
+    harness.viewContents.emit("did-finish-load");
+    t.mock.timers.tick(1); // flush the setTimeout(…,0) the reload re-push uses
+    const reload = harness.log.splice(0);
+    assert.ok(
+      reload.some((e) => e.includes("'--mc-win-caption-reserve', '142px'")),
+      "a reload re-pushes the zoom-correct reserve with no theme gate",
+    );
+  });
+
+  it("winCaptionReserveForZoom paints to a constant native width at every zoom", () => {
+    // The CSS-px reserve is 142/zoom, so reserve*zoom === 142 DIP regardless of
+    // zoom; a non-finite or non-positive zoom falls back to 1x.
+    for (const z of [0.5, 0.67, 0.8, 1, 1.25, 2]) {
+      assert.equal(winCaptionReserveForZoom(z), Math.round(WIN_CAPTION_RESERVE_CSS_PX / z));
+    }
+    assert.equal(winCaptionReserveForZoom(1), WIN_CAPTION_RESERVE_CSS_PX);
+    for (const bad of [undefined, null, NaN, Infinity, 0, -1]) {
+      assert.equal(winCaptionReserveForZoom(bad), WIN_CAPTION_RESERVE_CSS_PX);
+    }
   });
 });
 

@@ -2369,10 +2369,37 @@ file-tree-container{
    and mark the header as a drag region so the integrated menu row still moves
    the window — with an explicit no-drag opt-out for every interactive control,
    including the titlebar app-menu triggers below.
-   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts
-   (the 138px overlay plus 4px clearance). */
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js (the 138px overlay plus 4px clearance). The reserve is ZOOM-AWARE: the native
+   caption buttons are a fixed native width (DIPs), but a CSS-px padding is
+   multiplied by page zoom when painted, so a static 142 CSS px shrinks to
+   142*zoom DIP on screen and stops clearing the buttons below 100% zoom (the
+   bell slides under Minimize — the reported bug). The main process computes the
+   CSS-px reserve that paints to a constant 142 DIP (142/zoom) and sets it on
+   <html> as --mc-win-caption-reserve, next to where it scales the overlay
+   height — see pushWinCaptionReserve in runtime/window/chrome.js. The 142px
+   fallback here covers the first paint before that runs and non-Electron
+   contexts (a plain browser tab, jsdom in tests), preserving the previous
+   static layout there. One custom property keeps all four
+   `.win-electron`/`.embedded-win-inset` reserve rules below in lock-step. */
+/* Default the custom property on :root so it always resolves to the static
+   142px before the main process pushes the live zoom-aware value (and in
+   non-Electron contexts). It MUST be :root, not `.win-electron`: the main
+   process sets the live value inline on <html> (= :root), but `.win-electron`
+   sits on the inner shell <div> (App.tsx), so a default declared there would
+   re-set the property ON that div and shadow the inherited <html> value for
+   the whole header subtree — the reserve would stay a static 142px and the
+   zoom fix would never take effect. On :root the inline <html> style overrides
+   it (inline beats stylesheet) and every descendant — the header AND the
+   host-rendered strip in InstancesViewport, which renders OUTSIDE the shell
+   div — inherits the live value. Declaring the default here also lets the
+   padding rules use the plain `var(--mc-win-caption-reserve)` reference without
+   repeating the fallback: a bare custom-property reference round-trips through
+   every CSSOM (happy-dom drops a `var()` whose comma fallback it cannot parse),
+   while a defaulted property keeps the first-paint value correct. */
+:root{--mc-win-caption-reserve:142px}
 .win-electron header.topbar-glass{
-  padding-right:142px;
+  padding-right:var(--mc-win-caption-reserve);
   -webkit-app-region:drag;
 }
 .win-electron header.topbar-glass button,
@@ -2405,7 +2432,7 @@ file-tree-container{
    with nothing clearing the caption band. The controls stay painted there on
    both platforms — only macOS hides its own with the chrome, so only macOS needs
    no reserve. Keep the widths in sync with the two header rules above. */
-body.mc-focus-mode .win-electron .focus-caption-reserve{padding-right:142px}
+body.mc-focus-mode .win-electron .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
 body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
@@ -2419,19 +2446,19 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    frameless window (`winInset` in mc-host-model); the bridge toggles
    `.embedded-win-inset` on <html> so the pane's now-topmost header insets its
    RIGHT side clear of the parent window's native caption buttons.
-   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts and
-   with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js and with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
    here: draggable regions are only collected from the host document, never
    from a cross-origin iframe (see InstancesViewport), and the host's drag
    strips already clip at the caption zone. */
-.embedded-win-inset header.topbar-glass{padding-right:142px}
+.embedded-win-inset header.topbar-glass{padding-right:var(--mc-win-caption-reserve)}
 /* Focus mode inside an embedded pane under a Windows frameless host: same
    caption reserve as the local `.win-electron` rule further up — focus mode
    takes the pane's header out of flow, so the peeked surface at that corner
    must clear the caption band too. `.mc-focus-mode` (the body class) instead
    of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
    body's parent. Keep 142px in sync as above. */
-.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:142px}
+.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
 /* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone

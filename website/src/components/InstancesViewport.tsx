@@ -60,7 +60,7 @@ import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotific
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
-import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH, WIN_CAPTION_RESERVE_PX } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -126,7 +126,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const stripInsetStyle = macInset || winInset
     ? {
         ...(macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : null),
-        ...(winInset ? { paddingRight: WIN_CAPTION_RESERVE_PX } : null),
+        // Read the live, zoom-aware reserve the main process sets on <html>
+        // (--mc-win-caption-reserve). :root defaults that property to the
+        // static 142px in index.css, so a bare reference is first-paint-safe
+        // without an inline comma fallback here — and a comma fallback would
+        // not round-trip through happy-dom's CSSOM in tests. A fixed px here
+        // would drift from the zoom-aware header reserve the main process
+        // maintains.
+        ...(winInset ? { paddingRight: 'var(--mc-win-caption-reserve)' } : null),
       }
     : undefined
   const dispatch = useAppDispatch()
