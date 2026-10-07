@@ -2060,12 +2060,23 @@ def _run_stdio_dispatch_loop(
                         f"answering again."
                     )
                 else:
+                    # The gateway ANSWERED (a 409, or a 200 whose exclude this
+                    # process could not use), so the cause is a spec on disk,
+                    # never reachability. Saying so is the point of the second
+                    # sentence: the condition shares its symptom with an
+                    # unreachable gateway, and an operator who reads it as an
+                    # outage restarts processes that are healthy while the spec
+                    # stays broken. The list names every condition the
+                    # endpoint answers this code for, not just the parse.
                     _refusal = (
                         f"Error: tool '{tool_name}' is unavailable because this "
                         f"session's tool policy could not be read "
-                        f"({_policy.unresolved}): the gateway found an agent spec it "
-                        f"could not parse, or a managedToolPolicy of the wrong "
-                        f"shape. Refusing the call rather than ignoring an "
+                        f"({_policy.unresolved}): the gateway answered, but could not "
+                        f"determine this agent's policy from the agents directory -- "
+                        f"a spec there could not be read or parsed, two specs declare "
+                        f"the same name, or a managedToolPolicy has the wrong shape. "
+                        f"This is not a connection problem, and a restart will not "
+                        f"clear it. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; fix or remove the unreadable "
                         f"spec in the agents directory."
                     )

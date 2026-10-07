@@ -1828,6 +1828,35 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
+    def test_the_unreadable_policy_refusal_rules_out_a_connection_problem(self, monkeypatch):
+        """``policy_unreadable`` is an answer from the gateway, so its text says so.
+
+        It shares its symptom -- every call refused -- with an unreachable
+        gateway, and an operator who reads it as an outage restarts healthy
+        processes while the spec stays broken. The text therefore rules out
+        reachability, and names every condition the endpoint answers this code
+        for (an unreadable or unparseable spec, a duplicate name, a wrong-shape
+        ``managedToolPolicy``) rather than only the parse.
+        """
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "policy_unreadable"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(45, "echo", "dashboard:chat-7"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            body = json.dumps(harness.responses[0][1])
+            assert "the gateway answered" in body
+            assert "This is not a connection problem" in body
+            assert "a restart will not clear it" in body
+            assert "two specs declare the same name" in body
+            assert "could not be read or parsed" in body
+            assert "managedToolPolicy has the wrong shape" in body
+        finally:
+            harness.close()
+
     def test_unresolved_policy_refusal_names_the_file_the_gateway_named(self, monkeypatch):
         """The gateway's ``reason`` reaches the caller, defanged and redacted.
 

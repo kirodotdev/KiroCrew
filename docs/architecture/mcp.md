@@ -1386,7 +1386,7 @@ cannot be read or carries no `code` takes the `policy_unreadable` arm, the statu
 meaning for the unreadable-spec condition, so an unknown `409` is never read as anything
 narrower. The call is refused with an error naming the reason -- the `identity_unattested`
 text names the missing token, its usual cause, the `policy_unreadable` text the agents
-directory -- and
+directory, and says the gateway answered so the cause is not a connection problem -- and
 audited as `rejected_policy_unresolved`; the read that produced `identity_unattested` is
 itself audited as `tool_policy.unattested`, whose resources carry the asking process's
 `pid` and `ppid`. A control-plane backend
