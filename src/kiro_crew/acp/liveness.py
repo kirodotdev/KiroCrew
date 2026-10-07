@@ -11,7 +11,9 @@ deaths and never on healthy work.
 
 Policy (enforced by the caller in ``session_handle._dispatch_events``):
 
-- ``WORKING``     -> never act (log once per interval at most).
+- ``WORKING``     -> never act (log once per interval at most), except an
+  opaque MCP tool's ``mcp subtree active`` reading, which the tool branch
+  bounds by ``watchdog.tool_stall_hard_cap_secs``.
 - ``DEAD``        -> act immediately: recovery lands seconds after actual death
                      instead of at a blanket 90s/600s timeout.
 - ``STUCK_INPUT`` -> act immediately, with a cause the recovery nudge can name
@@ -253,6 +255,22 @@ EVIDENCE_PLATFORM_LIMITED = "platform_limited"
 # (Windows, a tree that cannot be read) the tag is never set and the
 # build-scale window holds.
 EVIDENCE_REMOTE_FLAT = "remote_flat"
+
+# Evidence prefix for an opaque MCP tool whose runtime subtree moved. It is the
+# weakest WORKING there is: the movement may belong to any process in the tree,
+# such as a sibling MCP server polling in the background, so it cannot tell a
+# live tool from one whose result frame was lost. The tool branch therefore
+# bounds this one WORKING reading (see ``session_handle._dispatch_events``)
+# while every other WORKING keeps deferring.
+EVIDENCE_MCP_SUBTREE_ACTIVE = "mcp subtree active"
+
+# kirocrew-core tools that ping ``/api/session-keepalive`` for their whole run
+# and can read ``mcp subtree active``: ``mcp_tools/spawn.py``
+# ``spawn_sub_agents``, bounded by its own collection timeout, so the tool
+# branch never cuts it off on the opaque-MCP bound. The core ``wait`` pings too
+# but never reaches that reading (``wait_tool_verdict`` answers first), so it
+# is not listed. Matched on the adapter identity, never on the title.
+_KEEPALIVE_TOOL_NAMES: frozenset[str] = frozenset({"spawn_sub_agents"})
 
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The
@@ -1218,6 +1236,17 @@ class ToolCallState:
             return False
         return _MCP_SEPARATOR_RE.split(self.tool_name)[-1] == _WAIT_TOOL_NAME
 
+    def is_trusted_keepalive_tool(self) -> bool:
+        """True when the adapter-authored identity names a kirocrew-core tool
+        that pings ``/api/session-keepalive`` while it runs.
+
+        Same identity rule as :meth:`is_trusted_wait`: ``mcp_server_name`` must
+        be the provenance-verified core server, and the title is never read.
+        """
+        if self.is_shell or self.mcp_server_name != CORE_MCP_SERVER:
+            return False
+        return _MCP_SEPARATOR_RE.split(self.tool_name)[-1] in _KEEPALIVE_TOOL_NAMES
+
     def declared_wait_verdict(self, now: float) -> tuple[str, str]:
         """Declared-duration contract for the kirocrew-core ``wait`` tool.
 
@@ -1385,7 +1414,7 @@ class LivenessOracle:
         # tree (which contains the serving MCP server process) reads WORKING.
         moved, evidence = self._tree_movement(runtime_pid)
         if moved:
-            return VERDICT_WORKING, f"mcp subtree active ({evidence})"
+            return VERDICT_WORKING, f"{EVIDENCE_MCP_SUBTREE_ACTIVE} ({evidence})"
         if evidence == "no readable counters" and not self._tree_observable():
             # No tree at all on this platform: the flat reading is absence of
             # evidence, and the caller's budget is the only bound. Tagged so

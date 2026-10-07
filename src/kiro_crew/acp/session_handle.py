@@ -80,6 +80,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
+    EVIDENCE_MCP_SUBTREE_ACTIVE,
     EVIDENCE_PLATFORM_LIMITED,
     EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
@@ -4433,8 +4434,12 @@ class AcpSessionHandle:
                             # observed the tool at the end of its await, so
                             # the pre-consult clock would shorten the window.
                             tool_moved_ts = time.monotonic()
-                            self._log_working_deferral(_tool_idle, evidence, timeout)
-                            continue
+                            if not self._working_tool_bound_reached(evidence, _tool_idle):
+                                self._log_working_deferral(_tool_idle, evidence, timeout)
+                                continue
+                            # Opaque-MCP WORKING past the hard cap: fall
+                            # through to the same session-scoped recovery
+                            # an UNKNOWN past the cap gets below.
                         # UNKNOWN acts at the suspect window. The suspect
                         # default (90 min) is BUILD-scale forbearance — an LLM-shaped
                         # stall (flat subtree whose only live evidence is an
@@ -4451,10 +4456,11 @@ class AcpSessionHandle:
                         # the absolute ceiling for UNKNOWN forbearance. Apply
                         # min(suspect_window, hard_cap) so the configured cap
                         # always bounds the effective window. WORKING deferred
-                        # unconditionally above; DEAD/STUCK_INPUT act
-                        # immediately regardless of the window.
-                        # WORKING was already deferred above; the action below
-                        # is the existing non-lethal tool-stall recovery.
+                        # above, except an opaque-MCP reading past the hard
+                        # cap; DEAD/STUCK_INPUT act immediately regardless of
+                        # the window.
+                        # The action below is the existing non-lethal
+                        # tool-stall recovery.
                         _suspect = wd.tool_stall_suspect_secs
                         _full_suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         # Idle measure the chosen window is compared against. Only
@@ -4554,7 +4560,11 @@ class AcpSessionHandle:
                             verdict,
                             evidence,
                             _tool_idle,
-                            window="narrowed" if _narrowed else "standard",
+                            window=(
+                                "working_cap"
+                                if verdict == VERDICT_WORKING
+                                else "narrowed" if _narrowed else "standard"
+                            ),
                         )
                         async for ev in self._end_stalled_tool(
                             verdict, evidence, _tool_idle, status=_input_wait
@@ -5315,6 +5325,25 @@ class AcpSessionHandle:
         pending = len(starts) if isinstance(starts, dict) else 0
         return len(queues) + (inits if isinstance(inits, int) else 0) + pending
 
+    def _working_tool_bound_reached(self, evidence: str, tool_idle: float) -> bool:
+        """Whether a tool-branch WORKING reading has run out of forbearance.
+
+        Only the opaque-MCP reading is bounded. It says some process in the
+        runtime's tree moved, which a warm sibling MCP server does too, so a
+        call whose result frame was lost would otherwise hold the turn to its
+        deadline. The bound is ``watchdog.tool_stall_hard_cap_secs``, the same
+        ceiling an UNKNOWN reading gets, measured on the session's own frame
+        clock. A matched shell child, the declared-duration ``wait`` verdict
+        and a kirocrew-core tool that pings the session keepalive
+        (:meth:`ToolCallState.is_trusted_keepalive_tool`) keep deferring.
+        """
+        if not evidence.startswith(EVIDENCE_MCP_SUBTREE_ACTIVE):
+            return False
+        tool = self._inflight_tool
+        if tool is not None and tool.is_trusted_keepalive_tool():
+            return False
+        return tool_idle > self._watchdog.tool_stall_hard_cap_secs
+
     def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per
         interval so a 40-minute build doesn't spam the journal.
@@ -5361,9 +5390,10 @@ class AcpSessionHandle:
         bucketed by :func:`_watchdog_evidence_class`; ``window`` is one of:
         "standard" (default), "narrowed" (a tool-branch tag reduces the
         build-scale suspect window — established_flat to the model-silent budget,
-        shell_child_absent to the ordinary silence window), or "extended"
+        shell_child_absent to the ordinary silence window), "extended"
         (model-wait established_flat extends the 600s stale window to the
-        model-silent probe window for a non-streamed server-side think).
+        model-silent probe window for a non-streamed server-side think), or
+        "working_cap" (an opaque-MCP WORKING reading ran past the hard cap).
         ``agent_override`` is the per-agent-override BOOLEAN from the settings
         snapshot — deliberately NOT the agent name (per-agent joins happen via
         the always-on token row store, not OTel attrs). Failures never reach

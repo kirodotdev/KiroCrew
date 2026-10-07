@@ -262,9 +262,11 @@ class WatchdogConfig:
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window) and for any per-agent "
-            "watchdog_tool_stall_* override. Applies ONLY to UNKNOWN verdicts — "
-            "never to a WORKING session, which is deferred before this cap is "
-            "consulted and is therefore bounded only by the turn's own ceiling. "
+            "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
+            "whose only WORKING evidence is movement somewhere in the runtime's "
+            "process tree. Every other WORKING reading (a matched shell child, "
+            "a declared wait, a keepalive-pinging core tool) is deferred before "
+            "this cap is consulted and is bounded only by the turn's own ceiling. "
             "Default 2h, clamped against the transport's per-prompt timeout like "
             "the suspect window.",
         ),
