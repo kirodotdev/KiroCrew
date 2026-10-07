@@ -97,6 +97,7 @@ from kiro_crew.cron import (
     is_valid_timezone,
     lookup_cron_folder_id,
     parse_time_string,
+    validate_managed_by,
 )
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import trigger_cron_job
@@ -1765,7 +1766,21 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     timeout = getattr(args, "timeout", None)
     timeout_secs = getattr(args, "timeout_secs", None)
     folder_ref = (getattr(args, "folder", "") or "").strip()
+    # None means the flag was not given; an explicit "" is a refusal, never
+    # "unmanaged": an installer whose $KEY is unset would otherwise store a
+    # keyless job on every run that its `remove --managed-by ""` can't find.
+    managed_by = getattr(args, "managed_by", None)
     message = args.message or ""
+
+    # ── Installer ownership key ──
+    # Not stripped: the key is compared on bytes with the one the installer
+    # recomputes, so a padded key is refused by the shape check below rather
+    # than silently becoming a different key than the one it will look up.
+    if managed_by is not None:
+        try:
+            validate_managed_by(managed_by)
+        except ValueError as e:
+            _cron_add_fail(str(e))
 
     # ── Job kind: exactly one of agent / script / command ──
     if script and command:
@@ -1936,7 +1951,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     minimal_context = bool(getattr(args, "minimal_context", False))
 
     try:
-        job = svc.add_job(
+        fields = dict(
             name=args.name,
             message=message,
             every_secs=every,
@@ -1961,6 +1976,10 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
         )
+        if managed_by is not None:
+            job = svc.add_managed_job(managed_by, **fields)
+        else:
+            job = svc.add_job(**fields)
     except CronStoreBusy:
         # The store lock stayed contended past its timeout (another writer --
         # the gateway, a dashboard create -- holds it). Nothing was written;
@@ -1987,6 +2006,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             resources=(
                 f"job_id={job.id} kind={kind} approval_mode={approval_mode or 'default'} "
                 f"agent={agent or 'default'} silent={silent}"
+                + (f" managed_by={managed_by}" if managed_by else "")
             ),
         )
     except Exception:
@@ -2046,6 +2066,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail = "owner: none (manage from CLI or the dashboard Schedule page)"
             if provenance:
                 detail += f"  created by: {provenance}"
+            if j.managed_by:
+                detail += f"  managed by: {j.managed_by}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -2210,11 +2232,37 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             print(f"Job not found: {args.job_id}")
 
     elif action == "remove":
-        removed = svc.remove_job(args.job_id, actor="cli", source="cli")
+        job_id = getattr(args, "job_id", None)
+        managed_by = getattr(args, "managed_by", None)
+        if managed_by is not None:
+            # An empty or malformed key must never reach the match below: every
+            # unmanaged job carries managed_by == "", so `--managed-by ""` (an
+            # installer whose $KEY is unset) would otherwise delete all of them.
+            try:
+                validate_managed_by(managed_by)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            # Read-decide-write: an unreadable store reads as empty, which would
+            # report "nothing to remove" over a corrupt file an installer then
+            # believes is clean. Probe first so that case refuses instead.
+            svc.raise_if_store_unreadable()
+            jobs = svc.list_jobs(include_disabled=True)
+            owned = [j.id for j in jobs if j.managed_by == managed_by]
+            if not owned:
+                print(f"No job is managed by: {managed_by}")
+                return
+            # Removed by the ids just read: a re-install that lands in between
+            # mints a fresh id, which this removal cannot touch.
+            for jid in owned:
+                if svc.remove_job(jid, actor="cli", source="cli"):
+                    print(f"Removed job: {jid} (managed by {managed_by})")
+            return
+        removed = svc.remove_job(job_id, actor="cli", source="cli")
         if removed:
-            print(f"Removed job: {args.job_id}")
+            print(f"Removed job: {job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {job_id}")
 
     elif action == "pause":
         if svc.enable_job(args.job_id, enabled=False):

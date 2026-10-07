@@ -1782,6 +1782,16 @@ Examples:
         default="",
         help='Tool approval mode ("auto" to auto-approve all tools)',
     )
+    cron_add.add_argument(
+        "--managed-by",
+        dest="managed_by",
+        default=None,
+        metavar="KEY",
+        help="Install-time owner key for an external installer (e.g. "
+        "'mysystem:owner/asset-name'). Unique across the store: a second add with the "
+        "same key is refused. Re-install with 'cron remove --managed-by KEY' and then "
+        "add again.",
+    )
     cron_update = cron_sub.add_parser("update", help="Update a cron job")
     cron_update.add_argument("job_id", help="Job ID to update")
     cron_update.add_argument("--name", help="New job name")
@@ -1810,7 +1820,15 @@ Examples:
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
-    cron_rm.add_argument("job_id", help="Job ID to remove")
+    cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)
+    cron_rm_target.add_argument("job_id", nargs="?", default=None, help="Job ID to remove")
+    cron_rm_target.add_argument(
+        "--managed-by",
+        dest="managed_by",
+        default=None,
+        metavar="KEY",
+        help="Remove the job registered with 'cron add --managed-by KEY'",
+    )
     cron_pause = cron_sub.add_parser("pause", help="Pause a cron job")
     cron_pause.add_argument("job_id", help="Job ID to pause")
     cron_resume = cron_sub.add_parser("resume", help="Resume a cron job")

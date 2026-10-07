@@ -229,6 +229,7 @@ _BASE_SERVICE_MEMBERS = (
     "add_job_async",
     "add_job_if_absent",
     "add_job_if_absent_async",
+    "add_managed_job",
     "adopt_job",
     "attach_run_task",
     "audit_one_shot_removal",

@@ -95,6 +95,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
+    validate_managed_by,
 )
 from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
     _CRON_FOLDERS_FILE,
@@ -1863,6 +1864,43 @@ class CronService:
             return None
         self._arm_timer()
         logger.info("Added cron job '%s' (%s) [if-absent]", job.name, job.id)
+        return job
+
+    def add_managed_job(self, managed_by: str, **kwargs: Any) -> CronJob:
+        """Create the job an installer owns under the key *managed_by*.
+
+        *kwargs* are :meth:`add_job`'s fields and are validated by the same
+        :func:`build_job` before any disk work. The key is unique across the
+        store, and this is its only writer, so the uniqueness holds by
+        construction: an existing job under the key is a refusal
+        (``ValueError`` naming its id), checked INSIDE the store lock after
+        ``_sync_for_write()`` so two installers racing the same key cannot both
+        see it absent and persist two jobs.
+
+        There is deliberately no replace-in-place. Every run-driven removal --
+        a script that raises ``Done``, a one-shot consumed on completion, a
+        deferred removal -- deletes its row BY ID with no record of which
+        definition the run started from, so a replacement reusing the id would
+        be deleted by the run it replaced. An installer re-installs with
+        ``cron remove --managed-by KEY`` then ``cron add --managed-by KEY``: the
+        new job gets a fresh id, so an in-flight run can only remove the dead
+        one. Replace-in-place needs a definition-generation fence first.
+        """
+        validate_managed_by(managed_by)
+        job = self._build_job(**kwargs)
+        job.managed_by = managed_by
+        # The shared locked check-then-append core: the key check runs after
+        # the in-lock reload, so two racing installers cannot both persist.
+        if not self._persist_add_if_absent_locked(lambda j: j.managed_by == managed_by, job):
+            existing = ", ".join(
+                j.id for j in self.list_jobs(include_disabled=True) if j.managed_by == managed_by
+            )
+            raise ValueError(
+                f"a job is already managed by {managed_by!r} ({existing}); "
+                f"remove it with 'cron remove --managed-by {managed_by}' first"
+            )
+        self._arm_timer()
+        logger.info("Added managed cron job '%s' (%s) for %s", job.name, job.id, managed_by)
         return job
 
     def _persist_add_if_absent_locked(

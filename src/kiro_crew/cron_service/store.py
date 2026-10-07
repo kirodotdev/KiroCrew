@@ -380,6 +380,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         created_by=_guard_str("created_by"),
         source_preset=_guard_str("source_preset"),
         source_template_prompt=_guard_str("source_template_prompt"),
+        managed_by=_guard_str("managed_by"),
         silent=j.get("silent", False),
         session_key=_guard_str("session_key"),
         last_posted_hash=_guard_str("last_posted_hash"),
@@ -545,7 +546,7 @@ def store_digest(raw: bytes) -> bytes:
 
 def job_record(j: CronJob) -> dict[str, Any]:
     """One job's ``crons.json`` entry. The key order IS the stored byte order."""
-    return {
+    record: dict[str, Any] = {
         "id": j.id,
         "name": j.name,
         "message": j.message,
@@ -605,6 +606,13 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "secret_env_pending_pin": j.secret_env_pending_pin,
         "secret_env_pending_ts": j.secret_env_pending_ts,
     }
+    # Written only when set, and last: a store with no installer-managed job
+    # stays byte-identical to the one an older build writes (pinned by
+    # test_cron_refactor_contract's store-bytes fixtures), and an older build
+    # reading a newer store simply ignores the extra key.
+    if j.managed_by:
+        record["managed_by"] = j.managed_by
+    return record
 
 
 def encode_store(jobs: Iterable[CronJob]) -> str:

@@ -13,6 +13,7 @@ The store transaction around them -- lock, reload, save -- is the service's.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -66,6 +67,24 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("secret_env_pin", MAX_SHORT_STRING),
     ("secret_env_pending_pin", MAX_SHORT_STRING),
 )
+
+
+# The shape of an installer's provenance key (CronJob.managed_by). Deliberately
+# not in _CRON_STRING_FIELD_CAPS: that table also gates apply_job_update, and
+# the key is create-only. ASCII, starting with an alphanumeric, so it is never
+# confusable with a flag, never carries whitespace or a control character, and
+# always compares on bytes the way the installer that recomputes it expects.
+MANAGED_BY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
+
+
+def validate_managed_by(key: str) -> str:
+    """Return *key* when it is a usable installer key, else raise ``ValueError``."""
+    if not isinstance(key, str) or not MANAGED_BY_RE.fullmatch(key):
+        raise ValueError(
+            "managed-by key must be 1-200 ASCII characters from A-Z a-z 0-9 . _ : / @ + - "
+            "and start with a letter or digit"
+        )
+    return key
 
 
 def _validate_cron_string_fields(

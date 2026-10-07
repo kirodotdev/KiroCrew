@@ -159,6 +159,17 @@ class CronJob:
     # Such a job simply never shows the hint.
     source_preset: str = ""
     source_template_prompt: str = ""
+    # Install-time provenance: the namespaced key an external installer owns
+    # this job under (``kirocrew cron add --managed-by <key>``), e.g.
+    # ``"<system>:owner/asset-name"``. Unique across the store by construction
+    # -- the only writer, :meth:`CronService.add_managed_job`, refuses a second
+    # job with the same key. It is how an installer finds its own job again
+    # without knowing the random ``id``: uninstall removes it
+    # (``kirocrew cron remove --managed-by <key>``) and a re-install is remove
+    # then add. Create-only: no update path accepts it, so a user edit on the
+    # Schedule page never detaches a job from its installer. ``""`` means "not
+    # installer-managed".
+    managed_by: str = ""
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)

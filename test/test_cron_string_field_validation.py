@@ -340,9 +340,14 @@ class TestAntiDrift:
     # - approval_mode: validated by a separate finite-set check, not length
     # - memory_store: resolved internally from trusted member/session identity;
     #   never accepted from a cron creation or update caller
+    # - managed_by: caller-supplied, but create-only, so it must stay OUT of the
+    #   table (which also gates apply_job_update). Validated by its own stricter
+    #   validate_managed_by (ASCII charset + 200 cap) at its only writer,
+    #   CronService.add_managed_job.
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
+            "managed_by",
             "last_status",
             "last_error",
             "last_result",
