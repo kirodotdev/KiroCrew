@@ -31,7 +31,7 @@ from typing import TypeVar
 import pytest
 
 from kiro_crew import security
-from kiro_crew.security import argv_floor, inline_payload
+from kiro_crew.security import argv_floor, inline_payload, ssh_self_floor
 from kiro_crew.security.shell_normalizer import _glob_could_expand_to, _glob_to_regex
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,8 +48,8 @@ _DOCUMENTATION_PEERS = frozenset({("198.51.100.1", 53), ("2001:db8::1", 53)})
 #: seed read the STUB (these turn up in the own-name set) from the seed reading
 #: a real interface.
 _STUB_OWN_ADDRESS = {
-    argv_floor.socket.AF_INET: "203.0.113.7",
-    argv_floor.socket.AF_INET6: "2001:db8::7",
+    ssh_self_floor.socket.AF_INET: "203.0.113.7",
+    ssh_self_floor.socket.AF_INET6: "2001:db8::7",
 }
 
 
@@ -106,7 +106,7 @@ def _own_host_seed_connects_nothing(monkeypatch) -> Iterator[list[tuple[int, obj
     stub's addresses never become another test's idea of this machine.
     """
     recorded: list[tuple[int, object]] = []
-    real_socket = argv_floor.socket
+    real_socket = ssh_self_floor.socket
 
     class _SocketModule:
         """``socket`` with datagram construction routed to the inert stub."""
@@ -119,10 +119,10 @@ def _own_host_seed_connects_nothing(monkeypatch) -> Iterator[list[tuple[int, obj
                 return _InertDatagramSocket(family, recorded)
             return real_socket.socket(family, type, proto, fileno)
 
-    monkeypatch.setattr(argv_floor, "socket", _SocketModule())
-    monkeypatch.setattr(argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-    monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-    monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+    monkeypatch.setattr(ssh_self_floor, "socket", _SocketModule())
+    monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+    monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+    monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
     yield recorded
 
 
@@ -1260,7 +1260,7 @@ class TestTheOwnHostSeedIsInertHere:
         # The seed ran through the stubbed seam: the addresses the stub answered are this
         # machine's own names now.  A seed that opened its datagram socket some other way
         # would have read a real interface instead, and neither address would be here.
-        names = argv_floor._own_host_names()
+        names = ssh_self_floor._own_host_names()
         assert set(_STUB_OWN_ADDRESS.values()) <= names, names
         # ... and every peer it named is a documentation address: RFC 5737 TEST-NET-2 or
         # the RFC 3849 prefix, never routed.  A probe re-pointed at a real resolver

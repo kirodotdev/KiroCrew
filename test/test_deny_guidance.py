@@ -1358,11 +1358,11 @@ _CONTACTS_REMOTE = (
 
 def _ssh_hook_result(monkeypatch, options: str):
     from kiro_crew.hooks import HookManager
-    from kiro_crew.security import argv_floor
+    from kiro_crew.security import ssh_self_floor
 
     # Fixture host is remote. Isolate DNS; no SSH or osascript is executed.
-    monkeypatch.setattr(argv_floor, "_resolved_host_verdict", lambda host, **kwargs: False)
-    monkeypatch.setattr(argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+    monkeypatch.setattr(ssh_self_floor, "_resolved_host_verdict", lambda host, **kwargs: False)
+    monkeypatch.setattr(ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
     command = f"/usr/bin/ssh {options} -o ConnectTimeout=8 user@remote.example {_CONTACTS_REMOTE}"
     return command, HookManager().on_tool_call("Run command", command=command, is_shell=True)
 

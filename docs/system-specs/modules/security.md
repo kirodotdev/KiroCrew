@@ -554,6 +554,15 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,
   search pattern, or commit message is not itself a verdict.
+- `ssh_self_floor.py` — the sandbox-escape floor (`_is_ssh_to_self`): an
+  ssh/scp/sftp/rsync target that resolves to this same host, together with the
+  own-host name and address cache, the hosts-file verdict cache, and the DNS
+  verdict layer behind it. It was split out of `argv_floor.py` as one cohesive
+  cluster so the argv floor keeps headroom under the per-module liveness cap
+  (#10283). It reads two argv-floor helpers (`_self_token_frames`,
+  `_static_substitution_output`) as attributes of that module, and `argv_floor`
+  never imports it, so the edge runs one way. `hosts_file.py` and
+  `host_addresses.py` sit below it and import nothing from the package.
 - `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in the tool gate's `read-only` tier (`hook_runtime/gate_tiers.py`), together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (the approval flow, where the reason text becomes the refusal card) and the gate's `read-only` tier (the auto-approve branch, reading it through `hooks.py`). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in a dependency order whose top is the argv floor. Pinned by `test_trust_reads.py`.
 
 ## Threat Model

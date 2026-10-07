@@ -37,17 +37,18 @@ from kiro_crew.security import perm_verb_mention as _perm_verb_mention
 from kiro_crew.security import (
     pinned_builtin_command_ids,
 )
+from kiro_crew.security import ssh_self_floor as _ssh_self_floor
 
 _GOLDEN = Path(__file__).parent / "fixtures" / "denied_commands_golden.json"
 
 # Captured at import, before the autouse fixture stubs the module attribute:
 # the alias-layer tests re-bind this real function and stub the resolver
 # socket underneath it instead.
-_REAL_RESOLVED_HOST_VERDICT = _argv_floor._resolved_host_verdict
-_REAL_SCHEDULE_HOSTS_WARM = getattr(_argv_floor, "_schedule_hosts_file_warm", None)
+_REAL_RESOLVED_HOST_VERDICT = _ssh_self_floor._resolved_host_verdict
+_REAL_SCHEDULE_HOSTS_WARM = getattr(_ssh_self_floor, "_schedule_hosts_file_warm", None)
 
 
-class _PacketlessProbeSocket(_argv_floor.socket.socket):
+class _PacketlessProbeSocket(_ssh_self_floor.socket.socket):
     """``socket.socket`` whose datagram ``connect`` never touches the network.
 
     ``_own_interface_addresses`` learns this host's primary outbound address per
@@ -62,13 +63,13 @@ class _PacketlessProbeSocket(_argv_floor.socket.socket):
     """
 
     def connect(self, address):  # type: ignore[override]
-        if self.type == _argv_floor.socket.SOCK_DGRAM:
+        if self.type == _ssh_self_floor.socket.SOCK_DGRAM:
             return None
         return super().connect(address)
 
     def getsockname(self):  # type: ignore[override]
-        if self.type == _argv_floor.socket.SOCK_DGRAM:
-            if self.family == _argv_floor.socket.AF_INET6:
+        if self.type == _ssh_self_floor.socket.SOCK_DGRAM:
+            if self.family == _ssh_self_floor.socket.AF_INET6:
                 return ("::1", 0, 0, 0)
             return ("127.0.0.1", 0)
         return super().getsockname()
@@ -93,12 +94,12 @@ def _own_address_probe_stays_local(monkeypatch):
     instead of starting a thread. Hosts-file tests name their own file and
     warm it explicitly.
     """
-    monkeypatch.setattr(_argv_floor.socket, "socket", _PacketlessProbeSocket)
-    monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-    monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: ())
-    monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
-    monkeypatch.setattr(_argv_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
-    monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: None, raising=False)
+    monkeypatch.setattr(_ssh_self_floor.socket, "socket", _PacketlessProbeSocket)
+    monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+    monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: ())
+    monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_CACHE", {})
+    monkeypatch.setattr(_ssh_self_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
+    monkeypatch.setattr(_ssh_self_floor, "_schedule_hosts_file_warm", lambda: None, raising=False)
 
 
 class TestCatalog:
@@ -2607,10 +2608,10 @@ class TestReverseShellNcIsCommandTokenAnchored:
         # nothing is resolved for real and the verdict here is this row's alone.
         own = security.socket.gethostname().strip().lower()
         pinned = frozenset(name for name in {own, own.split(".", 1)[0]} if name)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", lambda host, **_kw: False)
 
     @staticmethod
     def _effective_without(*rule_ids: str) -> list[str]:
@@ -8153,8 +8154,8 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         #
         # BOTH namespaces are patched, and neither is redundant. Each caller binds
         # ``_data_consumer_exempt`` as its own module global via ``from
-        # .shell_normalizer import ...``: the four frame loops in ``argv_floor``, and
-        # the payload walk in the ``security`` package body. The facade mirrors an
+        # .shell_normalizer import ...``: the four frame loops in ``argv_floor`` and
+        # ``ssh_self_floor``, and the payload walk in the ``security`` package body. The facade mirrors an
         # attribute write onto ONE owning submodule -- the normalizer, for this name --
         # so a facade write alone leaves ``argv_floor`` resolving the real function and
         # instruments nothing here. Which caller a given command reaches also varies:
@@ -8185,6 +8186,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
 
         with_memo = security.is_denied(cmd)
         monkeypatch.setattr(_argv_floor, "_data_consumer_exempt", recomputing_every_call)
+        monkeypatch.setattr(_ssh_self_floor, "_data_consumer_exempt", recomputing_every_call)
         monkeypatch.setattr(security, "_data_consumer_exempt", recomputing_every_call)
         without_memo = security.is_denied(cmd)
         assert calls["n"] > 0, (
@@ -8348,20 +8350,20 @@ class TestSandboxEscapeSshSelf:
         # ``global`` would leave the facade holding a stale value), so the
         # facade's patch mirroring does not cover them and the owner is
         # patched directly.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
         # round-33: tests run at steady state — the kernel address table has
         # published, so IP-literal allow rows resolve on their own merits.
         # The pending-window tests set this back to False themselves.
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         # The DNS-alias verdict layer fails closed on hostnames it has not
         # resolved, and tests must not resolve real names -- stub it to
         # "not self" so the parametrized remote-host allow cases stay
         # allowed.  The alias-layer tests below re-bind the real function
         # (captured at import as _REAL_RESOLVED_HOST_VERDICT) and stub the
         # resolver socket instead.
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", lambda host, **_kw: False)
 
     def test_rule_is_registered_on_both_tiers(self):
         assert self._RULE in {r.id for r in BUILTIN_DENIED_RULES}
@@ -8404,7 +8406,7 @@ class TestSandboxEscapeSshSelf:
         assert "(2) Still refused after those retries" in note
         # The minute in the note is the own-address worker's retry backoff: a
         # retry sooner than that cannot start a new check after a failed one.
-        assert _argv_floor._OWN_HOST_RESOLVE_BACKOFF_SECS == 60.0
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_BACKOFF_SECS == 60.0
         assert "ssh_config-only alias" in note
         assert "address list cannot be read, so use a resolvable name" in note
         assert (
@@ -8930,8 +8932,8 @@ class TestSandboxEscapeSshSelf:
         # allowed after stripping, so the fix does not over-block.
         own = security.socket.gethostname().strip().lower()
         pinned = frozenset({"fe80::1"} | {n for n in {own, own.split(".", 1)[0]} if n})
-        monkeypatch.setattr(security.argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
-        monkeypatch.setattr(security.argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(security.ssh_self_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+        monkeypatch.setattr(security.ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
         assert _denied_by("ssh fe80::1%eth0 whoami") == self._RULE
         assert _denied_by("scp file [fe80::1%eth0]:/tmp/") == self._RULE
         assert _denied_by("ssh fe80::99%eth0 true") is None
@@ -8990,12 +8992,12 @@ class TestSandboxEscapeSshSelf:
         # ssh-family command must already see them.  The DNS enrichment worker
         # is suppressed here (NEXT_TRY=inf), so a pass proves the seed alone
         # covers the interface IP -- no worker race can re-open the window.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_own_interface_addresses", lambda: {"203.0.113.7"})
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_own_interface_addresses", lambda: {"203.0.113.7"})
         assert _denied_by("ssh 203.0.113.7 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
@@ -9012,7 +9014,7 @@ class TestSandboxEscapeSshSelf:
             return ("stub-host", [], ["203.0.113.9"])
 
         monkeypatch.setattr(security.socket, "gethostbyname_ex", _record)
-        seed = _argv_floor._own_host_seed()
+        seed = _ssh_self_floor._own_host_seed()
         assert isinstance(seed, frozenset)
         assert calls == [], "the synchronous seed must not call gethostbyname_ex"
 
@@ -9023,19 +9025,21 @@ class TestSandboxEscapeSshSelf:
         # sweep itself is a win32-only iphlpapi call, so it is stubbed here --
         # this test pins the seed WIRING, and the off-platform guard below pins
         # that the helper contributes nothing elsewhere.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_windows_interface_addresses", lambda: {"203.0.113.44"})
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(
+            _ssh_self_floor, "_windows_interface_addresses", lambda: {"203.0.113.44"}
+        )
         assert _denied_by("ssh 203.0.113.44 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
     def test_windows_sweep_is_inert_off_windows(self):
         if sys.platform == "win32":  # pragma: no cover - exercised on win CI
             pytest.skip("the sweep enumerates real adapters on Windows")
-        assert _argv_floor._windows_interface_addresses() == set()
+        assert _ssh_self_floor._windows_interface_addresses() == set()
 
     def test_static_substitution_output_cannot_hide_self_host(self):
         # bash splices a substitution's output into the command line before
@@ -9091,10 +9095,12 @@ class TestSandboxEscapeSshSelf:
         ifa6 = struct.pack("=BBBBL", socket.AF_INET6, 64, 0, 0, 2)
         attr6 = struct.pack("=HH", 20, 1) + ipaddress.IPv6Address("2001:db8::7").packed
         done = struct.pack("=LHHLL", 16, 3, 0, 1, 0)  # NLMSG_DONE
-        got = _argv_floor._parse_netlink_addr_dump(_nl(20, ifa4 + attr4) + _nl(20, ifa6 + attr6))
+        got = _ssh_self_floor._parse_netlink_addr_dump(
+            _nl(20, ifa4 + attr4) + _nl(20, ifa6 + attr6)
+        )
         assert "10.0.0.7" in got
         assert "2001:db8::7" in got
-        assert _argv_floor._parse_netlink_addr_dump(done) == set()
+        assert _ssh_self_floor._parse_netlink_addr_dump(done) == set()
 
     def test_secondary_addresses_deny_after_netlink_publish(self, monkeypatch):
         # round-33: the netlink dump runs OFF the event loop in the DNS
@@ -9102,11 +9108,11 @@ class TestSandboxEscapeSshSelf:
         # seed).  Once published, a secondary IPv4 the ioctl sweep cannot
         # see denies from the cache like any own address, and a far IP is
         # admitted again.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"203.0.113.66"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"203.0.113.66"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         assert _denied_by("ssh 203.0.113.66 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
@@ -9115,15 +9121,15 @@ class TestSandboxEscapeSshSelf:
         # literal in host position could be an unlisted secondary of this
         # very machine -- so the window denies every one (the same
         # fail-closed contract dotted first-contact hostnames carry).
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
         assert _denied_by("ssh 198.51.100.9 id") == self._RULE
         assert _denied_by("ssh 203.0.113.66 uptime") == self._RULE
         assert _denied_by("ssh 2001:db8::7 id") == self._RULE
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         assert _denied_by("ssh 198.51.100.9 id") is None
 
     def test_enrichment_worker_merges_netlink_addresses(self, monkeypatch):
@@ -9131,24 +9137,24 @@ class TestSandboxEscapeSshSelf:
         # lands in the resolved set and a non-empty pass publishes the flag
         # that closes the IP-literal window.  DNS is stubbed inert so the
         # test stays packet-less.
-        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", lambda: {"203.0.113.66"})
-        monkeypatch.setattr(_argv_floor.socket, "getfqdn", lambda: "")
-        monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        resolved, _complete = _argv_floor._resolve_own_host_names()
+        monkeypatch.setattr(_ssh_self_floor, "_linux_netlink_addresses", lambda: {"203.0.113.66"})
+        monkeypatch.setattr(_ssh_self_floor.socket, "getfqdn", lambda: "")
+        monkeypatch.setattr(_ssh_self_floor.socket, "getaddrinfo", lambda *a, **k: [])
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        resolved, _complete = _ssh_self_floor._resolve_own_host_names()
         assert "203.0.113.66" in resolved
-        assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
+        assert _ssh_self_floor._NETLINK_ADDRS_PUBLISHED is True
 
     def _open_window(self, monkeypatch, *, netlink, fqdn=lambda: ""):
         """A fresh process: nothing published, the worker free to start now."""
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", netlink)
-        monkeypatch.setattr(_argv_floor.socket, "getfqdn", fqdn)
-        monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_linux_netlink_addresses", netlink)
+        monkeypatch.setattr(_ssh_self_floor.socket, "getfqdn", fqdn)
+        monkeypatch.setattr(_ssh_self_floor.socket, "getaddrinfo", lambda *a, **k: [])
 
     @staticmethod
     def _join_resolver():
@@ -9163,9 +9169,9 @@ class TestSandboxEscapeSshSelf:
         # starts the worker at boot, so the table is published before then.
         self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"})
         try:
-            _argv_floor.warm_own_host_names()
+            _ssh_self_floor.warm_own_host_names()
             self._join_resolver()
-            assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
+            assert _ssh_self_floor._NETLINK_ADDRS_PUBLISHED is True
             assert _denied_by("ssh 198.51.100.9 id") is None
             assert _denied_by("ssh 203.0.113.66 id") == self._RULE
         finally:
@@ -9183,13 +9189,13 @@ class TestSandboxEscapeSshSelf:
 
         self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"}, fqdn=_slow_fqdn)
         try:
-            _argv_floor.warm_own_host_names()
+            _ssh_self_floor.warm_own_host_names()
             deadline = time.monotonic() + 5
-            while not _argv_floor._NETLINK_ADDRS_PUBLISHED:
+            while not _ssh_self_floor._NETLINK_ADDRS_PUBLISHED:
                 assert time.monotonic() < deadline, "netlink never published"
                 time.sleep(0.01)
-            assert _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is True  # DNS still blocked
-            assert "203.0.113.66" in _argv_floor._OWN_HOST_NAMES_CACHE
+            assert _ssh_self_floor._OWN_HOST_RESOLVE_IN_FLIGHT is True  # DNS still blocked
+            assert "203.0.113.66" in _ssh_self_floor._OWN_HOST_NAMES_CACHE
             assert _denied_by("ssh 198.51.100.9 id") is None
         finally:
             release.set()
@@ -9260,13 +9266,13 @@ class TestSandboxEscapeSshSelf:
         assert "own-address read failed at startup" in caplog.text
 
     def test_repeated_netlink_misses_log_one_warning(self, monkeypatch, caplog):
-        monkeypatch.setattr(_argv_floor, "_NETLINK_MISSES", 0)
-        with caplog.at_level("WARNING", logger=_argv_floor.logger.name):
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_MISSES", 0)
+        with caplog.at_level("WARNING", logger=_ssh_self_floor.logger.name):
             for _ in range(5):
-                _argv_floor._note_netlink_result(False)
+                _ssh_self_floor._note_netlink_result(False)
         assert caplog.text.count("netlink read has not completed in 3 attempts") == 1
-        _argv_floor._note_netlink_result(True)
-        assert _argv_floor._NETLINK_MISSES == 0
+        _ssh_self_floor._note_netlink_result(True)
+        assert _ssh_self_floor._NETLINK_MISSES == 0
 
     def test_publish_merges_into_the_cache_before_opening_the_window(self, monkeypatch):
         seen: "list[tuple[bool, bool]]" = []
@@ -9277,18 +9283,18 @@ class TestSandboxEscapeSshSelf:
             def __or__(self, other):
                 seen.append(
                     (
-                        _argv_floor._NETLINK_ADDRS_PUBLISHED,
-                        _argv_floor._OWN_HOST_RESOLVE_LOCK.locked(),
+                        _ssh_self_floor._NETLINK_ADDRS_PUBLISHED,
+                        _ssh_self_floor._OWN_HOST_RESOLVE_LOCK.locked(),
                     )
                 )
                 return frozenset(self) | other
 
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", _Probe({"10.1.1.1"}))
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        _argv_floor._publish_netlink_addresses({"203.0.113.66"})
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", _Probe({"10.1.1.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        _ssh_self_floor._publish_netlink_addresses({"203.0.113.66"})
         assert seen == [(False, True)]
-        assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
-        assert {"10.1.1.1", "203.0.113.66"} <= _argv_floor._OWN_HOST_NAMES_CACHE
+        assert _ssh_self_floor._NETLINK_ADDRS_PUBLISHED is True
+        assert {"10.1.1.1", "203.0.113.66"} <= _ssh_self_floor._OWN_HOST_NAMES_CACHE
 
     @pytest.mark.parametrize("target", ["203.0.113.66", "2001:db8::66"])
     def test_a_publish_between_the_name_read_and_the_flag_read_still_refuses(
@@ -9296,14 +9302,14 @@ class TestSandboxEscapeSshSelf:
     ):
         # The check reads the names, the publisher lands, then the check
         # reads the flag: it must judge by the flag it saw BEFORE the names.
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
 
         def stale_names():
-            monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+            monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
             return frozenset()
 
-        monkeypatch.setattr(_argv_floor, "_own_host_names", stale_names)
-        assert _argv_floor._host_is_self(target) is True
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", stale_names)
+        assert _ssh_self_floor._host_is_self(target) is True
 
     def test_dns_worker_merges_the_cache_under_the_lock(self, monkeypatch):
         # The netlink publisher and the DNS worker both read-modify-write the
@@ -9311,7 +9317,7 @@ class TestSandboxEscapeSshSelf:
         # landing between its read and its write is lost after the window
         # has opened.
         held: "list[bool]" = []
-        real_lock = _argv_floor._OWN_HOST_RESOLVE_LOCK
+        real_lock = _ssh_self_floor._OWN_HOST_RESOLVE_LOCK
         state = {"inside": False}
 
         class _Spy:
@@ -9328,20 +9334,20 @@ class TestSandboxEscapeSshSelf:
                 held.append(state["inside"])
                 return frozenset(self) | frozenset(other)
 
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_LOCK", _Spy())
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", _Cache({"10.1.1.1"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_LOCK", _Spy())
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", _Cache({"10.1.1.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", True)
         monkeypatch.setattr(
-            _argv_floor, "_resolve_own_host_names", lambda: (frozenset({"10.2.2.2"}), False)
+            _ssh_self_floor, "_resolve_own_host_names", lambda: (frozenset({"10.2.2.2"}), False)
         )
-        _argv_floor._resolve_own_host_names_into_cache()
+        _ssh_self_floor._resolve_own_host_names_into_cache()
         assert held == [True]
-        assert {"10.1.1.1", "10.2.2.2"} <= _argv_floor._OWN_HOST_NAMES_CACHE
+        assert {"10.1.1.1", "10.2.2.2"} <= _ssh_self_floor._OWN_HOST_NAMES_CACHE
 
     def test_netlink_sweep_is_inert_off_linux(self):
         if sys.platform.startswith("linux"):  # pragma: no cover - real enumeration
             pytest.skip("the sweep enumerates real addresses on Linux")
-        assert _argv_floor._linux_netlink_addresses() == set()
+        assert _ssh_self_floor._linux_netlink_addresses() == set()
 
     def test_first_command_knows_darwin_interface_addresses(self, monkeypatch):
         # The macOS per-interface sweep feeds the SYNCHRONOUS seed exactly
@@ -9351,19 +9357,21 @@ class TestSandboxEscapeSshSelf:
         # darwin-only getifaddrs call, so it is stubbed here -- this test
         # pins the seed WIRING, and the off-platform guard below pins that
         # the helper contributes nothing elsewhere.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_darwin_interface_addresses", lambda: {"203.0.113.55"})
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(
+            _ssh_self_floor, "_darwin_interface_addresses", lambda: {"203.0.113.55"}
+        )
         assert _denied_by("ssh 203.0.113.55 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
     def test_darwin_sweep_is_inert_off_darwin(self):
         if sys.platform == "darwin":  # pragma: no cover - exercised on mac CI
             pytest.skip("the sweep enumerates real interfaces on macOS")
-        assert _argv_floor._darwin_interface_addresses() == set()
+        assert _ssh_self_floor._darwin_interface_addresses() == set()
 
     def test_glob_expandable_verb_is_denied(self):
         # bash pathname-expands an unquoted glob against the filesystem
@@ -9388,9 +9396,9 @@ class TestSandboxEscapeSshSelf:
         # from an off-loop resolution; the decision fails closed until the
         # worker publishes, and scheduling is single-flight per host.
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         started: "list[str]" = []
 
         class _RecordingThread:
@@ -9407,7 +9415,7 @@ class TestSandboxEscapeSshSelf:
             def is_alive(self):
                 return False
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _RecordingThread)
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _RecordingThread)
         assert _denied_by("ssh self.attacker.example id") == self._RULE
         assert _denied_by("ssh self.attacker.example id") == self._RULE
         assert len(started) == 1, "resolution scheduling must be single-flight"
@@ -9421,7 +9429,7 @@ class TestSandboxEscapeSshSelf:
         def _self_only(host, **_kw):
             return host == "self.attacker.example"
 
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _self_only)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _self_only)
         assert _denied_by("ssh -C self.attacker.example uptime") == self._RULE
         # Both ways: a real cipher value with a self DESTINATION after it.
         assert _denied_by("ssh -c aes128-ctr self.attacker.example id") == self._RULE
@@ -9441,7 +9449,7 @@ class TestSandboxEscapeSshSelf:
             consulted.append(host)
             return True
 
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _deny_all)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _deny_all)
         assert _denied_by("scp backup.tar.gz far.example.com:/dst") == self._RULE
         assert consulted and all(h == "far.example.com" for h in consulted), (
             "only the host:path prefix may reach the DNS layer, got %r" % consulted
@@ -9495,13 +9503,13 @@ class TestSandboxEscapeSshSelf:
         # that later rebinds to loopback is caught at the next revalidation.
         # Deny verdicts stay permanent (over-blocking is the safe direction).
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
         now = 1_000_000.0
-        monkeypatch.setattr(_argv_floor.time, "monotonic", lambda: now)
-        stale = now - _argv_floor._HOST_VERDICT_ALLOW_TTL - 1
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {"a.example": False})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {"a.example": stale})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor.time, "monotonic", lambda: now)
+        stale = now - _ssh_self_floor._HOST_VERDICT_ALLOW_TTL - 1
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {"a.example": False})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_STAMP", {"a.example": stale})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         started: "list[str]" = []
 
         class _RecordingThread:
@@ -9515,20 +9523,20 @@ class TestSandboxEscapeSshSelf:
             def is_alive(self):
                 return False
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _RecordingThread)
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _RecordingThread)
         # Stale allow: served (stale-while-revalidate), one worker scheduled.
-        assert _argv_floor._resolved_host_verdict("a.example") is False
+        assert _ssh_self_floor._resolved_host_verdict("a.example") is False
         assert started == ["a.example"]
         # Fresh allow: served, no revalidation.
-        _argv_floor._HOST_VERDICT_STAMP["a.example"] = now
-        _argv_floor._HOST_VERDICT_PENDING.clear()
+        _ssh_self_floor._HOST_VERDICT_STAMP["a.example"] = now
+        _ssh_self_floor._HOST_VERDICT_PENDING.clear()
         started.clear()
-        assert _argv_floor._resolved_host_verdict("a.example") is False
+        assert _ssh_self_floor._resolved_host_verdict("a.example") is False
         assert started == []
         # Deny verdicts are permanent -- no revalidation however old.
-        _argv_floor._HOST_VERDICT_CACHE["b.example"] = True
-        _argv_floor._HOST_VERDICT_STAMP["b.example"] = stale
-        assert _argv_floor._resolved_host_verdict("b.example") is True
+        _ssh_self_floor._HOST_VERDICT_CACHE["b.example"] = True
+        _ssh_self_floor._HOST_VERDICT_STAMP["b.example"] = stale
+        assert _ssh_self_floor._resolved_host_verdict("b.example") is True
         assert started == []
 
     def test_dns_alias_worker_classifies_addresses(self, monkeypatch):
@@ -9550,22 +9558,22 @@ class TestSandboxEscapeSshSelf:
             ("198.51.100.7", False),
         ):
             cache: "dict[str, bool]" = {}
-            monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", cache)
-            monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", {"alias.example"})
+            monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", cache)
+            monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", {"alias.example"})
             monkeypatch.setattr(security.socket, "getaddrinfo", _fake_gai(addr))
-            _argv_floor._resolve_host_verdict_into_cache("alias.example")
+            _ssh_self_floor._resolve_host_verdict_into_cache("alias.example")
             assert cache.get("alias.example") is expected, (addr, expected)
-            assert "alias.example" not in _argv_floor._HOST_VERDICT_PENDING
+            assert "alias.example" not in _ssh_self_floor._HOST_VERDICT_PENDING
         # round-25: a resolution FAILURE caches nothing -- a transient DNS
         # error latched as a 300s allow would let a recovered loopback alias
         # bypass the floor.  Pending clears so the next decision can retry.
         cache = {}
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", cache)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", {"alias.example"})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", cache)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", {"alias.example"})
         monkeypatch.setattr(security.socket, "getaddrinfo", _fake_gai(None))
-        _argv_floor._resolve_host_verdict_into_cache("alias.example")
+        _ssh_self_floor._resolve_host_verdict_into_cache("alias.example")
         assert "alias.example" not in cache
-        assert "alias.example" not in _argv_floor._HOST_VERDICT_PENDING
+        assert "alias.example" not in _ssh_self_floor._HOST_VERDICT_PENDING
 
     def test_numeric_loopback_needs_a_valid_address(self):
         # ``127.example.com`` is an ordinary remote domain, not a loopback
@@ -9597,10 +9605,10 @@ class TestSandboxEscapeSshSelf:
         # permission decision must then come from the synchronous seed
         # rather than an exception aborting the gate.  The cleared latch
         # lets a later call retry the worker once threads free up.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
 
         class _NoStartThread:
             def __init__(self, *args, **kwargs):
@@ -9609,19 +9617,19 @@ class TestSandboxEscapeSshSelf:
             def start(self):
                 raise RuntimeError("can't start new thread")
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _NoStartThread)
-        names = _argv_floor._own_host_names()
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _NoStartThread)
+        names = _ssh_self_floor._own_host_names()
         assert isinstance(names, frozenset)
         assert names, "the synchronous seed must answer the decision"
-        assert _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False
 
     def test_own_hostname_is_denied_once_resolved(self, monkeypatch):
         # The enriched set reads the published cache; enrichment happens in a
         # worker thread (see test_own_name_resolution below), so the deny path
         # is tested against a directly-published set.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
         monkeypatch.setattr(
-            _argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com", "myhost"})
+            _ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com", "myhost"})
         )
         assert _denied_by("ssh myhost.example.com sudo id") == self._RULE
         assert _denied_by("ssh user@myhost id") == self._RULE
@@ -9632,9 +9640,9 @@ class TestSandboxEscapeSshSelf:
         # destination AFTER the LAST ``@`` (URI authority and the plain
         # ``[user@]host`` form alike), so ``user:pass@myhost`` routes to
         # myhost while a colon-first split reads the host as ``user``.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
         monkeypatch.setattr(
-            _argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com", "myhost"})
+            _ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com", "myhost"})
         )
         assert _denied_by("ssh ssh://user:pass@myhost.example.com id") == self._RULE
         assert _denied_by("ssh ssh://user:pass@myhost:2222 id") == self._RULE
@@ -9649,10 +9657,10 @@ class TestSandboxEscapeSshSelf:
         # The gethostname seed is published SYNCHRONOUSLY on first use, so the
         # very first `ssh <own-hostname>` is denied even while DNS enrichment
         # has not run (no resolution race).
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
         # Backoff pushed to the future so no enrichment thread spawns in-test.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
         assert _denied_by("ssh myhost.example.com sudo id") == self._RULE
         assert _denied_by("ssh myhost id") == self._RULE
@@ -9660,9 +9668,9 @@ class TestSandboxEscapeSshSelf:
 
     def test_unresolved_own_names_still_block_loopback(self, monkeypatch):
         # The loopback half never depends on the seed or on DNS enrichment.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
 
         def _boom():
             raise OSError("no hostname")
@@ -9670,7 +9678,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(security.socket, "gethostname", _boom)
         # The seed also enumerates interface addresses; stub that too so this
         # scenario is a machine where NOTHING about the own identity resolves.
-        monkeypatch.setattr(_argv_floor, "_own_interface_addresses", set)
+        monkeypatch.setattr(_ssh_self_floor, "_own_interface_addresses", set)
         assert _denied_by("ssh -p 22 localhost id") == self._RULE
         assert security._own_host_names() == frozenset()
 
@@ -9699,7 +9707,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(security, "_own_interface_addresses", set, raising=False)
         # The netlink layer lives on the owning module; the facade's patch
         # mirroring does not create absent attributes, so stub it directly.
-        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", set)
+        monkeypatch.setattr(_ssh_self_floor, "_linux_netlink_addresses", set)
         resolved, complete = security._resolve_own_host_names()
         assert resolved == frozenset()
         assert complete is False
@@ -9718,19 +9726,19 @@ class TestSandboxEscapeSshSelf:
         # attach, DHCP renewal) admits ``ssh <new-address>`` forever.  The
         # stale set keeps being served (never blocks, never shrinks) while a
         # single-flight worker re-enumerates and merges.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
         # A stamp of 0.0 only reads as stale once ``time.monotonic()`` has
         # passed the refresh window; on Linux that clock counts from boot, so a
         # CI runner in its first five minutes served the set as fresh and never
         # kicked the worker. Place the stamp one window behind the clock instead.
         monkeypatch.setattr(
-            _argv_floor,
+            _ssh_self_floor,
             "_OWN_HOST_RESOLVE_STAMP",
-            _argv_floor.time.monotonic() - _argv_floor._OWN_HOST_REFRESH_SECS - 1.0,
+            _ssh_self_floor.time.monotonic() - _ssh_self_floor._OWN_HOST_REFRESH_SECS - 1.0,
         )
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         spawned: "list[dict]" = []
 
         class _FakeThread:
@@ -9740,46 +9748,48 @@ class TestSandboxEscapeSshSelf:
             def start(self):
                 return None
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _FakeThread)
-        assert "oldname" in _argv_floor._own_host_names()
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _FakeThread)
+        assert "oldname" in _ssh_self_floor._own_host_names()
         assert spawned, "stale complete set must re-kick the enrichment worker"
 
     def test_fresh_complete_own_set_short_circuits(self, monkeypatch):
         # Within the refresh window the DONE short-circuit serves the cache
         # with no lock taken and no worker spawned.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", _argv_floor.time.monotonic())
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(
+            _ssh_self_floor, "_OWN_HOST_RESOLVE_STAMP", _ssh_self_floor.time.monotonic()
+        )
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
 
         def _no_thread(**kw):
             raise AssertionError("no worker may spawn within the refresh window")
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _no_thread)
-        assert "oldname" in _argv_floor._own_host_names()
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _no_thread)
+        assert "oldname" in _ssh_self_floor._own_host_names()
 
     def test_complete_resolve_stamps_the_refresh_clock(self, monkeypatch):
         # A complete worker pass records WHEN it finished, which is what the
         # refresh window above is measured from.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"seed"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"seed"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_STAMP", 0.0)
         monkeypatch.setattr(
-            _argv_floor, "_resolve_own_host_names", lambda: (frozenset({"10.9.9.9"}), True)
+            _ssh_self_floor, "_resolve_own_host_names", lambda: (frozenset({"10.9.9.9"}), True)
         )
         security._resolve_own_host_names_into_cache()
-        assert _argv_floor._OWN_HOST_RESOLVE_DONE is True
-        assert _argv_floor._OWN_HOST_RESOLVE_STAMP > 0.0
-        assert {"seed", "10.9.9.9"} <= (_argv_floor._OWN_HOST_NAMES_CACHE or frozenset())
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_DONE is True
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_STAMP > 0.0
+        assert {"seed", "10.9.9.9"} <= (_ssh_self_floor._OWN_HOST_NAMES_CACHE or frozenset())
 
     def test_partial_resolve_publishes_but_leaves_retryable(self, monkeypatch):
         # A pass where one name enriches and another fails must PUBLISH the
         # successes yet leave DONE False -- otherwise the FQDN that failed to
         # resolve latches a partial set and bypasses the floor forever.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
         monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
 
@@ -9790,23 +9800,23 @@ class TestSandboxEscapeSshSelf:
 
         monkeypatch.setattr(security.socket, "getaddrinfo", _gai)
         security._resolve_own_host_names_into_cache()
-        assert _argv_floor._OWN_HOST_NAMES_CACHE is not None
-        assert {"myhost", "10.0.0.9"} <= _argv_floor._OWN_HOST_NAMES_CACHE
-        assert _argv_floor._OWN_HOST_RESOLVE_DONE is False
+        assert _ssh_self_floor._OWN_HOST_NAMES_CACHE is not None
+        assert {"myhost", "10.0.0.9"} <= _ssh_self_floor._OWN_HOST_NAMES_CACHE
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_DONE is False
 
     def test_hung_resolver_spawns_no_overlapping_workers(self, monkeypatch):
         # A DNS resolve that hangs past the 60s backoff must NOT stack a new
         # daemon per call: the single-flight latch gates the spawn while a
         # worker is alive, and the worker clears it on exit so the retry can
         # spawn again (single-flight, not single-shot).
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         # raising=False so this test also runs against pre-fix code (which lacks
         # the attribute) and fails on the behavioral overlap assert, not on a
         # missing attribute -- the parent's proof pass reverts the hunk and
         # expects THIS test to fail there.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False, raising=False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False, raising=False)
 
         spawned: list[threading.Thread] = []
         hang = threading.Event()
@@ -9831,7 +9841,7 @@ class TestSandboxEscapeSshSelf:
             assert _poll_until(lambda: len(spawned) == 1), "first worker did not start"
             # Backoff expired again, worker still hung: no new thread may spawn.
             for _ in range(2):
-                monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+                monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
                 security._own_host_names()
             assert len(spawned) == 1, "overlapping resolver workers were spawned"
         finally:
@@ -9840,12 +9850,12 @@ class TestSandboxEscapeSshSelf:
                 t.join(timeout=10)
 
         # The latch clears when the worker exits, so the retry can spawn again.
-        cleared = _poll_until(lambda: _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False)
+        cleared = _poll_until(lambda: _ssh_self_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False)
         assert cleared, "single-flight latch was not cleared on worker exit"
         # A fresh call after the worker exited spawns the retry (hang is set, so
         # this worker returns at once).
         spawned.clear()
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         security._own_host_names()
         try:
             assert _poll_until(lambda: len(spawned) == 1), "retry did not spawn after exit"
@@ -9856,9 +9866,9 @@ class TestSandboxEscapeSshSelf:
     def test_complete_resolve_latches_done(self, monkeypatch):
         # A fully successful pass (fqdn + every address) latches DONE so the
         # backoff retry stops.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(security.socket, "gethostname", lambda: "MyHost.Example.Com")
         monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
         monkeypatch.setattr(
@@ -9867,21 +9877,21 @@ class TestSandboxEscapeSshSelf:
             lambda *a, **k: [(None, None, None, None, ("10.0.0.9", 0))],
         )
         security._resolve_own_host_names_into_cache()
-        assert _argv_floor._OWN_HOST_NAMES_CACHE is not None
-        assert {"myhost.example.com", "myhost", "10.0.0.9"} <= _argv_floor._OWN_HOST_NAMES_CACHE
-        assert _argv_floor._OWN_HOST_RESOLVE_DONE is True
+        assert _ssh_self_floor._OWN_HOST_NAMES_CACHE is not None
+        assert {"myhost.example.com", "myhost", "10.0.0.9"} <= _ssh_self_floor._OWN_HOST_NAMES_CACHE
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_DONE is True
 
     def test_partial_resolve_merges_without_shrinking(self, monkeypatch):
         # A later partial pass UNIONS into the cache rather than replacing it, so
         # a name learned by an earlier pass is never dropped by one that missed
         # it -- and it still does not latch DONE while incomplete.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"a"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"a"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(security, "_resolve_own_host_names", lambda: (frozenset({"b"}), False))
         security._resolve_own_host_names_into_cache()
-        assert _argv_floor._OWN_HOST_NAMES_CACHE == frozenset({"a", "b"})
-        assert _argv_floor._OWN_HOST_RESOLVE_DONE is False
+        assert _ssh_self_floor._OWN_HOST_NAMES_CACHE == frozenset({"a", "b"})
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_DONE is False
 
     def test_pattern_is_a_subset_of_the_floor_predicate(self):
         """The catalog-visible pattern must never claim more than the floor.
@@ -9995,7 +10005,7 @@ class TestSandboxEscapeSshSelf:
             consulted.append(host)
             return True
 
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _deny_all)
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _deny_all)
         assert _denied_by("ssh -- alias.example uptime") == self._RULE
         assert any(h == "alias.example" for h in consulted), (
             "the operand after -- must keep host position, consulted=%r" % consulted
@@ -10014,11 +10024,11 @@ class TestSandboxEscapeSshSelf:
         # through DNS; only DOTTED names keep the fail-closed first contact.
         hosts = tmp_path / "hosts"
         hosts.write_text("127.0.0.1 localhost\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(hosts),))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(hosts),))
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         started: "list[str]" = []
 
         class _RecordingThread:
@@ -10032,7 +10042,7 @@ class TestSandboxEscapeSshSelf:
             def is_alive(self):
                 return False
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _RecordingThread)
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _RecordingThread)
         assert _denied_by("ssh dev-dsk 'cd /workplace && git status'") is None
         assert started, "the open answer must still schedule a revalidation worker"
 
@@ -10043,13 +10053,13 @@ class TestSandboxEscapeSshSelf:
         # spellings; a hosts entry naming a remote address answers allowed.
         hosts = tmp_path / "hosts"
         hosts.write_text("# test hosts\n127.0.0.1  localhost localalias\n10.4.4.4 farbox\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(hosts),))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(hosts),))
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         monkeypatch.setattr(
-            _argv_floor.threading,
+            _ssh_self_floor.threading,
             "Thread",
             lambda *a, **kw: type("_T", (), {"start": lambda s: None})(),
         )
@@ -10063,25 +10073,25 @@ class TestSandboxEscapeSshSelf:
         # worker, and its published verdict flips the cache to deny.
         hosts = tmp_path / "hosts"
         hosts.write_text("")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(hosts),))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(hosts),))
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         monkeypatch.setattr(
-            _argv_floor.threading,
+            _ssh_self_floor.threading,
             "Thread",
             lambda *a, **kw: type("_T", (), {"start": lambda s: None})(),
         )
         assert _denied_by("ssh dnsalias uptime") is None
         # What the scheduled worker would have done: resolve to loopback.
         monkeypatch.setattr(
-            _argv_floor.socket,
+            _ssh_self_floor.socket,
             "getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
         )
-        _argv_floor._HOST_VERDICT_PENDING.clear()
-        _argv_floor._resolve_host_verdict_into_cache("dnsalias")
+        _ssh_self_floor._HOST_VERDICT_PENDING.clear()
+        _ssh_self_floor._resolve_host_verdict_into_cache("dnsalias")
         assert _denied_by("ssh dnsalias uptime") == self._RULE
 
 
@@ -10437,26 +10447,26 @@ class TestHostsAliasPublicationWindow:
     def _wire(self, monkeypatch, tmp_path, started):
         hosts = tmp_path / "hosts"
         hosts.write_text("10.99.0.7 sneakyalias\n10.4.4.4 farbox\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(hosts),))
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(hosts),))
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_CACHE", {})
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
-        monkeypatch.setattr(_argv_floor.threading, "Thread", self._recording_thread(started))
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", self._recording_thread(started))
 
     def test_late_published_own_address_flips_the_cached_alias_to_deny(self, monkeypatch, tmp_path):
         started: "list[str]" = []
         self._wire(monkeypatch, tmp_path, started)
         # Startup window: netlink has not published, and the secondary own
         # address 10.99.0.7 is not in the seed set yet.
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        monkeypatch.setattr(_argv_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
         assert _denied_by("ssh sneakyalias uptime") is None  # first contact, window open
         # Publication completes: the alias's address is now a known own-IP.
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         monkeypatch.setattr(
-            _argv_floor, "_own_host_names", lambda: frozenset({"127.0.0.1", "10.99.0.7"})
+            _ssh_self_floor, "_own_host_names", lambda: frozenset({"127.0.0.1", "10.99.0.7"})
         )
         # The hosts cache must re-key on publication and re-parse, so the
         # alias is now a same-call deny — not a process-lifetime allow.
@@ -10468,8 +10478,8 @@ class TestHostsAliasPublicationWindow:
     ):
         started: "list[str]" = []
         self._wire(monkeypatch, tmp_path, started)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        monkeypatch.setattr(_argv_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
         # Inside the window a not-local hosts entry answers open (the
         # adjudicated dotless first-contact shape) but must hand the name
         # to the async layer, whose verdict cache TTL-revalidates.
@@ -10479,8 +10489,8 @@ class TestHostsAliasPublicationWindow:
     def test_published_remote_alias_stays_a_same_call_allow(self, monkeypatch, tmp_path):
         started: "list[str]" = []
         self._wire(monkeypatch, tmp_path, started)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", lambda: frozenset({"127.0.0.1"}))
         # Post-publication the hosts table is authoritative again: a remote
         # alias answers allowed same-call with no worker (the round-21
         # ``ssh dev-dsk`` shape).
@@ -10520,50 +10530,52 @@ class TestHostsFileWarmUp:
             def is_alive(self):
                 return False
 
-        monkeypatch.setattr(_argv_floor.threading, "Thread", _RecordingThread)
-        monkeypatch.setattr(_argv_floor.socket, "getfqdn", lambda: "")
-        monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
-        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", lambda: set())
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"127.0.0.1"}))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", time.monotonic())
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
+        monkeypatch.setattr(_ssh_self_floor.threading, "Thread", _RecordingThread)
+        monkeypatch.setattr(_ssh_self_floor.socket, "getfqdn", lambda: "")
+        monkeypatch.setattr(_ssh_self_floor.socket, "getaddrinfo", lambda *a, **k: [])
+        monkeypatch.setattr(_ssh_self_floor, "_linux_netlink_addresses", lambda: set())
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"127.0.0.1"}))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_STAMP", time.monotonic())
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
         # The POSIX key (ctime, no content read) on every runner; a Windows
         # runner would otherwise refuse every dotless name on a file over the
         # chunk cap.  The Windows tests turn the digest on with _windows().
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest_enabled", lambda: False)
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_content_digest_enabled", lambda: False)
         if _REAL_SCHEDULE_HOSTS_WARM is not None:
-            monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", _REAL_SCHEDULE_HOSTS_WARM)
+            monkeypatch.setattr(
+                _ssh_self_floor, "_schedule_hosts_file_warm", _REAL_SCHEDULE_HOSTS_WARM
+            )
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
-        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_ssh_self_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_ssh_self_floor, "_HOST_VERDICT_PENDING", set())
         self.tmp_path = tmp_path
 
     def _hosts(self, monkeypatch, text):
         hosts = self.tmp_path / "hosts"
         hosts.write_text(text)
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(hosts),))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(hosts),))
         return str(hosts)
 
     @staticmethod
     def _cold_worker(monkeypatch, *, netlink):
         """A process whose enrichment pass has not run yet."""
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", netlink)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_linux_netlink_addresses", netlink)
 
     def _big_hosts(self, monkeypatch, text, name="hosts"):
         """A hosts file one byte over the in-call parse cap."""
         hosts = self.tmp_path / name
-        pad = _argv_floor._HOSTS_FILE_READ_CHUNK + 1 - len(text.encode())
+        pad = _ssh_self_floor._HOSTS_FILE_READ_CHUNK + 1 - len(text.encode())
         hosts.write_bytes((text + "#" * (pad - 1) + "\n").encode())
-        assert os.stat(hosts).st_size == _argv_floor._HOSTS_FILE_READ_CHUNK + 1
+        assert os.stat(hosts).st_size == _ssh_self_floor._HOSTS_FILE_READ_CHUNK + 1
         return str(hosts)
 
     @staticmethod
@@ -10571,7 +10583,7 @@ class TestHostsFileWarmUp:
         def _boom(*_a, **_k):
             raise AssertionError("the gate path parsed the hosts file")
 
-        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _boom)
+        monkeypatch.setattr(_ssh_self_floor, "_parse_hosts_file", _boom)
 
     # --- the gate path: small file in call, large file pending -----------
 
@@ -10581,12 +10593,12 @@ class TestHostsFileWarmUp:
         assert _denied_by("ssh dev-dsk uptime") is None
         assert _denied_by("ssh dev-dsk 'cd /workplace && git status'") is None
         assert _denied_by("ssh loopalias uptime") == self._RULE
-        assert _argv_floor._HOSTS_FILE_CACHE[path][1] == {"farbox": False, "loopalias": True}
+        assert _ssh_self_floor._HOSTS_FILE_CACHE[path][1] == {"farbox": False, "loopalias": True}
         assert "kirocrew-hosts-warm" not in self.started
 
     def test_a_hosts_file_over_the_cap_is_never_parsed_on_the_gate(self, monkeypatch):
         path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (path,))
         self._parser_must_not_run(monkeypatch)
         assert _denied_by("ssh farbox uptime") == self._RULE
         assert _denied_by("ssh dev-dsk uptime") == self._RULE
@@ -10594,10 +10606,10 @@ class TestHostsFileWarmUp:
 
     def test_the_scheduled_warm_lets_the_same_command_through(self, monkeypatch):
         path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n127.0.0.1 loopalias\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (path,))
         assert _denied_by("ssh dev-dsk uptime") == self._RULE  # pending
-        _argv_floor._hosts_file_warm_worker()  # the scheduled thread's body
-        assert _argv_floor._HOSTS_WARM_IN_FLIGHT is False
+        _ssh_self_floor._hosts_file_warm_worker()  # the scheduled thread's body
+        assert _ssh_self_floor._HOSTS_WARM_IN_FLIGHT is False
         self._parser_must_not_run(monkeypatch)
         assert _denied_by("ssh dev-dsk uptime") is None
         assert _denied_by("ssh farbox uptime") is None
@@ -10605,7 +10617,7 @@ class TestHostsFileWarmUp:
 
     def test_no_hosts_file_is_not_pending(self, monkeypatch):
         monkeypatch.setattr(
-            _argv_floor, "_hosts_file_paths", lambda: (str(self.tmp_path / "missing"),)
+            _ssh_self_floor, "_hosts_file_paths", lambda: (str(self.tmp_path / "missing"),)
         )
         assert _denied_by("ssh dev-dsk uptime") is None
         assert "kirocrew-hosts-warm" not in self.started
@@ -10625,20 +10637,20 @@ class TestHostsFileWarmUp:
             base = {f"10.200.0.{n % 250}", f"10.201.{n // 250}.0"}
             return frozenset(base | ({"10.4.4.4"} if n >= 4 else set()))
 
-        monkeypatch.setattr(_argv_floor, "_own_host_names", _own)
-        assert _argv_floor._host_is_self("ownalias") is True
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", _own)
+        assert _ssh_self_floor._host_is_self("ownalias") is True
         for _ in range(3):
-            _argv_floor._warm_hosts_file_cache()
-        assert _argv_floor._HOSTS_FILE_CACHE == {}
-        assert _argv_floor._host_is_self("ownalias") is True
+            _ssh_self_floor._warm_hosts_file_cache()
+        assert _ssh_self_floor._HOSTS_FILE_CACHE == {}
+        assert _ssh_self_floor._host_is_self("ownalias") is True
 
     def test_publication_during_a_parse_caches_nothing_and_still_denies(self, monkeypatch):
         # The worker is mid-parse when the address table publishes this
         # host's 203.0.113.66, and a later line aliases a name to it.  That
         # table was judged against the old own set, so it must be dropped.
         self._hosts(monkeypatch, "10.4.4.4 farbox\n203.0.113.66 ownalias\n")
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CHUNK", 16)  # line 1 only
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_READ_CHUNK", 16)  # line 1 only
         real_open = open
 
         class _Handle:
@@ -10654,30 +10666,33 @@ class TestHostsFileWarmUp:
             def read(self, n=-1):
                 data = self._fh.read(n)
                 self._reads += 1
-                if self._reads == 1 and not _argv_floor._NETLINK_ADDRS_PUBLISHED:
-                    _argv_floor._publish_netlink_addresses({"203.0.113.66"})
+                if self._reads == 1 and not _ssh_self_floor._NETLINK_ADDRS_PUBLISHED:
+                    _ssh_self_floor._publish_netlink_addresses({"203.0.113.66"})
                 return data
 
         monkeypatch.setattr(
-            _argv_floor, "open", lambda f, *a, **k: _Handle(real_open(f, *a, **k)), raising=False
+            _ssh_self_floor,
+            "open",
+            lambda f, *a, **k: _Handle(real_open(f, *a, **k)),
+            raising=False,
         )
-        _argv_floor._warm_hosts_file_cache()
-        assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
-        assert _argv_floor._HOSTS_FILE_CACHE == {}
-        assert _argv_floor._host_is_self("ownalias") is True
-        _argv_floor._warm_hosts_file_cache()  # the next pass, key now stable
-        assert _argv_floor._host_is_self("ownalias") is True
+        _ssh_self_floor._warm_hosts_file_cache()
+        assert _ssh_self_floor._NETLINK_ADDRS_PUBLISHED is True
+        assert _ssh_self_floor._HOSTS_FILE_CACHE == {}
+        assert _ssh_self_floor._host_is_self("ownalias") is True
+        _ssh_self_floor._warm_hosts_file_cache()  # the next pass, key now stable
+        assert _ssh_self_floor._host_is_self("ownalias") is True
         assert _denied_by("ssh farbox uptime") is None
 
     def test_an_own_address_learned_later_re_marks_a_cached_alias(self, monkeypatch):
         self._hosts(monkeypatch, "198.51.100.44 lateownalias\n")
-        _argv_floor._warm_hosts_file_cache()
-        assert _argv_floor._hosts_file_verdict("lateownalias") is False
+        _ssh_self_floor._warm_hosts_file_cache()
+        assert _ssh_self_floor._hosts_file_verdict("lateownalias") is False
         monkeypatch.setattr(
-            _argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"127.0.0.1", "198.51.100.44"})
+            _ssh_self_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"127.0.0.1", "198.51.100.44"})
         )
-        assert _argv_floor._hosts_file_verdict("lateownalias") is True  # re-parsed, local
-        assert _argv_floor._HOSTS_FILE_CACHE[str(self.tmp_path / "hosts")][1] == {
+        assert _ssh_self_floor._hosts_file_verdict("lateownalias") is True  # re-parsed, local
+        assert _ssh_self_floor._HOSTS_FILE_CACHE[str(self.tmp_path / "hosts")][1] == {
             "lateownalias": True
         }
 
@@ -10686,8 +10701,8 @@ class TestHostsFileWarmUp:
     def test_worker_pass_leaves_a_published_table(self, monkeypatch):
         path = self._hosts(monkeypatch, "203.0.113.66 ownalias\n10.4.4.4 farbox\n")
         self._cold_worker(monkeypatch, netlink=lambda: {"203.0.113.66"})
-        _argv_floor._resolve_own_host_names_into_cache()
-        key, table = _argv_floor._HOSTS_FILE_CACHE[path]
+        _ssh_self_floor._resolve_own_host_names_into_cache()
+        key, table = _ssh_self_floor._HOSTS_FILE_CACHE[path]
         assert key[-2] is True
         assert table == {"ownalias": True, "farbox": False}
         self._parser_must_not_run(monkeypatch)
@@ -10700,11 +10715,11 @@ class TestHostsFileWarmUp:
         seen: "list[bool]" = []
 
         def _getaddrinfo(*_a, **_k):
-            seen.append(path in _argv_floor._HOSTS_FILE_CACHE)
+            seen.append(path in _ssh_self_floor._HOSTS_FILE_CACHE)
             return []
 
-        monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", _getaddrinfo)
-        _argv_floor._resolve_own_host_names()
+        monkeypatch.setattr(_ssh_self_floor.socket, "getaddrinfo", _getaddrinfo)
+        _ssh_self_floor._resolve_own_host_names()
         assert seen and all(seen)
 
     def test_worker_warms_even_without_a_netlink_dump(self, monkeypatch):
@@ -10713,21 +10728,21 @@ class TestHostsFileWarmUp:
         # pending; its remote entries defer to the async layer as before.
         path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
         self._cold_worker(monkeypatch, netlink=lambda: set())
-        _argv_floor._resolve_own_host_names()
-        key, table = _argv_floor._HOSTS_FILE_CACHE[path]
+        _ssh_self_floor._resolve_own_host_names()
+        key, table = _ssh_self_floor._HOSTS_FILE_CACHE[path]
         assert key[-2] is False and table == {"farbox": False}
-        assert _argv_floor._hosts_file_verdict("farbox") is None
+        assert _ssh_self_floor._hosts_file_verdict("farbox") is None
 
     def test_warm_parse_sees_dns_derived_own_addresses(self, monkeypatch):
         path = self._hosts(monkeypatch, "198.51.100.44 dnsownalias\n")
         self._cold_worker(monkeypatch, netlink=lambda: {"203.0.113.66"})
         monkeypatch.setattr(
-            _argv_floor.socket,
+            _ssh_self_floor.socket,
             "getaddrinfo",
             lambda *a, **k: [(2, 1, 6, "", ("198.51.100.44", 0))],
         )
-        _argv_floor._resolve_own_host_names_into_cache()
-        assert _argv_floor._HOSTS_FILE_CACHE[path][1] == {"dnsownalias": True}
+        _ssh_self_floor._resolve_own_host_names_into_cache()
+        assert _ssh_self_floor._HOSTS_FILE_CACHE[path][1] == {"dnsownalias": True}
         assert _denied_by("ssh dnsownalias uptime") == self._RULE
 
     def test_a_failed_warm_parse_does_not_fail_the_worker_pass(self, monkeypatch):
@@ -10737,11 +10752,11 @@ class TestHostsFileWarmUp:
         def _boom(*_a, **_k):
             raise RuntimeError("unreadable")
 
-        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _boom)
-        _argv_floor._resolve_own_host_names_into_cache()
-        assert "203.0.113.66" in _argv_floor._OWN_HOST_NAMES_CACHE
-        assert _argv_floor._OWN_HOST_RESOLVE_DONE is True
-        assert _argv_floor._HOSTS_FILE_CACHE == {}
+        monkeypatch.setattr(_ssh_self_floor, "_parse_hosts_file", _boom)
+        _ssh_self_floor._resolve_own_host_names_into_cache()
+        assert "203.0.113.66" in _ssh_self_floor._OWN_HOST_NAMES_CACHE
+        assert _ssh_self_floor._OWN_HOST_RESOLVE_DONE is True
+        assert _ssh_self_floor._HOSTS_FILE_CACHE == {}
 
     # --- the parse itself ----------------------------------------------
 
@@ -10756,11 +10771,11 @@ class TestHostsFileWarmUp:
         cap = text.index("10.9.9.9") + 4  # mid-address: the last line is unparseable
         hosts = self.tmp_path / "hosts"
         hosts.write_bytes(text.encode())
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CAP", cap)
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_READ_CAP", cap)
         tables = []
         for chunk in (1, 3, 7, 16, 1 << 16):
-            monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CHUNK", chunk)
-            tables.append(_argv_floor._parse_hosts_file(str(hosts), frozenset()))
+            monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_READ_CHUNK", chunk)
+            tables.append(_ssh_self_floor._parse_hosts_file(str(hosts), frozenset()))
         assert tables[0] == {
             "localhost": True,
             "looplias": True,
@@ -10778,9 +10793,9 @@ class TestHostsFileWarmUp:
             calls.append(1)
             return frozenset({"10.0.0.7"})
 
-        monkeypatch.setattr(_argv_floor, "_own_host_names", _own)
-        _argv_floor._warm_hosts_file_cache()
-        table = next(iter(_argv_floor._HOSTS_FILE_CACHE.values()))[1]
+        monkeypatch.setattr(_ssh_self_floor, "_own_host_names", _own)
+        _ssh_self_floor._warm_hosts_file_cache()
+        table = next(iter(_ssh_self_floor._HOSTS_FILE_CACHE.values()))[1]
         assert table["host7"] is True and table["host8"] is False
         # One read for the key before the parse, one to confirm it after.
         assert len(calls) == 2
@@ -10797,52 +10812,54 @@ class TestHostsFileWarmUp:
                 action()
                 return found
 
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", _Cache(_argv_floor._HOSTS_FILE_CACHE))
+        monkeypatch.setattr(
+            _ssh_self_floor, "_HOSTS_FILE_CACHE", _Cache(_ssh_self_floor._HOSTS_FILE_CACHE)
+        )
 
     def test_own_set_merge_after_the_key_check_is_a_deny(self, monkeypatch):
         # The worker merges this host's 10.4.4.4 after the gate matched the
         # cached key: the table's "remote" was judged without it.
         self._hosts(monkeypatch, "10.4.4.4 ownalias\n")
-        _argv_floor._warm_hosts_file_cache()
-        assert _argv_floor._hosts_file_verdict("ownalias") is False
+        _ssh_self_floor._warm_hosts_file_cache()
+        assert _ssh_self_floor._hosts_file_verdict("ownalias") is False
 
         def _merge():
-            _argv_floor._OWN_HOST_NAMES_CACHE = frozenset({"127.0.0.1", "10.4.4.4"})
+            _ssh_self_floor._OWN_HOST_NAMES_CACHE = frozenset({"127.0.0.1", "10.4.4.4"})
 
         self._fire_after_lookup(monkeypatch, _merge)
-        assert _argv_floor._host_is_self("ownalias") is True
+        assert _ssh_self_floor._host_is_self("ownalias") is True
         assert "kirocrew-hosts-warm" in self.started
 
     def test_publication_after_the_key_check_is_a_deny(self, monkeypatch):
         # A table judged before publication must not be read as authoritative
         # because publication flipped between the key check and the return.
         self._hosts(monkeypatch, "10.4.4.4 ownalias\n")
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
-        _argv_floor._warm_hosts_file_cache()
+        monkeypatch.setattr(_ssh_self_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        _ssh_self_floor._warm_hosts_file_cache()
 
         def _publish():
-            _argv_floor._NETLINK_ADDRS_PUBLISHED = True
-            _argv_floor._OWN_HOST_NAMES_CACHE = frozenset({"127.0.0.1", "10.4.4.4"})
+            _ssh_self_floor._NETLINK_ADDRS_PUBLISHED = True
+            _ssh_self_floor._OWN_HOST_NAMES_CACHE = frozenset({"127.0.0.1", "10.4.4.4"})
 
         self._fire_after_lookup(monkeypatch, _publish)
-        assert _argv_floor._host_is_self("ownalias") is True
+        assert _ssh_self_floor._host_is_self("ownalias") is True
 
     def test_a_stable_remote_is_still_a_same_call_allow(self, monkeypatch):
         self._hosts(monkeypatch, "10.4.4.4 farbox\n")
-        _argv_floor._warm_hosts_file_cache()
+        _ssh_self_floor._warm_hosts_file_cache()
         self._fire_after_lookup(monkeypatch, lambda: None)
-        assert _argv_floor._hosts_file_verdict("farbox") is False
+        assert _ssh_self_floor._hosts_file_verdict("farbox") is False
         assert _denied_by("ssh farbox uptime") is None
 
     def test_a_pending_path_wins_over_another_paths_remote(self, monkeypatch):
         first = self._big_hosts(monkeypatch, "127.0.0.1 localalias\n", name="hosts-a")
         second = self.tmp_path / "hosts-b"
         second.write_text("10.4.4.4 localalias\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (str(second),))
-        _argv_floor._warm_hosts_file_cache()  # only the second path is warm
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (first, str(second)))
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (str(second),))
+        _ssh_self_floor._warm_hosts_file_cache()  # only the second path is warm
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (first, str(second)))
         self._parser_must_not_run(monkeypatch)
-        assert _argv_floor._host_is_self("localalias") is True
+        assert _ssh_self_floor._host_is_self("localalias") is True
 
     # --- unreadable files and overlong lines ----------------------------
 
@@ -10853,17 +10870,17 @@ class TestHostsFileWarmUp:
         # file reads, the same command passes.  (Main allowed here.)
         path = self._hosts(monkeypatch, "10.4.4.4 farbox\n")
         readable = [False]
-        real_parse = _argv_floor._parse_hosts_file
+        real_parse = _ssh_self_floor._parse_hosts_file
 
         def _parse(p, own, **kw):
             if not readable[0]:
                 raise PermissionError("no read access")
             return real_parse(p, own, **kw)
 
-        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
+        monkeypatch.setattr(_ssh_self_floor, "_parse_hosts_file", _parse)
         assert _denied_by("ssh dev-dsk uptime") is not None
         assert _denied_by("ssh dev-dsk uptime") is not None
-        assert path not in _argv_floor._HOSTS_FILE_CACHE
+        assert path not in _ssh_self_floor._HOSTS_FILE_CACHE
         readable[0] = True
         assert _denied_by("ssh farbox uptime") is None
 
@@ -10875,10 +10892,10 @@ class TestHostsFileWarmUp:
         assert len(line) > 4096
         for pad in (60000, 61500, 64000, 65535):
             self._hosts(monkeypatch, "# pad\n" * (pad // 6) + line + "10.4.4.4 farbox\n")
-            monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
-            _argv_floor._warm_hosts_file_cache()
-            assert _argv_floor._host_is_self("secretbox") is True, pad
-            assert _argv_floor._host_is_self("a1199") is True, pad
+            monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_CACHE", {})
+            _ssh_self_floor._warm_hosts_file_cache()
+            assert _ssh_self_floor._host_is_self("secretbox") is True, pad
+            assert _ssh_self_floor._host_is_self("a1199") is True, pad
             assert _denied_by("ssh farbox uptime") is None, pad
 
     def test_a_line_with_no_break_reads_and_splits_each_chunk_once(self, monkeypatch):
@@ -10888,7 +10905,7 @@ class TestHostsFileWarmUp:
         # to its square; the line is still parsed.  Only the per-chunk split
         # is counted, not the one-piece break checks on its output.
         chunk = 1024
-        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CHUNK", chunk)
+        monkeypatch.setattr(_ssh_self_floor, "_HOSTS_FILE_READ_CHUNK", chunk)
         text = "127.0.0.1 " + "a" * (256 * 1024)
         hosts = self.tmp_path / "hosts"
         hosts.write_text(text)
@@ -10915,9 +10932,12 @@ class TestHostsFileWarmUp:
                 return _Tracked(self._fh.read(n))
 
         monkeypatch.setattr(
-            _argv_floor, "open", lambda f, *a, **k: _Handle(real_open(f, *a, **k)), raising=False
+            _ssh_self_floor,
+            "open",
+            lambda f, *a, **k: _Handle(real_open(f, *a, **k)),
+            raising=False,
         )
-        table = _argv_floor._parse_hosts_file(str(hosts), frozenset())
+        table = _ssh_self_floor._parse_hosts_file(str(hosts), frozenset())
         assert table == {"a" * (256 * 1024): True}
         assert sum(split) == len(text)
         assert max(split) <= chunk
@@ -10931,7 +10951,7 @@ class TestHostsFileWarmUp:
         # Windows or root reading on POSIX.
         path = self._hosts(monkeypatch, "127.0.0.1 loopalias\n10.4.4.4 farbox\n")
         failures = [1]
-        real_parse = _argv_floor._parse_hosts_file
+        real_parse = _ssh_self_floor._parse_hosts_file
 
         def _parse(p, own, **kw):
             if failures[0]:
@@ -10939,11 +10959,11 @@ class TestHostsFileWarmUp:
                 raise OSError("transient read error")
             return real_parse(p, own, **kw)
 
-        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse)
-        assert _argv_floor._host_is_self("farbox") is True  # the failing read: pending
-        assert path not in _argv_floor._HOSTS_FILE_CACHE
-        assert _argv_floor._host_is_self("farbox") is False  # read again: remote
-        assert _argv_floor._host_is_self("loopalias") is True
+        monkeypatch.setattr(_ssh_self_floor, "_parse_hosts_file", _parse)
+        assert _ssh_self_floor._host_is_self("farbox") is True  # the failing read: pending
+        assert path not in _ssh_self_floor._HOSTS_FILE_CACHE
+        assert _ssh_self_floor._host_is_self("farbox") is False  # read again: remote
+        assert _ssh_self_floor._host_is_self("loopalias") is True
 
     def test_an_unreadable_large_hosts_file_stays_pending_and_re_schedules(self, monkeypatch):
         # A file over the in-call cap whose background read fails (fd
@@ -10951,19 +10971,21 @@ class TestHostsFileWarmUp:
         # re-schedules the warm, so the retry does not hang on one thread.
         path = self._hosts(
             monkeypatch,
-            "# pad\n" * (_argv_floor._HOSTS_FILE_READ_CHUNK // 3) + "127.0.0.1 loopalias\n",
+            "# pad\n" * (_ssh_self_floor._HOSTS_FILE_READ_CHUNK // 3) + "127.0.0.1 loopalias\n",
         )
 
         def _emfile(*_a, **_k):
             raise OSError(24, "Too many open files")
 
-        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _emfile)
-        _argv_floor._warm_hosts_file_cache()  # the failing background read
+        monkeypatch.setattr(_ssh_self_floor, "_parse_hosts_file", _emfile)
+        _ssh_self_floor._warm_hosts_file_cache()  # the failing background read
         scheduled: "list[int]" = []
-        monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1))
-        assert _argv_floor._host_is_self("loopalias") is True
-        assert _argv_floor._host_is_self("loopalias") is True
-        assert path not in _argv_floor._HOSTS_FILE_CACHE
+        monkeypatch.setattr(
+            _ssh_self_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1)
+        )
+        assert _ssh_self_floor._host_is_self("loopalias") is True
+        assert _ssh_self_floor._host_is_self("loopalias") is True
+        assert path not in _ssh_self_floor._HOSTS_FILE_CACHE
         assert scheduled == [1, 1]
 
     def test_the_in_call_cap_counts_bytes_not_characters(self, monkeypatch):
@@ -10974,18 +10996,18 @@ class TestHostsFileWarmUp:
         text = "#" + "\U0001f600" * 20000 + "\n10.4.4.4 farbox\n"
         with open(path, "wb") as fh:
             fh.write(text.encode("utf-8"))
-        assert len(text) < _argv_floor._HOSTS_FILE_READ_CHUNK
-        assert os.stat(path).st_size > _argv_floor._HOSTS_FILE_READ_CHUNK
-        real_key = _argv_floor._hosts_file_key
+        assert len(text) < _ssh_self_floor._HOSTS_FILE_READ_CHUNK
+        assert os.stat(path).st_size > _ssh_self_floor._HOSTS_FILE_READ_CHUNK
+        real_key = _ssh_self_floor._hosts_file_key
 
         def _stale_small_key(p):
             key = real_key(p)
             return key[:2] + (16,) + key[3:]
 
-        monkeypatch.setattr(_argv_floor, "_hosts_file_key", _stale_small_key)
-        monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: None)
-        assert _argv_floor._host_is_self("farbox") is True
-        assert path not in _argv_floor._HOSTS_FILE_CACHE
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_key", _stale_small_key)
+        monkeypatch.setattr(_ssh_self_floor, "_schedule_hosts_file_warm", lambda: None)
+        assert _ssh_self_floor._host_is_self("farbox") is True
+        assert path not in _ssh_self_floor._HOSTS_FILE_CACHE
 
     def test_the_gate_never_reads_past_the_in_call_cap(self, monkeypatch):
         # The key's stat says the file is small, but it was replaced by a
@@ -10993,19 +11015,22 @@ class TestHostsFileWarmUp:
         # itself, so the gate stops at the cap, caches nothing, answers
         # pending and leaves the full parse to the background warm.
         path = self._hosts(
-            monkeypatch, "# pad\n" * (_argv_floor._HOSTS_FILE_READ_CHUNK // 3) + "10.4.4.4 farbox\n"
+            monkeypatch,
+            "# pad\n" * (_ssh_self_floor._HOSTS_FILE_READ_CHUNK // 3) + "10.4.4.4 farbox\n",
         )
-        real_key = _argv_floor._hosts_file_key
+        real_key = _ssh_self_floor._hosts_file_key
 
         def _stale_small_key(p):
             key = real_key(p)
             return key[:2] + (16,) + key[3:]
 
-        monkeypatch.setattr(_argv_floor, "_hosts_file_key", _stale_small_key)
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_key", _stale_small_key)
         scheduled: "list[int]" = []
-        monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1))
-        assert _argv_floor._host_is_self("farbox") is True
-        assert path not in _argv_floor._HOSTS_FILE_CACHE
+        monkeypatch.setattr(
+            _ssh_self_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1)
+        )
+        assert _ssh_self_floor._host_is_self("farbox") is True
+        assert path not in _ssh_self_floor._HOSTS_FILE_CACHE
         assert scheduled == [1]
 
     # --- Windows: a content digest, since st_ctime is creation time ------
@@ -11017,9 +11042,9 @@ class TestHostsFileWarmUp:
         ``st_ctime`` (its creation time), so a rewrite that restores mtime
         leaves mtime, ctime and size all unchanged, which is the Windows case.
         """
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest_enabled", lambda: True)
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_content_digest_enabled", lambda: True)
         born: "dict[str, float]" = {}
-        real_os = _argv_floor.os
+        real_os = _ssh_self_floor.os
 
         class _Stat:
             def __init__(self, st, ctime):
@@ -11037,7 +11062,7 @@ class TestHostsFileWarmUp:
                 st = real_os.stat(path, *a, **k)
                 return _Stat(st, born.setdefault(str(path), st.st_ctime))
 
-        monkeypatch.setattr(_argv_floor, "os", _WindowsOs())
+        monkeypatch.setattr(_ssh_self_floor, "os", _WindowsOs())
 
     @staticmethod
     def _rewrite_keeping_mtime(path, old, new):
@@ -11056,10 +11081,10 @@ class TestHostsFileWarmUp:
     def test_windows_same_size_rewrite_with_restored_mtime_re_parses(self, monkeypatch):
         self._windows(monkeypatch)
         path = self._hosts(monkeypatch, "10.44.4.4 swapbox\n")
-        assert _argv_floor._host_is_self("swapbox") is False
+        assert _ssh_self_floor._host_is_self("swapbox") is False
         self._rewrite_keeping_mtime(path, "10.44.4.4 swapbox", "127.0.0.9 swapbox")
-        assert _argv_floor._host_is_self("swapbox") is True
-        assert _argv_floor._HOSTS_FILE_CACHE[path][1] == {"swapbox": True}
+        assert _ssh_self_floor._host_is_self("swapbox") is True
+        assert _ssh_self_floor._HOSTS_FILE_CACHE[path][1] == {"swapbox": True}
 
     def test_windows_large_file_never_serves_a_remote_or_absent_verdict(self, monkeypatch):
         # A Windows hosts file over 64 KiB cannot be verified without a gate
@@ -11068,43 +11093,45 @@ class TestHostsFileWarmUp:
         # a same-size rewrite that restores mtime is invisible to its key.
         self._windows(monkeypatch)
         path = self._big_hosts(monkeypatch, "10.44.4.4 swapbox\n127.0.0.1 loopalias\n")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
-        _argv_floor._hosts_file_warm_worker()
-        assert _argv_floor._host_is_self("swapbox") is True
-        assert _argv_floor._hosts_file_verdict("nobody") is True
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (path,))
+        _ssh_self_floor._hosts_file_warm_worker()
+        assert _ssh_self_floor._host_is_self("swapbox") is True
+        assert _ssh_self_floor._hosts_file_verdict("nobody") is True
         assert _denied_by("ssh dev-dsk uptime") == self._RULE
         self._rewrite_keeping_mtime(path, "10.44.4.4 swapbox", "127.0.0.9 swapbox")
-        assert _argv_floor._host_is_self("swapbox") is True
+        assert _ssh_self_floor._host_is_self("swapbox") is True
         assert _denied_by("ssh loopalias uptime") == self._RULE
 
     def test_windows_small_file_read_failure_on_the_digest_is_pending(self, monkeypatch):
         self._windows(monkeypatch)
         self._hosts(monkeypatch, "10.44.4.4 swapbox\n")
-        _argv_floor._warm_hosts_file_cache()
+        _ssh_self_floor._warm_hosts_file_cache()
 
         def _eio(*_a, **_k):
             raise OSError(5, "I/O error")
 
-        monkeypatch.setattr(_argv_floor, "_read_hosts_bytes", _eio)
+        monkeypatch.setattr(_ssh_self_floor, "_read_hosts_bytes", _eio)
         scheduled: "list[int]" = []
-        monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1))
-        assert _argv_floor._host_is_self("swapbox") is True
+        monkeypatch.setattr(
+            _ssh_self_floor, "_schedule_hosts_file_warm", lambda: scheduled.append(1)
+        )
+        assert _ssh_self_floor._host_is_self("swapbox") is True
         assert scheduled == [1]
 
     def test_posix_key_does_no_content_read(self, monkeypatch):
         def _boom(*_a, **_k):
             raise AssertionError("POSIX read the hosts file for a digest")
 
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest", _boom, raising=False)
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_content_digest", _boom, raising=False)
         path = self._hosts(monkeypatch, "10.44.4.4 swapbox\n127.0.0.1 loopalias\n")
         with monkeypatch.context() as m:
             # The key itself reads nothing on POSIX; only a parse reads.
-            m.setattr(_argv_floor, "_read_hosts_bytes", _boom, raising=False)
-            assert _argv_floor._hosts_file_key(path)[3] is None
-        assert _argv_floor._host_is_self("swapbox") is False
-        assert _argv_floor._host_is_self("loopalias") is True
-        assert _argv_floor._HOSTS_FILE_CACHE[path][0][3] is None
+            m.setattr(_ssh_self_floor, "_read_hosts_bytes", _boom, raising=False)
+            assert _ssh_self_floor._hosts_file_key(path)[3] is None
+        assert _ssh_self_floor._host_is_self("swapbox") is False
+        assert _ssh_self_floor._host_is_self("loopalias") is True
+        assert _ssh_self_floor._HOSTS_FILE_CACHE[path][0][3] is None
         big = self._big_hosts(monkeypatch, "10.44.4.4 swapbox\n", name="hosts-big")
-        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (big,))
-        _argv_floor._hosts_file_warm_worker()
-        assert _argv_floor._host_is_self("swapbox") is False
+        monkeypatch.setattr(_ssh_self_floor, "_hosts_file_paths", lambda: (big,))
+        _ssh_self_floor._hosts_file_warm_worker()
+        assert _ssh_self_floor._host_is_self("swapbox") is False

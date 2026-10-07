@@ -3133,11 +3133,11 @@ class TestBuiltinDenyPatterns:
         The own-host cache is reset for the test and restored after it, so the
         stub's addresses never become another test's idea of this machine.
         """
-        from kiro_crew.security import argv_floor
+        from kiro_crew.security import ssh_self_floor
 
         recorded: list[tuple[int, object]] = []
-        real_socket = argv_floor.socket
-        real_interface_addresses = argv_floor._own_interface_addresses
+        real_socket = ssh_self_floor.socket
+        real_interface_addresses = ssh_self_floor._own_interface_addresses
         stub_addresses = set(_STUB_OWN_ADDRESS.values())
 
         def _stub_addresses_only() -> set[str]:
@@ -3154,11 +3154,11 @@ class TestBuiltinDenyPatterns:
                     return _InertDatagramSocket(family, recorded)
                 return real_socket.socket(family, type, proto, fileno)
 
-        monkeypatch.setattr(argv_floor, "socket", _SocketModule())
-        monkeypatch.setattr(argv_floor, "_own_interface_addresses", _stub_addresses_only)
-        monkeypatch.setattr(argv_floor, "_OWN_HOST_NAMES_CACHE", None)
-        monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
-        monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        monkeypatch.setattr(ssh_self_floor, "socket", _SocketModule())
+        monkeypatch.setattr(ssh_self_floor, "_own_interface_addresses", _stub_addresses_only)
+        monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(ssh_self_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         return recorded
 
     def test_allows_command_with_credential_in_path(self) -> None:
@@ -3618,15 +3618,15 @@ class TestBuiltinDenyPatterns:
         got there only because the real enumeration read them back from the
         stubbed socket, and the fixture's filter admits nothing else.
         """
-        from kiro_crew.security import argv_floor, is_denied
+        from kiro_crew.security import is_denied, ssh_self_floor
 
         assert is_denied("ssh dev-dsk 'cd /workplace && git status'") is None
         assert is_denied("ssh dev-dsk 'git commit -m \"address push-back from review\"'") is None
         recorded = _own_host_seed_connects_nothing
         assert {peer for _family, peer in recorded} == _OWN_HOST_PROBE_PEERS, recorded
         assert {family for family, _peer in recorded} == {socket.AF_INET, socket.AF_INET6}
-        assert argv_floor._OWN_HOST_NAMES_CACHE is not None
-        assert set(_STUB_OWN_ADDRESS.values()) <= argv_floor._OWN_HOST_NAMES_CACHE
+        assert ssh_self_floor._OWN_HOST_NAMES_CACHE is not None
+        assert set(_STUB_OWN_ADDRESS.values()) <= ssh_self_floor._OWN_HOST_NAMES_CACHE
 
     def test_blocks_ssh_remote_real_git_push(self) -> None:
         """A real ``git push`` inside an ``ssh`` remote command stays BLOCKED."""

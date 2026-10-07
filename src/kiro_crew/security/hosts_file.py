@@ -2,11 +2,11 @@
 
 The line parser that turns hosts-file text, fed one chunk at a time, into
 ``{name -> maps-to-local}``, the content digest a Windows cache key carries,
-and the two exceptions the reads raise.  ``argv_floor`` owns every read, the
+and the two exceptions the reads raise.  ``ssh_self_floor`` owns every read, the
 cache and the gate; these live apart so that parsing plumbing does not count
 against that module's per-module liveness cap.
 
-Layer.  This module imports nothing from the package: ``argv_floor`` imports
+Layer.  This module imports nothing from the package: ``ssh_self_floor`` imports
 these names and re-binds them in its own namespace, which is the seam tests
 monkeypatch.
 """

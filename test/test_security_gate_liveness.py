@@ -194,7 +194,13 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised again, from 28,572, for the ``ssh_self_floor.py`` split out of
+#: ``argv_floor.py``: the moved code is byte-identical, and the 40 lines are
+#: the new module's docstring and the stdlib and reader imports it now declares for
+#: itself. ``argv_floor`` drops from 4,454 lines to 2,210, which is the per-file cap
+#: below doing its job by a split rather than by a raise.
+_PACKAGE_LINE_BUDGET = 28_612
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -226,6 +232,25 @@ def test_no_single_module_grows_back_into_a_monolith() -> None:
         name: count for name, count in _package_line_counts().items() if count > _MODULE_LINE_CAP
     }
     assert not oversized, f"past the per-module cap: {oversized}"
+
+
+def test_the_argv_floor_never_imports_the_ssh_self_floor() -> None:
+    """``ssh_self_floor`` reads two argv-floor helpers, so the edge between the two
+    modules runs one way. An import back from ``argv_floor`` would make the pair a
+    load-time cycle and fold the split cluster back into the module it left."""
+    import ast
+
+    source = (Path(security.__file__).parent / "argv_floor.py").read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+    assert not {
+        name for name in imported if "ssh_self_floor" in name
+    }, f"argv_floor imports the ssh self-target floor: {sorted(imported)}"
 
 
 def test_the_facade_is_the_smallest_it_can_be_of_the_package() -> None:

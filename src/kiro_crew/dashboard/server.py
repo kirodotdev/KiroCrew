@@ -390,7 +390,7 @@ from kiro_crew.safety_override import (  # noqa: F401
     take_dropped_grant,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
-from kiro_crew.security.argv_floor import warm_own_host_names  # noqa: F401
+from kiro_crew.security.ssh_self_floor import warm_own_host_names  # noqa: F401
 from kiro_crew.sel import sel, sel_is_warm, warm_sel_singleton  # noqa: F401
 from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import (  # noqa: F401

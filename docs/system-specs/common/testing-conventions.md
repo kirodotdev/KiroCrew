@@ -2826,7 +2826,7 @@ negative control before it was believed, and that is what caught them.
   re-resolving the name is. Both halves are worth having: the test stops accusing observers,
   and a well-behaved observer stops being visible to tests that patch a stdlib symbol.
 - **A datagram `connect()` sends no packet, so it is a routing-table query and not a network
-  connection.** `src/kiro_crew/security/argv_floor.py`'s own-address enumeration connects a
+  connection.** `src/kiro_crew/security/ssh_self_floor.py`'s own-address enumeration connects a
   `SOCK_DGRAM` socket to `198.51.100.1:53` and `2001:db8::1:53` — TEST-NET-2 and
   documentation addresses, contacted by nobody — to learn the primary outbound address per
   family, and says so in a comment three lines above. The `socket.connect` audit hook never
@@ -3191,7 +3191,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `/proc/sys/kernel/pid_max` so the kernel's range check, not convention, is what makes
   the number unreachable.
 - **`network`: rank the address before you file the finding.** The UDP `connect` to
-  `198.51.100.1:53` / `2001:db8::1:53` in `argv_floor._own_interface_addresses` is the
+  `198.51.100.1:53` / `2001:db8::1:53` in `ssh_self_floor._own_interface_addresses` is the
   packet-less local-IP trick over TEST-NET, a hardening item: `test_security.py` now routes
   it through an inert `_InertDatagramSocket` at the module's `socket` binding (datagram
   construction only; every other socket kind passes through) that records the peer and

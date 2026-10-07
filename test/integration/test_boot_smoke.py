@@ -436,11 +436,11 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # in the next; neither is derived from the home.
     ("kiro_crew.sandbox", "_CGROUP_SCOPE_PROBE_AT"): "host probe clock",
     ("kiro_crew.sandbox", "_CPU_DELEGATED"): "host probe, re-read after a re-probe",
-    ("kiro_crew.security.argv_floor", "_OWN_HOST_NAMES_CACHE"): "host names",
-    ("kiro_crew.security.argv_floor", "_OWN_HOST_RESOLVE_DONE"): "host names",
-    ("kiro_crew.security.argv_floor", "_OWN_HOST_RESOLVE_IN_FLIGHT"): "host names",
-    ("kiro_crew.security.argv_floor", "_OWN_HOST_RESOLVE_NEXT_TRY"): "host probe clock",
-    ("kiro_crew.security.argv_floor", "_OWN_HOST_RESOLVE_STAMP"): "host probe clock",
+    ("kiro_crew.security.ssh_self_floor", "_OWN_HOST_NAMES_CACHE"): "host names",
+    ("kiro_crew.security.ssh_self_floor", "_OWN_HOST_RESOLVE_DONE"): "host names",
+    ("kiro_crew.security.ssh_self_floor", "_OWN_HOST_RESOLVE_IN_FLIGHT"): "host names",
+    ("kiro_crew.security.ssh_self_floor", "_OWN_HOST_RESOLVE_NEXT_TRY"): "host probe clock",
+    ("kiro_crew.security.ssh_self_floor", "_OWN_HOST_RESOLVE_STAMP"): "host probe clock",
     # Per-boot objects the next boot replaces wholesale before any read; they
     # hold references, not home-derived decisions a later request would act on.
     ("kiro_crew.apps.builtins.auto_improvement.backend.crew", "_runtime"): "replaced per boot",
