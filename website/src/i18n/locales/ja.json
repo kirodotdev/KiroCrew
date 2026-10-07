@@ -8777,6 +8777,7 @@
       "uncommitted": "{{count}} 件の未コミット",
       "branch_unavailable": "ブランチを利用できません",
       "status_failed": "リポジトリの状態を読み取れませんでした。コミット履歴が古い可能性があります。",
+      "status_failed_collapsed": "リポジトリの状態を読み取れませんでした。",
       "status_failed_no_history": "これとは別の問題です。変更の一覧を読み取れませんでした。更新して再試行してください。",
       "log_failed": "コミットログを読み取れませんでした。",
       "uncommitted_capped": "{{count}} 件以上の未コミット",
@@ -8791,7 +8792,10 @@
       "filter_refused_title_unreadable_changes": "Kiro は現在、変更を表示できません",
       "filter_refused_title_unreadable_history": "Kiro は現在、履歴を表示できません",
       "ask_agent_changes": "変更についてエージェントに質問",
-      "ask_agent_history": "履歴についてエージェントに質問"
+      "ask_agent_history": "履歴についてエージェントに質問",
+      "nested_title": "このフォルダー内のリポジトリ",
+      "nested_failed": "このフォルダー内のリポジトリを一覧表示できませんでした。",
+      "nested_truncated": "すべてのリポジトリは表示されていません。残りを表示するには、サブフォルダーをプロジェクトとして開いてください。"
     },
     "workspaceTree": {
       "status_failed": "リポジトリの状態を読み取れませんでした。",

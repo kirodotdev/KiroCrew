@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronRight, GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
 import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
@@ -61,22 +61,158 @@ interface GitPanelProps {
   onClose: () => void
 }
 
-export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
-  const prevBranch = useRef<string | undefined>(undefined)
+interface GitRepoViewProps extends GitPanelProps {
+  /** A repository inside `projectDir`, as `projectGitRepos` lists it. Renders as a collapsible section. */
+  repo?: string
+  expanded?: boolean
+  onToggle?: (expanded: boolean) => void
+}
 
-  const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery({
-    queryKey: ['git-status', projectDir],
-    queryFn: () => api.projectGitStatus(projectDir),
+interface NestedReposPanelProps extends GitPanelProps {
+  /** Sections the user opened or closed, by repository path; an absent path takes the default. */
+  open: Record<string, boolean>
+  onToggle: (repo: string, expanded: boolean) => void
+}
+
+function gitStatusQuery(projectDir: string, repo: string | undefined, refetchInterval: number) {
+  return {
+    // The root key is shared with the file tree and the rail; a nested repo
+    // extends it, so their `['git-status', projectDir]` refreshes reach it too.
+    queryKey: repo === undefined ? ['git-status', projectDir] : ['git-status', projectDir, repo],
+    queryFn: () => api.projectGitStatus(projectDir, repo),
     enabled: !!projectDir,
-    refetchInterval: 5000,
+    refetchInterval,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  }
+}
+
+export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
+  // The same query the single-repository view reads, so it costs no extra
+  // request. It keeps polling here, so a folder that becomes a repository
+  // switches back to that view on its own.
+  const { data: status, error: statusError } = useQuery(gitStatusQuery(projectDir, undefined, 5000))
+  // Held here rather than in each section: a failed root status read swaps in the
+  // single-repository view, and the sections the user opened stay open when it
+  // swaps back.
+  const [openByDir, setOpenByDir] = useState<Record<string, Record<string, boolean>>>({})
+  if (!statusError && status?.repo === false) {
+    return (
+      <NestedReposPanel
+        projectDir={projectDir}
+        onFileOpen={onFileOpen}
+        onClose={onClose}
+        open={openByDir[projectDir] ?? {}}
+        onToggle={(repo, expanded) =>
+          setOpenByDir(prev => ({ ...prev, [projectDir]: { ...prev[projectDir], [repo]: expanded } }))
+        }
+      />
+    )
+  }
+  return <GitRepoView projectDir={projectDir} onFileOpen={onFileOpen} onClose={onClose} />
+}
+
+function NestedReposPanel({ projectDir, onFileOpen, onClose, open, onToggle }: NestedReposPanelProps) {
+  const queryClient = useQueryClient()
+  const { data, error, isLoading, refetch } = useQuery({
+    queryKey: ['git-repos', projectDir],
+    queryFn: () => api.projectGitRepos(projectDir),
+    enabled: !!projectDir,
+    staleTime: 30_000,
     refetchOnWindowFocus: true,
     retry: 1,
   })
+  const repos = data?.repos ?? []
+  const found = !error && repos.length > 0
+
+  return (
+    <DetailPanel
+      embedded
+      title={i18nT('components.gitPanel.title')}
+      onClose={onClose}
+      noPadding
+      customHeader={
+        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+          <GitBranch size={14} className="text-accent shrink-0" />
+          <span className="text-[12px] font-medium text-text truncate">
+            {found
+              ? i18nT('components.gitPanel.nested_title')
+              : isLoading
+                ? i18nT('components.gitPanel.loading')
+                : i18nT('components.gitPanel.not_a_repository')}
+          </span>
+          <span className="flex-1" />
+          <button
+            onClick={() => {
+              refetch()
+              queryClient.invalidateQueries({ queryKey: ['git-status', projectDir] })
+              queryClient.invalidateQueries({ queryKey: ['git-log', projectDir] })
+            }}
+            className="flex items-center justify-center w-[26px] h-[26px] rounded-md transition-colors bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover"
+            title={i18nT('components.gitPanel.refresh')}
+            aria-label={i18nT('components.gitPanel.refresh')}
+          >
+            <RefreshCw size={13} />
+          </button>
+        </div>
+      }
+    >
+      <div className="overflow-y-auto flex-1 text-[12px]">
+        {error && (
+          <div className="p-3">
+            <ErrorNotice
+              message={i18nT('components.gitPanel.nested_failed')}
+              report={findReport(errMessage(error))}
+              askAgent
+              testId="git-panel-nested-error"
+            />
+          </div>
+        )}
+        {!error && !isLoading && repos.length === 0 && (
+          <div role="status" className="px-3 py-8 text-center text-muted text-[12px]">
+            {i18nT('components.gitPanel.not_a_repository_help')}
+          </div>
+        )}
+        {!error && repos.map(r => (
+          <GitRepoView
+            key={r.path}
+            projectDir={projectDir}
+            repo={r.path}
+            // One repository has nothing to choose between, so it opens.
+            expanded={open[r.path] ?? repos.length === 1}
+            onToggle={expanded => onToggle(r.path, expanded)}
+            onFileOpen={onFileOpen}
+            onClose={onClose}
+          />
+        ))}
+        {!error && data?.truncated && (
+          <div role="status" className="px-3 py-2 text-[11px] text-warn" data-testid="git-panel-nested-truncated">
+            {i18nT('components.gitPanel.nested_truncated')}
+          </div>
+        )}
+      </div>
+    </DetailPanel>
+  )
+}
+
+function GitRepoView({ projectDir, repo, expanded = false, onToggle, onFileOpen, onClose }: GitRepoViewProps) {
+  const prevBranch = useRef<string | undefined>(undefined)
+  const section = repo !== undefined
+  const bodyId = useId()
+  // A collapsed section still renders its failure notices: a muted header label
+  // alone would hide an outage or refusal behind a row that looks healthy.
+  const showDetail = !section || expanded
+
+  // A collapsed section still shows its branch and change count, so its status
+  // keeps polling, but slower: a folder can hold many repositories.
+  const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery(
+    gitStatusQuery(projectDir, repo, section && !expanded ? 30_000 : 5000),
+  )
 
   const { data: log, refetch: refetchLog, error: logError } = useQuery({
-    queryKey: ['git-log', projectDir],
-    queryFn: () => api.projectGitLog(projectDir),
-    enabled: !!projectDir,
+    queryKey: repo === undefined ? ['git-log', projectDir] : ['git-log', projectDir, repo],
+    queryFn: () => api.projectGitLog(projectDir, 20, repo),
+    enabled: !!projectDir && (!section || expanded),
     staleTime: 30_000,
     retry: 1,
   })
@@ -92,11 +228,13 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   // until the next manual refresh.
   useEffect(() => {
     const marker = status?.branch ? `${status.branch}@${status.ahead ?? 0}` : undefined
-    if (marker && prevBranch.current && marker !== prevBranch.current) {
+    // `refetch()` runs even while the query is disabled, so a collapsed section
+    // must not call it: expanding is what reads its log.
+    if (showDetail && marker && prevBranch.current && marker !== prevBranch.current) {
       refetchLog()
     }
     prevBranch.current = marker
-  }, [status?.branch, status?.ahead, refetchLog])
+  }, [status?.branch, status?.ahead, refetchLog, showDetail])
 
   const fileCount = status?.files?.length ?? 0
   const isRepository = status?.repo === true
@@ -167,11 +305,14 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   // rendered. When the log route ALSO failed there is no list, and the notice
   // below says so outright, so the two boxes then contradict each other -- one
   // warning about staleness in something the other says cannot be shown. Drop
-  // the clause exactly when the log side has its own notice.
+  // the clause exactly when the log side has its own notice. A collapsed section
+  // renders no history at all, so there it warns about nothing on screen.
   const localizedStatusFailure = i18nT(
     logError
       ? 'components.gitPanel.status_failed_no_history'
-      : 'components.gitPanel.status_failed',
+      : showDetail
+        ? 'components.gitPanel.status_failed'
+        : 'components.gitPanel.status_failed_collapsed',
   )
   // The refusal is permanent only while the repo config stands, and the
   // notice's own agent hand-off invites changing it in this window. The status
@@ -185,10 +326,10 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   // its own reason (the divergent case) proves nothing about the repo config, so
   // refetching there would churn a query whose refusal is still current.
   useEffect(() => {
-    if (!statusError && logFilterRefused) {
+    if (showDetail && !statusError && logFilterRefused) {
       refetchLog()
     }
-  }, [statusError, logFilterRefused, refetchLog])
+  }, [showDetail, statusError, logFilterRefused, refetchLog])
   // Inert ONLY while both routes are still refusing AND the cause is a declared
   // driver, which is the standing policy state a retry cannot change. An
   // unreadable config can become readable, and the status route re-polls every
@@ -199,14 +340,8 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   const refreshInert =
     statusFilterRefused && logFilterRefused && filterRefusedCause === 'declared'
 
-  return (
-    <DetailPanel
-      embedded
-      title={i18nT('components.gitPanel.title')}
-      onClose={onClose}
-      noPadding
-      customHeader={
-        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+  const headerItems = (
+        <>
           {statusError ? (
             <span className="text-[12px] text-muted truncate">
               {i18nT('components.gitPanel.branch_unavailable')}
@@ -267,8 +402,12 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
               thin diagonal at `size={13}`, and a reader shown three frames
               called all three crossed-out. The slash is the first thing 40%
               erases. Weaker than the live glyph either way, so the resting
-              convention below is untouched. */}
-          <button
+              convention below is untouched.
+
+              A section has none: the nested panel's header refreshes every
+              section, and one per row would be a list of identically named
+              controls. */}
+          {!section && <button
             onClick={() => { refetchStatus(); refetchLog() }}
             disabled={refreshInert}
             className={`flex items-center justify-center w-[26px] h-[26px] rounded-md transition-colors bg-transparent border-none ${
@@ -284,11 +423,12 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
               : i18nT('components.gitPanel.refresh')}
           >
             {refreshInert ? <RefreshCwOff size={13} strokeWidth={2.5} /> : <RefreshCw size={13} />}
-          </button>
-        </div>
-      }
-    >
-      <div className="overflow-y-auto flex-1 text-[12px]">
+          </button>}
+        </>
+  )
+
+  const body = (
+      <div id={bodyId} className={section ? 'text-[12px] pb-1' : 'overflow-y-auto flex-1 text-[12px]'}>
         {(statusError || logError) && (
           <div className="flex flex-col gap-2 p-3">
             {/* The refusal is repo-level, so both routes refuse together: ONE
@@ -375,14 +515,14 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </div>
         )}
 
-        {noRepository && (
+        {noRepository && !section && (
           <div role="status" className="px-3 py-8 text-center text-muted text-[12px]">
             {i18nT('components.gitPanel.not_a_repository_help')}
           </div>
         )}
 
         {/* ── CHANGES section ── */}
-        {!statusError && isRepository && !hasNoChanges && (
+        {showDetail && !statusError && isRepository && !hasNoChanges && (
           <section className="py-2">
             <div className="px-3 pb-1.5 flex items-center gap-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
@@ -430,7 +570,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
         )}
 
         {/* ── COMMITS section ── */}
-        {log?.commits && log.commits.length > 0 && (
+        {showDetail && log?.commits && log.commits.length > 0 && (
           <section className="py-2 border-t border-border">
             <div className="px-3 pb-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
@@ -465,6 +605,43 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </div>
         )}
       </div>
+  )
+
+  if (section) {
+    return (
+      <section className="border-b border-border" data-testid="git-panel-repo">
+        <div className="flex items-center gap-2 h-[34px] px-3">
+          <button
+            type="button"
+            onClick={() => onToggle?.(!expanded)}
+            aria-expanded={expanded}
+            aria-controls={expanded || statusError || logError ? bodyId : undefined}
+            title={repo}
+            className="flex items-center gap-1 min-w-0 shrink bg-transparent border-none p-0 cursor-pointer text-text"
+          >
+            <ChevronRight size={13} className={`shrink-0 text-muted transition-transform ${expanded ? 'rotate-90' : ''}`} />
+            <span className="font-mono text-[12px] truncate">{repo}</span>
+          </button>
+          {headerItems}
+        </div>
+        {(expanded || statusError || logError) && body}
+      </section>
+    )
+  }
+
+  return (
+    <DetailPanel
+      embedded
+      title={i18nT('components.gitPanel.title')}
+      onClose={onClose}
+      noPadding
+      customHeader={
+        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+          {headerItems}
+        </div>
+      }
+    >
+      {body}
     </DetailPanel>
   )
 }

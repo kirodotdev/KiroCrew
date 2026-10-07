@@ -8899,6 +8899,7 @@
       "uncommitted": "{{count}} nicht committet",
       "branch_unavailable": "Branch nicht verfügbar",
       "status_failed": "Der Repository-Status konnte nicht gelesen werden. Der Commit-Verlauf ist möglicherweise veraltet.",
+      "status_failed_collapsed": "Der Repository-Status konnte nicht gelesen werden.",
       "status_failed_no_history": "Ein separates Problem: Die Liste der Änderungen konnte nicht gelesen werden. Zum erneuten Versuch aktualisieren.",
       "log_failed": "Das Commit-Protokoll konnte nicht gelesen werden.",
       "uncommitted_capped": "über {{count}} nicht committet",
@@ -8913,7 +8914,10 @@
       "filter_refused_title_unreadable_changes": "Kiro kann die Änderungen derzeit nicht anzeigen",
       "filter_refused_title_unreadable_history": "Kiro kann den Verlauf derzeit nicht anzeigen",
       "ask_agent_changes": "Agent zu den Änderungen fragen",
-      "ask_agent_history": "Agent zum Verlauf fragen"
+      "ask_agent_history": "Agent zum Verlauf fragen",
+      "nested_title": "Repositorys in diesem Ordner",
+      "nested_failed": "Die Repositorys in diesem Ordner konnten nicht aufgelistet werden.",
+      "nested_truncated": "Nicht alle Repositorys werden angezeigt. Öffne einen Unterordner als Projekt, um die übrigen zu sehen."
     },
     "workspaceTree": {
       "status_failed": "Der Repository-Status konnte nicht gelesen werden.",

@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from conftest import make_dir_link
 from kiro_crew.dashboard.handlers import (
     api_project_git_log,
+    api_project_git_repos,
     api_project_git_status,
     api_project_tree,
 )
@@ -62,6 +63,7 @@ def _make_app(*known: str) -> web.Application:
     app["state"] = _State(*known)
     app.router.add_get("/api/project/git/status", api_project_git_status)
     app.router.add_get("/api/project/git/log", api_project_git_log)
+    app.router.add_get("/api/project/git/repos", api_project_git_repos)
     app.router.add_get("/api/project/tree", api_project_tree)
     return app
 
@@ -1589,3 +1591,162 @@ class TestListingCap:
         assert resp.status == 200
         assert data["files"] == []
         assert "truncated" not in data
+
+
+# ── nested repositories: /api/project/git/repos and the ``repo`` selector ──
+
+
+@pytest.fixture()
+def workspace(outside_any_repo, _repo_template) -> Path:
+    """A non-repository folder holding repositories at ``src/a``, ``src/b`` and ``tools/c``."""
+    for rel in ("src/a", "src/b", "tools/c"):
+        shutil.copytree(_repo_template, outside_any_repo / rel)
+    return outside_any_repo
+
+
+class TestNestedRepos:
+    async def _repos(self, project: Path, known: Path | None = None) -> tuple[int, dict]:
+        async with TestClient(TestServer(_make_app(str(known or project)))) as client:
+            resp = await client.get("/api/project/git/repos", params={"path": str(project)})
+            return resp.status, await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_lists_repositories_beneath_a_non_repository_folder(self, workspace, mock_sel):
+        status, data = await self._repos(workspace)
+        assert status == 200
+        assert data == {
+            "repos": [{"path": "src/a"}, {"path": "src/b"}, {"path": "tools/c"}],
+            "truncated": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_skips_hidden_tool_and_too_deep_folders(self, workspace, _repo_template, mock_sel):
+        for rel in (".hidden/r", "node_modules/r", "one/two/three/r"):
+            shutil.copytree(_repo_template, workspace / rel)
+        _status, data = await self._repos(workspace)
+        assert [r["path"] for r in data["repos"]] == ["src/a", "src/b", "tools/c"]
+
+    @pytest.mark.asyncio
+    async def test_does_not_descend_into_a_repository(self, workspace, _repo_template, mock_sel):
+        shutil.copytree(_repo_template, workspace / "src" / "a" / "vendored")
+        _status, data = await self._repos(workspace)
+        assert "src/a/vendored" not in [r["path"] for r in data["repos"]]
+
+    @pytest.mark.asyncio
+    async def test_does_not_follow_a_folder_link(self, workspace, tmp_path, _repo_template, mock_sel):
+        outside = tmp_path / "outside"
+        shutil.copytree(_repo_template, outside / "r")
+        make_dir_link(workspace / "linked", outside)
+        _status, data = await self._repos(workspace)
+        assert [r["path"] for r in data["repos"]] == ["src/a", "src/b", "tools/c"]
+
+    @pytest.mark.asyncio
+    async def test_the_repository_cap_marks_the_list_truncated(self, workspace, mock_sel, monkeypatch):
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_GIT_NESTED_REPO_MAX_REPOS", 2)
+        _status, data = await self._repos(workspace)
+        assert [r["path"] for r in data["repos"]] == ["src/a", "src/b"]
+        assert data["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_scan_budget_marks_the_list_truncated(self, workspace, mock_sel, monkeypatch):
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_GIT_NESTED_REPO_SCAN_LIMIT", 3)
+        _status, data = await self._repos(workspace)
+        assert data["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_folder_swapped_after_it_was_queued_is_not_read(
+        self, workspace, tmp_path, _repo_template, mock_sel, monkeypatch
+    ):
+        """``src`` is queued when the root is listed and read a level later. A
+        directory from outside the project renamed into its place in between has
+        another identity, so its repository is never listed."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        outside = tmp_path / "outside"
+        shutil.copytree(_repo_template, outside / "OUTSIDE_REPO")
+        real_scandir = files_mod._project_tree_scandir
+        swapped: list[bool] = []
+
+        def scandir(native, identity):
+            if not swapped and os.path.basename(native) == "src":
+                os.rename(workspace / "src", tmp_path / "src-moved-away")
+                os.rename(outside, workspace / "src")
+                swapped.append(True)
+            return real_scandir(native, identity)
+
+        monkeypatch.setattr(files_mod, "_project_tree_scandir", scandir)
+        _status, data = await self._repos(workspace)
+        assert swapped
+        assert [r["path"] for r in data["repos"]] == ["tools/c"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        reason="needs POSIX permission bits that apply to the test user",
+    )
+    async def test_an_unreadable_project_folder_is_an_outage_not_an_empty_list(
+        self, workspace, mock_sel
+    ):
+        workspace.chmod(0o311)
+        try:
+            status, data = await self._repos(workspace)
+        finally:
+            workspace.chmod(0o755)
+        assert status == 503
+        assert data["code"] == "git_repos_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_unknown_project_is_refused(self, workspace, tmp_path, mock_sel):
+        status, data = await self._repos(workspace, known=tmp_path / "elsewhere")
+        assert status == 403
+        assert data["code"] == "unknown_project_dir"
+
+    @pytest.mark.asyncio
+    async def test_status_and_log_run_in_the_selected_repository(self, workspace, mock_sel):
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            status = await client.get(
+                "/api/project/git/status", params={"path": str(workspace), "repo": "src/a"}
+            )
+            log = await client.get(
+                "/api/project/git/log", params={"path": str(workspace), "repo": "src/a"}
+            )
+            status_data, log_data = await status.json(), await log.json()
+        assert status.status == 200
+        assert status_data["repo"] is True
+        assert status_data["branch"] == "trunk"
+        assert os.path.normcase(status_data["repoRoot"]) == os.path.normcase(
+            os.path.realpath(workspace / "src" / "a")
+        )
+        assert [c["message"] for c in log_data["commits"]] == ["initial commit"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "selector", ["..", "../x", "src/../..", "src//a", "./src/a", "src\\a", "/etc"]
+    )
+    async def test_a_selector_outside_the_project_is_refused(self, workspace, selector, mock_sel):
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            for route in ("status", "log"):
+                resp = await client.get(
+                    f"/api/project/git/{route}", params={"path": str(workspace), "repo": selector}
+                )
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "invalid_repo_path"
+
+    @pytest.mark.asyncio
+    async def test_a_selector_through_a_link_out_of_the_project_is_refused(
+        self, workspace, tmp_path, _repo_template, mock_sel
+    ):
+        outside = tmp_path / "outside-repo"
+        shutil.copytree(_repo_template, outside)
+        make_dir_link(workspace / "escape", outside)
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            resp = await client.get(
+                "/api/project/git/status", params={"path": str(workspace), "repo": "escape"}
+            )
+            data = await resp.json()
+        assert resp.status == 400
+        assert data["code"] == "invalid_repo_path"

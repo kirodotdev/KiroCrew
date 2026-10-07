@@ -9021,6 +9021,7 @@
       "uncommitted": "{{count}} non committati",
       "branch_unavailable": "Branch non disponibile",
       "status_failed": "Impossibile leggere lo stato del repository. La cronologia dei commit potrebbe non essere aggiornata.",
+      "status_failed_collapsed": "Impossibile leggere lo stato del repository.",
       "status_failed_no_history": "Un problema distinto: non è stato possibile leggere l'elenco delle modifiche. Aggiorna per riprovare.",
       "log_failed": "Impossibile leggere la cronologia dei commit.",
       "uncommitted_capped": "oltre {{count}} non committati",
@@ -9035,7 +9036,10 @@
       "filter_refused_title_unreadable_changes": "Kiro non può mostrare le modifiche in questo momento",
       "filter_refused_title_unreadable_history": "Kiro non può mostrare la cronologia in questo momento",
       "ask_agent_changes": "Chiedi all'agente delle modifiche",
-      "ask_agent_history": "Chiedi all'agente della cronologia"
+      "ask_agent_history": "Chiedi all'agente della cronologia",
+      "nested_title": "Repository in questa cartella",
+      "nested_failed": "Impossibile elencare i repository di questa cartella.",
+      "nested_truncated": "Non tutti i repository sono elencati. Apri una sottocartella come progetto per vedere gli altri."
     },
     "workspaceTree": {
       "status_failed": "Impossibile leggere lo stato del repository.",

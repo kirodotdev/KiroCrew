@@ -1,4 +1,4 @@
-"""The Git panel: bounded git runs and ``GET /api/project/git/status`` and ``/log``."""
+"""The Git panel: bounded git runs and ``GET /api/project/git/status``, ``/log`` and ``/repos``."""
 
 from __future__ import annotations
 
@@ -16,9 +16,17 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _GIT_FILTER_KEY_RE,
+        _GIT_NESTED_REPO_MAX_DEPTH,
+        _GIT_NESTED_REPO_MAX_REPOS,
+        _GIT_NESTED_REPO_SCAN_LIMIT,
         _GIT_PROBE_STDERR_CAP,
+        _PROJECT_TREE_SKIP_DIRS,
         DashboardState,
         _match_known_project_for,
+        _project_tree_identity,
+        _project_tree_is_link,
+        _project_tree_scandir,
+        _ProjectTreeFolderMoved,
         _redact_project_path,
         _sel,
         _slot_project_snapshot,
@@ -305,11 +313,126 @@ def _repo_filter_refusal_cause(git_cmd: list[str], base: str, env: dict) -> str:
     return ""
 
 
+def _discover_nested_repos(base: str) -> tuple[list[str], bool]:
+    """List the git repositories beneath *base* as project-relative POSIX paths.
+
+    A folder counts when its own listing holds a ``.git`` entry. The entry is only
+    seen in that listing, never opened, so a ``.git`` link or gitdir file is not
+    followed here; whether the folder really is a repository stays git's call,
+    made by the status route. The walk is breadth-first, never follows a link (a
+    symlink or a Windows junction, as the tree walk judges it), skips dot-named and
+    ``_PROJECT_TREE_SKIP_DIRS`` folders, and does not descend into a repository it
+    found (its nested repositories are git's business).
+    ``truncated`` is true when the repository cap or the entry budget stopped the
+    walk with folders still unread, so more repositories may exist. A folder that
+    cannot be read, or is not the one its parent listed, is skipped; only
+    *base* itself failing raises.
+    """
+    found: list[str] = []
+    budget = _GIT_NESTED_REPO_SCAN_LIMIT
+    # (project-relative path, the (st_dev, st_ino) its parent listed, depth)
+    queue: list[tuple[str, tuple[int, int] | None, int]] = [("", None, 0)]
+    head = 0
+    while head < len(queue):
+        rel, identity, depth = queue[head]
+        head += 1
+        native = os.path.join(base, *rel.split(posixpath.sep)) if rel else base
+        subdirs: list[tuple[str, tuple[int, int]]] = []
+        is_repo = False
+        try:
+            # A folder is queued when its parent is listed and read a level
+            # later, so its name can be swapped for a link out of the project in
+            # between; the tree walk's identity-pinned read refuses that.
+            with _project_tree_scandir(native, identity) as it:
+                entries: list[os.DirEntry[str]] = []
+                for entry in it:
+                    if budget == 0:
+                        return sorted(found), True
+                    budget -= 1
+                    entries.append(entry)
+                is_repo = depth > 0 and any(entry.name == ".git" for entry in entries)
+                if not is_repo and depth < _GIT_NESTED_REPO_MAX_DEPTH:
+                    for entry in entries:
+                        if entry.name.startswith(".") or entry.name in _PROJECT_TREE_SKIP_DIRS:
+                            continue
+                        try:
+                            if not entry.is_dir(follow_symlinks=False):
+                                continue
+                            st = _project_tree_identity(entry, os.path.join(native, entry.name))
+                        except OSError:
+                            continue
+                        if not _project_tree_is_link(st):
+                            subdirs.append((entry.name, (st.st_dev, st.st_ino)))
+        except (OSError, _ProjectTreeFolderMoved):
+            # The project folder itself is the one read that must not fail
+            # quietly: an empty answer would read as "no repositories here".
+            if depth == 0:
+                raise
+            continue
+        if is_repo:
+            found.append(rel)
+            if len(found) == _GIT_NESTED_REPO_MAX_REPOS:
+                return sorted(found), head < len(queue)
+            continue
+        for name, child_identity in sorted(subdirs):
+            queue.append((posixpath.join(rel, name) if rel else name, child_identity, depth + 1))
+    return sorted(found), False
+
+
+def _nested_repo_dir(base: str, rel: str) -> str | None:
+    """Resolve the ``repo`` selector *rel* to a real directory strictly inside *base*.
+
+    *base* is the matched project's real path; *rel* is untrusted. Only a plain
+    relative POSIX path is accepted, and its real path must stay beneath *base*,
+    so an absolute path, a ``..`` segment or a link out of the project is refused
+    and the known-project allow-list stays the boundary of these routes.
+    """
+    if "\x00" in rel or "\\" in rel or rel.startswith("/") or os.path.isabs(rel):
+        return None
+    parts = rel.split(posixpath.sep)
+    if any(part in ("", ".", "..") for part in parts):
+        return None
+    real = os.path.realpath(os.path.join(base, *parts))
+    try:
+        inside = os.path.commonpath([base, real]) == base
+    except ValueError:
+        return None
+    return real if inside and real != base else None
+
+
+async def _nested_repo_or_refusal(
+    request: web.Request, caller: str, operation: str, base: str
+) -> tuple[str, web.Response | None]:
+    """Apply the optional ``repo`` selector of the status and log routes.
+
+    Returns the directory the route runs git in (*base* itself when no selector
+    was sent), or an audited 400 when the selector names no folder inside the
+    project.
+    """
+    rel = request.query.get("repo", "").strip()
+    if not rel:
+        return base, None
+    nested = await asyncio.to_thread(_nested_repo_dir, base, rel)
+    if nested is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"{base} repo={rel}",
+            error="repository path is not inside the project",
+        )
+        return base, web.json_response(
+            {"error": "Invalid repository path", "code": "invalid_repo_path"}, status=400
+        )
+    return nested, None
+
+
 async def api_project_git_status(request: web.Request) -> web.Response:
-    """GET /api/project/git/status?path=... - working tree status for a project dir.
+    """GET /api/project/git/status?path=...[&repo=...] - working tree status for a project dir.
 
     Returns staged/unstaged/untracked files with per-file line-change counts.
     Path must match a known project directory (same allow-list as api_project_git).
+    ``repo`` names a folder inside it, as listed by api_project_git_repos.
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
@@ -330,6 +453,9 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         )
 
     base = await asyncio.to_thread(lambda: os.path.realpath(os.path.expanduser(project)))
+    base, refusal = await _nested_repo_or_refusal(request, caller, "project_git_status", base)
+    if refusal is not None:
+        return refusal
     # Both probes stat the filesystem (a stalled network mount would block the
     # event loop), so they run in a worker thread like the realpath above.
     if await asyncio.to_thread(is_sensitive_path, base):
@@ -676,10 +802,11 @@ async def api_project_git_status(request: web.Request) -> web.Response:
 
 
 async def api_project_git_log(request: web.Request) -> web.Response:
-    """GET /api/project/git/log?path=...&limit=N - recent commit log for a project dir.
+    """GET /api/project/git/log?path=...&limit=N[&repo=...] - recent commit log for a project dir.
 
     Returns short sha, subject, author, date (ISO), and isHead flag.
     Path must match a known project directory (same allow-list as api_project_git).
+    ``repo`` names a folder inside it, as listed by api_project_git_repos.
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
@@ -707,6 +834,9 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         )
 
     base = await asyncio.to_thread(lambda: os.path.realpath(os.path.expanduser(project)))
+    base, refusal = await _nested_repo_or_refusal(request, caller, "project_git_log", base)
+    if refusal is not None:
+        return refusal
     # Both probes stat the filesystem (a stalled network mount would block the
     # event loop), so they run in a worker thread like the realpath above.
     if await asyncio.to_thread(is_sensitive_path, base):
@@ -848,3 +978,82 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         c["message"] = redact(c["message"])
         c["author"] = redact(c["author"])
     return web.json_response(result)
+
+
+async def api_project_git_repos(request: web.Request) -> web.Response:
+    """GET /api/project/git/repos?path=... - git repositories nested in a project dir.
+
+    For a project folder that holds several repositories without being one, so the
+    panel can show each. Same known-project allow-list, sensitive-path refusal and
+    audit as the status route. Response ``{"repos": [{"path": <project-relative
+    POSIX path>}], "truncated": bool}``; each ``path`` is what the status and log
+    routes accept as ``repo``.
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required", "code": "path_required"}, status=400)
+    project = await asyncio.to_thread(_match_known_project_for, _slot_project_snapshot(state), raw)
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_repos",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response(
+            {"error": "Unknown project directory", "code": "unknown_project_dir"}, status=403
+        )
+
+    base = await asyncio.to_thread(lambda: os.path.realpath(os.path.expanduser(project)))
+    if await asyncio.to_thread(is_sensitive_path, base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_repos",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
+    _sel().log_api_access(
+        caller=caller, operation="project_git_repos", outcome="allowed", resources=base
+    )
+
+    def _run() -> tuple[list[str], bool] | None:
+        if not os.path.isdir(base):
+            return [], False
+        try:
+            repos, truncated = _discover_nested_repos(base)
+        except (OSError, _ProjectTreeFolderMoved):
+            return None
+        # The status route refuses a sensitive folder anyway; listing one would
+        # offer the panel a section that can only ever show that refusal.
+        return [
+            rel
+            for rel in repos
+            if not is_sensitive_path(os.path.join(base, *rel.split(posixpath.sep)))
+        ], truncated
+
+    listing = await asyncio.to_thread(_run)
+    if listing is None:
+        return web.json_response(
+            {
+                "error": "Couldn't list the repositories in this folder.",
+                "code": "git_repos_unavailable",
+            },
+            status=503,
+        )
+    repos, truncated = listing
+    # Egress redaction, segment-wise like the status listing's file paths. A
+    # redacted path names no folder, so its section answers
+    # ``repo: false``; two that collide collapse to one entry.
+    listed: list[dict] = []
+    seen: set[str] = set()
+    for rel in repos:
+        shown = redact_path_segments(rel, redact)
+        if shown not in seen:
+            seen.add(shown)
+            listed.append({"path": shown})
+    return web.json_response({"repos": listed, "truncated": truncated})

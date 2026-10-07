@@ -9021,6 +9021,7 @@
       "uncommitted": "{{count}} sem commit",
       "branch_unavailable": "Branch indisponível",
       "status_failed": "Não foi possível ler o estado do repositório. O histórico de commits pode estar desatualizado.",
+      "status_failed_collapsed": "Não foi possível ler o estado do repositório.",
       "status_failed_no_history": "Um problema separado: não foi possível ler a lista de alterações. Atualize para tentar de novo.",
       "log_failed": "Não foi possível ler o histórico de commits.",
       "uncommitted_capped": "mais de {{count}} sem commit",
@@ -9035,7 +9036,10 @@
       "filter_refused_title_unreadable_changes": "Kiro não consegue mostrar as alterações neste momento",
       "filter_refused_title_unreadable_history": "Kiro não consegue mostrar o histórico neste momento",
       "ask_agent_changes": "Perguntar ao agente sobre as alterações",
-      "ask_agent_history": "Perguntar ao agente sobre o histórico"
+      "ask_agent_history": "Perguntar ao agente sobre o histórico",
+      "nested_title": "Repositórios nesta pasta",
+      "nested_failed": "Não foi possível listar os repositórios desta pasta.",
+      "nested_truncated": "Nem todos os repositórios estão listados. Abra uma subpasta como projeto para ver o restante."
     },
     "workspaceTree": {
       "status_failed": "Não foi possível ler o estado do repositório.",

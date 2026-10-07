@@ -9021,6 +9021,7 @@
       "uncommitted": "{{count}} non validé(s)",
       "branch_unavailable": "Branche indisponible",
       "status_failed": "Impossible de lire l’état du dépôt. L’historique des commits peut être obsolète.",
+      "status_failed_collapsed": "Impossible de lire l’état du dépôt.",
       "status_failed_no_history": "Un problème distinct : impossible de lire la liste des modifications. Actualisez pour réessayer.",
       "log_failed": "Impossible de lire l’historique des commits.",
       "uncommitted_capped": "plus de {{count}} non validé(s)",
@@ -9035,7 +9036,10 @@
       "filter_refused_title_unreadable_changes": "Kiro ne peut pas afficher les modifications pour le moment",
       "filter_refused_title_unreadable_history": "Kiro ne peut pas afficher l’historique pour le moment",
       "ask_agent_changes": "Interroger l’agent sur les modifications",
-      "ask_agent_history": "Interroger l’agent sur l’historique"
+      "ask_agent_history": "Interroger l’agent sur l’historique",
+      "nested_title": "Dépôts de ce dossier",
+      "nested_failed": "Impossible de lister les dépôts de ce dossier.",
+      "nested_truncated": "Tous les dépôts ne sont pas listés. Ouvre un sous-dossier comme projet pour voir les autres."
     },
     "workspaceTree": {
       "status_failed": "Impossible de lire l’état du dépôt.",

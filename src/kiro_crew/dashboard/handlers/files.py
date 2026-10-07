@@ -110,7 +110,10 @@ from kiro_crew.dashboard.file_api.dashboard_config import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _GIT_PANEL_STDOUT_CAP,
+    _discover_nested_repos,
     _is_not_a_repo_verdict,
+    _nested_repo_dir,
+    _nested_repo_or_refusal,
     _porcelain_unquote,
     _probe_git_dir,
     _project_directory_absent,
@@ -118,6 +121,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _run_git_bounded,
     _worktree_probe_failure_is_empty_scope,
     api_project_git_log,
+    api_project_git_repos,
     api_project_git_status,
 )
 from kiro_crew.dashboard.file_api.grep import (  # noqa: F401
@@ -2952,6 +2956,15 @@ _GIT_PROBE_STDERR_CAP = 4096
 _GIT_FILTER_KEY_RE = re.compile(
     r"^filter\..+\.(process|smudge|clean)$", re.IGNORECASE
 )
+
+# Bounds for the nested-repository listing (``api_project_git_repos``). The panel
+# polls the status of every repository it lists, so the count is capped as well as
+# the walk. Three levels reach a ``<folder>/src/<repo>`` layout, and the entry
+# budget keeps one request on a huge non-repository folder from becoming a scan of
+# the whole tree.
+_GIT_NESTED_REPO_MAX_DEPTH = 3
+_GIT_NESTED_REPO_MAX_REPOS = 20
+_GIT_NESTED_REPO_SCAN_LIMIT = 20_000
 
 
 # Cap on the ROWS api_project_tree returns -- files and directory rows
