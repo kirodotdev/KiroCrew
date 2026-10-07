@@ -258,6 +258,9 @@ interface RedactionUi {
   slotKey?: string
   /** Names this reply for the allow holds (slot and message time). */
   replyKey?: string
+  /** This reply's message time, so an allow or undo can ask the reload to
+   *  re-serve this row even when it is above the newest page (#17023). */
+  messageTs?: string
   /** This is the session's first reply with removed values: it carries the
    *  coach after the first block it explains. */
   coached: boolean
@@ -279,11 +282,12 @@ const RedactionUiCtx = createContext<RedactionUi>({
 })
 
 /** One per rendered reply: holds its records and which card is open. */
-export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey, coached = false, children }: {
+export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey, messageTs, coached = false, children }: {
   credentials: readonly CredentialRecord[]
   blockedLinks: readonly BlockedLink[]
   slotKey?: string
   replyKey?: string
+  messageTs?: string
   coached?: boolean
   children: React.ReactNode
 }) {
@@ -327,8 +331,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -1215,7 +1219,7 @@ type Confirming = null | 'open' | 'allow'
 type Feedback = null | { kind: 'opened' } | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
 
 function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTarget: boolean }) {
-  const { slotKey, replyKey, blockedLinks } = useRedactionUi()
+  const { slotKey, replyKey, messageTs, blockedLinks } = useRedactionUi()
   const hold = useAllowHolds(replyKey).get(record.domain)
   const [confirming, setConfirming] = useState<Confirming>(null)
   // A card that re-renders after the reply reloads picks its outcome up from
@@ -1252,7 +1256,7 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
       // The reply reloads with this host's links shown as links again; the
       // hold keeps this card open over them with its Undo.
       if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed' })
-      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
     } catch {
       setError(i18nT('components.redaction.link_allow_failed'))
     }
@@ -1264,7 +1268,7 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
       setError(null)
       setFeedback({ kind: 'undone' })
       if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
-      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
       setTimeout(() => setFeedback(null), 1600)
     } catch {
       setError(i18nT('components.redaction.link_undo_failed'))

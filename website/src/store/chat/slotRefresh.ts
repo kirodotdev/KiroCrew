@@ -44,13 +44,14 @@ const nextRefreshSeq = (): number => ++refreshSeqCounter
 
 export const refreshSlot = createAsyncThunk<
   (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number }) | null,
-  string | { key: string; onlyIfUnchanged?: boolean },
+  string | { key: string; onlyIfUnchanged?: boolean; reachTs?: string },
   { fulfilledMeta: { recoveryRevision?: number } }
 >(
   'chat/refreshSlot',
   async (arg, { getState, fulfillWithValue }) => {
     const key = typeof arg === 'string' ? arg : arg.key
     const onlyIfUnchanged = typeof arg !== 'string' && arg.onlyIfUnchanged
+    const reachTs = typeof arg !== 'string' ? arg.reachTs : undefined
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot !== key) return fulfillWithValue(null, {})
     // Sampled before the first await: the walk below declines when a live frame
@@ -160,8 +161,16 @@ export const refreshSlot = createAsyncThunk<
      * anchor is guarded rather than indexed blind. */
     const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    if (!page.hasMore || spansView || overlapsView) return finish(page)
-    const walked = await walkWindowBackTo(key, page, viewNow)
+    /* A caller that changed how ONE held row is served (`reachTs`: a host allowed
+     * or revoked from that reply's link card) needs that row inside the page. An
+     * overlap alone keeps it in the verbatim head above the cut, still showing what
+     * it showed before the change (#17023). The row is resolved to its `meta.mid`
+     * only when exactly one durable row carries that ts: `ts` is not an identity,
+     * and an ambiguous or unidentified match falls back to the plain refresh. */
+    const reachMid = reachMidForTs(viewNow, reachTs)
+    const pageHoldsReach = !reachMid || page.messages.some(m => m.meta?.mid === reachMid)
+    if (!page.hasMore || spansView || (overlapsView && pageHoldsReach)) return finish(page)
+    const walked = await walkWindowBackTo(key, page, viewNow, reachMid)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
      * reduces in that window is in the view but not in the walked payload, and
@@ -182,6 +191,15 @@ export const refreshSlot = createAsyncThunk<
     return finish(walked)
   },
 )
+
+/** The `meta.mid` of the one durable row in `view` whose `ts` is `ts`, or
+ *  undefined when none or more than one row carries it, or the row has no mid. */
+function reachMidForTs(view: ChatMessage[], ts: string | undefined): string | undefined {
+  if (!ts) return undefined
+  const hits = view.filter(m => isDurableRow(m) && m.ts === ts)
+  const mid = hits.length === 1 ? hits[0].meta?.mid : undefined
+  return typeof mid === 'string' && mid.length > 0 ? mid : undefined
+}
 
 let warmSeqCounter = 0
 const nextWarmSeq = (): number => ++warmSeqCounter

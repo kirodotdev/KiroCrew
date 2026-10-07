@@ -122,11 +122,13 @@ describe('Blocked link chip', () => {
     const onChange = (e: Event) => seen.push((e as CustomEvent).detail)
     window.addEventListener('mc:redaction-hosts-changed', onChange)
     try {
-      const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
+      const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" messageTs="2026-01-01T00:00:05Z" />)
       fireEvent.click(getByTestId('blocked-link-inspect'))
       fireEvent.click(getByTestId('blocked-link-allow'))
       fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
-      await waitFor(() => expect(seen).toEqual([{ slot: 's1' }]))
+      // The reply's own time rides along, so the reload re-serves this row even
+      // when it sits above the newest page (#17023).
+      await waitFor(() => expect(seen).toEqual([{ slot: 's1', messageTs: '2026-01-01T00:00:05Z' }]))
     } finally {
       window.removeEventListener('mc:redaction-hosts-changed', onChange)
     }

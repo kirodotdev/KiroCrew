@@ -59,13 +59,22 @@ function headAnchorRows(rows: ChatMessage[]): ChatMessage[] {
  *  empty -- a cold view has no scrollback to protect, and a wider window would
  *  be one nothing asked for), when the page already reaches the start, or when
  *  it already anchors. */
-export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: ChatMessage[]): Promise<SlotDetailPage> {
+export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: ChatMessage[], mustInclude?: string): Promise<SlotDetailPage> {
   const anchor = headAnchorRows(held)
   const anchorCounts = midOccurrences(anchor)
+  /* `mustInclude` names one held row the caller needs RE-SERVED, not kept: a
+   * change outdated how the server serves it (a host allowed or revoked from that
+   * reply's link card). Anchoring alone would stop on the first page that meets
+   * the held rows and leave that row in the verbatim head above the cut, so the
+   * walk also continues until the window holds it -- under the same page cap, so
+   * a row further back than the cap reaches stays as it was (#17023). */
+  const includes = (rows: ChatMessage[]): boolean =>
+    !mustInclude || rows.some(m => m.meta?.mid === mustInclude)
   const reaches = (rows: ChatMessage[]): boolean => {
     const rowCounts = midOccurrences(rows)
-    return idAnchorsOneRow(rows[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts)
-      || idAnchorsOneRow(anchor[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts)
+    return (idAnchorsOneRow(rows[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts)
+      || idAnchorsOneRow(anchor[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts))
+      && includes(rows)
   }
   if (anchor.length === 0 || !page.hasMore || reaches(page.messages)) return page
   let messages = page.messages

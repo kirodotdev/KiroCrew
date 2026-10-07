@@ -447,13 +447,20 @@ export function useChatEventBridges({
     window.addEventListener('mc:prefill-composer', handler)
     return () => window.removeEventListener('mc:prefill-composer', handler)
   }, [dispatch, inputRef])
-  // A redaction card's "Allow for this host": the reply was saved with the
-  // link removed, and the server shows allowed hosts' links again when it
-  // serves the slot, so reload it to show the link in place of the chip.
+  // A redaction card's "Allow for this host" (or its Undo): the reply was saved
+  // with the link removed, and the server shows allowed hosts' links again when
+  // it serves the slot, so reload it to show the link in place of the chip.
+  // `messageTs` names the card's reply so the reload re-serves that row even
+  // when it sits above the newest page (#17023).
   useEffect(() => {
     const handler = (e: Event) => {
-      const slot: unknown = (e as CustomEvent).detail?.slot
-      if (typeof slot === 'string' && slot) void dispatch(refreshSlot(slot))
+      const detail = (e as CustomEvent).detail
+      const slot: unknown = detail?.slot
+      const messageTs: unknown = detail?.messageTs
+      if (typeof slot !== 'string' || !slot) return
+      void dispatch(refreshSlot(typeof messageTs === 'string' && messageTs
+        ? { key: slot, reachTs: messageTs }
+        : slot))
     }
     window.addEventListener('mc:redaction-hosts-changed', handler)
     return () => window.removeEventListener('mc:redaction-hosts-changed', handler)

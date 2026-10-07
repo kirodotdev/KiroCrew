@@ -1220,7 +1220,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       {/* RedactionProvider: this reply's credential and blocked-link records,
           and which of their cards is open. A Provider renders no DOM node, so
           the scoping on the wrapper div above is unaffected. */}
-      <RedactionProvider credentials={credentialRecords} blockedLinks={blockedRecords} slotKey={slotKey} replyKey={replyKey} coached={redactionCoach && credentialRecords.length > 0}>
+      <RedactionProvider credentials={credentialRecords} blockedLinks={blockedRecords} slotKey={slotKey} replyKey={replyKey} messageTs={messageTs} coached={redactionCoach && credentialRecords.length > 0}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the
