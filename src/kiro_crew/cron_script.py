@@ -1356,23 +1356,56 @@ class ScriptContext:
 
         An HTTP refusal keeps the gateway's own reason, redacted, because
         ``HTTP Error 403: Forbidden`` alone hides the remedy the gateway names
-        in its body.
+        in its body. It also carries ``status_code`` and, when the body names
+        one, the gateway's ``code``, so a script that calls ``_post`` itself can
+        tell a refused identity (409 ``member_identity_unavailable``) from a job
+        that is already running (409 with no ``code``) without parsing the
+        ``error`` text. A transport failure has neither and stays
+        ``{"error": str(exc)}``.
         """
         where = f"{req.get_method()} {req.selector}"
         try:
             with loopback_urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
+            body = ""
             detail = ""
             try:
-                detail = redact(exc.read().decode("utf-8", "replace"))[:500]
+                body = exc.read().decode("utf-8", "replace")
+                detail = redact(body)[:500]
             except Exception:
                 pass
             logger.warning("ScriptContext %s refused: HTTP %s", where, exc.code)
-            return {"error": f"HTTP {exc.code}: {detail or exc.reason}"}
+            refusal: dict[str, Any] = {
+                "error": f"HTTP {exc.code}: {detail or exc.reason}",
+                "status_code": exc.code,
+            }
+            code = _refusal_code(body)
+            if code:
+                refusal["code"] = code
+            return refusal
         except Exception as exc:
             logger.warning("ScriptContext %s failed: %s", where, exc)
             return {"error": str(exc)}
+
+
+_REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")
+
+
+def _refusal_code(body: str) -> str:
+    """The gateway's machine-readable ``code`` from a refusal body, or ``""``.
+
+    The body is text this process did not write, so a code survives only as a
+    short identifier; anything else, and any body that does not parse as a
+    JSON object (:func:`parse_json_object_line` answers ``None`` for text that
+    is not JSON, for a scalar or a list, and for a body nested past the
+    parser's limit), yields no code.
+    """
+    parsed = parse_json_object_line(body)
+    code = parsed.get("code") if parsed is not None else None
+    if isinstance(code, str) and _REFUSAL_CODE.fullmatch(code):
+        return code
+    return ""
 
 
 # ── MCP Tool Bridge ──

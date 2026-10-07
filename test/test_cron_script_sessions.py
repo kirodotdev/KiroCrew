@@ -10,6 +10,7 @@ handled anywhere on this path.
 
 from __future__ import annotations
 
+import gc
 import io
 import json
 import urllib.error
@@ -344,3 +345,98 @@ class TestTheCronCredential:
             "key": f"cron:{_JOB}",
             "token": "signed-run-token",
         }
+
+
+class TestARefusalIsStructured:
+    """``_post`` returns a refusal a script can branch on without parsing ``error``.
+
+    A script that triggers another job calls ``ctx._post("/api/crons/<id>/run")``
+    itself, and a 409 there means either a refused identity or a job that is
+    already running. ``status_code`` and ``code`` sit beside the unchanged
+    ``error`` text, so every existing ``"error" in result`` check still holds.
+    """
+
+    _RUN = f"/api/crons/{_JOB}/run"
+
+    def _refused(self, ctx, gateway, status: int, reason: str, body: bytes) -> dict:
+        gateway.answers[("POST", self._RUN)] = urllib.error.HTTPError(
+            f"http://127.0.0.1:7788{self._RUN}", status, reason, {}, io.BytesIO(body)
+        )
+        return ctx._post(self._RUN, {})
+
+    def test_a_json_refusal_carries_its_status_and_code(self, ctx, gateway):
+        body = json.dumps(
+            {
+                "error": "The execution identity is unavailable; Global memory was not used.",
+                "code": "member_identity_unavailable",
+            }
+        ).encode()
+
+        result = self._refused(ctx, gateway, 409, "Conflict", body)
+
+        assert result == {
+            "error": f"HTTP 409: {body.decode()}",
+            "status_code": 409,
+            "code": "member_identity_unavailable",
+        }
+
+    def test_a_body_that_is_not_json_has_a_status_and_no_code(self, ctx, gateway):
+        result = self._refused(ctx, gateway, 403, "Forbidden", b"Forbidden")
+
+        assert result == {"error": "HTTP 403: Forbidden", "status_code": 403}
+
+    def test_an_empty_body_falls_back_to_the_status_reason(self, ctx, gateway):
+        result = self._refused(ctx, gateway, 404, "Not Found", b"")
+
+        assert result == {"error": "HTTP 404: Not Found", "status_code": 404}
+
+    @pytest.mark.parametrize(
+        "code",
+        ["<script>x</script>", "Has Spaces", "x" * 65, 42, None, ["member_identity_unavailable"]],
+        ids=["markup", "spaces", "too-long", "int", "null", "list"],
+    )
+    def test_a_code_that_is_not_an_identifier_is_dropped(self, ctx, gateway, code):
+        """The body is gateway text this process did not write; only an identifier is echoed."""
+        body = json.dumps({"error": "job is already running", "code": code}).encode()
+
+        result = self._refused(ctx, gateway, 409, "Conflict", body)
+
+        assert "code" not in result
+        assert result["status_code"] == 409
+
+    @pytest.fixture
+    def no_cyclic_gc_at_the_recursion_limit(self):
+        """Hold the cyclic collector off while the parser sits at the bottom of the stack.
+
+        Collect once at depth zero so garbage the worker inherited pays its
+        finalizers where there is stack for them, then disable the collector for
+        the deep parse; re-enable and collect at teardown. Spelled as
+        ``test_mcp_preflight`` spells it, per
+        ``docs/system-specs/common/testing-conventions.md``.
+        """
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            yield
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+
+    def test_a_body_nested_past_the_parser_limit_is_still_a_refusal(
+        self, ctx, gateway, no_cyclic_gc_at_the_recursion_limit
+    ):
+        """``json.loads`` raises RecursionError there, which is not a ValueError."""
+        depth = 20_000
+
+        result = self._refused(ctx, gateway, 409, "Conflict", b"[" * depth + b"]" * depth)
+
+        assert result["status_code"] == 409
+        assert result["error"].startswith("HTTP 409: ")
+        assert "code" not in result
+
+    def test_a_transport_failure_keeps_the_plain_shape(self, ctx, gateway):
+        gateway.answers[("POST", self._RUN)] = OSError("connection refused")
+
+        assert ctx._post(self._RUN, {}) == {"error": "connection refused"}

@@ -22,6 +22,8 @@ Must be runnable with ``--noconftest`` (no hypothesis dependency).
 from __future__ import annotations
 
 import os
+import urllib.request
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,8 +79,48 @@ def _capture_launcher_env(
     return captured["env"]
 
 
+def _sent_request(ctx: ScriptContext, path: str) -> urllib.request.Request:
+    """Return the ``Request`` ``ctx._post`` hands the loopback transport; nothing is dialled."""
+    captured: dict[str, urllib.request.Request] = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout):
+        captured["req"] = req
+        return _Resp()
+
+    with patch("kiro_crew.cron_script.loopback_urlopen", side_effect=fake_urlopen):
+        ctx._post(path, {})
+    return captured["req"]
+
+
+class _GatewayRequest(dict):
+    """The two things ``session_key_is_attested`` reads off an aiohttp request.
+
+    ``request.get("peer_verified")`` is the kernel attestation, which a loopback
+    TCP caller never has, so it stays absent. ``request.headers`` is the request
+    the child built, looked up case-insensitively as aiohttp's ``CIMultiDict``
+    does: ``urllib`` stores ``X-Session-Token`` as ``X-session-token``.
+    """
+
+    def __init__(self, req: urllib.request.Request) -> None:
+        super().__init__()
+        items = {name.lower(): value for name, value in req.header_items()}
+        self.headers = SimpleNamespace(
+            get=lambda name, default="": items.get(name.lower(), default)
+        )
+
+
 @pytest.fixture(autouse=True)
-def _no_ambient_identity(monkeypatch, tmp_path):
+def _no_ambient_identity(request, tmp_path):
     """The test process must not already look like an identified session.
 
     Otherwise a launcher that merely INHERITED the parent's key would pass the
@@ -88,17 +130,31 @@ def _no_ambient_identity(monkeypatch, tmp_path):
     separate reason: the launcher PUBLISHES one, and a unit test must not write
     into the real crew home. Tests that need the mapping to verify layer their
     own trust root over this (see ``signing_root``).
-    """
-    from kiro_crew import session_token_sig
 
-    for key in (
-        "KIROCREW_SESSION_KEY",
-        "KIROCREW_HOST_PID",
-        "KIROCREW_CLI",
-        "KIROCREW_STUB_SESSION_TOKEN",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(session_token_sig, "config_dir", lambda: tmp_path)
+    The whole data home is pinned to the same tmp dir so every non-SEL write stays
+    out of the real home. Without the root conftest's session-scoped SEL dir, stub
+    SEL so its process-wide daemon cannot outlive and re-create this test's dir.
+
+    It patches through its OWN ``MonkeyPatch``, not the shared ``monkeypatch``, so
+    a test that calls ``monkeypatch.undo()`` cannot lift these pins. The rootdir
+    ``_floor_monkeypatch`` does the same job but is absent under ``--noconftest``.
+    """
+    from kiro_crew import cron_script, session_token_sig
+
+    with pytest.MonkeyPatch.context() as mp:
+        if "_isolate_sel_default_dir" not in request.fixturenames:
+            audit = MagicMock()
+            mp.setattr(cron_script, "sel", lambda: audit)
+        for key in (
+            "KIROCREW_SESSION_KEY",
+            "KIROCREW_HOST_PID",
+            "KIROCREW_CLI",
+            "KIROCREW_STUB_SESSION_TOKEN",
+        ):
+            mp.delenv(key, raising=False)
+        mp.setenv("KIROCREW_HOME", str(tmp_path))
+        mp.setattr(session_token_sig, "config_dir", lambda: tmp_path)
+        yield
 
 
 class TestLauncherInjectsIdentity:
@@ -245,6 +301,68 @@ class TestLauncherPublishesAVerifiableToken:
 
         assert token != "f" * 64
 
+    def _judge_child_request(self, env: dict[str, str], *, keep_token: bool) -> dict[str, object]:
+        """Build the run request the child would send, and ask the gateway's judge.
+
+        Called while the launcher's mapping is published -- the window a real
+        child makes its calls in -- so the token can verify. The judge is
+        ``member_memory_auth.session_key_is_attested``, which every owner-surface
+        route such as ``POST /api/crons/{id}/run`` asks before it trusts a
+        declared ``X-Session-Key``.
+        """
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+        from kiro_crew.member_memory_auth import session_key_is_attested
+
+        child_env = {"_KIROCREW_DIAL_PORT": "5476"}
+        if keep_token:
+            child_env[STUB_SESSION_TOKEN_ENV] = env[STUB_SESSION_TOKEN_ENV]
+        with patch.dict(os.environ, child_env):
+            if not keep_token:
+                os.environ.pop(STUB_SESSION_TOKEN_ENV, None)
+            ctx = ScriptContext(job=MagicMock(id=JOB_ID, message=""))
+            req = _sent_request(ctx, f"/api/crons/{JOB_ID}/run")
+        wire = _GatewayRequest(req)
+        return {
+            "declared": req.get_header("X-session-key"),
+            "attested": session_key_is_attested(wire, EXPECTED_KEY),
+            "attested_for_a_neighbour": session_key_is_attested(wire, "cron:job-other"),
+        }
+
+    def test_the_gateway_attests_the_request_scriptcontext_builds(self, signing_root):
+        """End to end: launcher token -> ``ScriptContext`` header -> the gateway's judge.
+
+        The pieces are each pinned on their own elsewhere; this is the one test
+        that fails if they stop agreeing -- a renamed header, a token read from
+        a different variable, or a mapping published under another key.
+        """
+        verdicts: dict[str, object] = {}
+
+        def judge(env):
+            verdicts.update(self._judge_child_request(env, keep_token=True))
+
+        _capture_launcher_env(JOB_ID, during_spawn=judge)
+
+        assert verdicts == {
+            "declared": EXPECTED_KEY,
+            "attested": True,
+            "attested_for_a_neighbour": False,
+        }
+
+    def test_the_same_request_without_the_token_is_unattested(self, signing_root):
+        """Baseline: the declared key alone is the request the gateway refuses with 409."""
+        verdicts: dict[str, object] = {}
+
+        def judge(env):
+            verdicts.update(self._judge_child_request(env, keep_token=False))
+
+        _capture_launcher_env(JOB_ID, during_spawn=judge)
+
+        assert verdicts == {
+            "declared": EXPECTED_KEY,
+            "attested": False,
+            "attested_for_a_neighbour": False,
+        }
+
 
 class TestBridgePinsIdentityOnTheServerSpawn:
     def _spawn_env(self, session_key: str, spec_env: dict[str, str] | None = None):
@@ -287,7 +405,10 @@ class TestBridgePinsIdentityOnTheServerSpawn:
         env = self._spawn_env("")
         assert "KIROCREW_SESSION_KEY" not in env
 
-    def test_call_tool_passes_the_jobs_key_to_the_bridge(self):
+    def test_call_tool_passes_the_jobs_key_to_the_bridge(self, request):
+        from kiro_crew.sel import SecurityEventLog
+
+        singleton_before = SecurityEventLog._instance
         job = MagicMock(id=JOB_ID, message="")
         with patch.dict(os.environ, {"_KIROCREW_DIAL_PORT": "5476"}):
             ctx = ScriptContext(job=job)
@@ -296,6 +417,8 @@ class TestBridgePinsIdentityOnTheServerSpawn:
         with patch("kiro_crew.cron_script.McpToolClient", return_value=fake_client) as ctor:
             ctx.call_tool("kirocrew-cron", "cron_list", {})
         ctor.assert_called_once_with("kirocrew-cron", session_key=EXPECTED_KEY)
+        if "_isolate_sel_default_dir" not in request.fixturenames:
+            assert SecurityEventLog._instance is singleton_before
 
 
 class TestTheRealConsumerAcceptsIt:
