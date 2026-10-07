@@ -25,9 +25,18 @@ export interface CrewmateIdentity {
   label?: string
 }
 
-export default function CrewmateMessage({ pos, children }: { pos: CrewmateRunPosition; children: ReactNode }) {
+export default function CrewmateMessage({ pos, author, children }: { pos: CrewmateRunPosition; author?: string; children: ReactNode }) {
+  // `author` names the speaker for a screen reader only: the visible author
+  // line stays gone (the DM header names the one speaker), but a listener
+  // hearing the transcript has no header in view, so each message is a group
+  // labelled with who said it.
   return (
-    <div data-testid="crewmate-message" className={`min-w-0 ${crewmateRowClass(pos)}`}>
+    <div
+      data-testid="crewmate-message"
+      role={author ? 'group' : undefined}
+      aria-label={author || undefined}
+      className={`min-w-0 ${crewmateRowClass(pos)}`}
+    >
       {children}
     </div>
   )

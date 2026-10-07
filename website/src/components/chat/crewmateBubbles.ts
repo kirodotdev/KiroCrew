@@ -12,7 +12,11 @@
  *    `[Subagent completion event]` envelopes, tool-call rows, reasoning
  *    bursts, and the say-nothing rows a quiet patrol ends on — is filtered at
  *    RENDER time by `filterCrewmateChat`. Nothing is deleted: the rows stay in
- *    the slot's transcript and the Work log reads them from there.
+ *    the slot's transcript and the Work log reads them from there. The one
+ *    exception is the turn IN FLIGHT: while the crewmate works, its tool calls
+ *    and thinking since the turn opened stay in, so the chat shows what it is
+ *    doing with the same rows the ordinary transcript draws. They fold away
+ *    again when the turn ends.
  *
  * 2. HOW A RUN LOOKS. Consecutive messages from the crewmate form a run: one
  *    bubble per message, grouped corners on the run's (left) side, and NO
@@ -30,6 +34,8 @@
 import { isSystemNoticeRow } from '../../pages/chat/CompactionCard'
 import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
+import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
+import { opensTurn } from '../../pages/chat/RecoveryCard'
 import type { ChatMessage } from '../../types'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
@@ -55,6 +61,10 @@ const MACHINERY_ROLES: ReadonlySet<string> = new Set([
   'nudge', 'inject', 'subagent', 'tool', 'tool_call', 'tool_result', 'thinking', 'done',
 ])
 
+/** The live turn's progress rows: tool calls (the 🔧 line and its hidden
+ *  ✅ / 🚫 siblings, which the list reads for the denied flag) and thinking. */
+const LIVE_PROGRESS_ROLES: ReadonlySet<string> = new Set(['tool', ...REASONING_ROLES])
+
 /** The stop card travels under `system`; every other `system` row is state
  *  no surface draws. */
 function isStopCard(m: ChatMessage): boolean {
@@ -67,6 +77,10 @@ function isStopCard(m: ChatMessage): boolean {
  *  among `system` rows: it IS drawn (the user pressed Stop and sees the card),
  *  so it is a boundary like an error row, not state the run reads past. */
 function isRunTransparent(m: ChatMessage): boolean {
+  // A live turn's progress rows (kept only while the turn runs) are the turn's
+  // own machinery: the run, its corners and its footer read past them exactly
+  // as they do once the rows fold away, so nothing reshapes at turn end.
+  if (LIVE_PROGRESS_ROLES.has(m.role)) return true
   if (m.role === 'permission') return !!m.meta?.resolved
   if (isStopCard(m)) return false
   return m.role === 'system' || m.role === 'done' || m.role === 'queued'
@@ -105,10 +119,20 @@ export function isCrewmateChatRow(m: ChatMessage): boolean {
   return true
 }
 
-/** The rows a crewmate's chat draws, in transcript order. Same array identity
- *  back when nothing was dropped, so a memo on the result stays stable. */
-export function filterCrewmateChat(messages: ChatMessage[]): ChatMessage[] {
-  const kept = messages.filter(isCrewmateChatRow)
+/** The rows a crewmate's chat draws, in transcript order. With `live` (the
+ *  slot is running a turn) the progress rows after the newest turn opener are
+ *  kept too; the opener is the transcript's own `opensTurn`, so a steer sent
+ *  into the running turn does not restart it. Same array identity back when
+ *  nothing was dropped, so a memo on the result stays stable. */
+export function filterCrewmateChat(messages: ChatMessage[], live = false): ChatMessage[] {
+  let turnStart = messages.length
+  if (live) {
+    turnStart = 0
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (opensTurn(messages[i])) { turnStart = i + 1; break }
+    }
+  }
+  const kept = messages.filter((m, i) => isCrewmateChatRow(m) || (i >= turnStart && LIVE_PROGRESS_ROLES.has(m.role)))
   return kept.length === messages.length ? messages : kept
 }
 
@@ -194,12 +218,14 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
   end: 'rounded-2xl rounded-tl-md',
 }
 
-/** Surface + padding + measure, every bubble alike. Tokens only (`bg-card`,
- *  `border-border`), so light and dark each pick their own palette. The
- *  markdown's outermost first/last block margins are zeroed so the bubble's own
- *  padding is the whole inset. */
+/** Surface + padding + measure, every bubble alike. OUTLINED on the page
+ *  background, never filled: the user's own bubble is the filled `bg-card` one
+ *  on the right, so filled-right vs outlined-left tells the two speakers apart
+ *  in every theme, and the text sits on the page background the theme already
+ *  guarantees contrast for. Tokens only. The markdown's outermost first/last
+ *  block margins are zeroed so the bubble's own padding is the whole inset. */
 const BUBBLE_BASE =
-  'bg-card border border-border px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
+  'bg-transparent border border-border-strong px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
 
 /** Classes for the crewmate's message bubble at `pos`. */
 export function crewmateBubbleClass(pos: CrewmateRunPosition): string {

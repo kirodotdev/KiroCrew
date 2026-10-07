@@ -1475,12 +1475,23 @@ when the roster's quote or recency moved since the read observed it, so a
 message the crewmate speaks while a roster read is in flight is never
 overwritten by the older answer.
 
+While a turn runs (the slot's stream or its `running` flag), the chat also
+keeps that turn's progress rows — `tool` rows (the 🔧 line and its hidden ✅ /
+🚫 siblings) and thinking — after the newest turn opener (`TURN_OPENER_ROLES`:
+a user message, a patrol wake, a sub-agent drain), and draws them with the
+ordinary transcript's own tool line, step group and thinking block; earlier
+turns' machinery stays folded away, and the live rows fold away again when the
+turn ends (`filterCrewmateChat(messages, live)`).
+
 How it is drawn: the crewmate's messages form **runs**. A message carries NO
 author line — no avatar, no name, no time row — and no avatar gutter: the chat
 is a 1:1 thread with one speaker besides the user, and the DM header's identity
 chip already names that speaker (#16617 retired the per-run author line #15167
-had made redundant). Every message is its own bubble (`bg-card`,
-`border-border`, `max-w-[72ch]`) in the full text column, and consecutive
+had made redundant); for assistive tech each message row is a `group`
+labelled with the crewmate's name, which draws nothing. Every message is its
+own OUTLINED bubble (`bg-transparent`, `border-border-strong`, `max-w-[72ch]`)
+in the full text column, left-aligned, so it never shares a surface with the
+user's filled right-aligned `bg-card` bubble; consecutive
 bubbles read as one speaker through their grouped corners alone. Corner rule on
 the run's (left) side:
 single = all corners full; first = bottom-left small; middle = top-left and

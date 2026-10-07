@@ -500,10 +500,13 @@ export default function ChatPane({
   // prop). Filtered HERE, above the list, so the run positions the assistant
   // rows compute from their neighbours see the drawn list, and so the pinned
   // prompt, the earlier-messages anchor and the empty hint all agree with what
-  // is on screen. Same array identity back when nothing is dropped.
+  // is on screen. Same array identity back when nothing is dropped. While a
+  // turn runs, its tool calls and thinking stay in, so the chat shows what the
+  // crewmate is doing (same liveness the footer reads).
+  const crewmateLive = running || !!paneSlot?.running
   const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(paneMessages) : paneMessages),
-    [crewmate, paneMessages],
+    () => (crewmate ? filterCrewmateChat(paneMessages, crewmateLive) : paneMessages),
+    [crewmate, paneMessages, crewmateLive],
   )
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block

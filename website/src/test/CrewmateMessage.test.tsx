@@ -34,6 +34,19 @@ describe('CrewmateMessage', () => {
     expect(row.className).not.toMatch(/pl-\[/)
   })
 
+  it('names the speaker for assistive tech without drawing an author line', () => {
+    render(
+      <CrewmateMessage pos="start" author="Kiro">
+        <p>bubble</p>
+      </CrewmateMessage>,
+    )
+    const row = screen.getByRole('group', { name: 'Kiro' })
+    expect(row).toBe(screen.getByTestId('crewmate-message'))
+    // Still only the bubble: the name is the group's label, not a visible row.
+    expect(row.children).toHaveLength(1)
+    expect(screen.queryByText('Kiro')).toBeNull()
+  })
+
   it('places the bubble in the row its run position dictates', () => {
     render(
       <CrewmateMessage pos="cont">

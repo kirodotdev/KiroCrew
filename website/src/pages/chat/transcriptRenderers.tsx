@@ -35,7 +35,7 @@ import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
-import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
+import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
@@ -47,7 +47,7 @@ import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './Subage
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
-import { REASONING_ROLES, TURN_OPENER_ROLES, hasReasoningContent } from './groupDisplayItems'
+import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
@@ -168,28 +168,6 @@ export interface TranscriptRendererOptions {
    *  policy block writes among them) are only here. Read for the steer-chip
    *  decision, never for layout. Meaningless without `crewmate`. */
   crewmateTranscript?: ChatMessage[]
-}
-
-/** Whether `row` OPENS a turn, for the two feature-request scans below. Read
- *  from the transcript's own row-kind vocabulary, not a role list of this
- *  module's: the opener ROLES (`TURN_OPENER_ROLES`: a typed row, an auto-nudge
- *  cycle, a drained sub-agent completion) minus a STEER, plus the inject KINDS
- *  the gateway stamps as a prompt of their own (`injectOpensTurn`: a cron
- *  notification, a fan-out synthesis -- a `recovery` or `user_replay` continues
- *  the request above it, and an unstamped inject dispatches nothing). A steer is
- *  persisted as a `user` row with `meta.steer` (chat_delivery.py) and appended
- *  optimistically in the same shape (ChatPage `steer()`), but it was injected
- *  INTO a running turn, so it cannot begin one. Same answer as the store's
- *  `isTurnBoundaryUser`, `selectSlotPendingApproval`'s walk and the turn-head
- *  walk in `app-sdk/turnPolicyBlock.ts`. Every steer row is exempt, the
- *  optimistic bubble included: a bubble the server turned into a NEW turn is
- *  reconciled by the echo that carries its `sendId` (the store deletes its
- *  `steer` flag), and until then a misread here only moves a link between two
- *  rows -- it never splices content, which is the one reason
- *  `isTurnBoundaryUser` keeps its optimistic exception. */
-function opensTurn(row: ChatMessage): boolean {
-  if (row.role === 'user') return !row.meta?.steer
-  return TURN_OPENER_ROLES.has(row.role) || injectOpensTurn(row)
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -507,7 +485,7 @@ export function createTranscriptRenderers(
             })
             if (bubble === null) return null
             return ctx.row(
-              <CrewmateMessage pos={pos}>{bubble}</CrewmateMessage>,
+              <CrewmateMessage pos={pos} author={crewmate.label || crewmate.name}>{bubble}</CrewmateMessage>,
               true,
             )
           },

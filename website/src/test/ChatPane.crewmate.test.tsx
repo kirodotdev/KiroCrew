@@ -64,13 +64,13 @@ const MACHINERY = [
   { role: 'assistant', content: '\u200b', cls: '', ts: '2026-09-22T06:00:09Z' },
 ]
 
-function makeStore() {
+function makeStore(running = false) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: SLOT, messages: MACHINERY.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: SLOT, messages: MACHINERY.length, running, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         slotsLoaded: true,
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -79,10 +79,10 @@ function makeStore() {
   })
 }
 
-function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean } = { crewmate: true }) {
+function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean; running?: boolean } = { crewmate: true }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <Provider store={makeStore()}>
+    <Provider store={makeStore(opts.running)}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
@@ -109,6 +109,16 @@ describe("a crewmate's chat", () => {
     expect(view.queryByText(/Session ready/)).toBeNull()
     expect(view.queryByText(/gh issue list/)).toBeNull()
     expect(view.queryByText(/auto-nudge/)).toBeNull()
+  })
+
+  it("while it works, the running turn's tool calls show, the patrol wake does not", async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: MACHINERY, running: true, has_more: false, total: MACHINERY.length,
+    })
+    const view = renderPane({ crewmate: true, running: true })
+    expect(await view.findByText(/gh issue list/)).toBeInTheDocument()
+    expect(view.queryByText(/auto-nudge/)).toBeNull()
+    expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
   })
 
   it('a BOUNDED window with no speech in it is not proof: the pane reads the whole history first', async () => {

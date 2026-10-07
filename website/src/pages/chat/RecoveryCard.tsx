@@ -5,6 +5,8 @@ import { i18nT } from '../../i18n/t'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
 import { useRowDisclosure } from './rowDisclosure'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import type { ChatMessage } from '../../types'
+import { TURN_OPENER_ROLES } from './groupDisplayItems'
 
 /**
  * The synthetic-continuation prefixes the gateway prepends when it recovers a
@@ -425,6 +427,29 @@ export function injectOpensTurn(m: { role: string; meta?: Record<string, unknown
   if (m.role !== 'inject') return false
   const kind = m.meta?.injectKind
   return typeof kind === 'string' && Object.hasOwn(INJECT_KIND_OPENS_TURN, kind) && INJECT_KIND_OPENS_TURN[kind as InjectKind]
+}
+
+/** Whether `row` OPENS a turn (the feature-request scans in
+ *  transcriptRenderers, the crewmate chat's live-turn start). Read
+ *  from the transcript's own row-kind vocabulary, not a role list of this
+ *  module's: the opener ROLES (`TURN_OPENER_ROLES`: a typed row, an auto-nudge
+ *  cycle, a drained sub-agent completion) minus a STEER, plus the inject KINDS
+ *  the gateway stamps as a prompt of their own (`injectOpensTurn`: a cron
+ *  notification, a fan-out synthesis -- a `recovery` or `user_replay` continues
+ *  the request above it, and an unstamped inject dispatches nothing). A steer is
+ *  persisted as a `user` row with `meta.steer` (chat_delivery.py) and appended
+ *  optimistically in the same shape (ChatPage `steer()`), but it was injected
+ *  INTO a running turn, so it cannot begin one. Same answer as the store's
+ *  `isTurnBoundaryUser`, `selectSlotPendingApproval`'s walk and the turn-head
+ *  walk in `app-sdk/turnPolicyBlock.ts`. Every steer row is exempt, the
+ *  optimistic bubble included: a bubble the server turned into a NEW turn is
+ *  reconciled by the echo that carries its `sendId` (the store deletes its
+ *  `steer` flag), and until then a misread here only moves a link between two
+ *  rows -- it never splices content, which is the one reason
+ *  `isTurnBoundaryUser` keeps its optimistic exception. */
+export function opensTurn(row: ChatMessage): boolean {
+  if (row.role === 'user') return !row.meta?.steer
+  return TURN_OPENER_ROLES.has(row.role) || injectOpensTurn(row)
 }
 
 /**
