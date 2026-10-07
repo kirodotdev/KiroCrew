@@ -2880,11 +2880,18 @@ class _DenyMatcher:
             self._disabled = True
 
     def match(self, text: str) -> bool:
+        return self.span(text) is not None
+
+    def span(self, text: str) -> "tuple[int, int] | None":
+        """Offsets of the match in *text* (``None`` on no match); ``match`` is built on it.
+
+        On the fragment path: first fragment's start to last fragment's end.
+        """
         if self._disabled:
-            return False
+            return None
         if self._bounded:
             if self._whole_re is None:
-                return False
+                return None
             # DOCUMENTED TRADE-OFF: the bounded path scans only the first
             # ``_DENY_FALLBACK_SCAN_MAX_CHARS`` chars. Python's backtracking ``re``
             # cannot give exact ``re.search`` semantics AND full-input AND
@@ -2901,17 +2908,21 @@ class _DenyMatcher:
             # has exact semantics; and an edition rule that WOULD land here is not
             # published at all (``edition_denied_rules``), since a rule enforced
             # only over a prefix is bypassable by padding. See security.md.
-            return self._whole_re.search(text[:_DENY_FALLBACK_SCAN_MAX_CHARS]) is not None
+            whole = self._whole_re.search(text[:_DENY_FALLBACK_SCAN_MAX_CHARS])
+            return None if whole is None else whole.span()
         # An empty fragment list means the pattern reduced to ``.*`` (matches
         # everything).  No built-in does this, but stay fail-open-safe: only a
         # literal ``.*`` custom rule would, and it legitimately matches all.
         pos = 0
+        start: "int | None" = None
         for frag_re in self._frag_res:
             m = frag_re.search(text, pos)
             if m is None:
-                return False
+                return None
+            if start is None:
+                start = m.start()
             pos = m.end()
-        return True
+        return (0 if start is None else start, pos)
 
 
 _DENY_MATCHER_CACHE: dict[str, _DenyMatcher] = {}
@@ -3123,11 +3134,22 @@ _ENV_CRED_SHARED_RULES: tuple[DeniedCommandRule, ...] = tuple(
 
 _ENV_CRED_DENIAL_REASON = "Blocked: command reads AWS credentials from environment variables"
 
+#: Diagnostic ids for ``_ENV_CRED_PATTERNS``, index-aligned (pinned by
+#: test_env_cred_refusal_diagnostic.py); the shared rules report their catalog id.
+_ENV_CRED_PATTERN_IDS: tuple[str, ...] = (
+    "env-cred-declare-print",
+    "env-cred-echo-expansion",
+    "env-cred-awk-environ",
+    "env-cred-interpreter-environ",
+)
+
 
 def _check_env_credential_access(command: str) -> str | None:
     """Detect attempts to read AWS credentials from environment variables.
 
-    Returns denial reason if env credential access detected, None otherwise.
+    Returns denial reason if env credential access detected, None otherwise. Line
+    one is always :data:`_ENV_CRED_DENIAL_REASON`; line two is the refusal
+    diagnostic (check id and match offsets, never the matched text).
 
     The shared rules run through the same ``_deny_matcher`` the catalog tier uses,
     not a raw ``re.search``. Sharing the regex TEXT alone is not enough: this tier
@@ -3139,9 +3161,15 @@ def _check_env_credential_access(command: str) -> str | None:
     synchronous PreToolUse gate that the catalog tier is already immune to.
     """
     for rule in _ENV_CRED_SHARED_RULES:
-        if _deny_matcher(rule.pattern).match(command):
-            return _ENV_CRED_DENIAL_REASON
-    for pattern in _ENV_CRED_PATTERNS:
-        if pattern.search(command):
-            return _ENV_CRED_DENIAL_REASON
+        span = _deny_matcher(rule.pattern).span(command)
+        if span is not None:
+            return _env_cred_refusal(rule.id, command, span)
+    for rule_id, pattern in zip(_ENV_CRED_PATTERN_IDS, _ENV_CRED_PATTERNS, strict=True):
+        if hit := pattern.search(command):
+            return _env_cred_refusal(rule_id, command, hit.span())
     return None
+
+
+def _env_cred_refusal(rule_id: str, command: str, span: "tuple[int, int]") -> str:
+    diagnostic = refusal_diagnostic(rule_id, "env-credential", command, span)
+    return annotate_refusal(_ENV_CRED_DENIAL_REASON, diagnostic)
