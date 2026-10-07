@@ -92,6 +92,9 @@ from kiro_crew.acp._dispatch import (
     parse_usage_cost,
     parse_usage_update,
     redact_text,
+)
+from kiro_crew.acp._dispatch import select_tool_title as _select_tool_title
+from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp._frame_record import record_frame
@@ -1796,52 +1799,6 @@ def _make_unified_diff(old: str, new: str, path: str, max_len: int = 65536) -> s
     semantics (line-boundary cut + ``DIFF_TRUNCATION_MARK``) live in one place.
     """
     return make_unified_diff(old, new, path, max_len=max_len)
-
-
-def _select_tool_title(
-    title: object,
-    raw_input: object,
-    kind: object = None,
-    *,
-    is_shell: bool | None = None,
-) -> str | None:
-    """Pick the pill label, preferring a human-readable `description` when present.
-
-    Some backends' Bash tool emits a `description` field alongside `command`
-    (e.g. "List KiroCrew ACP module files" rather than `ls /workplace/...`).
-    We surface it on the pill when supplied, then the literal shell command for
-    a shell tool, and only then the SDK-provided `title`. Used by both
-    `_extract_tool_event` (initial tool_call) and
-    `_extract_tool_call_refinement` (the second-phase tool_call_update from
-    claude-agent-acp) so the title rule stays consistent across both events.
-
-    The command outranks `title` because backends disagree on what `title`
-    holds for a shell call: some send the invocation itself, others a generic
-    kind label ("Run Command") that names no command at all. A genuinely
-    human-readable label arrives as `description`, which still wins.
-
-    `is_shell` overrides the kind-derived classification for a caller holding a
-    RESOLVED signal — a tool_call_update may omit `kind` entirely, and reading
-    that absence as non-shell would put the generic title back on a pill the
-    initial tool_call had already labelled with its command.
-    """
-    if isinstance(raw_input, dict):
-        desc = raw_input.get("description")
-        if isinstance(desc, str) and desc.strip():
-            return desc
-    kind_str = kind if isinstance(kind, str) else None
-    shell = _is_shell_kind(kind_str) if is_shell is None else is_shell
-    # Shell kinds only, so an fs tool's operation name ("strReplace") is never
-    # mistaken for a command.
-    if shell and isinstance(raw_input, dict):
-        cmd = raw_input.get("command")
-        if isinstance(cmd, str) and cmd.strip():
-            return cmd
-    # The flat title field defaults to an "unknown" sentinel when a backend
-    # omits it; treat that (and blanks) as absent rather than surfacing it.
-    if isinstance(title, str) and title and title != "unknown":
-        return title
-    return None
 
 
 def _launch_tools() -> LaunchTools:

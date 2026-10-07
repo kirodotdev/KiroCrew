@@ -8,7 +8,7 @@
           "command": "echo kiro-crew-id-reuse-probe",
           "description": "probe turn 2"
         },
-        "title": "probe turn 2",
+        "title": "bash",
         "tool_call_id": "call_0",
         "tool_input": "{\n  \"command\": \"echo kiro-crew-id-reuse-probe\",\n  \"description\": \"probe turn 2\"\n}",
         "tool_kind": "other",
@@ -82,7 +82,7 @@
           "command": "echo kiro-crew-id-reuse-probe",
           "description": "probe turn 3"
         },
-        "title": "probe turn 3",
+        "title": "bash",
         "tool_call_id": "call_0",
         "tool_input": "{\n  \"command\": \"echo kiro-crew-id-reuse-probe\",\n  \"description\": \"probe turn 3\"\n}",
         "tool_kind": "other",

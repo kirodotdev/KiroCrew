@@ -45,7 +45,7 @@
           "command": "touch ../outside-probe.txt ",
           "description": "create a file outside the workspace."
         },
-        "title": "create a file outside the workspace.",
+        "title": "bash",
         "tool_call_id": "call_hez03eul",
         "tool_input": "{\n  \"command\": \"touch ../outside-probe.txt \",\n  \"description\": \"create a file outside the workspace.\"\n}",
         "tool_kind": "other",

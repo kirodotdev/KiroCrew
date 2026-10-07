@@ -825,6 +825,16 @@ shell-cache hit whose value is `False` sets `shell_classified=True` — it is a
 resolved non-shell call, not a cache miss — and a structured-params cache hit
 sets `raw_params_trusted=True`.
 
+Both transports use `_dispatch.select_tool_title`; the direct client imports
+it as `_select_tool_title`. A confirmed shell call prefers `rawInput.description`,
+then its command, then the SDK title. A sub-agent call identified by a non-blank
+string `rawInput.subagent_type` also prefers its description (for example Claude's
+`Task` tool). Every other non-shell or unclassified call keeps the SDK title; its
+`description` can be a functional argument such as an issue body and is not a
+label. Refinements use cached parameters and `is_shell` when fields are absent,
+including an explicit cached `False`. This display rule does not alter tool
+identity, permission checks, reserved purpose arguments, or the delivered tool input.
+
 The shell cache is written **only** from a usable backend `kind` string. A
 `tool_call` frame that omits `kind` writes nothing — even when its
 `_meta.kiro.mcpServerName` proves the call MCP-served — because a cached `False`

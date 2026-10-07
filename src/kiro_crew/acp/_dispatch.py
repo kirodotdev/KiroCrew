@@ -626,7 +626,7 @@ def select_tool_title(
     *,
     is_shell: bool | None = None,
 ) -> str | None:
-    """Pick the pill label, preferring a human-readable ``description`` when present.
+    """Pick the pill label, using ``description`` for shell and sub-agent calls.
 
     Some backends' Bash tool emits a ``description`` field alongside ``command``
     (e.g. "List KiroCrew ACP module files" rather than ``ls /workplace/...``).
@@ -647,17 +647,18 @@ def select_tool_title(
     reading that absence as non-shell would put the generic title back on a
     pill the initial ``tool_call`` had already labelled with its command.
     """
-    if isinstance(raw_input, dict):
-        desc = raw_input.get("description")
-        if isinstance(desc, str) and desc.strip():
-            return desc
     kind_str = kind if isinstance(kind, str) else None
     shell = is_shell_kind(kind_str) if is_shell is None else is_shell
-    # Shell kinds only, so an fs tool's operation name ("strReplace") is never
-    # mistaken for a command.
-    if shell and isinstance(raw_input, dict):
+    if isinstance(raw_input, dict):
+        # Sub-agent calls label their task; other non-shell tools can use
+        # description as a functional argument such as an issue body.
+        subagent_type = raw_input.get("subagent_type")
+        subagent = isinstance(subagent_type, str) and bool(subagent_type.strip())
+        desc = raw_input.get("description")
+        if (shell or subagent) and isinstance(desc, str) and desc.strip():
+            return desc
         cmd = raw_input.get("command")
-        if isinstance(cmd, str) and cmd.strip():
+        if shell and isinstance(cmd, str) and cmd.strip():
             return cmd
     # The flat title field defaults to an "unknown" sentinel when a backend
     # omits it; treat that (and blanks) as absent rather than surfacing it.
