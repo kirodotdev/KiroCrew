@@ -53,7 +53,7 @@
  *                       refused greeting's notice is up: New crewmate is
  *                       disabled with the muted add_member_pending reason
  *                       under its label (one line at 1440; the menu has no
- *                       max-width and grows to fit); New team is live
+ *                       max-width and grows to fit)
  *   09b-add-menu-held-settling-<theme>  the same menu OPEN while the greeting
  *                       send is still in flight (add_member_settling)
  *   08-roster-load-failed-<theme>  the roster's first read failed: at >= md
@@ -98,11 +98,11 @@ function check(name, ok, detail) {
   return ok
 }
 
-// The roster "+" is a menu (New crewmate / New team) since the teams work: its
-// accessible name is "Add…", and its crewmate item is what the old single
-// button was — one click on the trigger, one on the item, lands on the dialog.
-// The create hold lives on THAT item (`aria-disabled`, with the reason written
-// under its label), not on the trigger: New team has no part in the follow-up.
+// The roster "+" is a menu whose only door is New crewmate while team creation
+// is hidden for the phase: its accessible name is "Add…", and its crewmate item
+// is what the old single button was — one click on the trigger, one on the item,
+// lands on the dialog. The create hold lives on THAT item (`aria-disabled`, with
+// the reason written under its label), not on the trigger.
 // Ported from the retired capture-members-add-opens-create.mjs, whose one
 // surviving invariant this is.
 const ADD_MENU = 'Add\u2026'
@@ -527,7 +527,7 @@ async function assertHeldMenu(page, tag, reason) {
   const heldColor = await held.evaluate((el) => getComputedStyle(el).color)
   const labelColor = await item.getByText('New crewmate', { exact: true }).evaluate((el) => getComputedStyle(el).color)
   check(`${tag} reason muted`, heldColor !== labelColor, `reason=${heldColor} label=${labelColor}`)
-  check(`${tag} team live`, (await page.getByTestId('member-add-team').getAttribute('aria-disabled')) !== 'true', 'New team has no part in the hold')
+  check(`${tag} one door`, (await menu.getByRole('menuitem').count()) === 1 && (await page.getByTestId('member-add-team').count()) === 0, 'the menu offers New crewmate alone while team creation is hidden')
   check(`${tag} no dialog`, (await page.getByRole('dialog').count()) === 0, 'no create dialog while the item is held')
   // A click on the held item must not open the dialog either.
   await item.click({ force: true })

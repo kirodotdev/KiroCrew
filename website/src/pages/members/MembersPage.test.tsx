@@ -418,10 +418,11 @@ const roster = () => within(screen.getByTestId('member-roster'))
 const rosterRow = async (name: string) =>
   within(await screen.findByTestId('member-roster')).findByText(name, undefined, PANE_READY)
 
-/* The roster header's "+" is a menu (New crewmate / New team). Radix opens
- * the dropdown on pointerdown (mouse), not click, so every case that wants
- * the crewmate item goes through here. Returns the item, which carries the
- * create hold (`aria-disabled` + the reason written under its label). */
+/* The roster header's "+" is a menu whose only door is New crewmate while
+ * team creation is hidden for the phase. Radix opens the dropdown on
+ * pointerdown (mouse), not click, so every case that wants the crewmate item
+ * goes through here. Returns the item, which carries the create hold
+ * (`aria-disabled` + the reason written under its label). */
 const openAddMenu = async () => {
   fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
   return await screen.findByTestId('member-add-crewmate')
@@ -1045,9 +1046,12 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('crewmate-switcher-list')).toBeNull())
 
-    // New team is on the pinned roster's "+" menu.
+    // The pinned roster's "+" offers the crewmate door and nothing else:
+    // team creation is hidden for the phase.
     fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    expect(await screen.findByTestId('member-add-team')).toBeInTheDocument()
+    const addMenu = await screen.findByTestId('member-add-menu')
+    expect(within(addMenu).getAllByRole('menuitem')).toHaveLength(1)
+    expect(screen.queryByTestId('member-add-team')).toBeNull()
     await closeAddMenu()
 
     // A row pick switches the thread and keeps the roster pinned.
@@ -1546,38 +1550,20 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })
 
-  it('the "+" menu offers New team, which opens the team dialog with every crewmate listed', async () => {
+  it('offers NO team door while team creation is hidden for the phase, and never opens the dialog in create mode', async () => {
     await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
     await rosterRow('oncall')
-    // Radix opens the dropdown on pointerdown (mouse), not click.
-    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByTestId('member-add-team'))
-    const body = await screen.findByTestId('team-dialog-body')
-    expect(within(body).getAllByTestId('team-dialog-row')).toHaveLength(2)
-    // Nothing on a team yet: every row says so, and the hint names the rule.
-    expect(within(body).getAllByText('No team')).toHaveLength(2)
-    expect(within(body).getByText(/on one team at a time/i)).toBeInTheDocument()
-    // Create is gated on a name.
-    expect(screen.getByTestId('team-dialog-save')).toBeDisabled()
-    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Triage' } })
-    expect(screen.getByTestId('team-dialog-save')).toBeEnabled()
-  })
-
-  it('creates a team from the dialog form and writes the returned team into the roster', async () => {
-    const created = { id: 'abc123abc123', name: 'Triage', members: ['oncall'] }
-    vi.mocked(api.teams.create).mockResolvedValue({ team: created })
-    vi.mocked(api.teams.list).mockResolvedValueOnce({ teams: [] }).mockResolvedValue({ teams: [created] })
-    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
-    await rosterRow('oncall')
-    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByTestId('member-add-team'))
-    const body = await screen.findByTestId('team-dialog-body')
-    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Triage' } })
-    fireEvent.click(screen.getByLabelText('oncall'))
-    fireEvent.submit(body)
-    await waitFor(() => expect(api.teams.create).toHaveBeenCalledWith({ name: 'Triage', members: ['oncall'] }))
-    await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
-    expect((await screen.findAllByTestId('team-group-header'))[0]).toHaveTextContent('Triage')
+    // The one door the "+" has is the crewmate one, and it is the only
+    // menuitem: a team cannot be created from anywhere on this page. The
+    // dialog's create mode is still covered by `TeamDialog.test.tsx`, so the
+    // door returning is a revert rather than a rewrite.
+    const item = await openAddMenu()
+    expect(item).toBeInTheDocument()
+    expect(within(screen.getByTestId('member-add-menu')).getAllByRole('menuitem')).toHaveLength(1)
+    expect(screen.queryByTestId('member-add-team')).toBeNull()
+    await closeAddMenu()
+    expect(screen.queryByTestId('team-dialog-body')).toBeNull()
+    expect(api.teams.create).not.toHaveBeenCalled()
   })
 
   it('deletes a team only after confirmation and removes it from the roster cache', async () => {
@@ -2066,7 +2052,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     }
   })
 
-  it('a team header says it opens the team, and the New team dialog guards an unsaved draft against Escape', async () => {
+  it('a team header says it opens the team, and the team dialog guards an unsaved draft against Escape', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
     await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
     await rosterRow('oncall')
@@ -2084,20 +2070,20 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const noTeamHeader = (await screen.findAllByTestId('team-group-header'))[1]
     expect(noTeamHeader.className.split(/\s+/)).toContain('py-1.5')
     expect(noTeamHeader.className.split(/\s+/)).not.toContain('py-2')
-    // The New team dialog: nothing typed -> Escape closes; a typed name -> Escape is ignored.
-    // Radix opens the dropdown on pointerdown (mouse), not click.
-    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByTestId('member-add-team'))
+    // The team dialog, reached the way it still can be (the group header's
+    // team view, then Edit): nothing changed -> Escape closes; a typed name ->
+    // Escape is ignored.
+    fireEvent.click(header)
+    fireEvent.click(within(await screen.findByTestId('team-view')).getByTestId('team-edit'))
     await screen.findByTestId('team-dialog-body')
-    // A crewmate already on a team reads "On Triage", not a bare team name.
+    // A crewmate on the team being edited reads "On this team"; one on another
+    // team reads "On <name>", which create mode pins (`TeamDialog.test.tsx`).
     expect(screen.getAllByTestId('team-dialog-row').map((r) => r.textContent)).toEqual(
-      expect.arrayContaining([expect.stringContaining('On Triage')]),
+      expect.arrayContaining([expect.stringContaining('On this team')]),
     )
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
-    // Radix opens the dropdown on pointerdown (mouse), not click.
-    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByTestId('member-add-team'))
+    fireEvent.click(within(await screen.findByTestId('team-view')).getByTestId('team-edit'))
     await screen.findByTestId('team-dialog-body')
     fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -3570,10 +3556,6 @@ describe('New crewmate dialog', () => {
       held: true,
       reason: 'Retry or dismiss the notice about radar before adding another crewmate.',
     })
-    // New team has no part in the follow-up, so the menu still offers it live.
-    await openAddMenu()
-    expect(screen.getByTestId('member-add-team')).not.toHaveAttribute('aria-disabled', 'true')
-    await closeAddMenu()
     // The retry lands: the record clears and the + is a + again.
     membersMock.mockResolvedValueOnce({
       members: [row(), row({ name: 'radar', slug: 'radar' })],

@@ -27,7 +27,7 @@ steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
   - Open the Crewmates page. After the preview is on, an item appears in the left rail directly under Sessions (labelled "Crew Members", or "Crewmates" on newer builds); click it.
-  - If the page shows the heading "No crewmates yet", click the "New crewmate" button below it. Otherwise the page already lists crewmates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens with the rows "New crewmate" and "New team", click "New crewmate". Either way a dialog titled "New crewmate" opens.
+  - If the page shows the heading "No crewmates yet", click the "New crewmate" button below it. Otherwise the page already lists crewmates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens (its one row reads "New crewmate"), click "New crewmate". Either way a dialog titled "New crewmate" opens.
   - In the dialog, type exactly "Radar" in the "Name" field.
   - In the field labelled "What it looks after" (marked optional), type exactly "Keep release notes up to date". Leave "Built from" and the Advanced section as they are.
   - Click the "Create crewmate" button and wait about three seconds.

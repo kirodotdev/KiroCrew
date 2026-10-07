@@ -35,7 +35,7 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  * old column's "+" did (one write path, one more front door). A second footer
  * action, "Show the full roster", brings the roster column back beside the
  * thread: this list holds crewmates only, and the column is where the team
- * headers, New team, the star, the filters and the sort live — on desktop,
+ * headers, the star, the filters and the sort live — on desktop,
  * with the thread's back control hidden, nothing else reaches them. While the
  * column is showing the same action reads "Hide the roster".
  *

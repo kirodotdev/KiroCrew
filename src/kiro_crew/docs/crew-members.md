@@ -94,7 +94,7 @@ A few situations make Kiro Crew refuse to open a thread rather than guess:
 ## Creating and editing
 
 **New crewmate** — the hero button on an empty roster, or the **+** menu in the
-roster header once one exists (its rows are **New crewmate** and **New team**)
+roster header once one exists (its one row is **New crewmate**)
 — opens an in-page dialog on the Crewmates page. It asks for a **Name** and what the crewmate is **Built from** (the
 starting setup it copies), plus an optional line on **what it looks after**;
 **Advanced** unfolds the workspace, model, triggers and session color. Creating
@@ -114,8 +114,10 @@ second its own identity, so each keeps its own chat and memory.
 
 ### Teams
 
-Teams group the roster: **New team** in the **+** menu creates one, and its
-crewmates are listed under it. Opening a team shows the team view. When a
+Teams group the roster: a team's crewmates are listed under its header, and
+opening the team shows the team view. Creating a team is not offered on the
+page for now (the **+** menu has no **New team** row); an existing team is
+renamed, re-membered or deleted from its view's **Edit team**. When a
 crewmate there asks a question, an answer option drafts a reply in that
 crewmate's chat; nothing is sent until you send it. Deleting a team keeps its
 crewmates' chats.

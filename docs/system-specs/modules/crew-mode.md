@@ -983,7 +983,7 @@ chip never draws empty. Below `md`, the roster remains the first level and the
 thread's Back control returns to it.
 
 The switcher lists crewmates only. Team headers (and the team view they open),
-**New team**, the per-crew star, the filters and the sort live on the roster
+the per-crew star, the filters and the sort live on the roster
 column, and on desktop nothing else reaches them once a DM is open (the Back
 control is `md:hidden` and a bare `/members` reopens a crewmate). So the
 popover's footer carries a second action beside **New crewmate**: **Show the
