@@ -4452,3 +4452,20 @@ class TestRunDirCensus:
         cli_doctor._doctor_run_dirs()
         out = capsys.readouterr().out
         assert "⚠️  the session pid ledger cannot be read; census skipped" in out
+
+    def test_a_content_keep_is_reported_as_the_third_figure(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """A permitted-marked folder the sweep keeps for its contents prints as *kept*."""
+        from kiro_crew.session_work_dir import data_home_id
+
+        root = tmp_path / "ws"
+        kept = self._marked(root, "subagent_00000001", f"{data_home_id()}\n23456")
+        (kept / "notes.txt").write_text("mine", encoding="utf-8")
+        before = sorted(p.name for p in root.rglob("*"))
+        out = self._run(monkeypatch, capsys, root)
+        (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
+        assert line.startswith("  run dirs:    ⚠️ ")
+        assert "1 marked director(ies) the sweep keeps for what they hold" in line
+        assert "no run directories left behind" not in out
+        assert sorted(p.name for p in root.rglob("*")) == before

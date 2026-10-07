@@ -472,6 +472,53 @@ class TestReclaimRule:
         assert memory.exists()
         assert subagent.exists()
 
+    @AGENTS_NOT_RESIDUE
+    def test_a_permitted_marked_folder_with_non_residue_is_counted_kept(
+        self, tmp_path: Path, plant
+    ) -> None:
+        """A marked folder the rule permits but the sweep keeps for its contents is *kept*.
+
+        On both walks a folder that gained anything beyond Crew's residue is kept
+        by the sweep; the census reports it in a third figure instead of over a
+        clean line. Counting reads the tree but removes nothing.
+        """
+        work_dir = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        plant(work_dir)
+        before = _tree(work_dir)
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        assert census == session_work_dir.RunDirCensus(kept=1)
+        assert _tree(work_dir) == before
+
+    @pytest.mark.parametrize("pinned", [True, False])
+    def test_kiro_clis_empty_agents_is_kept_only_on_the_by_name_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned: bool
+    ) -> None:
+        """A marked folder holding only kiro-cli's empty ``.kiro/agents``.
+
+        The pinned walk reclaims it, so the census counts it nowhere; the by-name
+        walk keeps it (removing the folder by name could follow a swapped-in
+        junction), so the census reports it as *kept*.
+        """
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        work_dir = _residue_dir(
+            tmp_path,
+            "subagent_0123456789abcdef",
+            owner_pid=PREDECESSOR_PID,
+            kiro_cli_agents=True,
+        )
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        expected = (
+            session_work_dir.RunDirCensus() if pinned else session_work_dir.RunDirCensus(kept=1)
+        )
+        assert census == expected
+        assert work_dir.exists()
+
+    def test_a_permitted_residue_only_folder_is_counted_nowhere(self, tmp_path: Path) -> None:
+        """A marked, residue-only folder the sweep would reclaim is in no figure."""
+        _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        assert census == session_work_dir.RunDirCensus()
+
     def test_kiro_clis_empty_agents_folder_is_residue(self, tmp_path: Path) -> None:
         """kiro-cli creates ``.kiro/agents`` in the folder it starts in; it must not pin the run."""
         work_dir = _residue_dir(tmp_path, "subagent_0123456789abcdef", kiro_cli_agents=True)

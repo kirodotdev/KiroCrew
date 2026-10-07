@@ -477,17 +477,17 @@ def _doctor_run_dirs() -> None:
     Advisory and read-only. A subagent, a stateless cron run or a memory
     consolidation call gets a directory under the workspace root that the provider
     marks at first start and reclaims at shutdown; the gateway sweeps what a dead
-    predecessor of its own data home left. Where the walk cannot pin ``.kiro``
-    (Windows), a folder holding kiro-cli's ``.kiro/agents`` is kept, and a
-    marked one whose marker the sweep's rule permits stays out of both figures,
-    which read names and markers only. A memory consolidation folder is never
-    marked there, so the census counts it with the unmarked ones. Two figures
-    from one bounded walk, judged by the sweep's own rule:
-    directories from builds that wrote no marker (a name is not provenance, so
-    the sweep deletes nothing it cannot prove Crew made), and marked directories
-    this data home cannot act on -- another data home's, an unreadable marker,
-    or a gateway the pid ledger still retains entries for. Named, never done:
-    the doctor deletes nothing.
+    predecessor of its own data home left. A memory consolidation folder is never
+    marked on the by-name walk (Windows), so the census counts it with the
+    unmarked ones. Three figures from one bounded walk, judged by the sweep's own
+    rule: directories from builds that wrote no marker (a name is not provenance,
+    so the sweep deletes nothing it cannot prove Crew made); marked directories
+    this data home cannot act on -- another data home's, an unreadable marker, or
+    a gateway the pid ledger still retains entries for; and marked directories
+    the rule permits yet the sweep keeps for what they hold beyond Crew's own
+    residue -- a folder the by-name walk keeps for kiro-cli's ``.kiro/agents``,
+    or any marked folder that gained a file. Named, never done: the doctor
+    deletes nothing.
     """
     from kiro_crew.config.loader import workspace_root
     from kiro_crew.session_pid import retained_gateway_pids
@@ -509,17 +509,18 @@ def _doctor_run_dirs() -> None:
         print("  run dirs:    ⚠️  the session pid ledger cannot be read; census skipped")
         return
     census = count_run_dirs(root, retained_gateway_pids=retained)
-    if not census.unmarked and not census.refused:
+    if not census.unmarked and not census.refused and not census.kept:
         print("  run dirs:    ✅ no run directories left behind that the sweep cannot reclaim")
         return
     suffix = "+" if census.floor else ""
-    warn = census.unmarked > _RUN_DIR_BACKLOG_WARN or census.refused > 0
+    warn = census.unmarked > _RUN_DIR_BACKLOG_WARN or census.refused > 0 or census.kept > 0
     print(
         f"  run dirs:    {'⚠️ ' if warn else '✅'} under {root}: {census.unmarked}{suffix} run"
         f" director(ies) carry no {RUN_DIR_MARKER} marker (left by a build that did not mark that"
         f" kind); {census.refused}{suffix} marked director(ies)"
         f" this data home cannot reclaim (another data home's, an unreadable marker, or a"
-        f" gateway the pid ledger still retains)"
+        f" gateway the pid ledger still retains); {census.kept}{suffix} marked director(ies) the"
+        f" sweep keeps for what they hold beyond .kiro/settings residue"
     )
     if census.unmarked > _RUN_DIR_BACKLOG_WARN:
         print(
