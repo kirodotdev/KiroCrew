@@ -777,7 +777,7 @@ def start_inject_proxy(runtime: Any, dev_url: str) -> tuple[object | None, str]:
         ),
     )
     try:
-        server = runtime.ThreadingHTTPServer(("127.0.0.1", 0), bound)
+        server = runtime._Server(("127.0.0.1", 0), bound)
     except OSError:
         return None, ""
     server.daemon_threads = True

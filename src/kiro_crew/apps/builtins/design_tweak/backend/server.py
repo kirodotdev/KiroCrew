@@ -17,6 +17,7 @@ import re
 import selectors
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys as _sys
 import tempfile
@@ -1003,6 +1004,19 @@ class _Server(ThreadingHTTPServer):
     """
 
     allow_reuse_address = IS_POSIX
+
+    def server_bind(self) -> None:
+        # ``http.server.HTTPServer.server_bind`` resolves ``socket.getfqdn(host)``
+        # between ``bind()`` and ``listen()``. That system-resolver lookup can
+        # stall on some macOS hosts while the socket sits bound but refuses every
+        # connect, which reads to a waiting parent as a server that never came up.
+        # This loopback listener is reached by address, never by name, so the
+        # lookup buys nothing -- skip it by binding through ``TCPServer`` and
+        # recording the address directly (mirrors plumb_cpu.LoopbackServer).
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def main() -> int:

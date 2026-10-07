@@ -1124,9 +1124,7 @@ class TestStartInjectProxy:
     def test_bind_failure_returns_none(self):
         """If this fails: a socket bind failure (port conflict) causes an unhandled
         exception, crashing the caller instead of returning a safe fallback."""
-        with patch.object(
-            server, "ThreadingHTTPServer", side_effect=OSError("addr in use")
-        ):
+        with patch.object(server, "_Server", side_effect=OSError("addr in use")):
             srv, url = server._start_inject_proxy("http://127.0.0.1:3000")
         assert srv is None
         assert url == ""
