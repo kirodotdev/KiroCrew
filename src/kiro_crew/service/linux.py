@@ -1884,10 +1884,19 @@ def alias_holder() -> AliasHolder | None:
     :func:`uninstall` report in — and the first scope that is an alias is
     returned, since a refusal needs only one holder to name. ``show`` needs no
     sudo, so both scopes use the unprivileged path.
+
+    An alias whose target is stopped (:attr:`_UnitState.running` is False —
+    ``ActiveState`` is ``inactive`` or ``failed``) is NOT reported: there is no
+    process the alias's manager is supervising, so the caller's SIGTERM would not
+    land on another unit's process, and refusing would misdirect — the printed
+    ``systemctl`` remedy points at a unit that is already down while the real
+    foreground gateway the operator means to stop keeps running. ``running``
+    fails CLOSED on an indeterminate ``ActiveState`` (empty, or a value a newer
+    systemd adds), so an alias we cannot confirm is stopped still refuses.
     """
     for user in (False, True):
         state = _unit_state(user=user)
-        if state.is_alias:
+        if state.is_alias and state.running:
             return AliasHolder(state.scope, state.unit_id)
     return None
 

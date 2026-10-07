@@ -2343,13 +2343,23 @@ class TestStop:
         with (
             patch("kiro_crew.cli_server.service_controller.stop_service", return_value=False),
             patch(
-                "kiro_crew.cli_server.service_controller.service_alias_holder",
-                return_value=None,
-            ),
-            patch(
                 "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
                 return_value=True,
             ),
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _no_alias_service(self):
+        # ``_stop`` consults ``service_alias_holder()`` before the foreground
+        # SIGTERM-by-port path (an alias of another unit must not be signalled).
+        # The real call shells out to ``systemctl show kirocrew.service`` on the
+        # test host, so pin it None here, as ``TestRestart`` does; the alias
+        # refusal test overrides it. Keeping this a dedicated fixture (not folded
+        # into ``_no_service``) makes the hermeticity guard explicit.
+        with patch(
+            "kiro_crew.cli_server.service_controller.service_alias_holder",
+            return_value=None,
         ):
             yield
 
