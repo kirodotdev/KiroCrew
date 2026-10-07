@@ -4655,6 +4655,8 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
             "build-wheel.yml",
             "dependency-vulnerability.yml",
             "pr-merge-conflict-label.yml",
+            # Posts a sticky PR comment; left to a human to re-run.
+            "sensitive-change-review.yml",
         }
     )
     assert wd.HEAL_SAFE_WORKFLOWS == heal_safe

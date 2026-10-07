@@ -61,6 +61,15 @@ _CANONICAL_DISPATCH_EXPR = (
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
     "|| 'ubuntu-latest' }}"
 )
+# The sensitive-change gate runs only default-branch scripts, never PR code, so
+# every pull_request and pull_request_review event may use the fleet.
+_CANONICAL_BASE_ONLY_PR_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && github.event.pull_request.head.repo.full_name == github.repository && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
 # The ratchet audit: push, manual dispatch, and the merge group, which is the
 # integrated tree one step before it lands.
 _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
@@ -142,6 +151,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),
     ("dependency-vulnerability.yml", "audit-production-dependencies"),
+    ("sensitive-change-review.yml", "sensitive-change-review"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -150,6 +160,7 @@ _PUSH_ONLY_WORKFLOWS = {
     "dependency-vulnerability.yml",
 }
 _DISPATCH_WORKFLOWS = {"pages.yml"}
+_BASE_ONLY_PR_WORKFLOWS = {"sensitive-change-review.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
@@ -207,6 +218,8 @@ def _all_workflow_files() -> list[Path]:
 def _expected_inline_expression(workflow_name: str) -> str:
     if workflow_name in _PUSH_ONLY_WORKFLOWS:
         return _CANONICAL_PUSH_EXPR
+    if workflow_name in _BASE_ONLY_PR_WORKFLOWS:
+        return _CANONICAL_BASE_ONLY_PR_EXPR
     if workflow_name in _DISPATCH_WORKFLOWS:
         return _CANONICAL_DISPATCH_EXPR
     if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:

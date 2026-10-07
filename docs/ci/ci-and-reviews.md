@@ -665,6 +665,9 @@ runs from listed actors. The three non-agentic code-review checks use the PR
 route; the merge-conflict label job and the reusable wheel/dependency-audit
 jobs use the fleet only for push events, keeping scheduled/manual callers hosted.
 Their steps, permissions and triggers are unchanged.
+Sensitive Change Review uses the fleet on every PR and review event, not just
+`opened`/`synchronize`: it checks out only default-branch scripts and runs no
+PR code, so the "actor did not supply the code" reason does not apply.
 
 The repository variable is a JSON array of string actor IDs matching the fleet
 webhook filter. The maintainer changing either fleet project's actor filter owns

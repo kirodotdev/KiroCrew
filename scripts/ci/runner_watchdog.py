@@ -250,6 +250,7 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "pr-scope.yml",
     "release.yml",
     "screenshot-evidence.yml",
+    "sensitive-change-review.yml",
 )
 # Put the workflows that carry routine pull-request traffic ahead of release
 # and audit workflows when looking for recent fleet starts.

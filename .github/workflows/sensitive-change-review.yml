@@ -38,7 +38,11 @@ concurrency:
 jobs:
   sensitive-change-review:
     name: Sensitive Change Review
-    runs-on: ubuntu-latest
+    # A 10-second check must not wait an hour behind the hosted queue, so a
+    # same-repository PR from a listed actor uses the fleet on every event.
+    # The job checks out only the default branch's scripts and never runs PR
+    # code, so the opened/synchronize limit other routes carry buys nothing.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
