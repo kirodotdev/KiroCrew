@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, ToggleLeft, ToggleRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
@@ -215,8 +215,8 @@ function ScopeBadge({
       ? i18nT('pages.overview.mcpTab.scope_disabled_in_config', { label })
       : i18nT('pages.overview.mcpTab.pending_uninstall', { label }))
     : pendingChange
-      ? `${label}: ${active ? 'pending enable' : 'pending disable'} (click to revert)`
-      : `${label}: ${active ? 'on' : 'off'} (click to ${active ? 'disable' : 'enable'})`
+      ? i18nT(active ? 'pages.overview.mcpTab.scope_switch_pending_on' : 'pages.overview.mcpTab.scope_switch_pending_off', { label })
+      : i18nT(active ? 'pages.overview.mcpTab.scope_switch_on' : 'pages.overview.mcpTab.scope_switch_off', { label })
   const bg = disabled
     ? 'bg-bg-elevated text-muted'
     : active
@@ -225,16 +225,24 @@ function ScopeBadge({
   const pendingRing = pendingChange
     ? 'ring-1 ring-[var(--warn)] ring-offset-1 ring-offset-bg border-dashed'
     : ''
+  // Each badge is an on/off switch for one scope (#13076): the Kiro Crew
+  // badge is the per-server enable/disable for Kiro Crew sessions. A bare
+  // coloured word did not read as a control, so it carries switch semantics
+  // and a toggle glyph that shows the state without relying on colour.
+  const Glyph = active ? ToggleRight : ToggleLeft
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={active}
       disabled={disabled}
       onClick={onClick}
       title={title}
       aria-label={title}
-      className={`px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors ${bg} ${pendingRing}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors ${bg} ${pendingRing}`}
       data-scope={scope}
     >
+      <Glyph className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-glyph" data-on={active ? 'true' : 'false'} />
       {label}
     </button>
   )

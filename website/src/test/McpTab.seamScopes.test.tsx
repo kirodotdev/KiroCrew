@@ -44,14 +44,14 @@ describe('McpTab — seam-aware Globals column', () => {
   it('shows only the core Kiro global badge when no provider scope is configured', async () => {
     mockApi.mcpGlobalScopes.mockResolvedValue({ scopes: [] })
     renderTab()
-    expect(await screen.findByRole('button', { name: /Kiro:/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Claude/ })).toBeNull()
+    expect(await screen.findByRole('switch', { name: /Kiro:/ })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /Claude/ })).toBeNull()
   })
 
   it('re-surfaces a companion scope badge when the seam contributes one', async () => {
     mockApi.mcpGlobalScopes.mockResolvedValue({ scopes: [{ id: 'ccGlobal', label: 'Claude' }] })
     renderTab()
-    expect(await screen.findByRole('button', { name: /Claude:/ })).toBeInTheDocument()
+    expect(await screen.findByRole('switch', { name: /Claude:/ })).toBeInTheDocument()
   })
 
   it('toggling the companion scope and applying sends its <id>Global presence', async () => {
@@ -59,7 +59,7 @@ describe('McpTab — seam-aware Globals column', () => {
     renderTab()
 
     // ccGlobal starts off (presence.ccGlobal === false) → click to enable.
-    const claude = await screen.findByRole('button', { name: /Claude:/ })
+    const claude = await screen.findByRole('switch', { name: /Claude:/ })
     fireEvent.click(claude)
 
     // Pending change surfaces the Apply button; commit it.
