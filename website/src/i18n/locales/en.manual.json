@@ -1985,6 +1985,7 @@
     },
     "chatInput": {
       "cancel_upload": "Cancel upload",
+      "send_waits_for_upload": "Waiting for the attachment to finish",
       "auto_jev": "Auto (Jev)",
       "auto_jev_desc": "Let Jev choose: act now, or run after",
       "auto_jev_enter": "Auto (Jev) — Jev chooses whether to act now or run after (Enter)",

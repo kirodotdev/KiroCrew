@@ -6142,6 +6142,7 @@
       "approve_sub_agent": "সাব-এজেন্ট অনুমোদন করো: {{name}}",
       "attach_files": "ফাইল সংযুক্ত করুন",
       "cancel_upload": "আপলোড বাতিল করো",
+      "send_waits_for_upload": "সংযুক্তি শেষ হওয়ার অপেক্ষায়",
       "editor_unavailable_standard_input": "উন্নত সম্পাদকটি লোড হতে পারেনি, তাই স্ট্যান্ডার্ড ইনপুট সক্রিয় রয়েছে। আপনার খসড়া অপরিবর্তিত আছে।",
       "branch": "ব্রাঞ্চ: {{branch}}",
       "click_again_to_force_stop": "জোর করে থামাতে আবার ক্লিক করুন",

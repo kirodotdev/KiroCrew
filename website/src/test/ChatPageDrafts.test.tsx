@@ -735,7 +735,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     // Switch to slot-b while the upload is still pending.
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
 
-    // Now resolve the upload — the file must be diverted to slot-a.
+    // Now resolve the upload: the file must wait in slot-a's saved draft.
     await act(async () => {
       resolveUpload({ paths: ['/tmp/uploaded.png'] })
       await deferred
@@ -745,6 +745,13 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       const saved = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
       expect(saved['slot-a']).toEqual(['/tmp/uploaded.png'])
       expect(saved['slot-b']).toBeUndefined()
+    })
+
+    // Back on slot-a, its composer restores the file from that draft.
+    act(() => { store.dispatch(setActiveSlot('slot-a')) })
+    await waitFor(() => {
+      const saved = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
+      expect(saved['slot-a']).toEqual(['/tmp/uploaded.png'])
     })
   })
 

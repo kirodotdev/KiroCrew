@@ -91,6 +91,18 @@ function confirmRun() {
 }
 
 describe('direct terminal commands', () => {
+  it('does not show or apply the attachment hold to a terminal command', () => {
+    setup({ holdSend: true })
+    // A terminal command never carries an attachment, so an upload in flight
+    // has nothing to hold: no status line, and Send stays live.
+    expect(screen.queryByTestId('composer-send-held')).not.toBeInTheDocument()
+    const run = screen.getByRole('button', { name: 'Review terminal command' })
+    expect(run).toBeEnabled()
+    expect(run).toHaveAttribute('title', 'Review and run in terminal')
+    fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+    expect(screen.getByRole('dialog')).toHaveTextContent('pwd')
+  })
+
   it('names the workspace folder in the hint when the project chip is absent or compact', () => {
     const observers = new Map<Element, ResizeObserverCallback>()
     vi.stubGlobal('ResizeObserver', class {

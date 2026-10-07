@@ -18,7 +18,7 @@ import type { ComposerBusyMode } from './props'
    renders the stop controls that replace the send button through a stop's soft
    and hard phases. */
 
-export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
+export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
   slotId: string | null
   busyMode: ComposerBusyMode
   isRunning: boolean
@@ -27,6 +27,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
   onSteer?: (opts?: { auto?: boolean; text?: string }) => void
   jevAutoAvailable: boolean
   disabled: boolean
+  holdSend: boolean
   voiceTranscribing: boolean
   value: string
   pasteBlocks: PasteBlock[]
@@ -90,6 +91,12 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     // sends the complete text. Covers both Enter (handleKeyDown) and the Send
     // button, since both route through here.
     if (voiceTranscribing) return
+    // Same hole for an attachment still uploading: the send would clear the
+    // composer and leave without the file, and the file would then land in the
+    // emptied composer as a stray attachment for the next message. The Send
+    // controls render disabled for the same window; this covers Enter. Checked
+    // before the over-limit hold so a held press does not spend its one warning.
+    if (holdSend) return
     // An over-limit prompt is held once; repeating the send confirms it.
     if (interceptOverLimitSend()) { haptic('error'); return }
     const flip = alternate === true && busyChoiceAvailable && !steerOnly
@@ -103,7 +110,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     if (value.trim() || pendingFilesCount || pendingSessionsCount || hasQuote) haptic('light')
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount, hasQuote])
+  }, [disabled, voiceTranscribing, holdSend, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount, hasQuote])
   // Every stop button in the row goes through this, so the tap and the truthiness
   // checks on `onStop` (which decide whether a button renders at all) stay apart.
   const stopWithTap = useCallback(() => {
@@ -124,7 +131,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
 
 /** The send slot while a turn runs or a stop is in progress. Stop escalates
  *  from a soft stop to a force kill; a draft offers steer or queue. */
-export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, connected, effectiveBusyMode, setBusySendMode, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false }: {
+export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQueued, composerHasDraft, canSteer, onSteer, steerOnly, fireComposer, disabled, holdSend, holdSendReason, connected, effectiveBusyMode, setBusySendMode, sendOnEnter, jevAutoAvailable, onStop, stopDeclinedArmed = false, terminalActive = false }: {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   /** The press before this one was declined (compaction); the backend treats
    *  the next press as the force stop, and the armed Stop's hint says so. */
@@ -138,6 +145,8 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
   steerOnly: boolean
   fireComposer: (alternate?: unknown) => void
   disabled: boolean
+  holdSend: boolean
+  holdSendReason: string
   connected: boolean
   effectiveBusyMode: BusySendMode
   setBusySendMode: ReturnType<typeof useBusySendMode>[1]
@@ -146,6 +155,11 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
   onStop?: () => void
   terminalActive?: boolean
 }) {
+  const heldBusyAction = effectiveBusyMode === 'queue'
+    ? i18nT('components.chatInput.queue_message')
+    : effectiveBusyMode === 'auto'
+      ? i18nT('components.chatInput.auto_jev')
+      : i18nT('components.chatInput.steer')
   return (
     stopState === 'killing' ? (
       killingEscaped ? (
@@ -209,7 +223,8 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
           <button
             className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             onClick={fireComposer}
-            disabled={disabled || !connected}
+            disabled={disabled || holdSend || !connected}
+            title={holdSend ? `${i18nT('components.chatInput.send')} — ${holdSendReason}` : undefined}
             aria-label={i18nT('components.chatInput.send')}
             data-testid="steer-only-send"
             {...offlineProps(connected, 'send', i18nT('components.chatInput.send'))}
@@ -221,13 +236,14 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
           mode={effectiveBusyMode}
           onModeChange={setBusySendMode}
           onFire={fireComposer}
-          disabled={disabled}
+          disabled={disabled || holdSend}
+          disabledReason={holdSend ? `${heldBusyAction} — ${holdSendReason}` : undefined}
           altChordAvailable={sendOnEnter === 'enter'}
           autoAvailable={jevAutoAvailable}
         />
         )
       ) : (
-        <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
+        <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled || holdSend} title={holdSend ? `${i18nT('components.chatInput.queue_message')} — ${holdSendReason}` : i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
           <ArrowUpFromLine size={18} />
         </button>
       )

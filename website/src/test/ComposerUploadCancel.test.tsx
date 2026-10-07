@@ -4,8 +4,8 @@
  * While `uploading` is true every attach entry point is disabled, and the
  * request itself used to run to completion whatever the user did: the only exit
  * from a slow transfer was reloading the page, which throws away the bytes
- * already sent. Both composer hosts now hold the request's AbortController and
- * hand a cancel control to ChatInput.
+ * already sent. Both composer hosts now register the request's AbortController
+ * per slot (composerSendHolds) and hand a cancel control to ChatInput.
  *
  * Two things are pinned per host, because the second is the trap: aborting must
  * end the request AND must not be dressed up as a failure. The blanket catch

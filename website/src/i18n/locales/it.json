@@ -6239,6 +6239,7 @@
       "approve_sub_agent": "Approva il sotto-agente: {{name}}",
       "attach_files": "Allega file",
       "cancel_upload": "Annulla caricamento",
+      "send_waits_for_upload": "In attesa che l'allegato finisca",
       "editor_unavailable_standard_input": "L'editor avanzato non è stato caricato, quindi è attivo l'input standard. La tua bozza è invariata.",
       "branch": "Ramo: {{branch}}",
       "click_again_to_force_stop": "Clicca di nuovo per forzare l'arresto",

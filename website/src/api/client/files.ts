@@ -67,7 +67,7 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
-export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
+export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, withJournaledDeadline, sessionKeyHeader }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
     // Resolves with the created path, or rejects with the server's message
@@ -169,7 +169,11 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
       prepared.forEach((p, i) => { if (p.info && paths[i]) resizedByPath[paths[i]] = p.info })
       return { ...(body as { paths: string[]; error?: string }), resized, resizedByPath }
     },
-    screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
+    screenshot: (signal?: AbortSignal) => fetch('/api/screenshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...sessionKeyHeader },
+      ...(signal ? { signal } : {}),
+    }).then(j) as Promise<{ path: string }>,
   }
 
   return { projects, reveal, fileOps }

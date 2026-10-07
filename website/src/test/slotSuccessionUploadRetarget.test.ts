@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 
 import { clearSlotSuccession, pinSlotSuccession, recordSlotSuccession, releaseSlotSuccession, resolveSlotSuccession } from '../utils/slotSuccession'
-import { fileLandingSlot } from '../utils/uploadRouting'
 
 describe('an upload in flight across a mode switch', () => {
   beforeEach(() => clearSlotSuccession())
@@ -9,20 +8,6 @@ describe('an upload in flight across a mode switch', () => {
   it('lands in the replacement slot, not the deleted one', () => {
     recordSlotSuccession('slot-old', 'slot-new')
     expect(resolveSlotSuccession('slot-old')).toBe('slot-new')
-  })
-
-  it('routes the completion to the replacement draft bucket', () => {
-    recordSlotSuccession('slot-old', 'slot-new')
-    // The user has since moved on to a third slot, so the file goes to a draft, not the composer.
-    expect(fileLandingSlot(resolveSlotSuccession('slot-old'), 'slot-other')).toEqual({
-      target: 'draft',
-      slot: 'slot-new',
-    })
-  })
-
-  it('routes into the live composer when the replacement is the slot on screen', () => {
-    recordSlotSuccession('slot-old', 'slot-new')
-    expect(fileLandingSlot(resolveSlotSuccession('slot-old'), 'slot-new')).toEqual({ target: 'pending' })
   })
 
   it('follows a chain, because two switches in a row stale the first successor', () => {
@@ -37,10 +22,9 @@ describe('an upload in flight across a mode switch', () => {
     expect(['a', 'b']).toContain(resolveSlotSuccession('a'))
   })
 
-  it('passes absence through so the router can still drop it', () => {
+  it('passes absence through for callers with no destination', () => {
     expect(resolveSlotSuccession(null)).toBeNull()
     expect(resolveSlotSuccession(undefined)).toBeUndefined()
-    expect(fileLandingSlot(resolveSlotSuccession(null), 'slot-a')).toEqual({ target: 'drop' })
   })
 
   it('leaves an unreplaced slot alone', () => {

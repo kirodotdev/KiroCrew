@@ -123,6 +123,7 @@ function ChatInput({
   onScreenshot,
   onUploadFiles,
   uploading = false,
+  holdSend = false,
   onCancelUpload,
   pendingFiles = [],
   pendingDirs = [],
@@ -222,6 +223,7 @@ function ChatInput({
   const pasteSlice = useComposerPasteSlice()
   const pasteBlocks = pasteSlice ? pasteSlice.blocks : pasteBlocksProp
   const onPasteBlocksChange = pasteSlice ? pasteSlice.set : onPasteBlocksChangeProp
+  const holdSendReason = i18nT('components.chatInput.send_waits_for_upload')
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -271,6 +273,10 @@ function ChatInput({
     expand: text => expandPasteTokens(text, pasteBlocks),
   })
   const { run: runTerminalCommand } = terminal
+  // A terminal command never carries an attachment, so an upload still on its
+  // way has nothing to hold: the hold, its status line and its tooltip apply
+  // to agent sends only, matching `fireComposer`'s terminal branch.
+  const sendHeld = holdSend && !terminal.active
   const terminalRefusal = terminal.blocked || terminal.failure
   const terminalValidation = terminalRefusal === 'unavailable' ? i18nT('components.chatInput.terminal_unavailable')
     : terminalRefusal === 'host' ? i18nT('components.chatInput.terminal_main_window')
@@ -375,7 +381,7 @@ function ChatInput({
     setPlusOpen(false)
   }
   const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
-    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
+    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
   })
   // All terminal draft sends enter here before agent routing or prompt-length
@@ -934,6 +940,24 @@ function ChatInput({
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={removeFileEndingUndoBurst} onRemoveDir={removeDirEndingUndoBurst} rootRef={fileStripRef} />
 
+        {/* Why Send is dimmed, in words, while a draft waits on an attachment.
+            The Send tooltip alone reaches no touch, keyboard or screen-reader
+            user, and a held Enter or voice auto-submit otherwise does nothing
+            visible. Shown only with a draft: an upload with nothing to send
+            already has its spinner. Refs count here because the idle Send
+            they explain counts them (`hasSessionRefs`), unlike composerHasDraft. */}
+        {sendHeld && (composerHasDraft || hasSessionRefs) && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="composer-send-held"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] text-muted"
+          >
+            <Loader2 size={12} className="animate-spin shrink-0" aria-hidden="true" />
+            {holdSendReason}
+          </div>
+        )}
+
         <VoiceCaptureStatus
           voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
@@ -1189,7 +1213,7 @@ function ChatInput({
               // user with something to say is never left without a send.
               <CompactingIndicator />
             ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (!terminal.active && canSteer && onSteer)) ? (
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} holdSend={sendHeld} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
             ) : !terminal.active && (<>
               {promptOptimizer && <button
                 className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
@@ -1250,7 +1274,8 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || sendHeld || optimizing || !connected}
+                title={sendHeld ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >
