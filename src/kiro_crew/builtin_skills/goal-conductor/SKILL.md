@@ -502,8 +502,20 @@ finished work.
 
 One exception: if their message directly invalidates an item that is still
 running, deal with that item now — `session_stop` it and `close` its ledger item,
-or `session_send` the correction straight into it. Do not tear down the whole
-round for one item.
+or `session_send` the correction straight into it with `steer: true`. Do not
+tear down the whole round for one item.
+
+**Steer corrections, queue everything else.** A plain `session_send` to a busy
+worker waits for its current turn to end, so a correction sent that way arrives
+only after the worker has spent the whole turn — a build, a long investigation —
+going the wrong way. Pass `steer: true` for a correction, a changed direction,
+or "stop, that is already done": it lands in the running turn, and when the
+worker is idle or mid-turn injection is unavailable it starts or queues a turn
+exactly like a plain send, so it is never dropped. Leave `steer` off for answers
+to a `question`, seeds, and anything that can wait for the turn boundary.
+A steer does not withdraw what is already queued: if `session_read_message`
+reports a non-zero `queue_depth`, those messages still run after the turn, so
+say in the steered message which earlier instruction it supersedes.
 
 ## When a conductor dispatched you
 
