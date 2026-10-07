@@ -1502,7 +1502,10 @@ PR-time proof only, no publishing.
   before any pip-install lane fails.
 - **`desktop-matrix`** resolves the `build-desktop` matrix: `macos-15` joins
   it only when a packaging-sensitive path changed on a PR, and non-PR runs
-  include all three legs.
+  include all three legs. It checks out full history only on pull requests and
+  passes an empty token to `dorny/paths-filter`, so the PR decision comes from
+  local git diff without a pull-request-files API read or
+  `pull-requests: read`. Non-PR runs skip that checkout.
 - **`build-desktop`** builds the Electron app unsigned through `make desktop` on
   `ubuntu-22.04` and `ubuntu-22.04-arm` for every PR, plus `macos-15` when the
   matrix includes it, and every instantiated leg uploads its artifacts.

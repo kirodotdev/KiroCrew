@@ -365,6 +365,50 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
     )
 
 
+def test_desktop_matrix_checkout_is_pr_only_with_full_history() -> None:
+    """Local PR diffs need the PR history without paying for non-PR checkout."""
+    workflow = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["desktop-matrix"]["steps"]
+    checkout = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+
+    assert checkout.get("if") == "github.event_name == 'pull_request'"
+    assert checkout["with"].get("fetch-depth") == 0
+    assert checkout["with"].get("persist-credentials") is False
+
+
+def test_desktop_matrix_paths_filter_uses_local_git_diff() -> None:
+    """An empty dorny token selects git diff instead of the PR files API."""
+    workflow = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["desktop-matrix"]["steps"]
+    paths_filter = next(
+        step for step in steps if str(step.get("uses", "")).startswith("dorny/paths-filter@")
+    )
+
+    assert paths_filter.get("if") == "github.event_name == 'pull_request'"
+    assert paths_filter["with"].get("token") == ""
+
+
+def test_desktop_matrix_does_not_request_pull_request_api_permission() -> None:
+    """Local diffing removes the job's pull-request REST permission."""
+    workflow = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+    permissions = workflow["jobs"]["desktop-matrix"]["permissions"]
+
+    assert permissions == {"contents": "read"}
+
+
+def test_desktop_matrix_full_history_checkout_is_time_bounded() -> None:
+    """A hung full-history fetch must not hold every desktop leg for 6 hours.
+
+    Same budget as ci.yml's ``changes`` job: long enough for a slow runner's
+    ``fetch-depth: 0`` checkout, short of the 360-minute runner default.
+    """
+    workflow = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+
+    assert workflow["jobs"]["desktop-matrix"]["timeout-minutes"] == 15
+
+
 def test_pr_linux_desktop_artifacts_are_arch_qualified() -> None:
     """Two Linux legs both match ``runner.os == 'Linux'``.
 
