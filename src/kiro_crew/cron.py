@@ -145,6 +145,7 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     is_due,
     is_valid_skip_date,
     is_valid_timezone,
+    missed_cron_boundary,
     next_wake_secs,
     parse_time_string,
     validate_cron_expr,
@@ -485,6 +486,13 @@ class CronService:
         # spawning its due jobs yet — see _arm_timer's guard for the failure
         # mode this prevents.
         self._on_timer_running = False
+        # Wall-clock time of the previous due-scan in THIS process, or None
+        # before the first one. A cron-expression boundary after it that falls
+        # outside the current minute is one no scan saw (host asleep, loop
+        # stalled) and fires once on the next scan -- see missed_cron_boundary.
+        # Deliberately in memory: a boundary missed while the gateway was not
+        # running at all is not caught up on the next start.
+        self._last_scan_wall: float | None = None
         self._running = False
         # The event loop this service is bound to, captured in create()/start()
         # (the gateway's loop). _arm_timer() uses it to re-arm the timer THREAD-
@@ -3606,11 +3614,27 @@ class CronService:
         try:
             snapshot = await asyncio.to_thread(self._tick_scan_locked)
             now = time.time()
-            due = [
-                j
-                for j in snapshot
-                if j.enabled and j.id not in self._claims and self._is_due(j, now)
-            ]
+            since, self._last_scan_wall = self._last_scan_wall, now
+
+            def _due_now(j: CronJob) -> bool:
+                if self._is_due(j, now):
+                    return True
+                if since is None:
+                    return False
+                missed = missed_cron_boundary(j, since, now)
+                if missed is None:
+                    return False
+                logger.info(
+                    "Cron: catching up job %s (%s): its %s boundary passed while "
+                    "the scheduler was not scanning; firing once",
+                    j.id,
+                    j.name,
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(missed)),
+                )
+                return True
+
+            due = [j for j in snapshot if j.enabled and j.id not in self._claims and _due_now(j)]
+            catch_up = {j.id for j in due if not self._is_due(j, now)}
 
             # An empty due-scan can only end the tick when no deferral episode is
             # in progress: the recovery log (below) must still fire on a quiet
@@ -3659,7 +3683,14 @@ class CronService:
                 if j.id in live_by_id
                 and j.id not in self._claims
                 and j.id not in self._pending_removals
-                and self._is_due(live_by_id[j.id], now)
+                and (
+                    self._is_due(live_by_id[j.id], now)
+                    or (
+                        j.id in catch_up
+                        and since is not None
+                        and missed_cron_boundary(live_by_id[j.id], since, now) is not None
+                    )
+                )
             ]
 
             if not decision.admitted:

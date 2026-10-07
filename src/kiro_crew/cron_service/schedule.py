@@ -561,6 +561,50 @@ def is_due(job: CronJob, now: float) -> bool:
     return True
 
 
+def missed_cron_boundary(job: CronJob, since: float, now: float) -> float | None:
+    """The most recent cron boundary in ``(since, now]`` that no scan could fire, or None.
+
+    A cron-expression job is due only while its expression matches the CURRENT
+    minute (:func:`is_due`), so a boundary that falls while the scheduler is
+    not scanning -- the host asleep, or the event loop stalled -- is never
+    fired: on wake the minute has passed. ``every``/``at`` jobs need no help,
+    because they stay due until they run. ``since`` is the wall-clock time of
+    the scheduler's previous scan IN THIS PROCESS, so a boundary after it is
+    one no scan saw.
+
+    Only the LATEST such boundary is returned, so any number of missed
+    occurrences collapses to one catch-up fire. None when that boundary falls
+    in ``now``'s minute (the ordinary :func:`is_due` path owns it), when the
+    job already ran at or after it, when it or ``now`` lands on a skip date, or when the
+    schedule cannot be evaluated.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    sched = job.schedule
+    if sched.kind != "cron" or not sched.cron_expr or now <= since:
+        return None
+    try:
+        tz = _job_tz(job)
+        base = seams.datetime.fromtimestamp(now, tz=tz)
+        prev = croniter(sched.cron_expr, base).get_prev(float)
+    except Exception:
+        return None
+    if not isinstance(prev, (int, float)) or not math.isfinite(prev):
+        return None
+    if prev <= since or int(prev) // 60 == int(now) // 60:
+        return None
+    if job.last_run_ts and job.last_run_ts >= prev:
+        return None
+    if job.skip_dates:
+        # The missed boundary's date AND the date the catch-up would run on:
+        # a skipped day is skipped whichever of the two it is.
+        for ts in (prev, now):
+            local_date = seams.datetime.fromtimestamp(ts, tz).strftime("%Y-%m-%d")
+            if local_date in job.skip_dates:
+                return None
+    return prev
+
+
 def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float) -> float | None:
     """Seconds from ``now`` until the next of ``jobs`` should fire, or None when none will.
 
