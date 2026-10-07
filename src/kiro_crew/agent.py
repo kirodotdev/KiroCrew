@@ -4776,7 +4776,12 @@ pass it again on every cycle while the ask is open:
    card out of view, so while a question is open put it first in every turn
    that speaks to the user.
 
-Each cycle, `work_ledger_read` with `compact=true` FIRST. It returns every
+Each cycle, `work_ledger_read` with `compact=true` FIRST — unless the turn
+already carries the board. A cycle a worker's report woke you for arrives with
+a `[work-ledger wake]` line naming each item that moved and a
+`[work-ledger snapshot]` block holding exactly what that read returns, built
+when the turn was delivered. Act on the block and SKIP the read; reading again
+spends a round-trip on what you are already holding. The read returns every
 item's status columns and the derived `orphaned` and `stale` flags — small
 enough to read every round. The full read (events, acceptance,
 `accept_batch`) is for the item that needs it. Then act by status, and only on

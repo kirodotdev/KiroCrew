@@ -3267,7 +3267,23 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     Reads X-Session-Key header (set by browser and MCP subprocesses).
     Returns True if the session should be blocked from memory operations.
     """
-    sk = _read_session_key(request)
+    return is_restricted_session_key(state, _read_session_key(request))
+
+
+def is_restricted_session_key(state: DashboardState, sk: str) -> bool:
+    """The same judgement as :func:`_is_restricted_session`, over a KEY.
+
+    Split out so a caller holding a session key but no request reaches this
+    predicate instead of re-deriving it. An in-process producer that delivers
+    session-scoped state into a session's own turn is such a caller: it has the
+    key off the record it is serving and no request to read a header from, and a
+    second copy of a four-way restricted test is how one of the two drifts open.
+
+    *sk* is expected ALREADY NORMALIZED (the request form strips it through
+    ``_read_session_key``, for the inconsistent-normalization reason that function
+    gives); a caller holding a stored key has one that is normalized by
+    construction.
+    """
     if not sk:
         return False
     if sk == "dashboard:ui":

@@ -834,7 +834,25 @@ class AutoNudgeService:
         # Loop ids whose CURRENT tick observed a wake but has not yet had its fire
         # confirmed. Transient on purpose: it is a claim about a turn in flight,
         # so a restart must forget it rather than charge a turn that never ran.
-        self._pending_monitor_wake: set[str] = set()
+        #: A MAP, not a set, and the value is the kernel's own wake text: which
+        #: items moved and how, as ``irq`` composed it from the probe's briefs.
+        #: A GATED loop's fire path builds its prompt from the loop's own message
+        #: and carries no envelope, so the verdict was the only holder of that text
+        #: and it went out of scope at the gate -- which is why a delivered
+        #: work-ledger wake said only that a cycle had happened.
+        #:
+        #: Carried ON the claim rather than in a second table beside it, because
+        #: the two have one lifetime: a claim released without delivering must not
+        #: leave text behind for whatever fire comes next, and this file already
+        #: records what two claim tables with separate release points cost. Every
+        #: site that releases the claim therefore releases the text by doing so.
+        #:
+        #: The text is worker-attributed prose about the ledger, so the in-memory
+        #: lifetime is a boundary and not only a restart choice: the one place it
+        #: is entitled to appear is the conductor's own turn, and writing it beside
+        #: the watch state would put it outside the store's identity-gated read
+        #: path -- exactly what ``ledger_wake.wake_brief`` keeps out of there.
+        self._pending_monitor_wake: dict[str, str] = {}
         #: A quiet-streak floor tick that has decided to deliver but not yet
         #: delivered. Same shape and same reason as the wake claim above: the charge
         #: belongs at the single point delivery is confirmed, never at the decision.
@@ -1757,6 +1775,20 @@ class AutoNudgeService:
 
     def list_all(self) -> list[NudgeLoop]:
         return list(self._loops.values())
+
+    def pending_wake_briefs(self, loop_id: str) -> str:
+        """The wake text owed to *loop_id*'s next delivered cycle, or ``""``.
+
+        An accessor rather than a reach into ``_pending_monitor_wake``, matching
+        ``get_by_id`` / ``get_by_slot``: the fire path lives in the gateway, which is
+        another module, and the one thing it needs there is a read.
+
+        A READ, not a take. The text stays owed until delivery is confirmed, for the
+        same reason the claim carrying it does -- a fire the slot refuses delivered
+        nothing, and taking the text here would leave the retry with a turn that says
+        only that a cycle happened.
+        """
+        return self._pending_monitor_wake.get(loop_id, "")
 
     async def _write_monitor_snapshot_locked(self, payload: dict | None = None) -> None:
         """Persist a monitor transition without releasing ``_lock`` mid-write."""

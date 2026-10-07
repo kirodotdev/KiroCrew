@@ -299,7 +299,16 @@ python3 <this skill's dir>/scripts/patrol_budget.py renew \
 
 Each cycle:
 
-1. **`work_ledger_read` with `compact=true` first, every cycle.** It returns the
+1. **`work_ledger_read` with `compact=true` first, every cycle, unless the turn
+   already carries the board.** A cycle a worker's report woke you for arrives with a
+   `[work-ledger wake]` line naming each item that moved and a
+   `[work-ledger snapshot]` block holding the same document this read returns,
+   built when the turn was delivered. When you see that block, **act on it and
+   skip this read**: repeating it spends a round-trip to re-fetch what you are
+   already holding. Read for yourself when the turn carries no snapshot (a
+   scheduled patrol tick), or when you need a field the compact form omits.
+
+   The read returns the
    conductor record and, per item, the status columns plus the derived
    `orphaned`, `stale` and `acceptance_concrete` flags — no events, acceptance or
    `accept_batch`. This one read replaces the whole transcript-reading cycle, and

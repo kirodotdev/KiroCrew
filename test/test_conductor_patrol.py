@@ -113,7 +113,7 @@ def _env(tmp_path, _floor_monkeypatch):
 
     _floor_monkeypatch.setattr(routes, "_recognize_session", _recognized)
     _floor_monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    _floor_monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    _floor_monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     _floor_monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
     _floor_monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
     _floor_monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: True)

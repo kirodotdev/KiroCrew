@@ -481,3 +481,47 @@ def stall_brief(*, item_id: str, status: str | None) -> str:
     Structural only, for the reason :func:`wake_brief` gives.
     """
     return f"[work-ledger wake] item={item_id} reason=stall last_status={status or '(none yet)'}"
+
+
+#: Chars the briefs may contribute to a delivered wake. ``irq`` already bounds the
+#: list it joins (``irq._MAX_LIST`` entries, then a "(+n more)" tail) and every brief
+#: this module builds is one short line, so a body past this is a kernel or probe
+#: defect rather than a busy conductor -- and a defect must not be able to push the
+#: snapshot out of the turn it rides with.
+MAX_WAKE_BRIEF_CHARS = 4_000
+
+#: What the snapshot is labelled as in a delivered wake. The conductor reads this
+#: line to know the board below it is the ledger as of this turn, which is what makes
+#: the first ``work_ledger_read`` of a wake cycle unnecessary.
+SNAPSHOT_HEADER = (
+    "[work-ledger snapshot] the board as of this turn, equivalent to "
+    "work_ledger_read(compact=true). Act on it; do not re-read the ledger to "
+    "learn what changed."
+)
+
+
+def wake_turn_text(briefs: str, snapshot: str) -> str:
+    """The text a work-ledger wake delivers: which items moved, then the board.
+
+    Assembled here rather than at the delivery site because the ORDER is policy, not
+    plumbing: the briefs name what moved and the snapshot is the state to act on, so
+    a conductor reading top-down learns the news before the board it has to apply it
+    to. The delivery site owns where this string goes -- prefixed onto the nudge
+    prompt, or steered into a turn already running -- and both get the same text.
+
+    Each half is optional and the other still delivers. A snapshot the store could
+    not produce leaves the briefs, which is the shape that shipped; briefs the kernel
+    did not hand over leave the snapshot, which still tells the conductor the board
+    moved. Both empty answers ``""``, and the caller then delivers the plain nudge.
+
+    The briefs are TRUNCATED rather than dropped at :data:`MAX_WAKE_BRIEF_CHARS`, so
+    an over-long body costs the tail of the list and never the snapshot beneath it.
+    """
+    head = (briefs or "").strip()
+    if len(head) > MAX_WAKE_BRIEF_CHARS:
+        head = head[:MAX_WAKE_BRIEF_CHARS].rstrip() + "\n(brief list truncated)"
+    board = (snapshot or "").strip()
+    if not board:
+        return head
+    body = f"{SNAPSHOT_HEADER}\n{board}"
+    return f"{head}\n\n{body}" if head else body

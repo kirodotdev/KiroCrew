@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
@@ -54,7 +55,12 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.resolve import UNKNOWN, unit_for_session_key
 from kiro_crew.dashboard import session_control
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
+)
+from kiro_crew.dashboard.handlers._shared import (
+    is_restricted_session_key as _is_restricted_session_key,
+)
 
 # Module-scope like ``session_ledger.py``'s identical imports: the recognition
 # gate and the incognito classifier are this module's own load-bearing deps.
@@ -325,6 +331,11 @@ async def _caller_key(
 
 
 def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
+    """:func:`caller_admission` over a request. See it for the judgement."""
+    return caller_admission(request.app["state"], sk)
+
+
+def caller_admission(state: DashboardState, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
     """The entry gate's one judgement of *sk*: ``(why, slot, admission)``.
 
     ``why`` is ``""`` when the caller may reach the ledger, else the refusal reason
@@ -347,12 +358,16 @@ def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str
     A key that resolves to no open slot has no slot to record an audience on and
     nothing of its own that publishes; it is judged as before -- by its key and the
     live probe -- and records nothing.
+
+    Takes the STATE rather than the request, because an in-process producer that
+    delivers ledger state into a session's own turn has to pass this same gate and
+    holds no request. One judgement, one implementation: a second copy of a
+    containment test is how one of the two drifts open.
     """
-    state: DashboardState = request.app["state"]
     slot_key = session_control.caller_slot_key(state, sk)
     slot = state.get_slot(slot_key) if slot_key else None
     if slot is None:
-        return _contained_channel_caller(request, sk), None, None
+        return contained_channel_caller(state, sk), None, None
     try:
         verdict = session_control.judge_owner_dm(state, slot)
     except Exception:  # pragma: no cover - the predicate fails closed itself
@@ -367,6 +382,11 @@ def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str
 
 
 def _contained_channel_caller(request: web.Request, sk: str) -> str:
+    """:func:`contained_channel_caller` over a request. See it for the judgement."""
+    return contained_channel_caller(request.app["state"], sk)
+
+
+def contained_channel_caller(state: DashboardState, sk: str) -> str:
     """Why *sk*'s turns reach a channel audience the ledger must stay out of; ``""`` if not.
 
     Two mechanisms reach a channel -- a channel-BORN key, and a dashboard-born
@@ -391,9 +411,8 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
     this reason-only form is what that gate falls back to for a key no open slot
     answers to, where there is nothing to record.
     """
-    if not (is_channel_session_key(sk) or _reaches_a_channel(request, sk)):
+    if not (is_channel_session_key(sk) or reaches_a_channel(state, sk)):
         return ""
-    state: DashboardState = request.app["state"]
     try:
         return session_control.session_owner_dm_refusal(state, sk)
     except Exception:  # pragma: no cover - the predicate fails closed itself
@@ -402,6 +421,11 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
 
 
 def _reaches_a_channel(request: web.Request, sk: str) -> bool:
+    """:func:`reaches_a_channel` over a request. See it for the predicate."""
+    return reaches_a_channel(request.app["state"], sk)
+
+
+def reaches_a_channel(state: DashboardState, sk: str) -> bool:
     """Whether this caller's turns reach a messaging channel, mirror included.
 
     ``is_channel_session_key`` catches a channel-BORN session. It does not catch a
@@ -416,7 +440,6 @@ def _reaches_a_channel(request: web.Request, sk: str) -> bool:
     a peer, and which FAILS CLOSED: a session store that cannot answer counts as
     mirrored.
     """
-    state: DashboardState = request.app["state"]
     for candidate in (
         sk,
         session_ledger.ledger_key(sk),
@@ -1224,18 +1247,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     patrolled = conductor_patrol.has_active_patrol(state, key)
     rows: list[dict[str, Any]] = []
     for item in shown:
-        row = item.to_dict()
-        row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        row["stale"] = work_ledger.is_stale(
-            item,
-            worker_running=_slot_running(state, item.worker_session_key or ""),
-            worker_closed=_slot_closed(state, item.worker_session_key or ""),
-        )
-        # Why an item is (or is not) in ``accept_batch``, on the item itself. Without
-        # it a conductor sees an item it dispatched simply missing from the batch and
-        # has no way to tell "bar not filled in yet" from "the read dropped it".
-        row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
-        row["unpatrolled"] = item.state == "open" and not patrolled
+        row = _row_with_flags(state, item, conductor_alive=conductor_alive, patrolled=patrolled)
         if compact:
             rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
             continue
@@ -1270,6 +1282,46 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+def _row_with_flags(
+    state: DashboardState,
+    item: work_ledger.WorkItem,
+    *,
+    conductor_alive: bool,
+    patrolled: bool,
+) -> dict[str, Any]:
+    """One item as a read row, with the four flags the store derives from liveness.
+
+    A function rather than four lines inlined per caller because the read route and
+    the wake snapshot both publish these flags and must publish the SAME ones: a
+    snapshot that said a worker was alive while the route called it stale would be a
+    second opinion on the one question a conductor acts on.
+
+    Liveness is read straight off the dashboard's own slot table rather than over
+    HTTP: every caller runs in the process that owns it. ``orphaned`` asks whether
+    the CONDUCTOR's slot is still open and ``stale`` whether the WORKER's is -- the
+    conjunction with the staleness window is what keeps a worker in a thirty-minute
+    build from being flagged.
+
+    ``acceptance_concrete`` says why an item is (or is not) in ``accept_batch``.
+    Without it a conductor sees an item it dispatched simply missing from the batch
+    and has no way to tell "bar not filled in yet" from "the read dropped it".
+
+    ``unpatrolled`` marks an open item whose conductor holds no active work-ledger
+    watch -- nobody is reading its reports -- and ``patrolled`` is that one read for
+    the whole board, passed in rather than re-read per item.
+    """
+    row = item.to_dict()
+    row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
+    row["stale"] = work_ledger.is_stale(
+        item,
+        worker_running=_slot_running(state, item.worker_session_key or ""),
+        worker_closed=_slot_closed(state, item.worker_session_key or ""),
+    )
+    row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+    row["unpatrolled"] = item.state == "open" and not patrolled
+    return row
+
+
 #: The fields a ``compact=true`` row carries: what a patrol cycle reads to decide
 #: who moves next, the three derived flags included, and nothing that is a
 #: document in its own right (``acceptance``, ``artifacts``, the events).
@@ -1291,6 +1343,200 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "acceptance_concrete",
     "unpatrolled",
 )
+
+#: Chars a wake's snapshot may occupy. Smaller than the tool layer's read budget on
+#: purpose: a tool result is the whole turn's answer, while this rides IN FRONT of a
+#: patrol prompt the conductor still has to read, and may be steered into a turn
+#: already under way. The store caps a conductor at ``MAX_ITEMS_PER_CONDUCTOR``
+#: items whose compact fields are themselves capped, so a real board fits and the
+#: bound only binds a ledger at its own limits -- which the same trimming rules then
+#: shrink by dropping closed items first.
+WAKE_SNAPSHOT_BUDGET_CHARS = 24_000
+
+#: What a wake's snapshot is audited as. Its own name rather than
+#: ``work_ledger_read``: the row an operator reads should say the gateway delivered
+#: a board into a turn, not that a tool call asked for one.
+_WAKE_OPERATION = "work_ledger_wake_snapshot"
+
+
+@dataclass(frozen=True)
+class WakeSnapshot:
+    """A wake's board, plus the audience its read was admitted under.
+
+    The admission travels OUT rather than being recorded here, and that is the
+    whole reason this is a value and not a string.
+    ``session_control.record_audience_admission`` writes only inside a runner turn,
+    because its entries are cleared by that turn's teardown. A wake delivered to an
+    IDLE conductor is built before its turn starts, so recording at this layer would
+    be a no-op on the common path -- and the publisher, finding no entry, would
+    republish board-derived text to a mirror linked during that very turn.
+
+    So the producer hands the admission to whoever starts or already owns the turn
+    that receives *text*, and that caller fences it at the one moment the turn
+    exists. ``slot`` is the row the verdict judged, never a second lookup: a record
+    built from another read would describe whatever audience was live at that read.
+
+    Empty ``text`` means no board, for any reason; ``slot`` and ``admission`` are
+    then ``None`` and there is nothing to fence.
+
+    ``briefs`` is the STRUCTURAL half on its own: item ids and statuses, the text
+    ``ledger_wake.wake_brief`` builds and guarantees carries no ledger prose. It is
+    separated from ``text`` because the two may go to different places. THE RULE the
+    two fields exist to express: worker-authored ledger prose may enter only a turn
+    whose cross-surface publication this gateway has fenced for that turn's WHOLE
+    LIFE. A turn this gateway starts is such a turn. A turn that merely happens to be
+    running is such a turn too, until its text is requeued -- the teardown clears the
+    fence and the drain starts a successor that nothing re-fences. So a delivery that
+    can be requeued is handed ``briefs``, which needs no fence because it discloses
+    nothing a fence would protect, and ``text`` goes only where the fence holds.
+    """
+
+    text: str
+    briefs: str = ""
+    slot: Any = None
+    admission: dict[str, Any] | None = None
+
+
+async def compact_wake_snapshot(
+    state: DashboardState,
+    conductor_slot_key: str,
+    *,
+    budget: int = WAKE_SNAPSHOT_BUDGET_CHARS,
+) -> WakeSnapshot:
+    """*conductor_slot_key*'s own board, as ``work_ledger_read(compact=true)`` gives it.
+
+    Built AT DELIVERY, for the one caller that has no request to carry an identity:
+    the work-ledger wake, which prefixes this onto the turn it delivers so the
+    conductor does not spend a tool round-trip learning what it was woken for.
+
+    IN THIS MODULE because this is the store's single seam (``work_ledger``'s own
+    importer allowlist names it), and the rule that seam exists for is honoured
+    rather than bypassed: the key is not supplied by any caller that could name
+    someone else's ledger. It is the slot key of the loop whose own turn this text
+    is about to enter, and the answer goes nowhere but into that session -- the same
+    pairing of identity and destination ``X-Session-Key`` gives the route. Folded
+    through ``ledger_key`` like every other key here, so a conductor spelled
+    ``dashboard_chat-X`` reads the ledger it wrote as ``chat-X``.
+
+    EVERY GATE ``work_ledger_read`` APPLIES APPLIES HERE, through the same
+    functions rather than through copies of them. Naming the right ledger is not
+    the whole of that route's contract: it also refuses a restricted session mode,
+    refuses a session whose turns reach a channel audience that is not the owner's
+    own DM, refuses a cache flagged dirty, and RECORDS the audience it admitted the
+    read under. Skipping any of those would make this the softer way to the same
+    data -- a conductor tab mirrored to a channel would have the board, worker prose
+    included, republished to that channel by the very turn this text enters, with no
+    admission recorded to withhold it; and a dirty cache would be served as the
+    board to a conductor this same text tells not to re-read.
+
+    The containment judgement is taken TWICE, as the route takes it: once before the
+    read, and once after, because the exemption rests on live state and the read is
+    awaited across -- a mirror retargeted while the board was being read widens the
+    audience exactly as one gained earlier does.
+
+    Rendered, trimmed and bounded by the TOOL layer's own fitter
+    (``mcp_work.fit_ledger``), so a conductor cannot be shown one shape by its wake
+    and another by its read. A compact document carries no event tails and no
+    acceptance bars, so only that fitter's last stage can bind: closed items are
+    dropped first, then open items oldest-created, and the newest open item always
+    survives.
+
+    ``""`` for every ordinary absence -- no ledger, an unreadable one, a board whose
+    every item is closed -- and for any failure at all, because a snapshot is an
+    optimisation and must never be the reason a wake is not delivered. The
+    conductor's own ``work_ledger_read`` remains available to it in that turn.
+
+    NOT PERSISTED anywhere. The caller puts this string in one turn's text; the
+    watch-state file ``irq`` writes keeps carrying structural briefs alone, which is
+    the boundary ``ledger_wake.wake_brief`` documents and the reason the snapshot is
+    built here instead of travelling with the observation.
+    """
+    key = session_ledger.ledger_key(conductor_slot_key)
+    if not key:
+        return WakeSnapshot("")
+    try:
+        if _is_restricted_session_key(state, key):
+            # A ledger is durable state an incognito, temporary or guest session
+            # promises not to leave behind, and a board delivered into such a
+            # session's turn is that state reaching it by another door.
+            logger.debug("work-ledger wake: %s is a restricted session; no snapshot", key)
+            return WakeSnapshot("")
+        why, caller_slot, admission = caller_admission(state, key)
+        if why:
+            _audit(key, _WAKE_OPERATION, "denied", resources="channel_agent_block", error=why)
+            return WakeSnapshot("")
+        # The route's own hold, for the route's own reason: a write's cache commit
+        # and its record append are two steps, and a read between them would publish
+        # a mutation the record may yet roll back.
+        async with _board_lock(key):
+            # INSIDE the hold, where the route tests it too. A writer holding this
+            # lock can fail its record append and then fail its undo, which is what
+            # flags the cache; a test taken before the lock passes against the state
+            # before that writer ran, and the board read below is then delivered as
+            # authoritative while carrying a mutation the record never saw.
+            if await asyncio.to_thread(work_ledger.cache_dirty, key) is not None:
+                # Only a rebuild may touch a board whose cache is flagged dirty.
+                # Serving it as THE board, to a conductor this text tells not to
+                # re-read, passes the damage on as the state to act from.
+                _audit(key, _WAKE_OPERATION, "denied", error=work_ledger.CODE_CACHE_DIRTY)
+                return WakeSnapshot("")
+            record = await asyncio.to_thread(work_ledger.read_conductor, key)
+            if record is None:
+                return WakeSnapshot("")
+            items = await asyncio.to_thread(work_ledger.list_work_items, key)
+        if not items:
+            return WakeSnapshot("")
+        if post_read := contained_channel_caller(state, key):
+            # The audience widened while the board was being read, so this
+            # session may not be handed the text this would return.
+            _audit(
+                key,
+                _WAKE_OPERATION,
+                "denied",
+                resources="channel_agent_block_post_read",
+                error=post_read,
+            )
+            return WakeSnapshot("")
+        conductor_alive = _slot_open(state, key)
+        patrolled = conductor_patrol.has_active_patrol(state, key)
+        rows = [
+            {
+                name: value
+                for name, value in _row_with_flags(
+                    state, item, conductor_alive=conductor_alive, patrolled=patrolled
+                ).items()
+                if name in _COMPACT_ROW_FIELDS
+            }
+            for item in items
+        ]
+        payload: dict[str, Any] = {
+            "conductor": record.to_dict(),
+            "items": rows,
+            "compact": True,
+            # Carried even though the compact READ omits it: the conductor's next move
+            # on a ``done`` report is to evaluate that item's bar, and the batch is
+            # what it pipes to do so. Built from ``acceptance`` alone by the store,
+            # never from a worker's claimed ``pr``, and filtered to the items whose
+            # bar is concrete -- the ``done`` only filter stays the conductor's.
+            "accept_batch": work_ledger.accept_batch(items),
+        }
+        # Function-local: this module is on the gateway's route-binding path and the
+        # tool server is not, so an install whose conductors never wake pays nothing
+        # for it. Free in a gateway that has bound these routes -- everything the
+        # tool module imports is already loaded by then.
+        from kiro_crew import mcp_work
+
+        text = await asyncio.to_thread(mcp_work.fit_ledger, payload, budget)
+        # The SUCCESSFUL decision, audited where the route audits its own. A trail
+        # that records only refusals says nothing about the reads that happened,
+        # which is the half an operator asking "what was disclosed, and to whom"
+        # needs.
+        _audit(key, _WAKE_OPERATION, "ok", resources=f"{len(rows)} item(s)")
+        return WakeSnapshot(text, slot=caller_slot, admission=admission)
+    except Exception:
+        logger.debug("work-ledger wake: could not build a snapshot for %s", key, exc_info=True)
+        return WakeSnapshot("")
+
 
 #: Query-string spellings of ``compact``. ``true`` / ``false`` is what the tool
 #: layer sends.

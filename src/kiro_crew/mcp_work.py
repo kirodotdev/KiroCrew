@@ -201,7 +201,7 @@ def _drop_rank(row: dict[str, Any]) -> tuple[bool, bool, datetime, str]:
     )
 
 
-def _fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
+def fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
     """Render the ledger read under *budget* chars, always as valid JSON.
 
     Each stage runs only while the text is still over budget, and a trimmed reply
@@ -308,6 +308,14 @@ def _fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
         if len(text) <= budget or not ids:
             return text
         ids = ids[: len(ids) // 2]
+
+
+#: The private spelling this function carried while the tool layer was its only
+#: caller. Kept as an alias rather than as a second implementation: the work-ledger
+#: wake builds the same document and has to fit it the same way, and a reader of
+#: either name must land on one set of rules. The two are the same object, so a test
+#: that patches a collaborator of this module still reaches the live one.
+_fit_ledger = fit_ledger
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
@@ -700,7 +708,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # The ledger holds worker-authored prose written from untrusted work, and a
         # patrol cycle re-reads it into context every round: redacted, and fitted
         # under the runtime's tool-result cut so a cut never tears the JSON.
-        return _fit_ledger(resp)
+        return fit_ledger(resp)
 
     if name == "work_ledger_rebuild":
         resp = _post(_REBUILD_PATH, {}, session_key=caller_key)

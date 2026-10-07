@@ -4641,7 +4641,7 @@ class TestAutomaticOriginMirror:
 
         monkeypatch.setattr(ledger_routes, "_recognize_session", _recognized)
         monkeypatch.setattr(ledger_routes, "_is_restricted_session", lambda *a: False)
-        monkeypatch.setattr(ledger_routes, "_contained_channel_caller", lambda request, sk: "")
+        monkeypatch.setattr(ledger_routes, "contained_channel_caller", lambda state, sk: "")
 
         async def _goal_write(sess: Any, key: str) -> tuple[int, dict[str, Any]]:
             app = web.Application()

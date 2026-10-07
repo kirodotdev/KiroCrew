@@ -429,7 +429,9 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 self._rearm_fail_count.get(loop.id, 0) + 1,
             )
     claimed_wake = loop.id in self._pending_monitor_wake
-    self._pending_monitor_wake.discard(loop.id)
+    # Taken, not merely tested: the claim carries the wake's own text, and the
+    # re-owe below has to put the same text back rather than an empty one.
+    claimed_briefs = self._pending_monitor_wake.pop(loop.id, "")
     claimed_floor = loop.id in self._pending_floor_tick
     self._pending_floor_tick.discard(loop.id)
     if claimed_wake and loop.monitor is not None:
@@ -470,7 +472,12 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
             # single point delivery is confirmed, and the claim is discarded
             # there. A retry that is refused again re-owes it, which is correct
             # and bounded by the same backoff that bounds the retry itself.
-            self._pending_monitor_wake.add(loop.id)
+            #
+            # Re-owed WITH ITS TEXT. The retry takes the observation-free bypass, so
+            # it never re-reads the probe and the briefs cannot be rebuilt: an empty
+            # re-owe here would deliver the news as a bare cycle header, which is the
+            # whole defect the text was added to close.
+            self._pending_monitor_wake[loop.id] = claimed_briefs
         if claimed_floor:
             # Same reasoning: a refused floor delivery spent nothing, so the charge
             # stays owed rather than being recorded or dropped.

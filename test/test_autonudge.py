@@ -2168,7 +2168,10 @@ async def test_a_failed_retarget_write_hands_the_wake_claim_back(tmp_path, monke
         gate=True,
     )
     service._loops[loop.id] = loop
-    service._pending_monitor_wake.add(loop.id)
+    # The claim carries the kernel's wake text, so the rollback has to restore BOTH:
+    # a claim handed back without its briefs leaves the retried delivery announcing a
+    # cycle and naming nothing.
+    service._pending_monitor_wake[loop.id] = "[wake] acme/widgets#42 went red"
 
     def _explode(_payload):
         raise OSError("disk full")
@@ -2181,6 +2184,9 @@ async def test_a_failed_retarget_write_hands_the_wake_claim_back(tmp_path, monke
                 loop.id, message="watch https://github.com/acme/widgets/pull/99 for failures"
             )
         assert loop.id in service._pending_monitor_wake, "the claim must come back"
+        assert (
+            service.pending_wake_briefs(loop.id) == "[wake] acme/widgets#42 went red"
+        ), "and the wake text it was holding"
         assert loop.monitor is not None
         assert loop.monitor.target == "acme/widgets#42", "and the old subject with it"
     finally:
@@ -2581,7 +2587,7 @@ async def test_a_retarget_does_not_hand_the_old_wake_to_the_new_subject(tmp_path
         gate=True,
     )
     service._loops[loop.id] = loop
-    service._pending_monitor_wake.add(loop.id)
+    service._pending_monitor_wake[loop.id] = "[wake] acme/widgets#42 went red"
 
     try:
         await service.update(
@@ -2590,6 +2596,9 @@ async def test_a_retarget_does_not_hand_the_old_wake_to_the_new_subject(tmp_path
         assert loop.monitor is not None
         assert loop.monitor.target == "acme/widgets#99", "the new subject must be bound"
         assert loop.id not in service._pending_monitor_wake
+        assert (
+            service.pending_wake_briefs(loop.id) == ""
+        ), "the old subject's wake text must not reach the new one either"
         assert loop.monitor.wakes == 0
         assert loop.monitor.followup_ticks == 0
     finally:
@@ -2880,7 +2889,7 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
 
     try:
         # A tick observed a wake and is now in flight toward its fire.
-        service._pending_monitor_wake.add(loop.id)
+        service._pending_monitor_wake[loop.id] = "[wake] acme/widgets#42 went red"
         service._timers[loop.id] = asyncio.create_task(_never())
         await asyncio.sleep(0)
 
@@ -2888,6 +2897,9 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
         assert (
             loop.id not in service._pending_monitor_wake
         ), "a cancelled cycle must not leave a claim for a later fire to inherit"
+        assert (
+            service.pending_wake_briefs(loop.id) == ""
+        ), "nor the wake text that claim was carrying"
 
         # And the later fire, which observed nothing, charges nothing.
         await service._run_fire_cycle(loop)

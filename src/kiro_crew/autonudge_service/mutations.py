@@ -886,8 +886,11 @@ async def _update_unserialized(
                     # follow-up allowance it never earned. Remembered so the
                     # persistence rollback below can hand it back if this
                     # retarget never lands.
+                    # The claim carries the wake's own text, so it is TAKEN rather
+                    # than tested: the briefs describe the OLD subject's items, and
+                    # the rollback below has to restore exactly what was taken.
                     claim_discarded_for_retarget = loop.id in self._pending_monitor_wake
-                    self._pending_monitor_wake.discard(loop.id)
+                    discarded_briefs_for_retarget = self._pending_monitor_wake.pop(loop.id, "")
                     # And the floor claim, for the identical reason. I added
                     # that second claim one round ago and wrote on the pull
                     # request that two hand-written claim sets with two release
@@ -1161,7 +1164,10 @@ async def _update_unserialized(
                 # it discarded costs the delivered wake its accounting and its
                 # follow-up turn. Rolling back the fields but not this is the
                 # same incomplete-restore defect as the terminal transition's.
-                self._pending_monitor_wake.add(loop.id)
+                # Restored WITH the text it was holding: the claim and the briefs
+                # are one value, so handing the claim back without them would leave
+                # the retried delivery announcing a cycle and naming no item.
+                self._pending_monitor_wake[loop.id] = discarded_briefs_for_retarget
             if floor_discarded_for_retarget:
                 # Same restore, same reason. This is the fourth hand-written
                 # restore of a per-loop claim in this file, and the review has now

@@ -461,7 +461,7 @@ def open_routes(monkeypatch) -> None:
 
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
     monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: True)
     yield

@@ -30,7 +30,7 @@ from kiro_crew.dashboard.handlers import work_ledger as routes
 
 #: The real implementation, captured before the autouse fixture stubs the name.
 #: A test that drives the true branch has to reach past its own default.
-_REAL_REACHES_A_CHANNEL = routes._reaches_a_channel
+_REAL_REACHES_A_CHANNEL = routes.reaches_a_channel
 
 CONDUCTOR_A = "chat-a-conductor"
 CONDUCTOR_B = "chat-b-conductor"
@@ -64,7 +64,7 @@ def _open_route(monkeypatch):
 
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     # The routes record every write into the caller's crew log and refuse when
     # they cannot: a ``MagicMock`` state resolves no unit, so the gate is opened
     # here and the append is swallowed. ``test_work_ledger_projection.py`` drives
@@ -1034,7 +1034,7 @@ async def test_an_outbound_mirrored_session_is_refused_like_a_channel_one(monkey
     channel, so its key looks local while the disclosure is identical. The key alone
     is therefore not the test."""
     ids = await two_by_two()
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: True)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: True)
     for status, body in (
         await _brief(WORKER_A),
         await _report(WORKER_A, {"status": "done", "summary": "x"}),
@@ -1058,7 +1058,7 @@ def test_the_mirror_probe_fails_closed_on_an_unreadable_store(monkeypatch):
 
     monkeypatch.setattr(session_control, "_has_channel_mirror", _boom)
     request = _req("GET", "/api/work-ledger", sk="chat-probe")
-    assert _REAL_REACHES_A_CHANNEL(request, "chat-probe") is True
+    assert _REAL_REACHES_A_CHANNEL(request.app["state"], "chat-probe") is True
 
 
 @pytest.mark.asyncio
@@ -1183,12 +1183,12 @@ async def test_a_read_refuses_when_a_mirror_appears_during_the_read(monkeypatch)
     ids = await two_by_two()
     calls = {"n": 0}
 
-    def _mirror_appears_after_entry(request: Any, sk: str) -> bool:
+    def _mirror_appears_after_entry(state: Any, sk: str) -> bool:
         # False for the entry check, True for the post-read re-check.
         calls["n"] += 1
         return calls["n"] > 1
 
-    monkeypatch.setattr(routes, "_reaches_a_channel", _mirror_appears_after_entry)
+    monkeypatch.setattr(routes, "reaches_a_channel", _mirror_appears_after_entry)
     status, body = await _brief(WORKER_A)
     assert status == 403
     assert body["code"] == "channel_session"

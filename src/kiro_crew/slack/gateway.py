@@ -7414,6 +7414,20 @@ class GatewayOrchestrator:
                 "advanced under the refused turn, so the verdict is stale",
                 loop.id,
             )
+        # This cycle's work-ledger news: which items moved, and the board as of now.
+        # Built ONCE, here, because both ways of delivering it are below and each
+        # costs a ledger read -- the prefix onto the nudge prompt a step down, and
+        # the steer into a turn already running further down still. Empty for every
+        # other loop shape and for a cycle with nothing owed, which is what keeps
+        # those paths byte-identical to what shipped.
+        from kiro_crew.dashboard.handlers.work_ledger import WakeSnapshot as _WakeSnapshot
+
+        _wake = (
+            await self._work_ledger_wake_text(loop)
+            if self._work_ledger_wake_loop(loop, wake_message)
+            else _WakeSnapshot("")
+        )
+        _wake_text = _wake.text
         if wake_message is None:
             # Snapshot message, sentinel AND config generation TOGETHER, before
             # the compose_nudge_body() await: a concurrent PATCH during that
@@ -7427,6 +7441,13 @@ class GatewayOrchestrator:
             _fired_generation = loop.config_generation
             msg = await compose_nudge_body(_fired_message, _fired_sentinel, loop.slot_key)
             tagged = f"{nudge_cycle_header(loop)}\n{msg}"
+            if _wake_text:
+                # The news FIRST, then the standing patrol instruction. Without this
+                # the delivered turn carried the cycle header and the loop's own
+                # message alone: the probe's briefs died with the verdict the gate
+                # read, so the conductor was not told which item had moved and spent
+                # a ``work_ledger_read`` finding out.
+                tagged = f"{_wake_text}\n\n{tagged}"
         else:
             tagged = wake_message
             # Capture the generation on THIS arm too. A monitor wake runs the
@@ -7476,10 +7497,23 @@ class GatewayOrchestrator:
         )
 
         if slot.running:
-            # Turn still active — drop this nudge. Next idle-timer tick will
-            # schedule again once the turn ends.
-            # Queueing would stack identical 3KB+ nudges and blow up the context
-            # window. Returning False keeps cycle_count accurate (only delivered
+            # Turn still active. A work-ledger wake goes INTO that turn rather than
+            # waiting it out: its payload is one line naming the item that moved plus
+            # a bounded board, and a conductor told a worker finished three minutes
+            # after the fact has lost the whole point of an event-driven watch.
+            # Everything else still declines -- queueing a multi-kilobyte instruction
+            # payload behind a turn would stack identical copies and blow out the
+            # context window.
+            if _wake_text and await self._steer_work_ledger_wake(loop, slot, _wake):
+                # DISPATCHED, because the news reached a model turn: that is what the
+                # fire exists to do, and the loop must not re-owe a wake it has
+                # delivered. It also charges the cycle, which is the honest direction
+                # for a budget -- a steered wake buys the conductor's attention just
+                # as a fired turn does, so counting it can only leave the loop's
+                # remaining cycles understated, never overspent.
+                return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+            # Next idle-timer tick will schedule again once the turn ends.
+            # Returning False keeps cycle_count accurate (only delivered
             # nudges count toward max_cycles).
             logger.info(
                 "AutoNudge skip: slot %s is running (loop %s cycle %d)",
@@ -7644,6 +7678,15 @@ class GatewayOrchestrator:
             # provider entry to cover revocation during that setup.
             if completion_hook is not None and not await completion_hook.authorize():
                 return
+            if _wake_text:
+                # Fence the wake's board audience HERE, after admission and with no
+                # suspension point before ``_run_chat`` -- not before
+                # ``spawn_guarded_turn``, where a queued wake cancelled or timed out
+                # waiting for background capacity would never run ``_run_chat`` and so
+                # would leave the entry nothing clears, withholding the next unrelated
+                # mirror reply (fail-closed). Recorded here, ``_run_chat`` is the very
+                # next statement and its teardown is guaranteed to empty the entry.
+                self._fence_wake_audience(_wake)
             await _run_chat(
                 dashboard_state,
                 turn_slot,
@@ -7685,6 +7728,240 @@ class GatewayOrchestrator:
             task.add_done_callback(_settle_unstarted_admission)
             return _delivery_result(wake_message, await admission)
         return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+
+    def _work_ledger_wake_loop(self, loop: NudgeLoop, wake_message: str | None) -> bool:
+        """Whether *loop* is a GATED work-ledger watch delivering its own wake.
+
+        The one loop shape the two paths below are for. A structured monitor
+        (``wake_message is not None``) composes its own envelope through its
+        controller and needs neither; a plain prompt loop has no probe and so no
+        news of its own to carry; a gated watch on some other subject gets its text
+        from that subject's probe and is not this module's to reshape.
+        """
+        if wake_message is not None:
+            return False
+        monitor = getattr(loop, "monitor", None)
+        if monitor is None or not getattr(loop, "gate", False):
+            return False
+        from kiro_crew import probes
+
+        return str(getattr(monitor, "kind", "")) == probes.WORK_LEDGER
+
+    async def _work_ledger_wake_text(self, loop: NudgeLoop) -> Any:
+        """The text a work-ledger wake delivers for *loop*, or ``""``.
+
+        Which items moved, as the kernel's briefs named them, then the conductor's
+        own board. Both halves are assembled by ``ledger_wake.wake_turn_text``, which
+        owns the order; this method owns where each half comes from.
+
+        The briefs come from the loop's OWED wake claim, which is the only holder of
+        them: the kernel composed them into the verdict the gate read, and a gated
+        loop's fire path has no envelope to carry a verdict. Read rather than taken,
+        so a fire this text is refused by leaves it owed to the retry.
+
+        The snapshot is built HERE, at delivery, and never travels with the
+        observation. Two reasons, and the first is the boundary: ``irq`` persists an
+        observation's brief into its watch-state file, which is not under the work
+        ledger's identity-gated read path, so worker-authored prose may not go there
+        -- which is why ``ledger_wake.wake_brief`` carries an item id and a status
+        and nothing else. The second is freshness: a wake refused by a busy slot can
+        be retried several turns later, and a board read at observation time would
+        then describe a ledger that has moved on.
+
+        Returns the snapshot's own value, so the AUDIENCE its read was admitted
+        under travels with the text: the fence has to be recorded at the moment the
+        receiving turn exists, which is the caller's to know and not this method's.
+        Empty text when there is nothing owed and no board to show, which leaves the
+        plain nudge exactly as it was.
+        """
+        from kiro_crew.dashboard.handlers.work_ledger import WakeSnapshot
+
+        service = self.autonudge_svc
+        state = self.dashboard_state
+        if service is None or state is None:
+            return WakeSnapshot("")
+        reader = getattr(service, "pending_wake_briefs", None)
+        briefs = str(reader(loop.id)) if callable(reader) else ""
+        if not briefs:  # noqa: SIM102 - the comment below is the whole reason
+            # NO OWED WAKE, NO TEXT, and the board is not read. This cycle is a
+            # quiet-streak floor tick, a fallback, or a retry whose claim was
+            # released: it observed no news, so there is nothing for a board to be
+            # the state FOR. Reading one anyway would put up to a full snapshot in
+            # front of every patrol prompt, and -- worse -- would give the steer
+            # below something to inject, so such a tick would interrupt a turn the
+            # user is driving to hand it a board nobody asked for and charge a cycle
+            # for it. A tick with no news is declined instead.
+            return WakeSnapshot("")
+        from kiro_crew import ledger_wake
+        from kiro_crew.dashboard.handlers.work_ledger import compact_wake_snapshot
+
+        board = await compact_wake_snapshot(state, loop.slot_key)
+        return WakeSnapshot(
+            ledger_wake.wake_turn_text(briefs, board.text),
+            briefs=ledger_wake.wake_turn_text(briefs, ""),
+            slot=board.slot,
+            admission=board.admission,
+        )
+
+    @staticmethod
+    def _fence_wake_audience(wake: Any) -> None:
+        """Record the audience the wake's board was read under, on its own slot.
+
+        At the ONE moment the receiving turn exists, which is why the snapshot hands
+        the admission out instead of recording it where it judged: the publisher
+        compares the containment holding at reply delivery against this record and
+        withholds the cross-surface legs when a constraint newly holds, so a wake
+        whose board reached a turn with no entry would have board-derived text
+        republished to a mirror linked during that very turn.
+
+        ONE caller, and that is what makes the promise keepable: the arm that starts
+        the turn itself, with no suspension point between this call and the turn's
+        admission, so the entry is emptied by that turn's own teardown. The steer arm
+        deliberately does not call this -- it carries no prose to fence, and a fence
+        on a turn whose text can be requeued is a promise the teardown breaks.
+        """
+        admission = getattr(wake, "admission", None)
+        target = getattr(wake, "slot", None)
+        if admission is None or target is None:
+            return
+        from kiro_crew.dashboard import session_control
+
+        try:
+            session_control.record_audience_admission(target, admission, for_pending_turn=True)
+        except Exception:
+            # The publisher's fence is a withholding mechanism, so a record that
+            # could not be written must not also take the delivery down: the turn
+            # still runs, and every other containment gate still applies to it.
+            logger.warning(
+                "AutoNudge: could not record the wake's audience admission", exc_info=True
+            )
+
+    async def _steer_work_ledger_wake(self, loop: NudgeLoop, slot: Any, wake: Any) -> bool:
+        """Inject *text*, *loop*'s pending wake, into the turn *slot* is running.
+
+        THE FIX for a wake that lands mid-turn. The fire below declines a running
+        slot, and declining is right for a plain nudge -- a multi-kilobyte
+        instruction payload queued behind a turn would stack identical copies and
+        blow out the context window. A work-ledger wake is the opposite shape: a
+        line naming the item that moved plus a bounded snapshot of the board, which
+        is exactly what a steer is for. So rather than hold it until the turn ends,
+        the news goes INTO the turn that is running.
+
+        Authorization is the fire's own, unchanged. ``_dashboard_mode_admits`` is
+        checked here because the ordinary path checks it only past the running-slot
+        return, and a steer must not become the way around it. Nothing else is
+        needed: the loop is already authorized to start a WHOLE TURN on this slot
+        with this text, and a steer delivers strictly less -- same session, smaller
+        payload, no new turn -- so it cannot reach anywhere the fire could not.
+
+        The containment snapshot is recorded for the REQUEUE. A turn that ends while
+        the steer RPC is suspended degrades the text to a queue card, and the drain
+        re-checks that card against the containment that held when it was admitted;
+        an entry carrying no stamp falls to the drain's fail-closed floor instead.
+        ``user_origin=False``, because nobody typed this into the session's own
+        surface, so it must not inherit a human's exemption from the drain's linked
+        drop.
+
+        WHAT IT CARRIES IS THE BRIEFS, NOT THE BOARD, and that is a boundary rather
+        than a size choice. Worker-authored ledger prose may enter only a turn whose
+        cross-surface publication this gateway has fenced for that turn's WHOLE life.
+        A turn already running stops being such a turn the moment its text is
+        requeued: the teardown clears the fence and the drain starts a successor
+        nothing re-fences, so a mirror linked during that successor would receive
+        board-derived output. A steer can always be requeued -- the race is one this
+        method's own ``STEER_REQUEUED`` arm exists for -- so the board cannot ride it.
+        The briefs can: ``ledger_wake.wake_brief`` builds item ids and statuses and
+        nothing else, which is the same text ``irq`` is already allowed to persist
+        outside the store's identity-gated read path.
+
+        Nothing is lost that the wake exists to deliver. The conductor is told WHICH
+        item moved and how, inside the turn it is already running, which is the
+        latency this fixes; the footer tells it to read the board, and the next
+        delivered cycle carries one.
+
+        *wake* is passed in rather than built here because the caller has already
+        built it for the other delivery, and building it costs a ledger read.
+
+        ``False`` for every refusal -- a mode that declines, a slot with no
+        steer-capable client, a backend that queued the text instead of consuming it
+        -- and the caller then declines the fire exactly as it did before, leaving
+        the wake owed and the turn-end retry to deliver it.
+        """
+        state = self.dashboard_state
+        text = str(getattr(wake, "briefs", "") or "")
+        if state is None or not text or bool(getattr(slot, "is_closing", False)):
+            return False
+        if not await self._dashboard_mode_admits(loop, slot):
+            await self._audit_fire_refused(loop, slot)
+            return False
+        # Deferred import for the cycle the sibling fire path documents: gateway ->
+        # dashboard.chat_delivery -> gateway.
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_REQUEUED,
+            STEER_STEERED,
+            steer_into_running_turn,
+        )
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        try:
+            admission = containment_meta(state, slot)
+        except Exception:
+            # A containment this cannot read is not one to steer past. Declining
+            # costs the wake its place in THIS turn; the turn-end retry still
+            # delivers it, so the cheap failure is to fall back to the fire.
+            logger.debug(
+                "AutoNudge: could not read containment for loop %s -- not steering",
+                loop.id,
+                exc_info=True,
+            )
+            return False
+        # NO AUDIENCE FENCE HERE, and its absence is the point rather than an
+        # omission: this delivery carries structural briefs only, so there is
+        # nothing a fence would withhold. A fence recorded on the running turn would
+        # also be the wrong promise -- the teardown clears it, and a requeued steer's
+        # successor would run without it.
+        try:
+            outcome = await steer_into_running_turn(
+                state, slot, text, user_origin=False, admission=admission
+            )
+        except Exception:
+            logger.warning(
+                "AutoNudge: steering loop %s's work-ledger wake raised -- " "leaving the wake owed",
+                loop.id,
+                exc_info=True,
+            )
+            return False
+        if outcome == STEER_REQUEUED:
+            # The turn ended while the RPC was suspended, so the teardown degraded
+            # the text to a queue card at the HEAD of the slot queue. It runs, as
+            # its own turn, and the drain's own notice covers the one case it does
+            # not. So the news is delivered and the claim must be discharged:
+            # reporting a refusal here would re-owe these briefs, the turn-end retry
+            # would deliver them a second time with a fresh board and another charged
+            # turn, and on the possibly-delivered path ``chat_delivery`` states
+            # outright that the text must not be resent.
+            logger.info(
+                "AutoNudge: loop %s's work-ledger wake was requeued as its own turn "
+                "on slot %s; the wake is discharged",
+                loop.id,
+                loop.slot_key,
+            )
+            return True
+        if outcome != STEER_STEERED:
+            logger.info(
+                "AutoNudge: loop %s could not steer its work-ledger wake into the "
+                "running turn (%s); the wake stays owed",
+                loop.id,
+                outcome,
+            )
+            return False
+        logger.info(
+            "AutoNudge: loop %s steered its work-ledger wake into the turn already "
+            "running on slot %s",
+            loop.id,
+            loop.slot_key,
+        )
+        return True
 
     @staticmethod
     async def _dashboard_mode_admits(loop: NudgeLoop, slot: Any) -> bool:

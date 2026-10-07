@@ -58,7 +58,7 @@ def _isolated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     yield
     _SLOTS.clear()
 

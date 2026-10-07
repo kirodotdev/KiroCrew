@@ -265,6 +265,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "notify_cycle_start_failed": ("method", "2a34976b11b0"),
     "notify_turn_complete": ("method", "295ffab180e4"),
     "notify_user_input": ("method", "fad3ce03aadf"),
+    "pending_wake_briefs": ("method", "45a16f5ce541"),
     "record_monitor_completion_evidence_unavailable": ("method+async", "400845dc24be"),
     "release_approval_hold": ("method+async", "3e62765820c2"),
     "record_monitor_dispatch_busy": ("method+async", "400845dc24be"),

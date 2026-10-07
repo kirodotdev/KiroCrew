@@ -1035,7 +1035,17 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # claimed at the one point delivery is confirmed, in
         # :meth:`_run_fire_cycle`. A process that dies in between charges
         # nothing, which is the right direction: never invent a turn.
-        self._pending_monitor_wake.add(loop.id)
+        #
+        # The claim CARRIES the kernel's wake text, because ``verdict.body`` is the
+        # only place the probe's briefs exist: a gated loop's fire path builds its
+        # prompt from the loop's own message and has no envelope for them, so letting
+        # the verdict go out of scope here is why a delivered work-ledger wake said
+        # nothing about which item moved. Written on the WAKE arm alone -- a quiet
+        # tick observed no news and a fallback observed nothing, so neither may
+        # overwrite text an earlier wake is still owed, and the follow-up tick that
+        # retries a refused fire returns before polling and produces no verdict of
+        # its own.
+        self._pending_monitor_wake[loop.id] = str(verdict.body or "")
     else:
         # A fallback is an OBSERVATION outcome, not a delivery, so it is
         # counted here where it happened.

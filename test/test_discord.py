@@ -3951,7 +3951,7 @@ class TestDispatcher:
 
         monkeypatch.setattr(ledger_routes, "_recognize_session", _recognized)
         monkeypatch.setattr(ledger_routes, "_is_restricted_session", lambda *a: False)
-        monkeypatch.setattr(ledger_routes, "_contained_channel_caller", lambda request, sk: "")
+        monkeypatch.setattr(ledger_routes, "contained_channel_caller", lambda state, sk: "")
         emit.reset_caches()
         try:
             d, _cli, sess = _dispatcher({"u1"})

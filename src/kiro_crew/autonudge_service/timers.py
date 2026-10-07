@@ -604,6 +604,29 @@ def notify_turn_complete(
     if loop.id in self._firing:
         self._rearm_pending.add(loop.id)
         return
+    if loop.id in self._pending_monitor_wake:
+        # A wake this loop OWES, and the turn it was refused by has just ended.
+        #
+        # The refusal is ordinary: ``_fire_dashboard_nudge`` declines a busy slot, so
+        # a worker reporting while its conductor is mid-turn gets its wake held. The
+        # fire path already re-owes the claim and grants the next tick a gate-free
+        # retry, but nothing brought that tick FORWARD -- this hook armed toward the
+        # loop's own deadline, so on the hours-long cadence a work-ledger watch is
+        # meant to enable the report waited out a whole interval. Measured at 14 to 30
+        # minutes on a twenty-minute loop.
+        #
+        # Delay zero rather than ``_arm_from_deadline``'s overdue beat: that beat
+        # exists so an elapsed deadline does not ambush someone mid-conversation, and
+        # the turn it protects has just finished. The retry runs the ordinary
+        # ``_timer`` body, so every terminal bound still applies and a slot that
+        # became busy again simply refuses and re-owes.
+        logger.debug(
+            "AutoNudge: loop %s has a wake owed and its turn just ended -- "
+            "retrying the delivery now rather than at its deadline",
+            loop.id,
+        )
+        self._arm_timer(loop, delay=0.0)
+        return
     self._arm_from_deadline(loop)
 
 
@@ -751,7 +774,11 @@ def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = T
     # and is charged as a wake as well, counting one delivered turn under two
     # counters. That trade is deliberate: an undelivered observation is lost rather
     # than attributed to a turn that did not carry it.
-    self._pending_monitor_wake.discard(loop_id)
+    # The claim carries the wake's text, so dropping the claim drops the text with
+    # it -- which is the point of keeping them in one value. A cancelled cycle's
+    # briefs must not ride the loop's next fire: they would name items a turn
+    # nobody delivered had observed.
+    self._pending_monitor_wake.pop(loop_id, None)
     self._pending_floor_tick.discard(loop_id)
 
 
