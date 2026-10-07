@@ -463,6 +463,16 @@ export default function SkillsTab() {
            draft. */
         <ErrorNotice className="mb-3" askAgent={!detailEditing} message={deleteError?.message} report={deleteError?.report} onDismiss={() => setDeleteError(null)} testId="skill-delete-failure" />
       )}
+      {/* A save failure whose editor is NOT mounted: a viewport crossing
+        * (desktop -> phone) can hide the detail pane while the edit session
+        * stays latched, so a PUT that rejects afterwards has no editor to
+        * report in. Show the retained failure here instead. Same retire rules
+        * as the in-editor notice (dismiss, Edit re-entry, a later success);
+        * a row tap reopens the latched editor, which then shows it inline.
+        * No hand-off: the latched draft is still the only copy of the edit. */}
+      {detailEditing && !showDetail && updateError && (
+        <ErrorNotice className="mb-3" variant="inline" title={i18nT('pages.overview.skillsTab.update_failed_title')} message={updateError} onDismiss={() => setUpdateError('')} testId="skill-update-failure-list" />
+      )}
 
       {skills.length === 0 ? <EmptyState icon={<Sparkles className="lucide-inline" />} title={i18nT('pages.overview.skillsTab.no_skills_yet')} subtitle={i18nT('pages.overview.skillsTab.empty_subtitle')} action={<Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn>} /> : (
         /* List-detail: skill list (pane 1) on the left, then the directory
