@@ -187,6 +187,22 @@ function createFeedLane({
    * with nothing discovered discovers instead of blind-downloading.
    */
   async function startDownload({ automatic = false } = {}) {
+    if (installing || quitHandled) {
+      // An install dispatch is underway: the gateway is being stopped on
+      // purpose and the process is handing off to the platform installer. A
+      // download must not start in this window. The dangerous caller is the
+      // AUTOMATIC path: a feed check already in flight when the user clicks
+      // Install can return a NEWER build and fire startDownload({automatic})
+      // from the update-available handler mid-dispatch. Letting it set
+      // `downloading = true` would corrupt the error handler's phase
+      // derivation (`downloading ? "download" : installing ? "install"`), so a
+      // failure landing while the gateway is stopped would be misattributed to
+      // the download phase and skip the install-phase abort that restores the
+      // stopped gateway -- leaving the app with a dead dashboard. Refuse here,
+      // the same way safeCheck() already refuses during install activity.
+      log.info("[update] download requested during install activity — skipping");
+      return;
+    }
     if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
     if (updateReady && stagedVersion) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });

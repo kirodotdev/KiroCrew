@@ -2371,6 +2371,42 @@ test("install() proceeds to quitAndInstall even when stopGateway errors (still i
   assert.deepStrictEqual(events, ["stopGateway:threw", "quitAndInstall"]);
 });
 
+// #10282: a feed check already in flight when the user clicks Install can return
+// a NEWER build and fire an automatic supersede-download from the
+// update-available handler WHILE the install dispatch is stopping the gateway.
+// startDownload must refuse during the install window. Without the guard it sets
+// `downloading = true` over the top of `installing`, and the post-stopGateway
+// error handler then derives phase "download" instead of "install" and skips the
+// install-phase abort that restores the stopped gateway -- a dead dashboard.
+// This test FAILS on main (no guard: downloadUpdate runs) and passes with it.
+test("an automatic download fired during an install dispatch is refused (#10282)", async () => {
+  const { deps, calls, emit } = makeDeps();
+  deps.getAutoDownloadPreference = () => true; // auto-download on
+  // Park the install dispatch inside stopGateway with `installing` already set,
+  // so the automatic download below arrives mid-install.
+  let releaseStop;
+  const stopEntered = new Promise((entered) => {
+    deps.stopGateway = () => {
+      entered();
+      return new Promise((r) => { releaseStop = r; });
+    };
+  });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" }); // stage a build so install proceeds
+  const installDone = u.install();                 // do NOT await: parks in stopGateway
+  await stopEntered;                               // installing === true now
+  // A check already in flight returns a NEWER build; its update-available
+  // handler fires startDownload({automatic:true}) during the install window.
+  emit("update-available", { version: "1.2.0" });
+  assert.strictEqual(
+    calls.downloadUpdate,
+    0,
+    "an automatic download must not start during an install dispatch -- it would corrupt the install-phase error attribution and leave the gateway stopped",
+  );
+  releaseStop();          // let the install dispatch finish cleanly
+  await installDone;
+});
+
 test("install path arms a force-exit failsafe after quitAndInstall (app-still-running guard)", async () => {
   const { deps, emit } = makeDeps();
   const events = [];
