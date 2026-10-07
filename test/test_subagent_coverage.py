@@ -1107,6 +1107,21 @@ class TestReadSurfaces:
         mgr._agents["queued"] = _info("queued", queued=True)
         assert mgr.task_memory_rows() == []
 
+    def test_task_memory_rows_carry_the_key_a_child_names_as_parent(self) -> None:
+        """The System Sessions table nests a nested run under its parent
+        task by matching the child's ``parent`` to this key. A continued run
+        keeps ``subagent:<original>``, so the key is NOT always ``subagent:<id>``."""
+        mgr = _manager()
+        mgr._agents["fresh"] = _info("fresh", parent_session_key="dash:1")
+        mgr._agents["cont"] = _info(
+            "cont", parent_session_key="dash:1", conversation_key="subagent:orig"
+        )
+        mgr._agents["kid"] = _info("kid", parent_session_key="subagent:orig")
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["fresh"]["session_key"] == "subagent:fresh"
+        assert rows["cont"]["session_key"] == "subagent:orig"
+        assert rows["kid"]["parent"] == rows["cont"]["session_key"]
+
     def test_task_memory_rows_redact_before_truncate(self) -> None:
         """A credential straddling the 80-char cut must not leak a fragment.
 

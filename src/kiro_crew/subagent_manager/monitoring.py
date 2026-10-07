@@ -1441,6 +1441,11 @@ class OrphanStallMonitor(ManagerComponent):
                 "task": _redact_and_truncate(a.task, 80),
                 "agent": _redact(a.agent),
                 "parent": a.parent_session_key,
+                # The key a CHILD of this task records as its ``parent`` -- the
+                # same derivation the WS frames use for ``child_session``. A
+                # continued run keeps ``subagent:<original>`` as its key, so
+                # ``subagent:<id>`` alone would orphan that run's children.
+                "session_key": a.conversation_key or f"subagent:{a.id}",
                 "rss_mb": round(a.last_rss_gb * 1024, 1),
                 "peak_rss_mb": round(a.peak_rss_gb * 1024, 1),
                 "cpu_cores": round(a.last_cpu_cores, 2),

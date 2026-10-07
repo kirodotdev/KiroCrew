@@ -171,6 +171,74 @@ describe('sparklineBars', () => {
 // ── buildTree ──
 
 describe('buildTree', () => {
+  it('nests a subagent-spawned task under its parent task, to any depth', () => {
+    // A nested run's `parent` is its parent TASK's key, which no session row
+    // carries, so it must be matched against task rows or it lands top-level.
+    // Child listed BEFORE its parent: the match must not depend on payload order.
+    const rows = buildTree(
+      [session({ key: 'dashboard:chat-1' })],
+      [
+        task({ id: 'gc', session_key: 'subagent:gc', parent: 'subagent:c' }),
+        task({ id: 'c', session_key: 'subagent:c', parent: 'dashboard:chat-1' }),
+      ],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:chat-1'])
+    const child = rows[0].subRows!
+    expect(child.map(r => r.id)).toEqual(['c'])
+    expect(child[0].subRows!.map(r => r.id)).toEqual(['gc'])
+  })
+
+  it('matches a continued run on its session_key, not its id', () => {
+    // `spawn_continue` keeps `subagent:<original>` as the run's key, so the
+    // child names that key and `subagent:<id>` would orphan it.
+    const rows = buildTree(
+      [session({ key: 'dashboard:chat-1' })],
+      [
+        task({ id: 'cont', session_key: 'subagent:orig', parent: 'dashboard:chat-1' }),
+        task({ id: 'kid', session_key: 'subagent:kid', parent: 'subagent:orig' }),
+      ],
+    )
+    expect(rows[0].subRows![0].subRows!.map(r => r.id)).toEqual(['kid'])
+  })
+
+  it('prefers a live parent task over a session row with the same key', () => {
+    // A continued run can also own a runtime listed as a session keyed
+    // `subagent:<original>`; its children belong under the task, not that row.
+    const rows = buildTree(
+      [session({ key: 'dashboard:chat-1' }), session({ key: 'subagent:orig' })],
+      [
+        task({ id: 'cont', session_key: 'subagent:orig', parent: 'dashboard:chat-1' }),
+        task({ id: 'kid', session_key: 'subagent:kid', parent: 'subagent:orig' }),
+      ],
+    )
+    const chat = rows.find(r => r.id === 'dashboard:chat-1')!
+    expect(chat.subRows![0].subRows!.map(r => r.id)).toEqual(['kid'])
+    expect(rows.find(r => r.id === 'subagent:orig')!.subRows).toBeUndefined()
+  })
+
+  it('keeps a task whose parent task has finished as a top-level row', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:chat-1' })],
+      [task({ id: 'gc', session_key: 'subagent:gc', parent: 'subagent:gone' })],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:chat-1', 'gc'])
+  })
+
+  it('keeps every task of a parent loop reachable instead of dropping the loop', () => {
+    const rows = buildTree(
+      [],
+      [
+        task({ id: 'a', session_key: 'subagent:a', parent: 'subagent:b' }),
+        task({ id: 'b', session_key: 'subagent:b', parent: 'subagent:a' }),
+      ],
+    )
+    expect(rows.map(r => r.id).sort()).toEqual(['a', 'b'])
+  })
+
+  it('leaves a task from an older gateway (no session_key) nestable under a session', () => {
+    const rows = buildTree([session({ key: 'dashboard:chat-1' })], [task({ id: 't1' })])
+    expect(rows[0].subRows!.map(r => r.id)).toEqual(['t1'])
+  })
   it('nests each task under the right parent via subRows', () => {
     // Tasks must be accessible through the parent session, not as top-level rows,
     // because TanStack expand/collapse operates on subRows.
