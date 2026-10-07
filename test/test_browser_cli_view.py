@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -942,9 +943,41 @@ def test_free_port_is_bindable_loopback() -> None:
         s.bind(("127.0.0.1", port))
 
 
-def test_free_port_is_not_hardcoded() -> None:
-    """A fixed port would collide with whatever else the operator runs."""
-    assert mod._free_port() != mod._free_port()
+def test_free_port_is_not_hardcoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fixed port would collide with whatever else the operator runs.
+
+    So every number must be the kernel's: each call binds port 0 on loopback and
+    returns the port the kernel answered for that bind. That is asserted on the binds
+    and their answers, over two calls so a cached first answer fails too. The two
+    numbers are never compared: once the first socket is closed the kernel may legally
+    hand back the same port.
+    """
+    binds: list[object] = []
+    answers: list[int] = []
+
+    class _RecordingSocket(socket.socket):
+        def bind(self, address: object) -> None:
+            binds.append(address)
+            super().bind(address)
+
+        def getsockname(self) -> object:
+            name = super().getsockname()
+            answers.append(name[1])
+            return name
+
+    # The module's own ``socket`` binding, so the stdlib module stays untouched.
+    monkeypatch.setattr(
+        mod,
+        "socket",
+        SimpleNamespace(
+            socket=_RecordingSocket, AF_INET=socket.AF_INET, SOCK_STREAM=socket.SOCK_STREAM
+        ),
+    )
+
+    first, second = mod._free_port(), mod._free_port()
+
+    assert binds == [(mod.LOOPBACK_HOST, 0)] * 2, "a call did not leave the port to the kernel"
+    assert answers == [first, second], "a returned port is not the kernel's answer to that call"
 
 
 def test_ensure_running_returns_none_without_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:

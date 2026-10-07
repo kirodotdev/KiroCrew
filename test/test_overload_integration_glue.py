@@ -53,6 +53,7 @@ from kiro_crew.taskq import store as store_mod
 from kiro_crew.taskq.adapters import runner as runner_mod
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitRecord
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -3227,6 +3228,11 @@ async def test_a_raise_inside_reenter_releases_the_reservation(
 
 # ── the pump sees a deferred row only after its defer landed ─────────────────
 
+#: Lost-run bound for the gated defer and the spawn the test releases. The test's call
+#: measured at most 0.04 s in repeats at -n0, so this only ends a broken run, by name,
+#: well inside the suite's 120 s timeout.
+_DEFER_LOST_RUN_SECS = 30.0
+
 
 @pytest.mark.asyncio
 async def test_admitting_id_is_held_until_the_posted_defer_landed(
@@ -3241,26 +3247,41 @@ async def test_admitting_id_is_held_until_the_posted_defer_landed(
     monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
     monkeypatch.setattr(subagent_mod, "check_memory_available", lambda min_gb: (False, 0.5))
     gate = threading.Event()
+    defer_entered = threading.Event()
     real_defer = store.defer
     seen: dict[str, Any] = {}
 
     def _slow_defer(task_id, *, wait, reason):
-        assert gate.wait(5)
+        defer_entered.set()
+        assert gate.wait(_DEFER_LOST_RUN_SECS)
         seen["wait"] = wait
         return real_defer(task_id, wait=wait, reason=reason)
 
     monkeypatch.setattr(store, "defer", _slow_defer)
     task = asyncio.ensure_future(mgr.spawn_async("pressure", parent_session_key="web-1"))
-    for _ in range(20):
-        await asyncio.sleep(0.005)
-    admitting = getattr(mgr, "_admitting_ids")
-    assert (
-        len(admitting) == 1
-    ), "the row stays excluded from the refill while its defer is in flight"
-    (aid,) = tuple(admitting)
-    assert aid in mgr._admission.taskq_excluded_ids()
-    gate.set()
-    info = await task
+    try:
+        # The window under test opens when the posted defer is running and held by
+        # the gate. Wait for that, not for a count of loop turns: on a slow executor
+        # the spawn's off-loop hops outlast any count, and ``_admitting_ids`` does
+        # not exist until the spawn reaches the row it accepted. A spawn that
+        # returns without deferring ends the wait too, and fails below.
+        await async_wait_until(
+            lambda: defer_entered.is_set() or task.done(),
+            timeout=_DEFER_LOST_RUN_SECS,
+            describe=lambda: f"admitting={getattr(mgr, '_admitting_ids', None)!r}",
+        )
+        assert defer_entered.is_set(), f"the spawn never posted its defer: {task!r}"
+        admitting = getattr(mgr, "_admitting_ids", set())
+        assert (
+            len(admitting) == 1
+        ), "the row stays excluded from the refill while its defer is in flight"
+        (aid,) = tuple(admitting)
+        assert aid in mgr._admission.taskq_excluded_ids()
+    finally:
+        # Released on every path, so a failed assertion never leaves the store's
+        # writer thread parked on the gate.
+        gate.set()
+    info = await asyncio.wait_for(task, _DEFER_LOST_RUN_SECS)
     assert info is not None and info.queued
     assert not admitting, "cleared only once the defer landed"
     rec = store.get(info.id)

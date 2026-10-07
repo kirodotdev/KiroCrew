@@ -37,6 +37,7 @@ from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.testing.wait import until_parked
 
 SECRET = "test-proxy-secret"
 
@@ -3785,6 +3786,26 @@ async def test_a_sync_during_the_retry_window_never_commits_the_staged_temp(
     assert not list(root.glob("One.md.*.tmp")), "a temp survived a successful save"
 
 
+async def _parked_behind(lock: LoopBoundLock, contender: asyncio.Task, what: str) -> None:
+    """Return once ``contender`` is parked on ``lock``, the barrier a "still waiting" check needs.
+
+    Without it a contender that has not yet REACHED the lock satisfies the negative as
+    well as one the lock is holding back, so the check passes with the lock removed. A
+    contender that finishes instead of parking fails here by name; one that never
+    parks fails at ``until_parked``'s deadline, quoting how many waiters it saw.
+    """
+    parked = asyncio.ensure_future(until_parked(lock, describe=lambda: what))
+    try:
+        await asyncio.wait({parked, contender}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        if not parked.done():
+            parked.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await parked
+    assert not contender.done(), f"{what} finished without ever waiting on the lock"
+    parked.result()
+
+
 @pytest.mark.asyncio
 async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
     fixtures,
@@ -3870,9 +3891,11 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                 )
 
                 # Requested while staging is parked: the Sync must wait on the
-                # vault write lock the staging call holds, not run beside it.
+                # vault write lock the staging call holds, not run beside it. It is
+                # seen parked there first: a Sync that has not reached the lock yet
+                # would pass this check as well, lock or no lock.
                 sync = real_asyncio.create_task(client.post("/api/sync"))
-                await real_asyncio.sleep(0.2)
+                await _parked_behind(_mod.vault_write_lock(vault["localPath"]), sync, "the Sync")
                 assert not sync.done(), "the Sync ran while a note was still staging"
             finally:
                 release_stage.set()
@@ -4061,16 +4084,17 @@ async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
                 str(target)
             ).locked(), "the per-note lock was released during an unguarded retry"
 
-            task_b = real_asyncio.create_task(
-                client.put("/api/note", {"path": "One.md", "content": "B"})
-            )
-            # Yield generously rather than sleeping: if B could interleave it
-            # would have completed by now.
-            for _ in range(100):
-                await real_asyncio.sleep(0)
-            assert not task_b.done(), "a later save interleaved into the retry gap"
-
-            release_a.set()
+            try:
+                task_b = real_asyncio.create_task(
+                    client.put("/api/note", {"path": "One.md", "content": "B"})
+                )
+                # B is seen parked on the note's lock before the check: a B whose
+                # request has not reached the lock yet would pass it as well, lock
+                # or no lock.
+                await _parked_behind(_mod._save_lock(str(target)), task_b, "the later save")
+                assert not task_b.done(), "a later save interleaved into the retry gap"
+            finally:
+                release_a.set()
             status_a, body_a = await real_asyncio.wait_for(task_a, timeout=5)
             status_b, body_b = await real_asyncio.wait_for(task_b, timeout=5)
 
@@ -4142,19 +4166,20 @@ async def test_a_tokenless_save_stages_inside_the_note_lock(fixtures) -> None:
                 str(target)
             ).locked(), "a tokenless save staged its temp outside the per-note lock"
 
-            task_b = real_asyncio.create_task(
-                client.put("/api/note", {"path": "One.md", "content": "B"})
-            )
-            # Yield generously rather than sleeping: were the lock free, B would
-            # have staged and published by now.
-            for _ in range(100):
-                await real_asyncio.sleep(0)
-            assert staged == [
-                "A"
-            ], f"a later save staged while the earlier one held the lock: {staged}"
-            assert not task_b.done(), "a later save completed while the earlier one was staging"
-
-            release_a.set()
+            try:
+                task_b = real_asyncio.create_task(
+                    client.put("/api/note", {"path": "One.md", "content": "B"})
+                )
+                # B is seen parked on the note's lock before the checks: a B whose
+                # request has not reached the lock yet would pass them as well, lock
+                # or no lock.
+                await _parked_behind(_mod._save_lock(str(target)), task_b, "the later save")
+                assert staged == [
+                    "A"
+                ], f"a later save staged while the earlier one held the lock: {staged}"
+                assert not task_b.done(), "a later save completed while the earlier one was staging"
+            finally:
+                release_a.set()
             status_a, body_a = await real_asyncio.wait_for(task_a, timeout=10)
             status_b, body_b = await real_asyncio.wait_for(task_b, timeout=10)
 

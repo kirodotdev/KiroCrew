@@ -38,8 +38,12 @@ p.add_argument("--ttl", type=float, default=30.0)
 p.add_argument("--leader-ttl", type=float, default=-1.0)
 a = p.parse_args()
 
-if a.pidfile:
-    Path(a.pidfile).write_text(str(os.getpid()))
+def _publish_pid(path):
+    # Written aside and renamed into place, so the pidfile never exists without its
+    # whole pid in it.
+    tmp = path + ".tmp"
+    Path(tmp).write_text(str(os.getpid()))
+    os.replace(tmp, path)
 
 # Holds the escaped child's pid so the SIGTERM handler can reap its group,
 # modelling the real backend, whose kiro-cli workers setsid into their own
@@ -73,13 +77,21 @@ if a.spawn_child:
         # escaping the parent's process group exactly as a kiro-cli worker does.
         if a.child_setsid:
             os.setsid()
-        if a.child_pidfile:
-            Path(a.child_pidfile).write_text(str(os.getpid()))
+        # Disposition before pidfile, as for the leader.
         signal.signal(signal.SIGTERM, signal.SIG_IGN if a.ignore_sigterm else signal.SIG_DFL)
+        if a.child_pidfile:
+            _publish_pid(a.child_pidfile)
         time.sleep(a.ttl)
         os._exit(0)
     else:
         _child["pid"] = pid
+
+# A test reads the pidfile as "this process is ready for SIGTERM", so it appears
+# only after the disposition above, and after the forked child is recorded for the
+# reap. Before the disposition, a SIGTERM meets the default action and the drain
+# reads -15 instead of 0.
+if a.pidfile:
+    _publish_pid(a.pidfile)
 
 if a.port and a.run_dir:
     time.sleep(a.secret_delay)
