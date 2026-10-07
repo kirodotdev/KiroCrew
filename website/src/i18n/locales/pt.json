@@ -6201,6 +6201,10 @@
       "default_goal": "Sua estrela-guia está em {{northStar}}, o roteiro em {{roadmap}} e as tarefas em {{tasks}}. Escolha o próximo passo de maior impacto rumo ao objetivo e execute-o. Atualize {{tasks}}. Publique um bloqueio UMA única vez se realmente travar. Quando o objetivo for alcançado, chame a ferramenta {{stopTool}} para encerrar o loop."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fechar todas as abas",
+      "close_other_tabs": "Fechar outras abas",
+      "close_tab": "Fechar",
+      "close_tabs_to_right": "Fechar abas à direita",
       "close_terminal": "Fechar terminal",
       "focus_popout": "Focar janela destacada",
       "hide_terminal_panel": "Ocultar painel do terminal",
@@ -6215,6 +6219,16 @@
       "more_actions": "Mais ações",
       "close_failed": "Não foi possível encerrar o shell deste terminal no servidor. Ele será limpo automaticamente.",
       "closing_terminal": "Fechando terminal…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "Descartar e fechar terminais",
+      "close_terminals_body_one": "{{count}} terminal será fechado e seu shell em execução será encerrado.",
+      "close_terminals_body_many": "{{count}} terminais serão fechados e seus shells em execução serão encerrados.",
+      "close_terminals_body_other": "{{count}} terminais serão fechados e seus shells em execução serão encerrados.",
+      "close_terminals_button": "Fechar terminais",
+      "close_terminals_title": "Fechar terminais?",
+      "last_copy_files_lost": "Estes arquivos não estão no disco; fechá-los descarta sua única cópia restante.",
+      "unsaved_files_lost": "Estes arquivos têm alterações não salvas que serão perdidas."
     },
     "chatInput": {
       "auto_jev": "Automático (Jev)",

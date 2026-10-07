@@ -8,7 +8,7 @@
  * document-level mousedown listener this replaced.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
@@ -36,14 +36,27 @@ vi.mock('../utils/terminalRegistry', () => ({
 vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
+// Disk preflight for a clean file tab's close batch (SidePanel.handleCloseTabs).
+// Default: every file is present on disk, so a clean tab needs no confirmation;
+// a test overrides this to make a file read 404 (gone) or fail.
+const fileReadMock = vi.fn(async (_path: string) => ({ ok: true, status: 200, text: '', binary: false, truncated: false, redacted: false, lossy: false }))
+vi.mock('../utils/fileReadQuery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/fileReadQuery')>()),
+  fetchFileRead: (path: string) => fileReadMock(path),
+}))
+
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
-import { usePanelTabs } from '../hooks/usePanelTabs'
+import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { PREVIEW_DASHBOARD, setPreviewFlag } from '../utils/previewFlags'
+import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
+
+let panelController: ReturnType<typeof usePanelTabs>
 
 function Harness() {
   const tabsCtl = usePanelTabs('slot-a')
+  panelController = tabsCtl
   return (
     <SidePanel
       tabsCtl={tabsCtl}
@@ -266,5 +279,203 @@ describe('newMenuSections', () => {
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser', 'terminal'],
     ])
+  })
+})
+
+
+describe('workspace tab close menu', () => {
+  beforeEach(() => { localStorage.clear(); __resetPanelTabs(); fileReadMock.mockResolvedValue({ ok: true, status: 200, text: '', binary: false, truncated: false, redacted: false, lossy: false }) })
+  it('closes tabs to the right and preserves fixed views', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openView('issues')
+      panelController.openView('browser')
+      panelController.openView('workflows')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }), { clientX: 50, clientY: 50 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close tabs to the right' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Workflows/ })).toBeNull())
+    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
+  })
+
+  it('closes other tabs and keeps the requested tab and fixed views', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openView('issues')
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Issues/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull())
+    expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
+  })
+
+  it('asks before bulk close discards file edits, and cancel retains every tab', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/draft.md', 'saved')
+      panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    // The dialog names what is lost rather than asking blind.
+    expect(within(screen.getByRole('dialog')).getByText('draft.md')).toHaveAttribute('title', '/tmp/draft.md')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
+    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
+  })
+
+  it('the single × closes a dirty tab directly, without a confirmation', async () => {
+    // The frozen Goal says the single × is unchanged: it closes one tab the way
+    // it did on main, so even a dirty file goes straight through handleCloseTab.
+    // Only the close MENU items run through the batch path that confirms.
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/draft.md', 'saved')
+      panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Close tab' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('asks before a bulk close discards a clean file whose disk copy is gone', async () => {
+    // The disk no longer holds this file, so the clean buffer is its only copy.
+    fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/gone.md', 'saved contents')  // clean: content === savedContent
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    // The batch does not close the clean tab silently — it names it as a last copy.
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByText('gone.md')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /gone.md/ })).toBeTruthy()
+  })
+
+  it('confirms a partial (truncated) file whose disk copy is gone before closing', async () => {
+    // A truncated buffer is still the only surviving prefix once the disk copy
+    // is gone, so the preflight must not skip it.
+    fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: true })
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByText('truncated.log')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /truncated.log/ })).toBeTruthy()
+  })
+
+  it('re-evaluates a file edited during the disk preflight instead of closing a stale snapshot', async () => {
+    // The preflight reads the disk asynchronously; a buffer the user edits
+    // during that round trip must be named as unsaved, not closed on the clean
+    // pre-read snapshot.
+    let release: (v: { ok: boolean; status: number; text: string; binary: boolean; truncated: boolean; redacted: boolean; lossy: boolean }) => void
+    fileReadMock.mockImplementation(() => new Promise(res => { release = res }))
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/edited.md', 'saved contents')  // clean at snapshot time
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    // While the read is pending, the user edits the file — it is now dirty.
+    act(() => { panelController.patchTab('file:/tmp/edited.md', { content: 'edited while closing' }) })
+    // Let the (present-on-disk) read resolve; the batch must now see the edit.
+    act(() => { release!({ ok: true, status: 200, text: '', binary: false, truncated: false, redacted: false, lossy: false }) })
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByText('edited.md')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /edited.md/ })).toBeTruthy()
+  })
+
+  it('closes a clean file silently when its disk copy is still present', async () => {
+    // Default mock: the file is on disk, so its clean buffer is not a last copy.
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/present.md', 'saved contents')
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    // No confirmation: nothing unsaved and the file is safe on disk.
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /present.md/ })).toBeNull())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('names the combined action when a bulk close both discards edits and stops shells', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/draft.md', 'saved')
+      panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
+      panelController.openTerminal()
+      panelController.openTerminal()
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    // One dialog states both losses...
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByText('draft.md')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByText('2 terminals will close and their running shells will stop.')).toBeTruthy()
+    // ...and the confirm button names BOTH, not just the discard, since clicking
+    // it also stops the shells and that cannot be undone.
+    expect(screen.getByRole('button', { name: 'Discard and close terminals' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and close terminals' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
+    expect(screen.queryByRole('tab', { name: /Terminal/ })).toBeNull()
+  })
+
+  it('counts the shells a bulk close would stop before closing them', async () => {
+    renderPanel()
+    act(() => { panelController.openTerminal() })
+    act(() => { panelController.openTerminal() })
+    act(() => { panelController.openView('browser') })
+    expect(screen.getAllByRole('tab', { name: /Terminal/ })).toHaveLength(2)
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    expect(await screen.findByText('2 terminals will close and their running shells will stop.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close terminals' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Terminal/ })).toBeNull())
+    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+  })
+
+  // Same hold as the terminal strip: lifting in place opens the menu, and the
+  // Radix trigger's own 700ms touch timer stays silent in between.
+  it('opens on a touch hold that lifts in place', () => {
+    renderPanel()
+    act(() => {
+      panelController.openView('issues')
+      panelController.openView('browser')
+    })
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerDown(screen.getByRole('tab', { name: /Browser/ }), { pointerType: 'touch', button: 0, clientX: 50, clientY: 50 })
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 700) })
+      expect(screen.queryByRole('menu')).toBeNull()
+      fireEvent.pointerUp(window, { clientX: 50, clientY: 50 })
+      expect(screen.getByRole('menuitem', { name: 'Close other tabs' })).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -6104,6 +6104,10 @@
       "default_goal": "तुम्हारा नॉर्थ स्टार {{northStar}} में है, रोडमैप {{roadmap}} में, और कार्य {{tasks}} में। लक्ष्य की ओर सबसे अधिक असर वाला अगला एक कदम चुनो और उसे पूरा करो। {{tasks}} अपडेट करो। सच में अटकने पर केवल एक बार ब्लॉकर पोस्ट करो। लक्ष्य पूरा होने पर लूप रोकने के लिए {{stopTool}} टूल कॉल करो।"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "सभी टैब बंद करो",
+      "close_other_tabs": "अन्य टैब बंद करो",
+      "close_tab": "बंद करो",
+      "close_tabs_to_right": "दाईं ओर के टैब बंद करो",
       "close_terminal": "टर्मिनल बंद करें",
       "focus_popout": "पॉपआउट पर फ़ोकस करें",
       "hide_terminal_panel": "टर्मिनल पैनल छिपाएँ",
@@ -6118,6 +6122,15 @@
       "more_actions": "और कार्रवाइयां",
       "close_failed": "सर्वर पर इस टर्मिनल का शेल बंद नहीं किया जा सका। यह स्वतः साफ़ हो जाएगा।",
       "closing_terminal": "टर्मिनल बंद हो रहा है…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "छोड़ें और टर्मिनल बंद करो",
+      "close_terminals_body_one": "{{count}} टर्मिनल बंद होगा और उसका चल रहा शेल रुक जाएगा।",
+      "close_terminals_body_other": "{{count}} टर्मिनल बंद होंगे और उनके चल रहे शेल रुक जाएँगे।",
+      "close_terminals_button": "टर्मिनल बंद करो",
+      "close_terminals_title": "टर्मिनल बंद करने हैं?",
+      "last_copy_files_lost": "ये फ़ाइलें डिस्क पर नहीं हैं; इन्हें बंद करने पर इनकी एकमात्र बची हुई कॉपी चली जाएगी।",
+      "unsaved_files_lost": "इन फ़ाइलों में बिना सहेजे बदलाव हैं, जो खो जाएँगे।"
     },
     "chatInput": {
       "auto_jev": "स्वतः (Jev)",

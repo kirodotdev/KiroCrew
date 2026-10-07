@@ -58,7 +58,6 @@ src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
 src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
 src/components/AppIcon.tsx 51.1   # 24/47
-src/components/BottomTerminalPanel.tsx 55.1   # 49/89
 src/components/CommentThreadPopover.tsx 59.0   # 46/78
 src/components/ExecutionsView.tsx 48.8   # 20/41
 src/components/InlineCommentOverlay.tsx 31.9   # 23/72

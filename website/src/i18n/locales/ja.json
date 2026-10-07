@@ -6007,6 +6007,10 @@
       "default_goal": "北極星は {{northStar}}、ロードマップは {{roadmap}}、タスクは {{tasks}} にあります。目標に向けて最も効果の高い次の一手を選び、実行してください。{{tasks}} を更新してください。本当に行き詰まったときだけ、ブロッカーを一度だけ投稿してください。目標を達成したら、{{stopTool}} ツールを呼び出してループを止めてください。"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "すべてのタブを閉じる",
+      "close_other_tabs": "他のタブを閉じる",
+      "close_tab": "閉じる",
+      "close_tabs_to_right": "右側のタブを閉じる",
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",
       "focus_popout": "ポップアウトをフォーカス",
       "pop_out_to_window": "別ウィンドウに切り離す",
@@ -6021,6 +6025,14 @@
       "more_actions": "その他の操作",
       "close_failed": "サーバー上でこのターミナルのシェルを停止できませんでした。自動的にクリーンアップされます。",
       "closing_terminal": "ターミナルを閉じています…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "破棄してターミナルを閉じる",
+      "close_terminals_body_other": "{{count}} 個のターミナルを閉じ、実行中のシェルを停止します。",
+      "close_terminals_button": "ターミナルを閉じる",
+      "close_terminals_title": "ターミナルを閉じますか？",
+      "last_copy_files_lost": "これらのファイルはディスク上にありません。閉じると残っている唯一のコピーが失われます。",
+      "unsaved_files_lost": "次のファイルの保存されていない変更は失われます。"
     },
     "chatInput": {
       "auto_jev": "自動 (Jev)",

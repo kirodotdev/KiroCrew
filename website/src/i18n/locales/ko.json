@@ -6007,6 +6007,10 @@
       "default_goal": "북극성은 {{northStar}}, 로드맵은 {{roadmap}}, 작업은 {{tasks}}에 있습니다. 목표를 향해 가장 효과가 큰 다음 단계 하나를 골라 실행하세요. {{tasks}}을(를) 업데이트하세요. 정말 막혔을 때만 블로커를 한 번 게시하세요. 목표를 달성하면 {{stopTool}} 도구를 호출해 루프를 멈추세요."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "모든 탭 닫기",
+      "close_other_tabs": "다른 탭 닫기",
+      "close_tab": "닫기",
+      "close_tabs_to_right": "오른쪽 탭 닫기",
       "close_terminal": "터미널 닫기",
       "focus_popout": "팝아웃 포커스",
       "hide_terminal_panel": "터미널 패널 숨기기",
@@ -6021,6 +6025,14 @@
       "more_actions": "추가 작업",
       "close_failed": "서버에서 이 터미널의 셸을 중지할 수 없습니다. 자동으로 정리됩니다.",
       "closing_terminal": "터미널을 닫는 중…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "취소하고 터미널 닫기",
+      "close_terminals_body_other": "터미널 {{count}}개를 닫고 실행 중인 셸을 중지합니다.",
+      "close_terminals_button": "터미널 닫기",
+      "close_terminals_title": "터미널을 닫으시겠습니까?",
+      "last_copy_files_lost": "이 파일은 디스크에 없습니다. 닫으면 남은 유일한 사본이 사라집니다.",
+      "unsaved_files_lost": "다음 파일의 저장하지 않은 변경 사항이 사라집니다."
     },
     "chatInput": {
       "auto_jev": "자동 (Jev)",

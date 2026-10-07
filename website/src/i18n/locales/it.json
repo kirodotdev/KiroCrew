@@ -6201,6 +6201,10 @@
       "default_goal": "La tua stella polare è in {{northStar}}, la roadmap in {{roadmap}} e le attività in {{tasks}}. Scegli il prossimo passo con il maggiore impatto verso l'obiettivo ed eseguilo. Aggiorna {{tasks}}. Segnala un blocco UNA sola volta se sei davvero bloccato. Quando l'obiettivo è raggiunto, chiama lo strumento {{stopTool}} per fermare il ciclo."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Chiudi tutte le schede",
+      "close_other_tabs": "Chiudi le altre schede",
+      "close_tab": "Chiudi",
+      "close_tabs_to_right": "Chiudi le schede a destra",
       "close_terminal": "Chiudi il terminale",
       "focus_popout": "Metti a fuoco la finestra separata",
       "hide_terminal_panel": "Nascondi il pannello del terminale",
@@ -6215,6 +6219,16 @@
       "more_actions": "Altre azioni",
       "close_failed": "Impossibile arrestare la shell di questo terminale sul server. Verrà ripulita automaticamente.",
       "closing_terminal": "Chiusura del terminale…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "Ignora e chiudi i terminali",
+      "close_terminals_body_one": "{{count}} terminale verrà chiuso e la sua shell in esecuzione verrà arrestata.",
+      "close_terminals_body_many": "{{count}} terminali verranno chiusi e le loro shell in esecuzione verranno arrestate.",
+      "close_terminals_body_other": "{{count}} terminali verranno chiusi e le loro shell in esecuzione verranno arrestate.",
+      "close_terminals_button": "Chiudi i terminali",
+      "close_terminals_title": "Chiudere i terminali?",
+      "last_copy_files_lost": "Questi file non sono su disco; chiuderli elimina la loro unica copia rimasta.",
+      "unsaved_files_lost": "Questi file contengono modifiche non salvate che andranno perse."
     },
     "chatInput": {
       "auto_jev": "Automatico (Jev)",

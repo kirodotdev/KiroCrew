@@ -6007,6 +6007,10 @@
       "default_goal": "你的北极星在 {{northStar}}，路线图在 {{roadmap}}，任务在 {{tasks}}。选出朝目标推进最有价值的下一步并执行。更新 {{tasks}}。如果真的卡住，只发一次阻塞说明。目标达成后，调用 {{stopTool}} 工具停止循环。"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "关闭所有标签页",
+      "close_other_tabs": "关闭其他标签页",
+      "close_tab": "关闭",
+      "close_tabs_to_right": "关闭右侧标签页",
       "close_terminal": "关闭终端",
       "focus_popout": "聚焦弹出窗口",
       "hide_terminal_panel": "隐藏终端面板",
@@ -6021,6 +6025,14 @@
       "more_actions": "更多操作",
       "close_failed": "无法在服务器上停止此终端的 shell。它会被自动清理。",
       "closing_terminal": "正在关闭终端…"
+    },
+    "tabCloseMenu": {
+      "close_and_discard_button": "放弃更改并关闭终端",
+      "close_terminals_body_other": "将关闭 {{count}} 个终端，并终止其中正在运行的 shell。",
+      "close_terminals_button": "关闭终端",
+      "close_terminals_title": "关闭终端？",
+      "last_copy_files_lost": "这些文件已不在磁盘上，关闭它们会丢弃其仅存的副本。",
+      "unsaved_files_lost": "以下文件中未保存的更改将会丢失。"
     },
     "chatInput": {
       "auto_jev": "自动 (Jev)",
