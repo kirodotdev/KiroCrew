@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         _thread_agents,
         _thread_projects,
         _vc,
+        agent_switch_target,
         build_timing_footer,
         compact_unsupported_backend,
         compact_unsupported_reply,
@@ -1282,6 +1283,38 @@ async def _route_bang_command(
             )
             await slack.post_message(channel, "⛔ Not authorized to compact.", reply_ts)
             return True  # deny-by-default: do not fall through
+
+    # ── /agent <name>: the thread's agent, switched by Crew ──
+    # The same switch as ``!ta <name>`` and the same owner-only gate as every
+    # other agent command. Without this the words reach the model as a prompt
+    # (or, forwarded to kiro-cli, are refused by the native skill projection).
+    # A thread linked to a dashboard chat never gets here: its message goes to
+    # that chat, whose runner switches the chat's own agent.
+    _agent_target = agent_switch_target(cmd_text)
+    if _agent_target is not None:
+        if not is_owner(user_id):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.owner_command",
+                outcome="denied",
+                source="slack",
+                resources="/agent",
+                error="unauthorized sender",
+            )
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+            return True
+        await _bang_thread_agent(
+            f"!ta {_agent_target}",
+            slack,
+            sessions,
+            channel,
+            reply_ts,
+            msg_ts,
+            session_key,
+            user_id,
+            conversation_log,
+        )
+        return True
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if cmd_text.startswith("!"):

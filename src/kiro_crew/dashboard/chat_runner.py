@@ -88,6 +88,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
 from kiro_crew.autonudge import FINISHED_LOOP_REASONS, get_instance, reason_in
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (  # noqa: F401
@@ -6239,6 +6240,52 @@ async def _handle_workflow_command(
     state.push_slots_update()
 
 
+async def _handle_agent_command(
+    state: "DashboardState", slot: "_ChatSlot", agent: str, session_key: str
+) -> None:
+    """Handle ``/agent <name>`` through the same transaction as the agent picker.
+
+    Runs inside the slot's own turn, before it acquires a session, so the
+    switch is told it is that turn (``own_turn``) rather than refusing on the
+    slot's own ``running`` flag. ``template`` because kiro-cli's ``/agent``
+    names agent specs, and a stated kind refuses a name nothing answers rather
+    than committing it with the default agent answering the next turn. The
+    caller is never treated as the owner: the text can come from any allowed
+    channel user.
+    """
+    # Call-time import: chat_handlers imports this module.
+    from kiro_crew.dashboard.chat_handlers import (
+        SlotAgentSwitchCaller,
+        agent_switch_outcome,
+        switch_slot_agent,
+    )
+
+    resp = await switch_slot_agent(
+        state, slot, slot.key, agent, "template", SlotAgentSwitchCaller.for_turn(slot)
+    )
+    ok, body = agent_switch_outcome(resp)
+    if ok:
+        text = switch_announcement(str(body.get("agent") or agent), str(body.get("warning") or ""))
+    else:
+        reason = str(body.get("error") or "the switch was refused")
+        text = f"⚠️ Could not switch to agent `{agent}`: {reason}"
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    slot.append("assistant", text, "msg msg-a")
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name="/agent",
+        tool_kind="slash_command",
+        outcome="ok" if ok else "error",
+        metadata={"slot": slot.key, "agent": agent, "status": resp.status},
+    )
+    if ok:
+        state.broadcast_ws("slot_agent_switch", {"slot": slot.key, "agent": str(slot.agent)})
+    state.push_slots_update()
+
+
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
@@ -9512,6 +9559,17 @@ async def _run_chat(
     if first_word == "/workflow":
         turn_exit.local_command = first_word
         await _handle_workflow_command(state, slot, message, session_key)
+        return
+
+    # ── /agent <name>: Crew's own agent switch, never kiro-cli's ──
+    # Every surface that reaches a slot through this runner (the split pane,
+    # a Slack thread linked to a dashboard chat) gets the switch the agent
+    # picker makes. The main composer already sends it there before the
+    # message is ever posted.
+    _agent_target = agent_switch_target(message) if first_word == "/agent" else None
+    if _agent_target is not None:
+        turn_exit.local_command = first_word
+        await _handle_agent_command(state, slot, _agent_target, session_key)
         return
 
     # ── /prompts: handle locally instead of forwarding to kiro-cli ──

@@ -125,7 +125,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             for site in {
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
-                ("chat_handlers.py", "api_chat_slot_agent"),
+                # The agent route's transaction; the in-turn /agent command shares it.
+                ("chat_handlers.py", "switch_slot_agent"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),

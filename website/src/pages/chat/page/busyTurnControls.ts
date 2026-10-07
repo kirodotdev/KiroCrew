@@ -44,6 +44,9 @@ interface BusyTurnControlsOptions {
   /** Per-slot time of the last soft-stop press (the force-stop arming window). */
   softStopAtMapRef: MutableRefObject<Map<string, number>>
   dispatch: AppDispatch
+  /** Reports a refused slash command on the composer's notice, while its
+   *  origin chat is still on screen (the restored text is then right below). */
+  onSlashRefused?: (res: { stage?: 'open' | 'turn' | 'agent'; error?: string }) => void
 }
 
 /**
@@ -71,6 +74,7 @@ export function useBusyTurnControls({
   pendingQuestion,
   softStopAtMapRef,
   dispatch,
+  onSlashRefused,
 }: BusyTurnControlsOptions) {
   const { drafts, fileDrafts, pasteDrafts, saveDrafts } = stores
   const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens, mergeSlotTokens } = staging
@@ -181,6 +185,7 @@ export function useBusyTurnControls({
         const onScreen = originSlot === activeSlotRef.current && composerSlotRef.current === originSlot
         if (onScreen) {
           setInput(mergeIntoDraft(inputRef.current, cmdTxt))
+          onSlashRefused?.(res)
         } else {
           const merged = mergeIntoDraft(drafts.current[originSlot], cmdTxt)
           setDraft(drafts.current, originSlot, merged)
@@ -237,7 +242,7 @@ export function useBusyTurnControls({
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
+  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
     pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])

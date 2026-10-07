@@ -20,6 +20,7 @@ export function performAgentSlotSwitch(
   agent: string,
   dispatch: AppDispatch,
   kind?: 'member' | 'template',
+  opts?: { announce?: boolean },
 ): Promise<void> {
   // The ticket identity stays the bare name: burst stepping (the cycle
   // shortcuts) advances by name, and two kinds of one name are never both in
@@ -28,7 +29,9 @@ export function performAgentSlotSwitch(
     async () => {
       // Two-arg form when no kind was picked: the legacy request shape, byte
       // for byte, so a name-only control sends exactly what it always sent.
-      const r = kind ? await api.chatSlotAgent(slot, agent, kind) : await api.chatSlotAgent(slot, agent)
+      const r = kind
+        ? await (opts?.announce ? api.chatSlotAgent(slot, agent, kind, opts) : api.chatSlotAgent(slot, agent, kind))
+        : await api.chatSlotAgent(slot, agent)
       return { agent: r?.agent ?? agent, agentKind: r?.agent_kind, workspace: r?.workspace }
     },
     (value) => dispatch(updateSlot({

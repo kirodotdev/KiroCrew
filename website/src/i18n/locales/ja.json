@@ -11399,6 +11399,8 @@
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
       "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "could_not_switch_agent": "エージェントを切り替えられませんでした",
+      "agent_command_not_run": "/agent コマンドは実行されませんでした。メッセージは入力欄に残っています。",
       "run_in_terminal_liveness_probe_failed_error": "コマンドは新しいターミナルに送信されませんでした。シェルはまだ実行中の可能性があるため、タブは開いたままにしてあります。",
       "run_in_terminal_shell_alive_error": "コマンドは新しいターミナルに送信されませんでしたが、シェルは実行中です。そこでコマンドを実行できるよう、タブは開いたままにしてあります。",
       "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。",

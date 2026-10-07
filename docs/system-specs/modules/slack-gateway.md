@@ -919,6 +919,7 @@ which `handle_message` calls.
 | `!yolo on/off/renew/status` | Toggle, renew or report global auto-approve for all tool calls |
 | `!agent <name>` / `!agent off` | Switch kiro-cli agent globally (all new sessions) |
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
+| `/agent <name>` | Same switch as `!ta <name>`, owner-only, routed by `_route_bang_command` before the `!` gate. In a thread linked to a dashboard chat it reaches that chat's runner instead, which switches the chat's agent |
 | `!voice …` | Voice reply on/off/global/<name> and engine/speed/pitch controls |
 | `!project <path>` / `!project off` | Thread-scoped agent-discovery directory |
 | `!channel always\|mention\|observe\|off` / `!channel agent <name>` | Per-channel activation mode and agent |

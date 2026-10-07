@@ -11573,6 +11573,8 @@
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
       "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "could_not_switch_agent": "Agent konnte nicht gewechselt werden",
+      "agent_command_not_run": "Der Befehl /agent wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
       "run_in_terminal_liveness_probe_failed_error": "Der Befehl wurde nicht an das neue Terminal gesendet. Seine Shell läuft möglicherweise noch, daher bleibt der Tab geöffnet.",
       "run_in_terminal_shell_alive_error": "Der Befehl wurde nicht an das neue Terminal gesendet, aber seine Shell läuft — der Tab bleibt geöffnet, damit Sie den Befehl dort ausführen können.",
       "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen.",

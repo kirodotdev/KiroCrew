@@ -11573,6 +11573,8 @@
       "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
       "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
       "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
+      "could_not_switch_agent": "एजेंट नहीं बदल सके",
+      "agent_command_not_run": "/agent कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
       "run_in_terminal_liveness_probe_failed_error": "कमांड नए टर्मिनल में नहीं भेजा गया। उसका शेल अभी भी चल सकता है, इसलिए टैब खुला रहने दिया गया।",
       "run_in_terminal_shell_alive_error": "कमांड नए टर्मिनल में नहीं भेजा गया, लेकिन उसका शेल चल रहा है — टैब खुला रहने दिया गया है ताकि तुम वहाँ कमांड चला सको।",
       "run_in_terminal_dispatch_rolled_back_error": "कमांड नए टर्मिनल में नहीं भेजा गया, इसलिए वह टर्मिनल बंद कर दिया गया।",

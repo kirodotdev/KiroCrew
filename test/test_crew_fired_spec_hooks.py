@@ -322,7 +322,9 @@ async def test_an_in_turn_agent_switch_reloads_the_new_agents_spec_hooks(tmp_pat
 
 async def _run_switch_turn(state, slot) -> None:
     try:
-        await chat_runner._run_chat(state, slot, "/agent other")
+        # A kiro-cli subcommand, so it reaches the harness: Crew answers a bare
+        # ``/agent <name>`` itself and the provider's switch event never fires.
+        await chat_runner._run_chat(state, slot, "/agent swap other")
     finally:
         tasks = list(state._background_tasks)
         for task in tasks:

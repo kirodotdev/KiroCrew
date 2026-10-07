@@ -51,8 +51,12 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
+from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
+    agent_switch_target,
+)
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
+    KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
     KiroCrewConfig,
     config_path,
@@ -806,6 +810,10 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
         None,
     )
     if not match:
+        # kiro-cli's own agents ship inside its binary, so no spec file names
+        # them; they resolve as themselves (see KIRO_CLI_BUILTIN_AGENTS).
+        if name in KIRO_CLI_BUILTIN_AGENTS:
+            return name
         # Fallback: search companion-backend cc-plugins agents
         cc_match = _resolve_cc_agent_name(name)
         return cc_match

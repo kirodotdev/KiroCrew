@@ -22,15 +22,16 @@ import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
-const { mockSideOpen, mockSideTurn, mockSendChat } = vi.hoisted(() => ({
+const { mockSideOpen, mockSideTurn, mockSendChat, mockChatSlotAgent } = vi.hoisted(() => ({
   mockSideOpen: vi.fn().mockResolvedValue({ ok: true, open: true, messages: 0, last_run_id: '', created_at: '' }),
   mockSideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
   mockSendChat: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) }),
+  mockChatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'fable', agent_kind: 'template' }),
 }))
 
 vi.mock('../api/client', () => ({
   api: new Proxy(
-    { sideOpen: mockSideOpen, sideTurn: mockSideTurn, sendChat: mockSendChat },
+    { sideOpen: mockSideOpen, sideTurn: mockSideTurn, sendChat: mockSendChat, chatSlotAgent: mockChatSlotAgent },
     {
       get: (t, prop) => {
         if (prop in t) return (t as Record<string, unknown>)[prop as string]
@@ -200,6 +201,79 @@ describe('/side while a turn is running', () => {
     await armRunning(store)
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
+  })
+
+  it('/agent <name> goes to the agent selector, not into the running turn', async () => {
+    // The selector refuses mid-turn (409 turn_in_flight, with its own notice);
+    // steering the words into the turn would hand them to kiro-cli, where the
+    // skill projection refuses `/agent` outright.
+    const store = renderRunningChatPage()
+    const input = await screen.findByLabelText('Message input')
+    fireEvent.change(input, { target: { value: '/agent fable' } })
+    await armRunning(store)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockChatSlotAgent).toHaveBeenCalledWith(SLOT, 'fable', 'template', { announce: true }))
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
+  // Idle composer: hydration clears the fixture's running flag, so without
+  // armRunning() Enter takes send(), which awaits the switch before clearing.
+  async function idleComposer() {
+    const store = renderRunningChatPage()
+    const input = await screen.findByLabelText('Message input') as HTMLTextAreaElement
+    await waitFor(() => expect(screen.queryByTestId('busy-send-button')).toBeNull())
+    return { store, input }
+  }
+
+  it('a committed /agent switch clears the command it took', async () => {
+    const { input } = await idleComposer()
+    fireEvent.change(input, { target: { value: '/agent fable' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockChatSlotAgent).toHaveBeenCalled())
+    await waitFor(() => expect(input.value).toBe(''))
+  })
+
+  it('text typed while the /agent switch is in flight survives its success', async () => {
+    let commit!: (v: unknown) => void
+    mockChatSlotAgent.mockImplementationOnce(() => new Promise(r => { commit = r }))
+    const { store, input } = await idleComposer()
+    fireEvent.change(input, { target: { value: '/agent fable' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockChatSlotAgent).toHaveBeenCalled())
+    fireEvent.change(input, { target: { value: 'the next question' } })
+    await act(async () => { commit({ ok: true, agent: 'fable', agent_kind: 'template' }) })
+    await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === SLOT)?.agent).toBe('fable'))
+    expect(input.value).toBe('the next question')
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
+  // A refused switch reports on the composer's notice, above the kept draft,
+  // not on the shell toast that times out.
+  it('a refused /agent switch shows its reason on the composer notice', async () => {
+    mockChatSlotAgent.mockRejectedValueOnce(new Error('the selected agent choice is not available'))
+    const { store, input } = await idleComposer()
+    fireEvent.change(input, { target: { value: '/agent fabel' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const notice = await screen.findByTestId('refused-press-error')
+    expect(notice).toHaveTextContent("Couldn't switch agent")
+    expect(notice).toHaveTextContent('the selected agent choice is not available')
+    expect(input.value).toBe('/agent fabel')
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
+  it('a /agent switch refused during a running turn shows the same notice', async () => {
+    mockChatSlotAgent.mockRejectedValueOnce(new Error('a turn is in flight here'))
+    const store = renderRunningChatPage()
+    const input = await screen.findByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '/agent fable' } })
+    await armRunning(store)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const notice = await screen.findByTestId('refused-press-error')
+    expect(notice).toHaveTextContent("Couldn't switch agent")
+    expect(notice).toHaveTextContent('a turn is in flight here')
+    await waitFor(() => expect(input.value).toBe('/agent fable'))
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 
   it('/btw <message> rides the same interception — side turn, not steer', async () => {

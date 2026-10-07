@@ -399,8 +399,22 @@ const REFUSED_PRESS_TITLE_KEYS = {
   // the notice — "couldn't open" over an open panel contradicts what the user sees.
   side_open: 'pages.chatPage.could_not_open_side_chat',
   side_turn: 'pages.chatPage.could_not_send_to_side_chat',
+  agent_switch: 'pages.chatPage.could_not_switch_agent',
 } as const
 type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
+
+/** The refused-press notice for an intercepted slash command that failed. The
+ *  title names the command that was refused; the message is the gateway's
+ *  reason, or a fallback saying the draft is still in the composer. */
+function slashRefusal(res: { stage?: 'open' | 'turn' | 'agent'; error?: string }): { action: RefusedPressAction; message: string } {
+  if (res.stage === 'agent') {
+    return { action: 'agent_switch', message: res.error || i18nT('pages.chatPage.agent_command_not_run') }
+  }
+  return {
+    action: res.stage === 'turn' ? 'side_turn' : 'side_open',
+    message: res.error || i18nT('pages.chatPage.side_command_not_run'),
+  }
+}
 
 
 /**
@@ -2001,26 +2015,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!optionText && isInterceptedSlashCommand(raw)) {
       const slashPastes = pasteBlocksRef.current
       const slashTxt = slashPastes.length ? expandPasteTokens(raw, slashPastes) : raw
-      const slashResult = await interceptSlashCommand(slashTxt, uiSlot, dispatch)
+      const slashResult = await interceptSlashCommand(slashTxt, uiSlot, dispatch, {
+        // No slot yet: the same pending pick the agent picker makes, and like
+        // it, drop a model chosen for the previous agent (#2035).
+        onPendingAgent: (name) => { setPendingAgent(name, 'template'); setPendingModel('') },
+      })
       if (slashResult.intercepted) {
         // Not a send either way: the staged quote stays staged for the real one
         // -- while this slot's composer is still the live one. The await above
         // can span a slot switch, and the stage is not per slot, so restaging
         // then would hand this slot's quote to the next send from another chat;
         // off screen the block goes into this slot's parked text instead.
-        if (!optionText && !slashResult.failed) { setInput(''); setPasteBlocks([]) }
+        if (!optionText && !slashResult.failed) {
+          // Clear only the command this send took. The await can span edits
+          // and a slot switch: newer text in this composer, or another chat's
+          // draft now on screen, is not the command and stays. "On screen" is
+          // composerSlotRef, as the steer hand-back reads it.
+          if (composerMountedRef.current && composerSlotRef.current === uiSlot) {
+            if (inputRef.current.trim() === raw && pasteBlocksRef.current === slashPastes) { setInput(''); setPasteBlocks([]) }
+          } else if (uiSlot && (drafts.current[uiSlot] ?? '').trim() === raw) {
+            delete drafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]
+            saveDrafts()
+          }
+        }
         // After the clear above, so a block that falls back into the live text
         // (stage taken by a newer quote) is not wiped by it.
         restageOrPark()
         // Keeping the composer intact is the recovery; this is the report.
         // Same surface as a refused footer press, so the reason sits above the
         // draft it left in place instead of only in the console.
-        if (slashResult.failed) {
-          setRefusedPress({
-            action: slashResult.stage === 'turn' ? 'side_turn' : 'side_open',
-            message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
-          })
-        }
+        if (slashResult.failed) setRefusedPress(slashRefusal(slashResult))
         return false
       }
     }
@@ -2544,7 +2568,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // activeSlot is left in deps as a harmless no-op: dropping it churns the
     // array for no behavior change (the ref is always current regardless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, dispatch, connected, messageQuote.consume, messageQuote.restage])
+  }, [activeSlot, dispatch, connected, messageQuote.consume, messageQuote.restage, setPendingAgent, setPendingModel])
 
   // Submit inline document comments to the session the file was opened from,
   // not the currently-active one. If the user switched sessions while the
@@ -3900,6 +3924,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setPinExpanded(false)
   }, [activeSlot, setPinExpanded, setPinned])
 
+  // Stable: setRefusedPress never changes, so the steer callback is not rebuilt.
+  const reportSlashRefusal = useCallback((res: { stage?: 'open' | 'turn' | 'agent'; error?: string }) => {
+    setRefusedPress(slashRefusal(res))
+  }, [])
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
@@ -3923,6 +3951,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pendingQuestion,
     softStopAtMapRef,
     dispatch,
+    onSlashRefused: reportSlashRefusal,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), so it steers where

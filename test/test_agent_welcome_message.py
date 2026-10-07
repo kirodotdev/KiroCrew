@@ -604,8 +604,9 @@ class TestWelcomeMessageInARunnerTurn:
     async def test_an_in_turn_agent_switch_renders_the_new_agent_hint(
         self, monkeypatch, tmp_path
     ) -> None:
-        """``/agent <name>`` arrives as a provider-side switch; the greeting must
-        follow the "Switched to agent" line it belongs beside."""
+        """A provider-side switch (kiro-cli's own ``/agent swap``, which Crew
+        passes through); the greeting must follow the "Switched to agent" line it
+        belongs beside."""
         from kiro_crew.providers.base import EVENT_AGENT_SWITCHED, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._harness(
@@ -622,7 +623,7 @@ class TestWelcomeMessageInARunnerTurn:
         client.stream = _stream
         client.stream_command = _stream
         try:
-            await _run_chat(state, slot, "/agent other")
+            await _run_chat(state, slot, "/agent swap other")
         finally:
             await self._drain(state)
 

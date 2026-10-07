@@ -30,11 +30,17 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 !ta code-reviewer        # this thread uses code-reviewer
 !ta off                  # remove thread override
 !ta                      # show current thread agent
+/agent code-reviewer     # same as !ta code-reviewer (owner only)
 ```
 
 ### Per-Tab (Dashboard)
 
-Use the agent selector dropdown in the chat topbar or welcome screen.
+Use the agent selector dropdown in the chat topbar or welcome screen, or type
+`/agent <name>` in the chat: it makes the same switch as the selector, and a name
+no agent answers to is refused rather than silently running the default agent.
+The same command works in a Slack thread linked to a dashboard chat (it switches
+that chat's agent). `/agent list` and kiro-cli's other `/agent` subcommands are
+passed through unchanged.
 
 ### Per-Cron Job
 

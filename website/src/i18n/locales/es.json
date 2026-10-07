@@ -11747,6 +11747,8 @@
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
       "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "could_not_switch_agent": "No se pudo cambiar de agente",
+      "agent_command_not_run": "El comando /agent no se ejecutó. Tu mensaje sigue en el editor.",
       "run_in_terminal_liveness_probe_failed_error": "El comando no se envió al nuevo terminal. Su shell puede seguir en ejecución, por lo que la pestaña se dejó abierta.",
       "run_in_terminal_shell_alive_error": "El comando no se envió al nuevo terminal, pero su shell está en ejecución: la pestaña se dejó abierta para que puedas ejecutar el comando allí.",
       "run_in_terminal_dispatch_rolled_back_error": "El comando no se envió al nuevo terminal, por lo que ese terminal se cerró.",

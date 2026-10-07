@@ -927,7 +927,6 @@ def test_the_dashboard_runner_allocates_at_the_turns_priority():
     ("path", "function"),
     [
         ("dashboard/chat_handlers.py", "api_chat_slot_create"),
-        ("dashboard/chat_handlers.py", "api_chat_slot_agent"),
         ("dashboard/chat_handlers.py", "api_chat_slot_project"),
     ],
 )
@@ -935,6 +934,16 @@ def test_an_owner_slot_action_arms_its_eager_spawn_by_who_asked(path, function):
     assert _priority_args(path, function, "schedule_eager_spawn") == [
         "owner_start_priority(request)"
     ]
+
+
+def test_the_agent_switch_arms_its_eager_spawn_by_who_asked():
+    # The agent route's transaction lives in ``switch_slot_agent`` (the in-turn
+    # ``/agent <name>`` command shares it), so it reads the caller's owner bit
+    # rather than a request. The route derives that bit from the same owner gate
+    # ``owner_start_priority`` reads; a turn's command never claims it.
+    assert _priority_args(
+        "dashboard/chat_handlers.py", "switch_slot_agent", "schedule_eager_spawn"
+    ) == ["person_priority(caller.owner)"]
 
 
 class _Request(dict):

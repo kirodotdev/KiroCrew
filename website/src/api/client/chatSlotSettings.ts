@@ -35,11 +35,14 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather
-     *  than answered by the default agent. */
-    chatSlotAgent: (slot: string, agent: string, kind?: 'member' | 'template') =>
+     *  than answered by the default agent. `announce` asks the gateway to
+     *  append the "Switched to agent" transcript line, as the typed `/agent`
+     *  command does; the picker leaves it off. */
+    chatSlotAgent: (slot: string, agent: string, kind?: 'member' | 'template', opts?: { announce?: boolean }) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', {
         agent,
         ...(kind ? { agent_kind: kind } : {}),
+        ...(opts?.announce ? { announce: true } : {}),
       }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string }>,
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,

@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from itertools import islice  # noqa: F401
 from pathlib import Path
@@ -30,6 +30,7 @@ from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_a
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_switch_command import switch_announcement
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -300,6 +301,7 @@ from kiro_crew.session_agent_selection import (
 )
 from kiro_crew.session_lifecycle import compaction_in_flight
 from kiro_crew.session_summary import count_user_turns_in_records
+from kiro_crew.start_priority import person_priority
 from kiro_crew.trust_patterns import (
     base_consent_pattern,
     base_trust_patterns,
@@ -3521,7 +3523,7 @@ def _cancel_target(slot: _ChatSlot) -> str:
 
 
 def _app_cancel_denied(
-    request: web.Request, slot: _ChatSlot, operation: str, target_key: str
+    request: web.Request | Mapping[str, Any], slot: _ChatSlot, operation: str, target_key: str
 ) -> web.Response | None:
     """Whether *request* may cancel *target_key*, as an indistinguishable 404.
 
@@ -4906,7 +4908,11 @@ _slot_switch_session_lock = slot_switch_session_lock
 
 
 def _slot_replaced_while_queued(
-    state: DashboardState, slot: _ChatSlot, name: str, request: web.Request, operation: str
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    request: web.Request | Mapping[str, Any],
+    operation: str,
 ) -> bool:
     """Whether ``name`` registers a different object than *slot* -- checked after a lock await.
 
@@ -4946,7 +4952,12 @@ def _slot_replaced_while_queued(
 
 
 def _switch_target_busy(
-    state: DashboardState, slot: _ChatSlot, session_key: str, provider: object
+    state: DashboardState,
+    slot: _ChatSlot,
+    session_key: str,
+    provider: object,
+    *,
+    own_turn: bool = False,
 ) -> bool:
     """Whether a turn is in flight on *session_key* -- the switch handlers' pre-commit refusal.
 
@@ -4989,8 +5000,14 @@ def _switch_target_busy(
     ``skip_if_busy`` decline in ``SessionManager.reset`` as the backstop for
     a turn that starts after this read: message dispatch takes none of the
     switch locks, so this is a fast path, not the authority.
+
+    *own_turn* is the in-turn ``/agent <name>`` command (``switch_slot_agent``
+    called from the slot's own turn, before it acquires a session): that turn
+    is the switch itself and never prompts the provider, so its own
+    ``running`` flag is not a turn in flight. The provider probe and every
+    OTHER slot's turn still refuse.
     """
-    if slot.running:
+    if slot.running and not own_turn:
         return True
     if isinstance(provider, LLMProvider) and provider.has_active_turn():
         return True
@@ -5002,7 +5019,9 @@ def _switch_target_busy(
     # the comparison must too (``slot_switch_session_lock`` keys the same way).
     target = canonical_key(session_key)
     return any(
-        other.running and canonical_key(_cancel_target(other)) == target
+        other.running
+        and not (own_turn and other is slot)
+        and canonical_key(_cancel_target(other)) == target
         for other in list(state._slots.values())
     )
 
@@ -5015,6 +5034,69 @@ class _MemberMemoryRequiresNewConversation(ValueError):
     conversation-boundary refusal it means, instead of wrapping it in the
     store-unavailable 503 the generic except produces.
     """
+
+
+class SlotAgentSwitchCaller(NamedTuple):
+    """Who asked :func:`switch_slot_agent` to switch: an HTTP request, or a turn.
+
+    The HTTP route passes its request (:meth:`for_request`); the chat runner's
+    in-turn ``/agent <name>`` command passes :meth:`for_turn`. Everything the
+    switch reads about its caller is here, so the two doors run ONE
+    transaction instead of two copies that drift.
+    """
+
+    #: The app the caller acts for ("" = the dashboard).
+    app: str
+    #: Peer address, for the audit trail.
+    remote: str
+    #: Whether the dashboard owner asked. A turn's command never claims it: its
+    #: text can come from any allowed channel user, so it gets the permitted-user
+    #: rules (templates and V1 stores, never a V2 member store).
+    owner: bool
+    #: The HTTP request, when there is one.
+    request: web.Request | None = None
+    #: The switch runs inside the slot's own turn (see ``_switch_target_busy``).
+    own_turn: bool = False
+
+    @classmethod
+    def for_request(cls, request: web.Request) -> SlotAgentSwitchCaller:
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        return cls(
+            app=str(request.get("app", "") or ""),
+            remote=request.remote or "",
+            owner=is_owner_dashboard_request(request),
+            request=request,
+        )
+
+    @classmethod
+    def for_turn(cls, slot: _ChatSlot) -> SlotAgentSwitchCaller:
+        # The slot's own app scope: an app's turn is held to what that app's
+        # own request could do, never widened to the dashboard's.
+        return cls(app=slot._app or "", remote="", owner=False, own_turn=True)
+
+    @property
+    def scope(self) -> web.Request | Mapping[str, Any]:
+        """What the app-isolation helpers read (they take ``request.get("app")``)."""
+        return self.request if self.request is not None else {"app": self.app}
+
+    async def require_owner(self, operation: str) -> web.Response | None:
+        if self.request is not None:
+            from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+            return await require_owner_dashboard_request(self.request, operation)
+        if self.owner:
+            return None
+        sel().log_api_access(
+            caller=self.app or "turn",
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources="non_owner_block",
+        )
+        return web.json_response(
+            {"error": "owner authorization required", "code": "owner_only"}, status=403
+        )
 
 
 async def api_chat_slot_agent(request: web.Request) -> web.Response:
@@ -5031,11 +5113,68 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # `announce`: the composer's `/agent <name>` asks for the transcript line
+    # the in-turn command appends; the picker sends no flag and appends none.
+    announce = body.get("announce", False)
+    if not isinstance(announce, bool):
+        return web.json_response(
+            {"error": "announce must be a boolean", "code": "invalid_announce"}, status=400
+        )
+    resp = await switch_slot_agent(
+        state,
+        slot,
+        name,
+        body.get("agent", ""),
+        body.get("agent_kind", ""),
+        SlotAgentSwitchCaller.for_request(request),
+    )
+    if announce:
+        ok, outcome = agent_switch_outcome(resp)
+        if ok:
+            text = switch_announcement(
+                str(outcome.get("agent") or slot.agent), str(outcome.get("warning") or "")
+            )
+            text, _ = redact_credentials(text)
+            text, _ = redact_exfiltration_urls(text)
+            slot.append("assistant", text, "msg msg-a")
+            state.push_slots_update()
+    return resp
+
+
+def agent_switch_outcome(resp: web.Response) -> tuple[bool, dict[str, Any]]:
+    """Whether a :func:`switch_slot_agent` response committed, and its JSON body.
+
+    The body is ``{}`` when it is not a JSON object, so a caller reads
+    ``error`` / ``agent`` / ``warning`` from it without its own guards.
+    """
+    try:
+        body = json.loads(resp.text or "{}")
+    except (TypeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return resp.status == 200 and bool(body.get("ok")), body
+
+
+async def switch_slot_agent(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    agent_name: Any,
+    agent_kind: Any,
+    caller: SlotAgentSwitchCaller,
+) -> web.Response:
+    """Switch *slot* (registered as *name*) to *agent_name*: resolve, reset, commit.
+
+    The transaction behind ``POST /api/chat/slots/{slot}/agent`` and the
+    in-turn ``/agent <name>`` command. Answers the route's own responses, so a
+    non-HTTP caller reads ``status`` and the JSON ``error``/``code`` body.
+    """
     if slot.mode == members_mod.DM_SLOT_MODE and not members_mod.is_dispatchable_member_name(
         slot.agent
     ):
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller.remote,
             operation="chat.slot_agent",
             outcome="denied",
             source="member_pin",
@@ -5049,7 +5188,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    agent_name = body.get("agent", "")
     member_pin_match = members_mod.member_pin_matches(slot.mode, slot.agent, agent_name)
     if not isinstance(agent_name, str) or (
         agent_name
@@ -5062,7 +5200,6 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     ):
         return web.json_response({"error": "invalid agent name"}, status=400)
     # Same contract as the create route: an optional namespace for the name.
-    agent_kind = body.get("agent_kind", "")
     if agent_kind not in ("", "member", "template"):
         return web.json_response(
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
@@ -5103,7 +5240,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # Re-authorize after the await above (see _slot_replaced_while_queued):
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_agent"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_agent"):
             return slot_not_found()
         # The session the switch resets — ``effective_session_key``, never
         # ``_history_key_for`` (see api_chat_slot_model): a channel- or
@@ -5122,19 +5259,16 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         await _stack.enter_async_context(_slot_switch_session_lock(session_key))
         # Second lock-acquisition await, second re-check: a same-name
         # recreate lands during this wait just as easily as during the first.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_agent"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_agent"):
             return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel routes'
         # policy): slot ownership does not imply ownership of a linked
         # channel session, so an app caller may not switch the agent a
         # channel thread runs on. Denied as an indistinguishable 404.
-        denied = _app_cancel_denied(request, slot, "chat.slot_agent", session_key)
+        denied = _app_cancel_denied(caller.scope, slot, "chat.slot_agent", session_key)
         if denied is not None:
             return denied
-        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
-        owner_request = is_owner_dashboard_request(request)
+        owner_request = caller.owner
         if not owner_request:
             # Permitted chat users keep template and legacy V1 choices, but
             # cannot change a member assignment through aggregate controls. Refuse a V2 choice
@@ -5158,7 +5292,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 return _store_unavailable_response(slot.memory_store, exc)
             choice_store = choice_cfg.memory_stores.get(choice.memory_store_name)
             if choice_store is not None and choice_store.memory_version == 2:
-                denied = await require_owner_dashboard_request(request, "chat.slot_agent")
+                denied = await caller.require_owner("chat.slot_agent")
                 if denied is not None:
                     return denied
         if agent_name != slot.agent:
@@ -5201,7 +5335,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # retryable once the turn completes. Checked BEFORE the commit below,
         # so nothing needs rolling back.
         busy_provider = state.sessions.get_provider(session_key)
-        if _switch_target_busy(state, slot, session_key, busy_provider):
+        if _switch_target_busy(state, slot, session_key, busy_provider, own_turn=caller.own_turn):
             return web.json_response(
                 {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
             )
@@ -5275,7 +5409,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
                     # derived fields, reset or history write has committed yet.
-                    denied = await require_owner_dashboard_request(request, "chat.slot_agent")
+                    denied = await caller.require_owner("chat.slot_agent")
                     if denied is not None:
                         return denied
             assignment_resolved = bindings.requested_resolved
@@ -5533,7 +5667,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # fast path plus the atomic skip_if_busy decline below are what keep
         # the teardown off a streaming turn.
         recheck = state.sessions.get_provider(session_key)
-        if _switch_target_busy(state, slot, session_key, recheck):
+        if _switch_target_busy(state, slot, session_key, recheck, own_turn=caller.own_turn):
             _rollback_switch()
             return web.json_response(
                 {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
@@ -5818,11 +5952,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             # A non-owner choice preserves the recorded session assignment.
             slot._memory_assignment_from_history = not owner_request
 
-        owner_pick = (
-            slot.agent is committed_agent
-            and assignment_resolved
-            and is_owner_dashboard_request(request)
-        )
+        owner_pick = slot.agent is committed_agent and assignment_resolved and caller.owner
         if owner_pick:
             slot._memory_assignment_from_history = False
 
@@ -5916,7 +6046,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
-    schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+    schedule_eager_spawn(state, slot, start_priority=person_priority(caller.owner))
     state.push_slots_update()
     resp_body: dict = {
         "ok": True,

@@ -86,6 +86,10 @@ include it. Unmapped custom agents gain no tools or servers and have an empty
 discovery scope. The added tool uses the managed server declaration without
 adding auto-approval. Native `/agent` mutations are refused with a pointer to Crew's
 agent selector, which updates both the native mode and Crew's template binding.
+A typed `/agent <name>` never reaches that refusal on Crew's own surfaces: the
+dashboard composer, the chat runner (split pane and linked channel threads) and a
+Slack thread each switch through Crew instead (`agent_switch_command.py`; the
+runner and the picker's route share `chat_handlers.switch_slot_agent`).
 Read-only native agent listing/schema commands remain available. Mode activation
 refreshes the view inside the existing derived-spec freshness bracket.
 The reserved core server's command and environment are pinned to the managed

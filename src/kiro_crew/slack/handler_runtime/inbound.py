@@ -12,6 +12,7 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
         _is_sessions_keyword,
         _thread_agents,
         _thread_projects,
+        agent_switch_target,
         append_and_surface,
         config_path,
         is_allowed_user,
@@ -364,6 +366,13 @@ async def maybe_route_linked_thread(
         return False
     if not route_pinned and _is_sessions_keyword(text):
         return False
+    # An @mention leads the text of a mention event; for ``/agent <name>`` drop
+    # it, so the slot's runner sees the command and switches the linked chat's
+    # agent (the switch the dashboard's picker makes) instead of prompting the
+    # model with it.
+    _unmentioned = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+    if not route_pinned and agent_switch_target(_unmentioned) is not None:
+        text = _unmentioned
 
     _linked_slot_key = _linked_slot.key
     # Redact for UI display only — LLM receives original text so it can process

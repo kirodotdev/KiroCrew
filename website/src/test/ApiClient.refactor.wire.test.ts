@@ -255,3 +255,20 @@ describe('the endpoints and apiTransport issue identical requests', () => {
     await expect(api.status()).rejects.toBeInstanceOf(ApiError)
   })
 })
+
+describe('chatSlotAgent body', () => {
+  const sentBody = () => JSON.parse(String(lastCall()[1]?.body ?? '{}'))
+
+  it('the picker shapes carry no announce flag', async () => {
+    await api.chatSlotAgent('s', 'fable')
+    expect(sentBody()).toEqual({ agent: 'fable' })
+    await api.chatSlotAgent('s', 'fable', 'template')
+    expect(sentBody()).toEqual({ agent: 'fable', agent_kind: 'template' })
+  })
+
+  it('the typed /agent shape asks for the transcript line', async () => {
+    await api.chatSlotAgent('s', 'fable', 'template', { announce: true })
+    expect(lastCall()[0]).toBe('/api/chat/slots/s/agent')
+    expect(sentBody()).toEqual({ agent: 'fable', agent_kind: 'template', announce: true })
+  })
+})

@@ -11399,6 +11399,8 @@
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
       "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "could_not_switch_agent": "에이전트를 전환할 수 없습니다",
+      "agent_command_not_run": "/agent 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
       "run_in_terminal_liveness_probe_failed_error": "새 터미널로 명령이 전송되지 않았습니다. 셸이 아직 실행 중일 수 있으므로 탭을 열어 두었습니다.",
       "run_in_terminal_shell_alive_error": "새 터미널로 명령이 전송되지 않았지만 셸은 실행 중입니다. 거기서 명령을 실행할 수 있도록 탭을 열어 두었습니다.",
       "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다.",

@@ -11747,6 +11747,8 @@
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
       "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "could_not_switch_agent": "Impossible de changer d’agent",
+      "agent_command_not_run": "La commande /agent n’a pas été exécutée. Ton message est toujours dans le champ de saisie.",
       "run_in_terminal_liveness_probe_failed_error": "La commande n'a pas été envoyée au nouveau terminal. Son shell est peut-être toujours en cours d'exécution, son onglet est donc resté ouvert.",
       "run_in_terminal_shell_alive_error": "La commande n'a pas été envoyée au nouveau terminal, mais son shell fonctionne : l'onglet est resté ouvert pour que vous puissiez y exécuter la commande.",
       "run_in_terminal_dispatch_rolled_back_error": "La commande n'a pas été envoyée au nouveau terminal, donc ce terminal a été fermé.",

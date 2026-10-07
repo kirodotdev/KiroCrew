@@ -31,6 +31,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!ta <name>` | Set agent for this thread only |
 | `!ta off` | Remove thread agent override |
 | `!ta` | Show the current thread agent |
+| `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
