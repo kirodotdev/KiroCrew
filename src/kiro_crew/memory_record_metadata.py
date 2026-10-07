@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew._sqlite_compat import sqlite3
+
+logger = logging.getLogger(__name__)
 
 V1_ACCEPTED_REVISION_LIMIT = 20
 
@@ -491,10 +494,18 @@ def reconcile(db: sqlite3.Connection) -> int:
     for relation, kind in (("semantic_memory", "fact"), ("episodic_memories", "episode")):
         cursor = db.execute(f"SELECT * FROM {relation}")
         names = [column[0] for column in cursor.description]
+        skipped = 0
         for values in cursor:
             row = dict(zip(names, values))
+            identity = row["id"] if kind == "episode" else row["key"]
+            if not isinstance(identity, str) or not identity:
+                # SQLite lets a TEXT PRIMARY KEY hold NULL, and older importers
+                # wrote such rows. They cannot carry metadata; one of them must
+                # not stop the whole store from opening, so leave it untouched.
+                skipped += 1
+                continue
             actual_kind = "directive" if str(row.get("key", "")).startswith("lesson.") else kind
-            record_id = record_id_for(actual_kind, row["id"] if kind == "episode" else row["key"])
+            record_id = record_id_for(actual_kind, identity)
             previous = get_record_metadata(db, record_id)
             if previous.get("content_hash") == content_hash(row):
                 continue
@@ -517,4 +528,11 @@ def reconcile(db: sqlite3.Connection) -> int:
                 operation="legacy_sync" if previous else "backfill",
             )
             changed += 1
+        if skipped:
+            logger.warning(
+                "Memory reconcile skipped %d %s row(s) with no %s",
+                skipped,
+                relation,
+                "id" if kind == "episode" else "key",
+            )
     return changed
