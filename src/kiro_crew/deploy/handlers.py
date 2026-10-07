@@ -202,6 +202,36 @@ def _reaper_remediation(profile: str, region: str) -> str:
     return " ".join(parts)
 
 
+def _base_remediation(profile: str, region: str) -> str:
+    """Operator commands for a finite-TTL deploy when the BASE stack is missing.
+
+    ``install-reaper.sh`` reads the base stack's outputs first and exits with
+    "base stack not found" when it is absent, so handing it over alone is a
+    command that cannot succeed in that state. The base has to come first.
+    ``deploy.sh`` is the only script that creates it, but it also publishes an
+    app directory, so the remediation spells out its base step instead: the same
+    ``cloudformation deploy`` of ``templates/base-stack.yaml`` that
+    ``deploy.sh`` runs, then the reaper install.
+    """
+    template = "templates/base-stack.yaml"
+    try:
+        from kiro_crew.skills import skills_dir
+
+        template = str(skills_dir() / "artifact-deploy" / "templates" / "base-stack.yaml")
+    except Exception:  # noqa: BLE001 — remediation text must never break the 409
+        pass
+    parts = ["aws", "cloudformation", "deploy",
+             "--stack-name", "kirocrew-deploy-base",
+             "--template-file", template,
+             "--no-fail-on-empty-changeset",
+             "--tags", "kirocrew:managed=true"]
+    if profile:
+        parts += ["--profile", profile]
+    if region:
+        parts += ["--region", region]
+    return " ".join(parts) + " && " + _reaper_remediation(profile, region)
+
+
 def _audit(action: str, site_id: str, outcome: str, *, error: str = "") -> None:
     """Emit a SEL audit event for a deploy-web permission decision.
 
@@ -1200,10 +1230,15 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 "code": "reaper_required",
                 "details": (
                     "Finite-TTL deploys require the reaper base stack "
-                    "(kirocrew-deploy-base). Use ttl_hours=0 for persistent "
-                    "or install the reaper (install-reaper.sh)."
+                    f"(kirocrew-deploy-base), which was not found in {region} "
+                    "(or could not be read with this profile). Use ttl_hours=0 "
+                    "for persistent, or create the base stack first and then "
+                    "install the reaper (install-reaper.sh exits while the base "
+                    "is missing). install-reaper.sh also needs the "
+                    "kirocrew-deploy-app-boundary IAM policy and credentials "
+                    "that may create IAM roles."
                 ),
-                "remediation": _reaper_remediation(profile, region),
+                "remediation": _base_remediation(profile, region),
             }
 
         # Finite-TTL also requires the reaper Lambda stack (separate from base)

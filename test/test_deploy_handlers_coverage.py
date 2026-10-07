@@ -589,6 +589,38 @@ class TestDoDeployRefusals:
         assert payload["remediation"].endswith("install-reaper.sh --profile p --region us-west-2")
 
     @pytest.mark.asyncio
+    async def test_missing_base_stack_remediation_creates_base_before_reaper(
+            self, _site, monkeypatch):
+        # install-reaper.sh exits while the base stack is missing, so the
+        # remediation must create the base first and only then run it.
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(engine, "run_aws", _aws_router([], default=(1, "", "no stack")))
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site), "confirm": True})
+        assert status == 409 and payload["code"] == "reaper_required"
+        cmd = payload["remediation"]
+        base_step, _, reaper_step = cmd.partition(" && ")
+        assert base_step.startswith(
+            "aws cloudformation deploy --stack-name kirocrew-deploy-base --template-file ")
+        assert "base-stack.yaml" in base_step
+        assert base_step.endswith("--profile p --region us-west-2")
+        assert reaper_step.endswith("install-reaper.sh --profile p --region us-west-2")
+        assert "install-reaper.sh exits while the base is missing" in payload["details"]
+
+    @pytest.mark.asyncio
+    async def test_missing_reaper_stack_remediation_skips_base_step(self, _site, monkeypatch):
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(engine, "run_aws", _aws_router([
+            ("kirocrew-deploy-base", (0, _BASE_OUTPUTS, "")),
+            ("kirocrew-deploy-reaper", (1, "", "missing")),
+        ]))
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site), "confirm": True})
+        assert status == 409 and payload["code"] == "reaper_required"
+        assert "cloudformation deploy" not in payload["remediation"]
+        assert payload["remediation"].endswith("install-reaper.sh --profile p --region us-west-2")
+
+    @pytest.mark.asyncio
     async def test_base_stack_parse_error_is_swallowed(self, _site, monkeypatch):
         handlers._save_config("p", "us-west-2")
         monkeypatch.setattr(

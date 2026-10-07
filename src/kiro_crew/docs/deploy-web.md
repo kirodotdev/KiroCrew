@@ -143,8 +143,11 @@ not installed.
 The reaper is installed once per account by an operator, with
 `scripts/install-reaper.sh --profile <P> --region <R>` from
 `~/.kiro/crew/skills/artifact-deploy/`. It is an operator step by design: the stack creates an IAM
-role, and Kiro Crew never writes IAM. When a finite-TTL deploy is refused, the 409 body carries
-that exact command with your profile and region already filled in.
+role, and Kiro Crew never writes IAM. It needs the shared base stack (`kirocrew-deploy-base`) to
+exist first and exits when it does not. Dashboard deploys never create that stack, so on a fresh
+account create it with the same `aws cloudformation deploy` of `templates/base-stack.yaml` that
+`scripts/deploy.sh` runs. When a finite-TTL deploy is refused, the 409 body carries the exact
+commands for whichever piece is missing, with your profile and region already filled in.
 
 The reaper only touches resources that carry both the `kirocrew:site=<id>` and
 `kirocrew:managed=true` tags and match the managed naming scheme. It verifies the tag against the
@@ -307,7 +310,7 @@ nothing running in the box can re-open a route.
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| Finite-TTL deploy returns 409 | The reaper stack is missing. Run `install-reaper.sh` for that profile and region (the 409 body has the exact command), or publish with `ttl_hours=0` for a persistent site. |
+| Finite-TTL deploy returns 409 | Either the base stack (`kirocrew-deploy-base`) or the reaper stack is missing; `details` says which. When the base is missing, create it first: `install-reaper.sh` exits until it exists. The 409 body has the exact commands for your profile and region. Or publish with `ttl_hours=0` for a persistent site. |
 | URL shows "site can't be reached" / a DNS error right after publishing | A new distribution is still propagating. Wait up to ~15 minutes for the first deploy and watch the status in the console. |
 | Verify fails with `missing ... sso_start_url, sso_region` | The gateway resolved AWS CLI v1. Install v2 and put it ahead of `/usr/bin` on the gateway's `PATH` (see 1.2). |
 | Verify shows `s3_reachable: false` with a correct-looking policy | The policy needs `s3:ListAllMyBuckets` in its `DiscoveryAndIdentity` statement. |
