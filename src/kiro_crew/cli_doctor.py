@@ -71,6 +71,13 @@ from kiro_crew.acp.kas_transport import (
     KAS_RELAY_ENGINE_FLAG,
     build_kas_argv,
 )
+
+# The one skill-view count ceiling, enforced in the projection and reused as the
+# doctor's backlog-warn threshold. Imported from the ``agent_spec_format`` leaf
+# (above, beside the alias prefix) rather than the ACP projection, so this facade
+# does not grow the agent-SDK import boundary. The doctor_checks.resources family
+# reads it as ``cli_doctor.SKILL_VIEW_PROJECTION_CEILING`` -- see
+# test_cli_doctor_refactor_family_reads (the family binds no project module by name).
 from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent import AGENT_FILENAME, agent_spec_path
 from kiro_crew.agent_discovery import (
@@ -79,7 +86,11 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
 )
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, is_agent_spec_name  # noqa: F401
+from kiro_crew.agent_spec_format import (  # noqa: F401
+    NATIVE_SKILL_ALIAS_PREFIX,
+    SKILL_VIEW_PROJECTION_CEILING,
+    is_agent_spec_name,
+)
 from kiro_crew.agents_janitor import sweep_agents_dir  # noqa: F401
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_perf import _read_gateway_pid  # noqa: F401

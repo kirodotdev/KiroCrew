@@ -49,6 +49,16 @@ MARKDOWN_SUFFIX = ".md"
 AGENT_SPEC_SUFFIXES: tuple[str, ...] = (JSON_SUFFIX, MARKDOWN_SUFFIX)
 NATIVE_SKILL_ALIAS_PREFIX = "kirocrew-skill-view-"
 
+#: The ``kirocrew-skill-view-*`` alias count at or above which the projection
+#: stops minting new views and falls back to the authored agent, and which the
+#: doctor's backlog warning flags. It lives here, in the leaf that owns the
+#: alias prefix, so the ACP projection and the doctor (via ``cli_doctor``) share
+#: one number without the doctor importing the ACP layer -- the agent-SDK import
+#: boundary (``.github/agent-sdk-boundary-baseline.txt``) is shrink-only, and the
+#: doctor is a baselined consumer. See
+#: :data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`.
+SKILL_VIEW_PROJECTION_CEILING = 2000
+
 _FRONTMATTER_CLOSE_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 

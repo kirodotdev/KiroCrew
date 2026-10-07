@@ -27,7 +27,15 @@ from kiro_crew.doctor_checks import render
 # per-spawn reclaim covers steady-state orphans, so a count above this is either
 # a backlog this gateway has not drained yet or one it cannot drain (another
 # data home's aliases, an unreadable lease record); the warning tells which.
-_SKILL_VIEW_BACKLOG_WARN = 2000
+#
+# This is the SAME number the projection enforces as a hard ceiling
+# (:data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`): at or
+# above it, preparation stops minting new views and falls back to the authored
+# agent, so a host the doctor warns about is a host whose next spawn already fell
+# back. Read through the ``cli_doctor`` facade, not imported by name here: this
+# family binds no project module (test_cli_doctor_refactor_family_reads), and the
+# facade holds the constant so the two can never drift.
+_SKILL_VIEW_BACKLOG_WARN = cli_doctor.SKILL_VIEW_PROJECTION_CEILING
 
 
 # Where SwapTotal is read from. A module attribute (not inlined) so tests can
@@ -654,6 +662,14 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
     print(
         f"{render._INDENT}kiro-cli reads every file here on startup, so this many slows every"
         f" session start.{drain}"
+    )
+    print(
+        f"{render._INDENT}The gateway has stopped creating new skill views at this count;"
+        f" new spawns run under their authored agent until it drops, so the leak cannot deepen"
+        f" while it stands (sessions already projecting keep refreshing their own view)."
+        f" The count is every {alias_glob} file here -- kiro-cli reads them"
+        f" all at startup, including any written by a different gateway that shares this"
+        f" directory -- so the move below clears a share this gateway cannot drain itself."
     )
     print(
         f"{render._INDENT}To clear it at once: {stopped}, move the {alias_glob} files and the"
