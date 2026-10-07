@@ -232,6 +232,25 @@ class TestSetProjectTool:
         assert schema["properties"]["path"]["type"] == "string"
         assert schema["required"] == ["path"]
 
+    def test_guidance_names_worktrees_and_the_peer_refusal(self):
+        """Agents create worktrees and never retarget, so the tool
+        description and the bundled system prompt both name `git worktree add`
+        as a trigger, and both state that a peer-sent turn is refused (the
+        gate admits only a person's turn, not just "not headless")."""
+        from pathlib import Path
+
+        descriptor = next(t for t in mcp_core._list_tools() if t["name"] == "set_project")
+        description = descriptor["description"]
+        assert "git worktree add" in description
+        assert "session_send" in description
+
+        prompt = (Path(mcp_core.__file__).parent / "config" / "prompt.md").read_text(
+            encoding="utf-8"
+        )
+        line = next(ln for ln in prompt.splitlines() if ln.startswith("- `set_project`:"))
+        assert "git worktree add" in line
+        assert "turns sent by another session are refused" in line
+
 
 # ───────────────────── set_project absolute-path shape gate ─────────────────
 
