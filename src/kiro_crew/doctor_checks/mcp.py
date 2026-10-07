@@ -403,17 +403,15 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
     names = ", ".join(unrouted)
     print(f"  strict identity: ⏹ not routed through the gateway: {names}")
     render._print_wrapped(
-        "Tools that must know which session is calling (monitor_start, "
-        "session_ledger_*, set_project, ask_question, session control, "
-        "chat_folder_*) get no per-call caller injection on these servers: on "
-        "the kiro backend the session's AcpRuntime carries no session key in "
-        "its environment by design, and the gateway injects the caller only for "
-        "routed servers. They still resolve through the signed per-session "
-        "token on the session's MCP element, and are refused only when no "
-        "strict channel resolves. Route them from "
-        "MCP Management (or add them to mcp_gateway.stub_servers and restart) "
-        "if you use those tools. Leaving them unrouted is a valid choice — "
-        "routing starts a broker and one stub process per server — so this is "
-        "a note, not a problem to fix; the tools' own refusal now names the "
-        "same cause."
+        "This is the default and needs no change. Tools that must know which "
+        "session is calling (monitor_start, cron_add, session_ledger_*, "
+        "set_project, ask_question, session control, chat_folder_*) identify it "
+        "from a signed per-session token on the session's MCP element, which "
+        "needs no routing and no gateway. This check reads config only and does "
+        "not verify a live session. If one of those tools is refused, its error "
+        "names the identity channel that failed; route the server from MCP "
+        "Management (or add it to mcp_gateway.stub_servers and restart) only "
+        "when that error says the element carried no session token. Leaving "
+        "servers unrouted is a valid choice — routing starts a broker and one "
+        "stub process per server."
     )
