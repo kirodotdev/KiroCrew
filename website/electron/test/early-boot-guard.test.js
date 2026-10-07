@@ -217,4 +217,25 @@ describe("main.js executes under a stubbed electron (load test)", () => {
     assert.ok(box < exit, "showErrorBox precedes app.exit(1)");
     assert.match(run.stdout, /SHOW_ERROR_BOX_CONTENT:An error occurred before the app could open a window/);
   });
+
+  it("a lost single-instance lock logs why before exiting 0", () => {
+    const run = runDriver("lock-lost");
+    assert.equal(run.status, 0, `driver exited ${run.status}\n${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /^APP_EXIT:0$/m);
+    assert.doesNotMatch(run.stdout, /MAIN_LOADED/);
+    assert.match(run.log, /single-instance lock held by another process; exiting/);
+    assert.match(run.log, /stale SingletonLock in .*userData/);
+    assert.match(run.log, /no SingletonLock file/);
+    assert.doesNotMatch(run.log, /native logging armed/);
+  });
+
+  it("a lost lock left by a dead pid is described and left in place", { skip: process.platform === "win32" }, () => {
+    const run = runDriver("stale-lock");
+    assert.equal(run.status, 0, `driver exited ${run.status}\n${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /^APP_EXIT:0$/m);
+    assert.match(run.stdout, /^SINGLETON_LEFT:SingletonLock,SingletonSocket,SingletonCookie$/m);
+    assert.match(run.log, /single-instance lock held by another process; exiting/);
+    assert.match(run.log, /SingletonLock target "[^"]+-\d+", host matches, pid \d+ on this machine is not running/);
+    assert.doesNotMatch(run.log, /native logging armed/);
+  });
 });

@@ -21,12 +21,38 @@
 // guard under test listens on.
 
 const Module = require("node:module");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const [logsDir, userDataDir, mode] = process.argv.slice(2);
 if (!logsDir || !userDataDir || !mode) {
-  process.stderr.write("usage: early-boot-driver.js <logsDir> <userDataDir> ok|throw-once\n");
+  process.stderr.write("usage: early-boot-driver.js <logsDir> <userDataDir> ok|throw-once|lock-lost|stale-lock\n");
   process.exit(2);
+}
+
+const SINGLETON_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+if (mode === "stale-lock") {
+  const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+  fs.symlinkSync(os.hostname() + "-" + deadPid, path.join(userDataDir, "SingletonLock"));
+  fs.symlinkSync(path.join(userDataDir, "gone", "SingletonSocket"), path.join(userDataDir, "SingletonSocket"));
+  fs.symlinkSync("12345", path.join(userDataDir, "SingletonCookie"));
+}
+
+function singletonFilesLeft() {
+  return SINGLETON_FILES.filter((name) => {
+    try {
+      fs.lstatSync(path.join(userDataDir, name));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function requestSingleInstanceLock() {
+  return mode !== "lock-lost" && mode !== "stale-lock";
 }
 
 /** A surface whose every property is a no-op function (or a nested surface). */
@@ -88,13 +114,14 @@ const app = {
   getVersion: () => "0.0.0-test",
   getName: () => "Kiro Crew",
   getAppPath: () => path.join(__dirname, ".."),
-  requestSingleInstanceLock: () => true,
+  requestSingleInstanceLock,
   setAppUserModelId() {},
   on() {},
   once() {},
   whenReady: () => new Promise(() => {}),
   commandLine: { appendSwitch() {}, hasSwitch: () => false },
   exit(code) {
+    if (mode === "stale-lock") process.stdout.write("SINGLETON_LEFT:" + singletonFilesLeft().join(",") + "\n");
     process.stdout.write("APP_EXIT:" + code + "\n");
     process.exit(code);
   },

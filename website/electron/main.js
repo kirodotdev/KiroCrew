@@ -34,6 +34,7 @@ const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
 const { resolveHome, secretCandidates } = require("./home-dir");
 const { identityFamily } = require("./instance-guard");
+const { describeSingletonLock } = require("./singleton-lock");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -291,6 +292,12 @@ const requestQuit = () => {
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
 if (!app.requestSingleInstanceLock()) {
+  const userDataDir = app.getPath("userData");
+  glog(
+    "single-instance lock held by another process; exiting. If no Kiro Crew window is open, "
+      + "a crash may have left a stale SingletonLock in " + userDataDir + ". "
+      + describeSingletonLock({ userDataDir }),
+  );
   app.exit(0);
 } else {
   // Record the moment this build became able to collect crashes, BEFORE the
