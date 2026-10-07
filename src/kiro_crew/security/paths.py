@@ -1239,6 +1239,27 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/app-sources"
     for prefix in _CREW_HOME_PREFIXES
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The Meetings app's per-meeting user notes (``<data>/notes/<id>/note.md`` and
+    # the images pasted into them). The note is private free text the user cannot
+    # regenerate, and every meeting agent ships ``fs_write`` and is handed the
+    # meeting directory's path — so the note lives OUTSIDE that directory, in this
+    # app-owned tree, and this entry is what refuses an agent file tool rewriting it.
+    #
+    # WRITE-only, NOT on the read+write floor the sibling ``apps/meetings/data/edits``
+    # sits on, and the asymmetry is load-bearing rather than a weaker choice: the
+    # dashboard renders a note's pasted images through ``/api/file-raw``, which
+    # applies the READ floor, so a note tree there answers 403 for every image. The
+    # note is the user's own text in the user's own meeting; the harm the fence
+    # addresses is an agent silently overwriting it, which is what a write denial
+    # answers. A whole directory, like ``app-sources``: the per-meeting id segment
+    # makes a leaf unenumerable, and the matcher's ``entry + os.sep`` prefix form
+    # covers every note and image without naming them. The app backend opens the
+    # files directly and never routes through this gate, so save and paste keep
+    # working; only the agent's own file-edit tool is refused.
+    f"{prefix}/apps/meetings/data/notes"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 # ── kiro-cli agent-spec directory (~/.kiro/agents) ──
 # The user-level directory kiro-cli reads its ``--agent <name>`` specs from

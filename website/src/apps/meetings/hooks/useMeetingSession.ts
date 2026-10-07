@@ -25,6 +25,7 @@ import {
   type TranslationLine,
 } from '../api'
 import { useMeetingTranscription } from './useMeetingTranscription'
+import { useNoteDraft } from './useNoteDraft'
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
 const DEDUP_WINDOW_MS = 5000
@@ -255,6 +256,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const [partialTranscript, setPartialTranscript] = useState('')
   const [fullMeetingId, setFullMeetingId] = useState('')
   const transcriptFullNoticeRef = useRef('')
+  const [noteOpen, setNoteOpen] = useState(false)
   const [translationOpen, setTranslationOpen] = useState(false)
   const [chatViewAgents, setChatViewAgents] = useState<string[]>([])
   const [selectedPreset, setSelectedPreset] = useState(config?.default_preset ?? '')
@@ -359,6 +361,88 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       : status === 'paused' || status === 'reviewing'
         ? (config?.poll_interval_idle ?? 30_000)
         : false,
+  })
+
+  // ── the user's own note ───────────────────────────────────────────────────
+  //
+  // Fetched only while the panel is open, and NOT polled: this is the one thing in
+  // the meeting the user owns, so the authoritative copy is the textarea they are
+  // typing into. Refetching under them is how an autosaving editor loses a
+  // sentence, and there is no second writer to poll for.
+  const noteQuery = useQuery({
+    queryKey: [...scope, 'note'],
+    queryFn: () => meetingsApi.note(meetingId),
+    enabled: initQuery.isSuccess && noteOpen,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+  })
+
+  const noteMutation = useMutation({
+    mutationFn: (content: string) => meetingsApi.saveNote(meetingId, content),
+    onSuccess: response => {
+      // Seed the cache from the response instead of invalidating: an invalidate
+      // would refetch and hand the editor a value mid-keystroke.
+      queryClient.setQueryData([...scope, 'note'], {
+        content: response.content,
+        updated_at: response.updated_at,
+        path: response.path,
+      })
+    },
+    // `notify` directly rather than `failureNotice`: that helper is declared
+    // further down (referencing it here would be a use-before-init), and its one
+    // special case — the 409 "another meeting is active" — cannot arise for a note.
+    onError: () => notify(i18nT('apps.meetings.session.noteSaveFailed'), { type: 'error' }),
+    // Serialized, the way ChatPanel serializes its hidden-models save and for the
+    // same ordering reason. Concurrent saves are ordinary here (the debounce timer
+    // plus the blur, preview and unmount flushes), and out-of-order completion let
+    // the OLDER response seed the cache last, which the panel's adopt effect then
+    // put back in the field over newer text. Completions in send order self-heal,
+    // so keeping them in send order is the whole fix.
+    scope: { id: `meetings-note-${meetingId}` },
+  })
+
+  /**
+   * Store one pasted image, resolving with the markdown pieces to insert.
+   *
+   * Throws on refusal — the draft hook classifies the error for its in-panel notice
+   * — after reporting it to the notification feed, which is the one surface still
+   * showing when the paste completes after the panel has been closed. The two cases
+   * worth distinguishing are the ones the user can act on: shrink the image, or
+   * paste a different format.
+   */
+  const uploadNoteImage = useCallback(
+    async (file: File): Promise<{ alt: string; src: string }> => {
+      try {
+        const stored = await meetingsApi.uploadNoteImage(meetingId, file)
+        return { alt: stored.alt, src: stored.src }
+      } catch (error) {
+        const tooLarge = error instanceof MeetingsApiError && error.status === 413
+        notify(
+          i18nT(
+            tooLarge
+              ? 'apps.meetings.session.noteImageTooLarge'
+              : 'apps.meetings.session.noteImageFailed',
+          ),
+          { type: 'error' },
+        )
+        throw error
+      }
+    },
+    [meetingId, notify],
+  )
+
+  // The draft lives HERE, with the meeting, not in the panel: `NoteSidebar` is
+  // unmounted when the user closes it, and a draft held in its state died with it
+  // — a save refused on the way out lost the only copy. It lives no longer than the
+  // meeting view, either: leaving the view goes through `leaveNote` below, which
+  // waits for the final save and reports a refusal instead of navigating past it.
+  // See `useNoteDraft`.
+  const noteDraft = useNoteDraft({
+    meetingId,
+    serverContent: noteQuery.data?.content,
+    loadFailed: noteQuery.isError,
+    save: content => noteMutation.mutateAsync(content),
+    uploadImage: uploadNoteImage,
   })
 
   // ── live translation ──────────────────────────────────────────────────────
@@ -834,6 +918,46 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     chatViewAgents,
     selectedPreset,
     transcription,
+    /**
+     * The user's own note. Not polled — the draft is the authoritative copy, and
+     * it outlives the panel (see `useNoteDraft`), so every field the panel renders
+     * comes from the hook rather than from component state.
+     */
+    note: {
+      open: noteOpen,
+      draft: noteDraft.draft,
+      dirty: noteDraft.dirty,
+      loaded: noteDraft.loaded,
+      updatedAt: noteQuery.data?.updated_at ?? '',
+      path: noteQuery.data?.path ?? '',
+      saving: noteDraft.saving,
+      saveFailed: noteDraft.saveFailed,
+      // The initial GET's own failure, as a flag: the panel maps it to a catalog
+      // string, because the server's sentence is English in every locale. A failed
+      // load leaves the textarea EMPTY, which reads as "no note yet" — and typing
+      // into that is how an existing note gets overwritten with a fresh one. The
+      // panel therefore says so in place, not only in a toast that fades.
+      loadFailed: noteQuery.isError,
+      uploading: noteDraft.uploading,
+      uploadError: noteDraft.uploadError,
+    },
+    setNoteOpen,
+    changeNote: noteDraft.change,
+    flushNote: noteDraft.flush,
+    pasteNoteImage: noteDraft.pasteImage,
+    /**
+     * The step before leaving the meeting view. Saves the note and resolves once the
+     * server has answered: `true` when it is safe to go (the note is on disk, or
+     * there was nothing to save), `false` when the save was refused. The draft is
+     * held by this hook, which the view unmounts on the way out — so the caller
+     * navigates only on `true`, and on `false` stays where the text still is, with
+     * the panel opened so the refusal it renders is on screen.
+     */
+    leaveNote: async (): Promise<boolean> => {
+      const saved = await noteDraft.exit()
+      if (!saved) setNoteOpen(true)
+      return saved
+    },
     /** Live translation: `''` language means the feature is off. */
     translation: {
       language: translationLanguage,

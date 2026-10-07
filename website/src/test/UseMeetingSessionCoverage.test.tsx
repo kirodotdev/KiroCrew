@@ -35,6 +35,8 @@ const apiMocks = vi.hoisted(() => ({
   reviewTask: vi.fn(),
   saveOutput: vi.fn(),
   revertOutput: vi.fn(),
+  note: vi.fn(),
+  saveNote: vi.fn(),
 }))
 
 /**
@@ -155,6 +157,8 @@ beforeEach(() => {
   ] as const) {
     apiMocks[key].mockResolvedValue({})
   }
+  apiMocks.note.mockResolvedValue({ content: '', updated_at: '', path: '/data/notes/weekly_sync/note.md' })
+  apiMocks.saveNote.mockResolvedValue({ ok: true, content: '', updated_at: '', path: '' })
   // `dispatch` is deliberately absent from the list above: it is the one mutation
   // whose response the hook READS, so it needs its real DispatchResponse shape
   // rather than a bare {}. Broadcast's success path commits `response.segment`
@@ -883,5 +887,77 @@ describe('useMeetingSession chat view', () => {
 
     act(() => view.result.current.toggleChatView('note-taker'))
     expect(view.result.current.chatViewAgents).toEqual(['summarizer'])
+  })
+})
+
+// The note draft lives in this hook and unmounts with the meeting view, so the
+// view asks `leaveNote` before it lets the user go. These drive the real hook,
+// the real React Query mutation and the real draft state machine together.
+describe('useMeetingSession leaving with a note', () => {
+  /** A promise a test settles by hand, to hold the PUT in flight. */
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => {}
+    let reject: (reason?: unknown) => void = () => {}
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  async function mountWithNote() {
+    const view = await mountLoaded()
+    act(() => view.result.current.setNoteOpen(true))
+    await waitFor(() => expect(view.result.current.note.loaded).toBe(true))
+    return view
+  }
+
+  it('does not answer while the save is pending, so the view cannot navigate yet', async () => {
+    const pending = deferred<unknown>()
+    apiMocks.saveNote.mockReturnValue(pending.promise)
+    const view = await mountWithNote()
+    act(() => view.result.current.changeNote('the last line'))
+
+    let answered: boolean | undefined
+    let leaving!: Promise<boolean>
+    act(() => {
+      leaving = view.result.current.leaveNote()
+      void leaving.then(value => { answered = value })
+    })
+    await waitFor(() => expect(apiMocks.saveNote).toHaveBeenCalledWith('weekly_sync', 'the last line'))
+    await act(async () => { await Promise.resolve() })
+    expect(answered).toBeUndefined()
+    expect(view.result.current.note.saving).toBe(true)
+
+    pending.resolve({ ok: true, content: 'the last line', updated_at: 'now', path: '' })
+    await act(async () => { await leaving })
+    expect(answered).toBe(true)
+    await waitFor(() => expect(view.result.current.note.dirty).toBe(false))
+  })
+
+  it('answers false on a refusal and opens the panel on the failure it renders', async () => {
+    apiMocks.saveNote.mockRejectedValue(new MeetingsApiError('disk full', 500))
+    const view = await mountWithNote()
+    act(() => view.result.current.changeNote('not on disk'))
+    // Closed the panel first, the way a user leaving usually has: the refusal must
+    // still be on screen when the view stays, so `leaveNote` reopens it.
+    act(() => view.result.current.setNoteOpen(false))
+
+    let answered: boolean | undefined
+    await act(async () => { answered = await view.result.current.leaveNote() })
+    expect(answered).toBe(false)
+    expect(view.result.current.note.draft).toBe('not on disk')
+    expect(view.result.current.note.dirty).toBe(true)
+    expect(view.result.current.note.saveFailed).toBe(true)
+    expect(view.result.current.note.open).toBe(true)
+    expect(view.notify).toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.noteSaveFailed'),
+      { type: 'error' },
+    )
+  })
+
+  it('answers true at once when the note is already on disk', async () => {
+    const view = await mountWithNote()
+    let answered: boolean | undefined
+    await act(async () => { answered = await view.result.current.leaveNote() })
+    expect(answered).toBe(true)
+    expect(apiMocks.saveNote).not.toHaveBeenCalled()
   })
 })

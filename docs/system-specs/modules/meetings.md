@@ -19,6 +19,7 @@ action items.
 | `.../backend/domain/session.py` | batching dispatcher + meeting state machine |
 | `.../backend/domain/translate.py` | live per-line translation queue + its prompt |
 | `.../backend/domain/audio.py` | splitting an imported transcript into lines |
+| `.../backend/domain/images.py` | image-signature sniffing for note pastes |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
 | `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
 | `.../backend/calendar_sync.py` | one calendar sync (provider fetch → cache), shared by the route and the poller |
@@ -66,6 +67,9 @@ GET    /meetings/{id}/outputs       batch-read every agent output + tasks
 GET    /meetings/{id}/translations[?since=N]   translated lines, cursor-paged
 PUT    /meetings/{id}/outputs       replace one agent's minutes  {agent_id, content}
 DELETE /meetings/{id}/outputs       discard the edit, serve the agent's own output {agent_id}
+GET    /meetings/{id}/note          the user's own note + its absolute path
+PUT    /meetings/{id}/note          {content} — replace it
+POST   /meetings/{id}/note/images   multipart — one pasted screenshot
 POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
 POST   /meetings/{id}/mute          {agent_id, muted}
@@ -115,6 +119,8 @@ meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 meetings/<safe_id>/translations.json  live translation, reset on language change
 edits/<safe_id>/<agent>.md        the user's edit of that agent's minutes (sidecar)
+notes/<safe_id>/note.md          the user's own note (write-fenced sidecar)
+notes/<safe_id>/images/*         screenshots pasted into that note
 ```
 
 `edits/` is an **app-owned sidecar root outside every agent-writable meeting
@@ -135,8 +141,27 @@ point the user's text would be handed to the iframe renderer. The sidecar's
 filename is derived from the agent's validated id, never from the request, and
 the directory passes through `store.contain` like every other derived path.
 
+`notes/` is the **second app-owned sidecar root**, built and link-checked exactly
+as `edits/` is (`store.notes_root` / `note_dir` mirror `agent_edits_root` /
+`agent_edits_dir`, `_refuse_linked` included). Its location is the security
+property: every meeting agent ships `fs_read`/`fs_write` and is handed the meeting
+directory's absolute path, so a note stored inside that directory — the first
+version used `<meeting>/_note.md`, whose underscore only proved no agent's DERIVED
+output filename could collide with it — was one prompt-injected `fs_write` away from
+being overwritten. Unlike `edits/`, `notes/` is on the shared **WRITE-only** tier
+(`security.paths._WRITE_PROTECTED_HOME_PATHS`, the `app-sources` shape), not the
+read+write floor, and the asymmetry is load-bearing: pasted images are served through
+`/api/file-raw`, which applies the READ floor, so a note tree on that floor answers
+403 for every image. Reads stay open — the note is the user's own text in the user's
+own meeting — and what the fence refuses is an agent file tool rewriting it. Pinned
+by `test_the_tree_is_on_the_write_only_fence_and_stays_readable`, against the live
+gate rather than this app's own list. Nothing is migrated from the old location: the
+feature never shipped with it, and a migration would import whatever an agent had
+written there into the fenced tree.
+
 Deleting a meeting removes its complete per-meeting directory (metadata,
-transcript, tasks, notes, and diagrams) and its app-owned edit directory. The route
+transcript, tasks, notes, and diagrams) and both app-owned sidecar directories
+(`edits/<id>` and `notes/<id>`). The route
 refuses a meeting with a live
 in-process session with `409 meeting_active`; the dashboard keeps the row's delete
 affordance visible but disabled for active, paused, and reviewing states. Calendar
@@ -473,6 +498,65 @@ empty room, filler) is a real outcome the user must be able to see.
 There is **no UI for this yet** — it is an API surface. A host-path picker in the
 meeting view is a separate UI decision.
 
+## The user's note
+
+`notes/<id>/note.md` per meeting, with pasted screenshots beside it under
+`images/` (see **Data** for why that tree, and why it is write-fenced rather than
+read-fenced). Four decisions worth carrying forward:
+
+* **The note is not redacted**, unlike everything else this app accepts, and the PUT
+  body is validated by hand rather than with `field_str`. That helper treats a
+  non-string as *missing* — so a malformed request would answer 200 having ERASED
+  the memo — and it `strip()`s, destroying trailing blank lines the user typed. A
+  note is the one thing here the user cannot regenerate. A body that cannot be encoded
+  as UTF-8 (JSON `\udXXX` escapes decode into unpaired surrogates) is refused as a 400
+  for the same reason the minutes `PUT` refuses one: the write would otherwise fail
+  inside `atomic_write` and report a server fault for a malformed request.
+* **The note PUT has its own body cap**, `MAX_NOTE_BODY_BYTES` (2 MiB), paired with
+  `MAX_NOTE_CHARS` exactly as `MAX_MINUTES_BODY_BYTES` is paired with
+  `MAX_MINUTES_CHARS`: the shared 256 KiB default is fewer wire bytes than 100,000
+  characters as soon as the text is not ASCII, so a CJK note crossed it at roughly
+  87,400 characters and every later autosave answered 413. Pinned with a multi-byte
+  case in `test_meetings_note.py::TestBodyCaps`, because the ASCII case at the cap
+  never observed it.
+* **The note is never polled**, and the save response seeds the cache instead of
+  invalidating: the textarea is the authoritative copy, and refetching under the user
+  is how an autosaving editor loses a sentence.
+* **Image paste never reads the client filename.** The extension is sniffed from the
+  bytes (`domain/images.sniff_image_ext`) and the name is a fresh uuid4, so no client
+  string reaches a path. An unrecognised signature is REFUSED, which is what keeps
+  SVG out (no binary signature, and a document that can carry `<script>`).
+  The magic bytes themselves are NOT this app's: `sniff_image_ext` delegates to
+  `kiro_crew.messaging.raster.sniff_raster_mime` and keeps only a `{mime: ext}`
+  allowlist, which is the per-consumer narrowing that module reserves for its callers.
+  A second copy of the table is how one path ends up accepting a type another rejects,
+  so BMP stays out by being absent from the allowlist rather than from the table.
+  `store.safe_note_image_name` additionally requires exactly the generated shape,
+  because `contain()` alone is not enough: it bounds a path to the DATA ROOT, so
+  `../../../meetings/m2/note-taker.md` — another meeting's agent output — would pass.
+
+No second file-serving route was added. `MarkdownRenderer`'s `ImgWithFallback`
+rewrites a relative `<img src>` to `/api/file-raw?path=…` when a `BasePathCtx` is
+present, and that route is already hardened (content type from MAGIC BYTES only,
+`O_NOFOLLOW`, `nosniff`, SVG CSP). The note's `GET` returns its own absolute `path`
+for exactly this. The request is made by the dashboard SPA as the logged-in user,
+whose token bypasses `permissions.api` entirely (`token_auth.app_token_path_allowed`),
+so `app.json` grants the meetings app **no** `/api/file-raw` scope: nothing under
+`website/src/apps/meetings/` mints or uses an app token, and the grant would have
+handed one host-wide file read for a flow that never fetches on it.
+
+The frontend's draft lives in `hooks/useNoteDraft.ts`, ABOVE the panel, not in the
+panel: `NoteSidebar` is unmounted when the user closes it, and a draft held in
+component state died with it — a close-time save that was refused lost the only copy.
+The hook owns the debounce, the flush, the acknowledged-server-content baseline
+(advanced when a save LANDS, not when it is sent, so a stale response can never
+replace newer typing and a refused save stays dirty until one succeeds), and the
+pending image paste, whose markdown is inserted and saved when the upload resolves
+even if the panel has since closed. Every failure the user can act on — a refused
+save, a refused load (`note_unreadable`, mapped to a catalog string by code), a
+refused paste — renders in the panel through `ErrorNotice`, not only in the
+notification feed.
+
 ## The two provider seams
 
 Both follow `kiro_crew.embeddings`' `EmbeddingBackend` /
@@ -686,8 +770,9 @@ broadcast bar remains available when speech input is unavailable.
   than coercing (`bool("false")` is `True`, which would invert a mute decision);
   `field_str` treats a non-string as missing rather than stringifying it. The
   minutes PUT has its own 3 MiB body cap: it covers the 200,000-character limit
-  even when a valid JSON client uses twelve-byte UTF-16 surrogate escapes, while
-  every ordinary short-field route keeps the shared 256 KiB cap.
+  even when a valid JSON client uses twelve-byte UTF-16 surrogate escapes, and the
+  note PUT has its own 2 MiB cap for the same reason over its 100,000-character
+  limit, while every ordinary short-field route keeps the shared 256 KiB cap.
 * **Narrow config writer.** `PUT /config` is an allow-list, not a merge: an
   unknown provider id collapses to the default, an agent id that is not a safe
   slug is dropped, and an agent-spec reference with `..` or a leading `/` becomes
@@ -739,11 +824,19 @@ broadcast bar remains available when speech input is unavailable.
   decoder consume one descriptor for that snapshot. Platforms without that
   primitive fail closed with 501 before opening the client path. The format check
   runs on the canonical source, so a symlink cannot use its own name to pass it.
+* **A deliberate redaction EXEMPTION, for the user's own writing.** The note is
+  returned verbatim: it is text on its way back to only the person who typed it and
+  is never fed to an agent. It renders through the dashboard's shared markdown
+  sanitizer, which is what keeps the round trip safe without altering the text.
+* **An uploaded image's name is never the client's.** The extension comes from the
+  bytes and the stem is a uuid4; `store.safe_note_image_name` then requires exactly
+  that shape, because path containment alone permits `../<other-meeting>/<agent>.md`.
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
-  enable check, the task-provider `create`, the import's path vetting and
-  speech-to-text availability probe, and every store read and the init
-  transaction inside a calendar-poller tick all run on an executor.
+  enable check, the task-provider `create`, the note reads/writes, image sniffing,
+  the import's path vetting and speech-to-text availability probe, and every store
+  read and the init transaction inside a calendar-poller tick all run on an
+  executor.
 
 ## What the port changed
 
@@ -767,9 +860,11 @@ due-event rule, a tick against a real `.ics`, pre-creation as init-not-start, th
 loop surviving a bad tick, the settings round trip), `test_meetings_minutes.py` (the
 editable minutes: sidecar ownership, the read overlay, staleness, the widget
 gate, redaction asymmetry, body caps), `test_meetings_translation.py` (the
-injection guard, the bounded queue, off-by-default), and
+injection guard, the bounded queue, off-by-default),
 `test_meetings_audio_import.py` (the split's boundary rules, the refusals in
-ORDER, and the shared dispatch transaction), with the shared fixtures and the
+ORDER, and the shared dispatch transaction), and `test_meetings_note.py` +
+`test_meetings_note_images.py` (the write-fenced sidecar tree, the by-hand body
+validation and its multi-byte body cap, the signature sniffing), with the shared fixtures and the
 fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
 model, or decodes audio.
@@ -785,5 +880,6 @@ transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (lis
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
-`MeetingsTranslation.test.tsx`, and `MeetingsTranscriptPanel.test.tsx`
-(durable/live rows, follow mode, and the split-to-primary layout transition).
+`MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
+`MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
+split-to-primary layout transition).

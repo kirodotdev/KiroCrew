@@ -250,6 +250,19 @@ def register_routes(app: web.Application) -> None:
         BASE + "/meetings/{meeting_id}/outputs",
         route(require_owner("meetings.delete_output")(lifecycle_routes.handle_delete_output)),
     )
+    # The user's own note. A GET/PUT pair rather than a PATCH: the body is the
+    # whole note, so there is no partial update to express. Writes are owner-only
+    # like the output sidecar writes above; reads follow the app's deliberately open
+    # authenticated-read policy.
+    router.add_get(BASE + "/meetings/{meeting_id}/note", route(lifecycle_routes.handle_get_note))
+    router.add_put(
+        BASE + "/meetings/{meeting_id}/note",
+        route(require_owner("meetings.put_note")(lifecycle_routes.handle_put_note)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/note/images",
+        route(require_owner("meetings.note_image")(lifecycle_routes.handle_post_note_image)),
+    )
     router.add_post(
         BASE + "/meetings/{meeting_id}/attachments",
         route(require_owner("meetings.attachments")(lifecycle_routes.handle_attachments)),
