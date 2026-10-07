@@ -89,6 +89,13 @@ installed against:
 - The host CLI name `kirocrew` is pinned to the running gateway before any of
   the above applies.
 
+A stdio entry's `env` values are passed through as declared. In particular a
+`secret://<name>` value is **not** resolved against the Secrets vault for an
+app's server: the server receives the literal reference text. Registration logs
+a warning naming the app, server and env key when it sees one. How an app may
+receive a vault secret is still an open decision
+([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+
 ## Scheduling
 
 ### `crons` — Cron Job Definitions

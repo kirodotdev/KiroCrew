@@ -1890,6 +1890,44 @@ class TestStdioInterpreterResolution:
             )
         assert "resolves to no existing executable" not in caplog.text
 
+    def test_a_secret_uri_env_value_logs_a_warning_and_registers_unchanged(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # An app's stdio server is spawned by kiro-cli, which never
+        # resolves secret://, so the literal reaches the child. Until the owner
+        # decides how apps may reach the vault, registration must at least say
+        # so -- naming the env KEY only, never the secret name -- and must not
+        # rewrite or drop the declared value.
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            entry = self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {
+                    "command": "python3",
+                    "args": [],
+                    "env": {"API_TOKEN": "secret://hidden-name-10641", "MODE": "x"},
+                },
+                setup=_fake_venv_python,
+            )
+        assert entry["env"]["API_TOKEN"] == "secret://hidden-name-10641"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        hits = [w for w in warnings if "secret://" in w]
+        assert len(hits) == 1
+        assert "test-app" in hits[0] and "'srv'" in hits[0]
+        assert "'API_TOKEN'" in hits[0]
+        assert "'MODE'" not in hits[0]
+        assert "hidden-name-10641" not in caplog.text
+
+    def test_a_plain_env_logs_no_secret_uri_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {"command": "python3", "args": [], "env": {"MODE": "secret:/not-a-ref"}},
+                setup=_fake_venv_python,
+            )
+        assert "secret:// reference" not in caplog.text
+
     def test_one_bad_server_does_not_block_its_siblings(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.bridges as bmod
 
