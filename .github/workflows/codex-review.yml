@@ -1,6 +1,6 @@
 name: GPT 6.1 Review
 
-# Second AI reviewer using OpenAI GPT-5.6 Sol via Amazon Bedrock (Mantle).
+# Second AI reviewer using OpenAI GPT-6.1 Sol via Amazon Bedrock (Mantle).
 # Runs alongside claude-review.yml to provide a second independent perspective.
 # Runs the Codex CLI directly with model_provider = amazon-bedrock; the CLI
 # authenticates to Bedrock with the OIDC role's SigV4 credentials via the AWS
