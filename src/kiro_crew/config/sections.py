@@ -3645,22 +3645,25 @@ class TelemetryConfig:
             "How often the local exporter flushes aggregated metrics to disk (>=1).",
         ),
     )
+    # Bounded by default: an enabled sink writes roughly 19 MB/day, and an
+    # unbounded metrics dir eventually fills the home volume.
     retention_days: int = field(
-        default=0,
+        default=14,
         metadata=_meta(
             "Retention (days)",
             "Prune local JSONL metric shards older than this many days on each "
-            "export cycle. 0 disables age-based pruning. Bounds on-disk telemetry "
-            "growth (rec #14: bounded retention).",
+            "export cycle. Default 14. 0 disables age-based pruning. Bounds "
+            "on-disk telemetry growth (rec #14: bounded retention).",
         ),
     )
     max_total_mb: int = field(
-        default=0,
+        default=500,
         metadata=_meta(
             "Max Total Size (MB)",
-            "Opportunistic directory budget for local metric shards. Closed shards "
-            "are pruned oldest-first; protected active writers can temporarily exceed "
-            "the budget. 0 disables the size cap (rec #14: bounded retention).",
+            "Opportunistic directory budget for local metric shards. Default 500. "
+            "Closed shards are pruned oldest-first; protected active writers can "
+            "temporarily exceed the budget. 0 disables the size cap (rec #14: "
+            "bounded retention).",
         ),
     )
     otlp_endpoint: str = field(

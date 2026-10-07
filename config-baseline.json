@@ -3075,8 +3075,8 @@
         "enabled": false,
         "local_dir": "",
         "export_interval_seconds": 60,
-        "retention_days": 0,
-        "max_total_mb": 0,
+        "retention_days": 14,
+        "max_total_mb": 500,
         "otlp_endpoint": "",
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
@@ -3133,10 +3133,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Retention (days)",
-      "help": "Prune local JSONL metric shards older than this many days on each export cycle. 0 disables age-based pruning. Bounds on-disk telemetry growth (rec #14: bounded retention).",
+      "help": "Prune local JSONL metric shards older than this many days on each export cycle. Default 14. 0 disables age-based pruning. Bounds on-disk telemetry growth (rec #14: bounded retention).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 14
     },
     {
       "path": "telemetry.max_total_mb",
@@ -3147,10 +3147,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Total Size (MB)",
-      "help": "Opportunistic directory budget for local metric shards. Closed shards are pruned oldest-first; protected active writers can temporarily exceed the budget. 0 disables the size cap (rec #14: bounded retention).",
+      "help": "Opportunistic directory budget for local metric shards. Default 500. Closed shards are pruned oldest-first; protected active writers can temporarily exceed the budget. 0 disables the size cap (rec #14: bounded retention).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 500
     },
     {
       "path": "telemetry.otlp_endpoint",

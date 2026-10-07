@@ -136,8 +136,8 @@ worst case is one dropped export cycle rather than a corrupt shard.
 | `enabled` | `false` | Main switch. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
 | `local_dir` | `""` | JSONL shard dir; empty = `~/.kiro/crew/metrics`. `~` expansion supported. |
 | `export_interval_seconds` | `60` | Flush interval (floored to 1). |
-| `retention_days` | `0` | Age pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive day window to opt in (rec #14). |
-| `max_total_mb` | `0` | Size pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive opportunistic directory budget to opt in; protected active writers can temporarily exceed it (rec #14). |
+| `retention_days` | `14` | Shards older than 14 days are pruned. An enabled sink writes roughly 19 MB/day, so the earlier `0` default grew the directory without bound (#11236). Set `0` to disable age pruning (rec #14). |
+| `max_total_mb` | `500` | Opportunistic directory budget; closed shards are pruned oldest-first and protected active writers can temporarily exceed it. Set `0` to disable the size cap (rec #14). |
 | `otlp_endpoint` | `""` | Opt-in OTLP/HTTP metrics endpoint (e.g. `http://localhost:4318/v1/metrics`). **Empty = no network egress (default).** When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires `pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"` (rec #1). |
 
 Field validation (`TelemetryConfig.__post_init__`): `export_interval_seconds`
@@ -247,12 +247,15 @@ to pass low-cardinality constants rather than prompts, content, tokens, paths or
 user ids. That sanitisation is defence in depth over the requirement, not a
 substitute for it, so egress is only as safe as the call sites feeding it.
 
-**Bounded local retention (rec #14, explicit opt-in):** both destructive caps
-default to `0`, so upgrading cannot delete existing telemetry history. Operators
-can opt in independently to age and/or size bounds:
-- *Age cap* — set `retention_days` to a positive window (for example `7`); shards
-  whose mtime is older than that window are eligible for deletion.
-- *Total-size cap* — set `max_total_mb` to a positive budget (for example `128`);
+**Bounded local retention (rec #14, on by default):** both caps are on by
+default (`retention_days` 14, `max_total_mb` 500), because an enabled sink left
+unbounded fills the home volume (#11236). An install upgrading with telemetry
+enabled and neither key set therefore gets pruned history; the first-plan
+warning and 300-second deferral below give it a window to set `0`. Each cap is
+independent:
+- *Age cap* — `retention_days` (default `14`); shards whose mtime is older than
+  that window are eligible for deletion.
+- *Total-size cap* — `max_total_mb` (default `500`);
   before an append would
   exceed the live-shard budget, the exporter rotates that shard and opens a
   fresh canonical writer. Closed shards are then deleted oldest-first until the
@@ -262,9 +265,8 @@ can opt in independently to age and/or size bounds:
   protected shards can temporarily approach the number of active writers times
   `max_total_mb` before those writers rotate and closed shards become eligible
   for oldest-first deletion.
-- *Both caps are independently opt-in* and can be disabled again by setting
-  the value to `0`.
-- After an operator enables a cap, before the first destructive plan in each
+- *Each cap can be disabled independently* by setting its value to `0`.
+- Whenever a cap is active, before the first destructive plan in each
   exporter process, retention emits
   one fixed, path-free warning and defers deletion for a full 300-second prune
   interval. Operators can set either cap to `0` during that window. The notice

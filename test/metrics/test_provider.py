@@ -289,12 +289,21 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
 
 
 def test_retention_config_defaults():
-    """Retention caps default off so upgrades never delete existing shards."""
-    from kiro_crew.config.loader import TelemetryConfig
+    """Retention caps are bounded by default; an explicit 0 still opts out."""
+    from kiro_crew.config.loader import TelemetryConfig, _build_telemetry_config
 
     cfg = TelemetryConfig()
-    assert cfg.retention_days == 0
-    assert cfg.max_total_mb == 0
+    assert cfg.retention_days == 14
+    assert cfg.max_total_mb == 500
+    # A config.json section that omits the keys resolves to the same bounds,
+    # so an existing install with telemetry enabled is bounded after upgrade.
+    loaded = _build_telemetry_config({"enabled": True})
+    assert loaded.retention_days == 14
+    assert loaded.max_total_mb == 500
+    # An explicit 0 remains the documented opt-out, not "use the default".
+    opted_out = _build_telemetry_config({"retention_days": 0, "max_total_mb": 0})
+    assert opted_out.retention_days == 0
+    assert opted_out.max_total_mb == 0
     # Negative values are clamped to 0 (disabled) rather than pruning everything.
     clamped = TelemetryConfig(retention_days=-5, max_total_mb=-1)
     assert clamped.retention_days == 0

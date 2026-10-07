@@ -95,8 +95,8 @@ journal.
 |---|---|---|
 | `telemetry.export_interval_seconds` | `60` | Applies to both readers. |
 | `telemetry.local_dir` | `~/.kiro/crew/metrics` | Local JSONL shard directory. |
-| `telemetry.retention_days` | `0` | `0` never prunes by age. |
-| `telemetry.max_total_mb` | `0` | `0` never prunes by size. |
+| `telemetry.retention_days` | `14` | Shards older than this are pruned; `0` never prunes by age. |
+| `telemetry.max_total_mb` | `500` | Oldest closed shards are pruned past this budget; `0` never prunes by size. |
 
 ## Temporality: the setting that decides whether your backend accepts the data
 
