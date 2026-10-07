@@ -1837,6 +1837,37 @@ class TestControllerDispatch:
         ), patch.object(svc_macos, "is_active", return_value=True):
             assert controller.is_service_active() is True
 
+    def test_service_alias_holder_routes_to_linux_on_systemd(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import linux as svc_linux
+
+        holder = svc_linux.AliasHolder("system", "other.service")
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.SYSTEMD,
+        ), patch.object(svc_linux, "alias_holder", return_value=holder) as mock_alias:
+            assert controller.service_alias_holder() is holder
+        mock_alias.assert_called_once()
+
+    def test_service_alias_holder_is_none_on_launchd(self):
+        """launchd has no alias concept for labels — macOS always answers None."""
+        from kiro_crew.service import controller
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.LAUNCHD,
+        ):
+            assert controller.service_alias_holder() is None
+
+    def test_service_alias_holder_is_none_on_unsupported(self):
+        from kiro_crew.service import controller
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.UNSUPPORTED,
+        ):
+            assert controller.service_alias_holder() is None
+
 
 class TestLinuxControlPaths:
     """Cover uninstall, stop, status, is_active, and the sudo helper paths."""
@@ -3937,6 +3968,57 @@ class TestLinuxServiceScopes:
         assert "will not see" not in remedy
         assert "only looks at the system unit" not in remedy
         assert "kirocrew service status|uninstall" in remedy
+
+    # -- alias_holder -------------------------------------------------------
+
+    def test_alias_holder_names_the_scope_and_target_of_a_system_scope_alias(self):
+        """`show kirocrew.service` on an alias answers for the resolved unit;
+        `alias_holder()` reports the scope and that unit's canonical Id so the
+        CLI can refuse before it signals the alias target's process."""
+        from kiro_crew.service import linux as svc_linux
+
+        run = _fake_systemctl(system=_RUNNING, user=None, system_id="other.service")
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            holder = svc_linux.alias_holder()
+
+        assert holder == svc_linux.AliasHolder("system", "other.service")
+        # The question is answerable without sudo, like status/is_active.
+        assert all("sudo" not in c for c in run.calls), run.calls
+
+    def test_alias_holder_names_the_user_scope_when_only_it_is_an_alias(self):
+        from kiro_crew.service import linux as svc_linux
+
+        run = _fake_systemctl(system=None, user=_RUNNING, user_id="other.service")
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            holder = svc_linux.alias_holder()
+
+        assert holder == svc_linux.AliasHolder("user", "other.service")
+
+    def test_alias_holder_prefers_the_system_scope_when_both_are_aliases(self):
+        from kiro_crew.service import linux as svc_linux
+
+        run = _fake_systemctl(
+            system=_RUNNING, user=_RUNNING, system_id="sys.service", user_id="usr.service"
+        )
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            holder = svc_linux.alias_holder()
+
+        assert holder == svc_linux.AliasHolder("system", "sys.service")
+
+    def test_alias_holder_is_none_for_our_own_unit(self):
+        """Our canonical name in both scopes is not an alias — nothing to refuse."""
+        from kiro_crew.service import linux as svc_linux
+
+        run = _fake_systemctl(system=_RUNNING, user=None)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            assert svc_linux.alias_holder() is None
+
+    def test_alias_holder_is_none_when_no_unit_is_installed(self):
+        from kiro_crew.service import linux as svc_linux
+
+        run = _fake_systemctl(system=None, user=None)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            assert svc_linux.alias_holder() is None
 
 
 class TestMacOSControlPaths:

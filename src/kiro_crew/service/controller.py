@@ -295,6 +295,25 @@ def is_service_active() -> bool:
     return False
 
 
+def service_alias_holder() -> "linux.AliasHolder | None":
+    """Return the scope whose ``kirocrew.service`` name is an alias of another
+    unit, or ``None`` when none is.
+
+    systemd-only: ``launchd`` has no alias concept for labels, so macOS and the
+    unsupported platforms always answer ``None``. :func:`is_service_active`,
+    :func:`stop_service` and :func:`restart_service` all fail closed on an alias
+    (they never select or count it), which is right — the aliased unit is not
+    this gateway — but leaves a CLI caller that falls back from them unable to
+    tell "no managed unit here" from "the name resolves to a unit a manager
+    supervises". ``kirocrew stop`` / ``kirocrew restart`` ask this before their
+    foreground-gateway fallback so they refuse rather than signal the alias
+    target's process and spawn a competitor beside it.
+    """
+    if current_platform() == Platform.SYSTEMD:
+        return linux.alias_holder()
+    return None
+
+
 def stop_service() -> bool:
     """Stop the platform service if active. Returns True if a service was stopped."""
     plat = current_platform()

@@ -573,6 +573,52 @@ def _stop_expected_pid(port: int, expect_pid: int) -> None:
     _stop_mcp_gateway_daemon()
 
 
+def _refuse_service_alias(operation: str, port: int) -> bool:
+    """Refuse ``kirocrew stop`` / ``kirocrew restart`` when ``kirocrew.service``
+    is an alias of another unit, before the foreground-gateway fallback.
+
+    Returns True (and prints the refusal, audits it, and the caller must exit 1)
+    when a systemd scope holds our name as an alias; False when none does, so the
+    caller proceeds unchanged.
+
+    ``service_controller.stop_service()`` / ``restart_service()`` /
+    ``is_service_active()`` all fail CLOSED on an alias — the aliased unit is not
+    this gateway, so they never select, count, or act on it. That is correct, but
+    it reads to the fallback below like "no managed service here", which then
+    finds the process the alias target's manager is supervising on the port,
+    SIGTERMs it (the manager restarts it at once — the rendered unit carries
+    ``Restart=always``) and, for restart, spawns a detached replacement that
+    competes for the port and the ``KIROCREW_HOME`` lock. The CLI cannot justify
+    mutating a process it does not manage, so it stops here: exit 1, nothing
+    signalled, nothing spawned. ``service uninstall`` already refuses an alias
+    whole and ``service status`` already names it; this is the same guard for the
+    two verbs that otherwise fall through to signalling.
+    """
+    holder = service_controller.service_alias_holder()
+    if holder is None:
+        return False
+    sel().log_api_access(
+        caller="cli",
+        operation=operation,
+        outcome="denied",
+        source="cli",
+        resources=f"port={port} reason=service_name_is_alias scope={holder.scope}",
+    )
+    # Spell the remedy for the ACTUAL scope and verb, not a fixed
+    # `sudo systemctl restart`: a user-scope alias is reached with
+    # `systemctl --user` (plain `sudo systemctl` hits the system manager and
+    # answers "Unit not found" or acts on a different unit), and a user who ran
+    # `kirocrew stop` must be told to STOP the holder, not restart it.
+    verb = "restart" if operation == "gateway_restart" else "stop"
+    systemctl = "systemctl --user" if holder.scope == "user" else "sudo systemctl"
+    print(
+        f"❌ kirocrew.service is an alias of {holder.unit_id} in the {holder.scope} "
+        f"scope; this command does not manage that unit. {verb.capitalize()} it with\n"
+        f"   `{systemctl} {verb} {holder.unit_id}`, or remove the alias."
+    )
+    return True
+
+
 def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None:
     """Stop a running KiroCrew gateway.
 
@@ -606,6 +652,13 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         print("✅ Stopped kirocrew service. To remove it: kirocrew service uninstall")
         _stop_mcp_gateway_daemon()
         return
+
+    # Before the foreground-gateway fallback: refuse when our name is an alias of
+    # another unit. ``stop_service()`` returned False for it (it fails closed on
+    # an alias), but the fallback below would then SIGTERM the alias target's
+    # managed process on the port — exactly what this CLI must not do.
+    if cli_port is None and _refuse_service_alias("gateway_stop", port):
+        sys.exit(1)
 
     # Cross-platform port -> listening PID lookup (lsof on POSIX, netstat -ano
     # on Windows — there is no lsof there, so an lsof-only lookup makes
@@ -1526,6 +1579,14 @@ def _restart(cli_port: int | None = None) -> None:
                     "   The service manager restarted nothing; run `kirocrew restart` again."
                 )
             print("\n".join(lines))
+            sys.exit(1)
+
+        # The restart attempted nothing and no managed unit is active — but our
+        # name may be an alias of another unit (restart_service() /
+        # is_service_active() both fail closed on an alias). Refuse before the
+        # foreground path below, which would SIGTERM the alias target's managed
+        # process on the port and spawn a detached replacement beside it.
+        if _refuse_service_alias("gateway_restart", port):
             sys.exit(1)
 
     # No service active — bounce the foreground gateway and detach a fresh one.
