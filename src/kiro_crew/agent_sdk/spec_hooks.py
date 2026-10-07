@@ -361,9 +361,12 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
 
     *project_dir* is the session's checkout on a backend that resolves its spec
     project-nearest first (goose, opencode; see ``overlay_project_scope``). There a
-    project spec of that name is the one the session runs, so its hooks are the
-    ones read, and a project spec that cannot be read raises. KAS reads the user
-    level alone, so it passes none.
+    project spec of that name is the one the session runs, but its hooks are
+    commands, so they are read only when the checkout is trusted to choose them
+    (``session_mcp.trusted_project_agent_spec``, the verdict that also gates its
+    ``mcpServers``). An untrusted one yields the user-level spec of that name, and
+    a project spec that cannot be read raises. KAS reads the user level alone, so
+    it passes none.
 
     A KAS mode switch can move a session to one of KAS's own built-in modes
     (``vibe``), which has no Crew spec: it carries no spec hooks, and the Hooks
@@ -374,11 +377,11 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import agent_spec_absent, load_agent_spec
-    from kiro_crew.acp.session_mcp import project_agent_spec
+    from kiro_crew.acp.session_mcp import trusted_project_agent_spec
     from kiro_crew.config.paths import kiro_agents_dir
 
     if project_dir:
-        declared, spec = project_agent_spec(agent_id, project_dir)
+        declared, spec = trusted_project_agent_spec(agent_id, project_dir)
         if declared:
             if spec is None:
                 raise ValueError(f"the project spec for agent {agent_id!r} could not be read")

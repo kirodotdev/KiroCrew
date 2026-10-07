@@ -483,6 +483,29 @@ def project_agent_spec(agent: str, work_dir: str | Path | None) -> tuple[bool, d
     return True, _read_agent_spec(project, operation="spec_hooks_project_agent", source="unknown")
 
 
+def trusted_project_agent_spec(agent: str, work_dir: str | Path | None) -> tuple[bool, dict | None]:
+    """:func:`project_agent_spec` as a reader of the spec's ``hooks`` consumes it.
+
+    A hook in that spec is a command Crew runs as the user when a session opens
+    or a prompt is sent, so the checkout's spec answers here only when
+    :func:`_project_mcp_trusted` lets it choose commands -- the same verdict, on
+    the same resolution, that decides whether its ``mcpServers`` launch. Refused,
+    it answers ``(False, None)``: the caller falls through to the user-level spec
+    of that name, the one the session's MCP array falls back to as well. A spec
+    that exists but cannot be read still answers ``(True, None)``, so a caller
+    that fails closed on it keeps doing so.
+    """
+    declared, spec = project_agent_spec(agent, work_dir)
+    if not declared or spec is None or _project_mcp_trusted(work_dir):
+        return declared, spec
+    logger.info(
+        "spec hooks: the project spec for agent %r is not trusted to run commands;"
+        " its hooks are not loaded",
+        agent,
+    )
+    return False, None
+
+
 def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str, Any] | None:
     """The materialized kiro spec for *agent*, or ``None`` when unreadable.
 
@@ -503,7 +526,9 @@ def _project_mcp_trusted(work_dir: str | Path | None) -> bool:
     Crew cannot read that verdict, and the project-skills consent covers skill
     files entering context, not commands launching, so neither is borrowed here.
     The answer stays ``False`` until a consent exists whose wording names MCP
-    servers. *work_dir* is the seam such a consent would key on.
+    servers. *work_dir* is the seam such a consent would key on. The same verdict
+    gates the spec's ``hooks`` (:func:`trusted_project_agent_spec`), so a consent
+    for it also admits the checkout's hook commands and must say so.
 
     Refusing the servers does not refuse the spec's restrictions: a project entry's
     switch-off keys (:func:`_project_restrictions`) still apply, because they can
@@ -591,9 +616,9 @@ def _session_spec_and_snapshot_for(
     """:func:`_agent_spec_and_snapshot_for` as a mirrored session's array consumes it.
 
     The array is where an array-backed host gets its MCP servers, so this is the
-    read that applies :func:`_project_mcp_trusted`. Every other reader -- the
-    unresolved-ref diagnostic on every host, Crew-fired spec hooks -- keeps the
-    plain resolution.
+    read that applies :func:`_project_mcp_trusted` to them. Crew-fired spec hooks
+    apply the same verdict through :func:`trusted_project_agent_spec`; the
+    unresolved-ref diagnostic on every host keeps the plain resolution.
     """
     return _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
 
