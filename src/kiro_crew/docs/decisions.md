@@ -54,7 +54,7 @@ The configuration shape is:
 }
 ```
 
-Create the API-key secret through the existing [secrets vault](secrets-vault.md) under the name `TYPESAFE_API_KEY`; that is the only vault entry this feature reads, and only for the default Jev endpoint. The reference above is a placeholder, not a working key.
+Create the API-key secret through the existing [secrets vault](secrets-vault.md) under the name `TYPESAFE_API_KEY`; that is the only vault entry this feature reads. The key is sent only to the endpoint your consent was recorded for (and never to a loopback address). The reference above is a placeholder, not a working key.
 
 `bucket` chooses a percentage of sessions. It is a fixed sample, not a random draw per message. A session stays selected or unselected while its key and bucket remain unchanged. `0` samples none and `100` samples all otherwise eligible sessions. Its default is `100`, so with the switch on and no `bucket` set, every otherwise-eligible session is sampled. A value that is not a whole number reads as `0`, so a typo never widens the sample.
 
@@ -75,6 +75,30 @@ This setting alone changes nothing: a chat is only routed while its model is set
 `skills.max_triggered` must be greater than zero to allow automatic selection. Its default is zero, which disables automatic selection even when the Decisions switch is on. Jev selects at most one skill and does not raise that limit.
 
 After setting the provider and sampling values, enable the switch only if the data transfer below is acceptable. Turn it off to return to normal trigger matching. Old `preview` and per-point mode values do not enable this new behavior.
+
+## Using Cloudflare Clef
+
+Cloudflare's Clef decision model on Workers AI answers the same questions in the same format as Jev, so it works as the Decisions provider. Cloudflare wraps its answer in a `result` object, and Kiro Crew reads either shape. A failure reply carries no `answers` and is refused like any other unusable answer, and nothing from it is logged.
+
+Set `provider` in `config.json` by hand (the Decision model picker only offers Jev and local models), using your own Cloudflare account id:
+
+```json
+{
+  "decisions": {
+    "provider": {
+      "endpoint": "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run/@cf/cloudflare/clef-flash",
+      "api_key": "secret://TYPESAFE_API_KEY",
+      "model": "clef-flash",
+      "timeout_ms": 3000
+    }
+  }
+}
+```
+
+- `model` must be `clef` or `clef-flash`, matching the model in the endpoint path (`@cf/cloudflare/clef` or `@cf/cloudflare/clef-flash`).
+- Store a Cloudflare API token that can run Workers AI in the [secrets vault](secrets-vault.md) under `TYPESAFE_API_KEY`. The name is fixed, whichever provider the key belongs to. It is sent as `Authorization: Bearer <token>`.
+- Changing the endpoint withdraws your consent: turn the Decisions switch off and on again on the card, which shows the Cloudflare address you are agreeing to send messages to.
+- Pricing, rate limits and latency are Cloudflare's; see the [Clef model page](https://developers.cloudflare.com/workers-ai/models/clef/). Kiro Crew keeps its connection to the provider open between decisions, so only the first decision after a quiet spell pays the connection set-up (over a second to Cloudflare's API); raise `timeout_ms` if that one, or a busy model, times out, and remember that a slow answer only means the decision falls back.
 
 ## Running a model on this machine
 

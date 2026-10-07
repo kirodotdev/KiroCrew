@@ -478,7 +478,7 @@ _LAZY_IMPORTS = {
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
-    "kiro_crew.decisions": "local_runtime",
+    "kiro_crew.decisions": "impl_jev local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
@@ -509,7 +509,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 77
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1358,6 +1358,7 @@ _DASHBOARD_HOOKS = {
         "_kas_login_shutdown",
         "_stt_shutdown",
         "_local_decision_model_shutdown",
+        "_decision_http_shutdown",
         "_config_watch_shutdown",
         "_instances_shutdown",
         "_crew_log_drain",
@@ -1377,6 +1378,7 @@ _API_HOOKS = {
         "_kas_login_shutdown",
         "_stt_shutdown",
         "_local_decision_model_shutdown",
+        "_decision_http_shutdown",
         "_config_watch_shutdown",
         "_prevent_sleep_shutdown",
         "_listener_guard_shutdown",
@@ -1882,6 +1884,36 @@ async def test_the_local_decision_model_release_waits_for_its_import(
     monkeypatch.setattr(decisions, "local_runtime", runtime, raising=False)
     await hook(app)
     assert calls == [({"wait": True}, False)]
+
+
+@pytest.mark.asyncio
+async def test_the_decision_http_release_waits_for_its_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cleanup hook closes the decision client's shared HTTP sessions only once
+    that module was imported at all -- a gateway that never made a decision does not
+    import it to close nothing."""
+    import kiro_crew.decisions as decisions
+
+    name = "kiro_crew.decisions.impl_jev"
+    app = web.Application()
+    server._register_stt_hooks(app)
+    hook = next(h for h in app.on_cleanup if h.__name__ == "_decision_http_shutdown")
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delattr(decisions, "impl_jev", raising=False)
+    await hook(app)
+    assert name not in sys.modules
+    closed: list[bool] = []
+
+    async def _close_sessions() -> None:
+        closed.append(True)
+
+    module = types.ModuleType(name)
+    module.close_sessions = _close_sessions  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(decisions, "impl_jev", module, raising=False)
+    await hook(app)
+    assert closed == [True]
 
 
 # ── the owners' own behaviour ─────────────────────────────────────────────────

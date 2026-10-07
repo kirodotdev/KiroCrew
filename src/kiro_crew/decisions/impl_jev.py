@@ -9,6 +9,9 @@ protocol error. The gate validates answer domains again before anything is
 consumed. Transport and protocol failures raise; the gate supplies fallback, not
 retries.
 
+The same client serves Cloudflare's Clef decision model on Workers AI, which speaks
+this format inside a ``result`` envelope that ``_from_wire`` unwraps.
+
 The same client serves a local System One server (``decisions/local_models.py``):
 an endpoint on a literal loopback address is sent no credential at all.
 """
@@ -16,8 +19,10 @@ an endpoint on a literal loopback address is sent no credential at all.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
+import threading
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -78,6 +83,80 @@ _SECRET_PREFIX = "secret://"
 #: a prompt-injected shell pick which of the operator's secrets is sent as the
 #: bearer token. Only the dedicated Jev entry resolves; any other name is "no key".
 VAULT_SECRET_NAME = "TYPESAFE_API_KEY"
+
+
+# One keep-alive HTTP session per event loop, shared by every oracle. ``decide``
+# builds a fresh ``JevOracle`` for each decision, so a session owned by the oracle
+# would be a session per request: a hosted provider then pays its full TCP and TLS
+# handshake on every decision (over a second to Cloudflare's API, against tens of
+# milliseconds of inference), which is longer than the default ``timeout_ms``. The
+# pool is keyed by loop because an aiohttp session is bound to the loop it was
+# created on; a loop that has closed takes its session with it (see
+# :func:`_session_for_running_loop`).
+#
+# Nothing per-endpoint or per-request lives on the session: the ``Authorization``
+# header, the URL and the timeout are all passed on each ``post``, and the connector
+# pools by host and port, so a changed ``provider.endpoint`` simply opens a new
+# connection and the old one idles out after ``_KEEPALIVE_SECS``. A credential is
+# therefore never attached to a connection, only to the request sent over it.
+_KEEPALIVE_SECS = 15.0
+_POOL_LIMIT = 16
+_sessions: dict[asyncio.AbstractEventLoop, Any] = {}
+_sessions_lock = threading.Lock()
+
+
+def _session_for_running_loop() -> Any:
+    """The shared keep-alive session for the running loop, created on first use.
+
+    Recreated when it was closed, and never shared across loops. Entries whose loop
+    has closed are dropped here: no running loop can close their session,
+    and ``detach`` marks it closed so dropping the last reference is quiet; the
+    connector closes its own sockets when it is collected.
+
+    The cookie jar is a ``DummyCookieJar`` on purpose. A session that outlives a
+    request would otherwise replay any ``Set-Cookie`` the provider (or something in
+    front of it) sent on every later decision, state that the one-session-per-request
+    code could not carry.
+    """
+    import aiohttp
+
+    loop = asyncio.get_running_loop()
+    with _sessions_lock:
+        for dead in [lp for lp in _sessions if lp.is_closed()]:
+            _sessions.pop(dead).detach()
+        session = _sessions.get(loop)
+        if session is None or session.closed:
+            session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    limit=_POOL_LIMIT, keepalive_timeout=_KEEPALIVE_SECS
+                ),
+                cookie_jar=aiohttp.DummyCookieJar(),
+            )
+            _sessions[loop] = session
+        return session
+
+
+async def close_sessions() -> None:
+    """Close every shared session; the gateway's shutdown hook calls this.
+
+    The running loop's session is closed in place. A session on another loop that
+    is still running is closed on that loop without waiting for it, and one on a
+    closed loop is only dropped. Safe to call with nothing open, and a later
+    ``ask`` simply makes a new session.
+    """
+    running = asyncio.get_running_loop()
+    with _sessions_lock:
+        held = list(_sessions.items())
+        _sessions.clear()
+    for loop, session in held:
+        if loop is running:
+            with contextlib.suppress(Exception):
+                await session.close()
+        elif loop.is_closed():
+            session.detach()
+        else:
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(session.close(), loop)
 
 
 class JevProtocolError(RuntimeError):
@@ -180,6 +259,8 @@ def _from_wire(body: Any, questions: list[Question]) -> Answers:
         raise JevProtocolError("response is not an object")
     raw_answers = body.get("answers")
     if not isinstance(raw_answers, dict):
+        raw_answers = _unwrap_envelope(body)
+    if not isinstance(raw_answers, dict):
         raise JevProtocolError("response has no 'answers' object")
     answers: Answers = {}
     for q in questions:
@@ -188,6 +269,22 @@ def _from_wire(body: Any, questions: list[Question]) -> Answers:
             raise JevProtocolError("no answer for question")
         answers[q.id] = _answer_from_wire(q, raw)
     return answers
+
+
+def _unwrap_envelope(body: dict) -> Any:
+    """The ``answers`` inside Cloudflare's Workers AI REST envelope, else ``None``.
+
+    Cloudflare serves the same System One format as Jev but wraps it:
+    ``{"result": {"model", "answers", "usage"}, "success": true, "errors": [], ...}``.
+    Only a body with NO top-level ``answers`` object and a ``result`` object is read
+    this way, so the shape Jev itself sends is untouched. A failure envelope carries
+    ``"result": null`` and so has no ``answers`` object to read, which the caller
+    refuses; its ``errors`` text is never read, since error text could echo the request.
+    """
+    result = body.get("result")
+    if not isinstance(result, dict):
+        return None
+    return result.get("answers")
 
 
 def _answer_from_wire(q: Question, raw: dict) -> Answer:
@@ -297,35 +394,38 @@ class JevOracle:
 
         body = _to_wire(state, self._model, questions)
         timeout_ms = _as_float_or_none(self._timeout_ms)
+        # Per request, not per session: the session is shared, and the total covers
+        # waiting for a pooled connection as well as the exchange itself.
         timeout = aiohttp.ClientTimeout(total=max(0.001, (timeout_ms or 0.0) / 1000.0))
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            # No redirects, ever: consent is bound to THIS endpoint, and following a
-            # 3xx would replay the body -- conversation text and skill descriptions
-            # -- to whatever Location the server named. A 3xx is refused below as a
-            # non-2xx, so the row says the provider misbehaved, not that we sent.
-            async with session.post(
-                self._endpoint,
-                json=body,
-                allow_redirects=False,
-                headers=headers,
-            ) as resp:
-                if resp.status < 200 or resp.status >= 300:
-                    raise JevHttpError(f"HTTP {resp.status}")
-                # Bounded and chunked: `resp.text()` reads to EOF, and a single
-                # `read(n)` may return short while more is coming, so only a
-                # running total refuses on the real size instead of truncating.
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.content.iter_chunked(_RESPONSE_CHUNK_BYTES):
-                    total += len(chunk)
-                    if total > _MAX_RESPONSE_BYTES:
-                        raise JevProtocolError(f"response exceeded {_MAX_RESPONSE_BYTES} bytes")
-                    chunks.append(chunk)
-                text = b"".join(chunks).decode("utf-8", errors="replace")
-                import json
+        session = _session_for_running_loop()
+        # No redirects, ever: consent is bound to THIS endpoint, and following a
+        # 3xx would replay the body -- conversation text and skill descriptions
+        # -- to whatever Location the server named. A 3xx is refused below as a
+        # non-2xx, so the row says the provider misbehaved, not that we sent.
+        async with session.post(
+            self._endpoint,
+            json=body,
+            allow_redirects=False,
+            headers=headers,
+            timeout=timeout,
+        ) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                raise JevHttpError(f"HTTP {resp.status}")
+            # Bounded and chunked: `resp.text()` reads to EOF, and a single
+            # `read(n)` may return short while more is coming, so only a
+            # running total refuses on the real size instead of truncating.
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.content.iter_chunked(_RESPONSE_CHUNK_BYTES):
+                total += len(chunk)
+                if total > _MAX_RESPONSE_BYTES:
+                    raise JevProtocolError(f"response exceeded {_MAX_RESPONSE_BYTES} bytes")
+                chunks.append(chunk)
+            text = b"".join(chunks).decode("utf-8", errors="replace")
+            import json
 
-                try:
-                    parsed = json.loads(text)
-                except ValueError:
-                    raise JevProtocolError("response is not JSON") from None
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                raise JevProtocolError("response is not JSON") from None
         return _from_wire(parsed, questions)
