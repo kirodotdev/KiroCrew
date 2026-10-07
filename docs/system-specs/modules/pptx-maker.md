@@ -121,7 +121,9 @@ honestly:
   so this is a cost-and-coverage decision, not an integrity one: shipping it
   would mean a partial, platform-asymmetric installer for a tool the user can get
   in one command. `/deps` therefore returns a per-OS `hints` command and the user
-  runs it.
+  runs it. On Linux the command is picked from os-release (apt or dnf family);
+  Amazon Linux packages no LibreOffice, so it gets no command rather than a
+  failing `dnf` line.
 
   `conda-forge` poppler was rejected on the same axis rather than for integrity:
   the tree IS relocatable (`@loader_path`/`$ORIGIN`), but it is not

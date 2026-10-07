@@ -219,8 +219,8 @@ def soffice_path() -> str | None:
         return None
 
 
-def soffice_hint() -> str:
-    """The per-OS install command the app shows for a missing ``soffice``."""
+def soffice_hint() -> str | None:
+    """The per-OS install command the app shows for a missing ``soffice``, if any."""
     from kiro_crew.apps.builtins.pptx_maker.backend import preview_tools
 
     return preview_tools.soffice_hint()

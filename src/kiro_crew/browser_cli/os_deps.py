@@ -202,6 +202,11 @@ def _os_release_ids() -> set[str]:
     return ids
 
 
+def os_release_ids() -> frozenset[str]:
+    """Public read of :func:`_os_release_ids`, for other per-distribution hints."""
+    return frozenset(_os_release_ids())
+
+
 @lru_cache(maxsize=1)
 def linux_family() -> str:
     """Package-manager family of this host.

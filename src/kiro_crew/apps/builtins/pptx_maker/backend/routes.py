@@ -692,8 +692,8 @@ def _deps_status() -> dict:
         # The one missing tool the user must install themselves, with the command
         # for THIS platform. Data for the UI to show — never run from here.
         "hints": (
-            {preview_tools.SOFFICE: preview_tools.soffice_hint()}
-            if preview_tools.SOFFICE in missing
+            {preview_tools.SOFFICE: hint}
+            if preview_tools.SOFFICE in missing and (hint := preview_tools.soffice_hint())
             else {}
         ),
     }
