@@ -211,18 +211,23 @@ describe('GitPanel repository state', () => {
     expect(screen.queryByText('Not a Git repository')).toBeNull()
   })
 
-  it('turns the header branch switcher off while the chat response runs', async () => {
+  it('keeps the header branch copyable, not switchable, while the chat response runs', async () => {
     mount({ busy: true })
 
     const trigger = await screen.findByTestId('branch-switcher-trigger')
-    expect(trigger).toBeDisabled()
-    expect(trigger).toHaveAttribute('title', 'Stop the current response to switch branch')
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    expect(trigger).toHaveAccessibleDescription('Copy branch name. Stop the current response to switch branch.')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
   })
 
   it('leaves the header branch switcher on when the chat is idle', async () => {
     mount()
 
-    expect(await screen.findByTestId('branch-switcher-trigger')).toBeEnabled()
+    const trigger = await screen.findByTestId('branch-switcher-trigger')
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'switch')
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox')
   })
 
   it('keeps the dirty-repository label, count, and changed-file row', async () => {

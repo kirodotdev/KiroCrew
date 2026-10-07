@@ -7,16 +7,26 @@
  *
  * Frames:
  *   1-closed        header shows the checked-out branch with a chevron
- *   2-open          picker: local (newest first, ahead pill) + remote sections
+ *   2-open          picker: safety line, local (newest first, ahead pill) + remote sections
  *   3-filtered      typed query narrowing the list, plus the create row
  *   4-switched      header after switching to a local branch
- *   5-dirty         409 git_switch_dirty rendered as the localized notice
- *   6-blocked       switchBlocked: "filter" explains why every row is inert
- *   7-light-open    the open picker in the light theme
+ *   5-dirty         409 git_switch_dirty rendered as a notice naming the target branch
+ *   6-blocked       switchBlocked: "filter" explains why, and every row is muted
+ *   7-light-open    the open picker in the light theme, safety line included
  *   8-chip-closed   the composer's project chip with its branch segment
  *   9-chip-open     the same picker opened upward from the composer chip
  *   10-chip-switched chip and panel header both follow a switch made from the chip
  *   11-chip-light-open the composer picker in the light theme
+ *   12-chip-hover   the idle composer chip under the pointer (hover fill)
+ *   13-chip-busy    while a response runs the chip is a copy control (copy glyph)
+ *   14-chip-busy-copied the same chip after a click: name copied, check glyph
+ *                   and the visible note saying how to switch
+ *   15-ahead-behind-tooltip the open picker with the pointer on a row's ↑N pill
+ *   16-light-dirty   the dirty refusal in the light theme (safety line hidden)
+ *   17-chip-busy-copy-failed the busy chip after a click the clipboard refused
+ *
+ * Frames 4 and 10 also carry the "Switched to …" acknowledgment, and frame 13
+ * the busy reason the chip shows under the pointer.
  *
  * Usage: node scripts/capture-branch-switcher.mjs <outDir>
  */
@@ -68,18 +78,18 @@ const h = await openTranscriptHarness({
 
 const ago = s => new Date(Date.now() - s * 1000).toISOString()
 const row = (name, s, subject, extra = {}) => ({
-  name, sha: 'a1b2c3d', date: ago(s), author: 'Gray Smith', subject, switchable: true, ...extra,
+  name, date: ago(s), author: 'Gray Smith', subject, switchable: true, ...extra,
 })
 
 let current = 'develop'
 let mode = 'ok'
 const localRows = () => [
-  row('develop', 3600, 'Add Namespace Governance tab to AI SDLC dashboard', { upstream: 'origin/develop', ahead: 1 }),
+  row('develop', 3600, 'Add Namespace Governance tab to AI SDLC dashboard', { ahead: 1 }),
   row('sdlc-0911', 6 * 86400, 'Add SCTE 2026 speaking materials, webinar diagrams'),
   row('second-brain', 90 * 86400, 'Add sea-shell skills'),
   row('feature/dev-backup-042426', 210 * 86400, 'Update docs'),
   row('feature/main-backup', 400 * 86400, "Merge branch 'develop' into 'main'"),
-  row('main', 400 * 86400, "Merge branch 'develop' into 'main'", { upstream: 'origin/main', behind: 3 }),
+  row('main', 400 * 86400, "Merge branch 'develop' into 'main'", { behind: 3 }),
 ].map(r => ({ ...r, current: r.name === current }))
 
 const dashCfg = { auto_open_git_panel: true }
@@ -124,9 +134,8 @@ await h.page.route(/\/api\/project\/git/, async route => {
     if (mode === 'dirty') {
       return json(route, { error: 'Your uncommitted changes would be overwritten by this switch.', code: 'git_switch_dirty' }, 409)
     }
-    const previous = current
     current = body.branch
-    return json(route, { ok: true, branch: current, previous })
+    return json(route, { ok: true, branch: current })
   }
   return json(route, { repo: true, repoRoot: PROJECT, branch: current })
 })
@@ -156,6 +165,11 @@ await boot()
 await shot('1-closed')
 
 await openPicker()
+await h.page.waitForSelector('[data-testid="branch-switcher-safety"]', { timeout: 15000 })
+console.log('SAFETY', await h.page.locator('[data-testid="branch-switcher-safety"]').textContent())
+// The list overflows here (the Remote section sits below its edge), so the
+// scroll-edge cue must be drawn: a frame without it would hide the cue.
+await h.page.waitForSelector('[data-testid="branch-switcher-more-below"]', { timeout: 5000 })
 await shot('2-open')
 
 await h.page.keyboard.type('feat')
@@ -167,13 +181,18 @@ await h.page.locator(`${pop} [data-testid="branch-row-local"]`, { hasText: 'sdlc
 await h.page.waitForSelector(pop, { state: 'detached', timeout: 15000 })
 await h.page.waitForSelector(`${trigger}:has-text("sdlc-0911")`, { timeout: 15000 })
 console.log('SWITCHED', await h.page.locator(trigger).textContent())
+await h.page.waitForSelector('[data-testid="branch-switcher-note"][data-note="switched"]', { timeout: 5000 })
+console.log('ACK', await h.page.locator('[data-testid="branch-switcher-note"]').textContent())
 await shot('4-switched')
 
 mode = 'dirty'
 await openPicker()
 await h.page.locator(`${pop} [data-testid="branch-row-local"]`, { hasText: 'second-brain' }).dispatchEvent('mousedown')
 await h.page.waitForSelector('[data-testid="branch-switcher-error"]', { timeout: 15000 })
-console.log('DIRTY', await h.page.locator('[data-testid="branch-switcher-error"]').textContent())
+const dirtyText = await h.page.locator('[data-testid="branch-switcher-error"]').textContent()
+console.log('DIRTY', dirtyText)
+if (!dirtyText.includes('second-brain')) throw new Error('dirty notice does not name the target branch')
+if (await h.page.locator('[data-testid="branch-switcher-safety"]').count()) throw new Error('safety line shown beside a refusal')
 await shot('5-dirty')
 await h.page.keyboard.press('Escape')
 
@@ -182,6 +201,11 @@ await h.page.evaluate(() => {})
 await boot()
 await openPicker()
 await h.page.waitForSelector('[data-testid="branch-switcher-blocked"]', { timeout: 15000 })
+// Pointer over a row: a muted row takes no highlight.
+await h.page.hover(`${pop} [data-testid="branch-row-local"]:nth-of-type(2)`)
+const unmuted = await h.page.locator(`${pop} [role="option"]:not([data-muted])`).count()
+console.log('BLOCKED unmuted rows:', unmuted, '|', await h.page.locator('[data-testid="branch-switcher-blocked"]').textContent())
+if (unmuted) throw new Error('a filter-blocked row is not muted')
 await shot('6-blocked')
 
 mode = 'ok'
@@ -189,6 +213,27 @@ await boot('light')
 await openPicker()
 await shot('7-light-open')
 await h.page.keyboard.press('Escape')
+
+// A row's ahead/behind pill under the pointer: the native tooltip is not drawn
+// in a headless screenshot, so the frame shows the pill and the log its title.
+await boot()
+await openPicker()
+const pill = h.page.locator(`${pop} [data-testid="branch-ahead-behind"]`).first()
+await pill.hover()
+console.log('PILL TITLE', await pill.getAttribute('title'))
+await h.page.waitForTimeout(1200)
+await shot('15-ahead-behind-tooltip')
+await h.page.keyboard.press('Escape')
+
+mode = 'dirty'
+await boot('light')
+await openPicker()
+await h.page.locator(`${pop} [data-testid="branch-row-local"]`, { hasText: 'main' }).last().dispatchEvent('mousedown')
+await h.page.waitForSelector('[data-testid="branch-switcher-error"]', { timeout: 15000 })
+if (await h.page.locator('[data-testid="branch-switcher-safety"]').count()) throw new Error('safety line shown beside a refusal')
+await shot('16-light-dirty')
+await h.page.keyboard.press('Escape')
+mode = 'ok'
 
 // The composer's project chip opens the same picker, upward.
 current = 'develop'
@@ -202,6 +247,7 @@ await h.page.locator(`${pop} [data-testid="branch-row-local"]`, { hasText: 'seco
 await h.page.waitForSelector(pop, { state: 'detached', timeout: 15000 })
 await h.page.waitForSelector(`${chipTrigger}:has-text("second-brain")`, { timeout: 15000 })
 await h.page.waitForSelector(`${trigger}:has-text("second-brain")`, { timeout: 15000 })
+await h.page.waitForSelector('[data-testid="branch-switcher-note"][data-note="switched"]', { timeout: 5000 })
 console.log('CHIP SWITCHED', await h.page.locator(chipTrigger).textContent(), '| header:', await h.page.locator(trigger).textContent())
 await shot('10-chip-switched')
 
@@ -209,5 +255,40 @@ await boot('light')
 await h.page.click(chipTrigger)
 await h.page.waitForSelector(`${pop} [data-testid="branch-row-local"]`, { timeout: 15000 })
 await shot('11-chip-light-open')
+await h.page.keyboard.press('Escape')
+
+current = 'develop'
+await boot()
+await h.page.waitForSelector(`${chipTrigger}:has-text("develop")`, { timeout: 15000 })
+await h.page.hover(chipTrigger)
+await shot('12-chip-hover')
+
+// A running response: the chip stays enabled and copies instead of switching.
+slots[0].running = true
+detail.running = true
+await boot()
+await h.page.waitForSelector(`${chipTrigger}[data-mode="copy"]`, { timeout: 15000 })
+await h.page.hover(chipTrigger)
+await h.page.waitForSelector('[data-testid="branch-switcher-note"][data-note="busy"]', { timeout: 5000 })
+console.log('BUSY', await h.page.locator(chipTrigger).getAttribute('aria-label'), '|', await h.page.locator('[data-testid="branch-switcher-note"]').textContent())
+await shot('13-chip-busy')
+await h.page.click(chipTrigger)
+await h.page.waitForSelector(`${chipTrigger}[aria-label^="Copied"]`, { timeout: 5000 })
+if (await h.page.locator(pop).count()) throw new Error('picker opened while a response runs')
+console.log('BUSY COPIED', await h.page.locator(chipTrigger).getAttribute('aria-label'), '|', await h.page.locator('[data-testid="branch-switcher-note"]').textContent())
+await shot('14-chip-busy-copied')
+
+// The clipboard refuses: both copy layers fail, so the chip shows an error notice.
+await h.page.evaluate(() => {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } })
+  document.execCommand = () => false
+})
+await h.page.mouse.move(5, 5)
+await h.page.waitForTimeout(2800)
+await h.page.click(chipTrigger)
+await h.page.waitForSelector('[data-testid="branch-switcher-copy-error"]', { timeout: 5000 })
+console.log('COPY FAILED', await h.page.locator('[data-testid="branch-switcher-copy-error"]').textContent())
+await h.page.mouse.move(5, 5)
+await shot('17-chip-busy-copy-failed')
 
 await h.close()

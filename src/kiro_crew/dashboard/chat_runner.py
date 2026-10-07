@@ -117,7 +117,7 @@ from kiro_crew.context_blocks import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, repo_checkout_guard
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -8324,6 +8324,15 @@ async def _run_chat(
         turn_exit.handed_off = True
         await _send_chat_done(state, slot)
         return
+
+    # Chokepoint for the branch switch's ordering: a turn must not read project
+    # files on one branch and write them back on another. This is the first
+    # await of the body, before any prompt expansion reads a file, and the slot
+    # already publishes this turn, so a switch either refuses on seeing it or
+    # holds a reservation this waits out (see repo_checkout_guard).
+    await repo_checkout_guard.wait_for_checkout(
+        getattr(slot, "project", None), waiter=f"session {slot.key}"
+    )
 
     # Capture before any await: a Stop can complete while pre-turn setup is
     # suspended and reset _stop_state to idle before continuation processing.

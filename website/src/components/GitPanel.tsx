@@ -60,7 +60,8 @@ interface GitPanelProps {
   projectDir: string
   onFileOpen?: (path: string) => void
   onClose: () => void
-  /** True while this chat's response runs: a checkout would change files under the turn. */
+  /** True while this chat's response runs: a checkout would change files under
+   *  the turn, so the header branch control copies the name instead of switching. */
   busy?: boolean
 }
 
@@ -221,7 +222,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose, busy = false
                 <BranchSwitcher
                   projectDir={projectDir}
                   branch={status?.branch}
-                  disabledReason={busy ? i18nT('components.branchSwitcher.stop_response_to_switch') : undefined}
+                  switchBlocked={busy}
                 />
               ) : (
                 <>

@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
@@ -27,8 +27,8 @@ const LIST: GitBranchList = {
   repo: true,
   current: 'feat/example',
   local: [
-    { name: 'feat/example', sha: 'abc1234', date: '2026-10-01T00:00:00Z', author: 'Ada', subject: 'wip', switchable: true, current: true },
-    { name: 'main', sha: 'def5678', date: '2026-09-30T00:00:00Z', author: 'Ada', subject: 'release', switchable: true },
+    { name: 'feat/example', date: '2026-10-01T00:00:00Z', author: 'Ada', subject: 'wip', switchable: true, current: true },
+    { name: 'main', date: '2026-09-30T00:00:00Z', author: 'Ada', subject: 'release', switchable: true },
   ],
   remote: [],
 }
@@ -36,6 +36,21 @@ const LIST: GitBranchList = {
 beforeEach(() => {
   vi.restoreAllMocks()
   localStorage.clear()
+})
+
+let originalClipboard: PropertyDescriptor | undefined
+
+const stubClipboard = () => {
+  originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  return writeText
+}
+
+afterEach(() => {
+  if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+  else delete (navigator as { clipboard?: unknown }).clipboard
+  originalClipboard = undefined
 })
 
 const chip = () => screen.getByRole('button', { name: /Project: |Select project/ })
@@ -74,15 +89,42 @@ describe('ChatInput project chip branch label', () => {
     expect(btn).toBeDisabled()
   })
 
-  it('blocks branch switching while a response is running', () => {
+  it('leaves the branch copyable while a response is running', async () => {
+    const writeText = stubClipboard()
     const list = vi.spyOn(api, 'projectGitBranches').mockResolvedValue(LIST)
     renderWithProviders(<ChatInput {...defaultProps} projectBranch="main" isRunning onStop={vi.fn()} />)
-    // A checkout mid-turn would change files under the agent, same as a project switch.
-    expect(branchBtn()).toBeDisabled()
-    expect(branchBtn()).toHaveAccessibleName('Stop the current response to switch branch')
+    // Switching mid-run is unsafe, since a checkout would change files under the
+    // agent; reading the branch name is not. The segment stays a live control
+    // that copies, and its tooltip says how to switch.
+    expect(branchBtn()).not.toBeDisabled()
+    expect(branchBtn()).toHaveAccessibleName('Copy branch name main')
+    expect(branchBtn()).toHaveAccessibleDescription('Copy branch name. Stop the current response to switch branch.')
     fireEvent.click(branchBtn())
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('main'))
+    await waitFor(() => expect(branchBtn()).toHaveAccessibleName('Copied branch name main'))
     expect(screen.queryByTestId('branch-switcher')).not.toBeInTheDocument()
     expect(list).not.toHaveBeenCalled()
+  })
+
+  it('calls a detached HEAD a commit when copying it mid-run', () => {
+    renderWithProviders(<ChatInput {...defaultProps} projectBranch="a1b2c3d" projectDetached isRunning onStop={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Copy commit a1b2c3d' })).toBeInTheDocument()
+  })
+
+  it('keeps the message input focused while copying the branch mid-run', async () => {
+    // A real pointer click moves focus to the pressed button before `click`
+    // fires. The trigger cancels that transfer on mousedown, so a user who is
+    // typing a steer can copy the branch and keep typing. `userEvent` replays
+    // the full mousedown -> focus -> mouseup -> click sequence; `fireEvent.click`
+    // alone would never move focus and could not fail here.
+    const user = userEvent.setup()
+    const writeText = stubClipboard()
+    renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" isRunning onStop={vi.fn()} />)
+    const input = screen.getByRole('textbox', { name: 'Message input' })
+    input.focus()
+    await user.click(branchBtn())
+    expect(input).toHaveFocus()
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('feat/example'))
   })
 
   it('falls back to the full path when the project has no basename', () => {
@@ -115,7 +157,7 @@ describe('ChatInput project chip branch switcher', () => {
 
   it('switches the project folder to the chosen branch', async () => {
     vi.spyOn(api, 'projectGitBranches').mockResolvedValue(LIST)
-    const sw = vi.spyOn(api, 'projectGitSwitch').mockResolvedValue({ ok: true, branch: 'main', previous: 'feat/example' })
+    const sw = vi.spyOn(api, 'projectGitSwitch').mockResolvedValue({ ok: true, branch: 'main' })
     renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
     fireEvent.click(branchBtn())
     fireEvent.mouseDown(await screen.findByText('main'))

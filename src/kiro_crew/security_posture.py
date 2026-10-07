@@ -1342,7 +1342,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Git panel branch switcher",
         "dashboard/handlers/git_branches.py",
-        "The branch names, upstreams, commit subjects and authors the branch "
+        "The branch names, commit subjects and authors the branch "
         "switcher (api_project_git_branches, api_project_git_switch) returns are "
         "redacted; a name the redactor alters is listed as not switchable.",
     ),

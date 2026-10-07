@@ -122,7 +122,10 @@ def _make_app(*projects, user: str = "owner") -> web.Application:
     app = web.Application(middlewares=[claims])
     state = MagicMock()
     state.owner_id = "owner"
-    state._slots = {f"chat-{i}": MagicMock(project=str(p)) for i, p in enumerate(projects)}
+    state.subagents = None
+    state._slots = {
+        f"chat-{i}": MagicMock(project=str(p), running=False) for i, p in enumerate(projects)
+    }
     app["state"] = state
     app.router.add_get("/api/project/git/branches", gb.api_project_git_branches)
     app.router.add_post("/api/project/git/switch", gb.api_project_git_switch)
@@ -166,6 +169,7 @@ class TestListBranches:
         assert feature["subject"] == "feature work"
         assert feature["author"] == "Test"
         assert feature["switchable"] is True
+        assert set(feature) == {"name", "date", "author", "subject", "current", "switchable"}
         assert "switchBlocked" not in body
 
     @pytest.mark.asyncio
@@ -285,6 +289,49 @@ class TestListBranches:
 
 class TestSwitch:
     @pytest.mark.asyncio
+    async def test_switch_does_not_update_submodules_when_recurse_is_configured(
+        self, repo, tmp_path, monkeypatch
+    ):
+        source = tmp_path / "submodule-source"
+        source.mkdir()
+        _git("init", "-q", "-b", "main", cwd=source)
+        (source / "content.txt").write_text("initial\n")
+        _git("add", "content.txt", cwd=source)
+        _git("commit", "-q", "-m", "initial submodule", cwd=source)
+        initial = _git("rev-parse", "HEAD", cwd=source)
+        _git("-c", "protocol.file.allow=always", "submodule", "add", str(source), "child", cwd=repo)
+        _git("commit", "-q", "-am", "add submodule", cwd=repo)
+        _git("switch", "-q", "-c", "sub-update", cwd=repo)
+        child = repo / "child"
+        (child / "content.txt").write_text("updated\n")
+        _git("commit", "-q", "-am", "update submodule", cwd=child)
+        updated = _git("rev-parse", "HEAD", cwd=child)
+        _git("commit", "-q", "-am", "update gitlink", cwd=repo)
+        _git("switch", "-q", "--no-recurse-submodules", "main", cwd=repo)
+        _git("switch", "-q", "--detach", initial, cwd=child)
+        _git("config", "submodule.recurse", "true", cwd=repo)
+        seen = []
+        real = gb._run_git
+
+        def recording(args, cwd, **kwargs):
+            seen.append(args)
+            return real(args, cwd, **kwargs)
+
+        monkeypatch.setattr(gb, "_run_git", recording)
+        client = await _client(repo)
+        try:
+            status, body = await _switch(client, repo, branch="sub-update")
+        finally:
+            await client.close()
+        assert status == 200, body
+        switches = [args for args in seen if args[0] == "switch"]
+        assert len(switches) == 1
+        assert "--no-recurse-submodules" in switches[0]
+        assert _git("rev-parse", "HEAD:child", cwd=repo) == updated
+        assert _git("rev-parse", "HEAD", cwd=child) == initial
+        assert (child / "content.txt").read_text() == "initial\n"
+
+    @pytest.mark.asyncio
     async def test_switches_to_existing_local_branch(self, repo):
         client = await _client(repo)
         try:
@@ -292,7 +339,7 @@ class TestSwitch:
         finally:
             await client.close()
         assert status == 200, body
-        assert body == {"ok": True, "branch": "feature", "previous": "main"}
+        assert body == {"ok": True, "branch": "feature"}
         assert _current(repo) == "feature"
         assert (repo / "README.md").read_text() == "feature\n"
 
@@ -387,11 +434,11 @@ class TestSwitch:
     async def test_every_git_call_runs_in_the_c_locale(self, repo, monkeypatch):
         # The classifier reads English stderr; a translated user locale would
         # turn a dirty refusal into a generic failure.
-        seen: list[dict | None] = []
+        seen: list[bool] = []
         real = gb._run_git
 
         def recording(args, cwd, **kwargs):
-            seen.append(kwargs.get("env_overrides"))
+            seen.append(bool(kwargs.get("c_locale")))
             return real(args, cwd, **kwargs)
 
         monkeypatch.setattr(gb, "_run_git", recording)
@@ -403,7 +450,7 @@ class TestSwitch:
             await client.close()
         assert (status, body["code"]) == (409, "git_switch_dirty")
         assert seen
-        assert all(env and env.get("LC_ALL") == "C" for env in seen)
+        assert all(seen)
 
     @pytest.mark.asyncio
     async def test_non_conflicting_local_changes_carry_over(self, repo):
@@ -418,14 +465,28 @@ class TestSwitch:
         assert (repo / "notes.txt").read_text() == "scratch\n"
 
     @pytest.mark.asyncio
-    async def test_switching_to_current_branch_is_a_no_op(self, repo):
+    @pytest.mark.parametrize("same_named_tag", [False, True])
+    async def test_switching_to_current_branch_is_a_no_op(self, repo, monkeypatch, same_named_tag):
+        if same_named_tag:
+            _git("tag", "main", cwd=repo)
+        (repo / "README.md").write_text("my edit\n")
+        seen = []
+        real = gb._run_git
+
+        def recording(args, cwd, **kwargs):
+            seen.append((args, kwargs))
+            return real(args, cwd, **kwargs)
+
+        monkeypatch.setattr(gb, "_run_git", recording)
         client = await _client(repo)
         try:
             status, body = await _switch(client, repo, branch="main")
         finally:
             await client.close()
-        assert status == 200
-        assert body["branch"] == "main"
+        assert (status, body) == (200, {"ok": True, "branch": "main"})
+        assert (["symbolic-ref", "--quiet", "HEAD"], {"c_locale": True}) in seen
+        assert not any(args[0] in ("switch", "branch") for args, _ in seen)
+        assert (repo / "README.md").read_text() == "my edit\n"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("branch", ["-f", "-", "@{-1}", "a b", "x\ny", ""])

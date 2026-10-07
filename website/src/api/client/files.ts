@@ -71,16 +71,14 @@ export const BROWSE_FILES_TIMEOUT_MS = 10_000
  *  name came back redacted, so echoing it to the switch route could not work. */
 export interface GitBranchRow {
   name: string
-  sha: string
   date: string
   author: string
   subject: string
   switchable: boolean
   current?: boolean
-  upstream?: string
+  /** Commits ahead of / behind the branch's upstream; absent when untracked or equal. */
   ahead?: number
   behind?: number
-  upstreamGone?: boolean
 }
 
 export interface GitBranchList {
@@ -134,7 +132,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGitBranches: (path: string) => fetch('/api/project/git/branches?path=' + encodeURIComponent(path)).then(j) as Promise<GitBranchList>,
     /** Check out `branch`; `create` makes it at HEAD, `track` makes it tracking `<remote>/<name>`. Owner-only. */
     projectGitSwitch: (body: { path: string; branch: string; create?: boolean; track?: string }) =>
-      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string; previous: string | null }>,
+      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string }>,
     projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
       fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),
