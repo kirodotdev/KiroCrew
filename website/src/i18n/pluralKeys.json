@@ -242,7 +242,7 @@
   "pages.overview.agentTemplatesTab.chars_count",
   "hooks.useNativeNotification.new_notifications",
   "pages.contextBreakdown.scope_turns",
-  "pages.contextBreakdown.earlier_hidden",
+  "pages.contextBreakdown.earlier_range_starts",
   "pages.contextBreakdown.scope_all_turns",
   "components.fileChangeChips.omitted_files_notice",
   "pages.chatSidebar.opened_sessions_count",

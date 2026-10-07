@@ -652,6 +652,42 @@ class TestContextTrace:
         assert out["totals"] == {}
         assert out["injected_chars"] == 0
 
+    def test_the_payload_says_whether_the_crew_log_is_recording(self, monkeypatch):
+        """An empty list cannot say why it is empty, so the payload does.
+
+        With the switch on, an empty session fills on its next turn; with it off,
+        nothing will ever arrive, and the panel must not promise otherwise.
+        """
+        monkeypatch.delenv("KIROCREW_CREW_LOG", raising=False)
+        assert usage_mod.context_trace("chat-never", 14)["recording"] is True
+        assert "env_file" not in usage_mod.context_trace("chat-never", 14)
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        off = usage_mod.context_trace("chat-never", 14)
+        assert off["recording"] is False
+        # Names the file to edit, the same reading the Crew Log panel's off state uses.
+        assert off["env_file"] == usage_mod.env_file_display()
+
+    def test_only_the_first_session_start_is_marked_even_after_a_refused_turn_one(self):
+        """A refused turn 1 pushes the real session start to ordinal 2.
+
+        The refusal consumes an ordinal, so the session's only start composition
+        carries ordinal 2. Keyed on the ordinal, the panel would call it a rebuild;
+        the fold's ``first_start`` mark says it is the session's start, and a later
+        start composition (a real rebuild) is not marked.
+        """
+        _open()
+        _refused(turn=1)
+        _compose({"memory": 30_000}, turn=2, phase=PHASE_SESSION_START)
+        _compose({"memory": 100}, turn=3)
+        _compose({"memory": 30_000}, turn=4, phase=PHASE_SESSION_START)
+        _flush()
+        turns = usage_mod.context_trace(SLOT, 14)["turns"]
+        assert [(t["ordinal"], t["phase"], t["first_start"]) for t in turns] == [
+            (2, PHASE_SESSION_START, True),
+            (3, PHASE_PER_TURN, False),
+            (4, PHASE_SESSION_START, False),
+        ]
+
     def test_an_unreadable_fold_reads_as_nothing_folded(self, monkeypatch, caplog):
         """A damaged log is not a 500. The panel renders an empty trace instead."""
 
@@ -1199,6 +1235,7 @@ class TestContextTraceParityWithTheShardScan:
                     "context_window": 200_000,
                     "model": "opus-5",
                     "ordinal": 1,
+                    "first_start": True,
                 },
                 {
                     "phase": "per_turn",
@@ -1208,6 +1245,7 @@ class TestContextTraceParityWithTheShardScan:
                     "context_window": 200_000,
                     "model": "opus-5",
                     "ordinal": 2,
+                    "first_start": False,
                 },
             ],
             "totals": {"memory": 30_000, "lessons": 5_000, "your_message": 460, "surface": 200},
@@ -1216,6 +1254,7 @@ class TestContextTraceParityWithTheShardScan:
             "peak_context_used": 12_500,
             "context_window": 200_000,
             "window_days": 14,
+            "recording": True,
         }
         # A stamp is an ISO-8601 UTC string, which is what the declared shape says and
         # what the scan's rows carried.
@@ -1290,12 +1329,16 @@ class TestTheContractTheFrontendDeclares:
             if ":" in line and not line.strip().startswith(("*", "/*", "//"))
         }
 
-    def test_every_field_the_trace_interface_declares_is_sent(self):
+    def test_every_field_the_trace_interface_declares_is_sent(self, monkeypatch):
         _open(window=200_000)
         _compose({"memory": 100, USER_LABEL: 10})
         _billed(used=1_000)
         _flush()
         out = usage_mod.context_trace(SLOT, 14)
+        # ``env_file`` rides only on a payload with recording off, so the union of
+        # both payloads is what the interface must be covered by.
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        out = {**out, **usage_mod.context_trace(SLOT, 14)}
         declared = self._declared("ContextTrace")
         # The control: the extraction found a real interface, not an empty string.
         assert "turns" in declared and "peak_context_used" in declared, declared

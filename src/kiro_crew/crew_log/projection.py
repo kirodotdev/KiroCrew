@@ -1551,6 +1551,9 @@ def _usage_start() -> dict[str, Any]:
         # left. Only a new unit -- a new session or a compaction, each its own crew log --
         # starts a new key space, because that is where turn numbers restart.
         "context_key_unit": 0,
+        # Whether a session-start composition has been folded yet, so exactly one row
+        # -- the session's real start -- is stamped ``first_start``.
+        "context_started": False,
         # A monotonic 1-based counter over the slot's TURN HISTORY, never reset by
         # truncation. Each composition row is stamped with its value as ``ordinal`` so a
         # retained row carries its TRUE position in the whole session history -- exact
@@ -1997,6 +2000,14 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         # when this turn is already the one it last accounted for, so a second
         # composition does not advance past the real turn sequence.
         row["ordinal"] = _count_turn_ordinal(state, state["context_key_unit"], row["turn"])
+        # Whether this row is the slot's FIRST session-start composition: the session's
+        # real start, as opposed to a later rebuild. Not derivable from the ordinal --
+        # a refused or composition-less turn 1 consumes ordinal 1, so the real start
+        # can carry 2 -- nor from the earliest retained row, which a trimmed window or
+        # a day view can make a rebuild. The fold sees every entry, so it marks it once.
+        row["first_start"] = row["phase"] == PHASE_SESSION_START and not state["context_started"]
+        if row["first_start"]:
+            state["context_started"] = True
         turns_window = state["context_turns"]
         turns_window.append(row)
         if len(turns_window) > CONTEXT_TURNS_LIMIT:
@@ -7886,7 +7897,9 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # a block of four zeros as unreported, and a savepoint from a build that
         # counted it as a report would resume onto this logic still carrying the
         # inflated count for the life of the unit.
-        state_version=_FOLD_STATE_VERSION_BASE + 10,
+        # Moved again for ``context_started`` and the per-row ``first_start``: a
+        # savepoint without them would mark a later rebuild as the session's start.
+        state_version=_FOLD_STATE_VERSION_BASE + 11,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.

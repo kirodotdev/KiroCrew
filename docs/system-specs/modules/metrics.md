@@ -1075,13 +1075,20 @@ and a trace row carries only what was injected.
 
 **How the panel draws it.** The chat Activity panel's Context Breakdown tab
 (`website/src/pages/ContextBreakdownPanel.tsx`) is a **stacked-area chart of what
-each turn sent**: x = turns in order (newest right, at most the newest 30 with an
-"N earlier turns not shown" line beyond that), y = characters, five bands bottom
+each turn sent**: x = turns in order (newest right, at most the newest 30, with a
+"Turns 1–N earlier" line naming the range before the first drawn turn, plus how
+many of that range are listed as rows above the chart), y = characters, five bands bottom
 to top — *your message*, *memory about you*, *rules you set*, *skill guides*,
 *everything else*. A `session_start` turn is excluded from the chart's x-series
-and y-domain and listed instead as a compact selectable row above it ("Turn 1 ·
-session start · N characters"): it is many times the size of any later turn and
-would pin a linear axis, flattening the rest. X-axis labels are strided from the
+and y-domain and listed instead as a compact selectable row above it ("Turn N ·
+session start · N characters" for the row the `usage` fold marks `first_start`,
+"Turn N · context rebuilt" for any later one, since a unit emits one such
+composition per start or rebuild; the mark, not the ordinal, decides, because a
+refused turn 1 puts the real start at turn 2): it is many times the size of any later turn and
+would pin a linear axis, flattening the rest. An empty trace reads "not recorded
+while the crew log is off" when the payload's `recording` is false, naming the
+`.env` the gateway reads from the payload's `env_file` (sent only then), and the
+"nothing recorded yet" copy otherwise. X-axis labels are strided from the
 measured plot width (`axisLabelIndices`: every k-th turn plus the selected and the
 last, minus a strided neighbour that would overprint either) so thirty turns in a
 320px side panel still read; when a per-turn hit column falls under 12px, one
