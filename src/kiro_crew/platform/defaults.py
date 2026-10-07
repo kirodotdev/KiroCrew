@@ -710,6 +710,44 @@ FARGATE_REMOTE_PROVISIONER = RemoteProvisioner(
     posix_only=True,
 )
 
+#: The id a launch request names as ``provider_id`` for the Lambda MicroVM lane.
+MICROVM_PROVISIONER_ID = "microvm"
+
+
+class RecipientMoved(RuntimeError):
+    """The lane would launch something other than what the operator confirmed.
+
+    Raised where the confirmation is compared against the configuration the engine
+    is actually built from, which is a SECOND read of the file the published
+    recipient came from.
+
+    A ``RuntimeError`` rather than the dashboard's own ``LaunchUnavailable``,
+    because this module is below the dashboard and must not import from it. The
+    launch path already reports an engine that refuses to be constructed, and the
+    message is written for the operator who has to act on it.
+    """
+
+
+#: The MicroVM descriptor. ``kind`` equals the id, so the dashboard looks for a
+#: renderer registered under that kind and skips the row when none is.
+#:
+#: The steps are RELABELLED rather than inherited. The built-in wording -- "create
+#: the instance and install Kiro Crew" -- is false on this lane: the crew image is
+#: already built, nothing is installed at launch, and the step that actually takes
+#: the time is waiting for the guest to enroll itself as a managed node.
+MICROVM_REMOTE_PROVISIONER = RemoteProvisioner(
+    id=MICROVM_PROVISIONER_ID,
+    kind=MICROVM_PROVISIONER_ID,
+    label="AWS Lambda MicroVM in your own account",
+    posix_only=True,
+    step_labels=(
+        ("preflight", "Check the region and this lane's configuration"),
+        ("provision", "Run the MicroVM and wait for the crew to enroll"),
+        ("signin", "Confirm the crew's credential was delivered"),
+        ("connect", "Add the crew to your Instances list"),
+    ),
+)
+
 
 class DefaultRemoteProvisionerProvider:
     """The provisioners the core ships: EC2 always, Fargate when it is configured.
@@ -759,6 +797,24 @@ class DefaultRemoteProvisionerProvider:
                     confirm_before_launch=config.credential_recipient(),
                 )
             )
+        # The `microvm` lane, offered when and only when its block is complete.
+        #
+        # The row carries what the owner confirms -- the base, the crew bundle and
+        # the key -- for the same reason the Fargate row carries its recipient:
+        # a value obtainable only by attempting a launch and reading the refusal
+        # makes confirming a ritual rather than a decision.
+        #
+        # An incomplete block publishes nothing rather than publishing a row whose
+        # every launch is refused, which is the same rule `MicroVmConfig.is_complete`
+        # applies to a zero lifetime and to a buildable block with no bundle.
+        microvm = self._microvm_config()
+        if microvm is not None:
+            rows.append(
+                dataclasses.replace(
+                    MICROVM_REMOTE_PROVISIONER,
+                    confirm_before_launch=microvm.launch_recipient(),
+                )
+            )
         return rows
 
     def engine_for(self, provisioner_id: str, *, confirmed_recipient: str = "") -> Any:
@@ -773,6 +829,8 @@ class DefaultRemoteProvisionerProvider:
             # ``cloud.json`` chooses what receives a credential. A value passed for it
             # is ignored rather than refused, so a caller may confirm uniformly.
             return RealLaunchEngine()
+        if provisioner_id == MICROVM_PROVISIONER_ID:
+            return self._microvm_engine(confirmed_recipient=confirmed_recipient)
         if provisioner_id != FARGATE_PROVISIONER_ID:
             raise KeyError(provisioner_id)
         config = self._fargate_config()
@@ -840,6 +898,67 @@ class DefaultRemoteProvisionerProvider:
             # population cap has no key at all and always stays the engine's.
             bounds=config.task_bounds(),
         )
+
+    @staticmethod
+    def _microvm_engine(*, confirmed_recipient: str = "") -> Any:
+        """The MicroVM engine, or ``KeyError`` when the lane is not configured.
+
+        The same ``KeyError`` an unknown id raises, for the reason the Fargate
+        branch gives: a caller naming an unconfigured lane and one naming a
+        nonexistent lane are in the same position, and a second failure mode would
+        ask every caller to learn a distinction that changes nothing they can do.
+        """
+        config = DefaultRemoteProvisionerProvider._microvm_config()
+        if config is None:
+            raise KeyError(MICROVM_PROVISIONER_ID)
+        # The confirmation is checked against THIS config object -- the same one
+        # the spec below is built from -- and not against a later read of the
+        # file. ``provisioners()`` published a recipient, the operator confirmed
+        # that string, and this is a SECOND read: an edit in between, or one
+        # racing a launch whose store checks are still running, means the owner
+        # approved one image and key and a different pair would be used. The
+        # recipient names exactly those two, which is why it is the thing to
+        # compare.
+        #
+        # Refused when a confirmation was supplied and does not match, and when
+        # one was supplied and this config publishes none at all -- an
+        # incomplete block answers "" and must not read as agreement.
+        if confirmed_recipient:
+            current = str(config.launch_recipient() or "")
+            if current != confirmed_recipient:
+                raise RecipientMoved(
+                    f"provisioner {MICROVM_PROVISIONER_ID!r} would launch a crew the operator "
+                    "did not confirm: its configuration changed after the recipient was "
+                    "approved. Nothing was launched; re-read the lane's recipient and confirm "
+                    "it again"
+                )
+        # circular import: each of these reaches this module through its own graph.
+        from kiro_crew.cloud.microvm.engine import MicroVmLaunchEngine
+        from kiro_crew.sandbox import require_unaliased_cloud_config
+
+        # The same no-alias refusal the Fargate branch makes, at the same point and
+        # for the same reason: an alias on ``cloud.json`` lets a write reach the
+        # inode by a name no seal covers, and the field it would reach chooses the
+        # image this lane runs and the bucket the crew's home is written to.
+        require_unaliased_cloud_config()
+
+        return MicroVmLaunchEngine(spec=config.launch_spec())
+
+    @staticmethod
+    def _microvm_config() -> Any:
+        """The configured MicroVM block, or ``None``. A read failure is ``None``.
+
+        Read per call and failure-tolerant, both for the reasons
+        :meth:`_fargate_config` states: an edit takes effect on the next request,
+        and one malformed block must not take the whole provisioner list down and
+        hide the ``aws_ec2`` lane with it.
+        """
+        try:
+            from kiro_crew.cloud.config import CloudConfig
+
+            return CloudConfig.load().microvm_config()
+        except Exception:  # noqa: BLE001 - a config read must not break the selector
+            return None
 
     @staticmethod
     def _fargate_config() -> Any:

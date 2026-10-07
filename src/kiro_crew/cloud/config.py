@@ -26,6 +26,7 @@ from kiro_crew.cloud.fargate.taskdef import (
     secret_destinations_for,
 )
 from kiro_crew.cloud.fargate_engine import TaskBounds
+from kiro_crew.cloud.microvm.config import MicroVmConfig
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -559,6 +560,11 @@ class CloudConfig:
     #: while it is half-finished. Whether the block is usable is
     #: :meth:`fargate_config`'s question.
     fargate: Any = None
+    #: The ``microvm`` block EXACTLY as read from the file, or ``None`` when the file
+    #: has none. Kept raw for the reason :attr:`fargate` is: a reader sees what the
+    #: operator wrote even while it is half-finished, and whether the block is usable
+    #: is :meth:`microvm_config`'s question.
+    microvm: Any = None
 
     def fargate_config(self) -> Optional[FargateConfig]:
         """The Fargate block as a typed config, or ``None`` when it is not complete.
@@ -569,6 +575,17 @@ class CloudConfig:
         round-trips untouched and the seam still sees complete-or-absent.
         """
         return FargateConfig.from_mapping(self.fargate)
+
+    def microvm_config(self) -> Optional[MicroVmConfig]:
+        """The MicroVM block as a typed config, or ``None`` when it is not complete.
+
+        Same contract as :meth:`fargate_config`, and the same reason for it: ``None``
+        keeps the lane UNREGISTERED, so an operator who has not filled the block in is
+        never offered a lane that would refuse them. Judged on every call rather than
+        once at load, so an edit takes effect on the next request instead of the next
+        gateway restart.
+        """
+        return MicroVmConfig.from_mapping(self.microvm)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "CloudConfig":
@@ -657,5 +674,7 @@ class CloudConfig:
             # carried as written and judged by fargate_config() at the point of use, so an
             # operator's half-finished edit reads back as the bytes they wrote.
             fargate=data.get("fargate"),
+            # Deliberately NOT sanitized here either, for the reason above.
+            microvm=data.get("microvm"),
         )
         return record, None

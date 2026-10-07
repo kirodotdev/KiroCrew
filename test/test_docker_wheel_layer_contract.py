@@ -269,3 +269,106 @@ def test_the_named_script_guard_is_not_vacuous() -> None:
         "test_named_build_scripts_exist_and_are_executable checks nothing. Either "
         "restore the citation or delete both tests deliberately"
     )
+
+
+# ---------------------------------------------------------------------------
+# The bundle directory has to stay traversable.
+#
+# ``--chmod`` takes ONE octal and BuildKit applies it to every path the COPY
+# creates -- including the destination directory, which a COPY into
+# ``/app/crew-bundle/`` creates on the way to the files. A mode without the
+# owner-execute bit therefore produces ``drw-r--r--`` on that directory, which
+# the crew user cannot enter, and then no file inside it is reachable whatever
+# its own mode says. The container fails at startup with
+#
+#     ConfigError: bundle check failed [manifest.json is readable JSON]:
+#     /app/crew-bundle/manifest.json could not be read as JSON (Permission denied)
+#
+# which reads like a corrupt bundle and is a directory mode. Measured live.
+#
+# Static, like the rest of this file: it reads the Dockerfile text, so it needs
+# no Docker daemon and cannot flake. A ratchet rather than a one-off, because
+# tightening a payload's modes is exactly the kind of tidy-up that looks correct
+# -- these are read-only JSON files that nothing executes -- and whose cost is
+# invisible until a crew boots. ``Dockerfile.crew`` is SHARED by the Fargate and
+# MicroVM lanes, so a regression here reaches every remote crew.
+
+#: The path whose traversability the crew user depends on, and the recipes that
+#: build it. Listed rather than discovered, so adding a recipe that writes this
+#: directory is a deliberate edit here.
+_BUNDLE_DIR = "/app/crew-bundle"
+_BUNDLE_RECIPES: tuple[Path, ...] = (_CREW_RUNTIME / "Dockerfile.crew",)
+
+
+def _chmod_of(inst: str) -> str:
+    """The ``--chmod`` value on one COPY, or ``""`` when it carries none."""
+    found = re.search(r"--chmod=(\d+)", inst)
+    return found.group(1) if found else ""
+
+
+def _creates_the_bundle_dir(dest: str) -> bool:
+    """Whether a COPY to *dest* creates or writes inside the bundle directory.
+
+    Both shapes count. ``/app/crew-bundle/`` creates the directory itself, and
+    ``/app/crew-bundle/skills`` creates it as a parent -- so the mode on either
+    line can be the one that makes it unenterable.
+    """
+    normalized = dest.rstrip("/")
+    return normalized == _BUNDLE_DIR or normalized.startswith(f"{_BUNDLE_DIR}/")
+
+
+@pytest.mark.parametrize("dockerfile", _BUNDLE_RECIPES, ids=_ids(_BUNDLE_RECIPES))
+def test_the_bundle_stays_traversable_by_the_crew_user(dockerfile: Path) -> None:
+    """Every COPY touching the bundle directory leaves it enterable.
+
+    Asserted on the OWNER-execute bit specifically. The bundle is owned by root
+    and read by the ``crew`` user, so the mode that matters for traversal is the
+    one BuildKit stamps on a directory it creates, and a value without ``0o100``
+    set is the failure this guards.
+    """
+    offenders: list[str] = []
+    checked = 0
+    for inst in _instructions(dockerfile):
+        if not inst.startswith("COPY"):
+            continue
+        _sources, dest = _copy_sources_and_dest(inst)
+        if not _creates_the_bundle_dir(dest):
+            continue
+        checked += 1
+        mode = _chmod_of(inst)
+        if not mode:
+            # No --chmod at all is fine: the directory then takes the builder's
+            # default, which is traversable. This line is only about an explicit
+            # mode that removes the bit.
+            continue
+        if not int(mode, 8) & 0o100:
+            offenders.append(f"{inst.splitlines()[0]}  ->  --chmod={mode}")
+    assert checked, (
+        f"no COPY in {dockerfile.name} writes {_BUNDLE_DIR}; this test is pinning "
+        "nothing and the path or the recipe list moved"
+    )
+    assert not offenders, (
+        f"{dockerfile.name} gives {_BUNDLE_DIR} a mode the crew user cannot enter. "
+        "BuildKit applies one --chmod to every path the COPY creates, including the "
+        "destination directory, so this produces drw-r--r-- and the supervisor fails "
+        "with Permission denied on a bundle that is actually intact:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_traversability_guard_is_not_vacuous() -> None:
+    """The guard catches the mode that broke a live crew.
+
+    Without this, a rewrite of ``_creates_the_bundle_dir`` or ``_chmod_of`` that
+    matched nothing would leave the test above passing on an empty set -- and the
+    ``checked`` assertion only proves the lines were FOUND, not that a bad mode
+    would be rejected.
+    """
+    assert _creates_the_bundle_dir("/app/crew-bundle/") is True
+    assert _creates_the_bundle_dir("/app/crew-bundle/skills") is True
+    assert _creates_the_bundle_dir("/app/other") is False
+    assert _chmod_of("COPY --chmod=0644 a b /app/crew-bundle/") == "0644"
+    assert _chmod_of("COPY a b /app/crew-bundle/") == ""
+    # 0644 is the mode that produced drw-r--r-- on a real build; 0755 is the one
+    # that works. The bit, not the number, is what the guard reads.
+    assert not int("0644", 8) & 0o100
+    assert int("0755", 8) & 0o100

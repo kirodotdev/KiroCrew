@@ -990,6 +990,16 @@ class TestRedactionSinkRegistry:
             # exfil scanner THEN the credential scanner over every string in a
             # projection view or event `data`, so a sink using it is fully covered.
             "_redact_projection_value",
+            # redact_peer_text (dashboard/peer_redaction.py) IS the pair: it runs
+            # redact_exfiltration_urls THEN redact_credentials in the repo's fixed
+            # order. Its two wrappers reach it for a whole JSON document and for one
+            # SSE event respectively, so a sink calling any of the three is fully
+            # covered. Named here because that module exists so its callers "share
+            # one registered sink instead of each inventing a redactor pair" -- which
+            # means a covered sink need not mention either scanner itself.
+            "redact_peer_text",
+            "_redact_peer_payload",
+            "_redact_sse_event_async",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

@@ -170,7 +170,7 @@ def env(backend):
     return backend
 
 
-def make_settings(backend, *, route_prefix: str = "/c/crew", control_secret: str | None = None):
+def make_settings(backend, *, route_prefix: str = "/c/crew", control_secret: str | None = "CTRL"):
     run_dir = backend["run_dir"]
     data_home = run_dir.parent / "data"
     return common.Settings(
@@ -210,6 +210,12 @@ async def run_front(settings):
 
 TURN = "/c/crew/v1/chat/completions"
 
+#: Every route this process serves now authenticates its caller, so a turn and a
+#: liveness probe both carry the secret. The tests below still assert what they
+#: always asserted -- what reaches the backend, how slots serialize, what a stream
+#: forwards -- with the gate as a precondition rather than as the subject.
+AUTH = {"X-SMC-Control-Secret": "CTRL"}
+
 
 # --------------------------------------------------------------------------- #
 # Forwarding + auth
@@ -217,7 +223,9 @@ TURN = "/c/crew/v1/chat/completions"
 @pytest.mark.asyncio
 async def test_customer_turn_forwards_and_authenticates(env):
     async with run_front(make_settings(env)) as (client, _app):
-        resp = await client.post(TURN, json={"model": "crew", "messages": [], "id": "slot-1"})
+        resp = await client.post(
+            TURN, json={"model": "crew", "messages": [], "id": "slot-1"}, headers=AUTH
+        )
     assert resp.status_code == 200
     assert resp.json()["id"] == "slot-1"
     assert len(env["fake"].requests) == 1
@@ -233,6 +241,7 @@ async def test_foreign_origin_and_forwarded_headers_are_not_forwarded(env):
     backend WITHOUT them: loopback-with-no-Origin is what the backend's CSRF
     check trusts, and a forwarded foreign Origin trips it silently."""
     hostile = {
+        **AUTH,
         "Origin": "https://evil.example.com",
         "X-Forwarded-For": "203.0.113.9",
         "X-Forwarded-Host": "evil.example.com",
@@ -255,8 +264,8 @@ async def test_foreign_origin_and_forwarded_headers_are_not_forwarded(env):
 @pytest.mark.asyncio
 async def test_bare_and_prefixed_health(env):
     async with run_front(make_settings(env)) as (client, _app):
-        bare = await client.get("/health")
-        prefixed = await client.get("/c/crew/health")
+        bare = await client.get("/health", headers=AUTH)
+        prefixed = await client.get("/c/crew/health", headers=AUTH)
     assert bare.status_code == 200 and bare.json() == {"status": "ok"}
     assert prefixed.status_code == 200 and prefixed.json() == {"status": "ok"}
     assert env["fake"].requests == []  # health never touches the backend
@@ -266,7 +275,9 @@ async def test_bare_and_prefixed_health(env):
 async def test_turn_recognized_only_after_prefix_strip(env):
     async with run_front(make_settings(env, route_prefix="/c/crew")) as (client, _app):
         ok = await client.post(
-            "/c/crew/v1/chat/completions", json={"model": "crew", "id": "s", "messages": []}
+            "/c/crew/v1/chat/completions",
+            json={"model": "crew", "id": "s", "messages": []},
+            headers=AUTH,
         )
     assert ok.status_code == 200
 
@@ -279,8 +290,8 @@ async def test_same_slot_requests_are_serialized_never_409(env):
     env["fake"].turn_delay = 0.2
     async with run_front(make_settings(env)) as (client, _app):
         r1, r2 = await asyncio.gather(
-            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}),
-            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}),
+            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}, headers=AUTH),
+            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}, headers=AUTH),
         )
     assert r1.status_code == 200 and r2.status_code == 200
     assert env["fake"].saw_409 == 0  # the caller never saw a 409
@@ -292,8 +303,8 @@ async def test_different_slots_run_concurrently(env):
     env["fake"].turn_delay = 0.2
     async with run_front(make_settings(env)) as (client, _app):
         r1, r2 = await asyncio.gather(
-            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}),
-            client.post(TURN, json={"model": "crew", "id": "B", "messages": []}),
+            client.post(TURN, json={"model": "crew", "id": "A", "messages": []}, headers=AUTH),
+            client.post(TURN, json={"model": "crew", "id": "B", "messages": []}, headers=AUTH),
         )
     assert r1.status_code == 200 and r2.status_code == 200
     assert env["fake"].max_concurrent >= 2  # a global lock would make this 1
@@ -352,7 +363,9 @@ async def test_secret_reread_and_retry_succeeds_on_403(env):
     fake.heal_on_bad = True  # first 403 writes NEW to disk
     env["secret_file"].write_text("OLD", encoding="utf-8")
     async with run_front(make_settings(env)) as (client, _app):
-        resp = await client.post(TURN, json={"model": "crew", "id": "s", "messages": []})
+        resp = await client.post(
+            TURN, json={"model": "crew", "id": "s", "messages": []}, headers=AUTH
+        )
     assert resp.status_code == 200
     assert len(fake.requests) == 2  # one 403, one retried success
     assert fake.requests[0]["headers"][common.HEADER.lower()] == "OLD"
@@ -366,7 +379,9 @@ async def test_secret_retry_gives_up_after_one_retry(env):
     fake.heal_on_bad = False  # disk never gets the good secret
     env["secret_file"].write_text("OLD", encoding="utf-8")
     async with run_front(make_settings(env)) as (client, _app):
-        resp = await client.post(TURN, json={"model": "crew", "id": "s", "messages": []})
+        resp = await client.post(
+            TURN, json={"model": "crew", "id": "s", "messages": []}, headers=AUTH
+        )
     assert resp.status_code == 403  # relayed to the caller
     assert len(fake.requests) == 2  # exactly one retry, then give up
 
@@ -401,7 +416,10 @@ async def test_stream_forwards_openai_chunks_done_and_keepalive(env):
     body = b""
     async with run_front(make_settings(env)) as (client, _app):
         async with client.stream(
-            "POST", TURN, json={"model": "crew", "id": "s", "messages": [], "stream": True}
+            "POST",
+            TURN,
+            json={"model": "crew", "id": "s", "messages": [], "stream": True},
+            headers=AUTH,
         ) as resp:
             assert resp.status_code == 200
             assert resp.headers["content-type"].startswith("text/event-stream")
@@ -428,7 +446,10 @@ async def test_stream_drops_named_acp_event_fail_closed(env):
     body = b""
     async with run_front(make_settings(env)) as (client, _app):
         async with client.stream(
-            "POST", TURN, json={"model": "crew", "id": "s", "messages": [], "stream": True}
+            "POST",
+            TURN,
+            json={"model": "crew", "id": "s", "messages": [], "stream": True},
+            headers=AUTH,
         ) as resp:
             async for chunk in resp.aiter_bytes():
                 body += chunk
@@ -453,7 +474,10 @@ async def test_stream_drops_non_chunk_json(env):
     body = b""
     async with run_front(make_settings(env)) as (client, _app):
         async with client.stream(
-            "POST", TURN, json={"model": "crew", "id": "s", "messages": [], "stream": True}
+            "POST",
+            TURN,
+            json={"model": "crew", "id": "s", "messages": [], "stream": True},
+            headers=AUTH,
         ) as resp:
             async for chunk in resp.aiter_bytes():
                 body += chunk
@@ -473,7 +497,10 @@ async def test_stream_backend_403_becomes_openai_error_frame(env):
     body = b""
     async with run_front(make_settings(env)) as (client, _app):
         async with client.stream(
-            "POST", TURN, json={"model": "crew", "id": "s", "messages": [], "stream": True}
+            "POST",
+            TURN,
+            json={"model": "crew", "id": "s", "messages": [], "stream": True},
+            headers=AUTH,
         ) as resp:
             assert resp.status_code == 200  # SSE commits 200, error is a frame
             async for chunk in resp.aiter_bytes():

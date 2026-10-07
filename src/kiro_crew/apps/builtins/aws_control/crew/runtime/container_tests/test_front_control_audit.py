@@ -14,6 +14,7 @@ behaviour of ``log_tool_invocation(critical=True)``.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import logging
@@ -195,18 +196,49 @@ def test_a_denial_that_cannot_be_recorded_is_also_refused_that_way(
 
 
 def test_the_customer_surface_is_not_a_control_decision(tmp_path: Path, caplog) -> None:
-    """Non-vacuity for the emit site.
+    """Non-vacuity for the emit site, in the posture the network bounds.
 
-    The customer surface is not a control decision, so it must produce NO record -- both
-    because a per-request audit line is noise and because a record implying an
+    Where a private subnet and a security group decide who can reach this port, the
+    customer surface is not a control decision, so it must produce NO record --
+    both because a per-request audit line is noise and because a record implying an
     authorisation decision was made would be false.
     """
     settings = make_settings(tmp_path, control_secret="right")
+    assert settings.require_auth_on_every_route is False
     with caplog.at_level("INFO"):
         with TestClient(build_app(settings)) as client:
             client.get("/health")
 
     assert _records(caplog) == []
+
+
+def test_every_route_is_a_decision_when_the_network_does_not_bound_it(
+    tmp_path: Path, caplog
+) -> None:
+    """The same emit site in the other posture, which is the one that needs it.
+
+    Where the compute carries its own internet-reachable endpoint there is no
+    security group to lean on, so every route is reachable by an arbitrary caller
+    and every one of them is a decision -- and a decision nobody recorded is a
+    decision nobody can account for.
+
+    Both outcomes are asserted, because a gate that only records its grants is a
+    gate whose denials are invisible.
+    """
+    settings = dataclasses.replace(
+        make_settings(tmp_path, control_secret="right"),
+        require_auth_on_every_route=True,
+    )
+    with caplog.at_level("INFO"):
+        with TestClient(build_app(settings)) as client:
+            granted = client.get("/health", headers={"X-SMC-Control-Secret": "right"})
+            denied = client.get("/health")
+
+    assert granted.status_code == 200 and granted.json() == {"status": "ok"}
+    assert denied.status_code == 403
+    records = _records(caplog)
+    assert len(records) == 2
+    assert [r["event_type"] for r in records] == [audit.EVENT_GRANTED, audit.EVENT_DENIED]
 
 
 def test_the_event_uses_sels_own_type_names() -> None:

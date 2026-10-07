@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Shared scaffolding for Kiro Crew remote crews on AWS Lambda MicroVMs, in the
+  user's own AWS account: the customer-managed key each crew's control secret is
+  encrypted with, the bucket an image build reads its recipe from, and the roles
+  a MicroVM's SSM agent registers and runs under. One stack per account and
+  region.
+
+  Deployed BY HAND, once, like kirocrew-fargate-base.yaml. The launcher never
+  creates a bucket or a key, and that is the point: these resources outlive every
+  crew that uses them, so they are created by a deliberate act with a stack behind
+  it rather than as a side effect of someone's first launch.
+
+  Its outputs are the configuration home for the `microvm` block in
+  ~/.kiro/crew/cloud.json: LaneKmsKeyArn and RecipeBucketName.
+
+# ---------------------------------------------------------------------------
+# Parameters. There is no networking here at all, and that is a property of the
+# platform rather than an omission: a MicroVM launched with the INTERNET_EGRESS
+# connector has no security group and no route table, and there is no
+# MicroVM-level control that narrows its outbound traffic. So this stack has
+# nothing to place and nothing to bound on the network side.
+# ---------------------------------------------------------------------------
+Parameters:
+  StackTag:
+    Type: String
+    Default: kirocrew
+    # Mirrors the other lanes' cap for the same reason: names derived from this
+    # tag are bounded by AWS resource-name limits, and a value that passes
+    # template validation but fails opaquely at resource creation is worse than
+    # one refused here.
+    AllowedPattern: "[a-z0-9-]{1,51}"
+    Description: Discovery tag value written as kirocrew:microvm.
+
+  SecretPathPrefix:
+    Type: String
+    Default: kirocrew/crew
+    Description: >-
+      Secrets Manager path prefix the guest may read, which must equal
+      microvm.secret_path_prefix in ~/.kiro/crew/cloud.json. The guest's role is
+      scoped to this prefix, so a config that names a different one is a launch
+      that ends at the secrets stage.
+    AllowedPattern: "^[A-Za-z0-9/_+=.@-]{1,200}$"
+
+Resources:
+  # --- The key. A customer-managed CMK rather than the AWS-managed default,
+  #     because the thing it protects is the per-crew control secret -- the one
+  #     credential that authenticates the owner's gateway to their crew -- and a
+  #     key the owner holds is the only form they can revoke.
+  #
+  #     This is the largest standing cost in the lane, at roughly one dollar a
+  #     month, and it is the only one that exists whether or not a crew is
+  #     running. Stated plainly because the lane's whole argument is cost.
+  LaneKey:
+    Type: AWS::KMS::Key
+    # Retained on stack delete. A secret encrypted under a key that was scheduled
+    # for deletion is unreadable, and recovery after that is limited to cancelling
+    # the key's scheduled deletion before its waiting period ends.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub "Kiro Crew MicroVM per-crew control secrets (${StackTag})"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+      Tags:
+        - Key: kirocrew:microvm
+          Value: !Ref StackTag
+
+  LaneKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${StackTag}-microvm"
+      TargetKeyId: !Ref LaneKey
+
+  # --- The bucket a crew's image RECIPE is uploaded to, and the role Lambda
+  #     assumes to read it and run the build.
+  #
+  #     A crew's image is built rather than configured, from an AWS-managed base
+  #     plus that crew's own signed bundle -- the same two inputs the Fargate lane
+  #     builds a task definition from. The build runs on Lambda's capacity, so the
+  #     recipe has to be somewhere Lambda can read and the build needs a role to
+  #     read it with. Neither is created by a launch, for the reason the key is
+  #     not: a launch creating the thing that outlives it is how an account
+  #     accumulates resources nobody chose.
+  #
+  #     Recipes expire quickly. A recipe is an input to a build, not a record of
+  #     one: the image it produced carries its recipe digest as a tag, so the zip
+  #     has no job once the build finishes.
+  RecipeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${StackTag}-microvm-recipes-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRecipes
+            Status: Enabled
+            ExpirationInDays: 7
+          - Id: AbandonMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: kirocrew:microvm
+          Value: !Ref StackTag
+
+  ImageBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackTag}-microvm-build"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: read-the-recipe
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # The recipe prefix and nothing else. No ListBucket: a build does
+              # not need to enumerate other crews' recipes, and a role that can
+              # is a role that can read them.
+              - Effect: Allow
+                Action: "s3:GetObject"
+                Resource: !Sub "${RecipeBucket.Arn}/recipes/*"
+        # Build logs. Required whenever CreateMicrovmImage is given a log group,
+        # and the failure without it has no timeout and no error: the image
+        # version stays PENDING with updatedAt equal to createdAt, the image
+        # stays CREATING, no log group is created, and nothing ever says why.
+        # Measured live -- over two hours in that state, against the same recipe
+        # that fails in 55 seconds with logging off. A build that cannot write
+        # its logs does not build without them; it does not build at all.
+        # Worse, it cannot be cleaned up: the version is the last one so it
+        # cannot be deleted, and the image is not in a deletable state, so the
+        # image NAME -- which is the recipe digest -- is burned for that content.
+        - PolicyName: write-build-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda-microvms/*"
+      Tags:
+        - Key: kirocrew:microvm
+          Value: !Ref StackTag
+
+  # --- The role a MicroVM's SSM agent registers as. One role for the lane, not
+  #     one per crew: a per-crew role buys containment BETWEEN crews, which
+  #     matters for a shared roster and is ceremony for one owner running their
+  #     own. The lane is single-owner today, and the day it is not is the day this
+  #     becomes one role per crew.
+  #
+  #     It grants exactly what a guest needs to come up and be reached: the SSM
+  #     managed-node core policy, its own two secrets, and decrypt on the key
+  #     those secrets are encrypted under.
+  HybridActivationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackTag}-microvm-crew"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: crew-key
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Decrypt only. The guest READS its secrets; the control plane is
+              # what writes them, so a guest that could encrypt under this key
+              # could write a secret its owner never minted.
+              - Effect: Allow
+                Action: "kms:Decrypt"
+                Resource: !GetAtt LaneKey.Arn
+        - PolicyName: crew-identity
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # The guest's two secrets: the per-crew control secret and the Kiro
+              # identity beside it. This is the role's only identity, and the
+              # payload carries a secret REFERENCE rather than a value precisely
+              # so the guest reads them itself -- which it cannot do without this
+              # grant, and a launch without it ends at the secrets stage with a
+              # VM that bills and serves nothing.
+              #
+              # Scoped to the prefix the lane writes under. An operator who sets
+              # microvm.secret_path_prefix to something else must widen this
+              # resource to match; the default is what the lane uses when they
+              # set nothing.
+              - Effect: Allow
+                Action: "secretsmanager:GetSecretValue"
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Prefix}/*"
+                  - Prefix: !Ref SecretPathPrefix
+              # The guest removes its OWN managed node on the way out. Without
+              # this, every terminated crew leaves an SSM node behind that the
+              # sweeper can only report, and the account accumulates one per
+              # launch.
+              #
+              # Unscoped because SSM does not support a resource condition on this
+              # action; the guest can only name an id, and the only id it holds is
+              # the one it registered as.
+              - Effect: Allow
+                Action: "ssm:DeregisterManagedInstance"
+                Resource: "*"
+      Tags:
+        - Key: kirocrew:microvm
+          Value: !Ref StackTag
+
+  # The role the PLATFORM assumes to run one MicroVM, as distinct from the role
+  # the guest's own SSM node registers under above.
+  #
+  # Required for logs, which is why it is not optional. ``run-microvm`` has its
+  # own ``--logging``, separate from the image build's, and refuses it with
+  # "Logging cannot be enabled without providing executionRoleArn". Without
+  # per-VM logging a launch that fails before the guest registers is INVISIBLE:
+  # the control plane shows an activation with zero registrations and a VM in
+  # RUNNING, and a MicroVM has no other channel out before it registers. Two
+  # launches were spent on a cause nobody could see.
+  #
+  # It carries the same key grant. On one platform version the guest's effective
+  # identity was this role rather than the activation role -- injected ambiently
+  # -- so a grant present on only one of the two makes a secret readable or not
+  # depending on which the platform hands the guest. Granting both removes that
+  # coin flip.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackTag}-microvm-exec"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: microvm-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda-microvms/*"
+        - PolicyName: crew-key
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Decrypt only. The guest READS its secrets; the control plane is
+              # what writes them, so a guest that could encrypt under this key
+              # could write a secret its owner never minted.
+              - Effect: Allow
+                Action: "kms:Decrypt"
+                Resource: !GetAtt LaneKey.Arn
+Outputs:
+
+  LaneKmsKeyArn:
+    Description: Write this as microvm.kms_key_id in ~/.kiro/crew/cloud.json.
+    Value: !GetAtt LaneKey.Arn
+
+  RecipeBucketName:
+    Description: Write this as microvm.recipe_bucket in ~/.kiro/crew/cloud.json.
+    Value: !Ref RecipeBucket
+
+  ImageBuildRoleArn:
+    Description: Write this as microvm.build_role_arn in ~/.kiro/crew/cloud.json.
+    Value: !GetAtt ImageBuildRole.Arn
+
+  HybridActivationRoleArn:
+    Description: >-
+      Write this as microvm.activation_role_arn in ~/.kiro/crew/cloud.json. It is
+      the role an SSM hybrid activation registers a MicroVM's node under, and
+      ssm:CreateActivation refuses the call without it, so the lane treats it as
+      required rather than optional.
+    Value: !GetAtt HybridActivationRole.Arn
+
+  ExecutionRoleArn:
+    Description: >-
+      Write this as microvm.execution_role_arn in ~/.kiro/crew/cloud.json. The
+      role the platform runs a MicroVM as; run-microvm refuses --logging without
+      it, and without logging a launch that fails before the guest registers
+      leaves no trace anywhere.
+    Value: !GetAtt ExecutionRole.Arn

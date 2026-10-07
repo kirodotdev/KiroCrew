@@ -1522,6 +1522,14 @@ describe('RemoteCrewPanel', () => {
         <button type="button" onClick={() => launch({ size_key: 'pool-small' })}>
           Claim a host
         </button>
+        {/* A form that DOES ask for a region, so the panel's fallback can be shown
+            not to override one the reader chose in the provisioner's own form. */}
+        <button
+          type="button"
+          onClick={() => launch({ size_key: 'pool-small', region: 'eu-west-2' })}
+        >
+          Pick Ireland and claim
+        </button>
         {launching ? <span>Claiming…</span> : null}
       </div>
     )
@@ -1578,13 +1586,46 @@ describe('RemoteCrewPanel', () => {
         expect(api.cloudLaunch).toHaveBeenCalledWith({
           provider_id: 'devspace_iad',
           profile: '',
-          region: '',
+          // The PANEL's region, inherited. This form asks for none of its own, and
+          // every provisioner's preflight refuses an empty one -- reported as
+          // `region='' is not a region`, which reads as a malformed value rather
+          // than an absent one. So a form that does not ask inherits the region
+          // the reader already chose here rather than posting nothing.
+          region: 'us-east-1',
           size_key: 'pool-small',
         }),
       )
       // And nothing re-probed AWS on the way: the preflight belongs to the EC2
       // form that was on screen before the switch.
       expect(vi.mocked(api.cloudPreflight).mock.calls.length).toBe(preflightsBefore)
+    })
+
+    it('keeps a region the provisioner form supplied rather than the panel one', async () => {
+      // The fallback fills a gap; it must not overrule a choice. A form that asks
+      // for a region is the reader saying where this crew goes, and the panel's
+      // own selection is not that answer.
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudLaunch).mockResolvedValue({ ...RUNNING_JOB, provider_id: 'devspace_pdx' })
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('button', { name: 'Amazon DevSpace (PDX)' }))
+      await u.click(await screen.findByRole('button', { name: /Pick Ireland and claim/i }))
+
+      await waitFor(() =>
+        expect(api.cloudLaunch).toHaveBeenCalledWith({
+          provider_id: 'devspace_pdx',
+          profile: '',
+          region: 'eu-west-2',
+          size_key: 'pool-small',
+        }),
+      )
     })
 
     it('never probes AWS when the remembered provisioner is not the AWS one', async () => {

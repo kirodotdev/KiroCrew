@@ -352,6 +352,29 @@ class Settings:
     # a local host or any other lane that says nothing keeps refusing.
     internal_only: bool = False
 
+    # Whether this process requires the control secret on EVERY route it serves.
+    #
+    # A setting rather than a constant, because one image serves lanes bounded by
+    # different things and the bound is not something the container can observe. So
+    # it arrives as a claim the deployment makes, exactly as `internal_only` does.
+    #
+    # On a lane placed in a private subnet behind a security group, that network
+    # placement decides who can reach this port, and the deployment says so by
+    # leaving this alone.
+    #
+    # On a lane whose compute carries its own internet-reachable endpoint there is no
+    # placement to lean on: the endpoint is served whatever network connector the VM
+    # was launched with, and the only control the platform enforces on it is a port
+    # list, so a holder of a correctly-scoped token is still an arbitrary internet
+    # caller. There the container must authenticate for itself, and such a lane sets
+    # this on the image it builds rather than per launch.
+    #
+    # Defaults to False, which leaves every existing deployment as it was: silence
+    # means "the network bounds this", so the lane that cannot say it is the one that
+    # sets it. The setting stops being needed once every caller sends the per-crew
+    # secret, at which point the container can require it unconditionally.
+    require_auth_on_every_route: bool = False
+
     # How many seconds this task may run before the supervisor stops it, where zero
     # means unbounded.
     #
@@ -368,6 +391,29 @@ class Settings:
     # Carries a default for the same reason `bundle_dir` does: several tests build
     # Settings by hand.
     task_ttl_seconds: int = 0
+
+    # The interface the front binds, which is the one setting whose right answer
+    # differs by lane.
+    #
+    # ``0.0.0.0`` on Fargate, where a security group decides who can reach the
+    # task's port at all. ``127.0.0.1`` on the Lambda MicroVM lane, where there
+    # is no security group, the VM's HTTPS endpoint is always reachable from the
+    # internet, and an endpoint credential names a PORT rather than a path -- so a
+    # caller who can mint one asks for whichever port in the guest they like, and
+    # the only port that may answer is the lifecycle-hook listener. Measured, on
+    # a real VM, from outside the account's network.
+    #
+    # It is not the authorisation: ``front/app.py`` requires the deployment's
+    # secret on every route, and that is what decides whether a caller is SERVED.
+    # This decides whether the port can be reached. Both, because each alone has
+    # been enough to lose -- a reachable port with no secret served turns to
+    # anyone who got past the group, and a secret on a port nobody should be able
+    # to reach is one bug away from being the only thing left.
+    #
+    # Carries a default for the same reason ``bundle_dir`` and ``task_ttl_seconds``
+    # do: several tests build Settings by hand. The default is the Fargate
+    # posture, so this field existing changes no deployed behaviour.
+    front_bind: str = "0.0.0.0"  # noqa: S104
 
     @property
     def backend_base_url(self) -> str:
@@ -582,6 +628,9 @@ def load() -> Settings:
         backend_port=_int("SMC_BACKEND_PORT", 8765),
         backend_run_dir=_path("SMC_BACKEND_RUN_DIR", str(data_home / "run")),
         front_port=_int("SMC_FRONT_PORT", 8080),
+        # Defaults to the Fargate posture, so an existing deploy is unchanged by
+        # this field existing. The MicroVM lane sets it explicitly.
+        front_bind=os.environ.get("SMC_FRONT_BIND") or "0.0.0.0",  # noqa: S104
         route_prefix=parse_route_prefix(os.environ.get("SMC_ROUTE_PREFIX")),
         control_secret=os.environ.get("SMC_CONTROL_SECRET") or None,
         # Absent or empty means "not claimed", which is the posture that refuses the
@@ -604,6 +653,18 @@ def load() -> Settings:
                 "whether this task serves the operator's own crews only, which decides "
                 "whether the model subprocess may run unsandboxed on a host that cannot "
                 "sandbox it"
+            ),
+        ),
+        # Whether every route must authenticate (see the field). Absent is the
+        # deployment claiming a network placement that bounds who can reach the port,
+        # which is what every existing one claims.
+        require_auth_on_every_route=_bool(
+            "SMC_REQUIRE_AUTH_ALL_ROUTES",
+            False,
+            why=(
+                "whether this deployment's network placement bounds who can reach this "
+                "port, which decides whether the container must also require the "
+                "control secret on every route it serves"
             ),
         ),
         data_home=data_home,

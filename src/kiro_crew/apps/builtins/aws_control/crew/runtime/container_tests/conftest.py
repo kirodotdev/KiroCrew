@@ -118,7 +118,7 @@ _FLOOR_MARGIN = 2
 # long before anyone notices it drifted. It may be LOWERED only alongside a deliberate
 # deletion of tests, in the same commit, and never to make a red lane green: a floor
 # edited down to meet the measurement measures nothing.
-_MIN_COLLECTED = 712
+_MIN_COLLECTED = 743
 
 # Not collected off Linux. This suite's SUBJECT is the source of a Linux container
 # image, built by the deploy driver and run on Fargate -- not part of the application

@@ -145,6 +145,7 @@ from kiro_crew.instances.registry import (
     InstancesRegistry,
     ancestor_ids,
     descendant_ids,
+    is_headless_provisioner,
     validate_ttl,
 )
 from kiro_crew.instances.ssm_token_mint import (
@@ -1790,6 +1791,12 @@ class _TransportParams:
     #: chain exists.
     via_instance_id: str = ""
     via_remote_port: int = 0
+    #: Whether the crew at the far end serves a turn route and no dashboard, from
+    #: ``registry.is_headless_provisioner`` -- that function stays the one judge,
+    #: and this only CARRIES its answer to the sites where the instance row is not
+    #: in scope. :meth:`turn_url` is the reason it has to be carried at all: it
+    #: has ``self`` and a port and nothing else.
+    headless: bool = False
 
     @property
     def is_chained(self) -> bool:
@@ -1830,8 +1837,24 @@ class _TransportParams:
         }
 
     def turn_url(self, local_port: int) -> str:
-        """The local turn-API URL for a fargate forward, ``""`` otherwise."""
-        if self.method != "fargate":
+        """The local turn-API URL for a HEADLESS crew's forward, ``""`` otherwise.
+
+        Keyed on the crew, like the mint is, rather than on the method being
+        ``fargate``. A MicroVM crew IS headless and reaches its guest over
+        ``ssm``, so while this was method-keyed its status carried no turn URL and
+        two things downstream read the wrong thing from that silence:
+
+        * the forward's liveness probe went to ``/api/health`` instead of the
+          front's ``/health`` -- harmless today only because the probe accepts any
+          status line, and the front answers 403 there under the lane's strict
+          posture;
+        * ``status.turn_url`` stayed empty, so the pane's own ``_turn_target`` fell
+          through to composing the URL from the connected port. That fallback
+          works, which is why the pane was not broken -- but it means the value
+          the far end states about itself is unused for exactly the lane that has
+          one.
+        """
+        if self.method != "fargate" and not self.headless:
             return ""
         return f"http://{_LOOPBACK}:{local_port}{FARGATE_TURN_PATH}"
 
@@ -2575,6 +2598,7 @@ class SshTunnelManager:
                 ssm_target=target,
                 aws_profile=validate_aws_profile(inst.aws_profile),
                 aws_region=validate_aws_region(inst.aws_region),
+                headless=is_headless_provisioner(inst.provisioner_id),
             )
         if method == "ssm":
             target = validate_ssm_target(inst.ssm_target)
@@ -2595,11 +2619,13 @@ class SshTunnelManager:
                 aws_region=validate_aws_region(inst.aws_region),
                 ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),
                 remote_bin=validate_remote_bin(inst.remote_bin),
+                headless=is_headless_provisioner(inst.provisioner_id),
             )
         return _TransportParams(
             method="ssh",
             ssh_host=validate_ssh_host(inst.ssh_host),
             remote_bin=validate_remote_bin(inst.remote_bin),
+            headless=is_headless_provisioner(inst.provisioner_id),
         )
 
     def _resolve_chained_transport(
@@ -2647,6 +2673,7 @@ class SshTunnelManager:
             ssh_host=validate_ssh_host(parent.ssh_host),
             via_instance_id=parent.id,
             via_remote_port=inst.via_remote_port,
+            headless=is_headless_provisioner(inst.provisioner_id),
         )
 
     async def _with_parent(self, inst: Instance) -> Instance | None:
@@ -3091,9 +3118,9 @@ class SshTunnelManager:
         """
         if params.is_chained:
             return await self._mint_through_parent(inst, params)
-        if params.method == "fargate":
+        if params.method == "fargate" or params.headless:
             raise TokenMintError(
-                "a fargate instance has no dashboard token: the task serves only its "
+                "a headless crew has no dashboard token: the far end serves only its "
                 "turn API, reached at the tunnel's turn_url"
             )
         if params.method == "ssm":
@@ -3412,9 +3439,9 @@ class SshTunnelManager:
         reach the lease and the answer. A default would let a future caller mint an
         uncapped credential without saying so.
         """
-        if params.method == "fargate":
+        if params.method == "fargate" or params.headless:
             raise TokenMintError(
-                "a fargate instance has no dashboard token: the task serves only its "
+                "a headless crew has no dashboard token: the far end serves only its "
                 "turn API, reached at the tunnel's turn_url"
             )
         if params.method == "ssm":
@@ -3810,10 +3837,19 @@ class SshTunnelManager:
                 return self._error_status(inst, cycle)
 
             # Mint a per-instance token over the same transport (never logged).
-            # A fargate forward reaches a turn API, not a dashboard: there is no
-            # token to mint and none to refresh, so the forward alone is the
+            # A HEADLESS crew's forward reaches a turn API, not a dashboard: there
+            # is no token to mint and none to refresh, so the forward alone is the
             # connection and the status carries the turn URL instead.
-            if params.method != "fargate":
+            #
+            # Keyed on the CREW, not on the transport. A headless crew reached
+            # over SSM is as headless as one reached over an ECS exec, and asking
+            # the transport instead mints a dashboard token against a crew that
+            # serves no dashboard: the mint fails, this method returns an error
+            # status, and the forward it already installed is torn down -- so the
+            # pane reports a crew that will not answer about a forward that is
+            # fine. This seam is owned elsewhere, so the change here is one
+            # condition.
+            if params.method != "fargate" and not is_headless_provisioner(inst.provisioner_id):
                 try:
                     # Already minted above for a chained crew, because its reply is
                     # what named the port this forward was allowed to dial.
@@ -4614,7 +4650,12 @@ class SshTunnelManager:
         # rebuild binds to below. A chained crew's tier 2 is the rebuild alone
         # too, for the opposite reason -- its mint runs at the top of this
         # recovery, seconds ago, and carries the hop port tier 1 dialled.
-        if params.method == "fargate" or params.is_chained:
+        # A HEADLESS crew belongs on the re-forward arm, not the re-mint arm.
+        # While this asked only about ``fargate``, a MicroVM crew took the else
+        # branch, tried to mint, and ``_mint_for`` raised -- so the recovery stood
+        # down and a dropped forward was never rebuilt. The connect path already
+        # asks about the crew; this is the same question on the healing path.
+        if params.method == "fargate" or params.headless or params.is_chained:
             logger.info("Self-heal tier 2 (re-forward) for %s", instance_id)
         else:
             logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
@@ -4657,7 +4698,13 @@ class SshTunnelManager:
                         return
                     self._schedule_token_refresh(instance_id)
             await self._mark_recovered(instance_id, rebuilt, epoch + 2)
-            if params.method != "fargate":
+            # Same rule as the connect path's mint, and for the same reason: a
+            # headless crew has no dashboard session to prime, whatever transport
+            # reaches it. Leaving this one keyed on the transport would put the
+            # self-heal path on the transport while the connect path asks about
+            # the crew. This seam is owned elsewhere, so the change here is one
+            # condition.
+            if params.method != "fargate" and not is_headless_provisioner(inst.provisioner_id):
                 await self._prime_peer_session(instance_id)
             logger.info("Self-heal tier 2 finished for %s", instance_id)
         else:
@@ -4789,14 +4836,17 @@ class SshTunnelManager:
                     f"dashboard cannot run commands on it. Restart it from that crew."
                 ),
             }
-        if params.method == "fargate":
-            # Refused before any command is built: the task runs no kirocrew
-            # gateway, so a restart dispatched at it would only fail remotely.
+        if params.method == "fargate" or params.headless:
+            # Refused before any command is built: the far end runs no kirocrew
+            # gateway, so a restart dispatched at it would only fail remotely --
+            # and on the MicroVM lane it fails as ``sudo: unknown user``, which
+            # reads like a misconfigured row rather than a verb that does not
+            # apply to this crew.
             return {
                 "ok": False,
                 "message": (
-                    "a fargate instance runs no Kiro Crew gateway to restart; "
-                    "stop and relaunch the task instead"
+                    "a headless crew runs no Kiro Crew gateway to restart; "
+                    "stop and relaunch it instead"
                 ),
             }
         if params.method == "ssm":
