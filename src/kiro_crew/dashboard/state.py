@@ -7584,6 +7584,7 @@ class DashboardState:
         """Update a slot's Slack link state and persist to SessionStore."""
         slot = self._slots.get(slot_name)
         if not slot:
+            logger.warning("slack link skipped: no live slot %r (chat closed?)", slot_name)
             return
         # A thread handoff is ONE action with TWO persisted writes: the previous
         # owner's link is cleared and this slot's is claimed. Each write rewrites
