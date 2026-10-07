@@ -94,6 +94,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
     data_home,
     normalize_agent_model,
+    oauth_endpoints_path,
     refresh_materialized_agents,
     resolve_agent_bindings,
     resolve_effective_model,
@@ -565,6 +566,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_exfiltration_urls_with_records,
     sanitized_oauth_endpoint,
+    sanitized_oauth_endpoint_display,
 )
 from kiro_crew.security.credential_sources import credential_records
 from kiro_crew.security.exfil import MAX_BLOCKED_LINKS_PER_MESSAGE
@@ -2390,6 +2392,23 @@ def _emit_mcp_oauth_request(
                 "URL contained credential or exfiltration pattern "
                 f"(endpoint: {rejected_host}{rejected_path})"
             )
+            # The failed banner renders ONLY meta["error"], so the remedy has to
+            # ride there too or it never reaches the screen. It is
+            # added only when writing the entry would actually clear this
+            # rejection: sanitized_oauth_endpoint_display re-runs the gate as if
+            # the endpoint were approved and answers None for a fixed
+            # credential, http, an explicit port, a loopback/IP host, a redacted
+            # or capped component, or a shape the extension loader refuses.
+            # Those keep the bare error rather than advertise a fix that fails.
+            # Naming the remedy changes no verdict: the URL is still rejected
+            # and the file stays operator-written, out-of-band.
+            if sanitized_oauth_endpoint_display(oauth_url) is not None:
+                entry = json.dumps({"host": rejected_host, "path": rejected_path})
+                rejected_meta["error"] += (
+                    ". If you trust this identity provider, add "
+                    f'{entry} to "additional_authorization_endpoints" in '
+                    f"{oauth_endpoints_path()} and retry"
+                )
             endpoint_detail = (
                 f" The rejected authorization endpoint was "
                 f"{rejected_host}{rejected_path} (query values withheld)."

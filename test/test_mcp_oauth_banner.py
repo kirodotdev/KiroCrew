@@ -323,6 +323,75 @@ class TestEmitMcpOAuthRequest:
         assert m["meta"]["remedy"] == "oauth_endpoints.json"
         assert "oauth_endpoints.json" in m["content"]
 
+    # A Cloudflare Access per-tenant consent URL with a real-world shape:
+    # PKCE + state + redirect push the query past the 200-char length gate, and
+    # the host can never be a builtin (host, path) pair.
+    _CF_ACCESS_URL = (
+        "https://asu.cloudflareaccess.com/cdn-cgi/access/oauth/authorization"
+        "?response_type=code&client_id=Qm9hcmRJZGVudGl0eUNsaWVudA"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2Fcallback"
+        "&scope=openid%20profile%20email%20offline_access"
+        "&state=Zk3pQ9rT2vWx8yLmN4bC7dHs1aJ6eUoI"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+    )
+
+    def test_remedy_reaches_the_rendered_error_with_a_working_entry(self):
+        """The failed banner renders ONLY meta["error"], so the
+        oauth_endpoints.json remedy must ride there, as a copy-ready entry --
+        and writing exactly that entry must clear the rejection."""
+        from kiro_crew.config.loader import oauth_endpoints_path
+
+        url = self._CF_ACCESS_URL
+        assert oauth_url_contains_credential(url), "fixture must trip the gate"
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(MagicMock(), slot, "jenkins-iden", url)
+        m = slot.messages[0]
+        assert m["meta"]["failed"] is True
+        assert m["meta"]["rejected_url"] is True
+        assert "oauth_url" not in m["meta"]
+        error = m["meta"]["error"]
+        entry = {
+            "host": "asu.cloudflareaccess.com",
+            "path": "/cdn-cgi/access/oauth/authorization",
+        }
+        assert json.dumps(entry) in error
+        assert "additional_authorization_endpoints" in error
+        assert str(oauth_endpoints_path()) in error
+        # PKCE/state material never reaches any surfaced field.
+        serialized = json.dumps(m, ensure_ascii=False)
+        assert "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" not in serialized
+        assert "Zk3pQ9rT2vWx8yLmN4bC7dHs1aJ6eUoI" not in serialized
+        # The advertised remedy works: write exactly that entry (into the
+        # test-isolated crew home) and the same URL then passes the gate.
+        path = oauth_endpoints_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"additional_authorization_endpoints": [entry]}))
+        assert not oauth_url_contains_credential(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Fixed credential: refused again even at an approved endpoint.
+            "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+            # http and an explicit port: the carve-out never relaxes either.
+            _CF_ACCESS_URL.replace("https://", "http://", 1),
+            _CF_ACCESS_URL.replace(".com/", ".com:8443/", 1),
+            # A loopback host the extension loader refuses.
+            _CF_ACCESS_URL.replace("asu.cloudflareaccess.com", "localhost", 1),
+        ],
+    )
+    def test_no_remedy_in_error_when_the_entry_could_not_work(self, url):
+        """Only a rejection the allowlist can clear gets the remedy in the
+        rendered error; anything else keeps the bare reason."""
+        assert oauth_url_contains_credential(url)
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(MagicMock(), slot, "self-hosted", url)
+        m = slot.messages[0]
+        assert m["meta"]["failed"] is True
+        assert "additional_authorization_endpoints" not in m["meta"]["error"]
+        assert "If you trust" not in m["meta"]["error"]
+
     def test_rejection_banner_survives_unparseable_url(self):
         """A URL that cannot be parsed to a hostname still rejects with the
         original unnamed banner — no endpoint fields, no crash."""
