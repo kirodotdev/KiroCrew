@@ -6457,10 +6457,8 @@
       "open": "開く",
       "open_in_side_panel": "{{path}} をサイドパネルで開く",
       "plain_view": "ハイライトなし — プレーンビュー",
-      "split_view": "分割ビュー",
       "switch_to_split_view": "分割ビューに切り替え",
-      "switch_to_unified_view": "統一ビューに切り替え",
-      "unified_view": "統一ビュー"
+      "switch_to_unified_view": "統一ビューに切り替え"
     },
     "diffPanel": {
       "click_to_copy_path": "クリックしてパスをコピー",
@@ -7146,6 +7144,7 @@
       "trace_load_failed": "この実行のトレースを読み込めませんでした。"
     },
     "markdownPanel": {
+      "downloading": "ダウンロード中…",
       "add_to_artifact_library": "アーティファクトライブラリに追加",
       "add_to_artifacts": "アーティファクトに追加",
       "add_to_knowledge": "ナレッジに追加",
@@ -8979,6 +8978,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "このデプロイメントでは、ポリシーにより電話の接続が無効になっています。"
     },
     "filePathMenu": {
+      "download_current_file": "ディスク上の現在のファイルをダウンロード: {{path}}",
       "copy_failed": "パスをコピーできませんでした",
       "copy_path": "パスをコピー",
       "path_copied": "パスをコピーしました",

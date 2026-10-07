@@ -19,10 +19,16 @@
  * reports so `WarmSwap` reveals the impl the way it does on screen. Controls
  * inside a hidden warm-up box are not counted: a reader cannot reach them.
  */
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render as rtlRender, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+
+function render(...args: Parameters<typeof rtlRender>) {
+  const result = rtlRender(...args)
+  fireEvent.keyDown(screen.getByRole('button', { name: 'More options' }), { key: 'Enter' })
+  return result
+}
 
 const state = vi.hoisted(() => ({
   /** Pierre's highlight workers, so a test can fail the pool AFTER paint. */
@@ -156,6 +162,9 @@ const visibleHeaders = (container: HTMLElement) =>
 
 async function loadDiffBlock() {
   const { default: DiffBlock } = await import('../components/DiffBlock')
+  // Load the lazy renderer before the DOM deadline; the test controls its
+  // painted state through geometry and worker events, not module-load speed.
+  await import('../pierre/PierreImpl')
   return DiffBlock
 }
 
@@ -203,11 +212,12 @@ function stubScrollHeight() {
 const fireResize = () => act(() => { for (const cb of [...state.resizeCallbacks]) cb() })
 
 class FakeResizeObserver {
-  constructor(private readonly cb: () => void) {}
-  observe() { if (!state.resizeCallbacks.includes(this.cb)) state.resizeCallbacks.push(this.cb) }
+  private readonly notify: () => void
+  constructor(cb: ResizeObserverCallback) { this.notify = () => cb([], this as unknown as ResizeObserver) }
+  observe() { if (!state.resizeCallbacks.includes(this.notify)) state.resizeCallbacks.push(this.notify) }
   unobserve() { this.disconnect() }
   disconnect() {
-    const i = state.resizeCallbacks.indexOf(this.cb)
+    const i = state.resizeCallbacks.indexOf(this.notify)
     if (i >= 0) state.resizeCallbacks.splice(i, 1)
   }
 }
@@ -294,11 +304,11 @@ describe('diff block: the header survives the highlight pool', () => {
       expect(held?.textContent).not.toContain(plumbing)
     }
     expect(visibleHeaders(container)[0]).not.toHaveTextContent('Plain view')
-    expect(reachable(screen.getAllByTitle('Unified view'))[0]).toBeEnabled()
+    expect(reachable(screen.getAllByTitle('Switch to unified view'))[0]).toBeEnabled()
     // Painted: the fallback leaves; the row is unchanged.
     fireResize()
     await vi.waitFor(() => expect(container.querySelector('pre.pierre-plain')).toBeNull())
-    expect(reachable(screen.getAllByTitle('Unified view'))[0]).toBeEnabled()
+    expect(reachable(screen.getAllByTitle('Switch to unified view'))[0]).toBeEnabled()
   })
 
   /** The plain body Pierre shows while its pool is down sits under the block's
@@ -313,8 +323,9 @@ describe('diff block: the header survives the highlight pool', () => {
     const { container } = await renderPainted(vi.fn())
     const row = () => visibleHeaders(container)[0]
     // Painted: no label, and the toggle is live (unseeded default is split).
+    // Three header buttons: Copy, layout toggle, and the ⋯ menu.
     expect(row().querySelector('[data-label]')).toBeNull()
-    const live = reachable(screen.getAllByTitle('Unified view'))[0]
+    const live = reachable(screen.getAllByTitle('Switch to unified view'))[0]
     expect(live).toBeEnabled()
     expect(row().querySelectorAll('button')).toHaveLength(3)
 
@@ -327,14 +338,13 @@ describe('diff block: the header survives the highlight pool', () => {
       expect(body?.textContent).not.toContain(plumbing)
     }
     expect(row().querySelector('[data-label]')).toHaveTextContent('No highlighting — plain view')
-    // Open + Copy, and nothing else: the toggle is not in the row in any form.
-    expect(screen.queryByTitle('Unified view')).not.toBeInTheDocument()
-    expect(screen.queryByTitle('Split view')).not.toBeInTheDocument()
+    // The header stays Copy + More; the open menu no longer offers layout.
+    expect(screen.queryByTitle('Switch to unified view')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Switch to split view')).not.toBeInTheDocument()
     expect(container.querySelector('[aria-disabled]')).toBeNull()
     const buttons = [...row().querySelectorAll('button')].map(b => b.getAttribute('title') ?? '')
     expect(buttons).toHaveLength(2)
-    expect(buttons[0]).toMatch(OPEN_NAME)
-    expect(buttons[1]).toBe('Copy patch')
+    expect(buttons).toEqual(['Copy patch', 'More options'])
     // The Copy control is untouched by what the body shows.
     const user = userEvent.setup()
     await user.click(reachableCopy()[0])
@@ -556,7 +566,8 @@ new mode 100755
     // a file row carries its file and its counts only.
     expect(reachableOpen()).toHaveLength(1)
     expect(reachableCopy()[0].closest('[data-diffs-header]')).toBe(rows()[0])
-    expect(reachable(screen.getAllByTitle('Unified view'))[0].closest('[data-diffs-header]')).toBe(rows()[0])
+    expect(screen.getByRole('button', { name: 'More options' }).closest('[data-diffs-header]')).toBe(rows()[0])
+    expect(reachable(screen.getAllByTitle('Switch to unified view'))).toHaveLength(1)
     expect(rows()[1].querySelector('button')).toBeNull()
     expect(rows()[2].querySelector('button')).toBeNull()
 
@@ -566,8 +577,8 @@ new mode 100755
     expect(reachableOpen()).toHaveLength(1)
     expect(rows()[0].querySelector('[data-label]')).toHaveTextContent('No highlighting — plain view')
     expect(rows()[1].querySelector('[data-label]')).toBeNull()
-    // The toggle is withheld over the plain bodies: the card row is Open + Copy.
-    expect(screen.queryByTitle('Unified view')).not.toBeInTheDocument()
+    // The toggle is withheld over the plain bodies; Copy + More stays stable.
+    expect(screen.queryByTitle('Switch to unified view')).not.toBeInTheDocument()
     expect(rows()[0].querySelectorAll('button')).toHaveLength(2)
   })
 })

@@ -6766,10 +6766,8 @@
       "open": "Открыть",
       "open_in_side_panel": "Открыть {{path}} в боковой панели",
       "plain_view": "Без подсветки — простой вид",
-      "split_view": "Разделённый вид",
       "switch_to_split_view": "Переключить на разделённый вид",
-      "switch_to_unified_view": "Переключить на объединённый вид",
-      "unified_view": "Объединённый вид"
+      "switch_to_unified_view": "Переключить на объединённый вид"
     },
     "diffPanel": {
       "click_to_copy_path": "Нажмите, чтобы скопировать путь",
@@ -7479,6 +7477,7 @@
       "trace_load_failed": "Не удалось загрузить трассировку этого запуска."
     },
     "markdownPanel": {
+      "downloading": "Загрузка…",
       "add_to_artifact_library": "Добавить в библиотеку артефактов",
       "add_to_artifacts": "Добавить в артефакты",
       "add_to_knowledge": "Добавить в «Знания»",
@@ -9354,6 +9353,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "Подключение телефона отключено политикой в этом развёртывании."
     },
     "filePathMenu": {
+      "download_current_file": "Скачать текущий файл с диска: {{path}}",
       "copy_failed": "Не удалось скопировать путь",
       "copy_path": "Копировать путь",
       "path_copied": "Путь скопирован",

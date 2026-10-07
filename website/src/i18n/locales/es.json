@@ -6663,10 +6663,8 @@
       "open": "Abrir",
       "open_in_side_panel": "Abrir {{path}} en el panel lateral",
       "plain_view": "Sin resaltado — vista de texto plano",
-      "split_view": "Vista dividida",
       "switch_to_split_view": "Cambiar a la vista dividida",
-      "switch_to_unified_view": "Cambiar a la vista unificada",
-      "unified_view": "Vista unificada"
+      "switch_to_unified_view": "Cambiar a la vista unificada"
     },
     "diffPanel": {
       "click_to_copy_path": "Haz clic para copiar la ruta",
@@ -7368,6 +7366,7 @@
       "trace_load_failed": "No se pudo cargar el registro de esta ejecución."
     },
     "markdownPanel": {
+      "downloading": "Descargando…",
       "add_to_artifact_library": "Añadir a la biblioteca de artefactos",
       "add_to_artifacts": "Añadir a Artefactos",
       "add_to_knowledge": "Añadir a Conocimiento",
@@ -9229,6 +9228,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "La conexión del teléfono está deshabilitada por política en esta implementación."
     },
     "filePathMenu": {
+      "download_current_file": "Descargar el archivo actual del disco: {{path}}",
       "copy_failed": "No se pudo copiar la ruta",
       "copy_path": "Copiar ruta",
       "path_copied": "Ruta copiada",

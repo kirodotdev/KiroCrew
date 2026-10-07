@@ -6457,10 +6457,8 @@
       "open": "열기",
       "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
       "plain_view": "강조 표시 없음 — 일반 보기",
-      "split_view": "분할 보기",
       "switch_to_split_view": "분할 보기로 전환",
-      "switch_to_unified_view": "통합 보기로 전환",
-      "unified_view": "통합 보기"
+      "switch_to_unified_view": "통합 보기로 전환"
     },
     "diffPanel": {
       "click_to_copy_path": "클릭하여 경로 복사",
@@ -7146,6 +7144,7 @@
       "trace_load_failed": "이 실행의 추적 기록을 불러올 수 없습니다."
     },
     "markdownPanel": {
+      "downloading": "다운로드 중…",
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
       "add_to_artifacts": "아티팩트에 추가",
       "add_to_knowledge": "지식에 추가",
@@ -8979,6 +8978,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "이 배포에서는 정책에 따라 휴대전화 연결이 비활성화되어 있습니다."
     },
     "filePathMenu": {
+      "download_current_file": "디스크의 현재 파일 다운로드: {{path}}",
       "copy_failed": "경로를 복사하지 못했습니다",
       "copy_path": "경로 복사",
       "path_copied": "경로 복사됨",

@@ -4105,6 +4105,28 @@ React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 
   - **Failure** — malformed JSON, a truncated stream, or an empty scene renders a one-line explanation (`components.excalidrawBlock.render_failed`) above the source, muted and height-capped. Not danger-red and not full-bleed: scene JSON is hundreds of lines of machine data, so an unannotated red wall reads as a crash rather than a fallback. A diagram never costs the user the content.
   - **Security** — scene JSON is untrusted (model-generated or arbitrary file content). Embedded `files[].dataURL` is restricted to a **raster** `data:image/*;base64` allowlist (`svg+xml` deliberately excluded); colors are pattern-validated before reaching attributes; text is assigned via `textContent`. The SVG is built with `createElementNS`/`setAttribute` throughout, never string concatenation.
 - `DiffBlock.tsx` — dedicated diff renderer with a single colored line-number gutter (adds/context show the new number, deletions the old; the number carries the add/del color and changed rows get a 2px inset edge bar — no `+`/`-` sign column). Raw `@@` hunk headers are not rendered: Pierre draws the chat diff with `hunkSeparators: 'simple'`, a bare hairline between hunks with no label and no expand control, so a short block reads as continuous code. When Pierre cannot draw it (while the worker pool is starting or recovering, or for a patch that will not parse) the body falls back to the plain hunks-only text under the same header row, and only the last such plain body reports the degraded state. Per-file parse state resets at `---`/`+++`/`diff --git` headers so multi-file patches never fabricate a cross-file separator, and the first hunk renders nothing. Unified and split views with forced line wrap (`whitespace-pre-wrap break-words` — these surfaces are width-constrained, so no horizontal scroll; the Monaco editor diff is the full-width surface), file meta headers, "Copy patch" button (raw patch, signs intact), provisional "generating diff…" indicator for incomplete streaming blocks. Supports both standard unified diff and kiro-cli `+N:`/`-N:` format. The Changes panel's `PullRequestPanel.tsx` `DiffView` renders through the same `PierrePatch` component, so the gutter looks alike, but the two title their files differently — `DiffBlock` draws its own header row per file (`PlainFilePairHeader`, named, counted and — added / deleted / binary / executable-bit change — worded by `splitPatchSections` in `utils/diffLineCounts.ts`; a multi-file patch opens with a card-level row carrying the file count, the whole-card totals and the patch-wide controls; Pierre's file header is disabled and the patch reaches Pierre untouched), `DiffView` through `withUnifiedPatchHeaders` in `components/unifiedPatchHeaders.ts`. The oversized file-pair card works the same way: once the reader opts in, Pierre draws only the worker-computed body (`disableFileHeader`), and the card's `PlainFilePairHeader` is its single header in every state, before and after the swap.
+- Transcript diff headers keep Copy patch beside a More options menu containing
+  Open and Download. Headers that previously reserved Open, layout and Copy retain
+  the direct layout toggle; other headers put layout in More to avoid growing
+  two controls into three. Each non-deleted file in a completed
+  multi-file patch has its own Download entry, using the basename unless another
+  target shares it, in which case the full path disambiguates both entries; ambiguous rootless
+  paths require exact rooted corroboration from the surrounding prose. Other
+  relative paths require an absolute hint naming that section; unrelated relative
+  siblings are omitted. The gateway project directory is not evidence of a stored
+  transcript’s checkout, so downloads never infer that binding. Downloads retrieve the
+  current gateway file, not a historical revision from the patch. File-path chips
+  offer Download in their shared context menu for absolute/home-qualified files,
+  including remote sessions, but not directories or unbound relative paths. Their
+  existing Open and Copy path actions are unchanged. Shift+F10 or the context-menu key opens a focused
+  file chip's menu, including on macOS. Both surfaces use `downloadFileToDisk` and the
+  existing `/api/file-download` authorization, path and credential checks. A
+  refusal stays visible in the menu with an accessible agent hand-off; repeated
+  selections are disabled with a localized Downloading label while pending. Successful
+  downloads close the menu and restore focus; refusals remain open for retry. The
+  action tooltip explicitly names the current file on disk. The MarkdownPanel
+  breadcrumb omits this disk-only action: its existing overflow and missing-file
+  banner own the buffer-aware download that rescues the last copy of a deleted file.
 - `TypewriterText.tsx` — animated title reveal
 
 **Inline code chips** (`components/markdown/InlineCode.tsx`): an inline-code span that names a path is a path chip: a click opens the file or browses the directory, Shift+click reveals it in the gateway host's file manager (or copies the path on a remote or tunneled session, where `/api/reveal` cannot drive that host), and Ctrl/Cmd+click copies. Any other span is a copy chip (`data-chip-action="copy"`, neutral colour, dotted underline): its click copies, and the tooltip bubble reads "Click to copy", then flips to "Copied!" or a copy-failed notice.

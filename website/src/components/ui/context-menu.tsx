@@ -5,13 +5,8 @@ import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { PhoneSubContentDiv, PhoneSubTriggerDiv, usePhoneSubState } from './phoneSubmenu'
 
-/**
- * A context menu opens on a right-click, so no caller drives it: `open` is
- * deliberately not accepted (a future controlled caller gets a type error
- * here instead of a silently ignored prop). Radix's Root does take `open`,
- * which is what lets this wrapper close it.
- */
-type ContextMenuProps = Omit<React.ComponentProps<typeof ContextMenuPrimitive.Root>, 'open'>
+/** Controlled callers may close after an asynchronous action succeeds. */
+type ContextMenuProps = React.ComponentProps<typeof ContextMenuPrimitive.Root>
 
 /**
  * Radix `ContextMenu.Root`, plus the same rule as `DropdownMenu`: an open
@@ -19,8 +14,9 @@ type ContextMenuProps = Omit<React.ComponentProps<typeof ContextMenuPrimitive.Ro
  * so the chat composer's drop zone can receive the drop. See
  * `useCloseOnFileDrag` for the mechanism.
  */
-function ContextMenu({ onOpenChange, modal = true, ...rest }: ContextMenuProps) {
-  const [open, setOpen] = React.useState(false)
+function ContextMenu({ open: openProp, onOpenChange, modal = true, ...rest }: ContextMenuProps) {
+  const [internalOpen, setOpen] = React.useState(false)
+  const open = openProp ?? internalOpen
 
   const handleOpenChange = React.useCallback((next: boolean) => {
     setOpen(next)
