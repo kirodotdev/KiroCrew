@@ -97,6 +97,38 @@ class TestCoreOwnedSectionsAreNotUnrecognized:
             KiroCrewConfig.load()
         assert _unrecognized_warnings(caplog) == []
 
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_connections_section_written_by_oauth_apps_is_not_reported(
+        self, tmp_path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The OAuth Apps form writes ``connections.oauth_clients``; loading it stays quiet."""
+        cfgp = tmp_path / "config.json"
+        cfgp.write_text(
+            json.dumps(
+                {
+                    "agent": {"provider": "acp"},
+                    "connections": {"oauth_clients": {"github": {"client_id": "Iv1.abc123"}}},
+                }
+            )
+        )
+        monkeypatch.setattr(L, "config_path", lambda: cfgp)
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            cfg = KiroCrewConfig.load()
+        assert _unrecognized_warnings(caplog) == []
+        assert cfg.to_dict()["connections"]["oauth_clients"]["github"]["client_id"] == "Iv1.abc123"
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_a_non_object_connections_value_still_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data({"agent": {"provider": "acp"}, "connections": "github"})
+        warnings = _unrecognized_warnings(caplog)
+        assert warnings and "connections" in warnings[0]
+
 
 class TestCoreOwnedSectionsRoundTrip:
     def test_voice_reply_section_survives_load_and_to_dict(self, tmp_path, monkeypatch) -> None:
@@ -125,7 +157,21 @@ class TestEveryCoreOwnedKeyHasAReader:
     def test_members_are_exactly_the_documented_readers(self) -> None:
         # Extend this tuple together with validation._CORE_OWNED_TOP_KEYS and
         # add a reader test below; a member with no reader test is a silenced typo.
-        assert validation._CORE_OWNED_TOP_KEYS == frozenset({"voice_reply"})
+        assert validation._CORE_OWNED_TOP_KEYS == frozenset({"voice_reply", "connections"})
+
+    def test_connections_client_id_is_read_by_resolve_oauth_client(self) -> None:
+        from kiro_crew.connections.oauth_clients import _config_client_id
+
+        config = {"connections": {"oauth_clients": {"github": {"client_id": "Iv1.abc123"}}}}
+        assert _config_client_id(config, "github") == "Iv1.abc123"
+
+    def test_connections_tool_aliases_is_read_by_the_alias_gate(self, monkeypatch) -> None:
+        from kiro_crew.agent_materialization import mcp_aliases
+
+        monkeypatch.setattr(
+            mcp_aliases.agent_mod, "_load_json", lambda _p: {"connections": {"tool_aliases": True}}
+        )
+        assert mcp_aliases._connection_tool_aliases_enabled() is True
 
     def test_voice_reply_is_read_by_load_voice_reply_config(self, tmp_path, monkeypatch) -> None:
         from kiro_crew.slack import handler as handler_mod
