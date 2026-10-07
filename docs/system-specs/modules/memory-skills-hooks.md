@@ -1554,11 +1554,14 @@ lessons. Literal managed prefixes and explicitly named managed files still refus
 other admission and read failures are not swallowed. The managed-source check
 matches a top-level name by prefix (`memory*`, `lessons*`, `.lessons*`), so an
 ordinary project entry in a managed workspace can share it; the prefix is kept
-fail-safe rather than narrowed, and the prune is not silent: each pruned entry
-the glob would have descended into or returned is logged as a warning and named
+fail-safe rather than narrowed, and the prune is not silent for a collision: each
+pruned entry the glob would have descended into or returned whose top-level name
+is not one of the store's own (`memory`, `lessons`, `.lessons`, `memory.db*`,
+`memory_index.db*`, `lessons.jsonl*`) is logged as a warning and named
 in one in-band `essential-context#managed-skipped:<template>` note per template
 (part of the member's core, so a size-limited envelope never drops it; never a
-host-native source, so a native-only read leaves it out). Directory names alone do
+host-native source, so a native-only read leaves it out). Pruning the real store
+is routine and logged at debug level only. Directory names alone do
 not exclude an ordinary project outside the configured managed workspaces.
 Containment is judged on resolved paths on both sides: a declared root (the
 project root, or the owner's home for a resource outside it) is normalized the

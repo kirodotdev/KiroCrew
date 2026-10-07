@@ -50,7 +50,29 @@ def _declared_document_count(resources: list[ResourceDeclaration]) -> int:
 
 
 class _ManagedEssentialSourceError(MemberEssentialContextError):
-    """A managed source is excluded from wildcard discovery, never readable."""
+    """A managed source is excluded from wildcard discovery, never readable.
+
+    *workspace_entry* is the top-level workspace entry name that matched the
+    managed-name prefix, or ``None`` when the source sits under an admin root.
+    """
+
+    def __init__(self, message: str, *, workspace_entry: str | None = None) -> None:
+        super().__init__(message)
+        self.workspace_entry = workspace_entry
+
+
+#: Top-level workspace names the product itself writes as managed state. An entry
+#: the prefix prune catches under one of these names is the store working as
+#: intended; any other name is a prefix collision with ordinary project content.
+_MANAGED_EXACT_NAMES = frozenset({"memory", "lessons", ".lessons"})
+#: Managed files whose name may carry a suffix (SQLite ``-wal``/``-shm`` sidecars).
+_MANAGED_NAME_STEMS = ("memory.db", "memory_index.db", "lessons.jsonl")
+
+
+def _is_prefix_collision(name: str) -> bool:
+    """Whether a pruned top-level *name* is ordinary content, not managed state."""
+    folded = name.casefold()
+    return folded not in _MANAGED_EXACT_NAMES and not folded.startswith(_MANAGED_NAME_STEMS)
 
 
 def _refuse_managed_source(path: Path) -> None:
@@ -107,7 +129,8 @@ def _refuse_managed_source(path: Path) -> None:
             parts = candidate.relative_to(workspace).parts
             if parts and parts[0].casefold().startswith(("memory", "lessons", ".lessons")):
                 raise _ManagedEssentialSourceError(
-                    f"Essential source {path}: managed memory/member state cannot be a project resource"
+                    f"Essential source {path}: managed memory/member state cannot be a project resource",
+                    workspace_entry=parts[0],
                 )
             in_workspace = True
     if not in_workspace and any(candidate.is_relative_to(resolved_roots[root]) for root in roots):
@@ -261,9 +284,11 @@ def _skipped_managed_note(skipped: list[Path], template: str) -> tuple[str, str]
 def _matches(root: Path, pattern: str, skipped: list[Path] | None = None) -> list[Path]:
     """Expand a declared glob with bounded directory work and no link traversal.
 
-    An entry the glob would have used but the managed-source check prunes is
-    logged as a warning and, when *skipped* is given, appended to it, so the
-    caller can tell the agent which entries were left out.
+    An entry the glob would have used but the managed-source check prunes for a
+    prefix collision (a name like ``memory-notes`` that is not one of the store's
+    own names) is logged as a warning and, when *skipped* is given, appended to
+    it, so the caller can tell the agent which entries were left out. Pruning the
+    store's real ``memory``/``lessons`` entries is logged at debug level only.
     """
     pieces = Path(pattern).parts
     if Path(pattern).is_absolute() or ".." in pieces:
@@ -328,17 +353,21 @@ def _matches(root: Path, pattern: str, skipped: list[Path] | None = None) -> lis
                     # before descent; literal prefixes and reads still refuse it.
                     try:
                         _refuse_managed_source(path)
-                    except _ManagedEssentialSourceError:
+                    except _ManagedEssentialSourceError as exc:
                         # The prune keeps the name-prefix heuristic fail-safe, so
                         # an ordinary project entry can be caught by it: say so
                         # instead of dropping it silently. Only an entry the glob
-                        # would otherwise have descended into or returned counts.
+                        # would otherwise have descended into or returned counts,
+                        # and only a prefix COLLISION is reported -- the real
+                        # managed store pruned by a broad glob is routine.
                         is_dir = entry.is_dir(follow_symlinks=False)
-                        if (is_dir and (component == "**" or offset + 1 < len(pieces))) or (
+                        wanted = (is_dir and (component == "**" or offset + 1 < len(pieces))) or (
                             not is_dir and offset == len(pieces) - 1
-                        ):
-                            if path not in pruned:
-                                pruned.add(path)
+                        )
+                        if wanted and path not in pruned:
+                            pruned.add(path)
+                            name = exc.workspace_entry
+                            if name is not None and _is_prefix_collision(name):
                                 logger.warning(
                                     "Essential source %s skipped by %s: its name matches "
                                     "managed memory/lessons state",
@@ -347,6 +376,8 @@ def _matches(root: Path, pattern: str, skipped: list[Path] | None = None) -> lis
                                 )
                                 if skipped is not None:
                                     skipped.append(path)
+                            else:
+                                logger.debug("Managed state %s pruned from %s", path, pattern)
                         continue
                     if is_link_or_junction(path):
                         raise MemberEssentialContextError(

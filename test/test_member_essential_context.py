@@ -1581,9 +1581,42 @@ def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypat
     assert "WORKSPACE_CHILD_GUIDE" in message
     assert "MANAGED_CONTENT_MUST_NOT_LOAD" not in message
     assert "You are writer." in message
-    # The prune stays, but it names what it left out.
-    assert "[Essential source: essential-context#managed-skipped:writer-template]" in message
-    assert str(managed) in message
+    # The prune stays; it names only a prefix collision, never the real store.
+    note_label = "[Essential source: essential-context#managed-skipped:writer-template]"
+    if leaf == "memory_index":
+        assert note_label in message
+        assert str(managed) in message
+    else:
+        assert note_label not in message
+        assert str(managed) not in message
+
+
+def test_plain_workspace_glob_over_real_managed_store_adds_no_note(env, caplog):
+    """A broad glob walking past the workspace's own memory/lessons store is
+    routine: no note, no warning, only a debug line."""
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MANAGED_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    project = config_dir() / "workspace"
+    for name in ("memory", "lessons", ".lessons"):
+        (project / name).mkdir(parents=True, exist_ok=True)
+        (project / name / "AGENTS.md").write_text("MANAGED", encoding="utf-8")
+    for name in ("memory.db", "memory.db-wal", "memory_index.db-shm", "lessons.jsonl"):
+        (project / name).write_text("", encoding="utf-8")
+    (project / "guides").mkdir(exist_ok=True)
+    (project / "guides" / "AGENTS.md").write_text("WORKSPACE_CHILD_GUIDE", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://*/AGENTS.md", "file://*", "file://**/*.md"])
+    with caplog.at_level("DEBUG", logger="kiro_crew.member_essential_context"):
+        documents = documents_for_member("writer-template", str(project))
+    assert not any(s.startswith(ESSENTIAL_MANAGED_SKIP_SOURCE) for s, _ in documents)
+    assert "WORKSPACE_CHILD_GUIDE" in "\n".join(body for _, body in documents)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("pruned" in r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
 
 
 def _write_template(agents: Path, name: str, resources: list[str]) -> None:
