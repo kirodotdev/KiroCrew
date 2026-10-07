@@ -187,6 +187,23 @@ export function useChatPageSessionController({
     // itself dep-free, so this identity is genuinely stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionTabs.openInNewTab, dispatch, activeSlotRef])
+  // Read at click time, like `connectedRef`: the callback below is memoized.
+  const tabsRef = useRef(sessionTabs.tabs)
+  tabsRef.current = sessionTabs.tabs
+  /**
+   * Give `key` its own tab beside the active one, unless it has one. Backs
+   * "Open Sidebar Sessions in a Session Tab": a sidebar or flyout click calls it
+   * right after dispatching `switchSlot`. The hook replaces the active tab's
+   * session only from an effect that runs after this update is queued, and
+   * that effect's functional update then finds `key` in the set, so the tab
+   * the user was on keeps its session. An existing tab gets no cue, unlike
+   * `openSlotInNewTab`: the switch is the response.
+   */
+  const ensureSlotTab = useCallback((key: string) => {
+    if (!tabsRef.current.includes(key)) sessionTabs.openInNewTab(key)
+    // Same stable-identity reason as `openSlotInNewTab` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionTabs.openInNewTab])
   const selectSessionTab = useCallback((key: string) => {
     if (key === activeSlotRef.current || !connectedRef.current) return
     // Tab-strip select is a user gesture on a session reference: the announced
@@ -949,6 +966,7 @@ export function useChatPageSessionController({
   return {
     closeSessionTab,
     drawerPopRef,
+    ensureSlotTab,
     handleResumeSession,
     appSlotLaunch,
     setAppSlotLaunch,

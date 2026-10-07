@@ -15031,6 +15031,8 @@
         "show_thinking_inline": "内联显示思考过程",
         "show_timestamps": "显示时间戳",
         "show_token_usage": "显示上下文令牌",
+        "sidebar_click_opens_tab": "在会话标签页中打开侧边栏会话",
+        "sidebar_click_opens_tab_desc": "点击会话会在单独的会话标签页中打开，不会替换当前标签页里的会话。",
         "simplified_tool_call_names": "简化工具调用名称",
         "single_line": "单行",
         "spellcheck_input": "检查消息输入的拼写",

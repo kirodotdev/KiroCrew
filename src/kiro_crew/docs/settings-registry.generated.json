@@ -629,6 +629,13 @@
       "description": "When located on the right edge, the minimap replaces the scroll bar."
     },
     {
+      "id": "chat.open-sidebar-sessions-in-a-session-tab",
+      "label": "Open Sidebar Sessions in a Session Tab",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.open-sidebar-sessions-in-a-session-tab",
+      "description": "A click opens the session in its own session tab instead of replacing the active tab's session."
+    },
+    {
       "id": "chat.pin-the-latest-turn",
       "label": "Pin the latest turn",
       "tab": "chat",

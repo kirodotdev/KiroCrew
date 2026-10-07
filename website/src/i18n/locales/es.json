@@ -15537,6 +15537,8 @@
         "show_thinking_inline": "Mostrar el razonamiento en línea",
         "show_timestamps": "Mostrar marcas de tiempo",
         "show_token_usage": "Mostrar los tokens de contexto",
+        "sidebar_click_opens_tab": "Abrir las sesiones de la barra lateral en una pestaña de sesión",
+        "sidebar_click_opens_tab_desc": "Al hacer clic en una sesión, se abre en su propia pestaña de sesión en lugar de reemplazar la sesión de la pestaña activa.",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
         "single_line": "Una sola línea",
         "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",

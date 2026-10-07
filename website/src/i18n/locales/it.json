@@ -15537,6 +15537,8 @@
         "show_thinking_inline": "Mostra il ragionamento inline",
         "show_timestamps": "Mostra i timestamp",
         "show_token_usage": "Mostra i token di contesto",
+        "sidebar_click_opens_tab": "Apri le sessioni della barra laterale in una scheda di sessione",
+        "sidebar_click_opens_tab_desc": "Un clic su una sessione la apre in una scheda di sessione dedicata invece di sostituire la sessione della scheda attiva.",
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "single_line": "Riga singola",
         "spellcheck_input": "Controlla l'ortografia nel campo messaggio",

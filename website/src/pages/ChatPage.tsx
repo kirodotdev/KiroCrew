@@ -751,7 +751,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // tip + record it as shown, silently burning the 6h cadence.
   const [splitMode, setSplitMode] = useState(false)
   /**
-   * Passed to ChatSidebar as `onSelectSlot`. Stable BY CONTRACT, not by
+   * Run by ChatSidebar's `onSelectSlot`. Stable BY CONTRACT, not by
    * convenience: `ChatSidebar` is wrapped in `memo`, and an inline arrow here
    * makes that memo bail on EVERY ChatPage render. ChatPage re-renders once per
    * frame while anything is streaming (`useWebSocket` batches chunks per rAF
@@ -1754,6 +1754,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setAppSlotLaunch,
     closeSessionTab,
     drawerPopRef,
+    ensureSlotTab,
     handleResumeSession,
     highlightTs,
     initialMidRef,
@@ -5127,13 +5128,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // collapse means a later button-only expand cannot inherit a stale flyout
   // rect and appear to grow out of nothing.
   useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
+  // "Open Sidebar Sessions in a Session Tab" (Settings > Chat > Sessions). A
+  // sidebar row's click, Enter/Space and source chip all call `onSelectSlot`
+  // after their `switchSlot`, so one handler covers each; the flyout below is
+  // the same list while the sidebar is collapsed.
+  const sidebarClickOpensTab = chatConfig.sidebarClickOpensTab
+  const selectFromSidebar = useCallback((key: string) => {
+    clearSplitOnSelect()
+    if (sidebarClickOpensTab) ensureSlotTab(key)
+  }, [clearSplitOnSelect, sidebarClickOpensTab, ensureSlotTab])
   const flyoutSwitch = useCallback((key: string) => {
     // User gesture on a listed session row (collapsed-sidebar flyout): the
     // announced class, same as the expanded sidebar's own rows.
     dispatch(switchSlot({ key, announceOnMissing: true }))
     setSplitMode(false)
+    if (sidebarClickOpensTab) ensureSlotTab(key)
     flyout.close()
-  }, [dispatch, flyout])
+  }, [dispatch, flyout, sidebarClickOpensTab, ensureSlotTab])
   const flyoutNew = useCallback(() => {
     flyout.close()
     // `focusComposerAfter`, not a bare dispatch + rAF: there is one composer and
@@ -5515,7 +5526,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           fillsHost={isMobile}
           collapsible={!isMobile}
           staticRows={isMobile}
-          onSelectSlot={clearSplitOnSelect}
+          onSelectSlot={selectFromSidebar}
           onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
           onOpenSource={revealSourceLink}
           // Only offer the pane as a drop target when a composer exists to show

@@ -15537,6 +15537,8 @@
         "show_thinking_inline": "Afficher la réflexion en ligne",
         "show_timestamps": "Afficher les horodatages",
         "show_token_usage": "Afficher les jetons de contexte",
+        "sidebar_click_opens_tab": "Ouvrir les sessions de la barre latérale dans un onglet de session",
+        "sidebar_click_opens_tab_desc": "Un clic sur une session l'ouvre dans son propre onglet de session au lieu de remplacer la session de l'onglet actif.",
         "simplified_tool_call_names": "Noms d'appels d'outils simplifiés",
         "single_line": "Une seule ligne",
         "spellcheck_input": "Vérifier l'orthographe dans la zone de message",

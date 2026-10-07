@@ -15031,6 +15031,8 @@
         "show_thinking_inline": "インライン思考を表示",
         "show_timestamps": "タイムスタンプを表示",
         "show_token_usage": "コンテキストトークンを表示",
+        "sidebar_click_opens_tab": "サイドバーのセッションをセッションタブで開く",
+        "sidebar_click_opens_tab_desc": "セッションをクリックすると、アクティブなタブのセッションを置き換えずに、専用のセッションタブで開きます。",
         "simplified_tool_call_names": "簡略化されたツール呼び出し名",
         "single_line": "単一行",
         "spellcheck_input": "メッセージ入力のスペルチェック",

@@ -15031,6 +15031,8 @@
         "show_thinking_inline": "사고 과정 인라인 표시",
         "show_timestamps": "타임스탬프 표시",
         "show_token_usage": "컨텍스트 토큰 표시",
+        "sidebar_click_opens_tab": "사이드바 세션을 세션 탭에서 열기",
+        "sidebar_click_opens_tab_desc": "세션을 클릭하면 활성 탭의 세션을 바꾸지 않고 별도의 세션 탭에서 엽니다.",
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
         "single_line": "한 줄",
         "spellcheck_input": "메시지 입력 맞춤법 검사",

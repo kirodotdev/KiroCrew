@@ -15537,6 +15537,8 @@
         "show_thinking_inline": "Mostrar raciocínio embutido",
         "show_timestamps": "Mostrar carimbos de hora",
         "show_token_usage": "Mostrar os tokens de contexto",
+        "sidebar_click_opens_tab": "Abrir sessões da barra lateral em uma aba de sessão",
+        "sidebar_click_opens_tab_desc": "Clicar em uma sessão a abre em uma aba de sessão própria, em vez de substituir a sessão da aba ativa.",
         "simplified_tool_call_names": "Nomes simplificados de chamadas de ferramenta",
         "single_line": "Linha única",
         "spellcheck_input": "Verificar a ortografia na entrada de mensagens",

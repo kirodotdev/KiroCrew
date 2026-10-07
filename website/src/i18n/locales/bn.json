@@ -15284,6 +15284,8 @@
         "show_thinking_inline": "চিন্তাভাবনা ইনলাইনে দেখান",
         "show_timestamps": "টাইমস্ট্যাম্প দেখান",
         "show_token_usage": "কনটেক্সট টোকেন দেখান",
+        "sidebar_click_opens_tab": "সাইডবারের সেশনগুলো সেশন ট্যাবে খোলো",
+        "sidebar_click_opens_tab_desc": "কোনো সেশনে ক্লিক করলে সেটি সক্রিয় ট্যাবের সেশন বদলে না দিয়ে নিজের সেশন ট্যাবে খোলে।",
         "simplified_tool_call_names": "সরলীকৃত টুল কলের নাম",
         "single_line": "এক লাইন",
         "spellcheck_input": "মেসেজ ইনপুটে বানান পরীক্ষা",
