@@ -6563,6 +6563,19 @@ def member_template_id(agent_cfg: KiroCrewAgentConfig) -> str:
     return dispatch_kiro_agent(agent_cfg.kiro_agent) or "kirocrew"
 
 
+#: Agents kiro-cli ships inside its own binary. No spec file declares them in any
+#: agents directory, so no scan below can find them, yet kiro-cli launches and
+#: switches to them like any other: ``/agent kiro_planner`` (or ``/plan``) moves a
+#: session onto one. The set is what ``kiro-cli acp`` advertises in
+#: ``availableModes`` and starts as ``currentModeId`` under ``--agent``, measured
+#: against kiro-cli 2.21.1. It is NOT ``kiro-cli agent list``'s ``(Built-in)``
+#: rows: ``kiro_help`` is listed there but is not an ACP agent (``--agent
+#: kiro_help`` silently starts ``kiro_default``), and ``kiro_guide`` is the ACP
+#: one. A spec file of the same name, when one exists, is what kiro-cli loads
+#: instead; the answer here is the same name.
+KIRO_CLI_BUILTIN_AGENTS = frozenset({"kiro_default", "kiro_guide", "kiro_planner"})
+
+
 def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = None) -> str:
     """Return *agent_name* when a materialized kiro agent config declares it.
 
@@ -6621,6 +6634,10 @@ def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = N
     """
     if not agent_name:
         return ""
+    if agent_name in KIRO_CLI_BUILTIN_AGENTS:
+        # kiro-cli's own agents have no file to find (see the constant). Without
+        # this, a switch to one is recorded and then refused on the next turn.
+        return agent_name
     if _MATERIALIZED_AGENTS_READY and agent_name in _MATERIALIZED_AGENTS:
         return agent_name
     if not _MATERIALIZED_AGENTS_READY:

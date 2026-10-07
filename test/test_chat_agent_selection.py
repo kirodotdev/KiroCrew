@@ -173,6 +173,164 @@ def test_resume_after_crewmate_prune_refuses_uninstalled_agent(monkeypatch, prun
     assert not bindings.requested_resolved
 
 
+def _record_store(monkeypatch, record):
+    """Route the session record through one in-memory cell, read and write alike."""
+    from kiro_crew import session_agent_selection
+
+    cell = {"record": record}
+    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: cell["record"])
+
+    def _bind(_key, execution, **_kwargs):
+        cell["record"] = execution
+
+    monkeypatch.setattr(session_agent_selection, "bind_session_execution", _bind)
+    return cell
+
+
+def test_provider_agent_switch_on_an_ordinary_chat_resolves_next_turn(monkeypatch):
+    """`/agent <name>` on an ordinary chat must still resolve on the turn after.
+
+    An ordinary dashboard chat records the default alias with kind ``member`` and
+    no member id. kiro-cli's switch event names a TEMPLATE, usually one that is
+    only a spec file under ``~/.kiro/agents`` and not a ``config.agents`` key. If
+    the record keeps kind ``member`` while its name becomes the template's, the
+    next turn resolves that name in the member namespace, where it does not exist,
+    and the turn is refused: the switch is announced and then never takes effect.
+    """
+    from kiro_crew import execution_context, session_agent_selection
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {"default": KiroCrewAgentConfig(kiro_agent="kirocrew")}
+    cfg.default_agent = "default"
+    cell = _record_store(
+        monkeypatch,
+        execution_context.ExecutionContext(
+            None,
+            execution_context.MemoryStoreRef("default"),
+            "member",
+            "kirocrew",
+            selection_name="default",
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: name if name in ("kirocrew", "fable") else "",
+    )
+
+    session_agent_selection.record_provider_agent_switch(
+        cfg, "dashboard:switch", "default", "fable", None
+    )
+
+    assert cell["record"].selection_kind == "template"
+    assert cell["record"].selection_name == "fable"
+    assert cell["record"].store.store_id == "default"
+    bindings = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:switch", "fable"
+    )
+    assert bindings.requested_resolved
+    assert bindings.kiro_agent == "fable"
+    assert bindings.memory_store_name == "default"
+
+
+@pytest.mark.parametrize("builtin", ["kiro_default", "kiro_guide", "kiro_planner"])
+def test_provider_agent_switch_to_a_kiro_cli_builtin_resolves_next_turn(monkeypatch, builtin):
+    """`/agent kiro_planner` (or `/plan`) must survive being recorded.
+
+    kiro-cli's built-in agents live in its binary, so no agents directory holds a
+    spec for them and the materialized-agent scan never lists them. The switch was
+    refused while being recorded: kiro-cli had already moved the session, the turn
+    errored, and the chat restarted on the agent it had before.
+    """
+    from kiro_crew import execution_context, session_agent_selection
+    from kiro_crew.config import loader
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {"default": KiroCrewAgentConfig(kiro_agent="kirocrew")}
+    cfg.default_agent = "default"
+    cell = _record_store(
+        monkeypatch,
+        execution_context.ExecutionContext(
+            None,
+            execution_context.MemoryStoreRef("default"),
+            "member",
+            "kirocrew",
+            selection_name="default",
+        ),
+    )
+    # A warm snapshot that lists nothing: no spec file declares a built-in.
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"kirocrew"}))
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+
+    session_agent_selection.record_provider_agent_switch(
+        cfg, "dashboard:builtin", "default", builtin, None
+    )
+
+    assert cell["record"].selection_kind == "template"
+    assert cell["record"].template_id == builtin
+    assert cell["record"].store.store_id == "default"
+    bindings = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:builtin", builtin
+    )
+    assert bindings.requested_resolved
+    assert bindings.kiro_agent == builtin
+    assert bindings.memory_store_name == "default"
+
+
+@pytest.mark.parametrize("name", ["kiro_nonexistent", "kiro_help"])
+def test_unknown_agent_without_a_spec_is_still_unresolved(monkeypatch, name):
+    """The built-in carve-out names kiro-cli's ACP agents only, not any spec-less name.
+
+    ``kiro_help`` is a TUI-only built-in: ``kiro-cli acp --agent kiro_help`` starts
+    ``kiro_default``, so resolving it would record an agent that never runs.
+    """
+    from kiro_crew.config import loader
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {"default": KiroCrewAgentConfig(kiro_agent="kirocrew")}
+    cfg.default_agent = "default"
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"kirocrew"}))
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+
+    bindings = resolve_agent_bindings(cfg, name, selection_kind="template")
+
+    assert not bindings.requested_resolved
+
+
+def test_provider_agent_switch_keeps_a_members_own_selection(monkeypatch):
+    """A session owned by a member keeps its member selection through a switch.
+
+    Only the template changes; the member, its name and its kind are the owner's.
+    """
+    from kiro_crew import execution_context, session_agent_selection
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {"radar": KiroCrewAgentConfig(kiro_agent="kirocrew")}
+    cfg.default_agent = "radar"
+    cell = _record_store(
+        monkeypatch,
+        execution_context.ExecutionContext(
+            "member-1",
+            execution_context.MemoryStoreRef("radar-store", "member-1"),
+            "member",
+            "kirocrew",
+            selection_name="radar",
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: name if name == "fable" else "",
+    )
+
+    session_agent_selection.record_provider_agent_switch(
+        cfg, "dashboard:member", "radar", "fable", None
+    )
+
+    assert cell["record"].member_id == "member-1"
+    assert cell["record"].selection_kind == "member"
+    assert cell["record"].selection_name == "radar"
+    assert cell["record"].template_id == "fable"
+
+
 def _turn_state(tmp_path, monkeypatch):
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "workspace"),

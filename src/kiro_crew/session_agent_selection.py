@@ -131,10 +131,17 @@ def record_provider_agent_switch(config, session_key, prior_agent, new_agent, pr
     selected.selection_revision = _revision(prior)
     if prior is not None:
         # A provider template event changes behavior, never the memory owner.
+        # A session with no member id (the ordinary chat, recorded as the default
+        # alias with kind "member") now selects the TEMPLATE, so its kind must say
+        # so too. Left as "member", the next turn resolves the template name in
+        # the member namespace, where an agent that is only a spec file (not a
+        # config.agents key) is unresolvable, and the turn is refused.
+        unowned = prior.member_id is None
         selected.execution_context = dataclass_replace(
             prior,
             template_id=selected.kiro_agent,
-            selection_name=new_agent if prior.member_id is None else prior.selection_name,
+            selection_name=new_agent if unowned else prior.selection_name,
+            selection_kind="template" if unowned else prior.selection_kind,
         )
     # Carrying the owner over means carrying it out of the session's OWN record,
     # which the session can rewrite, so this publication must not vouch for it.
