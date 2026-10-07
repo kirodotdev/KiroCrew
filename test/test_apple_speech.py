@@ -1782,7 +1782,6 @@ class TestNoBlockingCallOnEventLoop:
 
 
 _PREFERRED_SAY_VOICE = "Samantha"
-_NO_EN_US_VOICE = "no en_US `say` voice installed to synthesize an English fixture"
 
 
 def _en_us_say_voice(listing: str) -> str | None:
@@ -1802,13 +1801,17 @@ def _en_us_say_voice(listing: str) -> str | None:
     return voices[0] if voices else None
 
 
-async def _installed_en_us_say_voice() -> str | None:
-    """Return an en_US voice installed on this host, or None."""
+async def _say_voice_args() -> list[str]:
+    """``say`` flags that pin an installed en_US voice, or none at all.
+
+    With no en_US voice installed the fixture uses the host's default voice.
+    """
     import asyncio
 
     proc = await asyncio.create_subprocess_exec("say", "-v", "?", stdout=asyncio.subprocess.PIPE)
     out, _ = await proc.communicate()
-    return _en_us_say_voice(out.decode("utf-8", "replace"))
+    voice = _en_us_say_voice(out.decode("utf-8", "replace"))
+    return ["-v", voice] if voice else []
 
 
 class TestEnUsSayVoice:
@@ -1864,18 +1867,17 @@ class TestEndToEndMacOS:
             pytest.skip("no Swift toolchain on this host")
         if not shutil.which("say"):
             pytest.skip("no `say` to synthesize a fixture")
-        voice = await _installed_en_us_say_voice()
-        if voice is None:
-            pytest.skip(_NO_EN_US_VOICE)
+        voice_args = await _say_voice_args()
 
         audio = tmp_path / "sample.aiff"
-        # ``-v`` pins an en_US voice to match the en-US recognizer below.
+        # ``-v`` pins an en_US voice, when one is installed, to match the en-US
+        # recognizer below.
         # ``-o`` makes ``say`` write the AIFF instead of playing it through the
         # sound output, so the fixture is silent on the developer's machine. The
         # child runs from tmp_path so any file it creates lands there, not in
         # the checkout it would otherwise inherit as CWD.
         proc = await asyncio.create_subprocess_exec(
-            "say", "-v", voice, "-o", str(audio), "the build is green", cwd=tmp_path
+            "say", *voice_args, "-o", str(audio), "the build is green", cwd=tmp_path
         )
         await proc.wait()
         assert audio.is_file()
@@ -1905,17 +1907,14 @@ class TestEndToEndMacOS:
         for tool in ("say", "afconvert"):
             if not shutil.which(tool):
                 pytest.skip(f"no `{tool}` to build a 16 kHz fixture")
-        voice = await _installed_en_us_say_voice()
-        if voice is None:
-            pytest.skip(_NO_EN_US_VOICE)
+        voice_args = await _say_voice_args()
 
         aiff = tmp_path / "s.aiff"
         # ``-o`` writes the AIFF instead of playing it; cwd=tmp_path keeps any
         # stray output out of the checkout (see test_round_trip).
         proc = await asyncio.create_subprocess_exec(
             "say",
-            "-v",
-            voice,
+            *voice_args,
             "-o",
             str(aiff),
             "the continuous integration build is green and the tests all pass",
