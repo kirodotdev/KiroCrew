@@ -297,6 +297,15 @@ input, which the crew log only digests, and a decision needs the live future the
 resolve endpoints check, which a recorded request cannot prove still exists.
 Incognito/temporary artifact persistence restrictions remain unchanged.
 
+Every artifact route that changes state is owner-only for dashboard callers.
+That covers create, edit, delete, settle, events, publish and sharing, relocate,
+upstream sync, materialize, folders, pins, comments and remote clone, fork and
+comments. A signed-in dashboard subject who is not the owner gets the shared
+403 `owner_only` before the route reads its body or the store. The loopback
+internal-secret transport (the agent `artifact_*` tools, the CLI and app
+drivers) and app tokens within their manifest grant are not dashboard subjects
+and keep their own rules. Pinned by `test/test_artifacts_owner_gate.py`.
+
 ### Artifact files
 
 ```
@@ -370,7 +379,7 @@ and are imported from their owner.
 | `kiro_crew.artifact_store.records` | The persisted formats: `meta.json` and its tolerant load, the lifecycle event entries (`ALLOWED_EVENT_TYPES`), `comments.json`, and the publication and fork-metadata field allowlists |
 | `kiro_crew.artifact_store.comments` | The comment-thread rules: the forwarding filter, whole-thread cap pruning, the provider merge, the anchor rescan and root-cascade removal |
 | `kiro_crew.artifact_store.folders` | `ArtifactFolderStore` and `artifact_folders.json` |
-| `dashboard/handlers/artifacts.py` | The HTTP projection: request parsing, the restricted-session gate, SEL audit, response redaction (`_serialize`), the publish governance gates and the live-refresh broadcast |
+| `dashboard/handlers/artifacts.py` | The HTTP projection: request parsing, the owner gate on write routes, the restricted-session gate, SEL audit, response redaction (`_serialize`), the publish governance gates and the live-refresh broadcast |
 | `kiro_crew.mcp_tools.artifacts` | The MCP projection: tool schemas and handlers, which reach the artifact store only through the HTTP API |
 
 No module under `kiro_crew.artifact_store` imports `kiro_crew.artifacts` at import
