@@ -556,8 +556,12 @@ def _repo_slug(repo: str) -> str:
 
 
 #: The characters a forge-scoped slug copies through unchanged. ``_`` is NOT in it:
-#: it is the escape leader below, so every underscore in the output is one.
-_FORGE_SLUG_PLAIN = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+#: it is the escape leader below, so every underscore in the output is one. ``.`` is
+#: NOT in it either: the filename joins ``<forge tag>.<slug>`` with a dot, and the tag
+#: carries the host's own dots, so a dot inside the slug would move that boundary.
+#: ``gitlab.example`` + ``team.prod/widget`` and ``gitlab.example.team`` + ``prod/widget``
+#: would otherwise spell the same file, and one project would read the other's queue.
+_FORGE_SLUG_PLAIN = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
 
 
 def _forge_repo_slug(repo: str) -> str:
@@ -575,8 +579,14 @@ def _forge_repo_slug(repo: str) -> str:
     digits is any other character outside :data:`_FORGE_SLUG_PLAIN` (``u`` is not a
     hex digit, and neither is ``_``). Left-to-right decoding is therefore
     deterministic, which is what makes two different repositories unable to share a
-    filename. ``_repo_slug`` itself is left alone because its output is the GitHub
-    writers' contract: those files already exist on disk under that name.
+    filename. ``.`` is escaped too (``_2e``), so the slug never contains the dot that
+    separates it from the forge tag in the filename. ``_repo_slug`` itself is left
+    alone because its output is the GitHub writers' contract: those files already
+    exist on disk under that name.
+
+    This grammar is the WRITER CONTRACT for every other forge: a job that appends to
+    a GitLab queue shard must produce exactly the name :func:`queue_path` does, and
+    ``test_issue_radar_pipeline_forge.py`` pins the literal names it has to match.
     """
     out: list[str] = []
     for ch in repo or "":

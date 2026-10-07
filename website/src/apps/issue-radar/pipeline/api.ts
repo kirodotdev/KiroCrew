@@ -464,7 +464,8 @@ export interface ApiError extends Error {
 
 /** Whether a failure is the backend refusing a repository whose forge it cannot read.
  *
- * RECOGNITION, not a second rule: the allow-list lives in `_reject_foreign_provider`
+ * RECOGNITION, not a second rule: the allow-list lives in `_forge_params` and
+ * `_reject_unservable`
  * on the backend and nothing here restates which providers or hosts qualify. This only
  * reads the answer, so the two can never disagree.
  */

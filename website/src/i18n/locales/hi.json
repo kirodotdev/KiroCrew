@@ -2906,8 +2906,9 @@
           "retry": "पुनः प्रयास"
         },
         "pipelineDashboard": {
-          "github_only": "ट्राइएज पाइपलाइन केवल GitHub रिपॉज़िटरी पर चलती है",
-          "github_only_hint": "इसके शेड्यूल किए गए जॉब केवल GitHub पढ़ते और लिखते हैं, इसलिए इस बोर्ड पर इस रिपॉज़िटरी का पाइपलाइन डेटा नहीं है।"
+          "forge_unsupported": "इस रिपॉज़िटरी के लिए ट्राइएज पाइपलाइन उपलब्ध नहीं है",
+          "forge_unsupported_gitlab_hint": "यह पाइपलाइन देखने के लिए {{host}} को ~/.kiro/crew/config.json में dashboard.gitlab_hosts में जोड़ो।",
+          "forge_unsupported_other_hint": "पाइपलाइन के शेड्यूल किए गए जॉब इस रिपॉजिटरी के होस्ट पर नहीं चलते, इसलिए दिखाने के लिए कोई पाइपलाइन डेटा नहीं है।"
         }
       },
       "welcomeCarousel": {

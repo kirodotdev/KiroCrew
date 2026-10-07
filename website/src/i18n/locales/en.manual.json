@@ -1007,8 +1007,9 @@
           "rail_filters": "Filters"
         },
         "pipelineDashboard": {
-          "github_only": "The triage pipeline runs on GitHub repositories",
-          "github_only_hint": "Its scheduled jobs read and write GitHub only, so this board has no pipeline data for this repository."
+          "forge_unsupported": "The triage pipeline isn't available for this repository",
+          "forge_unsupported_gitlab_hint": "Add {{host}} to dashboard.gitlab_hosts in ~/.kiro/crew/config.json to see this pipeline.",
+          "forge_unsupported_other_hint": "The pipeline's scheduled jobs don't run against this repository's host, so there is no pipeline data to show."
         }
       },
       "api": {

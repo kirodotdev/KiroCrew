@@ -32,8 +32,14 @@ from kiro_crew.apps.builtins.issue_radar.backend.errors import (
     ProviderCliError,
     ProviderSetupError,
 )
+from kiro_crew.apps.builtins.issue_radar.backend.gitlab_queries import (
+    _MAX_DEPS_EDGES,
+    _MAX_DEPS_NODES,
+    _MAX_LINKS_PER_ISSUE,
+    _MAX_TITLE_CHARS,
+)
 
-OWNER, REPO, HOST = "gl-owner", "gl-repo", "code.aws.dev"
+OWNER, REPO, HOST = "gl-owner", "gl-repo", "gitlab.example.com"
 
 GL_KEY = provider.RepoKey(provider="gitlab", host=HOST, owner=OWNER, repo=REPO)
 GH_KEY = provider.RepoKey(provider="github", host="github.com", owner=OWNER, repo=REPO)
@@ -56,12 +62,11 @@ def _link(iid: int, link_type: str, state: str = "opened", title: str = "t") -> 
 
 
 def _make_run_api(responses: dict[int, list[dict]]) -> object:
-    """Fake run_api that returns the responses map keyed by iid.
+    """Fake ``/links`` reader that returns the responses map keyed by iid.
 
-    Called as ``run_api(path)`` by ``_fetch_issue_links``.  The path is
-    ``projects/.../issues/<iid>/links``, so we parse the iid from the tail.
-    Raises ProviderCliError when the iid key is missing from the dict to
-    simulate a per-issue failure.
+    Called as ``fn(path)`` with ``projects/.../issues/<iid>/links`` (see ``_edges``),
+    so the iid is parsed from the tail. Raises ProviderCliError when the iid key is
+    missing from the dict to simulate a per-issue failure.
     """
 
     def _run(path: str, **_kw) -> list:
@@ -74,10 +79,23 @@ def _make_run_api(responses: dict[int, list[dict]]) -> object:
     return _run
 
 
-def _edges(owner, repo, open_issues, node_hints=None, *, host=HOST, run_api):
-    return gitlab_queries.fetch_dependency_edges(
-        owner, repo, open_issues, node_hints, host=host, run_api=run_api
-    )
+def _edges(owner, repo, open_issues, *, host=HOST, run_api):
+    """Run the fetcher with ``run_api`` standing in for the client's ``/links`` read.
+
+    The production seam is ``gitlab_client.list_issue_links``; the fakes here are
+    written against the REST path (``projects/<id>/issues/<iid>/links``) because that
+    is what they assert on, so this adapter builds the path the client would and hands
+    it over. ``host`` and ``timeout`` are passed through as keywords for fakes that
+    want them.
+    """
+    from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client
+
+    def fake_list_issue_links(o, r, iid, *, host, timeout):
+        path = f"projects/{gitlab_client.project_path(o, r)}/issues/{int(iid)}/links"
+        return run_api(path, host=host, timeout=timeout)
+
+    with mock.patch.object(gitlab_client, "list_issue_links", side_effect=fake_list_issue_links):
+        return gitlab_queries.fetch_dependency_edges(owner, repo, open_issues, host=host)
 
 
 # ── fetcher unit tests ────────────────────────────────────────────────────────
@@ -160,6 +178,63 @@ class TestClosedBlockerState(unittest.TestCase):
         self.assertEqual(nodes["5"]["state"], "closed")
 
 
+class TestFreshLinkPayloadWins(unittest.TestCase):
+    """Fresh link fields update nodes seeded from a cached issue-list snapshot."""
+
+    def test_fresh_closed_state_and_title_replace_seeded_values(self):
+        run_api = _make_run_api({10: [_link(5, "is_blocked_by", "closed", "fresh title")], 5: []})
+        issues = [
+            {"number": 10, "title": "dependent", "state": "open"},
+            {"number": 5, "title": "stale title", "state": "open"},
+        ]
+
+        _, nodes = _edges(OWNER, REPO, issues, run_api=run_api)
+
+        self.assertEqual(nodes["5"]["state"], "closed")
+        self.assertEqual(nodes["5"]["title"], "fresh title")
+
+    def test_omitted_link_fields_leave_seeded_values_unchanged(self):
+        link = _link(5, "is_blocked_by")
+        link.pop("state")
+        link.pop("title")
+        run_api = _make_run_api({10: [link], 5: []})
+        issues = [
+            {"number": 10, "title": "dependent", "state": "open"},
+            {"number": 5, "title": "seeded title", "state": "closed"},
+        ]
+
+        _, nodes = _edges(OWNER, REPO, issues, run_api=run_api)
+
+        self.assertEqual(nodes["5"]["state"], "closed")
+        self.assertEqual(nodes["5"]["title"], "seeded title")
+
+    def test_node_cap_applies_only_when_inserting_a_new_node(self):
+        issues = [
+            {"number": n, "title": "seeded", "state": "open"} for n in range(1, _MAX_DEPS_NODES + 1)
+        ]
+
+        def existing_node_link(path: str, **_kw) -> list[dict]:
+            iid = int(path.rstrip("/").split("/")[-2])
+            return [_link(2, "blocks", "closed")] if iid == 1 else []
+
+        _, nodes = _edges(OWNER, REPO, issues, run_api=existing_node_link)
+        self.assertEqual(len(nodes), _MAX_DEPS_NODES)
+        self.assertEqual(nodes["2"]["state"], "closed")
+
+        def new_node_link(path: str, **_kw) -> list[dict]:
+            iid = int(path.rstrip("/").split("/")[-2])
+            return [_link(_MAX_DEPS_NODES + 1, "blocks", "closed")] if iid == 1 else []
+
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            edges, nodes = _edges(OWNER, REPO, issues, run_api=new_node_link)
+        # The edge to the unretained node is kept (the store tolerates an edge whose
+        # endpoint has no node); only the node row past the cap is dropped.
+        self.assertEqual(len(nodes), _MAX_DEPS_NODES)
+        self.assertNotIn(str(_MAX_DEPS_NODES + 1), nodes)
+        self.assertEqual(len(edges), 1)
+        self.assertTrue(any("nodes_over_max=1" in line for line in captured.output))
+
+
 class TestOpenedStateMapsToOpen(unittest.TestCase):
     """GitLab's ``"opened"`` state must normalize to ``"open"``."""
 
@@ -170,6 +245,136 @@ class TestOpenedStateMapsToOpen(unittest.TestCase):
         self.assertEqual(nodes["5"]["state"], "open")
         # The issue node itself should also be "open" (from open_issues seeding).
         self.assertEqual(nodes["10"]["state"], "open")
+
+
+class TestBoundedTitles(unittest.TestCase):
+    """Every externally supplied title is bounded where graph nodes retain it."""
+
+    def test_open_issue_seed_bounds_title_and_keeps_none_empty(self):
+        oversized = "x" * (_MAX_TITLE_CHARS + 1)
+        issues = [
+            {"number": 1, "title": oversized, "state": "open"},
+            {"number": 2, "title": None, "state": "open"},
+        ]
+        _, nodes = _edges(OWNER, REPO, issues, run_api=_make_run_api({1: [], 2: []}))
+
+        self.assertEqual(nodes["1"]["title"], "x" * _MAX_TITLE_CHARS)
+        self.assertEqual(len(nodes["1"]["title"]), _MAX_TITLE_CHARS)
+        self.assertEqual(nodes["2"]["title"], "")
+
+    def test_link_payload_seed_bounds_title_and_keeps_missing_empty(self):
+        oversized = "y" * (_MAX_TITLE_CHARS + 1)
+        missing_title = _link(3, "blocks")
+        missing_title.pop("title")
+        run_api = _make_run_api({1: [_link(2, "blocks", title=oversized), missing_title]})
+        issues = [{"number": 1, "title": "source", "state": "open"}]
+        _, nodes = _edges(OWNER, REPO, issues, run_api=run_api)
+
+        self.assertEqual(nodes["2"]["title"], "y" * _MAX_TITLE_CHARS)
+        self.assertEqual(len(nodes["2"]["title"]), _MAX_TITLE_CHARS)
+        self.assertEqual(nodes["3"]["title"], "")
+
+
+class TestRetentionBounds(unittest.TestCase):
+    """Oversized GitLab dependency graphs are truncated at their bounds and served
+    partial, never refused: a project past a cap must get the same graph on every load
+    (including its first, when there is no cache to fall back to)."""
+
+    def test_first_load_of_a_project_past_the_node_cap_gets_a_partial_graph(self):
+        issues = [
+            {"number": n, "title": "t", "state": "open"} for n in range(1, _MAX_DEPS_NODES + 2)
+        ]
+
+        def link_free(path: str, **_kw) -> list[dict]:
+            return []
+
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            edges, nodes = _edges(OWNER, REPO, issues, run_api=link_free)
+
+        self.assertEqual(edges, [])
+        self.assertEqual(len(nodes), _MAX_DEPS_NODES)
+        self.assertNotIn(str(_MAX_DEPS_NODES + 1), nodes)
+        truncated = [line for line in captured.output if "serving the partial graph" in line]
+        self.assertEqual(len(truncated), 1)
+        self.assertIn("open_issue_nodes_over_max=1", truncated[0])
+
+    def test_one_issue_over_the_link_row_limit_keeps_the_first_rows(self):
+        links = [_link(2, "blocks")] * (_MAX_LINKS_PER_ISSUE + 1)
+
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            edges, _ = _edges(
+                OWNER,
+                REPO,
+                [{"number": 1, "title": "t", "state": "open"}],
+                run_api=_make_run_api({1: links}),
+            )
+
+        self.assertEqual(len(edges), _MAX_LINKS_PER_ISSUE)
+        self.assertIn("link_rows_over_per_issue_max=1", captured.output[0])
+
+    def test_worker_projects_and_bounds_rows_before_returning(self):
+        oversized_title = "t" * (_MAX_TITLE_CHARS + 1)
+        large_description = "d" * 100_000
+        links = [
+            dict(
+                _link(2, "blocks", title=oversized_title),
+                description=large_description,
+            )
+            for _ in range(_MAX_LINKS_PER_ISSUE + 1)
+        ]
+
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client
+
+        with mock.patch.object(gitlab_client, "list_issue_links", return_value=links):
+            result = gitlab_queries._fetch_issue_links(OWNER, REPO, 1, host=HOST, timeout=1.0)
+
+        self.assertIsNotNone(result)
+        projected, rows_over_max = result
+        self.assertEqual(len(projected), _MAX_LINKS_PER_ISSUE)
+        self.assertEqual(rows_over_max, 1)
+        self.assertTrue(
+            all(set(row) == {"link_type", "iid", "relative", "state", "title"} for row in projected)
+        )
+        self.assertTrue(all(len(row["title"]) == _MAX_TITLE_CHARS for row in projected))
+
+    def test_total_edges_at_the_cap_succeed_and_one_more_is_dropped(self):
+        def graph_with_edges(total: int) -> tuple[list[dict], object]:
+            issues: list[dict] = []
+            responses: dict[int, list[dict]] = {}
+            remaining = total
+            number = 1
+            while remaining:
+                batch = min(remaining, _MAX_LINKS_PER_ISSUE)
+                issues.append({"number": number, "title": "t", "state": "open"})
+                responses[number] = [_link(100_000, "blocks")] * batch
+                remaining -= batch
+                number += 1
+            return issues, _make_run_api(responses)
+
+        issues, run_api = graph_with_edges(_MAX_DEPS_EDGES)
+        edges, _ = _edges(OWNER, REPO, issues, run_api=run_api)
+        self.assertEqual(len(edges), _MAX_DEPS_EDGES)
+
+        issues, run_api = graph_with_edges(_MAX_DEPS_EDGES + 1)
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            edges, _ = _edges(OWNER, REPO, issues, run_api=run_api)
+        self.assertEqual(len(edges), _MAX_DEPS_EDGES)
+        self.assertIn("edges_over_max=1", captured.output[0])
+
+    def test_warning_names_the_overflow_count(self):
+        overflow = 3
+        links = [_link(2, "blocks")] * (_MAX_LINKS_PER_ISSUE + overflow)
+
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            _edges(
+                OWNER,
+                REPO,
+                [{"number": 1, "title": "t", "state": "open"}],
+                run_api=_make_run_api({1: links}),
+            )
+
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn(f"link_rows_over_per_issue_max={overflow}", captured.output[0])
 
 
 class TestOneIssueLinksFail(unittest.TestCase):
@@ -190,14 +395,48 @@ class TestOneIssueLinksFail(unittest.TestCase):
         # Issue 99 produced no edges (failure degraded silently).
         self.assertEqual([e for e in edges if e["blocked"] == 99 or e["blocker"] == 99], [])
 
-    def test_all_failures_still_return_empty_graph_not_exception(self):
+    def test_all_failures_raise_instead_of_emptying_the_graph(self):
+        # Every issue failing is a host-wide condition, not N per-issue skips. Returning
+        # an empty graph here would let the route overwrite the previous good graph and
+        # serve it as fresh for the TTL; the fetcher raises so the route keeps the cache.
         run_api = _make_run_api({})  # all issues will fail
         issues = [
             {"number": 1, "title": "a", "state": "open"},
             {"number": 2, "title": "b", "state": "open"},
         ]
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            with self.assertRaises(ProviderCliError) as raised:
+                _edges(OWNER, REPO, issues, run_api=run_api)
+        self.assertNotIsInstance(raised.exception, ProviderSetupError)
+        self.assertIn("all 2 /links calls failed", str(raised.exception))
+        self.assertIn("failed for every one of 2 open issues", captured.output[0])
+
+    def test_majority_failures_raise_instead_of_shipping_the_survivors(self):
+        # 199 of 200 calls failing (rate limiting that set in partway) is not 199
+        # per-issue skips: the one survivor would make a complete-looking, nearly
+        # empty graph that the route persists over the last good one. Past the
+        # majority threshold the fetcher raises exactly as the all-failed case does.
+        issues = [{"number": n, "title": "t", "state": "open"} for n in range(1, 11)]
+        run_api = _make_run_api({10: [_link(1, "blocks")], 9: [], 8: []})  # 7 of 10 fail
+        with self.assertLogs("kirocrew.app.issue-radar", level="WARNING") as captured:
+            with self.assertRaises(ProviderCliError) as raised:
+                _edges(OWNER, REPO, issues, run_api=run_api)
+        self.assertNotIsInstance(raised.exception, ProviderSetupError)
+        self.assertIn("7 of 10 /links calls failed", str(raised.exception))
+        self.assertIn("failed for 7 of 10 open issues", captured.output[0])
+
+    def test_minority_failures_still_return_the_partial_graph(self):
+        # At or below the threshold the per-issue policy holds: the survivors' edges
+        # are the graph. 5 of 10 is exactly half, which is NOT "more than half".
+        issues = [{"number": n, "title": "t", "state": "open"} for n in range(1, 11)]
+        run_api = _make_run_api({n: [_link(n + 100, "blocks")] for n in range(1, 6)})
         edges, nodes = _edges(OWNER, REPO, issues, run_api=run_api)
-        self.assertEqual(edges, [])
+        self.assertEqual(sorted(e["blocked"] for e in edges), [101, 102, 103, 104, 105])
+        self.assertEqual(sorted(int(k) for k in nodes), list(range(1, 11)) + list(range(101, 106)))
+
+    def test_no_open_issues_is_an_empty_graph_not_a_failure(self):
+        edges, nodes = _edges(OWNER, REPO, [], run_api=_make_run_api({}))
+        self.assertEqual((edges, nodes), ([], {}))
 
 
 class TestSetupErrorIsHostWide(unittest.TestCase):
@@ -208,7 +447,7 @@ class TestSetupErrorIsHostWide(unittest.TestCase):
     def test_setup_error_propagates_instead_of_emptying_the_graph(self):
         def unauthenticated(path: str, **_kw) -> list:
             raise ProviderSetupError(
-                "glab is not authenticated for code.aws.dev", reason="not_authenticated"
+                "glab is not authenticated for gitlab.example.com", reason="not_authenticated"
             )
 
         issues = [{"number": n, "title": "t", "state": "open"} for n in range(1, 4)]
@@ -216,27 +455,64 @@ class TestSetupErrorIsHostWide(unittest.TestCase):
             _edges(OWNER, REPO, issues, run_api=unauthenticated)
 
     def test_the_first_setup_error_stops_further_calls(self):
-        # Two failures, many issues: after the first ProviderSetupError the pool
-        # cancels what it has not started, so the call count stays near the pool
-        # width rather than reaching every issue.
+        # Deterministic by construction, not by timing. Exactly one call raises; every
+        # other call that the pool has already started blocks until the fetcher's own
+        # ``shutdown(cancel_futures=True)`` runs, which the recording executor turns
+        # into an Event. So the submitting thread is guaranteed to observe the failure
+        # while the rest of the work is still pending, and the assertions are about
+        # what the pool can do at all: at most a worker-width of calls can be in flight
+        # (plus the one thread that raised and picked up a second item before the
+        # cancel landed), and every other future must have been cancelled unstarted.
         import threading
+        from concurrent.futures import Future, ThreadPoolExecutor
 
         calls: list[int] = []
         lock = threading.Lock()
+        cancelled = threading.Event()
+        futures: list[Future] = []
+        timed_out: list[str] = []
 
-        def unauthenticated(path: str, **_kw) -> list:
+        class Recording(ThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                futures.append(future)
+                return future
+
+            def shutdown(self, wait=True, *, cancel_futures=False):
+                # Cancel the queue FIRST, release the blocked workers second. The
+                # other order lets a woken worker take a queued item in the gap
+                # before it is cancelled, and the call count stops being decided.
+                super().shutdown(wait=wait, cancel_futures=cancel_futures)
+                if cancel_futures:
+                    cancelled.set()
+
+        def gated(path: str, **_kw) -> list:
             with lock:
                 calls.append(int(path.rstrip("/").split("/")[-2]))
-            raise ProviderSetupError(
-                "glab is not authenticated for code.aws.dev", reason="not_authenticated"
-            )
+                first = len(calls) == 1
+            if first:
+                raise ProviderSetupError(
+                    "glab is not authenticated for gitlab.example.com", reason="not_authenticated"
+                )
+            # Bounded: a fetcher that never cancels fails this test, not the suite. The
+            # verdict is recorded rather than asserted here because an exception in a
+            # worker whose result nobody reads would be swallowed.
+            if not cancelled.wait(timeout=10):
+                timed_out.append(path)
+            return []
 
-        total = 10 * gitlab_queries._LINKS_WORKERS
+        workers = gitlab_queries._LINKS_WORKERS
+        total = 10 * workers
         issues = [{"number": n, "title": "t", "state": "open"} for n in range(1, total + 1)]
-        with self.assertRaises(ProviderSetupError):
-            _edges(OWNER, REPO, issues, run_api=unauthenticated)
-        self.assertGreaterEqual(len(calls), 1)
-        self.assertLess(len(calls), total)
+        with mock.patch.object(gitlab_queries, "ThreadPoolExecutor", Recording):
+            with self.assertRaises(ProviderSetupError):
+                _edges(OWNER, REPO, issues, run_api=gated)
+        self.assertEqual(timed_out, [])
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(futures), total)
+        unstarted = sum(1 for f in futures if f.cancelled())
+        self.assertLessEqual(len(calls), workers + 1)
+        self.assertEqual(len(calls) + unstarted, total)
 
 
 class TestCrossProjectLinksAreDropped(unittest.TestCase):
@@ -282,9 +558,9 @@ class TestProductionSeam(unittest.TestCase):
         issues = [{"number": 1, "title": "one", "state": "open"}]
         with mock.patch.object(gitlab_client, "list_issue_links", side_effect=fake_links):
             edges, nodes = gitlab_queries.fetch_dependency_edges(
-                OWNER, REPO, issues, None, host="code.aws.dev", timeout=3.0
+                OWNER, REPO, issues, host="gitlab.example.com", timeout=3.0
             )
-        self.assertEqual(calls, [(OWNER, REPO, 1, "code.aws.dev", 3.0)])
+        self.assertEqual(calls, [(OWNER, REPO, 1, "gitlab.example.com", 3.0)])
         self.assertEqual(edges, [{"blocked": 2, "blocker": 1, "source": "native"}])
         self.assertIn("2", nodes)
 

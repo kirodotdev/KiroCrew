@@ -2848,8 +2848,9 @@
           "retry": "重试"
         },
         "pipelineDashboard": {
-          "github_only": "分流流水线仅支持 GitHub 仓库",
-          "github_only_hint": "其定时任务只读写 GitHub，因此此看板没有该仓库的流水线数据。"
+          "forge_unsupported": "分流流水线不适用于此仓库",
+          "forge_unsupported_gitlab_hint": "要查看此流水线，请在 ~/.kiro/crew/config.json 中将 {{host}} 添加到 dashboard.gitlab_hosts。",
+          "forge_unsupported_other_hint": "流水线计划任务不会针对此仓库主机运行，因此没有可显示的流水线数据。"
         }
       },
       "welcomeCarousel": {

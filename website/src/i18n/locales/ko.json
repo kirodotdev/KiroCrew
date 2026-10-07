@@ -2934,8 +2934,9 @@
           "retry": "다시 시도"
         },
         "pipelineDashboard": {
-          "github_only": "분류 파이프라인은 GitHub 저장소만 지원합니다",
-          "github_only_hint": "예약 작업이 GitHub만 읽고 쓰므로 이 보드에는 이 저장소의 파이프라인 데이터가 없습니다."
+          "forge_unsupported": "이 리포지토리에서는 트리아지 파이프라인을 사용할 수 없습니다",
+          "forge_unsupported_gitlab_hint": "이 파이프라인을 보려면 ~/.kiro/crew/config.json의 dashboard.gitlab_hosts에 {{host}}을(를) 추가하세요.",
+          "forge_unsupported_other_hint": "파이프라인의 예약된 작업은 이 리포지토리의 호스트에서 실행되지 않으므로 표시할 파이프라인 데이터가 없습니다."
         }
       },
       "welcomeCarousel": {

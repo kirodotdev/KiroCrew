@@ -2934,8 +2934,9 @@
           "retry": "再試行"
         },
         "pipelineDashboard": {
-          "github_only": "トリアージパイプラインは GitHub リポジトリのみ対応しています",
-          "github_only_hint": "スケジュールジョブは GitHub のみを読み書きするため、このボードにこのリポジトリのパイプラインデータはありません。"
+          "forge_unsupported": "このリポジトリではトリアージパイプラインを利用できません",
+          "forge_unsupported_gitlab_hint": "このパイプラインを表示するには、~/.kiro/crew/config.json の dashboard.gitlab_hosts に {{host}} を追加してください。",
+          "forge_unsupported_other_hint": "パイプラインのスケジュールされたジョブはこのリポジトリのホストに対して実行されないため、表示できるパイプラインのデータはありません。"
         }
       },
       "welcomeCarousel": {

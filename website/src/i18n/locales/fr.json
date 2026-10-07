@@ -3050,8 +3050,9 @@
           "retry": "RÉESSAYER"
         },
         "pipelineDashboard": {
-          "github_only": "Le pipeline de triage fonctionne uniquement avec les dépôts GitHub",
-          "github_only_hint": "Ses tâches planifiées lisent et écrivent uniquement sur GitHub, ce tableau n'a donc aucune donnée de pipeline pour ce dépôt."
+          "forge_unsupported": "Le pipeline de triage n'est pas disponible pour ce dépôt",
+          "forge_unsupported_gitlab_hint": "Ajoute {{host}} à dashboard.gitlab_hosts dans ~/.kiro/crew/config.json pour voir ce pipeline.",
+          "forge_unsupported_other_hint": "Les tâches planifiées du pipeline ne s'exécutent pas sur l'hôte de ce dépôt, il n'y a donc aucune donnée de pipeline à afficher."
         }
       },
       "welcomeCarousel": {

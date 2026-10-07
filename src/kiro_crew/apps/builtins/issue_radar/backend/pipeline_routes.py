@@ -24,8 +24,10 @@ from aiohttp import web
 
 from kiro_crew.apps.manager import is_app_enabled
 
+from . import gitlab_transport
 from . import pipeline_fold as fold
 from . import provider, store
+from .errors import ProviderCliError
 
 logger = logging.getLogger(__name__)
 
@@ -71,28 +73,32 @@ def _bad_request(message: str, code: str) -> web.Response:
 #: value escaped the tree it was supposed to name a folder in.
 _REPO_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 
+#: One GitLab path segment, as the GitLab client itself admits it when a project is
+#: connected (``gitlab_transport.SEGMENT_RE``: the same character class, up to
+#: ``GITLAB_MAX_SEGMENT_CHARS``), minus the two names that are not names at all: ``.``
+#: and ``..`` would walk the issue-cache tree. Built FROM the transport's constants
+#: rather than restated so a connected project can never be refused here: a segment
+#: starting with ``_`` or ``.``, or longer than a GitHub name, is legal on GitLab.
+_GITLAB_SEGMENT = (
+    r"(?!\.\.?(?:/|\Z))[A-Za-z0-9._-]{1,%d}" % gitlab_transport.GITLAB_MAX_SEGMENT_CHARS
+)
 
-#: A GitLab host as it is written in a URL: dotted labels and an optional port. Strict
-#: because the host reaches two filesystem paths (the forge's audit-log name and its
-#: issue-cache subtree) and a crafted value must never be able to escape them. It is
-#: checked BEFORE the connected-repo gate so the gate never sees a hostile string.
-#: The shape mirrors the ``dashboard.gitlab_hosts`` coercer in ``config.sections``
-#: (same label grammar, same 1-65535 port range) so this cannot refuse a host the
-#: operator was allowed to list, nor admit one the allowlist would have dropped.
-_GITLAB_HOST_NAME_RE = re.compile(r"\A[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
+#: A GitLab owner is a group path: segments joined by ``/`` (GitLab's namespace
+#: separator, a URL path, not a filesystem one), at most ``MAX_NAMESPACE_SEGMENTS``
+#: deep. One regex rather than a split-and-check so every segment is judged by the
+#: same rule and an empty segment (``a//b``, a leading or trailing ``/``) cannot slip by.
+_GITLAB_OWNER_RE = re.compile(
+    r"\A%s(?:/%s){0,%d}\Z"
+    % (_GITLAB_SEGMENT, _GITLAB_SEGMENT, gitlab_transport.MAX_NAMESPACE_SEGMENTS - 1)
+)
+_GITLAB_REPO_RE = re.compile(r"\A%s\Z" % _GITLAB_SEGMENT)
 
 
-def _valid_gitlab_host(host: str) -> bool:
-    name, sep, port_text = host.rpartition(":")
-    if not sep:
-        name, port_text = host, ""
-    if not _GITLAB_HOST_NAME_RE.match(name):
-        return False
-    if not sep:
-        return True
-    if not (port_text.isascii() and port_text.isdigit()):
-        return False
-    return 0 < int(port_text) < 65536
+def _unsupported_forge() -> web.Response:
+    return _bad_request(
+        "the triage pipeline is not available for this repository's forge",
+        "repo_provider_unsupported",
+    )
 
 
 def _forge_params(request: web.Request) -> fold.Forge | web.Response:
@@ -109,6 +115,10 @@ def _forge_params(request: web.Request) -> fold.Forge | web.Response:
     with an explicit host are served. Anything else -- Azure, GitHub Enterprise, a
     GitLab request with no host -- is refused with ``repo_provider_unsupported``, which
     the client renders as a stable "unsupported forge" state and stops polling on.
+
+    This reads only which forge is named. Whether the host is one ``glab`` may talk to
+    is decided in :func:`_reject_unservable` by the GitLab client's own host rule, off
+    the event loop (it reads config) and before any of the forge's files are opened.
     Authorization is unchanged and still comes from the connected-repo gate, which
     matches provider + host + owner + repo.
 
@@ -117,10 +127,7 @@ def _forge_params(request: web.Request) -> fold.Forge | web.Response:
     """
     provider_name = (request.query.get("provider") or "").strip().lower()
     host = (request.query.get("host") or "").strip().lower()
-    unsupported = _bad_request(
-        "the triage pipeline is not available for this repository's forge",
-        "repo_provider_unsupported",
-    )
+    unsupported = _unsupported_forge()
     if provider_name in ("", "github"):
         # A host is only ever set for a self-hosted forge; public GitHub carries none.
         # Without this, provider=github&host=ghe.internal would pass as public GitHub.
@@ -132,7 +139,7 @@ def _forge_params(request: web.Request) -> fold.Forge | web.Response:
     if provider_name != "gitlab":
         return unsupported
     host = provider.normalize_host(host, provider_name)
-    if not host or not _valid_gitlab_host(host):
+    if not host:
         return unsupported
     return fold.Forge(provider=provider_name, host=host)
 
@@ -157,21 +164,60 @@ def _repo_params(request: web.Request) -> tuple[str, str, fold.Forge] | web.Resp
     forge = _forge_params(request)
     if isinstance(forge, web.Response):
         return forge
-    owner_parts = owner.split("/") if not forge.is_github else [owner]
-    if not all(_REPO_NAME_RE.match(part) for part in owner_parts) or not _REPO_NAME_RE.match(repo):
+    owner_re, repo_re = (
+        (_REPO_NAME_RE, _REPO_NAME_RE) if forge.is_github else (_GITLAB_OWNER_RE, _GITLAB_REPO_RE)
+    )
+    if not owner_re.match(owner) or not repo_re.match(repo):
         return _bad_request("owner or repo is not a valid name", "repo_invalid")
     return owner, repo, forge
 
 
-async def _reject_unconnected(
+def _servable_host(forge: fold.Forge) -> bool:
+    """May the pipeline read this forge's files? GitHub always; GitLab exactly when
+    ``glab`` would be allowed to call the host.
+
+    The rule is the GitLab client's, not a copy: ``gitlab_transport.resolve_host``
+    over ``gitlab_client.allowed_hosts()`` is the same check every ``glab`` call makes,
+    so the Pipeline tab and the GitLab calls cannot disagree about a host. gitlab.com
+    is always accepted there and never appears in ``dashboard.gitlab_hosts`` (the
+    coercer drops it), which a membership test on the allowlist would get wrong. A
+    host that passes has either that fixed spelling or one the config coercer already
+    held to its label-and-port grammar, so it is safe as a filename segment and an
+    issue-cache directory without a second grammar here.
+
+    ``gitlab_transport`` is a module-level import because ``_GITLAB_SEGMENT`` reads
+    its segment grammar at load time. Only ``gitlab_client`` is deferred: it carries
+    the ``glab`` executable lookup and subprocess spawn, the config loader and the SEL
+    audit sink, none of which this read-only view should load at import time.
+    """
+    if forge.is_github:
+        return True
+    from . import gitlab_client
+
+    try:
+        gitlab_transport.resolve_host(forge.host, allowed_hosts=gitlab_client.allowed_hosts())
+    except ProviderCliError:
+        return False
+    return True
+
+
+async def _reject_unservable(
     owner: str, repo: str, forge: fold.Forge = fold.GITHUB
 ) -> web.Response | None:
-    """Refuse a repository Issue Radar is not connected to. None means it is.
+    """Refuse a forge whose host the operator does not list, then a repository Issue
+    Radar is not connected to. None means the request may be served.
 
-    This is the HOST APP's authorization gate, not a courtesy: every repo-scoped
-    read in ``http_routes`` is gated on ``store.is_repo_connected`` through
-    ``routes._connected``, and ``routes.py``'s own note names that call as "the
-    gate that actually decides whether this request may touch a repo". These three
+    The host check comes first so removing a host from ``dashboard.gitlab_hosts``
+    takes effect on the Pipeline tab at once, as it does on every ``glab`` call.
+    Without it, an already-connected project on a de-listed host would keep reading
+    its audit log, queue shard and issue cache from disk. It answers
+    ``repo_provider_unsupported`` so the client lands on the same stable "unsupported
+    forge" state it shows for a host that never qualified.
+
+    The connected-repo gate is the HOST APP's authorization gate, not a courtesy: every
+    repo-scoped read in ``http_routes`` is gated on ``store.is_repo_connected`` through
+    ``routes._connected``, and ``routes.py``'s own note names that call as "the gate
+    that actually decides whether this request may touch a repo". These three
     handlers read the SAME per-repository data -- the issue cache under the repo's
     own directory, and its queue shard -- so skipping the gate would make them the
     one door in the app that opens on a repository the operator has not connected.
@@ -183,9 +229,11 @@ async def _reject_unconnected(
     connected/not-connected distinction is itself worth not confirming, and it is
     the status and code the sibling handlers already return.
 
-    Off the event loop: the gate reads the store's JSON from disk, exactly as
-    ``http_routes`` does at each of its ``routes._connected`` call sites.
+    Off the event loop: both checks read JSON from disk (the config, then the store),
+    exactly as ``http_routes`` does at each of its ``routes._connected`` call sites.
     """
+    if not await asyncio.to_thread(_servable_host, forge):
+        return _unsupported_forge()
     if await asyncio.to_thread(
         store.is_repo_connected, owner, repo, provider=forge.provider, host=forge.host
     ):
@@ -203,14 +251,14 @@ def _repo_key(owner: str, repo: str) -> str:
     """Join a VALIDATED pair into the ``"owner/repo"`` key the fold is scoped by.
 
     Only ever called with what ``_repo_params`` returned, which is why it can be a
-    plain join: every segment has matched ``_REPO_NAME_RE``. Dropping provider/host
+    plain join: every segment has matched its forge's name rule. Dropping provider/host
     here is sound because the FORGE selects the files the key is looked up in (see
     ``pipeline_fold.Forge``), so within one forge ``owner/repo`` is the whole identity.
     """
     # A repository KEY handed to the fold, not a response body: this is not a route
     # (the _handle_* functions are), the server is aiohttp rather than Flask, and
-    # both halves are already matched against _REPO_NAME_RE, which admits no
-    # character that could reach markup.
+    # both halves are already matched against their forge's name rule, whose
+    # character class admits nothing that could reach markup.
     # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
     return f"{owner}/{repo}"
 
@@ -241,7 +289,7 @@ async def _handle_overview(request: web.Request) -> web.StreamResponse:
     if isinstance(resolved, web.Response):
         return resolved
     owner, repo, forge = resolved
-    unconnected = await _reject_unconnected(owner, repo, forge)
+    unconnected = await _reject_unservable(owner, repo, forge)
     if unconnected is not None:
         return unconnected
     scope = _repo_key(owner, repo)
@@ -284,7 +332,7 @@ async def _handle_step(request: web.Request) -> web.StreamResponse:
     if isinstance(resolved, web.Response):
         return resolved
     owner, repo, forge = resolved
-    unconnected = await _reject_unconnected(owner, repo, forge)
+    unconnected = await _reject_unservable(owner, repo, forge)
     if unconnected is not None:
         return unconnected
     step = (request.query.get("step") or "").strip()
@@ -336,7 +384,7 @@ async def _handle_item_sessions(request: web.Request) -> web.StreamResponse:
     if isinstance(resolved, web.Response):
         return resolved
     owner, repo, forge = resolved
-    unconnected = await _reject_unconnected(owner, repo, forge)
+    unconnected = await _reject_unservable(owner, repo, forge)
     if unconnected is not None:
         return unconnected
     try:
