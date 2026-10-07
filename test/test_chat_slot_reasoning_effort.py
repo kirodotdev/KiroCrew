@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -11,7 +10,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import kiro_crew
 from kiro_crew.dashboard import chat_handlers, chat_persistence
 from kiro_crew.dashboard.chat import api_chat_slot_reasoning_effort
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_selection_capabilities
@@ -181,106 +179,6 @@ class TestSlotSelectionCapabilities:
             "effort_supported": True,
             "effort_levels": ["low", "medium", "high"],
             "model_effort_pair_ids": False,
-        }
-
-    @pytest.mark.asyncio
-    async def test_remote_slot_reads_the_peers_live_capabilities(self, monkeypatch):
-        slot = _ChatSlot("test")
-        slot.executor = "remote"
-        slot.instance_id = "nobita"
-        slot.remote_slot = "peer-chat-9"
-        state = _mock_state(slot)
-        payload = {
-            "known": True,
-            "backend": "pi",
-            "effort_supported": True,
-            "effort_levels": [None] * 32 + ["off", "minimal", "high"],
-            "model_effort_pair_ids": False,
-        }
-
-        class _Proxy:
-            async def __aenter__(self):
-                return SimpleNamespace(
-                    status=200,
-                    content=SimpleNamespace(read=AsyncMock(return_value=json.dumps(payload).encode())),
-                )
-
-            async def __aexit__(self, *_args):
-                return False
-
-        manager = SimpleNamespace(
-            peer_version=AsyncMock(return_value=(True, kiro_crew.__version__)),
-            proxy_request=MagicMock(return_value=_Proxy()),
-        )
-        state.instances_manager = manager
-        monkeypatch.setattr(chat_handlers, "deny_non_owner_remote_operation", lambda *_args: None)
-        register_levels = MagicMock(return_value=["off", "minimal"])
-        monkeypatch.setattr(chat_handlers, "register_reasoning_effort_values", register_levels)
-
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.get("/api/chat/slots/test/selection-capabilities")
-            data = await resp.json()
-
-        assert resp.status == 200
-        assert data == {**payload, "effort_levels": ["off", "minimal"]}
-        register_levels.assert_called_once_with(["off", "minimal", "high"])
-        manager.proxy_request.assert_called_once_with(
-            "nobita", "GET", "api/chat/slots/peer-chat-9/selection-capabilities"
-        )
-
-    @pytest.mark.asyncio
-    async def test_remote_slot_preserves_pair_id_convention_before_session_start(self, monkeypatch):
-        slot = _ChatSlot("test")
-        slot.executor = "remote"
-        slot.instance_id = "nobita"
-        slot.remote_slot = "peer-chat-9"
-        state = _mock_state(slot)
-        payload = {"known": False, "model_effort_pair_ids": True}
-
-        class _Proxy:
-            async def __aenter__(self):
-                return SimpleNamespace(
-                    status=200,
-                    content=SimpleNamespace(read=AsyncMock(return_value=json.dumps(payload).encode())),
-                )
-
-            async def __aexit__(self, *_args):
-                return False
-
-        state.instances_manager = SimpleNamespace(
-            peer_version=AsyncMock(return_value=(True, kiro_crew.__version__)),
-            proxy_request=MagicMock(return_value=_Proxy()),
-        )
-        monkeypatch.setattr(chat_handlers, "deny_non_owner_remote_operation", lambda *_args: None)
-
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.get("/api/chat/slots/test/selection-capabilities")
-            data = await resp.json()
-
-        assert resp.status == 200
-        assert data == payload
-
-    @pytest.mark.asyncio
-    async def test_remote_slot_reports_an_error_when_its_peer_is_unavailable(self, monkeypatch):
-        slot = _ChatSlot("test")
-        slot.executor = "remote"
-        slot.instance_id = "nobita"
-        slot.remote_slot = "peer-chat-9"
-        state = _mock_state(slot)
-        state.instances_manager = SimpleNamespace(
-            peer_version=AsyncMock(return_value=(True, kiro_crew.__version__)),
-            proxy_request=MagicMock(side_effect=ConnectionError("peer offline")),
-        )
-        monkeypatch.setattr(chat_handlers, "deny_non_owner_remote_operation", lambda *_args: None)
-
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.get("/api/chat/slots/test/selection-capabilities")
-            data = await resp.json()
-
-        assert resp.status == 502
-        assert data == {
-            "error": "peer capabilities unavailable",
-            "code": "peer_capabilities_unavailable",
         }
 
 

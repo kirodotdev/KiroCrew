@@ -982,7 +982,7 @@ class TestAgentMismatchFix:
         resp = await api_completions(request)
 
         assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "remote_slot_unsupported"
+        assert json.loads(resp.body)["code"] == "relay_archive_read_only"
         # No unsent turn recorded and no dispatch: refused ahead of the mutation.
         slot.append.assert_not_called()
         assert slot.task is None

@@ -450,7 +450,7 @@ def app_slot_is_local_user_session(slot: Any) -> bool:
     """
     if str(getattr(slot, "_origin", "") or "") != SlotOrigin.USER:
         return False
-    if getattr(slot, "mode", "") == "member" or bool(getattr(slot, "is_remote", False)):
+    if getattr(slot, "mode", "") == "member" or getattr(slot, "executor", "") == "remote":
         return False
     return effective_session_key(slot).startswith("dashboard:")
 

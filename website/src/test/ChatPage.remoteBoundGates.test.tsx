@@ -1,12 +1,11 @@
 /**
  * Guards ChatPage's crew-bound offer gates (PR 10617, FIX 1).
  *
- * A crew-bound (remote-executor) session refuses every LOCAL turn-starting
- * action server-side: `remote_bound_refusal` in
- * `src/kiro_crew/dashboard/remote_relay.py` answers 409
- * `remote_action_unsupported` for regenerate, edit-resend, rewind and continue,
- * because each would run the crew's turn on THIS machine and diverge the
- * transcripts. Continue was already gated client-side (`selectContinuable`);
+ * A relay archive (remote-executor) session refuses every turn-starting
+ * action server-side: `relay_archive_refusal` in
+ * `src/kiro_crew/dashboard/relay_archive.py` answers 409
+ * `relay_archive_read_only` for regenerate, edit-resend, rewind and continue,
+ * because each would run the crew's old turn on THIS machine. Continue was already gated client-side (`selectContinuable`);
  * regenerate and edit-resend were NOT, so ChatPage offered controls the server
  * is guaranteed to reject.
  *
@@ -51,8 +50,8 @@ describe('ChatPage – crew-bound offer gates', () => {
     expect(chatPageSrc).toMatch(/onRegenerate=\{i === lastTextIdxRef\.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound \? handleRegenerate : undefined\}/)
   })
 
-  it('does NOT gate onSwitchVariant — the server allows switch-variant on a bound slot (no remote_bound_refusal)', () => {
-    // Deliberate: `api_chat_slot_switch_variant` carries no remote_bound_refusal,
+  it('does NOT gate onSwitchVariant — the server allows switch-variant on a bound slot (no relay_archive_refusal)', () => {
+    // Deliberate: `api_chat_slot_switch_variant` carries no relay_archive_refusal,
     // so gating it here would hide a control the server accepts. This pins the
     // ungated shape; if a future edit inserts the crew-bound guard before the
     // `?`, this exact condition no longer matches and the choice is revisited.

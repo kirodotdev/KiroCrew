@@ -1,19 +1,11 @@
-"""``GET /api/instances/{id}/chat-slots`` — a peer's live sessions, deduplicated.
+"""``GET /api/instances/{id}/chat-slots`` — a peer's live sessions.
 
 The merged-sessions sidebar renders a connected peer's OPEN sessions as ordinary
-rows in this machine's Sessions list. Reading the peer's ``/api/chat/slots``
-straight through a proxy hop is what it did first, and it double-renders one
-conversation: a local session bound to that peer for EXECUTION (``executor ==
-"remote"``) is backed by a real slot ON the peer, so the peer lists it alongside
-its own. The browser then shows the same chat twice — once as the local row the
-user can type in, once as a read-only peer row that navigates to the instance
-pane — and cannot tell they are the same, because the correlating
-``remote_slot`` is deliberately never projected to it.
-
-So the filter lives here, where the binding already does. These tests pin the
-filter's edges (which bindings count, which rows survive) and the untrusted-input
-discipline every peer read in this module shares: bound before decoding, refuse
-rather than reshape.
+rows in this machine's Sessions list. A local relay archive (an old
+``executor == "remote"`` chat) hides no peer row behind it: the
+archive is read-only, and the peer's own row is where that chat goes on. These
+tests pin that, and the untrusted-input discipline every peer read in this
+module shares: bound before decoding, refuse rather than reshape.
 """
 
 from __future__ import annotations
@@ -159,13 +151,7 @@ def _state(mgr, slots: dict[str, _ChatSlot] | None = None):
 
 
 def _remote_slot(key: str = "chat-1", *, instance_id: str = "nobita", remote: str = "peer-chat-9"):
-    """A LOCAL slot whose turns are dispatched to a peer.
-
-    The real ``_ChatSlot`` on purpose, not a stub with ``is_remote = True``: that
-    property is the whole predicate under test here, and it is deliberately
-    conjunctive (executor AND instance AND remote_slot). Stubbing it would pass
-    while the handler read a half-written binding.
-    """
+    """A LOCAL relay archive: an old slot whose turns a peer once ran."""
     slot = _ChatSlot(key)
     slot.executor = "remote"
     slot.instance_id = instance_id
@@ -182,19 +168,10 @@ async def _body(resp):
 
 
 @pytest.mark.asyncio
-class TestHubDrivenRowsAreDropped:
-    """The defect this route exists for: one conversation rendered twice."""
+class TestRelayArchivesHideNoPeerRow:
+    """The peer's own row for a relay archive's chat stays on the list."""
 
-    async def test_the_slot_this_hub_drives_is_filtered_and_the_peers_own_survive(
-        self, monkeypatch
-    ):
-        """The load-bearing case.
-
-        ``peer-chat-9`` is the peer-side slot backing a local remote-EXECUTION
-        session, so the user already has a row for it that they can type in.
-        Passing the peer's copy through as well puts a second, read-only row for
-        the same chat in the same list.
-        """
+    async def test_the_peer_row_behind_a_relay_archive_is_listed(self, monkeypatch):
         _enable_instances(monkeypatch)
         mgr = _manager(body=_rows("peer-chat-9", "peer-chat-3"))
         state = _state(mgr, {"chat-1": _remote_slot()})
@@ -202,66 +179,14 @@ class TestHubDrivenRowsAreDropped:
         resp = await hi.api_instances_chat_slots(_request(state))
 
         assert resp.status == 200
-        assert [row["key"] for row in await _body(resp)] == ["peer-chat-3"]
-
-    async def test_a_binding_to_a_different_crew_filters_nothing(self, monkeypatch):
-        """Peer slot keys are only unique WITHIN a peer.
-
-        Two crews can each hold a ``chat-2``, so a set of keys gathered across
-        every binding would drop an innocent row from crew A because crew B
-        happens to drive a slot of the same name.
-        """
-        _enable_instances(monkeypatch)
-        mgr = _manager(body=_rows("peer-chat-9"))
-        state = _state(mgr, {"chat-1": _remote_slot(instance_id="shizuka")})
-
-        data = await _body(await hi.api_instances_chat_slots(_request(state)))
-
-        assert [row["key"] for row in data] == ["peer-chat-9"]
-
-    async def test_a_local_slot_carrying_a_stale_remote_slot_filters_nothing(self, monkeypatch):
-        """Only a WHOLE binding drives anything.
-
-        A session moved back to local execution keeps its ``remote_slot`` value
-        until it is next written, so a filter keyed on that field alone would go
-        on hiding the peer's own session long after this machine stopped driving
-        it — an unreachable row, with nothing to explain its absence.
-        """
-        _enable_instances(monkeypatch)
-        slot = _remote_slot()
-        slot.executor = "local"
-        mgr = _manager(body=_rows("peer-chat-9"))
-
-        data = await _body(
-            await hi.api_instances_chat_slots(_request(_state(mgr, {"chat-1": slot})))
-        )
-
-        assert [row["key"] for row in data] == ["peer-chat-9"]
-
-    async def test_every_local_binding_to_this_crew_is_considered(self, monkeypatch):
-        """More than one session can be bound to the same peer at once."""
-        _enable_instances(monkeypatch)
-        mgr = _manager(body=_rows("peer-a", "peer-b", "peer-c"))
-        state = _state(
-            mgr,
-            {
-                "chat-1": _remote_slot("chat-1", remote="peer-a"),
-                "chat-2": _remote_slot("chat-2", remote="peer-c"),
-            },
-        )
-
-        data = await _body(await hi.api_instances_chat_slots(_request(state)))
-
-        assert [row["key"] for row in data] == ["peer-b"]
+        assert [row["key"] for row in await _body(resp)] == ["peer-chat-9", "peer-chat-3"]
 
     async def test_a_row_with_no_usable_key_is_kept_not_dropped(self, monkeypatch):
-        """Dedupe is not validation.
+        """Shaping is not validation.
 
-        The sidebar hook already rejects a row whose ``key`` is not a string, and
-        dropping such a row HERE would make a malformed one indistinguishable
-        from a deduplicated one in this route's audit count. So it survives the
-        dedupe pass — shaped, with no ``key``, because ``8`` is not a peer string
-        and the allowlist emits only what it can vouch for.
+        The sidebar hook already rejects a row whose ``key`` is not a string, so it
+        is shaped here with no ``key``, because ``8`` is not a peer string and the
+        allowlist emits only what it can vouch for.
 
         ``"nonsense"`` is not a dict, so it was never a row at all and is the one
         thing the shaping pass does drop.
@@ -272,7 +197,15 @@ class TestHubDrivenRowsAreDropped:
 
         data = await _body(await hi.api_instances_chat_slots(_request(state)))
 
-        assert data == [{"running": False, "pending_approval": False}]
+        assert data == [
+            {"running": False, "pending_approval": False},
+            {
+                "key": "peer-chat-9",
+                "running": False,
+                "pending_approval": False,
+                "row_identity": "nobita:peer-chat-9",
+            },
+        ]
 
     async def test_the_peer_path_is_a_literal_and_the_method_is_a_read(self, monkeypatch):
         """Nothing caller-supplied reaches the peer, and nothing mutates."""
@@ -297,7 +230,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
     Assertions are on the PROPERTY (the secret is gone, the row still renders)
     rather than on the redactor's placeholder text, which belongs to
-    ``remote_relay`` and is free to change without this route regressing.
+    ``peer_redaction`` and is free to change without this route regressing.
     """
 
     async def test_a_credential_shaped_title_never_reaches_the_browser(self, monkeypatch):
@@ -482,49 +415,8 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
         assert data[0]["parent"] == {"slot": "gone"}
 
-    async def test_a_citation_naming_a_hub_driven_slot_is_rewritten_to_the_local_driver(
-        self, monkeypatch
-    ):
-        """The route's contract is that no peer slot key of a hub-driven binding
-        crosses to the browser. The driven row itself is filtered; a peer session
-        that row OPENED still ships, and its citation would carry the same key by
-        another route. The citation is rewritten to the LOCAL slot that drives
-        the creator: ``hub_key`` names it in the hub's key space (``key`` is the
-        peer's and stays absent), and ``slot`` names it for the "opened by"
-        glyph. The conductor lane then nests the worker under the local row the
-        user chats in, where before it rendered as a top-level stray."""
-        _enable_instances(monkeypatch)
-        rows = [
-            {"key": "peer-chat-9", "title": "driven lead"},
-            {"key": "w1", "parent": {"slot": "peer-chat-9", "key": "peer-chat-9"}},
-            {"key": "w2", "parent": {"slot": "peer-chat-9", "key": None}},
-            {"key": "w3", "parent": {"slot": "other", "key": "other"}},
-        ]
-        mgr = _manager(body=json.dumps(rows).encode())
-        state = _state(mgr, {"chat-1": _remote_slot()})
-
-        data = await _body(await hi.api_instances_chat_slots(_request(state)))
-
-        by_key = {r["key"]: r for r in data}
-        assert set(by_key) == {"w1", "w2", "w3"}
-        assert by_key["w1"]["parent"] == {"slot": "chat-1", "hub_key": "chat-1"}
-        # ``slot`` alone names the driven creator (its ``key`` half is null: the
-        # peer's projection lost the creator): rewritten the same way.
-        assert by_key["w2"]["parent"] == {"slot": "chat-1", "hub_key": "chat-1"}
-        assert by_key["w3"]["parent"] == {"slot": "other", "key": "other"}
-        assert "peer-chat-9" not in json.dumps(data)
-
-    def test_a_driven_citation_without_a_local_key_is_dropped(self):
-        """With no local key to redirect to, the citation is dropped whole rather
-        than forwarded naming the peer key. ``hub_key`` is never taken from the
-        peer: a peer row that spells one itself is shaped down to the two
-        allowlisted fields."""
-        cited = {"slot": "peer-chat-9", "key": "peer-chat-9"}
-        assert hi._clean_peer_parent(cited, {"peer-chat-9": ""}) is None
-        assert hi._clean_peer_parent(cited, {"peer-chat-9": "chat-1"}) == {
-            "slot": "chat-1",
-            "hub_key": "chat-1",
-        }
+    def test_a_peer_spelled_hub_key_is_not_forwarded(self):
+        """Only the two allowlisted halves of a citation cross."""
         assert hi._clean_peer_parent({"slot": "a", "key": "a", "hub_key": "chat-1"}) == {
             "slot": "a",
             "key": "a",
@@ -729,17 +621,9 @@ class TestUntrustedPeerReply:
         assert resp.status == 502
         assert (await _body(resp))["code"] == "peer_slots_malformed"
 
-    async def test_peer_row_identity_matches_the_projection(self, monkeypatch):
-        """The listing's row identity and the projection's must be byte-equal.
-
-        This equality IS the feature: opening a peer session here binds a local
-        slot whose projected ``row_identity`` must be the string the peer row
-        already carried, or the sidebar mounts a second element instead of
-        re-rendering the row the user clicked. Two authors composing
-        ``<instance_id>:<peer_key>`` separately is how that silently drifts, so the
-        listing is compared against ``resolved_row_identity`` rather than against a
-        format spelled out again here.
-        """
+    async def test_a_relay_archive_never_shares_the_peer_rows_identity(self, monkeypatch):
+        """The archive and the peer row both render now, so their sidebar keys
+        must differ: the archive projects its own local key."""
         _enable_instances(monkeypatch)
         mgr = _manager(body=b'[{"key": "peer-chat-9", "title": "T"}]')
 
@@ -747,11 +631,9 @@ class TestUntrustedPeerReply:
         rows = await _body(resp)
 
         assert resp.status == 200
-        # The bound local slot the adopt would create, projected by the server.
-        bound = SimpleNamespace(
-            key="chat-local-1", is_remote=True, instance_id="nobita", remote_slot="peer-chat-9"
-        )
-        assert rows[0]["row_identity"] == resolved_row_identity(bound)
+        archive = _remote_slot("chat-local-1")
+        assert resolved_row_identity(archive) == "chat-local-1"
+        assert rows[0]["row_identity"] != resolved_row_identity(archive)
 
     async def test_an_empty_list_is_a_200_with_no_rows(self, monkeypatch):
         """A peer with nothing open is not an error, and must not read as one."""
@@ -908,9 +790,9 @@ class TestTheRowCountIsBoundedNotOnlyTheByteCount:
         seen: list[object] = []
         real = hi._clean_peer_slot
 
-        def _spy(row, driven=()):
+        def _spy(row):
             seen.append(row)
-            return real(row, driven)
+            return real(row)
 
         monkeypatch.setattr(hi, "_clean_peer_slot", _spy)
         mgr = _manager(body=_rows(*[f"peer-{i}" for i in range(50)]))
@@ -918,23 +800,6 @@ class TestTheRowCountIsBoundedNotOnlyTheByteCount:
         await hi.api_instances_chat_slots(_request(_state(mgr)))
 
         assert len(seen) == 3
-
-    async def test_hub_driven_rows_do_not_consume_the_row_cap(self, monkeypatch):
-        """The slice is after the dedupe, and the order matters.
-
-        Slicing ``payload`` first would spend the budget on rows this hub already
-        drives and then drop them, so a peer whose sessions are mostly hub-driven
-        would report fewer of its OWN than the cap allows — rows missing from the
-        sidebar for a reason no count in the audit line explains.
-        """
-        _enable_instances(monkeypatch)
-        monkeypatch.setattr("kiro_crew.dashboard.handlers_instances.MAX_LIVE_SLOTS", 2)
-        mgr = _manager(body=_rows("peer-chat-9", "peer-a", "peer-b"))
-        state = _state(mgr, {"chat-1": _remote_slot()})
-
-        data = await _body(await hi.api_instances_chat_slots(_request(state)))
-
-        assert [row["key"] for row in data] == ["peer-a", "peer-b"]
 
     async def test_a_reply_exactly_at_the_row_cap_is_untouched(self, monkeypatch):
         """A ceiling, not an off-by-one exclusion — same rule as the byte cap."""

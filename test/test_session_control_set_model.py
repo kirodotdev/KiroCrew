@@ -573,7 +573,7 @@ def test_a_remote_crew_target_is_refused(tmp_path):
     with pytest.raises(sc.SessionControlError) as exc:
         _set_model(state, caller, "chat-2", "sonnet")
 
-    assert exc.value.code == "remote_target_unsupported"
+    assert exc.value.code == "relay_archive_read_only"
     assert target._pending_model_pick is None
 
 

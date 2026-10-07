@@ -221,17 +221,11 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "executor",
         "instance_id",
         "remote_slot",
-        # In-flight relay marker: the slot save writes it only while a relay is
-        # running and omits it once the turn ends. Absence therefore means "not
-        # in flight" and must clear the on-disk value — left unowned, the `true`
-        # written at relay start is carried forward past a clean completion, so
-        # every later restart would append a false "interrupted" row.
-        "relay_in_flight",
         # Local-turn crash marker: the generation of the turn ``_run_chat``
         # admitted, written before provider dispatch and omitted once the turn
-        # reaches teardown. Owned for the same reason as ``relay_in_flight``:
-        # absence IS the clear, so a carried-forward value would flag every
-        # later restart as interrupted after one clean completion.
+        # reaches teardown. Owned because absence IS the clear: a
+        # carried-forward value would flag every later restart as interrupted
+        # after one clean completion.
         "turn_in_flight_generation",
         # The row that opened that turn (role, content, cls, ts, meta), carried
         # with the generation so a restart inside the periodic flush window

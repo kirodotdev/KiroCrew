@@ -1453,10 +1453,6 @@ class GatewayOrchestrator:
         * no ``dashboard_state`` at all is genuinely no surface, but the caller
           reaches its own no-UI branch before asking, so that answer is never
           used to refuse anything.
-
-        A relay reader is not a false positive here: it consumes the SSE stream
-        (``dashboard/remote_mirror``), never registers on ``/api/ws``, and so is
-        not in ``_ws_clients`` at all.
         """
         if self.dashboard_state is None:
             return False

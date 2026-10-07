@@ -122,31 +122,21 @@ transport, and **EC2** when the instance was provisioned by the cloud launcher.
 
 ## A session that runs on another machine
 
-**New chat on crew** starts a session here whose turns execute over there. It is
-a feature preview: turn on **Settings → Developer → Feature Previews → Chat on
-a crew**, then pick it from the new-chat menu and choose one of your connected
-machines. Only connected ones are offered.
+**New chat on crew** creates a session ON a connected machine and opens it here in
+a crew window. It is a feature preview: turn on **Settings → Developer → Feature
+Previews → Chat on a crew**, then pick it from the new-chat menu and choose one of
+your connected machines. Only connected ones are offered, and creating one fails
+outright when the machine runs a Kiro Crew version too far from yours.
 
-What you get is a local session — a row in your own sidebar, a local transcript,
-local history and search — wearing a chip that names the machine running it. Its
-prompts, tools and model all run on the remote, against the remote's workspace
-and its agents.
+The window shows the remote's own transcript, running state and pending approval.
+Send, stop, approve, continue, regenerate and rewind call the remote's own routes,
+so its prompts, tools and model all run over there, against its agents and
+workspace. Nothing is stored on this machine, and every reply is redacted before
+it renders.
 
-Two things follow from the split:
-
-- **The remote's roster wins.** The session uses the remote machine's agents,
-  models and workspaces, not this machine's. Your local default agent is not sent
-  over; a name from your roster would mean nothing, or something else, over
-  there.
-- **The tunnel has to be up to send.** While it is down the session refuses a new
-  turn and says it is reconnecting. A turn already in flight keeps running on the
-  remote even if the hub restarts — when you come back, the transcript carries an
-  explicit note that a restart interrupted it rather than just stopping
-  mid-sentence.
-
-Creating one fails outright when the machine is disconnected or running a Kiro
-Crew version too far from yours, rather than leaving you a session that cannot
-send.
+A chat an older version ran on a crew through the retired turn relay stays in your
+list as a **read-only archive**. You can read it, but every action that would run
+it answers `relay_archive_read_only`; open the crew's own session to keep going.
 
 ## Another machine's sessions in your list
 
@@ -155,11 +145,7 @@ this dashboard's Sessions list. Turn on **Settings → Developer → Feature
 Previews → Remote crew sessions**. With it off, nothing is fetched at all.
 
 Peer rows are ordered with your local ones by recency and badged with the machine
-that owns them. Clicking one opens it **here**: the hub binds a fresh local
-session to that remote session and backfills its transcript, so you get a real
-local conversation whose turns keep running on the remote. The row keeps the
-identity it had, so it re-renders in place instead of appearing twice, and it
-drops out of the peer rows once adopted.
+that owns them. Clicking one opens it in a crew window, as above.
 
 A peer row deliberately does less than a local one, because the other machine —
 not this one — owns the session:
@@ -170,10 +156,6 @@ not this one — owns the session:
 | Folders and drag | Filing is local bookkeeping about local rows. |
 | The `⋯` group actions | Same reason: they act on sessions this machine owns. |
 | The board view | It stays local, and reports how many rows it filtered out. |
-
-A machine that cannot say which memory mode a session runs in is refused rather
-than guessed at, so an adopt never quietly crosses a privacy boundary you set
-over there.
 
 Only **live** sessions appear here. The other machine's closed ones are reachable
 through search.

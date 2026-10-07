@@ -1616,15 +1616,15 @@ export function slotSurfaceKey(slot: { mode?: string; surface?: string }): strin
 }
 
 /**
- * True when a slot's turns run on a connected crew rather than THIS machine —
- * the single spelling of "crew-bound". Two client surfaces must agree with each
- * other and with the server on it: `selectContinuable` (which must not OFFER
- * Continue on a bound slot) and ChatPage's regenerate / edit-resend gates
- * (which must not offer those either). Mirrors `remote_bound_refusal` in
- * `src/kiro_crew/dashboard/remote_relay.py`, which REFUSES the same actions with
- * 409 `remote_action_unsupported`.
+ * True for a relay archive: a chat an older build ran on a connected crew,
+ * read-only now. Two client surfaces must agree with each other and with the
+ * server on it: `selectContinuable` (which must not OFFER Continue on one) and
+ * ChatPage's regenerate / edit-resend gates (which must not offer those
+ * either). Mirrors `relay_archive_refusal` in
+ * `src/kiro_crew/dashboard/relay_archive.py`, which REFUSES the same actions
+ * with 409 `relay_archive_read_only`.
  *
- * Keyed on `executor` (the binding INTENT), never `instance_id` or `is_remote`:
+ * Keyed on `executor` (the binding INTENT), never `instance_id`:
  * the server refuses a half-open binding (marker set, triple incomplete) too, so
  * an unbound `executor` must read as bound here exactly as it does there. An
  * absent slot is not bound — an older gateway ships `executor` on every slot, so

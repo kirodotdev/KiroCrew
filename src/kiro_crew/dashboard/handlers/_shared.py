@@ -442,7 +442,7 @@ async def read_bounded_json(
     header puts the preflight back. In-tree callers are unaffected: every client
     that sends a body already sets ``application/json`` (the frontend
     ``post``/``put``/``patch``/``del`` helpers, ``mcp_core``, ``cron_script``,
-    ``cli_*``, ``pod.runtime``, ``remote_relay``), and the bodiless requests
+    ``cli_*``, ``pod.runtime``), and the bodiless requests
     (``app_lifecycle_client``, ``cron_trigger``) are not checked.
 
     ONE caller opts OUT, and must: ``POST /api/messaging/teams``, where

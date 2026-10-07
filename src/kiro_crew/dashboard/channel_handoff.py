@@ -259,7 +259,7 @@ def slot_unable_to_take(slot: Any) -> str:
         return REFUSED_NO_SLOT
     if getattr(slot, "is_closing", False):
         return REFUSED_CLOSING
-    if getattr(slot, "is_remote", False) or getattr(slot, "executor", "") == "remote":
+    if getattr(slot, "executor", "") == "remote":
         return REFUSED_REMOTE
     if not getattr(slot, "running", False):
         return REFUSED_IDLE

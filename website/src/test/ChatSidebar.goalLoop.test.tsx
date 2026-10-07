@@ -403,7 +403,7 @@ describe('chat sidebar — interrupted ordinary session', () => {
   })
 
   it('drops the Resume instruction on a crew-bound row', () => {
-    // A remote-bound session has no local Continue (`remote_action_unsupported`),
+    // A relay archive has no Continue (`relay_archive_read_only`),
     // so the composer offers no Resume control — the row must not tell the user to
     // press one. The interruption marker itself still belongs there.
     const slots = [{

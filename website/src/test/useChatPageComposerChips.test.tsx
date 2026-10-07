@@ -45,7 +45,6 @@ function harness() {
     codexPairModels: false,
     selectionCapabilities: undefined,
     selectionCapabilitiesQ: { isError: false },
-    remoteCrew: { isRemote: false } as never,
     dispatch: vi.fn() as never,
     queryClient,
     showActionError: vi.fn(),

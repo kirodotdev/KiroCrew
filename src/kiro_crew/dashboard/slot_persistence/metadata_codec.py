@@ -693,11 +693,6 @@ def _read_executor(r: _Read) -> None:
         slot.instance_id = instance_id
     if isinstance(remote_slot, str) and remote_slot:
         slot.remote_slot = remote_slot
-    # Only a COMPLETE binding can have been mid-relay; an incomplete one never
-    # dispatched, so there is no in-flight tail to recover. The reader appends
-    # the notice once its window is loaded, so it lands at the tail.
-    if slot.is_remote:
-        r.applied.relay_in_flight = bool(meta.get("relay_in_flight"))
 
 
 def _read_turn_in_flight(r: _Read) -> None:
@@ -1065,8 +1060,7 @@ FIELDS: tuple[Field, ...] = (
     ),
     # The binding is written whole or not at all: a half binding (``executor`` remote
     # with no peer slot) is the fail-closed refusal case, so the marker without its
-    # target would resurrect a session that can never run. ``relay_in_flight`` is
-    # written only while a turn is mid-relay, so a True read back is the crash sign.
+    # target would resurrect a session that can never run.
     Field(
         "executor",
         frozenset({RESTORE}),
@@ -1095,18 +1089,6 @@ FIELDS: tuple[Field, ...] = (
         line=_if_bound(lambda s: s.remote_slot),
         merge=_if_bound(lambda s: s.remote_slot),
         why="part of the remote binding",
-    ),
-    Field(
-        "relay_in_flight",
-        frozenset({RESTORE}),
-        attr="_relay_in_flight",
-        line=_if_bound(lambda s: True if getattr(s, "_relay_in_flight", False) else OMIT),
-        merge=_if_bound(lambda s: True if getattr(s, "_relay_in_flight", False) else OMIT),
-        why=(
-            "read only beside a complete binding, as ``AppliedMeta.relay_in_flight``: "
-            "the reader appends the interrupted-turn notice; the slot's own flag "
-            "stays False"
-        ),
     ),
     Field(
         "mode",
@@ -1402,7 +1384,6 @@ LINE_ORDER: tuple[str, ...] = (
     "executor",
     "instance_id",
     "remote_slot",
-    "relay_in_flight",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "folder_id",
@@ -1464,7 +1445,6 @@ MERGE_ORDER: tuple[str, ...] = (
     "executor",
     "instance_id",
     "remote_slot",
-    "relay_in_flight",
     "tab_id",
     "auto_tagged",
     "human_seen",
@@ -1534,9 +1514,7 @@ class AppliedMeta:
 
     *meta* is the line :func:`apply` read; *turn_generation* / *turn_prompt* are
     the local-turn crash marker (parsed by ``apply`` for RESTORE, by ``settle``
-    otherwise);
-    *relay_in_flight* is a complete remote binding that was mid-relay (RESTORE),
-    for the reader's interrupted-turn notice; *minted_tab_id* is a tab id the
+    otherwise); *minted_tab_id* is a tab id the
     line lacked, for the reader to persist after its transcript read.
     """
 
@@ -1545,7 +1523,6 @@ class AppliedMeta:
     meta: dict[str, Any] = field(default_factory=dict)
     turn_generation: int = 0
     turn_prompt: dict | None = None
-    relay_in_flight: bool = False
     minted_tab_id: str | None = None
     restored_notes: list[dict] = field(default_factory=list)
 

@@ -139,15 +139,9 @@ export const selectContinuable = (state: RootState): boolean => {
   if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
   const dashSlot = state.dashboard.slots.find((sl) => sl.key === c.activeSlot)
   if (dashSlot?.subagents_running) return false
-  // A crew-bound session has NO local continue: `remote_bound_refusal` rejects
-  // `executor === 'remote'` with 409 `remote_action_unsupported` ahead of every
-  // guard above, because the synthetic turn Continue queues would dispatch on
-  // THIS machine and diverge from the peer's transcript. Without the same guard
-  // here the offer is self-defeating on the one path that guarantees the state:
-  // `relay_remote_turn`'s failure path appends a trailing `error` row, which is
-  // exactly the shape `selectTurnInterrupted` reads as an interruption, so a
-  // dropped tunnel leaves a Resume whose only possible answer is that 409.
-  // Typing is unaffected; a plain send DOES relay.
+  // A relay archive has NO continue: `relay_archive_refusal` rejects
+  // `executor === 'remote'` with 409 `relay_archive_read_only`, so offering
+  // Resume would show a button whose only possible answer is that 409.
   // Keyed on `executor`, not `instance_id`: a half-open binding (marker set,
   // triple incomplete) is refused server-side too, so it must not offer here.
   if (slotIsRemoteBound(dashSlot)) return false

@@ -2818,7 +2818,7 @@ def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monk
                 state, caller_session_key=_key(caller), target="chat-2", message="do it there"
             )
         )
-    assert err.value.code == "remote_target_unsupported"
+    assert err.value.code == "relay_archive_read_only"
     # Refused before dispatch: no local turn ran and nothing was queued.
     assert ran == {}
     assert target._queue == []
@@ -3919,19 +3919,11 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "app",
         "forked_from",
         "linked_session_key",
-        # The remote-execution binding, written all-three-or-none by both the
-        # full save and the merge. A plain local newborn carries none of it; the
-        # bound case is covered by
-        # test_remote_crew_execution.py::test_the_empty_window_merge_persists_a_complete_binding.
+        # The relay-archive binding, written all-three-or-none by both the
+        # full save and the merge. A plain local newborn carries none of it.
         "executor",
         "instance_id",
         "remote_slot",
-        # In-flight relay marker: written ONLY while a relay is running and
-        # omitted once the turn ends (absence = "not in flight"), so a plain
-        # newborn never carries it. Its clear-on-completion behaviour is covered by
-        # test_remote_crew_execution.py::
-        # test_the_marker_is_cleared_on_disk_when_a_relay_completes.
-        "relay_in_flight",
         # Written only for a NON-DEFAULT memory store, because absence is what
         # means "the global store" -- so a newborn on the default store must NOT
         # carry it, and writing "default" here would make a session that predates

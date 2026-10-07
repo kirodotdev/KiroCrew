@@ -445,7 +445,7 @@ To force the change, call `session_stop`, then retry once the target is idle.
 
 Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
-owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
+owner may arm; and a read-only relay archive (`relay_archive_read_only`).
 
 ### `session_reload`
 
@@ -467,8 +467,8 @@ Only an idle one: a turn running or starting, queued messages, or attached
 sub-agents refuse the call with `target_busy` ("session busy, not reloaded")
 and nothing is torn down. The tool never stops anything itself. You cannot
 reload yourself (`self_target`): the calling session is mid-turn, and a reload
-under a running turn would orphan it. A target bound to a remote crew is refused
-with `remote_target_unsupported`.
+under a running turn would orphan it. A read-only relay archive is refused
+with `relay_archive_read_only`.
 
 If the target gains a channel link or otherwise leaves your reach while its
 process is being reset, the call answers `target_changed_during_reload`: the

@@ -38,7 +38,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
-from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     checkpoint_slot_replaced,
@@ -122,11 +122,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
-    # session and re-run the edited turn on this machine, diverging from the peer.
-    # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
-    # apart from a missing one via the 409.
-    refusal = remote_bound_refusal(slot)
+    # A relay archive is read-only. AFTER the app-ownership 404 above so a
+    # foreign app cannot tell an archive apart from a missing slot via the 409.
+    refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
 

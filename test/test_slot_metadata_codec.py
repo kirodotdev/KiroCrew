@@ -61,7 +61,6 @@ _POPULATED: dict = {
     "executor": "remote",
     "instance_id": "inst-1",
     "remote_slot": "rs-1",
-    "_relay_in_flight": True,
     "_turn_in_flight_generation": 2,
     "_turn_in_flight_prompt": PROMPT,
     "mode": "focus",
@@ -92,7 +91,6 @@ _QUEUE = [{"id": "q-1", "content": "queued", "meta": {"sendId": "s1"}}]
 #: Fields whose value lands on ``AppliedMeta`` (the reader acts on it) rather than
 #: on the slot.
 _APPLIED = {
-    "relay_in_flight": "relay_in_flight",
     "turn_in_flight_generation": "turn_generation",
     "turn_in_flight_prompt": "turn_prompt",
 }
@@ -125,7 +123,6 @@ _BASE_LINE_ORDER = (
     "executor",
     "instance_id",
     "remote_slot",
-    "relay_in_flight",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "folder_id",
@@ -184,7 +181,6 @@ _BASE_MERGE_ORDER = (
     "executor",
     "instance_id",
     "remote_slot",
-    "relay_in_flight",
     "tab_id",
     "auto_tagged",
     "human_seen",
@@ -260,8 +256,6 @@ def _value(slot, applied, row):
 
 
 def _expected(source, row):
-    if row.key == "relay_in_flight":
-        return True
     if row.key == "queued_prompts":
         return durable_queue_entries(source._queue)
     return _value(source, None, row) if row.key not in _APPLIED else getattr(source, row.attr)
@@ -330,7 +324,6 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
         "executor": ["restore"],
         "instance_id": ["restore"],
         "remote_slot": ["restore"],
-        "relay_in_flight": ["restore"],
         "created_by": ["recent", "restore"],
         "app": ["recent", "restore"],
         "artifact": ["recent", "restore"],
@@ -552,14 +545,24 @@ def test_the_restricted_mark_follows_the_line_and_resume_clears_a_stale_one(tmp_
     assert "dashboard:h" not in state._restricted_keys
 
 
-def test_an_incomplete_remote_binding_keeps_the_marker_and_cannot_have_been_mid_relay(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("instance_id", "remote_slot", "expected"),
+    [("inst-1", "rs-1", ("remote", "inst-1", "rs-1")), ("", 5, ("remote", "", ""))],
+    ids=["complete", "incomplete"],
+)
+def test_an_old_relay_line_keeps_the_archive_marker_and_ignores_its_relay_flag(
+    tmp_path, monkeypatch, instance_id, remote_slot, expected
 ):
     state = _state(tmp_path, monkeypatch)
-    meta = {"executor": "remote", "instance_id": "", "remote_slot": 5, "relay_in_flight": True}
+    meta = {
+        "executor": "remote",
+        "instance_id": instance_id,
+        "remote_slot": remote_slot,
+        "relay_in_flight": True,
+    }
     slot, applied, _ = _read_back(state, meta, codec.RESTORE)
-    assert (slot.executor, slot.instance_id, slot.remote_slot) == ("remote", "", "")
-    assert applied.relay_in_flight is False
+    assert (slot.executor, slot.instance_id, slot.remote_slot) == expected
+    assert not hasattr(applied, "relay_in_flight")
 
 
 def test_a_resume_drops_a_folder_only_on_a_verdict_about_that_folder(tmp_path, monkeypatch):

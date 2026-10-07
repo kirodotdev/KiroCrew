@@ -607,9 +607,7 @@ async def test_cancelled_turn_invalidates_old_card_after_same_key_recreation(
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
 
 
-@pytest.mark.parametrize(
-    "invalidate", ["empty", "incognito", "temporary", "remote", "executor", "worker"]
-)
+@pytest.mark.parametrize("invalidate", ["empty", "incognito", "temporary", "executor", "worker"])
 def test_registered_slot_invalidation_still_forgets_card(lifecycle, monkeypatch, invalidate):
     service, slot, state = lifecycle
     service.publisher.notify(slot.key, slot._dashboard_card_identity, "dashboard:one", "done")
@@ -620,8 +618,6 @@ def test_registered_slot_invalidation_still_forgets_card(lifecycle, monkeypatch,
         slot.messages = []
     elif invalidate in {"incognito", "temporary"}:
         slot.memory_mode = invalidate
-    elif invalidate == "remote":
-        slot.is_remote = True
     elif invalidate == "worker":
         slot._created_by = "conductor"
     else:
@@ -1205,7 +1201,8 @@ async def test_a_worker_session_spends_no_attempt_and_reads_unavailable(lifecycl
 async def test_remote_executor_never_admits_local_generation(lifecycle, complete_binding):
     service, slot, state = lifecycle
     slot.executor = "remote"
-    slot.is_remote = complete_binding
+    if complete_binding:
+        slot.instance_id, slot.remote_slot = "peer-1", "peer-chat-1"
     service.notify(slot, "restored")
     assert service.worker is None
     assert not service.publisher.entries
@@ -1224,7 +1221,8 @@ async def test_remote_executor_revokes_completed_and_read_cards(
     async def generate(*args, **kwargs):
         if transition == "during":
             slot.executor = "remote"
-            slot.is_remote = complete_binding
+            if complete_binding:
+                slot.instance_id, slot.remote_slot = "peer-1", "peer-chat-1"
         return '{"html":"<p>must not publish</p>","data":{}}'
 
     monkeypatch.setattr(card_lifecycle, "run_bg_oneliner", generate)
@@ -1233,7 +1231,8 @@ async def test_remote_executor_revokes_completed_and_read_cards(
     if transition == "after":
         assert (await service.read(slot))["card"] is not None
         slot.executor = "remote"
-        slot.is_remote = complete_binding
+        if complete_binding:
+            slot.instance_id, slot.remote_slot = "peer-1", "peer-chat-1"
     assert (await service.read(slot))["card"] is None
     assert len(service.publisher.attempts) == 1
     entry = service.publisher.entries.get(slot.key)

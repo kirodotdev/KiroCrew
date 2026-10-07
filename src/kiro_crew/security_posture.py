@@ -1553,17 +1553,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "text reaches the dashboard.",
     ),
     (
-        "Relayed remote-crew turn output",
-        "dashboard/remote_relay.py",
-        "Every string in a turn relayed from a bound remote crew: the assistant "
-        "text, and each mirrored frame's tool inputs and outputs. The peer is a "
-        "SEPARATE machine with its own agents, environment and secrets, so its "
-        "reply can quote a credential or an exfiltration URL that no local "
-        "redaction pass has ever seen. The peer redacts its own copy with this "
-        "same chain, but a hub that trusted that would inherit whatever an older "
-        "or misconfigured peer failed to scrub -- so the boundary where the "
-        "peer's bytes become this dashboard's transcript re-applies the "
-        "credential + exfiltration-URL chain itself, before any broadcast.",
+        "Peer crew text",
+        "dashboard/peer_redaction.py",
+        "Every string a connected peer crew sends that this dashboard renders, "
+        "broadcasts or persists: proxied replies (JSON documents and SSE events), "
+        "capability labels and session-list fields. The peer is a SEPARATE "
+        "machine with its own agents, environment and secrets, so its text can "
+        "quote a credential or an exfiltration URL that no local redaction pass "
+        "has ever seen. The peer redacts its own copy with this same chain, but a "
+        "hub that trusted that would inherit whatever an older or misconfigured "
+        "peer failed to scrub -- so every such string runs the credential + "
+        "exfiltration-URL chain here, through the one sink.",
     ),
     (
         "Host-side UI preference backup",

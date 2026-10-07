@@ -93,6 +93,11 @@ from kiro_crew.dashboard.create_rate_limit import (
     allow_create,
     has_create_budget,
 )
+from kiro_crew.dashboard.relay_archive import (
+    RELAY_ARCHIVE_CODE,
+    RELAY_ARCHIVE_ERROR,
+    is_relay_archive,
+)
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     MAX_SLOTS_PER_CREATOR,
@@ -5212,13 +5217,8 @@ async def set_model_target(
     with _audit_denials(
         caller_session_key=caller_session_key, operation="set_model", slot_key=slot_key
     ):
-        if slot.is_remote or slot.executor == "remote":
-            raise SessionControlError(
-                "that session runs on a remote crew; changing its model from another "
-                "session is not supported yet",
-                code="remote_target_unsupported",
-                status=409,
-            )
+        if is_relay_archive(slot):
+            raise SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
         session_key = effective_session_key(slot)
         if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
             raise _target_busy_error()
@@ -5556,13 +5556,8 @@ async def reload_target(
                     code="not_creator",
                     status=403,
                 )
-            if found.is_remote or found.executor == "remote":
-                raise SessionControlError(
-                    "that session runs on a remote crew; reloading it from another "
-                    "session is not supported yet",
-                    code="remote_target_unsupported",
-                    status=409,
-                )
+            if is_relay_archive(found):
+                raise SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
         return found
 
     def _busy(target_slot: "_ChatSlot", session_key: str) -> bool:
@@ -6679,21 +6674,11 @@ async def send_to_target(
         precomputed_ownership_fenced=caller_fenced,
     )
 
-    # A crew-bound target executes its turns on the peer, not here. The delivery
-    # below hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has no
-    # remote/executor branch — so on a bound target it would run the crew's work
-    # on THIS machine and diverge the local and peer transcripts, the same failure
-    # the send / regenerate / rewind / continue paths refuse. Relaying a
-    # cross-session send is a separate mechanism (open a peer turn, mirror it
-    # back); until that exists the send is refused rather than run locally.
-    # Keyed on ``executor``, so a half-open binding is refused too.
-    if slot.executor == "remote":
-        raise SessionControlError(
-            "that session runs on a remote crew; sending into a crew-bound "
-            "session from another session is not supported yet",
-            code="remote_target_unsupported",
-            status=409,
-        )
+    # A relay archive is read-only: the delivery below would run the crew's old
+    # session on THIS machine, the same thing the send / regenerate / rewind /
+    # continue paths refuse.
+    if is_relay_archive(slot):
+        raise SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
 
     # Cancellation can only enter at an await. Route every await below the
     # authorization through this helper so no authorized cancellation loses its

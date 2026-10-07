@@ -262,7 +262,7 @@ async def test_a_dispatched_conductor_still_gets_its_board(service: Any) -> None
 
 @pytest.mark.parametrize(
     ("attribute", "value"),
-    [("memory_mode", "incognito"), ("is_remote", True), ("executor", "remote")],
+    [("memory_mode", "incognito"), ("executor", "remote")],
 )
 def test_privacy_and_remoteness_still_withhold_the_card(
     service: Any, attribute: str, value: Any
@@ -1166,7 +1166,7 @@ def test_eviction_does_not_need_a_card_to_have_been_there(service: Any) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attribute", "value"),
-    [("memory_mode", "incognito"), ("is_remote", True), ("executor", "remote")],
+    [("memory_mode", "incognito"), ("executor", "remote")],
 )
 async def test_a_slot_that_tightens_after_publishing_loses_its_card(
     service: Any, attribute: str, value: Any

@@ -926,7 +926,7 @@ async def test_resume_does_not_apply_the_remote_binding_from_disk(tmp_path, monk
     assert not getattr(
         slot, "remote_slot", ""
     ), f"resume applied remote_slot from disk ({getattr(slot, 'remote_slot', None)!r})"
-    assert slot.is_remote is False, "the resumed slot is admitted as remote"
+    assert slot.executor != "remote", "the resumed slot is admitted as a relay archive"
     # The transcript still hydrated correctly — this is a real resume, not a
     # refusal that would pass the negatives vacuously.
     contents = [m.get("content") for m in slot.messages]

@@ -55,7 +55,7 @@ _BASE_NAMES = frozenset("""
         ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
         HUMAN_TURN_META_KEY JEV_ROUTE_MODEL KiroCrewConfig LLMProvider MAX_COLOR_INDEX
         MAX_DEFERRED_NOTES MAX_DEFERRED_NOTE_CHARS MODEL_NAMESPACE_ACP MemoryStartupUnavailable
-        NamedTuple OversizedRecord Path RESERVED_ROW_META_KEYS RemoteTurnError ResumeOutcome
+        NamedTuple OversizedRecord Path RESERVED_ROW_META_KEYS ResumeOutcome
         ResumeRefusal SESSION_RELOAD_KIND SESSION_START_FAILED_KIND SLOT_DETAIL_MAX_LIMIT
         STEER_AUTO STEER_REQUEUED STEER_STEERED SUGGEST_FOLLOWUP_SCHEMA SYNTHETIC_RECOVERY_KIND
         SelectionChange SlotCloseError SplitlinesBoundaryRecord TURN_ACTOR_META_KEY
@@ -70,8 +70,8 @@ _BASE_NAMES = frozenset("""
         _STRUCTURED_CONTENT_PLACEHOLDER _TEARDOWN_INCOMPLETE_WARNING _TRANSIENT_ROLES
         _TURN_OPENER_ROLES _TURN_OPENING_INJECT_KINDS _UNOWED_WINDOW_ROLES _UNPINNED _UNSET
         _app_cancel_denied _app_may_send_to_slot
-        _append_unflushed_tail _append_unflushed_tail_from_offset _apply_remote_pick
-        _apply_remote_pick_locked _apply_source_link_unlink _attach_variants
+        _append_unflushed_tail _append_unflushed_tail_from_offset
+        _apply_source_link_unlink _attach_variants
         _audit_source_link_unlink _autocompact_txn_lock _autocompact_txn_locks
         _await_guarded_history_write _bounded_slot_page _broadcast_context_reset
         _broadcast_expired_oauth_banners _build_pending_context_entry _build_stream_chunk
@@ -129,22 +129,22 @@ _BASE_NAMES = frozenset("""
         chat_message_frame close_slot compaction_in_flight config_dir context_entry_expired
         contextlib count_user_turns_in_records datetime
         decided_message_handling default_project_dir deny_non_dashboard_caller
-        deny_non_owner_remote_operation deny_session_approval_caller drained_to_thread
-        durable_row_count effective_session_key ensure_version_parity exact_trust_pattern
-        forward_peer_selection forward_peer_stop generate_session_summary
+        deny_session_approval_caller drained_to_thread
+        durable_row_count effective_session_key exact_trust_pattern
+        generate_session_summary
         get_reasoning_effort_ordered get_reasoning_effort_values history_corpus_unreadable
         is_channel_session_key is_claude_code is_incognito_transcript is_owner_dashboard_request
         is_registered_agent_name is_sensitive_path is_stop_event_row is_system_notice
         is_turn_interrupted islice json logger logging math maybe_auto_tag members_mod
         model_registry normalize_send_id normalize_theme_consent_sha note_crew_log_class
-        note_hold_durable note_slot_closed os owner_start_priority parse_cls_meta peer_is_connected
+        note_hold_durable note_slot_closed os owner_start_priority parse_cls_meta
         persist_deferred_notes_sync pick_epoch_host pin_private_agent_store
         published_autocompact_pct queue_entry_is_user_origin queue_entry_view
         queue_for_next_turn queued_text_for_display read_bounded_json
         read_cached_intent_summary record_agent_selection redact_credentials
-        redact_exfiltration_urls redact_peer_text register_reasoning_effort_values
-        relay_remote_turn release_prewarmed_session reload_slot_session remote_bound_refusal
-        remote_mirror request_slot_origin resolve_agent_bindings
+        redact_exfiltration_urls register_reasoning_effort_values
+        release_prewarmed_session reload_slot_session
+        request_slot_origin resolve_agent_bindings
         resolve_folder_project_dir_off_loop resolve_session_agent_bindings resolved_row_identity
         restore_agent_selection restore_replacement_if_handover_did_not_land
         resume_slot_from_history row_mid safety_override save_slot_off_loop schedule_eager_spawn
@@ -223,7 +223,7 @@ _RUNNER_SEAMS = (
 def test_every_name_the_handlers_bound_at_the_base_still_resolves() -> None:
     """Callers, the ``dashboard.chat`` facade and tests read private names off the
     handlers module as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) > 370
+    assert len(_BASE_NAMES) > 350
     assert sorted(name for name in _BASE_NAMES if not hasattr(ch, name)) == []
 
 
@@ -231,7 +231,7 @@ def test_a_fresh_interpreter_sees_every_base_public_name(tmp_path: Path) -> None
     """The public names resolve in a process that imports nothing else first, and the
     ``dashboard.chat`` re-exports are the facade's own objects there too."""
     public = sorted(name for name in _BASE_NAMES if not name.startswith("_"))
-    assert len(public) > 200
+    assert len(public) > 180
     script = """
         import sys
         import kiro_crew.dashboard.chat_handlers as ch
@@ -1378,9 +1378,9 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 #: Constructs repository guards read in ``dashboard/chat_handlers.py`` by path or
 #: through the facade's module source: the agent-SDK boundary's three baselined
-#: imports, the approval-mode writers, the remote peer gate and pick chokepoint, the
+#: imports, the approval-mode writers, the
 #: queue-clear the session-control doc counts, the app-actor turn kwargs, the
-#: hold-branch persist, the remote-down refusal text, the stop chokepoints, the
+#: hold-branch persist, the stop chokepoints, the
 #: synthesis boundary the frontend mirrors, the permission-resolution sites with
 #: their dirty flags, and the approval-resolved broadcasts. An owner that grew one
 #: would move it out of such a guard's sight, so each stays in the facade.
@@ -1389,12 +1389,9 @@ _STAYS_IN_THE_FACADE = (
     r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$",
     r"(?m)^from kiro_crew\.providers\.base import LLMProvider$",
     r"safety_override\(\)\.activate",
-    r"deny_non_owner_remote_operation\(",
-    r"_apply_remote_pick\(\s*request",
     r"\._queue\.clear\(\)",
     r'_turn_kwargs\["_turn_actor"\]',
     r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)",
-    r"reconnecting to the crew running this session",
     r"(?m)^def _unblock_pending_waits\(",
     r"(?m)^async def _reset_slot_session\(",
     r"(?m)^def _orphan_in_current_turn\(",
@@ -1412,17 +1409,12 @@ def test_a_construct_a_guard_reads_in_the_facade_stays_there(pattern: str) -> No
 
 
 #: Calls guards check through the facade's own module source or file only: the
-#: peer sinks the remote owner gate sweeps, the turn dispatch the turn-ceiling
-#: scan counts, and the gate, pick and permission-resolution sites beside them.
+#: turn dispatch the turn-ceiling scan counts, and the permission-resolution
+#: sites beside it.
 #: The facade makes each call and no owner may, so a moved caller cannot slip past
 #: a guard that never reads ``chat_api``.
 _FACADE_ONLY_CALLS = frozenset(
     {
-        "relay_remote_turn",
-        "forward_peer_stop",
-        "forward_peer_selection",
-        "deny_non_owner_remote_operation",
-        "_apply_remote_pick",
         "_run_chat",
         "spawn_guarded_turn",
         "_mark_permission_resolved",

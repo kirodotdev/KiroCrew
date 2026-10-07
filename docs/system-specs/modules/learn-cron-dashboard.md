@@ -2575,8 +2575,8 @@ reader refreshing the page. Incognito, temporary, missing,
 deleted, rewritten, re-bound or remote sources do not publish local derived
 content. Transcript publication holds validate privacy and source generation
 before and after the model call and on reads, never across the call itself.
-The remote check includes `executor="remote"` even when incomplete binding leaves
-`is_remote` false, at event admission, model completion and reads.
+The remote check keys on `executor="remote"`, so an incomplete binding is
+excluded too, at event admission, model completion and reads.
 
 Hard per-process gateway ceilings (shared by all viewers and sessions):
 

@@ -399,9 +399,9 @@ def _materialise_slot_from_history(
     transcript rows. It reads nothing from the request, and — this is the
     load-bearing constraint of the fold (RFC section 7.1b) — it applies exactly
     the metadata field set resume applies and DOES NOT apply
-    ``executor`` / ``instance_id`` / ``remote_slot``. A session bound to a remote
-    instance therefore comes back LOCAL when materialised here, which is the
-    behaviour to preserve: rehydrating the remote binding is the startup restore
+    ``executor`` / ``instance_id`` / ``remote_slot``. A relay archive therefore
+    comes back LOCAL when materialised here, which is the behaviour to
+    preserve: rehydrating the archive marker is the startup restore
     path's job (``_rehydrate_slot_from_history`` in chat_persistence), not this
     one. Do not add remote-binding application here "for consistency" — that is
     the prohibited change, and it is pinned by a test.

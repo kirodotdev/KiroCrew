@@ -6448,7 +6448,7 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
     """
     for key in slot_keys:
         slot = state._slots.get(key)
-        if slot is None or not slot._queue or slot.is_remote:
+        if slot is None or not slot._queue or slot.executor == "remote":
             continue
         try:
             async with slot._lock:
@@ -8107,29 +8107,22 @@ async def _run_chat(
     # reclassified or mirrored as authenticated-human speech.
     _incoming_message = message
 
-    # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
-    # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
-    # dispatch entry point (the primary send, regenerate, edit-resend, rewind,
-    # continue, ``session_send``, the queue drain, the
-    # OpenAI-compat endpoint) is supposed to refuse or relay a remote slot before
-    # reaching here — but they are many and a new one is easy to add. This is the
-    # single place that makes running a bound slot on this machine impossible
-    # regardless of caller: local tools, local credentials and a locally-authored
-    # answer on
-    # a session the user handed to a crew would diverge the two transcripts.
-    # Keyed on ``executor`` (not ``is_remote``) so a half-open binding is refused
-    # too. An error row + ``chat_done`` matches the shape a refused turn takes, so
-    # the composer unblocks rather than hanging.
+    # Chokepoint invariant: a relay archive NEVER executes. Every dispatch entry
+    # point (the primary send, regenerate, edit-resend, rewind, continue,
+    # ``session_send``, the queue drain, the OpenAI-compat endpoint) refuses one
+    # before reaching here, but they are many and a new one is easy to add. This
+    # is the single place that makes running one on this machine impossible
+    # regardless of caller. An error row + ``chat_done`` matches the shape a
+    # refused turn takes, so the composer unblocks rather than hanging.
     if getattr(slot, "executor", "") == "remote":
-        logger.warning("refusing to run remote-bound slot %s on this machine", slot.key)
+        logger.warning("refusing to run relay archive %s", slot.key)
         slot.append(
             "error",
-            "This session runs on a remote crew, so it cannot run on this "
-            "machine. Reopen it on the crew, or send again once it reconnects.",
+            "This chat ran on a remote crew and is read-only now. Open the "
+            "crew's own session to keep going.",
             "msg msg-err",
         )
-        # The one exit with no tail: a remote-bound slot's queue drains on its
-        # peer, and draining it here would run it locally.
+        # The one exit with no tail: an archive's queue must never drain here.
         turn_exit.handed_off = True
         await _send_chat_done(state, slot)
         return

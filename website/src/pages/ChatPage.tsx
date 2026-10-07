@@ -869,19 +869,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // project changes which project-scoped agents exist. Derived here rather than
   // from `currentSlot`, which is computed further down the render body.
   const activeSlotProject = slots.find(s => s.key === activeSlot)?.project || undefined
-  // Crew-bound (remote-executor) sessions refuse every local turn-starting
-  // action server-side (`remote_bound_refusal`): regenerate, edit-resend, rewind
-  // and continue would run the crew's turn on THIS machine and diverge the
-  // transcripts. So the client must not OFFER them here either — same predicate
-  // and same `executor` keying `selectContinuable` already uses for Resume.
+  // Relay archives (old remote-executor sessions) are read-only: the server
+  // refuses every turn-starting action on them (`relay_archive_refusal`), so the
+  // client must not OFFER regenerate, edit-resend, rewind or continue either —
+  // same predicate and same `executor` keying `selectContinuable` uses for Resume.
   const activeSlotRemoteBound = slotIsRemoteBound(slots.find(s => s.key === activeSlot))
-  // The agent and model rosters the pickers offer: this machine's, or a peer crew's.
+  // The agent and model rosters the pickers offer.
   const {
-    installedAgents, defaultAgent, remoteCrew, effectiveAgents,
+    installedAgents, defaultAgent, effectiveAgents,
     defaultAgentFailed, toggleDefaultAgent,
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
     effectiveModels,
-  } = useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, slots, dispatch })
+  } = useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, dispatch })
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', activeSlot],
     queryFn: () => api.chatSlotSelectionCapabilities(activeSlot!),
@@ -919,14 +918,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // row is simply not offered.
     retry: false,
   })
-  // NOT offered for a remote-bound session. Its turns run on the peer through
-  // `relay_remote_turn`, which never reaches the routing hook, and the slot-model
-  // route forwards the resolved `auto` to the peer without the flag — so the entry
-  // would be a control that silently does nothing.
   // The slot answer is the third gate: without one the entry has nowhere to land.
   // It returns as soon as a slot exists.
-  const jevRouteOn =
-    jevRouteOffered(jevDashCfgQ.data, jevConsentQ.data, !!activeSlot) && !remoteCrew.isRemote
+  const jevRouteOn = jevRouteOffered(jevDashCfgQ.data, jevConsentQ.data, !!activeSlot)
   const jevRouteLabel = i18nT('pages.chatPage.model_auto_jev_description')
   const modelPickerModels = useMemo(
     () => {
@@ -2749,12 +2743,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = sessionControlState
   // One source for both same-meaning markers in the agent pop-up: the row's check and
   // the default-agent row's label. Reading the slot twice let them disagree.
-  // A peer-bound session falls back to the PEER's default, never this machine's:
-  // the backend deliberately stores no agent for such a slot (the peer picks), so
-  // `defaultAgent` here would advertise a crew from the wrong roster while the
-  // peer answered with its own.
-  const effectiveDefaultAgent = remoteCrew.isRemote ? (remoteCrew.capabilities?.default_agent || '') : defaultAgent
-  const activeAgentName = currentSlot?.agent || effectiveDefaultAgent || 'default'
+  const activeAgentName = currentSlot?.agent || defaultAgent || 'default'
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
@@ -3001,7 +2990,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const displayMode = slotApprovalMode(approvalMode, currentSlot)
   // What the composer's model, effort and project chips show.
   const {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
+    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,
@@ -3015,7 +3004,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     codexPairModels,
     selectionCapabilities,
     selectionCapabilitiesQ,
-    remoteCrew,
     dispatch,
     queryClient,
     showActionError,
@@ -6392,8 +6380,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
-              agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
+              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent)}
+              agentIsInheritedDefault={!currentSlot?.agent && !!defaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
               modelIsInheritedDefault={modelMarker === 'default'}
@@ -6433,7 +6421,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
-              contextWindowTokens={contextTokens?.window || remoteContextWindow || provider.getContextWindow(shownModel)}
+              contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
               showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
@@ -6543,10 +6531,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 models={filteredModels}
                 activeModel={jevRouteShownModel(shownModel, currentSlot)}
                 onSelectModel={pickModel}
-                modelsLoading={remoteCrew.modelsPending}
-                modelsFailed={remoteCrew.failed}
-                retryingModels={remoteCrew.retrying}
-                onRetryModels={() => remoteCrew.refetch()}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}

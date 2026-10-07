@@ -1,4 +1,3 @@
-import { useMemo } from 'react'
 import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
@@ -6,7 +5,6 @@ import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '../../../hooks/useInteractiveModels'
 import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
-import type { useRemoteCapabilities } from '../../../hooks/useRemoteCapabilities'
 import { i18nT } from '../../../i18n/t'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
@@ -26,13 +24,12 @@ interface ComposerChipsOptions {
   pendingAgent: string
   installedAgents: KiroCrewAgent[]
   provider: ReturnType<typeof useProvider>
-  /** The roster the picker offers (the peer's for a remote-bound session). */
+  /** The roster the picker offers. */
   availableModels: ModelInfo[]
   codexPairModels: boolean
   /** The slot's ACP capability answer, once known. */
   selectionCapabilities: Awaited<ReturnType<typeof api.chatSlotSelectionCapabilities>> | undefined
   selectionCapabilitiesQ: { isError: boolean; error?: unknown }
-  remoteCrew: ReturnType<typeof useRemoteCapabilities>
   dispatch: AppDispatch
   queryClient: QueryClient
   showActionError: (message: string, title?: string) => void
@@ -54,7 +51,6 @@ export function useComposerChips({
   codexPairModels,
   selectionCapabilities,
   selectionCapabilitiesQ,
-  remoteCrew,
   dispatch,
   queryClient,
   showActionError,
@@ -134,9 +130,7 @@ export function useComposerChips({
       ? selectionCapabilities.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities
-    ? selectionCapabilities.effort_levels
-    : remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined
+  const effortLevelsOverride = selectionCapabilities?.effort_levels
   // The same answer WITHOUT that substitution, for the pin-to-agent row: that
   // row asks about the PIN, and it must stay disabled for a withheld one even
   // now that the chip names the model the session inherited instead.
@@ -148,7 +142,7 @@ export function useComposerChips({
   )
   // The chip says `default` only for the Settings default; a model picked for
   // the user (Auto router, withheld pin's fallback) is marked `auto` instead.
-  const chipDefault = useSettingsDefaultModel(_slotAgentName, remoteCrew.isRemote, codexPairModels)
+  const chipDefault = useSettingsDefaultModel(_slotAgentName, codexPairModels)
   const modelMarker = modelChipMarker(
     currentSlot?.model || '',
     shownModel,
@@ -156,17 +150,6 @@ export function useComposerChips({
     chipDefault.settingsDefault,
     chipDefault.agentPinned,
   )
-  // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
-  // turn has run the real number arrives with the relayed `context_usage` frame and
-  // wins; until then `provider.getContextWindow` would answer from THIS machine's
-  // model knowledge, which can differ from the peer's for the same model name.
-  const remoteContextWindow = useMemo(() => {
-    if (!remoteCrew.isRemote) return 0
-    const picked = shownModel === 'auto' ? '' : shownModel
-    return remoteCrew.capabilities?.models.find(m =>
-      (codexPairModels ? modelWithoutEffort(m.model_name) : m.model_name) === picked,
-    )?.context_window || 0
-  }, [remoteCrew.isRemote, remoteCrew.capabilities, shownModel, codexPairModels])
   // True when the pin row would be a no-op: the agent already stores the
   // selected base model. 'auto' is the inherit spelling, never a stored pin.
   // Read the slot's pin through displayPin, not the fallback shownModel: a
@@ -217,7 +200,7 @@ export function useComposerChips({
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
   return {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
+    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,

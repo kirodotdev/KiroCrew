@@ -2990,12 +2990,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             {"error": "member thread mode is locked", "code": "member_mode_locked"},
             status=409,
         )
-    # A crew-bound (remote) session runs PLAIN chat only — the same rule
-    # api_chat_slot_create enforces at birth, applied here to the post-create
-    # switch that would otherwise reopen it. A non-plain mode would run
-    # its tools and filesystem work on THIS machine, not on the peer the
-    # session is bound to. Keyed on ``executor`` rather than
-    # ``is_remote`` so even a half-bound slot can never be switched into one.
+    # A relay archive is read-only: a non-plain mode would run its tools and
+    # filesystem work on THIS machine for a chat a peer crew ran.
     if slot.executor == "remote" and mode:
         return web.json_response(
             {

@@ -816,8 +816,7 @@ def _derived_allowed(slot: Any) -> bool:
     definition and cannot be redirected that way.
     """
     return not (
-        getattr(slot, "is_remote", False)
-        or getattr(slot, "executor", "") == "remote"
+        getattr(slot, "executor", "") == "remote"
         or is_incognito_transcript(getattr(slot, "memory_mode", ""))
     )
 

@@ -4,7 +4,7 @@
  * connected peer's federated session search, capabilities and live slots.
  */
 
-import type { RemoteCrewCapabilities } from '../../hooks/useRemoteCapabilities'
+import type { RemoteCrewCapabilities } from '../../types'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 

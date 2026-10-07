@@ -42,28 +42,11 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
 
 
 def resolved_row_identity(slot: Any) -> str:
-    """The identity the sidebar renders this slot under.
+    """The identity the sidebar renders this slot under: its own local key.
 
-    A purely local session is its own key. A remote-bound one -- minted through
-    ``create_peer_slot`` or adopted from a peer row -- is ``<instance_id>:<peer_key>``,
-    the same identity the peer row carries before anything is bound to it.
-
-    That equality is the whole point. The sidebar keys rows on this value (React
-    key, ``layoutId``, ``data-session-row``, the hover-hold seats), so a binding
-    that preserves it re-renders ONE row where a fresh key would mount a second
-    element beside the row the user clicked and leave the browser to notice they
-    are the same conversation.
-
-    The invariant that buys, and the trap in it: for a remote-bound session this
-    identity is NOT the local slot key, and never becomes it. Read ``key`` when you
-    need the local slot -- switching sessions, loading a transcript, addressing the
-    slot on the wire. Splitting this string to recover that key yields the PEER's
-    key, which is routable only inside a request sent back through that instance.
+    A relay archive is a local row too, so it never shares an identity with the
+    peer crew's own row for the same conversation.
     """
-    instance_id = getattr(slot, "instance_id", "") or ""
-    remote_slot = getattr(slot, "remote_slot", "") or ""
-    if getattr(slot, "is_remote", False) and instance_id and remote_slot:
-        return f"{instance_id}:{remote_slot}"
     return str(getattr(slot, "key", "") or "")
 
 
@@ -421,24 +404,11 @@ class SlotProjection:
             "surface": slot.mode,
             "workspace": slot.workspace,
             "project": slot.project,
-            # Remote-execution binding. Shipped on every slot (not just remote
-            # ones) so the frontend can branch on a field that is always
-            # present: an absent key and "runs locally" would be the same
-            # reading, and a stale client would then render a peer session as
-            # local. The binding's third field, `remote_slot`, is still NOT
-            # projected: it is the PEER's slot key, routable only inside a
-            # request sent back through that instance, and shipping a routable
-            # peer key to a browser buys nothing.
-            #
-            # What the browser does need from it is the row's IDENTITY, so that
-            # is projected instead, already resolved. A remote-bound session --
-            # minted through `create_peer_slot` or adopted from a peer row --
-            # identifies as `<instance_id>:<peer_key>`, which is exactly the
-            # identity the peer row carried before it was bound. Same identity
-            # before and after means the sidebar re-renders ONE row rather than
-            # replacing the row the user clicked with a sibling, and it means a
-            # log line, a `data-session-row` selector and a trace all stay
-            # continuous across the adopt instead of splitting in two.
+            # Relay-archive marker. Shipped on every slot so the frontend can
+            # branch on a field that is always present: an absent key and "runs
+            # locally" would be the same reading. The binding's third field,
+            # `remote_slot`, is NOT projected: it is the PEER's slot key, and
+            # shipping it to a browser buys nothing.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),

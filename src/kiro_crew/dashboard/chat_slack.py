@@ -668,7 +668,7 @@ def auto_link_eligible(state: DashboardState, slot: Any) -> bool:  # noqa: ANN00
     # does not prove a person started the session, the marker does.
     if getattr(slot, "_created_by", ""):
         return False
-    if getattr(slot, "channel_origin", False) or getattr(slot, "is_remote", False):
+    if getattr(slot, "channel_origin", False) or getattr(slot, "executor", "") == "remote":
         return False
     if getattr(slot, "memory_mode", "persistent") != "persistent":
         return False

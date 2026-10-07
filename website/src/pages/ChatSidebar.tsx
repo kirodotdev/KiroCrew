@@ -1366,7 +1366,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
         build: () => {
           // A crew-bound row must not name Resume: the composer offers no such
           // control there (`selectContinuable` mirrors the server's
-          // `remote_action_unsupported` refusal), so the instruction would point
+          // `relay_archive_read_only` refusal), so the instruction would point
           // at a button that is not on screen. The interruption is still real and
           // still needs the marker — only the instruction is dropped.
           //

@@ -144,22 +144,6 @@ describe('a picker with no live slot', () => {
   })
 })
 
-describe('a remote-bound session', () => {
-  it('is withheld at the call site, not inside jevRouteOffered', () => {
-    // The two pages AND the condition: a peer-bound session's turns run on the
-    // other machine through `relay_remote_turn` and never reach the routing hook,
-    // so the entry would be a control that silently does nothing. Asserted on the
-    // source because the condition is a conjunct at the call site — `jevRouteOffered`
-    // answers only the consent question and knows nothing about remoteness.
-    for (const rel of ['../pages/ChatPage.tsx', '../components/ChatPane.tsx']) {
-      const source = readFileSync(join(__dirname, rel), 'utf-8')
-      const line = source.split('\n').find(l => l.includes('jevRouteOffered('))
-      expect(line, `${rel} does not call jevRouteOffered`).toBeTruthy()
-      expect(line, `${rel} offers Auto (Jev) on a remote slot`).toMatch(/isRemote/)
-    }
-  })
-})
-
 describe('withJevRoute', () => {
   it('prepends the row beside Auto, which is its sibling', () => {
     const list = withJevRoute(LIST, true, LABEL)

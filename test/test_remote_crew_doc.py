@@ -210,14 +210,9 @@ def test_the_two_feature_previews_the_page_sends_users_to_still_exist(doc_flat: 
     assert "Feature Previews → Chat on a crew" in doc_flat
 
 
-def test_a_remote_bound_session_still_refuses_a_turn_while_its_tunnel_is_down(
-    doc_flat: str,
-) -> None:
-    """§A session that runs on another machine promises a refusal, not a silent failure."""
-    handlers = (ROOT / "src" / "kiro_crew" / "dashboard" / "chat_handlers.py").read_text(
-        encoding="utf-8"
-    )
-    assert (
-        "reconnecting to the crew running this session" in handlers
-    ), "the page says a remote session refuses a turn and says it is reconnecting"
-    assert "says it is reconnecting" in doc_flat
+def test_an_old_relay_chat_is_a_read_only_archive(doc_flat: str) -> None:
+    """§A session that runs on another machine names the archive refusal code."""
+    from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE
+
+    assert f"answers `{RELAY_ARCHIVE_CODE}`" in doc_flat
+    assert "read-only archive" in doc_flat

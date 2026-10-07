@@ -85,7 +85,6 @@ class _Slot:
         self.key = key
         self.messages: list[dict] = kwargs.pop("messages", [{"role": "user", "content": "hi"}])  # type: ignore[assignment]
         self._created_by = kwargs.pop("created_by", "")
-        self.is_remote = kwargs.pop("is_remote", False)
         self.executor = kwargs.pop("executor", "")
         self.memory_mode = kwargs.pop("memory_mode", "persistent")
         self._dashboard_card_identity = kwargs.pop("identity", "id-" + key)
@@ -509,7 +508,6 @@ def test_a_worker_is_not_eligible_for_a_card_at_all() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        pytest.param({"is_remote": True}, id="remote-flag"),
         pytest.param({"executor": "remote"}, id="remote-executor"),
         pytest.param({"memory_mode": "incognito"}, id="incognito"),
     ],

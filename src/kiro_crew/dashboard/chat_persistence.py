@@ -1308,31 +1308,8 @@ def _rehydrate_slot_from_history(
         # A local turn admitted by the previous process and never torn down, the
         # held notes the window already delivered, and the title refresh mark
         # re-based against the rows the window holds -- the fields whose read
-        # needs the window. When both the local-turn marker and the relay marker
-        # are present the metadata is inconsistent (a slot runs locally OR on a
-        # peer), and one row is enough.
-        _had_local_turn_marker = applied.settle(messages)
-        if applied.relay_in_flight and not _had_local_turn_marker:
-            # The gateway crashed while this slot's turn was executing on the peer.
-            # The relay reader died with it and the turn's tail was never mirrored
-            # here, so the loaded window stops mid-turn. Append an explicit notice
-            # at the TAIL rather than resurrect a silently truncated conversation —
-            # the peer may well have finished, and the next send re-synchronises the
-            # visible history. ``broadcast=False`` is the sanctioned replay door
-            # (fork / transfer / window-rebuild use it): no clients exist at boot,
-            # and it appends a schema-correct row with a minted id. Placed AFTER
-            # ``_disk_window_len`` so the new row is not miscounted as
-            # already-persisted, with ``_dirty`` re-armed so the next flush writes
-            # it. The runtime ``_relay_in_flight`` stays False, so that flush clears
-            # the on-disk marker and a second restart cannot append the notice twice.
-            slot.append(
-                "error",
-                "This turn was interrupted when the app restarted. The crew may "
-                "have finished it — send again to pick the conversation back up.",
-                "msg msg-err",
-                broadcast=False,
-            )
-            slot._dirty = True
+        # needs the window.
+        applied.settle(messages)
         logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
         return slot
     except BaseException:

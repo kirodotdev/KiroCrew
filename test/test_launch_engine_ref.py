@@ -4,8 +4,8 @@
 own source, so the default is inert for it; a packaged install has no checkout,
 takes the public-repo clone, and with no ref at the call site the instance
 installs ``main`` while this machine runs a release —
-``remote_relay.ensure_version_parity`` then refuses every session between the
-two on ``major.minor``. The fix lives in ``ec2.deploy`` because BOTH callers
+the remote-crew version gate (``apps.version.versions_compatible``) then
+refuses the pair on ``major.minor``. The fix lives in ``ec2.deploy`` because BOTH callers
 that can reach the clone path (``launch_engine.RealLaunchEngine.provision`` for
 the dashboard, ``wizard._deploy_with_progress`` for the CLI) pass no ref, and a
 seam fix covers a caller that does not exist yet.

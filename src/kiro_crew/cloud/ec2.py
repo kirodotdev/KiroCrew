@@ -602,8 +602,8 @@ def resolve_public_ref(repo: str = "") -> str:
     The template's ``KirocrewRef`` defaults to ``main``, which is right for a
     checkout that ships its own source and wrong for a packaged install: the
     instance then runs whatever ``main`` is while this machine runs a release,
-    and ``remote_relay.ensure_version_parity`` refuses every session between
-    them on ``major.minor``. So a packaged install pins the first release tag
+    and the remote-crew version gate (``apps.version.versions_compatible``)
+    refuses the pair on ``major.minor``. So a packaged install pins the first release tag
     its own version names (:func:`release_channel.release_refs`, likeliest
     first) that the remote confirms it has. Returns ``""`` — "let the template
     default stand" — when no tag maps onto the version (a nightly) or the

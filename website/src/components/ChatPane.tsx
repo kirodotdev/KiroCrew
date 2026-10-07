@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { X, LoaderCircle } from 'lucide-react'
+import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
@@ -37,7 +37,6 @@ import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
@@ -45,7 +44,6 @@ import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
-import type { ModelInfo } from '../providers/types'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
@@ -621,16 +619,7 @@ export default function ChatPane({
   // the configured default (matching what dispatch runs) before the literal
   // 'default' placeholder.
   const paneAgentName = paneSlot?.agent || defaultAgent || 'default'
-  // A remote (peer-bound) pane resolves the PEER's default, never this machine's:
-  // feeding the local `defaultAgent` into the inherited-default label would mark
-  // a peer's agent-less session with the wrong roster's default (#8770 GPT
-  // review). Mirrors ChatPage's `effectiveDefaultAgent`; '' for a peer whose
-  // capabilities have not loaded, which yields no false marker.
-  const paneRemoteCrew = useRemoteCapabilities(paneSlot)
   const queryClient = useQueryClient()
-  const paneEffectiveDefaultAgent = paneRemoteCrew.isRemote
-    ? (paneRemoteCrew.capabilities?.default_agent || '')
-    : defaultAgent
   const navigate = useNavigate()
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.
@@ -643,15 +632,7 @@ export default function ChatPane({
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const localModels = useAvailableModels()
-  const effectiveModels = useMemo<ModelInfo[]>(() => {
-    if (!paneRemoteCrew.isRemote) return localModels
-    return (paneRemoteCrew.capabilities?.models ?? []).map(model => ({
-      name: model.model_name,
-      description: model.description || model.display_name,
-      contextWindow: model.context_window || undefined,
-    }))
-  }, [paneRemoteCrew.isRemote, paneRemoteCrew.capabilities, localModels])
+  const effectiveModels = useAvailableModels()
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
@@ -676,10 +657,7 @@ export default function ChatPane({
     queryFn: () => api.getDecisionsConsent(),
     retry: false,
   })
-  // Not offered for a remote-bound session, for the reason ChatPage states: its
-  // turns run on the peer and never reach the routing hook.
-  const jevRouteOn =
-    jevRouteOffered(dashCfg, jevConsentQ.data, !!paneSlot) && !paneRemoteCrew.isRemote
+  const jevRouteOn = jevRouteOffered(dashCfg, jevConsentQ.data, !!paneSlot)
   const jevRouteLabel = i18nT('pages.chatPage.model_auto_jev_description')
   const modelPickerModels = useMemo(
     () => withJevRoute(
@@ -724,9 +702,7 @@ export default function ChatPane({
       ? selectionCapabilities.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities
-    ? selectionCapabilities.effort_levels
-    : paneRemoteCrew.isRemote ? (paneRemoteCrew.capabilities?.effort_levels ?? []) : undefined
+  const effortLevelsOverride = selectionCapabilities?.effort_levels
   const readKirocrewConfig = useKirocrewConfigReader()
   const { data: defaultEffort = '' } = useQuery({
     queryKey: ['default-effort', provider.id],
@@ -747,7 +723,6 @@ export default function ChatPane({
   // `default` only for the Settings default (see ChatPage).
   const chipDefault = useSettingsDefaultModel(
     paneSlot && !paneSlot.model ? paneAgentName : '',
-    paneRemoteCrew.isRemote,
     codexPairModels,
   )
   const modelMarker = modelChipMarker(
@@ -2051,8 +2026,8 @@ export default function ChatPane({
           // SLOT's stored agent (not `paneAgentName`, which has already
           // collapsed empty->default) so an agent-less slot reads
           // `<default> · default` and a pinned one reads the bare alias (#8770).
-          agentLabel={agentOrDefaultLabel(paneSlot?.agent, paneEffectiveDefaultAgent)}
-          agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
+          agentLabel={agentOrDefaultLabel(paneSlot?.agent, defaultAgent)}
+          agentIsInheritedDefault={!paneSlot?.agent && !!defaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
           reasoningEffort={effectiveEffort}
@@ -2229,24 +2204,9 @@ export default function ChatPane({
                 </Btn>
               </div>
             )}
-            {paneRemoteCrew.failed && (
-              <div className="flex shrink-0 items-center gap-2 px-1.5 py-1">
-                {/* No hand-off: this pane's composer may hold an unsent draft.
-                    Retry keeps the user in the owning chat. */}
-                <ErrorNotice
-                  className="min-w-0 flex-1"
-                  variant="inline"
-                  message={i18nT('components.modelEffortDropdown.models_failed')}
-                />
-                <Btn type="button" className="shrink-0" onClick={() => paneRemoteCrew.refetch()} disabled={paneRemoteCrew.retrying}>
-                  {paneRemoteCrew.retrying && <LoaderCircle className="lucide-inline animate-spin" aria-hidden />}
-                  {i18nT('pages.settings.chatPanel.retry')}
-                </Btn>
-              </div>
-            )}
             {/* Same bottom fade as ModelEffortDropdown's list (see MORE_BELOW_MASK). */}
             <div ref={attachModelList} role="listbox" aria-label={i18nT('components.chatPane.model_list')} className={`min-h-[96px] flex-1 overflow-y-auto max-h-[280px] ${modelListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
-              <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} loading={paneRemoteCrew.modelsPending} failed={paneRemoteCrew.failed} />
+              <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
             </div>
             {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
               modelDD.setOpen(false)
