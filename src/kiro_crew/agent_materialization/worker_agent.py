@@ -29,8 +29,7 @@ from kiro_crew.agent_files import (
 )
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp
-from kiro_crew.agent_spec_format import parse_markdown_spec
-from kiro_crew.agent_spec_format import volatile_env_keys
+from kiro_crew.agent_spec_format import parse_markdown_spec, volatile_env_keys
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
 #: superset claim holds against the agent the user actually runs rather than
@@ -934,6 +933,14 @@ def _without_volatile_mcp_env(mirrored: dict[str, Any]) -> dict[str, Any]:
     key altogether is a changed spec -- otherwise the mirror would keep an env entry
     absent from the default -- so it must still fingerprint differently. Every other
     env value still counts: a rotated credential is a different grant.
+
+    Two checks read this fingerprint: the post-load bracket
+    (``require_unchanged_derived_spec``) and the mirror-freshness check
+    (``_derived_spec_matches_default``), which compares it against the fingerprint
+    ``set_mirrored_from`` recorded at derive time. So a change to a volatile value alone
+    also skips the mirror re-derive. That is safe: the launcher writes every agent spec it
+    manages, the worker's own included, each with its own per-launch value, so the mirror
+    never needs the default's copy.
     """
     servers = mirrored.get("mcpServers")
     if not isinstance(servers, dict):

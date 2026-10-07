@@ -1741,6 +1741,7 @@ def test_a_per_launch_env_nonce_does_not_move_the_fingerprint(tmp_path, monkeypa
     already leaves it out of identity digests — so the fingerprint must not move with
     it, or every concurrent launch reads as a trust change and ends the worker whose
     load straddled it. Every other env value is still a grant and still counts."""
+    monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     default = tmp_path / AGENT_FILENAME
     default.write_text(json.dumps(_spec_with_creds_agent_nonce("1fbf21ab")), encoding="utf-8")
@@ -1774,7 +1775,9 @@ def test_a_nonce_restamp_during_the_load_does_not_end_the_session(tmp_path, monk
     snap = agent.require_fresh_derived_spec("kirocrew-worker", None)
     assert snap is not None
 
-    default.write_text(json.dumps(_spec_with_creds_agent_nonce("c45a9953")), encoding="utf-8")
+    # A longer nonce, so the size alone moves the identity when both writes land in
+    # one coarse mtime tick.
+    default.write_text(json.dumps(_spec_with_creds_agent_nonce("c45a9953e7")), encoding="utf-8")
     assert agent.default_spec_identity() != snap.identity
 
     agent.require_unchanged_derived_spec(snap)

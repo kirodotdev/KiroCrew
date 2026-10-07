@@ -35,10 +35,8 @@ from kiro_crew.agent_discovery import SCOPE_PROJECT, _read_agent_spec, list_agen
 from kiro_crew.agent_spec_format import (
     NATIVE_SKILL_ALIAS_PREFIX,
     SKILL_VIEW_PROJECTION_CEILING,
-    VOLATILE_ENV_KEYS_DEFAULT,
-    VOLATILE_ENV_VAR,
+    volatile_env_keys,
 )
-from kiro_crew.agent_spec_format import volatile_env_keys as _volatile_env_keys
 from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
@@ -2840,21 +2838,6 @@ def announce_alias(alias: str) -> None:
         return
     if data:
         _announce_publication(path, data)
-
-
-# MCP env keys whose VALUE a launcher re-stamps on every launch (a per-launch
-# nonce, not a credential the agent's grants depend on), so a changed value is no
-# change. The list and its ``KIROCREW_SKILL_VIEW_VOLATILE_ENV`` extension live in
-# ``agent_spec_format`` so the worker-spec freshness gate hashes ``mcpServers``
-# with the same exclusions; re-exported here under the names this module's
-# callers and tests use.
-_VOLATILE_ENV_KEYS_DEFAULT = VOLATILE_ENV_KEYS_DEFAULT
-_VOLATILE_ENV_VAR = VOLATILE_ENV_VAR
-
-
-def volatile_env_keys() -> frozenset[str]:
-    """The MCP env keys whose values identity digests ignore (see above)."""
-    return _volatile_env_keys()
 
 
 def _env_identity(env: dict[Any, Any], volatile: frozenset[str]) -> dict[str, str | None]:

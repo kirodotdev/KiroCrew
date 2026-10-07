@@ -410,12 +410,13 @@ def parse_agent_spec_bytes(raw: bytes, path: str | Path) -> Any:
 # key names), for a launcher this list does not know yet. Lives here, beside the
 # spec parser, because both the ACP skill views and the worker-spec freshness gate
 # hash ``mcpServers`` and must leave out the same keys -- the gate cannot import
-# the ACP layer to ask.
-VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
-VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
+# the ACP layer to ask. So a key listed here must be one the launcher writes into
+# every agent spec it manages, the worker's included, or the worker keeps an old value.
+_VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
+_VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
 
 
 def volatile_env_keys() -> frozenset[str]:
     """The MCP env keys whose values identity digests and fingerprints ignore (see above)."""
-    extra = os.environ.get(VOLATILE_ENV_VAR, "")
-    return VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
+    extra = os.environ.get(_VOLATILE_ENV_VAR, "")
+    return _VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}

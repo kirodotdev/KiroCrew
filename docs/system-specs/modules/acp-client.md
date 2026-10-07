@@ -222,6 +222,10 @@ alias. A launcher nonce under a
 key the set does not know shows up as one view per launch; `kirocrew doctor`
 names each `<server>.<KEY>` whose value differs across one agent's views
 (`census_churning_env_keys`), so the operator can declare it volatile.
+The same list governs the worker-spec freshness gate: a change to a volatile value
+alone neither ends a worker load (`require_unchanged_derived_spec`) nor re-derives
+the `kirocrew-worker.json` mirror. So a key declared volatile must be one the
+launcher writes into every agent spec it manages, the worker's included.
 Views can still differ per
 workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
 shape the view, so those agents get
