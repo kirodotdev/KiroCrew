@@ -72,8 +72,26 @@ function syncWarnText(state: string): string | undefined {
 const ORPHAN_WARN_KEY = 'components.commentsSidebar.anchor_text_no_longer_found_in_content'
 
 /** A small inline reply composer used under a root thread. */
-export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => void; onCancel: () => void }) {
+/** Push a box's unsaved-text flag to its host, clearing it when the box unmounts
+ *  (a submitted, cancelled or closed box holds nothing to lose). */
+function useReportDirty(dirty: boolean, report?: (dirty: boolean) => void) {
+  const reportRef = useRef(report)
+  reportRef.current = report
+  useEffect(() => { reportRef.current?.(dirty) }, [dirty])
+  useEffect(() => () => { reportRef.current?.(false) }, [])
+}
+
+export function ReplyBox({ onSubmit, onCancel, onDirtyChange, disabled }: {
+  onSubmit: (text: string) => void
+  onCancel: () => void
+  /** Lock the box (no typing) while the host is about to navigate away. */
+  disabled?: boolean
+  /** Reports whether the box holds unsent text (and `false` on unmount), so a
+   *  host that navigates away can ask before discarding it. */
+  onDirtyChange?: (dirty: boolean) => void
+}) {
   const [text, setText] = useState('')
+  useReportDirty(text.trim() !== '', onDirtyChange)
   const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
   useAutoGrowTextarea(ref, text)
@@ -83,6 +101,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
       <textarea
         ref={ref}
         value={text}
+        disabled={disabled}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.reply')}
         onChange={e => setText(e.target.value)}
@@ -117,8 +136,17 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
 /** Inline editor for a comment body (mirrors ReplyBox, seeded with the current
  *  text). Enter saves, Escape cancels. Rendered in place of the body inside the
  *  comment card, so it carries no left indent. */
-export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSubmit: (text: string) => void; onCancel: () => void }) {
+export function EditBox({ initial, onSubmit, onCancel, onDirtyChange, disabled }: {
+  initial: string
+  onSubmit: (text: string) => void
+  onCancel: () => void
+  /** Lock the box (no typing) while the host is about to navigate away. */
+  disabled?: boolean
+  /** Reports whether the edit differs from the saved body (and `false` on unmount). */
+  onDirtyChange?: (dirty: boolean) => void
+}) {
   const [text, setText] = useState(initial)
+  useReportDirty(text !== initial, onDirtyChange)
   const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
   useAutoGrowTextarea(ref, text)
@@ -128,6 +156,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
       <textarea
         ref={ref}
         value={text}
+        disabled={disabled}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.edit_comment')}
         onChange={e => setText(e.target.value)}
@@ -160,7 +189,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
 /** Single comment row (root or reply). Replies render indented with no anchor. */
 export function CommentRow({
   comment, isReply, active, restrictActions, hideResolve, hideDelete, onReply, onResolve, onMarkReview, onReopen, onDelete, onBodyClick,
-  editing, onEdit, onEditSubmit, onEditCancel,
+  editing, onEdit, onEditSubmit, onEditCancel, onEditDirtyChange, editDisabled,
 }: {
   comment: ArtifactComment
   isReply: boolean
@@ -178,6 +207,8 @@ export function CommentRow({
   onEdit?: (c: ArtifactComment) => void
   onEditSubmit?: (text: string) => void
   onEditCancel?: () => void
+  onEditDirtyChange?: (dirty: boolean) => void
+  editDisabled?: boolean
 }) {
   const quote = comment.anchor?.quote
   // Sync (push) state and anchor orphaning are independent signals — a
@@ -232,6 +263,8 @@ export function CommentRow({
           initial={comment.body}
           onSubmit={onEditSubmit as (text: string) => void}
           onCancel={onEditCancel || (() => {})}
+          onDirtyChange={onEditDirtyChange}
+          disabled={editDisabled}
         />
       ) : (
         <div className="text-[13px] text-text whitespace-pre-wrap break-words">{comment.body}</div>
@@ -362,6 +395,13 @@ export interface CommentsSidebarProps {
   /** When set, scroll that comment row into view + flash it — driven by an
    *  in-iframe highlight click. Nonce re-triggers on repeat clicks. */
   flashCommentId?: { id: string; nonce: number } | null
+  /** Whether any composer in the sidebar (the add box, an open reply, an
+   *  in-place edit) holds unsaved text. Reported on change and as `false` on
+   *  unmount, so a host about to navigate away can ask before discarding it. */
+  onDraftChange?: (hasDraft: boolean) => void
+  /** Lock every composer (add box, reply, in-place edit) against typing, e.g.
+   *  while the host is creating a session it is about to navigate to. */
+  composersDisabled?: boolean
   /** Override the root `<aside>` sizing classes. Defaults to the full-page /
    *  fullscreen sizing (`w-[340px] shrink-0 … h-[calc(100vh-240px)] min-h-480`).
    *  The chat side panel passes a stacked, height-capped variant so a narrow
@@ -390,7 +430,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
     comments, loading, remoteSyncError, loadError, mutationError, onDismissMutationError, onAdd, onReply, onResolve,
     onMarkReview, onDelete, onRefresh, onAskAgent, submitBar, onClose, restrictActions, hideResolve, hideDelete,
     onCommentClick, onReopen, activeCommentId, flashCommentId,
-    containerClassName, containerStyle, onEditComment,
+    containerClassName, containerStyle, onEditComment, onDraftChange, composersDisabled,
   } = props
   // Which comment (if any) is currently being edited in place.
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -416,6 +456,9 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
   }, [activeCommentId])
   const [adding, setAdding] = useState(false)
   const [addText, setAddText] = useState('')
+  const [replyDirty, setReplyDirty] = useState(false)
+  const [editDirty, setEditDirty] = useState(false)
+  useReportDirty(addText.trim() !== '' || replyDirty || editDirty, onDraftChange)
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [showResolved, setShowResolved] = useState(false)
   const addRef = useRef<HTMLTextAreaElement>(null)
@@ -555,6 +598,8 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
               onEditSubmit={onEditComment ? text => { onEditComment(root.id, text); setEditingId(null) } : undefined}
               onEditCancel={() => setEditingId(null)}
+              onEditDirtyChange={setEditDirty}
+              editDisabled={composersDisabled}
               onBodyClick={() => { if (root.anchor?.quote) onCommentClick?.(root.id); else setReplyTo(root.id) }}
             />
             {(repliesByParent.get(root.id) ?? []).map(r => (
@@ -575,6 +620,8 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
                   onEdit={onEditComment ? c => setEditingId(c.id) : undefined}
                   onEditSubmit={onEditComment ? text => { onEditComment(r.id, text); setEditingId(null) } : undefined}
                   onEditCancel={() => setEditingId(null)}
+                  onEditDirtyChange={setEditDirty}
+                  editDisabled={composersDisabled}
                   onBodyClick={() => { if (root.anchor?.quote) onCommentClick?.(root.id); else setReplyTo(root.id) }}
                 />
               </div>
@@ -583,6 +630,8 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               <ReplyBox
                 onSubmit={text => { onReply(root.id, text); setReplyTo(null) }}
                 onCancel={() => setReplyTo(null)}
+                onDirtyChange={setReplyDirty}
+                disabled={composersDisabled}
               />
             )}
           </div>
@@ -606,6 +655,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             <textarea
               ref={addRef}
               value={addText}
+              disabled={composersDisabled}
               rows={2}
               placeholder={i18nT('components.commentsSidebar.add_a_comment_on_the_whole_artifact')}
               onChange={e => setAddText(e.target.value)}

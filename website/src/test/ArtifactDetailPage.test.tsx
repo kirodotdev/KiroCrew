@@ -7,6 +7,15 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
+/** Download lives in the toolbar's "More" overflow menu. Radix opens a
+ *  DropdownMenuTrigger on keyboard activation in jsdom (its mouse path is
+ *  PointerEvent-driven), then the item is a normal click. */
+function clickMoreItem(name: string) {
+  fireEvent.keyDown(screen.getByLabelText('More actions'), { key: 'Enter' })
+  fireEvent.click(screen.getByRole('menuitem', { name }))
+}
+
+
 // The sandboxed frames mint their document URL through the api client. The
 // automock resolves every method to `undefined`, which the component cannot
 // await — without this stub the frame throws instead of rendering.
@@ -181,7 +190,7 @@ describe('ArtifactDetailPage', () => {
       return el
     })
     try {
-      fireEvent.click(screen.getByLabelText('Download'))
+      clickMoreItem('Download')
     } finally {
       createSpy.mockRestore()
     }

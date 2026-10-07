@@ -1603,6 +1603,37 @@ effect: the host route `/artifacts/:slug` owns the URL, and an in-place
 sessionStorage channel ChatPage already consumes on slot activation (the
 slot-change restore in `website/src/pages/chat/page/composerDrafts.ts`).
 
+**Start a new chat from this artifact** — an item in the toolbar's labelled
+**More** overflow menu (which also holds Download, so the toolbar row does not
+grow; view mode only, behind the same comment-draft guard as Edit) hands the
+artifact off to a fresh, ordinary session on the full `/chat` page, for context
+the user wants in a new session without loading it into the one that produced
+it (#13904). It creates through the `createSlot` thunk, so the user's default
+memory mode applies and the row is in the slots list before `/chat` mounts; the
+item is disabled while the create is in flight. Before navigating it asks (the
+same "Discard your unsaved comment?" prompt) when either the selection composer
+or the comments sidebar holds unsaved text: `CommentsSidebar` reports that
+through `onDraftChange` (add box, open reply, in-place edit; `false` on
+unmount), because that text is component-local and `/chat` would unmount it
+silently. The check runs again right before navigating when the first one found
+nothing, because the composers stay usable during the create round-trip;
+declining then removes the just-created session (the delete is awaited, so a
+failure reaches the page's error notice). While the create is in flight the page
+locks everything that starts unsaved text: Edit is disabled, the sidebar's
+composers are disabled (`CommentsSidebar` `composersDisabled`) and the selection
+composer is suspended (its draft kept). A hand-off is bound to the page view that started
+it: leaving that view (unmount, or the route reused for another slug) cancels
+it, so a create that resolves afterwards neither navigates nor reads the
+departed page's draft state, and the orphan session is deleted. The session is created with
+**no** `artifact` binding and no pinned
+title, so it is not a companion and the one-active-bound-session invariant is
+untouched; no companion context entry is injected. A handoff prompt naming the
+slug ("Use the artifact `<slug>` … as the brief for this chat.") is staged through
+`writePrefill` and never auto-sent, and the route goes through `sendNav`, so a
+popout forwards the intent to a main window. The session gets the normal
+new-chat defaults — agent, folder and project are not chosen here, nothing is
+pre-trusted, and no git worktree is involved.
+
 ## Roadmap
 
 In scope for the foundation:

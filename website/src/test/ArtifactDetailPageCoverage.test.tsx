@@ -30,6 +30,15 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { Artifact, ArtifactComment } from '../types'
 
+/** Download lives in the toolbar's "More" overflow menu. Radix opens a
+ *  DropdownMenuTrigger on keyboard activation in jsdom (its mouse path is
+ *  PointerEvent-driven), then the item is a normal click. */
+function clickMoreItem(name: string) {
+  fireEvent.keyDown(screen.getByLabelText('More actions'), { key: 'Enter' })
+  fireEvent.click(screen.getByRole('menuitem', { name }))
+}
+
+
 // The sandboxed frame mints its document URL through the api client. The
 // automock resolves every method to `undefined`, which the component cannot
 // await — without this stub the frame throws instead of rendering.
@@ -585,7 +594,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     const cap = captureDownload()
     try {
       await mount(mkArtifact({ kind, content: 'body', name: 'CR Queue' }))
-      fireEvent.click(screen.getByLabelText('Download'))
+      clickMoreItem('Download')
       await waitFor(() => expect(cap.seen.length).toBe(1))
       expect(cap.seen[0].download).toBe(`CR Queue-v2.${ext}`)
       expect(cap.seen[0].type).toBe(mime)
@@ -598,7 +607,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     const cap = captureDownload()
     try {
       await mount(mkArtifact({ kind: 'widget', name: 'CR/Queue: v2?', content: '<b>hi</b>' }))
-      fireEvent.click(screen.getByLabelText('Download'))
+      clickMoreItem('Download')
       await waitFor(() => expect(cap.seen.length).toBe(1))
       expect(cap.seen[0].download).toBe('CRQueue v2-v2.html')
       expect(cap.seen[0].type).toBe('text/html')
@@ -611,7 +620,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     const cap = captureDownload()
     try {
       await mount(mkArtifact({ kind: 'markdown', name: '???', content: 'x' }))
-      fireEvent.click(screen.getByLabelText('Download'))
+      clickMoreItem('Download')
       await waitFor(() => expect(cap.seen.length).toBe(1))
       expect(cap.seen[0].download).toBe(`${SLUG}-v2.md`)
     } finally {
@@ -954,7 +963,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await mount(mkArtifact())
     const { host } = bodyNodes()
     // Anchored in the toolbar, not the document body.
-    stubSelection({ text: 'Download', anchorNode: screen.getByLabelText('Download') })
+    stubSelection({ text: 'More', anchorNode: screen.getByLabelText('More actions') })
     fireEvent.mouseDown(host)
     fireEvent.mouseUp(host)
     expect(screen.queryByPlaceholderText('Write a comment…')).toBeNull()

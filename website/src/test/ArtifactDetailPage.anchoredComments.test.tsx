@@ -385,6 +385,24 @@ describe('ArtifactDetailPage anchored comments', () => {
     expect(vi.mocked(api).postArtifactComment).not.toHaveBeenCalled()
   })
 
+  it('hides the selection composer while a new-chat hand-off is creating its session (#13904)', async () => {
+    // The page is about to navigate; a comment begun in that window would be
+    // lost, so the composer is suspended (its state kept) until the create settles.
+    let resolveCreate: (v: unknown) => void = () => {}
+    vi.mocked(api).createChatSlot = vi.fn().mockReturnValue(new Promise((r) => { resolveCreate = r }))
+    vi.mocked(api).dashboardConfig = vi.fn().mockResolvedValue({})
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    renderPage()
+    await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
+    expect(selectInBody('beta')).toBe(true)
+    await screen.findByLabelText(COMPOSER_INPUT)
+    fireEvent.keyDown(screen.getByLabelText('More actions'), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Start a new chat from this artifact' }))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByLabelText(COMPOSER_INPUT)).toBeNull())
+    await act(async () => { resolveCreate({ key: 'slot-fresh', title: '' }) })
+  })
+
   it('does not offer anchored add while editing', async () => {
     // Selecting inside a textarea is an edit gesture, not an annotation gesture.
     renderPage()

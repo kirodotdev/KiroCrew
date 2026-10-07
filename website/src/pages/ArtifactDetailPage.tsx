@@ -5,12 +5,12 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, AlertTriangle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, AlertTriangle, RotateCcw, Plus, Sparkles, MessageSquare, MessageSquarePlus, MoreHorizontal, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch, useAppSelector } from '../store'
-import { switchSlot } from '../store/chatSlice'
+import { switchSlot, createSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
@@ -1503,6 +1503,100 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     sendNav({ path: '/chat', slotKey: boundSlot.key })
   }, [boundSlot, sendNav])
 
+  /** Hand this artifact off to a FRESH, ordinary chat session (#13904): the
+   *  artifact is the carrier for context the user wants in a new session
+   *  without loading it into the one that produced it. Unlike the companion
+   *  chat this session is NOT bound to the artifact (no `artifact` field), so
+   *  the one-active-bound-session-per-slug invariant is untouched, and it opens
+   *  on the full /chat page rather than in the side panel. The handoff prompt
+   *  is STAGED in the composer, never auto-sent, and the session gets no extra
+   *  trust: its agent, folder and project are the normal new-chat defaults.
+   *  No worktree is involved — this is plain session creation. */
+  const [startingChat, setStartingChat] = useState(false)
+  // Unsaved text in the comments sidebar (add box, reply, in-place edit). It is
+  // component-local state, so leaving for /chat would drop it silently; the
+  // hand-off asks first, alongside the selection composer's own guard.
+  const sidebarDraftRef = useRef(false)
+  const onSidebarDraftChange = useCallback((d: boolean) => { sidebarDraftRef.current = d }, [])
+  /** Whether leaving may drop unsaved comment text: the selection composer's
+   *  own guard first, then the sidebar's draft. `'clear'` means nothing was at
+   *  risk, `'discard'` that the user agreed to drop a draft, `'stay'` that they
+   *  declined. */
+  const confirmLeaveDrafts = useCallback(async (): Promise<'clear' | 'discard' | 'stay'> => {
+    let ok = false
+    let asked = false
+    await guardCommentDraft(() => { ok = true })
+    if (!ok) return 'stay'
+    if (sidebarDraftRef.current) {
+      asked = true
+      if (!(await confirmDiscardDraft())) return 'stay'
+    }
+    return asked ? 'discard' : 'clear'
+  }, [guardCommentDraft, confirmDiscardDraft])
+  // A hand-off belongs to the view that started it. Leaving that view (unmount,
+  // or the route reused for another slug) bumps the generation, so a create
+  // that resolves afterwards neither re-checks this page's stale draft refs nor
+  // navigates away from wherever the user is now.
+  const handoffGenRef = useRef(0)
+  useEffect(() => () => { handoffGenRef.current += 1 }, [slug])
+  const startChatFromArtifact = useCallback(async () => {
+    if (!artifact) return
+    if (sessionOpBusyRef.current) return
+    const gen = handoffGenRef.current
+    const first = await confirmLeaveDrafts()
+    if (first === 'stay' || gen !== handoffGenRef.current) return
+    sessionOpBusyRef.current = true
+    setStartingChat(true)
+    setSaveError(null)
+    try {
+      // Through the `createSlot` thunk, not a raw `api.createChatSlot()`: the
+      // thunk resolves the user's default memory mode (Incognito/Temporary) like
+      // every other new-chat entry point, and its fulfilled action adds the row
+      // to the slots list. Without that row, ChatPage's mount effect would clear
+      // the selection of a slot it does not know yet (the plain-create slots
+      // broadcast is deferred until after the response) and open another session,
+      // dropping the staged prompt. `activate: false` because sendNav switches.
+      const slot = await dispatch(createSlot({ activate: false })).unwrap()
+      const key = slot?.key
+      if (!key) return
+      if (gen !== handoffGenRef.current) {
+        // The user already left: the session is nobody's hand-off any more.
+        // Awaited like the decline path below, so a failure takes the same catch.
+        await api.deleteChatSlot(key)
+        dispatch(removeSlotOptimistic(key))
+        return
+      }
+      // The composers stay usable during the create round-trip, so a draft may
+      // have been started since a check that found nothing: ask again right
+      // before leaving. (A user who already agreed to discard is not asked twice.)
+      // Declining keeps the user here and removes the session nobody will use.
+      if (first === 'clear' && ((await confirmLeaveDrafts()) === 'stay' || gen !== handoffGenRef.current)) {
+        // Awaited before the row leaves the list, so a failed delete reaches the
+        // catch below and the error notice instead of vanishing.
+        await api.deleteChatSlot(key)
+        dispatch(removeSlotOptimistic(key))
+        return
+      }
+      sendNav({
+        path: '/chat',
+        slotKey: key,
+        prefill: {
+          slotKey: key,
+          prompt: i18nT('pages.artifactDetailPage.start_chat_from_artifact_prompt', {
+            slug: artifact.slug, name: artifact.name,
+          }),
+        },
+      })
+    } catch (err) {
+      // `unwrap()` rejects with a SerializedError (a plain object), not an Error.
+      const message = (err as { message?: unknown } | null)?.message
+      setSaveError(typeof message === 'string' && message ? message : String(err))
+    } finally {
+      sessionOpBusyRef.current = false
+      setStartingChat(false)
+    }
+  }, [artifact, confirmLeaveDrafts, dispatch, sendNav])
+
   // Deleted-artifact handling (consumes the `artifact_update {deleted}` WS event
   // relayed by useWebSocket as a window event): leave the page in the main
   // dashboard; a popout has no router so it surfaces an error instead.
@@ -1987,7 +2081,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   <button
                     type="button"
                     onClick={() => { void guardCommentDraft(startEditing) }}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+                    // Locked while a hand-off is creating its session: the page
+                    // is about to navigate, and an edit begun now would be lost.
+                    disabled={startingChat}
+                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
                     title={i18nT('pages.artifactDetailPage.edit_content')}
                     aria-label={i18nT('pages.artifactDetailPage.edit_content')}
                   >
@@ -2059,15 +2156,35 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 <Upload size={13} /> {i18nT('pages.artifactDetailPage.publish')}
               </Btn>
             )}
-            <Btn
-              type="button"
-              onClick={downloadAsHtml}
-              className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-              title={i18nT('pages.artifactDetailPage.download')}
-              aria-label={i18nT('pages.artifactDetailPage.download')}
-            >
-              <Download size={13} />
-            </Btn>
+            {/* More — the overflow for secondary actions, so the toolbar row does
+                not grow (max-two-buttons-per-row). Holds the hand-off to a fresh,
+                unbound session on the full chat page (#13904; the sparkle above
+                stays the companion chat bound to this artifact) and Download.
+                Labelled, not icon-only, so its contents are discoverable. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Btn
+                  type="button"
+                  title={i18nT('pages.artifactDetailPage.more_actions')}
+                  aria-label={i18nT('pages.artifactDetailPage.more_actions')}
+                >
+                  <MoreHorizontal size={13} /> {i18nT('pages.artifactDetailPage.more')}
+                </Btn>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[220px]">
+                {!editing && (
+                  <DropdownMenuItem
+                    disabled={startingChat}
+                    onSelect={() => { void startChatFromArtifact() }}
+                  >
+                    <MessageSquarePlus size={13} /> {i18nT('pages.artifactDetailPage.start_new_chat_from_this_artifact')}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={downloadAsHtml}>
+                  <Download size={13} /> {i18nT('pages.artifactDetailPage.download')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         </div>
       </div>
@@ -2242,7 +2359,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     render-failure notice) is not part of the artifact. Gated
                     like the native body: a comment is stored against the
                     CURRENT artifact, so a historical snapshot takes none. */}
-                {isCurrent && !editing && <SelectionToolbar key={slug} containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly suspended={narrowPanelOpen} />}
+                {isCurrent && !editing && <SelectionToolbar key={slug} containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly suspended={narrowPanelOpen || startingChat} />}
               </div>
             ) : (
               <div
@@ -2275,7 +2392,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 {/* Keyed per artifact: the route element is reused across a
                     param-only navigation, and a toolbar that survived it would
                     submit the previous artifact's draft through this one's callbacks. */}
-                {commentable && <SelectionToolbar key={slug} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} suspended={narrowPanelOpen} />}
+                {commentable && <SelectionToolbar key={slug} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} suspended={narrowPanelOpen || startingChat} />}
               </div>
             )}
           </div>
@@ -2310,6 +2427,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               onCommentClick={activateFromSidebar}
               onEditComment={editComment}
               activeCommentId={activeCommentId}
+              onDraftChange={onSidebarDraftChange}
+              composersDisabled={startingChat}
             />
           )}
           {panel === 'chat' && (
