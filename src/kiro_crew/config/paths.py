@@ -283,9 +283,122 @@ def _valid_override_home() -> Path | None:
 #: want it on a data drive without relocating the whole data home.
 SCRATCH_ROOT_ENV = "KIROCREW_SCRATCH_ROOT"
 
+#: Process-lifetime pin for the validated, resolved scratch-root override. The override
+#: is validated and ``realpath``-resolved exactly ONCE, on the first ``scratch_root()``
+#: call, and every later allocation, sweep and sandbox-plan reads this pinned value
+#: instead of re-reading the environment or re-resolving the path. That closes a
+#: time-of-check/time-of-use hole: if the override named a writable symlink alias, an
+#: agent could repoint it between calls so allocation and the sandbox mask resolved to
+#: different roots, exposing one session's scratch to another. The pin is keyed on the
+#: raw env string so a legitimately CHANGED variable (a different relocation) is honoured
+#: -- only a repoint of the SAME string's target is frozen out. ``_UNSET`` means "not yet
+#: computed"; ``None`` means "computed, no valid override" (fall back to the default).
+_UNSET: object = object()
+_scratch_root_override_pin: object = _UNSET
+
 
 def valid_scratch_root_override() -> Path | None:
-    """Return the resolved ``KIROCREW_SCRATCH_ROOT`` override iff set AND valid.
+    """The validated, resolved ``KIROCREW_SCRATCH_ROOT`` override, pinned per process.
+
+    Validates and ``realpath``-resolves the override exactly ONCE (via
+    :func:`_validate_scratch_root_override`) and PINS the result for the process
+    lifetime, keyed on the raw env string. Every later ``scratch_root()`` call --
+    allocation, sweep, sandbox plan -- reads the pinned value instead of re-reading the
+    environment or re-resolving the path. That is the time-of-use half of the symlink
+    defence: even if the override named a symlink alias (already refused outright by
+    :func:`_validate_scratch_root_override`), nothing re-resolves it later, so an alias
+    repointed after the first call cannot make allocation and the sandbox mask diverge.
+
+    A legitimately CHANGED variable is still honoured: the pin is keyed on the raw string,
+    so setting ``KIROCREW_SCRATCH_ROOT`` to a different directory recomputes; only a
+    repoint of the SAME string's target is frozen out, which is exactly the attack. Tests
+    reset the pin through the ``config.paths`` cache-reset fixture, like ``_resolved_home``.
+    """
+    resolved, _reason = _resolve_scratch_root_override()
+    return resolved
+
+
+def scratch_root_override_refusal_reason() -> str | None:
+    """Why the ``KIROCREW_SCRATCH_ROOT`` override was refused, or ``None``.
+
+    ``None`` when the override is unset or accepted; otherwise a short, operator-facing
+    phrase naming the refusal cause (``"a link"``, ``"a crew home"``, ``"the workspace"``,
+    ``"a system directory"``, ``"unsupported platform"``, ``"unresolvable"``,
+    ``"not owned by current user"``, ``"owner unreadable"``).
+    Reads the SAME per-process pin as :func:`valid_scratch_root_override`, so it costs no
+    second validation and never diverges from the accept/refuse decision the readers see.
+    The reason is logged once per distinct value when the override pin is computed (in
+    :func:`_resolve_scratch_root_override`), so an operator can tell WHY the override was
+    dropped instead of always seeing "is a system directory".
+    """
+    _resolved, reason = _resolve_scratch_root_override()
+    return reason
+
+
+def _resolve_scratch_root_override() -> tuple[Path | None, str | None]:
+    """Validate the override once and pin ``(path, reason)`` for the process.
+
+    The time-of-use defence (resolve/validate exactly ONCE, then freeze) and its rationale
+    live in :func:`valid_scratch_root_override`'s docstring. The pin now carries the refusal
+    reason alongside the resolved path so :func:`scratch_root_override_refusal_reason` can
+    report it without a second validation.
+    """
+    global _scratch_root_override_pin
+    raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
+    pin = _scratch_root_override_pin
+    if pin is not _UNSET and isinstance(pin, tuple) and pin[0] == raw:
+        return pin[1], pin[2]
+    resolved, reason = _validate_scratch_root_override()
+    _scratch_root_override_pin = (raw, resolved, reason)
+    # Warn exactly once per distinct raw value when a SET override was refused: the pin is
+    # keyed on the raw string and recomputed only when that string changes, so emitting the
+    # warning here -- at compute time -- fires once per offending value even though
+    # ``scratch_root()`` is called on every allocation, sweep and log-cap pass. A repointed
+    # (changed) value recomputes and warns again, which is what an operator fixing it needs.
+    if raw and resolved is None and reason is not None:
+        logger.warning("%s=%s is %s, ignoring", SCRATCH_ROOT_ENV, raw, reason)
+    return resolved, reason
+
+
+def scratch_root_owner_refusal(root: Path) -> str | None:
+    """Return a refusal reason if *root* is not owned by the current user, else ``None``.
+
+    ``None`` means the current user owns *root* (safe to adopt and lock). A non-``None``
+    string is the operator-facing phrase naming why it was refused -- ``"owner unreadable"``
+    when the owner SID cannot be read, ``"not owned by current user"`` when it reads as a
+    different principal.
+
+    Fail-closed by contract: any failure reading the owner (a non-Windows platform, a
+    missing ``windows_acl`` backend, a token-read failure) returns ``"owner unreadable"`` so
+    an owner that cannot be verified is never trusted. This is the SINGLE owner decision
+    shared by two call sites that must not drift: the validator
+    (:func:`_validate_scratch_root_override`), which refuses an EXISTING relocated override
+    the current user does not own, and :func:`agent_scratch.allocate_scratch`, which re-runs
+    it AFTER the ``mkdir`` and BEFORE ``restrict_dir_to_owner`` -- the validator may have
+    accepted a not-yet-created root (its result is cached), so another local user could have
+    created the directory in the window before allocation, and tightening its ACL without
+    re-checking the owner would cement THEIR control. Windows-only in effect; callers guard
+    on ``win32`` (the override itself is refused on every other platform), so a POSIX call
+    simply reads as ``"owner unreadable"`` and is never reached on the real path. A lazy,
+    in-function import keeps this module an import-time leaf (see the module docstring).
+    """
+    from kiro_crew import platform_compat, windows_acl
+
+    try:
+        owner_sid = windows_acl.describe(root).owner_sid
+        current_sid = platform_compat.current_user_sid()
+    except Exception:
+        return "owner unreadable"
+    if not current_sid or owner_sid != current_sid:
+        return "not owned by current user"
+    return None
+
+
+def _validate_scratch_root_override() -> tuple[Path | None, str | None]:
+    """Return ``(resolved override, refusal reason)``: the path iff set AND valid.
+
+    The second element is ``None`` when the override is unset or accepted, else a short
+    operator-facing phrase naming why it was refused (so the caller can log the real cause).
 
     Mirrors :func:`_valid_override_home`: a filesystem/drive root or a known
     system directory is refused via the SAME :func:`_is_unsafe_home` predicate,
@@ -294,6 +407,9 @@ def valid_scratch_root_override() -> Path | None:
     ignores it and falls back to ``config_dir()/scratch`` with a one-line
     warning, exactly as :func:`config_dir` does for an unsafe ``KIROCREW_HOME``.
 
+    Called once per distinct env value through :func:`_resolve_scratch_root_override`,
+    which pins the result; do not call this directly from allocation/sweep/plan.
+
     This is the supported alternative to junctioning the scratch directory onto
     another drive, which the auto-improvement clone-setup refuses for safety.
     The returned path is used AS the managed root (not with a ``scratch``
@@ -301,40 +417,131 @@ def valid_scratch_root_override() -> Path | None:
     refusal on the managed root intact: the override names a real directory,
     not a link planted at the ``scratch`` leaf.
 
-    It also refuses an override that EQUALS or CONTAINS the data home
-    (:func:`config_dir`) or the workspace base: the OS sandbox masks the resolved
-    scratch root as a hidden tree, so an override that is an ancestor of
-    ``config_dir()`` would hide the governance ceiling below it (turning a
-    tightest-wins policy into the permissive default) and hide the operator's own
-    work. A path on a different drive or a sibling of the data home is fine; only
-    an ancestor-or-equal of the protected trees is refused.
+    It refuses a SYMLINKED override (its ``realpath`` differs from its lexical path): a
+    writable alias at the override name could be repointed to another session's root after
+    the first resolve, so only a real directory is accepted. It refuses an override that
+    EQUALS, CONTAINS, or lies INSIDE any crew-home spelling --
+    the active data home (:func:`config_dir`), the default ``~/.kiro/crew``, AND the legacy
+    ``~/.kirocrew`` -- and one that equals or contains the workspace base: the OS sandbox
+    masks the resolved scratch root as a hidden tree under BOTH the default and legacy home
+    spellings regardless of which is active, so an override that is an ancestor of a crew
+    home would hide the governance ceiling below it (turning a tightest-wins policy into the
+    permissive default), and an override INSIDE one would hide whatever governance tree sits
+    there -- e.g. ``<data home>/profiles`` masks the read-only profile seal -- or, inside the
+    legacy home while another is active, produce a redundant nested mask that aborts the
+    launcher. A path on a different drive or a sibling of the data home is fine; only a
+    symlinked override, an ancestor-or-equal of the protected trees, or a path inside any
+    crew home is refused.
     """
     override = os.environ.get(SCRATCH_ROOT_ENV)
     if not override:
-        return None
-    p = Path(override).expanduser().resolve()
+        return None, None
+    # The override applies on Windows only. The relocated scratch root is masked by a
+    # pathname-anchored rule, and the mask protects the tree it is bound over, not a LATER
+    # allocation created after the root's own ancestor is renamed: on a non-Windows platform,
+    # under an operator-writable parent, an agent that renames an ancestor of the relocated
+    # root and recreates it makes ``allocate_scratch`` build subsequent sessions' scratch at
+    # the original pathname while the existing mask stays beneath the renamed-aside tree, so
+    # those later trees are reachable from another session. The ancestor-rename guards that
+    # close this cover only the default home, so the override is honoured only on Windows,
+    # whose scratch is a per-session private window the launcher opens directly rather than a
+    # pathname mask over an operator-writable tree. On every other platform the override is
+    # refused and ``scratch_root()`` falls back to the guarded default (``config_dir()/scratch``),
+    # which carries those guards.
+    if sys.platform != "win32":
+        return None, "unsupported platform"
+    # Resolve the override, refusing fail-safe on any resolution failure. ``Path.resolve()``
+    # raises ``RuntimeError`` on a self-referential symlink loop (CPython 3.12), and
+    # ``allocate_scratch``'s fallback catches only ``OSError``/``ScratchBoundaryError``, so an
+    # uncaught resolution error here would propagate out of ``scratch_root()`` and abort agent
+    # startup. Refusing instead (fall back to the guarded default root) keeps a misconfigured
+    # override a loud log line rather than a crash.
+    try:
+        p = Path(override).expanduser().resolve()
+    except Exception:
+        return None, "unresolvable"
     if _is_unsafe_home(p):
-        return None
-    # Refuse a root that equals or contains a protected tree. Masking an ancestor of
-    # the data home hides the policy ceiling and the operator's files below it; the
-    # override is meant to RELOCATE scratch, never to shadow the home or workspace.
-    protected: list[Path] = []
-    try:
-        protected.append(config_dir())
-    except Exception:  # pragma: no cover - defensive; never block resolution on this
-        pass
-    try:
-        protected.append(_default_workspace_base())
-    except Exception:  # pragma: no cover - defensive
-        pass
-    for guarded in protected:
+        return None, "a system directory"
+    # Refuse a SYMLINKED or JUNCTIONED override NAME. The override is used AS the managed
+    # root and is masked by the sandbox as a hidden tree; a writable link AT the override
+    # name could be repointed to another session's root between the resolve here and a
+    # later allocation/sweep/plan, so allocation and the mask would diverge and one
+    # session's scratch would be exposed to another. A real directory cannot be repointed
+    # that way, so refusing a linked override (fall back to the default) closes the alias
+    # entirely. The resolve-ONCE pin in :func:`valid_scratch_root_override` is the second
+    # half of the same defence.
+    #
+    # Detect the link with ``platform_compat.is_link_or_junction`` on the override name,
+    # NOT a ``realpath`` vs ``abspath`` compare: on Windows ``ntpath.realpath`` normalises
+    # the on-disk casing, upper-cases the drive letter and expands short 8.3 names, so a
+    # plain REAL directory typed as ``d:\scratch`` resolves to ``D:\scratch`` and the
+    # lexical compare refused it -- silently keeping scratch on the system drive, on the
+    # one platform this override exists for. It also treated an ordinary SYSTEM symlink in
+    # an ancestor (e.g. ``/home`` -> ``/local/home``, macOS ``/tmp`` -> ``/private/tmp``)
+    # as grounds to refuse a perfectly real relocation. ``os.path.islink`` alone reports
+    # False for a Windows junction, so pairing it with the junction check keeps symlink AND
+    # junction refusal fail-safe on every OS while a real directory -- whatever its casing,
+    # and wherever ordinary system links sit above it -- is accepted. The repoint attack is
+    # a link AT the name the operator controls, which is exactly what this tests. A lazy,
+    # in-function import keeps this module an import-time leaf (see the module docstring).
+    from kiro_crew import platform_compat
+
+    if platform_compat.is_link_or_junction(os.path.abspath(os.path.expanduser(override))):
+        return None, "a link"
+    # Refuse a root that equals, CONTAINS, or lies INSIDE a protected tree. Masking an
+    # ancestor of the data home hides the policy ceiling and the operator's files below
+    # it; masking a path INSIDE the data home hides whatever governance tree sits there --
+    # the sandbox exposes ``profiles``, ``security_policy.json`` and the rest of the
+    # read-only governance leaves under ``config_dir()``, and a scratch override pointing
+    # at e.g. ``<data home>/profiles`` would mask that leaf as a HIDDEN tree, dropping its
+    # read-only seal so the policy silently resolves to the permissive default. The
+    # workspace base is refused equal-or-above only: it holds the operator's own work, not
+    # policy, so a path merely under it is their choice. The override is meant to RELOCATE
+    # scratch to a different drive or a sibling of the data home, never to shadow or
+    # tunnel into the home, the governance ceiling, or the workspace.
+    #
+    # The refusal covers EVERY crew-home spelling, not only the active one: the active data
+    # home (``config_dir()``, which may be a custom ``KIROCREW_HOME``), the default
+    # ``~/.kiro/crew``, AND the pre-move legacy ``~/.kirocrew``. The sandbox masks the crew
+    # hidden leaves under both the default and legacy home spellings regardless of which one
+    # is active, so an override inside the OLD ``~/.kirocrew`` home (while a different
+    # ``KIROCREW_HOME`` is active) would still be masked twice -- the legacy-home mask and
+    # the override's own -- and the redundant nested mask aborts the launcher's mount pin.
+    # Refusing an override at, under, or above any of these homes closes that at the source
+    # (the module that owns the override) and falls back to the safe default.
+    crew_homes: list[Path] = []
+    for home_fn in (config_dir, _default_home, _legacy_home):
         try:
-            guarded_resolved = guarded.resolve()
-        except Exception:  # pragma: no cover - defensive
+            crew_homes.append(home_fn().resolve())
+        except Exception:  # pragma: no cover - defensive; never block resolution on this
             continue
-        if p == guarded_resolved or p in guarded_resolved.parents:
-            return None
-    return p
+    for home_resolved in crew_homes:
+        if p == home_resolved or p in home_resolved.parents or home_resolved in p.parents:
+            return None, "a crew home"
+    try:
+        workspace_resolved = _default_workspace_base().resolve()
+    except Exception:  # pragma: no cover - defensive
+        workspace_resolved = None
+    if workspace_resolved is not None and (
+        p == workspace_resolved or p in workspace_resolved.parents
+    ):
+        return None, "the workspace"
+    # Refuse an EXISTING override root the current user does not own. The relocated root is
+    # locked to its owner at allocation (``restrict_dir_to_owner``), but that pins whatever
+    # principal already owns it. On Windows a second local user can create the override path
+    # first (the documented ``D:\\kirocrew-scratch`` example) and own it, so adopting it
+    # would cement THEIR control over every session's scratch. Deciding this HERE -- in the
+    # validator -- makes ``scratch_root()`` the single place that resolves the override, so a
+    # refusal falls back to the guarded default consistently for allocation, the sweep, the
+    # log cap and the shared-window join alike. A not-yet-created root has no foreign owner
+    # to inherit (allocation creates it owner-only), so only an existing one is checked.
+    # Fail-closed: an owner that cannot be read is an owner that cannot be trusted. A lazy,
+    # in-function import keeps this module an import-time leaf (see the module docstring).
+    if p.exists():
+        reason = scratch_root_owner_refusal(p)
+        if reason is not None:
+            return None, reason
+    return p, None
 
 
 def shared_kiro_settings_writable() -> bool:

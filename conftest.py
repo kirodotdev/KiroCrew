@@ -4085,6 +4085,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
         monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET, raising=False)
         monkeypatch.setattr(
             paths,
             "_write_recovery_breadcrumb",

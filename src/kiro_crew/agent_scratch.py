@@ -91,19 +91,14 @@ from typing import Literal
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
-    SCRATCH_ROOT_ENV,
     config_dir,
+    scratch_root_owner_refusal,
     valid_scratch_root_override,
 )
 
 logger = logging.getLogger(__name__)
 
 _SUBDIR = "scratch"
-
-#: Distinct unsafe ``KIROCREW_SCRATCH_ROOT`` values already warned about, so the
-#: ignore-and-fall-back warning in :func:`scratch_root` fires once per value rather than
-#: on every allocation/sweep/log-cap call. Process-lifetime; a repointed value warns anew.
-_WARNED_UNSAFE_SCRATCH_ROOTS: set[str] = set()
 
 #: Owner-pid marker written by the spawner right after the child starts.
 OWNER_FILENAME = ".owner"
@@ -202,26 +197,20 @@ def scratch_root() -> Path:
 
     The override is used AS the managed root, so the subdirectory the sweep and
     allocator operate on is the overridden path itself. :func:`valid_scratch_root_override`
-    resolves the override to a real path (as ``KIROCREW_HOME`` does), so a symlink or
-    junction AT the override name is followed to its target like any operator-chosen
-    directory; the link/junction refusal in :func:`allocate_scratch` still fires on a link
-    planted at an allocation BELOW that resolved root, exactly as it does under the default
-    location. The sandbox masks the resolved root as a hidden tree
-    (``sandbox._relocated_scratch_root_target``), so relocating scratch does not weaken the
-    per-session isolation the default location has.
+    resolves and validates the override ONCE and pins it for the process lifetime, and it
+    is honoured on Windows ONLY (refused with a logged reason on every other platform,
+    falling back to ``config_dir()/scratch``). It also REJECTS a symlinked or junctioned
+    override name, a crew home, the workspace, a system directory, and an unresolvable path,
+    falling back the same way. The link/junction refusal in :func:`allocate_scratch` still
+    fires on a link planted at an allocation BELOW that resolved root, exactly as it does
+    under the default location.
     """
     override = valid_scratch_root_override()
     if override is not None:
         return override
-    raw = os.environ.get(SCRATCH_ROOT_ENV)
-    if raw and raw not in _WARNED_UNSAFE_SCRATCH_ROOTS:
-        # scratch_root() is called on every allocation, sweep and log-cap pass (every
-        # ~300s), so an unconditional warn would repeat the same line forever for a
-        # steadily-misconfigured value. Warn once per distinct offending value — a
-        # repointed-and-still-unsafe value warns again, which is what an operator
-        # fixing it needs to see.
-        _WARNED_UNSAFE_SCRATCH_ROOTS.add(raw)
-        logger.warning("%s=%s is a system directory, ignoring", SCRATCH_ROOT_ENV, raw)
+    # A set-but-refused override logs its reason once per distinct value when the override
+    # pin is computed (see ``config.paths._resolve_scratch_root_override``); here we only
+    # fall back to the guarded default root.
     return config_dir() / _SUBDIR
 
 
@@ -433,6 +422,37 @@ def allocate_scratch(label: str) -> Path:
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
+    # When the root is a relocated override (``KIROCREW_SCRATCH_ROOT``), lock it to the
+    # owner. The default root inherits the owner-only ACL ``ensure_data_home`` sets on the
+    # data home, but an override points at an arbitrary directory whose ACL is whatever its
+    # parent gives it -- and the ``mode=0o700`` above is ignored on Windows, so without this
+    # a relocated root on e.g. ``D:\`` keeps the drive's default ACL (Authenticated Users
+    # Modify) and another local user could read or replace this session's scratch.
+    #
+    # The validator refuses a relocated root the current user does not own, but it does so
+    # on the resolved value and CACHES the result (keyed on the raw env string). When the
+    # root does not exist yet at validation time -- the boot sweep calls ``scratch_root()``
+    # before any ``mkdir`` -- the validator has nothing to check and the cached accept pins.
+    # In the window before this allocation, another local user on a shared drive can create
+    # the override path and own it; the ``mkdir(exist_ok=True)`` above then adopts THEIR
+    # directory, and ``restrict_dir_to_owner`` only rewrites the access list -- it never
+    # changes the owner -- so tightening it would cement the foreign owner's control over
+    # every session's scratch. So re-run the owner decision HERE, on the created directory,
+    # before tightening: :func:`config.paths.scratch_root_owner_refusal` is the SAME helper
+    # the validator uses, so the two cannot drift. On refusal (foreign, or an owner that
+    # cannot be read) fall back fail-closed to the guarded default root
+    # (``config_dir()/scratch``), which carries the data home's owner-only ACL -- the same
+    # outcome the validator produces for an EXISTING foreign root.
+    if valid_scratch_root_override() is not None:
+        if scratch_root_owner_refusal(root) is not None:
+            root = config_dir() / _SUBDIR
+            _refuse_linked(root, f"managed root {_SUBDIR!r}")
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _refuse_linked(root, f"managed root {_SUBDIR!r}")
+        else:
+            # ``restrict_dir_to_owner`` is the same helper the data home uses; a
+            # no-op-shaped owner-only tighten on POSIX, an owner-only ACL on Windows.
+            platform_compat.restrict_dir_to_owner(root)
     safe = _LABEL_SAFE.sub("-", label)[:40].strip("-") or "agent"
     path = root / f"{safe}-{secrets.token_hex(4)}"
     # No ``exist_ok``: ``mkdir`` never follows the final component, so this

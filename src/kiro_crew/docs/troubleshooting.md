@@ -424,7 +424,9 @@ root or a known system directory is refused and logged
 (`KIROCREW_SCRATCH_ROOT=… is a system directory, ignoring`), falling back to the
 default `~/.kiro/crew/scratch`. Redirecting the directory with an NTFS junction
 or symlink is refused for safety, so this env var is the supported way to move
-it. Note `KIROCREW_SCRATCH` (no `_ROOT`) is unrelated — it is an output written
+it. `KIROCREW_SCRATCH_ROOT` is honoured on Windows only; it is ignored on Linux
+and macOS, where scratch stays at the default `~/.kiro/crew/scratch`. Note
+`KIROCREW_SCRATCH` (no `_ROOT`) is unrelated — it is an output written
 for child processes, and setting it yourself does nothing.
 
 Setting `KIROCREW_HOME` to a data drive relocates the whole data home,
