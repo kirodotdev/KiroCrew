@@ -5044,7 +5044,7 @@ class GatewayOrchestrator:
                     cron_agent or None, template_namespace=_default_substituted
                 )
                 _dispatch_agent = _single_kagent or cron_agent or None
-                # ── Retained-session agent guard (substituted default only) ──
+                # ── Retained-session agent guard (every single-agent job) ──
                 # The cron key is the stable f"cron:{job.id}", and the run's
                 # `finally` DEFERS the reset while sub-agents are pending or an
                 # injection is in flight, so a session can outlive its fire. The
@@ -5055,21 +5055,23 @@ class GatewayOrchestrator:
                 # run it on the OLD agent's process -- keeping MCP servers, a
                 # workspace and a pinned model the operator has just taken away.
                 #
-                # This window is opened by THIS change and by nothing else:
-                # before it an agent-less cron dispatched the constant
-                # "kirocrew" floor on every fire, so no two fires could differ.
-                # Hence the gate on `_agentless_job` -- the predicate that
-                # defines the window -- and NOT on `_default_substituted`, which
-                # failed open in exactly the case this guard exists for: fire N
+                # Two things let consecutive fires of one job dispatch different
+                # names. An agent-less job re-reads `agent.default_agent` on
+                # every fire, and the guard is NOT keyed on
+                # `_default_substituted`, which fails open in exactly the case
+                # this guard exists for: fire N
                 # substitutes and defers its reset, the operator then CLEARS
                 # `agent.default_agent`, and fire N+1 resolves an empty default,
                 # so that flag is False, the guard is skipped, and the fire runs
                 # the FLOOR's context on the process still holding the previous
                 # default's runtime. Every other reason for declining the
-                # substitution below reaches the same hole. Keying on the
-                # mismatch itself costs nothing elsewhere: a job pinning its own
-                # agent_id dispatches one name forever and is excluded by this
-                # predicate. A dispatching sequence is handled separately by the
+                # substitution below reaches the same hole. A job pinning its
+                # own agent_id reaches it too: `cron update` re-points the
+                # captured template (`recapture_cron_template`), so two fires of
+                # one pinned job can dispatch different names. The guard
+                # therefore runs for every single-agent dispatch; a job whose
+                # agent did not change compares equal and fires as before. A
+                # dispatching sequence is handled separately by the
                 # pre-loop sweep above, because each stable per-agent key must be
                 # compared with that step's freshly resolved dispatch agent.
                 #
@@ -5101,23 +5103,37 @@ class GatewayOrchestrator:
                 # the widening being closed. `session.agent` is stored as the
                 # `agent` kwarg verbatim (`agent=agent or ""`), so the two sides
                 # of this comparison are the same spelling by construction.
-                if _agentless_job:
-                    _live_agent = _retained_session_agent_mismatch(session_key, _dispatch_agent)
-                    if _live_agent is not None:
-                        logger.info(
-                            "Cron '%s': session retained under agent %r but this fire "
-                            "dispatches %r; deferring rather than reusing its runtime",
-                            job.name,
-                            _live_agent,
-                            _dispatch_agent or "",
-                        )
-                        _defer_cron_before_dispatch(
-                            job,
-                            f"session retained under agent {_live_agent!r} with work "
-                            f"pending; this fire dispatches "
-                            f"{_dispatch_agent or ''!r} and will not reuse it",
-                        )
-                        return None
+                _live_agent = _retained_session_agent_mismatch(session_key, _dispatch_agent)
+                if _live_agent is not None:
+                    logger.info(
+                        "Cron '%s': session retained under agent %r but this fire "
+                        "dispatches %r; deferring rather than reusing its runtime",
+                        job.name,
+                        _live_agent,
+                        _dispatch_agent or "",
+                    )
+                    _defer_cron_before_dispatch(
+                        job,
+                        f"session retained under agent {_live_agent!r} with work "
+                        f"pending; this fire dispatches "
+                        f"{_dispatch_agent or ''!r} and will not reuse it",
+                    )
+                    return None
+                # After an agent change the session record a previous run left
+                # under the stable key still names the template captured before,
+                # and the plain bind in `_acquire_with_model_fallback` refuses
+                # it. Bring the job's own record to the current capture first,
+                # template only; any other difference is left for that bind to
+                # refuse. Done here, at the fire, so a record published late (a
+                # run still in flight during the update) or one written while the
+                # job was stateless is caught on the next fire, and a failed
+                # write is retried by it.
+                if job.execution_context is not None:
+                    from kiro_crew.cron_service.identity import rebind_cron_session_template
+
+                    await asyncio.to_thread(
+                        rebind_cron_session_template, session_key, cron_execution, job.name
+                    )
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
                     session_key, _dispatch_agent, _single_cwd, _single_crew
                 )

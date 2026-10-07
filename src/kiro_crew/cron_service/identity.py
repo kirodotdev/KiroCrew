@@ -378,15 +378,8 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
     Only the stable single-agent key is reconciled. A per-run key is fresh on
     every fire, and the sequential path reads the record and replaces it itself.
     """
-    from dataclasses import replace
-
-    from kiro_crew.execution_context import (
-        EXECUTION_CONTEXT_KEY,
-        bind_session_execution,
-        read_session_execution,
-    )
+    from kiro_crew.execution_context import EXECUTION_CONTEXT_KEY
     from kiro_crew.history import ConversationLog
-    from kiro_crew.memory_stores import MissingExecutionIdentity
 
     if agent_sequence_dispatches(job.agent_sequence) or not job.persistent_session:
         return
@@ -416,13 +409,36 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
     ):
         logger.info("Cron '%s': its pre-identity session record now carries its capture", job.name)
         return
+    rebind_cron_session_template(session_key, execution, job.name)
+
+
+def rebind_cron_session_template(
+    session_key: str, execution: ExecutionContext, job_name: str
+) -> None:
+    """Make the schedule's own session record name the template it now captures.
+
+    Dispatch publishes the capture under the job's stable key with a plain
+    ``bind_session_execution``, which refuses a record that differs. A record
+    that differs from the capture in its template alone -- same member, store,
+    mode, app and selection -- is this schedule's own, left by a run under the
+    template the capture named before (a startup upgrade, or an agent change
+    through ``cron update``). It is rewritten under a compare-and-set against
+    the value just read. Any other record is left as it is and logged, and
+    dispatch refuses it with its own reason. Not vouched: a cron key is never
+    the caller slot of an own-store admission.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+    from kiro_crew.memory_stores import MissingExecutionIdentity
+
     try:
         current = read_session_execution(session_key)
     except MissingExecutionIdentity:
         logger.warning(
             "Cron '%s': its session record cannot be attributed to the schedule and was "
             "left as it is; archive that session or recreate the schedule",
-            job.name,
+            job_name,
         )
         return
     if current is None or current == execution:
@@ -431,13 +447,49 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
         logger.warning(
             "Cron '%s': its session record belongs to another execution and was left as it "
             "is; archive that session or recreate the schedule",
-            job.name,
+            job_name,
         )
         return
     bind_session_execution(
         session_key, execution, replace_existing=True, expected=current, vouch=False
     )
-    logger.info("Cron '%s': its session record now carries the agent it names", job.name)
+    logger.info("Cron '%s': its session record now carries the agent it names", job_name)
+
+
+def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | None:
+    """*job*'s captured execution re-pointed at a newly chosen *agent_id*.
+
+    Dispatch runs the captured ``execution_context.template_id``
+    (:func:`resolve_cron_memory`), not ``agent_id``, so an update that changes
+    the agent must move the capture with it or the job keeps running the agent
+    it was created with. The template is chosen as :func:`bind_cron_memory`
+    chooses it at creation: the named agent, else the member's own template for
+    a member schedule, else the ``kirocrew`` floor that dispatch maps to the
+    configured default. Store, member, mode and app are left as captured.
+
+    Returns ``None`` when nothing moves: no capture yet (an uncaptured record
+    dispatches from ``agent_id`` already), an ``agent_id`` equal to the stored
+    one (the job form resubmits the field on every edit, and a schedule made
+    from a template chat names its template only in the capture), or a template
+    the capture already names.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import derive_execution, execution_from_record
+
+    if job.execution_context is None or agent_id == job.agent_id:
+        return None
+    execution = execution_from_record({"execution_context": job.execution_context})
+    if agent_id:
+        template_id = agent_id
+    elif execution.member_id is not None or execution.selection_kind == "member":
+        member = job.member_id or execution.member_id or execution.selection_name
+        template_id = derive_execution(execution, target_member=member).template_id
+    else:
+        template_id = "kirocrew"
+    if template_id == execution.template_id:
+        return None
+    return replace(execution, template_id=template_id).to_record()
 
 
 def bind_cron_memory(job: CronJob) -> None:

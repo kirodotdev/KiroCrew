@@ -425,12 +425,22 @@ def apply_job_update(
                 f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
                 f"got {_eff_secs}"
             )
+    # Resolved here, before the first assignment, because a member schedule
+    # re-resolves its member's template and that can refuse: the job must be
+    # left untouched when it does.
+    recaptured = None
+    if "agent_id" in kwargs:
+        from kiro_crew.cron_service.identity import recapture_cron_template
+
+        recaptured = recapture_cron_template(job, kwargs["agent_id"] or "")
     if "name" in kwargs and kwargs["name"]:
         job.name = kwargs["name"]
     if "message" in kwargs and kwargs["message"]:
         job.message = kwargs["message"]
     if "agent_id" in kwargs:
         job.agent_id = kwargs["agent_id"] or ""
+        if recaptured is not None:
+            job.execution_context = recaptured
     if "channel" in kwargs:
         job.channel = kwargs["channel"] or None
     if "thread_ts" in kwargs:

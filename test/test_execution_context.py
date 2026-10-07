@@ -436,10 +436,10 @@ def test_every_binder_declares_whether_it_vouches():
     # session can write. `record_agent_selection` threads the decision because it
     # serves both shapes.
     #
-    # `_reconcile_legacy_cron_session` rebinds a `cron:` key, which is never the
+    # `rebind_cron_session_template` rebinds a `cron:` key, which is never the
     # caller slot of an own-store admission, so it publishes with `vouch=False`.
     expected = {
-        ("cron_service/identity.py", "_reconcile_legacy_cron_session"): "False",
+        ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
         ("dashboard/chat_persistence.py", "_pin_private_agent_assignment"): "ABSENT",
         ("dashboard/handlers/hooks.py", "bind_captured"): "False",

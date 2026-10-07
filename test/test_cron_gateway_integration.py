@@ -3131,18 +3131,31 @@ class TestCronDefaultAgent:
         assert result == "Agent response here"
 
     @pytest.mark.asyncio
-    async def test_an_explicit_agent_is_dispatched_even_past_a_stale_session(self):
-        """The guard is scoped to the substituted default, and only to it.
+    async def test_a_pinned_agent_defers_past_a_session_retained_under_another(self):
+        """A job pinning its own agent can change it through ``cron update``.
 
-        A job pinning its own ``agent_id`` dispatches the same name on every
-        fire, so a live session under a different one predates this change and
-        is not the window it opened. Widening the guard there would newly defer
-        fires for jobs this change does not touch -- a behaviour change owed its
-        own review, not one to smuggle in here.
+        The update re-points the captured template, so the next fire may
+        dispatch a different name while the previous fire's session is still
+        retained for pending sub-agents. That fire is deferred, exactly as for a
+        changed default, rather than run on the previous agent's process.
         """
         gw = _make_gw_for_llm()
         gw._cfg.agent.default_agent = "configured-default"
-        gw.sessions._get_session_agent = MagicMock(return_value="something-else")
+        gw.sessions._get_session_agent = MagicMock(return_value="previous-agent")
+        job = _make_llm_job(agent_id="pinned-agent")
+
+        result, stream = await _run_llm_callback(gw, job)
+
+        assert gw.sessions.get_or_create.call_args_list == []
+        stream.assert_not_awaited()
+        assert result is None
+        assert job.run_never_started is True
+        assert "previous-agent" in (job.last_error or "")
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_agent_fires_past_a_session_retained_under_the_same(self):
+        gw = _make_gw_for_llm()
+        gw.sessions._get_session_agent = MagicMock(return_value="pinned-agent")
         job = _make_llm_job(agent_id="pinned-agent")
 
         result, _ = await _run_llm_callback(gw, job)
@@ -3482,25 +3495,6 @@ class TestCronDefaultAgent:
         assert result is None
         assert job.run_never_started is True
         assert "researcher" in (job.last_error or "")
-
-    @pytest.mark.asyncio
-    async def test_a_pinned_agent_job_is_not_deferred_by_a_stale_session(self):
-        """Widening to the agent-less predicate must not reach a pinned job.
-
-        A job carrying its own ``agent_id`` dispatches one name on every fire, so
-        its stale-session case predates this change and deferring it here would be
-        a new refusal for a job this change does not touch.
-        """
-        gw = _make_gw_for_llm()
-        gw._cfg.agent.default_agent = "configured-default"
-        gw.sessions._get_session_agent = MagicMock(return_value="someone-else")
-        job = _make_llm_job(agent_id="pinned-agent")
-
-        result, _ = await _run_llm_callback(gw, job)
-
-        assert self._dispatched_agent(gw) == "pinned-agent"
-        assert result == "Agent response here"
-        assert job.run_never_started is False
 
     @pytest.mark.asyncio
     async def test_the_live_config_default_outranks_the_boot_snapshot(self, monkeypatch):
