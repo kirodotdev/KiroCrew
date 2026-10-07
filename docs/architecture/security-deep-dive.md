@@ -715,3 +715,31 @@ install-layout decision, and any such gate must default **off** — the
 `KIROCREW_PROVIDER_BIN_STRICT` precedent
 (`github_runner.py:validate_provider_executable`) records that requiring a
 root-owned copy made every stock package-manager install fail.
+
+**Cross-origin subresource DNS rebinding in the Design Critique capture browser
+is bounded, not fully closed (design track:
+[#17748](https://github.com/kirodotdev/KiroCrew/issues/17748)).** The URL-render
+capture path launches headless Chromium against untrusted external pages and
+defends SSRF / DNS rebinding with two shipped layers: the backend vets the typed
+base host and launches with a `--host-resolver-rules=MAP <host> <vetted-ip>` pin
+(`capture-site.mjs`, from `_resolve_vetted` in the backend), and
+`installSsrfGuard` (`ssrf-guard.mjs`) re-resolves every request host and aborts
+internal / private / loopback / CGNAT / metadata addresses. These close the base
+host and all same-host subresources. The residual is a **cross-origin
+subresource** loaded from a host other than the pinned base: the guard resolves
+the host as public and hands the request on with `route.continue()`, after which
+Chromium performs its own resolution to connect. `route.continue()` in
+`playwright-core` exposes no option that pins the connection to the IP the guard
+validated, so a name that answers public then private across those two
+resolutions is the window. It cannot be closed at the route layer without
+aborting **all** cross-origin subresources, which would drop legitimate CDN
+fonts and images from the rendered screenshot. **Status: ACCEPTED, bounded.**
+Reaching it requires an attacker to control both a critiqued page and a rebinding
+DNS name; the base-host and same-host vectors are already closed. The complete
+fix is below-the-browser egress filtering independent of Chromium's resolver — a
+network namespace or host firewall allowlist (the same mechanism named under *No
+network egress control by default*, above, scoped to the capture browser), or a
+userland forward proxy that validates the socket after connect. Choosing the
+mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
+privilege model, and fail-open vs fail-closed when the layer is unavailable), so
+it is tracked as a design item on #17748 rather than shipped here.
