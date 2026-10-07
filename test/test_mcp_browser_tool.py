@@ -148,6 +148,79 @@ def test_navigate_classifier_rejects_alternate_ip_encodings() -> None:
     assert mod._navigate_target_is_public("http://2130706433/") is False  # 127.0.0.1
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://%31%32%37.0.0.1:8080/",  # 127.0.0.1
+        "http://%31%36%39.254.169.254/",  # IMDS
+        "http://loc%61lhost/",
+        "http://%4C%4F%43%41%4C%48%4F%53%54/",  # LOCALHOST
+        "http://foo.loc%61lhost/",
+        "http://loc%61lhost%2e/",  # trailing dot
+        "http://127.0.0.1%2e/",  # trailing dot
+        "http://0x7f%30%30%30001/",  # hex 127.0.0.1
+        "http://%32130706433/",  # decimal 127.0.0.1
+        "http://%31%32%37.1/",  # short 127.1
+        "http://%2531%32%37.0.0.1/",  # double-encoded: a '%' survives one decode
+        "http://%ff127.0.0.1/",  # not UTF-8
+        "http://%e2%91%a027.0.0.1/",  # circled digit one
+        "http://%ef%bc%91%ef%bc%92%ef%bc%97.0.0.1/",  # fullwidth digits
+        "http://127%e3%80%820%e3%80%820%e3%80%821/",  # ideographic full stop
+        "http://127.0.0.1%40example.com/",  # '@' after decode
+        "http://169.254.169.254%2f.example.com/",  # '/' after decode
+        "http://127.0.0.1%3a80/",  # ':' after decode
+        "http://a@loc%61lhost/",  # userinfo
+    ],
+)
+def test_navigate_classifier_rejects_percent_encoded_hosts(url: str) -> None:
+    # urlsplit leaves the host percent-encoded; the browser decodes it.
+    assert mod._navigate_target_is_public(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://１２７.０.０.１/",  # fullwidth digits
+        "http://ｌｏｃａｌｈｏｓｔ/",  # fullwidth letters
+        "http://①27.0.0.1/",  # circled digit one
+        "http://ⓛocalhost/",  # circled letter
+        "http://127。0。0。1/",  # ideographic full stop
+    ],
+)
+def test_navigate_classifier_rejects_raw_non_ascii_private_hosts(url: str) -> None:
+    assert mod._navigate_target_is_public(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example%2ecom/",
+        "https://ex%41mple.com/",
+        "https://example.com/path?q=%2F",
+        "https://xn--bcher-kva.example/",
+        "http://[2606:4700::1111%25eth0]/",
+    ],
+)
+def test_navigate_classifier_keeps_percent_encoded_public_hosts(url: str) -> None:
+    assert mod._navigate_target_is_public(url) is True
+
+
+def test_navigate_percent_encoded_loopback_is_refused_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
+
+    def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
+        raise AssertionError("must not POST a percent-encoded loopback target")
+
+    monkeypatch.setattr(mod, "_post_command", _must_not_post)
+
+    out = mod.browser(
+        "browser", {"op": "navigate", "args": {"url": "http://%31%32%37.0.0.1:8080/"}}
+    )
+    assert out.startswith("Error: the browser tool only opens public http(s) URLs")
+
+
 def test_governance_deny_refuses_without_fallback_or_posting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

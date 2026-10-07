@@ -115,7 +115,8 @@ auto-approval. The last two choices are ordinary audited trust decisions and
 remain subject to the deny and governance gates. The native `browser` tool has a
 separate bounded surface: governance is checked before dispatch, and `navigate`
 auto-drives only public HTTP(S) targets. Literal loopback, private, link-local,
-reserved, alternate-encoded IP, non-ASCII host, parser-differential, and non-HTTP
+reserved, alternate- or percent-encoded IP or host name, non-ASCII host,
+parser-differential, and non-HTTP
 forms are refused and directed to the approval-gated CLI path; DNS names are not
 resolved, so public-name-to-private-address rebinding remains an accepted
 residual.
