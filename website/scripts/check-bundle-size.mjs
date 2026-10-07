@@ -238,10 +238,21 @@ export const CHUNK_BUDGETS = {
   // unmangled property names, part of the always-loaded chat-route shell, not a
   // lazy-loadable surface); its pre-merge note above measured 2,027,630 B, ~14 KB
   // below what the chunk actually built to after merge, so the 1990 KB ceiling was
-  // set from a stale-low pre-merge build and never had headroom. Back to the ~5%
-  // convention over the true merged measurement (2,041,857 B * 1.05 = 2,143,950 B),
-  // so ordinary first-party growth does not re-trip this on the next PR.
-  App: 2094 * KB, // measured 2,041,857 B on main @ 2d4278a18 with route-only pages lazy (~5% headroom)
+  // set from a stale-low pre-merge build and never had headroom.
+  //
+  // The folder default-agent picker adds 2,847 B of first-party code on top of
+  // that baseline: the folder settings modal's agent select with its four scope
+  // states, plus the roster client's project-scoped query. That cost is measured
+  // the same way -- reverting only this branch's `website/src` files and
+  // rebuilding moves the chunk by exactly that much -- and neither part is
+  // lazy-loadable: the modal opens from the sidebar shell this chunk already
+  // holds, and the roster client is app-core.
+  //
+  // The ceiling covers BOTH and is measured on the MERGED tree, never taken from
+  // either side: each side's figure counts only its own addition, so the larger of
+  // the two is still short of what the two together build. Back to the ~5%
+  // convention over that merged measurement.
+  App: 2097 * KB, // measured 2,044,704 B on the merged tree with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

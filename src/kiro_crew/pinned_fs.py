@@ -547,6 +547,74 @@ def open_fenced_for_read(
     return fd
 
 
+def open_fenced_for_read_at(
+    directory_fd: int,
+    name: str,
+    *,
+    fence: Callable[[str], bool],
+    refusal: type[Exception] = OSError,
+) -> int:
+    """Open one leaf under *directory_fd* without resolving the directory's name.
+
+    A caller that has enumerated a validated directory must parse a selected
+    entry through that same descriptor. Rebuilding ``directory / name`` and
+    delegating to :func:`open_fenced_for_read` would let a directory replacement
+    redirect the parse after enumeration. This helper accepts only a leaf name,
+    opens it relative to the held descriptor, and validates the opened inode
+    with the same regular-file, single-link, and fence checks as the by-name
+    reader. The fence runs for every descriptor-relative read: the caller has no
+    path-resolution result whose policy verdict can be reused.
+
+    The swap resistance comes from opening relative to the HELD descriptor, not
+    from refusing a link at the leaf, and the safety comes from fencing the
+    OPENED inode. Refusing a linked leaf outright would subtract safety rather
+    than add it: a refusal is folded to "not a readable spec" by the caller, so
+    the spec's declared name never reaches the set that fork-shadow governance
+    gates on, and a symlinked spec — an ordinary shape wherever the agents
+    directory is a dotfiles checkout — would silently escape that governance
+    while still being on disk. The link is therefore followed and the inode it
+    lands on is fenced, so a link aimed at a sensitive target is refused on the
+    target's own identity.
+
+    This primitive requires POSIX ``dir_fd`` support. Callers that cannot hold
+    a directory descriptor retain their explicitly chosen by-name fallback.
+    The caller owns the returned descriptor.
+    """
+    if (
+        not name
+        or name in {".", ".."}
+        or os.path.isabs(name)
+        or os.path.basename(name) != name
+        or (os.path.altsep is not None and os.path.altsep in name)
+    ):
+        raise refusal(f"refusing to read a non-leaf name: {name!r}")
+    if os.open not in os.supports_dir_fd:
+        raise refusal("descriptor-relative file reads are unsupported on this platform")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise refusal(f"refusing to read through a link cycle: {name}") from exc
+        raise
+
+    try:
+        opened = os.fstat(fd)
+        if not _stat.S_ISREG(opened.st_mode):
+            raise refusal(f"refusing to read a non-regular file: {name}")
+        if opened.st_nlink != 1:
+            raise refusal(f"refusing to read a hardlinked file: {name}")
+        fd_real = fd_real_path(fd)
+        if fd_real is None:
+            raise refusal(f"refusing to read an unverifiable file: {name}")
+        if fence(fd_real):
+            raise refusal(f"refusing to read sensitive path: {fd_real}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def is_reparse_point(path: str | Path) -> bool:
     """True for a symlink or a Windows junction.
 

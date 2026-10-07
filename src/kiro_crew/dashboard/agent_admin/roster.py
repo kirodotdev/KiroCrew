@@ -1,14 +1,18 @@
-"""The ``GET /api/agents`` row: the per-value mask, the guard that keeps a crew PUT from persisting it, the avatar projection and the row serializer."""
+"""The ``GET /api/agents`` row: the per-value mask, the guard that keeps a crew PUT from persisting it, the avatar projection, the row serializer and the ``?project_path=`` root resolver that scopes the roster."""
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
         KiroCrewAgentConfig,
+        _link_chain_refused,
         _redact_external,
         _safe_avatar,
+        _unc_refused,
+        is_sensitive_path,
     )
 
 
@@ -298,3 +302,73 @@ def _agent_roster_row(
         # dashboard and the per-crew avatar endpoint need. See ``_roster_avatar``.
         "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
     }
+
+
+def _resolve_roster_project_path(raw: str) -> tuple[str, bool]:
+    """Resolve+validate a ``?project_path=`` query value for roster scoping.
+
+    Returns ``(resolved_path, denied)``:
+
+    * ``denied=True`` — the spelling names an untrusted UNC share, or the
+      realpath'd target is sensitive (a protected tree such as a credential
+      home). ``resolved_path`` is ``""``; the CALLER logs the SEL denial,
+      because this runs in a worker thread and must not touch ``sel()`` there.
+    * ``resolved_path=""`` with ``denied=False`` — the path is neither sensitive
+      nor an existing directory (a half-typed draft, a typo). The caller ships
+      GLOBAL rows only rather than scanning a non-directory or falling back to
+      a different project's roster.
+    * ``resolved_path=<dir>`` — a safe, existing directory to scan.
+
+    Blocking (realpath + stat), so callers run it off the event loop. The UNC
+    gate runs before resolving the raw spelling because resolving an untrusted
+    UNC host is itself an outbound SMB probe; it runs again on the resolved
+    spelling before any sensitivity or directory probe. The
+    ``is_sensitive_path`` check is on the RESOLVED root so a symlink into a
+    protected tree cannot slip past. ``~`` is expanded first, because the folder
+    project-dir field accepts ``~/repo``-style paths (as the chat project picker
+    does) and ``realpath`` does NOT expand a leading ``~`` — without this an
+    existing ``~/repo`` resolves to a bogus literal-tilde path, fails the isdir
+    check, and the folder's project agents silently never appear. Deliberately
+    no ``~``/absolute-path bar beyond expansion: a read-only roster scan of an
+    existing directory is not held to the cron create-time write bar, and the
+    sensitivity gate is the real protection.
+
+    This resolver validates only the ROOT it is handed. The value actually
+    scanned is the ``.kiro``/``.kiro/agents`` SUBDIR, pinned and
+    sensitivity-checked by the scan machinery that enumerates it
+    (:func:`agent_discovery._pinned_scan_dir_fd`, reached through
+    ``project_agent_names``/``project_agent_files``) at the moment it opens
+    them — not re-validated or held here. That machinery is what refuses a
+    redirecting ancestor or a resolved-sensitive target, and what raises
+    :class:`kiro_crew.agent_discovery.ScanUnverifiable` when it cannot pin a
+    directory descriptor. Its caller, ``api_kirocrew_agents`` in
+    ``handlers.agents``, always asks for that signal
+    (``raise_unverifiable=True``) for an owner-supplied path, on every
+    platform: a directory an HTTP query named is not one the caller already
+    trusts, so a platform that cannot pin it answers 503 rather than walking
+    it by name, where a swapped component could redirect the read. Folder-level
+    project-agent selection is therefore unavailable on a platform that cannot
+    pin a directory descriptor — a stated platform limitation, not a failure.
+    That handler's slot-derived fallback is a different caller with no UI state for
+    "could not be checked"; it keeps the by-name fallback unconditionally and
+    is unaffected by this.
+    """
+    if _unc_refused(raw):
+        return "", True
+    try:
+        expanded = os.path.expanduser(raw)
+    except (OSError, ValueError):
+        return "", False
+    if _link_chain_refused(expanded):
+        return "", True
+    try:
+        resolved = os.path.realpath(expanded)
+    except (OSError, ValueError):
+        return "", False
+    if _unc_refused(resolved):
+        return "", True
+    if is_sensitive_path(resolved):
+        return "", True
+    if not os.path.isdir(resolved):
+        return "", False
+    return resolved, False

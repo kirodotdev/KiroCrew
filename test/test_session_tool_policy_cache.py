@@ -44,9 +44,9 @@ def _count_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     reads: list[Path] = []
     real_read = agent_discovery._read_spec_bytes
 
-    def recording_read(real: Path) -> bytes:
+    def recording_read(real: Path, **kwargs: Any) -> bytes:
         reads.append(real)
-        return real_read(real)
+        return real_read(real, **kwargs)
 
     monkeypatch.setattr(agent_discovery, "_read_spec_bytes", recording_read)
     return reads

@@ -28,7 +28,8 @@ from chat_test_helpers import _make_state
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_crew.dashboard import chat_folder_scaffold
+from kiro_crew import agent_discovery, pinned_fs
+from kiro_crew.dashboard import chat_folder_scaffold, chat_folders
 from kiro_crew.dashboard.chat_folder_scaffold import (
     MAX_REPORTED_UNKNOWN,
     STATUS_EMPTY,
@@ -45,10 +46,27 @@ from kiro_crew.dashboard.chat_folders import (
 
 
 def _make_scaffold_app(state: Any) -> web.Application:
-    """Minimal aiohttp app with the folder-scaffold endpoints."""
+    """Minimal aiohttp app with the folder-scaffold endpoints.
+
+    The request is shaped like a PERSON's, because that is what the scaffold
+    endpoints see in production: the token middleware publishes an empty app
+    claim and the signed machine-local bootstrap subject, which is the owner
+    while no owner id is configured (``is_owner_dashboard_request``). Stamped
+    with ``setdefault`` so a test that publishes its own app claim still wins,
+    whichever order the middlewares run in.
+    """
 
     app = web.Application()
     app["state"] = state
+
+    @web.middleware
+    async def _person_caller(request: web.Request, handler: Any) -> Any:
+        request.setdefault("app", "")
+        if not request.get("user"):
+            request["user"] = "local-app"
+        return await handler(request)
+
+    app.middlewares.append(_person_caller)
     app.router.add_post("/api/project-scaffold/scan", api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", api_chat_folders_scaffold)
     return app
@@ -65,6 +83,60 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         "kiro_crew.dashboard.chat_folder_scaffold.is_app_enabled", lambda name: True
     )
     return _make_state(tmp_path)
+
+
+@pytest.fixture
+def pinned_walk(monkeypatch: pytest.MonkeyPatch):
+    """Exercise the pinned-scan branches on EVERY platform.
+
+    Where the walk can genuinely pin, nothing is substituted and the real scan
+    runs. Where it cannot -- Windows, whose ``os.open`` has no ``dir_fd``
+    support -- the scan is doubled with the same enumeration done BY NAME, so the
+    scaffold's agent-scope branches are covered there instead of skipped. The
+    pin's own swap resistance is ``pinned_fs``'s to prove, not this suite's.
+
+    Replaces the scan outright rather than only toggling the capability, for the
+    reason this file's own unverifiable helpers document: ``agent_discovery``
+    binds ``supports_pinned_walk`` at import, so patching ``pinned_fs`` alone
+    leaves its internal check reading the real name.
+    """
+    if pinned_fs.supports_pinned_walk():
+        yield
+        return
+
+    def _declared_by_name(project_dir: Any, **_k: Any) -> frozenset[str]:
+        agents_dir = Path(str(project_dir)) / ".kiro" / "agents"
+        try:
+            return frozenset(spec.stem for spec in agents_dir.glob("*.json"))
+        except OSError:
+            return frozenset()
+
+    monkeypatch.setattr(agent_discovery, "project_agent_names", _declared_by_name)
+    monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: True)
+    yield
+
+
+def _arm_scan(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, unpinnable: bool):
+    """Run the real (or by-name) scan, or make every scan degrade as unpinnable.
+
+    The unpinnable arm runs on every platform: the scan is replaced outright
+    rather than relying on ``supports_pinned_walk`` alone, because
+    ``agent_discovery`` binds that name directly at import, so patching
+    ``pinned_fs.supports_pinned_walk`` does not affect its own capability check
+    on a host that can genuinely pin.
+    """
+    if not unpinnable:
+        request.getfixturevalue("pinned_walk")
+        return
+
+    def _raise(*_a: Any, **_k: Any) -> frozenset[str]:
+        raise agent_discovery.ScanUnverifiable("cannot pin")
+
+    monkeypatch.setattr(agent_discovery, "project_agent_names", _raise)
+    monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+
+
+_PIN_MODES = pytest.mark.parametrize("unpinnable", [False, True], ids=["pinned", "unpinnable"])
 
 
 class TestDisabledApp:
@@ -822,6 +894,116 @@ class TestScaffoldPartialFailure:
         assert sorted(_by_project_dir(state)) == sorted([str(root), str(root / "api")])
 
     @pytest.mark.asyncio
+    @_PIN_MODES
+    async def test_root_with_out_of_scope_default_is_reported_as_a_failure(
+        self,
+        state: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        unpinnable: bool,
+    ) -> None:
+        """The scaffold root is a normal folder create, including agent scope.
+
+        ``unpinnable`` is the Windows-side counterpart: with no pinned walk the
+        root's create can never confirm the directory declares (or lacks) the
+        effective agent, so its failure entry carries ``scan_unsupported_platform``
+        rather than ``default_agent_out_of_scope`` -- the same degrade
+        ``check_folder_agent_scope`` answers directly.
+        """
+        root = _sibling_repos(tmp_path / "work")
+        monkeypatch.setattr(chat_folders, "_global_agent_scope", lambda: (frozenset(), "ghost"))
+        _arm_scan(request, monkeypatch, unpinnable)
+
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            status, body = await _scaffold(client, root, [root / "api"])
+
+        assert status == 200
+        assert body["created"] == []
+        if unpinnable:
+            assert [(f["path"], f["code"]) for f in body["failed"]] == [
+                (str(root), "scan_unsupported_platform")
+            ]
+        else:
+            assert body["failed"] == [
+                {
+                    "path": str(root),
+                    "error": (
+                        "Agent 'ghost' is not among this folder's project directory "
+                        "or the globally installed agents"
+                    ),
+                    "code": "default_agent_out_of_scope",
+                }
+            ]
+        assert state._folders == []
+
+    @pytest.mark.asyncio
+    @_PIN_MODES
+    async def test_child_dropping_inherited_project_agent_fails_without_aborting_siblings(
+        self,
+        state: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        unpinnable: bool,
+    ) -> None:
+        """Each selected child validates its inherited agent against its own directory.
+
+        ``unpinnable``: neither child's create can verify its inherited or
+        declared agent against its own directory, so BOTH fail with
+        ``scan_unsupported_platform`` rather than one succeeding and the other
+        failing ``default_agent_out_of_scope`` -- there is no directory read to
+        tell them apart on that platform.
+        """
+        root = _sibling_repos(tmp_path / "work")
+        project_agent = "project-agent"
+        for agents_dir in (root / ".kiro" / "agents", root / "web" / ".kiro" / "agents"):
+            agents_dir.mkdir(parents=True)
+            (agents_dir / f"{project_agent}.json").write_text(
+                json.dumps({"name": project_agent}), encoding="utf-8"
+            )
+        state._folders = [
+            {
+                "id": "f-root",
+                "name": "work",
+                "order": 0,
+                "parent_id": "",
+                "project_dir": str(root),
+                "default_agent": project_agent,
+            }
+        ]
+        monkeypatch.setattr(chat_folders, "_global_agent_scope", lambda: (frozenset(), ""))
+        _arm_scan(request, monkeypatch, unpinnable)
+
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            status, body = await _scaffold(client, root, [root / "api", root / "web"])
+
+        assert status == 200
+        assert body["skipped_existing"] == [str(root)]
+        folders = _by_project_dir(state)
+        assert str(root / "api") not in folders
+        if unpinnable:
+            assert body["created"] == []
+            assert sorted((f["path"], f["code"]) for f in body["failed"]) == [
+                (str(root / "api"), "scan_unsupported_platform"),
+                (str(root / "web"), "scan_unsupported_platform"),
+            ]
+            assert str(root / "web") not in folders
+            return
+        assert [entry["path"] for entry in body["created"]] == [str(root / "web")]
+        assert body["failed"] == [
+            {
+                "path": str(root / "api"),
+                "error": (
+                    f"Agent {project_agent!r} is not among this folder's project directory "
+                    "or the globally installed agents"
+                ),
+                "code": "default_agent_out_of_scope",
+            }
+        ]
+        assert folders[str(root / "web")]["parent_id"] == "f-root"
+
+    @pytest.mark.asyncio
     async def test_an_ownership_refusal_is_audited_as_denied(
         self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1477,3 +1659,55 @@ class TestCreateValidatesOffTheLoop:
         assert folder["project_dir"] == str(target.resolve())
         assert ran_on, "the create path never validated the directory"
         assert all(t != loop_thread for t in ran_on)
+
+
+class TestValidateProjectDirUncGate:
+    r"""A UNC-shaped project_dir (``\\host\share``) names a remote host, so on
+    Windows ``realpath``-ing it is itself the outbound SMB/NTLM probe. The guard
+    on ``_validate_project_dir`` must therefore run BEFORE ``realpath`` — the same
+    ordering its sibling ``_resolve_roster_project_path`` enforces on the roster
+    read path. This pins the ORDER, not just the verdict: ``os.path.realpath`` is
+    patched to raise if it is ever reached with a UNC spelling, so a refactor that
+    resolves first and gates after fails here."""
+
+    def test_unc_project_dir_is_refused_before_realpath(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_folders as cf
+
+        # ``_unc_refused`` only fires on Windows; simulate it on the Linux box the
+        # gate floor runs on. ``is_unc_shape``/``unc_probe_allowed`` are pure
+        # lexical checks, so forcing this constant is enough to exercise the gate.
+        monkeypatch.setattr("kiro_crew.agent_discovery._WINDOWS", True)
+
+        real_realpath = os.path.realpath
+
+        def guard(path: Any, *args: Any, **kwargs: Any) -> str:
+            from kiro_crew.hooks import is_unc_shape
+
+            if is_unc_shape(str(path)):
+                raise AssertionError("realpath reached a UNC spelling before the guard")
+            return real_realpath(path, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, "realpath", guard)
+
+        resolved, err = cf._validate_project_dir(r"\\evil\share\repo")
+
+        assert resolved == ""
+        assert err is not None and "UNC" in err
+
+    def test_non_unc_absolute_dir_still_realpaths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The gate must not swallow ordinary local paths: with the Windows flag
+        # set, a normal absolute dir still resolves and validates.
+        from kiro_crew.dashboard import chat_folders as cf
+
+        monkeypatch.setattr("kiro_crew.agent_discovery._WINDOWS", True)
+        target = tmp_path / "repo"
+        target.mkdir()
+
+        resolved, err = cf._validate_project_dir(str(target))
+
+        assert err is None
+        assert resolved == str(target.resolve())
