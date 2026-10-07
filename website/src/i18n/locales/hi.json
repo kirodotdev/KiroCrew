@@ -8046,6 +8046,8 @@
         "press_again_to_clear": "साफ़ करने के लिए फिर से दबाओ",
         "reject": "अस्वीकार करें",
         "search": "खोजें…",
+        "decided_clear_failed": "यह सूचना हटाई नहीं जा सकी। फिर से कोशिश करने के लिए फ़ीड में इसका “{{button}}” बटन दबाओ।",
+        "decision_recorded": "तुम्हारा निर्णय दर्ज हो गया।",
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
         "try_a_different_search": "कोई दूसरी खोज आज़माएँ"
