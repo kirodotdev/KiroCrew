@@ -1133,6 +1133,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "browser_cli/install.py::_run",
         "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",
+        # NOT a subprocess spawn of its own: the AST heuristic matches the
+        # ``asyncio.run`` call that drives the shared lifecycle runner for a
+        # local app's ``setup.onInstall``. The actual child is created inside
+        # ``apps/lifecycle_scripts.py``, which is itself sandbox-routed
+        # (``wrap_argv_async`` + ``cgroup_scope_argv`` +
+        # ``create_subprocess_limited``) and pinned by the routed-spawn tests.
+        # The runner receives the app root and admitted manifest script; this
+        # function creates no command or argv of its own.
+        "apps/manager.py::install_app",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
@@ -1153,6 +1162,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn of its own: the AST heuristic matches the
+        # ``asyncio.run`` (attr ``run`` on base ``asyncio``) call that drives
+        # ``run_lifecycle_script`` for the CLI enable path. The actual child
+        # process is created inside apps/lifecycle_scripts.py, which is itself
+        # sandbox-routed (wrap_argv_async + cgroup_scope_argv +
+        # create_subprocess_limited) and asserted so by the routed-spawn tests.
+        # No child is created in this function.
+        "cli_commands.py::_handle_app",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord

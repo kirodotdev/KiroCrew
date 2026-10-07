@@ -9,6 +9,7 @@ registration (agents, skills, crons) to bridge functions.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
 import json
@@ -52,6 +53,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -598,9 +600,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
         # prefix: an app-owned name that merely shares the prefix (e.g.
         # ".kirocrew-deps-staging-assets") is the app's data and must copy.
         skip = {
-            n
-            for n in names
-            if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
+            n for n in names if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
         }
         for n in names:
             if n in skip:
@@ -621,9 +621,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                     # (Windows) or mixed abs/rel — treat as escaping.
                     escapes = True
                 if escapes:
-                    logger.warning(
-                        "Omitting symlink escaping app source root: %s", p
-                    )
+                    logger.warning("Omitting symlink escaping app source root: %s", p)
                     skip.add(n)
         return skip
 
@@ -649,9 +647,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                 continue
             rel_to_src = os.path.relpath(os.path.realpath(p), src_root)
             os.remove(p)
-            os.symlink(
-                os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
-            )
+            os.symlink(os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p)
 
 
 def preserved_data_awaits(name: str) -> bool:
@@ -775,6 +771,170 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 # Install
 # ---------------------------------------------------------------------------
 
+#: Seconds a local-directory install's ``setup.onInstall`` script may run
+#: before the shared lifecycle runner kills it and the install fails. Matches
+#: the registry path's ``registry._SCRIPT_TIMEOUT``.
+_INSTALL_SCRIPT_TIMEOUT = 300
+
+#: Terminal control sequences an app's own script output could carry. Lifecycle
+#: output is captured stdout/stderr of THIRD-PARTY shell code; printing it to an
+#: operator terminal would let a gate-passed app inject OSC (title overwrite,
+#: clipboard writes, hyperlink spoofs) or raw ANSI escapes. CSI (``ESC [``),
+#: OSC (``ESC ]`` ... BEL/ST), and bare C0 controls are covered; newline is the
+#: one control kept so multi-line tails stay readable. Lives HERE rather than in
+#: lifecycle_scripts because manager is the lower layer (lifecycle_scripts
+#: imports from this module; the reverse import would cycle).
+_TERMINAL_CONTROL_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI ... final byte
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC ... BEL or ST
+    r"|\x1b[@-Z\\-_]"  # other single-character ESC sequences
+    r"|[\x00-\x08\x0b-\x1f\x7f]"  # remaining C0 controls + DEL (keep \n)
+)
+
+
+def sanitize_script_output(output: str) -> str:
+    """Strip terminal control sequences from captured lifecycle-script output.
+
+    Every surface that ECHOES captured script output to a human (install/update
+    failure tails, the CLI's enable feedback) runs output through this before
+    printing, so an app cannot use its own script's stdout to drive the
+    operator's terminal. Redaction of credentials/URLs is a separate,
+    caller-chained step (``redact_credentials`` / ``redact_exfiltration_urls``)
+    because only the caller knows the destination.
+    """
+    return _TERMINAL_CONTROL_RE.sub("", output)
+
+
+def _unique_trash_path(path: Path, label: str, *, separator: str = "-") -> Path:
+    """Return a non-existent sibling trash name that cannot collide."""
+    while True:
+        candidate = path.parent / (
+            f".{path.name}{separator}{label}-{os.getpid()}-{os.urandom(4).hex()}"
+        )
+        if not os.path.lexists(candidate):
+            return candidate
+
+
+def _remove_readonly_rmtree_error(func, path, excinfo) -> None:
+    """Retry a failed removal after granting the owner the needed permissions."""
+    parent = os.path.dirname(path)
+    os.chmod(parent, stat.S_IRWXU)
+    try:
+        is_directory = stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        is_directory = False
+    if is_directory:
+        os.chmod(path, stat.S_IRWXU)
+    func(path)
+
+
+def _remove_path_in_trash(path: Path) -> None:
+    """Delete an untrusted path without deleting its authoritative name.
+
+    Renaming first preserves the name for atomic swaps. The trash cleanup is
+    best-effort: a read-only directory is chmod-retried, and any stubborn
+    leftover remains under a ``-trash-`` name that lifecycle entry paths ignore.
+    """
+    if not os.path.lexists(path):
+        return
+    trash = _unique_trash_path(path, "trash")
+    os.rename(path, trash)
+    try:
+        if trash.is_dir() and not is_link_or_junction(trash):
+            shutil.rmtree(trash, onerror=_remove_readonly_rmtree_error)
+        else:
+            trash.unlink()
+    except OSError:
+        logger.warning("Could not fully remove data trash path %s", trash, exc_info=True)
+
+
+def _remove_nonauthoritative_script_backups(name: str) -> None:
+    """Remove crash and cleanup copies; only a completed backup is authoritative."""
+    backup_prefix = f".{name}-data-script-backup"
+    for pattern in (f"{backup_prefix}-*", f"{backup_prefix}.partial-*"):
+        for leftover in apps_dir().glob(pattern):
+            _remove_path_in_trash(leftover)
+
+
+def _remove_installed_tree_except_data(
+    dest: Path, *, preserve_data: bool, restore_data_from: Path | None = None
+) -> None:
+    """Remove a failed partial install, optionally keeping a ``data/`` directory.
+
+    ``preserve_data`` must be true only when a ``data/`` directory existed
+    BEFORE this install attempt (a prior uninstall's leave-behind). A fresh
+    install preserves nothing: whatever sits in ``data/`` after the copy was
+    written by the source package or by the failed ``onInstall`` script itself,
+    and keeping it would let the NEXT attempt silently restore that partial,
+    unverified state as if it were established user data.
+
+    ``restore_data_from``, when given, is a pre-script backup of that SAME
+    pre-existing ``data/`` (see ``install_app``'s ``data_backup``). The failed
+    script ran with write access to ``dest`` and may have partially migrated,
+    truncated, or corrupted ``data/`` before failing — keeping whatever it
+    left (the plain ``preserve_data`` path) would silently promote that broken
+    state to "preserved user data". When a backup is supplied, ``data/`` is
+    replaced wholesale with it instead of being left as-is.
+    """
+    if not dest.is_dir():
+        return
+    # The failed script ran with WRITE access to dest, so dest itself may have
+    # been replaced by a symlink — iterating one would traverse wherever it
+    # points (e.g. the apps/ parent) and delete sibling installs. A link is
+    # unlinked, never followed.
+    if dest.is_symlink() or is_link_or_junction(dest):
+        with contextlib.suppress(OSError):
+            dest.unlink()
+        return
+    for child in dest.iterdir():
+        if child.name == "data" and preserve_data:
+            continue
+        if child.is_dir() and not is_link_or_junction(child):
+            shutil.rmtree(str(child), ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                child.unlink()
+    if preserve_data and restore_data_from is not None and restore_data_from.is_dir():
+        restored = dest / "data"
+        trash: Path | None = None
+        if os.path.lexists(restored):
+            trash = _unique_trash_path(restored, "restore")
+            os.rename(restored, trash)
+        try:
+            os.rename(str(restore_data_from), str(restored))
+        except (OSError, shutil.Error):
+            if trash is not None:
+                os.rename(trash, restored)
+            raise
+        if trash is not None:
+            _remove_path_in_trash(trash)
+
+
+def _remove_installed_tree_after_script(
+    dest: Path, *, preserve_data: bool, restore_data_from: Path
+) -> AppResult | None:
+    """Restore after script failure, translating an unrestorable tree to a result.
+
+    ``None`` means cleanup succeeded and the caller may return its ordinary
+    script/admission failure. A result names the retained backup, so the next
+    attempt can treat it as authoritative instead of silently losing user data.
+    """
+    try:
+        _remove_installed_tree_except_data(
+            dest, preserve_data=preserve_data, restore_data_from=restore_data_from
+        )
+    except (OSError, shutil.Error) as exc:
+        return AppResult(
+            ok=False,
+            name=dest.name,
+            error=(
+                "install failed and preserved data could not be restored; "
+                f"authoritative backup retained at {restore_data_from}: {exc}"
+            ),
+            error_code="on_install_restore_failed",
+        )
+    return None
+
 
 def install_app(
     source: str | Path,
@@ -821,8 +981,7 @@ def install_app(
     name = manifest.name
     if expected_name is not None and name != expected_name:
         detail = (
-            f"app identity changed during install: expected {expected_name!r}, "
-            f"found {name!r}"
+            f"app identity changed during install: expected {expected_name!r}, " f"found {name!r}"
         )
         sel().log_api_access(
             caller="app_install",
@@ -897,11 +1056,93 @@ def install_app(
             error_code="app_trust_repository_mismatch",
         )
 
+    # A failed copy may leave a partial under a private temporary name. Those
+    # copies are never authoritative; sweep them before judging the completed
+    # backup below. Rename-to-trash keeps cleanup from destroying a trusted
+    # path if a read-only tree makes the delete only partial.
+    _remove_nonauthoritative_script_backups(name)
+
+    # A script-window backup survives only an interrupted/crashed install. It
+    # is the last known pristine copy of pre-script user data, so a retry must
+    # restore it before the ordinary preserve/copy transaction can mistake the
+    # script-mutated tree for established data. Never delete it in place.
+    data_backup = dest.parent / f".{name}-data-script-backup"
+    if os.path.lexists(dest) and (dest.is_symlink() or is_link_or_junction(dest)):
+        # A failed script may have replaced the app directory itself. Unlink the
+        # link only: following it to remove dest/data would mutate whatever the
+        # link targets. The authoritative backup can then restore a real dest.
+        _remove_any_shape(dest)
+        if os.path.lexists(dest) and (dest.is_symlink() or is_link_or_junction(dest)):
+            detail = f"cannot remove script-planted app-directory link: {dest}"
+            sel().log_api_access(
+                caller="app_install",
+                operation="install",
+                outcome="failed",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="app_dest_link_obstructed",
+            )
+    if os.path.lexists(data_backup):
+        if not _owned_data_dir(data_backup):
+            detail = (
+                "leftover install-data backup is not a gateway-owned directory: " f"{data_backup}"
+            )
+            sel().log_api_access(
+                caller="app_install",
+                operation="install",
+                outcome="failed",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="on_install_data_backup_obstructed",
+            )
+        dest.mkdir(parents=True, exist_ok=True)
+        live_data = dest / "data"
+        old_live: Path | None = None
+        if os.path.lexists(live_data):
+            old_live = _unique_trash_path(live_data, "replaced")
+            os.rename(live_data, old_live)
+        try:
+            os.rename(str(data_backup), str(live_data))
+        except (OSError, shutil.Error) as exc:
+            if old_live is not None:
+                os.rename(old_live, live_data)
+            detail = f"cannot restore authoritative script backup {data_backup}: {exc}"
+            sel().log_api_access(
+                caller="app_install",
+                operation="install",
+                outcome="failed",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="on_install_data_backup_obstructed",
+            )
+        if old_live is not None:
+            _remove_path_in_trash(old_live)
+
     # Preserve existing data/ directory (left behind by a prior default uninstall)
     existing_data = dest / "data" if dest.exists() else None
     # Use same temp name as uninstall_app/update_app so data stranded by a
     # crashed sibling operation is reclaimable by whichever lifecycle runs next.
     tmp_data = dest.parent / f".{name}-data-tmp"
+    # Whether the attempt is responsible for PRE-EXISTING user data: either a
+    # live data/ dir or the sole-survivor tmp copy from a crashed sibling. Only
+    # then may a failed install leave a data/ directory behind (see
+    # _remove_installed_tree_except_data).
+    preserved_prior_data = bool((existing_data and existing_data.is_dir()) or tmp_data.is_dir())
 
     # BEFORE anything moves: the temp name must be free or hold the gateway's own
     # stale copy. A link or a file planted there is refused whole -- moving
@@ -1049,6 +1290,275 @@ def install_app(
         )
         return AppResult(ok=False, name=name, error=f"failed to copy app files: {exc}")
 
+    # Run the manifest's setup.onInstall, if declared, through the ONE shared
+    # lifecycle runner. A registry install executes the hook in its checkout
+    # before the copy; a local install executes it in the copied directory, so
+    # an app shipped without generated build output can still start. A local
+    # app.json is third-party shell code, so the execution-policy gate runs
+    # first and the script cannot mutate the developer's source tree.
+    install_script = manifest.setup.onInstall
+    # The registry path already executed this hook in its own checkout (before
+    # calling install_app inside the registry_source_repository scope) and the
+    # copied tree carries its effects — running it again here would double
+    # every non-idempotent side effect (repeated package installs, migrations,
+    # generated files). Only a source arriving OUTSIDE the registry scope — a
+    # local-directory install — still needs the hook.
+    if install_script and _REGISTRY_SOURCE_REPOSITORY.get() is None:
+        if preserved_prior_data and (dest / "data").is_dir():
+            partial_backup = _unique_trash_path(data_backup, "partial", separator=".")
+            try:
+                shutil.copytree(str(dest / "data"), str(partial_backup))
+            except BaseException as exc:
+                _remove_path_in_trash(partial_backup)
+                if not isinstance(exc, (OSError, shutil.Error)):
+                    raise
+                _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+                sel().log_api_access(
+                    caller="app_install",
+                    operation="install",
+                    outcome="failed",
+                    resources=f"name={name!r}",
+                    error=f"cannot back up preserved app data before onInstall: {exc}",
+                )
+                return AppResult(
+                    ok=False,
+                    name=name,
+                    error=f"cannot back up preserved app data before onInstall: {exc}",
+                    error_code="on_install_data_backup_failed",
+                )
+            else:
+                try:
+                    os.rename(str(partial_backup), str(data_backup))
+                except (OSError, shutil.Error) as exc:
+                    _remove_path_in_trash(partial_backup)
+                    sel().log_api_access(
+                        caller="app_install",
+                        operation="install",
+                        outcome="failed",
+                        resources=f"name={name!r}",
+                        error=f"cannot back up preserved app data before onInstall: {exc}",
+                    )
+                    return AppResult(
+                        ok=False,
+                        name=name,
+                        error=f"cannot back up preserved app data before onInstall: {exc}",
+                        error_code="on_install_data_backup_failed",
+                    )
+        execution_denied = app_execution_denied(
+            name,
+            action="install",
+            app_root=dest,
+            caller="app_install",
+            # Pass the caller-supplied source coordinate: mid-install there is
+            # no installed record yet, so a repository-bound grant could not
+            # otherwise be matched and would be spuriously denied.
+            repository=source_repository,
+        )
+        if execution_denied:
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_execution_admission",
+                outcome="denied",
+                resources=f"name={name!r} action='install'",
+                error=execution_denied,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"blocked by execution policy: {execution_denied}",
+                error_code="app_execution_denied",
+            )
+        sel().log_api_access(
+            caller="app_install",
+            operation="app_install_script",
+            outcome="started",
+            resources=f"name={name!r} source={source!s}",
+        )
+        logger.info("Executing sandboxed install script for app %s from %s", name, source)
+        # install_app is synchronous. Every production caller is off the event
+        # loop: HTTP install uses run_in_executor, registry install uses
+        # asyncio.to_thread, and the CLI is loop-less. Fail closed if a future
+        # caller violates that constraint rather than blocking its loop.
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
+
+                script_result = asyncio.run(
+                    run_lifecycle_script(
+                        name,
+                        install_script,
+                        timeout=_INSTALL_SCRIPT_TIMEOUT,
+                        action="on_install",
+                        app_root=dest,
+                        caller="app_install",
+                        repository=source_repository,
+                        reap_surviving_group=True,
+                    )
+                )
+            else:
+                script_result = {
+                    "output": "install hook runner cannot run on the event loop",
+                    "failed": True,
+                }
+        except BaseException as exc:
+            # A cancelled or interrupted install must leave the authoritative
+            # pre-script backup behind (restored when possible), never mutated
+            # live data that a retry might mistake for established user data.
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                raise RuntimeError(restore_result.error) from exc
+            raise
+        script_ok = not script_result.get("failed", True)
+        script_output = str(script_result.get("output", ""))
+        if not script_ok:
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                return restore_result
+            # Full shared chain: the text is the app's own stdout/stderr and
+            # reaches both the SEL audit record and the human-visible error.
+            # Terminal control sequences are stripped FIRST — redaction does
+            # not remove them, and this text is printed to operator terminals.
+            cleaned, _ = redact_credentials(sanitize_script_output(script_output))
+            cleaned, _ = redact_exfiltration_urls(cleaned)
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="failed",
+                resources=f"name={name!r} source={source!s}",
+                error=cleaned,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"install script failed: {cleaned}",
+                error_code="on_install_failed",
+            )
+        # The hook ran with write access to dest, so both gateway-owned root
+        # names must be judged again. A planted secret link must never survive
+        # to write_app_secret, and a planted data shape must not survive to
+        # app_data_dir or later lifecycle moves.
+        _remove_any_shape(dest / ".app_secret")
+        post_script_refusal = gateway_data_dir_obstruction(dest)
+        if post_script_refusal:
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                return restore_result
+            sel().log_api_access(
+                caller="app_install",
+                operation="gateway_owned_path_sweep",
+                outcome="denied",
+                resources=f"name={name!r}",
+                error=post_script_refusal,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=post_script_refusal,
+                error_code="gateway_owned_path_obstructed",
+            )
+        # The script ran with WRITE access to the copied tree, so the app.json
+        # on disk may not match the manifest that was admitted. Re-read it and
+        # re-check identity and admission before this install registers
+        # anything from the rewritten manifest.
+        try:
+            post_script_manifest = AppManifest.from_json_file(dest / APP_MANIFEST_FILENAME)
+        except (OSError, ValueError) as exc:
+            # The script destroyed or corrupted its own manifest — the same
+            # tampering case this re-read exists to catch. Fail closed through
+            # the ordinary script-failure cleanup instead of raising past the
+            # AppResult contract.
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                return restore_result
+            detail = f"install script corrupted the app manifest: {exc}"
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="denied",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="on_install_failed",
+            )
+        if post_script_manifest.name != name or post_script_manifest.version != manifest.version:
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                return restore_result
+            detail = (
+                f"app manifest changed during install script: expected "
+                f"{name!r} v{manifest.version}, found "
+                f"{post_script_manifest.name!r} v{post_script_manifest.version}"
+            )
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="denied",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="app_identity_changed",
+            )
+        post_denied = app_admission_denied(name, manifest=post_script_manifest, action="install")
+        if post_denied:
+            restore_result = _remove_installed_tree_after_script(
+                dest,
+                preserve_data=preserved_prior_data,
+                restore_data_from=data_backup,
+            )
+            if restore_result is not None:
+                return restore_result
+            sel().log_api_access(
+                caller="app_install",
+                operation="admission",
+                outcome="rejected",
+                resources=f"name={name!r}",
+                error=post_denied,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"blocked by admission policy: {post_denied}",
+            )
+        manifest = post_script_manifest
+        # Script succeeded and passed the post-script re-checks: the backup's
+        # job is done, and leaving it behind would strand it under the apps
+        # directory forever (nothing else ever cleans this path).
+        if os.path.lexists(data_backup):
+            _remove_path_in_trash(data_backup)
+
     # Write installed metadata
     meta = InstalledApp(
         name=name,
@@ -1088,9 +1598,7 @@ def install_app(
         ok=True,
         name=name,
         message=f"installed {name} v{manifest.version}",
-        notice=(
-            "session_approval_reconsent" if manifest.permissions.sessionApproval else ""
-        ),
+        notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
 
@@ -1115,6 +1623,10 @@ def update_app(
     ``expected_name``: when given, reject the update unless the source
     manifest's ``name`` matches — callers that lock/route by app name must
     not let a mismatched source mutate a different app.
+
+    ``setup.onUpdate`` remains deferred: this updater intentionally runs no
+    lifecycle hook. Do not add one casually; the public contract is still
+    declared-not-wired, and registry updates rely on idempotent onInstall.
     """
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
@@ -1507,13 +2019,17 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 # the provisioner's own open.
                 _lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
                 _lock_name = (
-                    ".kirocrew-deps.lock" if _data_pin.fd is not None
+                    ".kirocrew-deps.lock"
+                    if _data_pin.fd is not None
                     else str(data / ".kirocrew-deps.lock")
                 )
                 # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 _lfd = platform_compat.open_create_or_existing(
-                    _lock_name, _lflags, 0o644, dir_fd=_data_pin.fd,
+                    _lock_name,
+                    _lflags,
+                    0o644,
+                    dir_fd=_data_pin.fd,
                 )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
@@ -1619,6 +2135,8 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 shutil.move(str(tmp_data), str(data))
         else:
             shutil.rmtree(dest)
+            with contextlib.suppress(OSError):
+                _remove_nonauthoritative_script_backups(name)
         # Point of commit: every destructive step succeeded, the app is
         # uninstalled - NOW the quarantined trees die. A tree that resists
         # deletion here is logged, not fatal: under its doomed name it is
@@ -1662,8 +2180,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                     shutil.move(str(_tmp_restore), str(_data_restore))
             except OSError as restore_exc:
                 logger.warning(
-                    "Could not restore preserved data for app %s after a "
-                    "failed uninstall: %s",
+                    "Could not restore preserved data for app %s after a " "failed uninstall: %s",
                     name,
                     restore_exc,
                 )
@@ -1722,9 +2239,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 f"({restore_exc}). Review the current installed app, then re-grant "
                 f"it in Settings only if you still trust that occupant."
             )
-        return AppResult(
-            ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
-        )
+        return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
@@ -1920,6 +2435,7 @@ def _drop_trust_grant(name: str) -> None:
         if isinstance(local_locked, list):
             agent_locked["apps_trusted_local"] = [a for a in local_locked if a != name]
         return raw_locked
+
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -2104,8 +2620,7 @@ def _restore_trust_grant(
                 "in Settings before installing or running this name"
             ) from rollback_exc
         raise RuntimeError(
-            "the installed app changed while its grant was restored; the grant "
-            "was withdrawn"
+            "the installed app changed while its grant was restored; the grant " "was withdrawn"
         )
     logger.info("Restored %s's trust grant after a failed uninstall", name)
     try:
@@ -2157,9 +2672,13 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
                 from kiro_crew.sel import sel
 
                 sel().log_governance_decision(
-                    session_key=HOST_SESSION_KEY, tool_name=f"enable_app:{name}", scope="apps",
-                    item=name, outcome="denied",
-                    rule=getattr(decision, "rule", ""), layer=getattr(decision, "layer", ""),
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"enable_app:{name}",
+                    scope="apps",
+                    item=name,
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=getattr(decision, "layer", ""),
                     reason=getattr(decision, "reason", ""),
                 )
             except Exception:
@@ -2217,9 +2736,7 @@ def enable_app(name: str, *, session_approval_consent: bool = False) -> AppResul
                 resources=f"name={name!r}",
                 error=denied,
             )
-            return AppResult(
-                ok=False, name=name, error=f"blocked by admission policy: {denied}"
-            )
+            return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     # Deny before enabled metadata or any route-level registration, dependency,
     # lifecycle-script, hook, or backend side effect can occur.
@@ -2574,8 +3091,7 @@ def app_enabled_state(name: str) -> bool | None:
             # platform, so it cannot decide the verdict on its own.
             if not _absence_is_genuine(meta_path):
                 logger.warning(
-                    "Metadata path %s cannot exist: a component of it is not a "
-                    "directory",
+                    "Metadata path %s cannot exist: a component of it is not a " "directory",
                     meta_path,
                 )
                 return None
@@ -2742,9 +3258,7 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="register_external"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -3468,9 +3982,7 @@ def register_builtin_apps() -> int:
         # link target and delete data OUTSIDE the apps tree. Also require the
         # resolved path to stay contained under apps_dir().
         if esc_dir.is_symlink():
-            logger.warning(
-                "Skipping escalation cleanup for %r: app dir is a symlink", esc_name
-            )
+            logger.warning("Skipping escalation cleanup for %r: app dir is a symlink", esc_name)
             continue
         if not esc_dir.is_dir():
             continue
@@ -3502,7 +4014,8 @@ def register_builtin_apps() -> int:
             logger.info(
                 "Skipping escalation cleanup for %r: platform lacks dir_fd "
                 "primitives to pin validation to deletion — remove the "
-                "directory manually if no longer needed", esc_name,
+                "directory manually if no longer needed",
+                esc_name,
             )
             continue
         parent_fd = -1
@@ -3571,7 +4084,8 @@ def register_builtin_apps() -> int:
                 # Symlinked data/ (ELOOP) or unreadable — fail closed: keep.
                 logger.warning(
                     "Skipping escalation cleanup for %r: cannot inspect data/: %s",
-                    esc_name, exc,
+                    esc_name,
+                    exc,
                 )
                 continue
             if has_data:
@@ -3579,7 +4093,8 @@ def register_builtin_apps() -> int:
                 # the operator.
                 logger.info(
                     "Keeping escalated builtin %r: data/ is non-empty — remove "
-                    "the directory manually if no longer needed", esc_name,
+                    "the directory manually if no longer needed",
+                    esc_name,
                 )
                 continue
 
@@ -3600,7 +4115,8 @@ def register_builtin_apps() -> int:
                 else:
                     logger.warning(
                         "Escalation cleanup for %r: directory entry changed "
-                        "after pin — leaving the new entry in place", esc_name,
+                        "after pin — leaving the new entry in place",
+                        esc_name,
                     )
             except FileNotFoundError:
                 pass
@@ -3662,7 +4178,10 @@ def register_builtin_apps() -> int:
                 "Not registering builtin %r: a user-installed app already occupies "
                 "%s (source=%r, origin=%r). Leaving its manifest and metadata "
                 "untouched; the builtin is not registered on this host.",
-                name, app_dir(name), existing.source, existing.origin,
+                name,
+                app_dir(name),
+                existing.source,
+                existing.origin,
             )
             continue
 

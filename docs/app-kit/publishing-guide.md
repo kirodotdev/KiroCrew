@@ -153,9 +153,9 @@ and update paths are not masked and check out LFS content as usual.
 
 | Hook | When it runs | Timeout |
 |------|--------------|---------|
-| `onInstall` | After a **registry** install has cloned and built the source, before the files are copied into the data home | 300s |
+| `onInstall` | After a **registry** install has cloned and built the source, before the installed copy is admitted; also after a **local** source is copied into the data home | 300s |
 | `onUninstall` | Before app files are removed, and only after cron cleanup has succeeded | 120s |
-| `onEnable` | After resources are registered, the backend is started, and dependencies are resolved | 30s, or `onEnableTimeout` |
+| `onEnable` | After dependencies are resolved, before resources are registered and the backend is started | 30s, or `onEnableTimeout` |
 | `onDisable` | First step of disable, before hooks, backend stop, and deregistration | 30s, or `onDisableTimeout` |
 
 Execution model:
@@ -171,18 +171,30 @@ Execution model:
   ceiling, in their own process group so a timeout kills the whole tree. They
   must exit 0 on success. Output is truncated to the last lines and passed
   through credential redaction before it reaches the client.
+- A successful gateway-managed `onEnable` must not rely on a detached
+  background job: the gateway reaps leftover members of the script's process
+  group before registration. A local `onInstall` receives the same group
+  reaping for every resource mode. A self-managed or client-install app owns
+  its own detached work and may leave it running. A `setsid` child creates a
+  new session the reaper cannot reach, so no re-admission defends against that
+  detachment followed by an `app.json` rewrite; use `onEnable` to activate, not
+  to mutate the manifest after exit.
 - `onUninstall` additionally receives `KEEP_DATA` and `PURGE_DATA` (`1`/`0`). If
   the user chose to keep app data, skip deleting user data directories.
-- `onEnable` failure rolls the enable back: the backend is stopped, resources are
-  deregistered, and the app stays disabled. Rationale: an app that cannot start
-  should not be left enabled and broken.
+- `onEnable` failure rolls the enable back — including a failed re-enable of an
+  already-enabled app. For a gateway-managed app the backend is stopped and
+  resources are deregistered; in every non-client case the app is left
+  disabled. Rationale: a failed activation must not leave a half-activated app
+  enabled and broken.
 - `onDisable` failure does **not** block the disable. It is reported in the
   response's `warnings` and logged. A misbehaving app must always be
   disableable; orphaned processes beyond what the backend stop handles are the
   app's own responsibility.
 - Installing from a **local path** (`POST /api/apps/install`, `kirocrew app
-  install <dir>`) copies and registers the app but does not run `onInstall`. Do
-  any build step yourself while iterating locally.
+  install <dir>`) copies the app, runs `onInstall` in that copied directory,
+  and re-admits the resulting manifest by checking its name and version and rerunning admission policy before registration. Do not rely on a
+  build made only in your source tree. On native Windows without `/bin/bash`,
+  a local install that declares `onInstall` fails closed.
 - `setup.onUpdate` parses and round-trips through the manifest, but no code path
   executes it. Do not put work an update depends on there. Make `onInstall`
   idempotent instead, since a registry update re-runs it.
@@ -556,6 +568,11 @@ The store's Install button (`POST /api/apps/registry/install`, or the SSE varian
 Requirements: the repo must be git-accessible, `app.json` must sit at the repo
 root or at `subdirectory`, and the install script must be non-interactive and
 finish inside its timeout.
+
+A local-path install shares the hook timeout and sandbox model: copy, run
+`onInstall` in the copy, re-read `app.json`, compare its name and version, rerun admission policy, then register. It
+does not clone or run the registry's detected build first, so its `onInstall`
+must do any build work the installed app needs.
 
 ### Self-managed install
 

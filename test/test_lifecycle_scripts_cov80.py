@@ -139,6 +139,18 @@ async def test_timeout_kills_the_process_tree(admit, monkeypatch, tmp_path) -> N
     proc = _Process(hang=True)
     admit(proc)
     killed: list[tuple[int, Any]] = []
+    group_killed: list[tuple[int, Any]] = []
+
+    monkeypatch.setattr(
+        platform_compat, "posix_getpgid", lambda pid: proc.pid if pid == proc.pid else 1
+    )
+
+    def _kill_group(pgid, sig):
+        group_killed.append((pgid, sig))
+        if sig == platform_compat.SIGKILL:
+            proc.returncode = -9
+
+    monkeypatch.setattr(platform_compat, "kill_pgid", _kill_group)
 
     async def _kill_tree(pid, sig):
         killed.append((pid, sig))
@@ -150,14 +162,22 @@ async def test_timeout_kills_the_process_tree(admit, monkeypatch, tmp_path) -> N
     # Graceful SIGTERM first with a bounded grace window (a script's cleanup
     # trap can run), then the shared helper escalates the whole tree to
     # SIGKILL when the child ignored the TERM.
-    assert killed == [(proc.pid, platform_compat.SIGTERM), (proc.pid, platform_compat.SIGKILL)]
-    # The pid-scoped kill is the helper's second barrel after the tree signal.
-    assert proc.killed is True
+    # kill_and_reap owns the leader's final SIGKILL; the captured group gets
+    # TERM then the unconditional survivor sweep.
+    assert killed == []
+    assert group_killed == [
+        (proc.pid, platform_compat.SIGTERM),
+        (proc.pid, platform_compat.SIGKILL),
+    ]
+    # The captured-group SIGKILL reaps this fake leader; no pid-scoped fallback
+    # is needed (or safe if the pid were recycled).
+    assert proc.killed is False
+    assert proc.returncode == -9
     # The critical pin: every post-kill wait drains pipes via communicate();
     # a bare wait() on a killed child blocked writing into a full pipe would
-    # hang the caller forever. Calls: the site's own wait, the TERM
-    # grace, and the escalation reap.
-    assert proc.communicate_calls == 3
+    # hang the caller forever. The captured-group SIGKILL already reports the
+    # fake leader dead, so no third kill-and-reap drain is needed.
+    assert proc.communicate_calls == 2
     assert proc.waited is False
 
 
@@ -171,6 +191,17 @@ async def test_timeout_grace_lets_a_term_trap_finish_without_sigkill(
     proc = _Process(hang=True)
     admit(proc)
     killed: list[tuple[int, Any]] = []
+    group_killed: list[tuple[int, Any]] = []
+    monkeypatch.setattr(
+        platform_compat, "posix_getpgid", lambda pid: proc.pid if pid == proc.pid else 1
+    )
+
+    def _kill_group(pgid, sig):
+        group_killed.append((pgid, sig))
+        if sig == platform_compat.SIGKILL:
+            proc.returncode = -9
+
+    monkeypatch.setattr(platform_compat, "kill_pgid", _kill_group)
 
     async def _kill_tree(pid, sig):
         killed.append((pid, sig))
@@ -182,7 +213,11 @@ async def test_timeout_grace_lets_a_term_trap_finish_without_sigkill(
     monkeypatch.setattr(platform_compat, "kill_process_tree_async", _kill_tree)
     result = await lifecycle_scripts.run_lifecycle_script("demo-app", "sleep 99", timeout=7)
     assert result == {"output": "script timed out after 7s", "failed": True}
-    assert killed == [(proc.pid, platform_compat.SIGTERM)]  # no SIGKILL escalation
+    assert killed == []
+    assert group_killed == [
+        (proc.pid, platform_compat.SIGTERM),
+        (proc.pid, platform_compat.SIGKILL),
+    ]
     assert proc.killed is False
     assert proc.waited is False
 
@@ -222,7 +257,9 @@ async def test_sandbox_temp_file_is_removed_after_the_run(monkeypatch, tmp_path)
         return _Process(output=b"done\n")
 
     monkeypatch.setattr(lifecycle_scripts, "create_subprocess_limited", _spawn)
-    result = await lifecycle_scripts.run_lifecycle_script("demo-app", "echo done")
+    result = await lifecycle_scripts.run_lifecycle_script(
+        "demo-app", "echo done", reap_surviving_group=True
+    )
     assert result["failed"] is False
     assert not scratch.exists()
 

@@ -1,10 +1,12 @@
 """Tests for the `kirocrew app` CLI subcommand."""
+
 from __future__ import annotations
 
 import json
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 
 # ---------------------------------------------------------------------------
@@ -44,16 +46,16 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
     return {"home": home, "kiro_agents": kiro_agents}
 
 
 # ---------------------------------------------------------------------------
 # _handle_app unit tests (call the function directly, not subprocess)
 # ---------------------------------------------------------------------------
+
 
 class TestHandleApp:
     """Test _handle_app by simulating argparse Namespace objects."""
@@ -71,6 +73,7 @@ class TestHandleApp:
 
         # List
         from kiro_crew.apps.manager import list_apps
+
         apps = list_apps()
         assert len(apps) == 1
         assert apps[0]["name"] == "cli-test-app"
@@ -87,6 +90,7 @@ class TestHandleApp:
         ns = argparse.Namespace(app_action="enable", name="cli-test-app")
         _handle_app(ns)
         from kiro_crew.apps.manager import _read_installed
+
         meta = _read_installed("cli-test-app")
         assert meta is not None
         assert meta.enabled is True
@@ -97,6 +101,200 @@ class TestHandleApp:
         meta = _read_installed("cli-test-app")
         assert meta is not None
         assert meta.enabled is False
+
+    def _allow_real_script_children(self, monkeypatch):
+        """Run REAL bash children regardless of the host's sandbox capability.
+
+        On CI runners where unprivileged user namespaces are restricted,
+        ``wrap_argv`` fail-closes by design; these tests assert script
+        semantics, not sandbox construction (see ``test_sandbox_*.py``). Same
+        convention as ``test_apps_registry.py``'s ``unsandboxed_spawn``.
+        """
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_enable_runs_on_enable_script(self, tmp_path, app_env, monkeypatch):
+        """CLI enable must run setup.onEnable like the dashboard route does."""
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {"onInstall": "", "onEnable": "printf ran > enable-marker"}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        _handle_app(ns)
+
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is True
+        assert (app_env["home"] / "apps" / "cli-test-app" / "enable-marker").is_file()
+
+    def test_enable_rolls_back_when_on_enable_fails(self, tmp_path, app_env, monkeypatch):
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {"onEnable": "exit 7"}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        with pytest.raises(SystemExit):
+            _handle_app(ns)
+
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False, "failed onEnable must roll the enable back"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_failed_reenable_rolls_back_to_disabled(self, tmp_path, app_env, monkeypatch):
+        """A failed re-enable rolls back to disabled on CLI, matching HTTP.
+
+        The owner's contract is intentionally stricter than "keep a working
+        app enabled": a failed hook is a failed activation on both surfaces,
+        so the command's rollback does not depend on whether the flag was
+        already set.
+        """
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {"onInstall": "", "onEnable": "printf ok > enable-marker"}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        _handle_app(ns)  # first enable succeeds
+
+        # The installed manifest now acquires a failing script (an update).
+        installed_manifest = app_env["home"] / "apps" / "cli-test-app" / APP_MANIFEST_FILENAME
+        updated = json.loads(installed_manifest.read_text())
+        updated["setup"] = {"onInstall": "", "onEnable": "exit 7"}
+        installed_manifest.write_text(json.dumps(updated, indent=2))
+
+        with pytest.raises(SystemExit):
+            _handle_app(ns)  # re-enable fails
+
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False, "a failed re-enable must roll back to disabled"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_enable_rechecks_admission_after_on_enable_rewrites_manifest(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A successful onEnable that rewrites app.json must be re-admitted.
+
+        onEnable runs with WRITE access to the app directory; a script that
+        widens its own manifest (or swaps its identity) between admission and
+        `register_app` must not get registered on the strength of the
+        manifest it was originally admitted under. Mirrors the dashboard
+        route's post-onEnable re-admission check.
+        """
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {
+            "onInstall": "",
+            # Rewrites its own manifest to a different declared name — the
+            # same "app.json disagrees with the admitted manifest" shape the
+            # re-check exists to catch.
+            "onEnable": (
+                'python3 -c "import json,pathlib; '
+                "p = pathlib.Path('app.json'); "
+                "m = json.loads(p.read_text()); "
+                "m['name'] = 'renamed-app'; "
+                'p.write_text(json.dumps(m))"'
+            ),
+        }
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        registered: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands.register_app",
+            lambda name: registered.append(name) or type("R", (), {"agents": [], "skills": []})(),
+        )
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        with pytest.raises(SystemExit):
+            _handle_app(ns)
+
+        assert registered == [], "a rewritten manifest must never reach register_app"
+
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False, "identity change during onEnable must roll the enable back"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_enable_output_is_sanitized_before_print(self, tmp_path, app_env, monkeypatch, capsys):
+        """Captured script output must not carry terminal control sequences.
+
+        Lifecycle output is a third-party app's stdout; printing it raw would
+        let the app inject OSC/ANSI sequences into the operator's terminal.
+        """
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {
+            "onInstall": "",
+            "onEnable": (
+                'printf "ok\\n"; '
+                'printf "\\033]0;pwned\\007"; '
+                'printf "\\033[31mred\\033[0m\\n"'
+            ),
+        }
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        _handle_app(ns)
+
+        out = capsys.readouterr().out
+        assert "\x1b" not in out, "raw escape sequences must not reach the terminal"
+        assert "pwned" not in out
+        assert "ok" in out
 
     def test_info(self, tmp_path, app_env, capsys):
         import argparse
@@ -123,9 +321,7 @@ class TestHandleApp:
         data_file = app_env["home"] / "apps" / "cli-test-app" / "data" / "state.json"
         data_file.write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=False
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=False)
         _handle_app(ns)
 
         from kiro_crew.apps.manager import get_app
@@ -143,9 +339,7 @@ class TestHandleApp:
         app_dir = app_env["home"] / "apps" / "cli-test-app"
         (app_dir / "data" / "state.json").write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=True
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=True)
         _handle_app(ns)
 
         assert not app_dir.exists()
@@ -158,6 +352,61 @@ class TestHandleApp:
         ns = argparse.Namespace(app_action="install", source="/nonexistent")
         with pytest.raises(SystemExit):
             _handle_app(ns)
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="the scripted post-install mutation uses bash",
+    )
+    def test_install_readmits_the_manifest_before_registration(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """CLI install cannot register a manifest rewritten after admission.
+
+        ``install_app`` re-admits immediately after its own hook. The CLI owns
+        the final gate before ``register_app``, so a mutation in the remaining
+        window is re-read and refused rather than activated from stale trust.
+        """
+        import argparse
+
+        import kiro_crew.cli_commands as cli_mod
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {"onInstall": "true"}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+
+        real_install_app = cli_mod.install_app
+
+        def _install_then_mutate(source):
+            result = real_install_app(source)
+            if result.ok:
+                installed_manifest = app_env["home"] / "apps" / result.name / APP_MANIFEST_FILENAME
+                rewritten = json.loads(installed_manifest.read_text())
+                rewritten["version"] = "9.9.9"
+                installed_manifest.write_text(json.dumps(rewritten, indent=2))
+            return result
+
+        registered: list[str] = []
+        monkeypatch.setattr(cli_mod, "install_app", _install_then_mutate)
+        monkeypatch.setattr(
+            cli_mod,
+            "register_app",
+            lambda name: registered.append(name)
+            or type("R", (), {"agents": [], "skills": [], "crons": [], "errors": []})(),
+        )
+
+        ns = argparse.Namespace(app_action="install", source=str(src))
+        with pytest.raises(SystemExit):
+            _handle_app(ns)
+
+        assert registered == [], "a post-install rewrite must never be registered"
+        from kiro_crew.apps.manager import get_app
+
+        installed = get_app("cli-test-app")
+        assert installed is not None
+        assert installed["enabled"] is False, "refused post-install registration stays disabled"
 
     def test_no_action_prints_usage(self, app_env, capsys):
         import argparse
@@ -194,9 +443,7 @@ class TestEnableWarnsHooksNeedRestart:
 
         _handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
 
-    def test_enable_warns_when_the_app_declares_backend_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_warns_when_the_app_declares_backend_hooks(self, tmp_path, app_env, capsys):
         install_app(_make_app_source(tmp_path, hooks=self.HOOKS))
 
         self._enable()
@@ -218,9 +465,7 @@ class TestEnableWarnsHooksNeedRestart:
         meta = _read_installed("cli-test-app")
         assert meta is not None and meta.enabled is True
 
-    def test_enable_says_nothing_for_an_app_without_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_says_nothing_for_an_app_without_hooks(self, tmp_path, app_env, capsys):
         """No hooks means nothing in-process can be stale -- stay quiet."""
         install_app(_make_app_source(tmp_path))
 
@@ -230,9 +475,7 @@ class TestEnableWarnsHooksNeedRestart:
         assert "backend hooks" not in out
         assert "restart" not in out
 
-    def test_notice_helper_tolerates_a_malformed_backend_block(
-        self, tmp_path, app_env
-    ):
+    def test_notice_helper_tolerates_a_malformed_backend_block(self, tmp_path, app_env):
         """A hand-edited app.json must not turn the notice into a crash.
 
         ``backend`` and ``backend.hooks`` are user-editable JSON, so either can

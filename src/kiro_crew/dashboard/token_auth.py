@@ -1262,23 +1262,24 @@ def write_app_secret(app_name: str, secret: str) -> None:
     secret_dir = config_dir() / "apps" / app_name
     secret_dir.mkdir(parents=True, exist_ok=True)
     secret_path = secret_dir / ".app_secret"
-    # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
-    # then restrict_to_owner locks it down while it is still empty, then we
-    # write the secret bytes. This ordering matters on Windows because the
-    # lockdown replaces the file's DACL rather than being set at create time —
-    # if we wrote first the secret would sit under the parent-inherited DACL
-    # until that call landed. On failure we unlink the just-created empty file (mirroring
-    # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
-    # .app_secret under the default DACL that a later successful write
-    # (which does not re-inherit on O_TRUNC) could then populate.
-    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Unlink first, then create exclusively: a script may have replaced the
+    # gateway-owned name with a symlink between the pre-install sweep and this
+    # final write. O_NOFOLLOW is the second fence against that race; exclusive
+    # creation also removes the old O_TRUNC-follows-a-link window.
+    try:
+        secret_path.unlink()
+    except FileNotFoundError:
+        pass
+    open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if platform_compat.IS_POSIX:
+        open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(secret_path), open_flags, 0o600)
     try:
         # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
         # OSError, which would defeat the cleanup-and-reraise below for this
-        # app secret. On POSIX applies chmod 0o600 by path; on
-        # Windows an owner-only DACL (fchmod doesn't exist on
-        # Windows, where an IS_POSIX no-op would let per-app secrets
-        # land readable by other local users).
+        # app secret. On POSIX applies chmod 0o600 by path; on Windows an
+        # owner-only DACL (fchmod doesn't exist on Windows, where an IS_POSIX
+        # no-op would let per-app secrets land readable by other local users).
         platform_compat.restrict_to_owner(secret_path)
         with os.fdopen(fd, "w") as f:
             fd = -1  # fdopen took ownership; skip the redundant close below

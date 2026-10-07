@@ -226,6 +226,96 @@ class TestEnableDepsResolution:
 
         assert call_order == ["resolve_deps", "on_enable_script"]
 
+    @pytest.mark.asyncio
+    async def test_on_enable_runner_receives_the_straggler_reap_flag(self) -> None:
+        """Enable registration cannot begin while a detached writer may live."""
+        script_kwargs: dict[str, object] = {}
+
+        async def mock_script(*args, **kwargs):
+            script_kwargs.update(kwargs)
+            return {"output": "", "failed": False}
+
+        fake_app_info = {
+            "name": "reap-flag-app",
+            "manifest": {"setup": {"onEnable": "echo enabled"}},
+            "resources": "gateway",
+            "enabled": True,
+        }
+        with (
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch(
+                "kiro_crew.apps.routes.enable_app",
+                return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True}),
+            ),
+            patch(
+                "kiro_crew.apps.routes.register_app",
+                return_value=MagicMock(to_dict=lambda: {}),
+            ),
+            patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
+            patch("kiro_crew.apps.routes._run_lifecycle_script", side_effect=mock_script),
+            patch(
+                "kiro_crew.apps.routes.on_app_enable",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+        ):
+            from kiro_crew.apps.routes import handle_enable_app
+
+            request = MagicMock()
+            request.match_info = {"name": "reap-flag-app"}
+            request.app = {"state": MagicMock(owner_id="")}
+            request.can_read_body = False
+            owner_claims(request)
+
+            await handle_enable_app(request)
+
+        assert script_kwargs["reap_surviving_group"] is True
+
+    @pytest.mark.asyncio
+    async def test_self_managed_on_enable_does_not_reap_detached_work(self) -> None:
+        """A self-managed hook owns intentionally detached processes."""
+        script_kwargs: dict[str, object] = {}
+
+        async def mock_script(*args, **kwargs):
+            script_kwargs.update(kwargs)
+            return {"output": "", "failed": False}
+
+        fake_app_info = {
+            "name": "selfmanaged-reap-flag-app",
+            "manifest": {"setup": {"onEnable": "echo enabled"}},
+            "resources": "app",
+            "enabled": True,
+        }
+        with (
+            patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
+            patch(
+                "kiro_crew.apps.routes.enable_app",
+                return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True}),
+            ),
+            patch(
+                "kiro_crew.apps.routes._run_lifecycle_script",
+                side_effect=mock_script,
+            ),
+            patch(
+                "kiro_crew.apps.routes.on_app_enable",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+        ):
+            from kiro_crew.apps.routes import handle_enable_app
+
+            request = MagicMock()
+            request.match_info = {"name": "selfmanaged-reap-flag-app"}
+            request.app = {"state": MagicMock(owner_id="")}
+            request.can_read_body = False
+            owner_claims(request)
+
+            await handle_enable_app(request)
+
+        assert script_kwargs["reap_surviving_group"] is False
+
 
 class TestClientInstallOnEnableIsAdvisory:
     """A ``platform.installMode: "client"`` app's onEnable must not gate the enable.

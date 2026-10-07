@@ -289,6 +289,16 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "loaded companion's patterns) in full before any cap.",
     ),
     (
+        "App install-script failures",
+        "apps/manager.py",
+        "The captured output of a third-party app's failed ``setup.onInstall`` "
+        "script. It reaches TWO surfaces: the SEL audit record for the failed "
+        "install and the human-visible ``AppResult.error`` returned by the CLI "
+        "and the dashboard install routes. The bytes are the app's own "
+        "stdout/stderr, so both surfaces run the shared credential + "
+        "exfiltration-URL chain before the text is stored or shown.",
+    ),
+    (
         "CLI update output",
         "cli_server.py",
         "What `kirocrew update` prints around a wheel update: the release-feed "

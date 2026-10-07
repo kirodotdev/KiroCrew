@@ -1,7 +1,10 @@
 """Tests for kiro_crew.apps.routes — REST API endpoints."""
+
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -42,8 +45,10 @@ def _setup_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
     import kiro_crew.apps.backend as bmod
+
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home
@@ -67,6 +72,7 @@ def _make_app():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_list_empty(tmp_path, monkeypatch):
@@ -179,9 +185,7 @@ async def test_uninstall_purges_data_only_with_explicit_action(tmp_path, monkeyp
 
     async with TestClient(TestServer(_make_app())) as client:
         # The legacy destructive field is ignored and fails closed.
-        resp = await client.post(
-            "/api/apps/api-test-app/uninstall", json={"keep_data": False}
-        )
+        resp = await client.post("/api/apps/api-test-app/uninstall", json={"keep_data": False})
         assert resp.status == 200
     assert (app_dir / "data" / "state.json").is_file()
 
@@ -189,18 +193,14 @@ async def test_uninstall_purges_data_only_with_explicit_action(tmp_path, monkeyp
     # fails closed.
     install_app(src)
     async with TestClient(TestServer(_make_app())) as client:
-        resp = await client.post(
-            "/api/apps/api-test-app/uninstall", json={"purge_data": "true"}
-        )
+        resp = await client.post("/api/apps/api-test-app/uninstall", json={"purge_data": "true"})
         assert resp.status == 200
     assert (app_dir / "data" / "state.json").is_file()
 
     # Reinstall again, then invoke the dedicated literal-boolean purge action.
     install_app(src)
     async with TestClient(TestServer(_make_app())) as client:
-        resp = await client.post(
-            "/api/apps/api-test-app/uninstall", json={"purge_data": True}
-        )
+        resp = await client.post("/api/apps/api-test-app/uninstall", json={"purge_data": True})
         assert resp.status == 200
 
     assert not app_dir.exists()
@@ -304,9 +304,7 @@ async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
-    tmp_path, monkeypatch
-):
+async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(tmp_path, monkeypatch):
     """A single unlucky lock collision must not fail the user's uninstall."""
     _setup_env(tmp_path, monkeypatch)
     src = _make_app_source(tmp_path)
@@ -336,9 +334,7 @@ async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
 
 
 @pytest.mark.asyncio
-async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
-    tmp_path, monkeypatch
-):
+async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(tmp_path, monkeypatch):
     """ORDERING regression: when cron cleanup fails, the uninstall aborts
     (retryable 409) BEFORE anything destructive runs.
 
@@ -407,6 +403,7 @@ async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
 # ---------------------------------------------------------------------------
 # UI file serving — cache policy
 # ---------------------------------------------------------------------------
+
 
 def _make_app_source_with_ui(tmp_path, name="ui-cache-app"):
     src = _make_app_source(tmp_path, name)
@@ -526,3 +523,473 @@ async def test_install_route_registers_off_loop(tmp_path, monkeypatch):
         assert data["ok"] is True
         assert "registration" in data  # helper's return value still surfaces
     assert seen["thread"] is not loop_thread
+
+
+@pytest.mark.asyncio
+async def test_on_enable_gates_backend_start(tmp_path, monkeypatch):
+    """onEnable must finish BEFORE the backend is spawned.
+
+    An app whose onEnable installs its backend dependencies (npm install)
+    loses any race with the backend's first boot — the backend exits on
+    missing node_modules.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    order: list[str] = []
+
+    async def _fake_script(name, script, *, timeout=30, action="lifecycle_script", **kwargs):
+        order.append(f"onEnable:{name}")
+        return {"output": "", "failed": False}
+
+    def _fake_backend(app_name):
+        order.append(f"backend:{app_name}")
+        return None
+
+    monkeypatch.setattr("kiro_crew.apps.routes._run_lifecycle_script", _fake_script)
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", _fake_backend)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+
+    assert order == [
+        "onEnable:api-test-app",
+        "backend:api-test-app",
+    ], f"onEnable must complete before start_app_backend, saw {order}"
+
+
+@pytest.mark.asyncio
+async def test_enable_failure_before_backend_start_leaves_no_backend(tmp_path, monkeypatch):
+    """A failing onEnable rolls back before any backend process exists."""
+    _setup_env(tmp_path, monkeypatch)
+    # The failing script is a REAL bash child; allow it regardless of whether
+    # this host can build a namespace sandbox (same convention as
+    # test_apps_registry.py's unsandboxed_spawn fixture). Sandbox construction
+    # itself is covered by test_sandbox_*.py.
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "exit 1"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    backend_started: list[str] = []
+
+    def _fail_backend(app_name):
+        backend_started.append(app_name)
+        return None
+
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", _fail_backend)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_failed"
+
+    assert backend_started == [], "backend must not start when onEnable fails"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_enable_reads_manifest_again_inside_lifecycle_lock(tmp_path, monkeypatch):
+    """The under-lock app snapshot—not the pre-lock info read—gates onEnable.
+
+    A manifest can change between the handler's first ``get_app`` and the
+    lifecycle lock. Using the stale copy would run (or skip) the wrong hook;
+    re-reading under the lock uses the manifest that actually owns this
+    lifecycle transition.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    import kiro_crew.apps.routes as routes_mod
+
+    real_get_app = routes_mod.get_app
+    get_app_on_enable: list[object] = []
+
+    def _stale_first_get_app(name):
+        info = real_get_app(name)
+        if info is not None:
+            stale = dict(info)
+            # Only the first read—the pre-lock 404/info read—sees the stale
+            # manifest. Recording each returned manifest makes the later
+            # assertion prove the handler also obtained a distinct under-lock
+            # snapshot instead of silently reusing the first one.
+            if not get_app_on_enable:
+                stale["manifest"] = {
+                    **info.get("manifest", {}),
+                    "setup": {"onEnable": "exit 7"},
+                }
+            get_app_on_enable.append(
+                stale["manifest"]["setup"]["onEnable"]
+                if isinstance(stale["manifest"], dict)
+                else None
+            )
+            return stale
+        get_app_on_enable.append(None)
+        return info
+
+    monkeypatch.setattr(routes_mod, "get_app", _stale_first_get_app)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+
+    assert len(get_app_on_enable) == 2
+    assert get_app_on_enable == ["exit 7", "true"]
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_post_on_enable_manifest_read_runs_off_loop(tmp_path, monkeypatch):
+    """Re-admission reads a potentially unbounded app.json on an executor."""
+    import threading
+
+    import kiro_crew.apps.routes as routes_mod
+
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    loop_thread = threading.current_thread()
+    read_threads: list[threading.Thread] = []
+    real_get_app_manifest = routes_mod.get_app_manifest
+
+    async def _fake_script(*args, **kwargs):
+        return {"output": "", "failed": False}
+
+    def _spy_get_app_manifest(name):
+        read_threads.append(threading.current_thread())
+        return real_get_app_manifest(name)
+
+    monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _fake_script)
+    monkeypatch.setattr(routes_mod, "get_app_manifest", _spy_get_app_manifest)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+
+    assert read_threads
+    assert all(
+        thread is not loop_thread for thread in read_threads
+    ), "the post-onEnable manifest re-read must not run on the event loop"
+
+
+def _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body):
+    """Install an app whose onEnable runs *on_enable_body* as real bash.
+
+    Same unsandboxed convention as the scripted-install tests: these tests
+    assert real bash semantics and must not depend on the host's sandbox
+    backend. The lifecycle runner targets ``/bin/bash`` literally, which does
+    not resolve on Windows — there the route's documented graceful-failure
+    contract applies, so the real-bash assertions run on POSIX only.
+    """
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": on_enable_body}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_on_enable_cannot_swap_manifest_identity(tmp_path, monkeypatch):
+    """onEnable rewrites app.json → registration must be re-admitted first.
+
+    A compromised hook with write access to the app directory could swap the
+    admitted manifest (e.g. inject cron declarations) between admission and
+    registration. The enable route must re-read the manifest, detect the
+    identity change, and roll back before anything from the rewritten
+    manifest is registered or booted.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(
+        tmp_path,
+        monkeypatch,
+        on_enable_body=(
+            'printf \'{"name":"api-test-app","version":"9.9.9",'
+            '"displayName":"Evil"}\' > app.json'
+        ),
+    )
+
+    registered: list[str] = []
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.register_app",
+        lambda name: registered.append(name),
+    )
+    backend_started: list[str] = []
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.start_app_backend",
+        lambda app_name: backend_started.append(app_name),
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "9.9.9" in data["error"] or "manifest changed" in data["error"]
+
+    assert registered == [], "nothing from the rewritten manifest may register"
+    assert backend_started == [], "no backend may boot from a rewritten manifest"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_on_enable_cannot_destroy_the_manifest(tmp_path, monkeypatch):
+    """onEnable removes app.json → fail closed, not register from cache."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="rm -f app.json")
+
+    monkeypatch.setattr("kiro_crew.apps.routes.register_app", lambda name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "manifest" in data["error"]
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_on_enable_admission_policy_denial_rolls_back(tmp_path, monkeypatch):
+    """A post-onEnable admission denial rolls the enable back cleanly."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="true")
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.app_admission_denied",
+        lambda name, manifest=None, action="install": "unsigned app",
+    )
+    monkeypatch.setattr("kiro_crew.apps.routes.register_app", lambda name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "unsigned app" in data["error"]
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_benign_on_enable_passes_readmission(tmp_path, monkeypatch):
+    """A well-behaved onEnable leaves the manifest alone → enable succeeds."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="true")
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", lambda app_name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is True
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_failed_reenable_rolls_back_to_disabled(tmp_path, monkeypatch):
+    """A failed re-enable rolls back to disabled on HTTP, too.
+
+    The owner's contract is deliberately stricter than "preserve whatever was
+    enabled": a hook that fails after activation is a failed activation on both
+    surfaces, so the route stops what it manages and leaves the app disabled.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", lambda app_name: None)
+    monkeypatch.setattr("kiro_crew.apps.routes.stop_app_backend", lambda app_name: None)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+
+        # The installed manifest now acquires a failing script (an update).
+        home = tmp_path / "kirocrew-home"
+        installed_manifest = home / "apps" / "api-test-app" / APP_MANIFEST_FILENAME
+        updated = json.loads(installed_manifest.read_text())
+        updated["setup"] = {"onEnable": "exit 7"}
+        installed_manifest.write_text(json.dumps(updated, indent=2))
+
+        resp = await client.post("/api/apps/api-test-app/enable")  # re-enable fails
+        assert resp.status == 400
+        data = await resp.json()
+    assert data["code"] == "on_enable_failed"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False, "a failed re-enable must roll back to disabled"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_on_enable_reaps_a_manifest_writing_straggler(tmp_path, monkeypatch):
+    """A detached onEnable writer cannot race post-script registration."""
+    import json
+    import time
+
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    evil_manifest = json.dumps(
+        {
+            "name": "api-test-app",
+            "version": "9.9.9",
+            "displayName": "Evil",
+            "description": "rewritten by a detached straggler",
+            "author": "attacker",
+        },
+        separators=(",", ":"),
+    )
+    (src / "evil.json").write_text(evil_manifest)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {
+        "onEnable": ("nohup bash -c 'sleep .3; cp evil.json app.json' " ">/dev/null 2>&1 & disown")
+    }
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    import kiro_crew.apps.routes as routes_mod
+
+    registered: list[str] = []
+    registration = routes_mod.RegistrationResult()
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.register_app",
+        lambda name: registered.append(name) or registration,
+    )
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", lambda name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["registration"] == registration.to_dict()
+
+    installed = tmp_path / "kirocrew-home" / "apps" / "api-test-app" / APP_MANIFEST_FILENAME
+    # This wait is the counterfactual: an unreaped writer would overwrite the
+    # manifest after its delayed startup. Waiting here ensures the test
+    # observes that window rather than passing because it returned too early.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(installed.read_text()).get("version") == "9.9.9":
+                break
+        except (OSError, json.JSONDecodeError):
+            pass
+        await asyncio.sleep(0.02)
+
+    rewritten = json.loads(installed.read_text())
+    assert rewritten.get("version") != "9.9.9"
+    assert registered == ["api-test-app"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_post_on_enable_denial_stops_a_fresh_auto_started_backend(tmp_path, monkeypatch):
+    """A denied rewritten manifest must not strand an auto-started backend.
+
+    The installed app starts disabled, so an auto-started backend can already be
+    running before a fresh enable. `was_enabled` cannot decide rollback scope.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="true")
+    stopped: list[str] = []
+
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.stop_app_backend",
+        lambda name: stopped.append(name),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.app_admission_denied",
+        lambda name, manifest=None, action="install": "denied after rewrite",
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "on_enable_admission_denied"
+
+    assert stopped == ["api-test-app"]
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None and meta.enabled is False

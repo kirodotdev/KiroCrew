@@ -207,13 +207,30 @@ Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
 
 | Operation | `resources: gateway` | `resources: app` |
 |---|---|---|
-| Enable | register resources, start backend, resolve dependencies, run `onEnable` | run `onEnable` only |
+| Enable | resolve dependencies, run `onEnable`, re-admit the manifest (name/version comparison plus admission policy), then register resources and start backend | run `onEnable` only |
 | Disable | run `onDisable`, run hooks, stop backend, deregister | run `onDisable` and hooks only |
 
 | Operation | `lifecycle: gateway` | `lifecycle: app` | `lifecycle: locked` |
 |---|---|---|---|
 | Update | re-clone or re-copy, re-register | 400 | 400 |
 | Uninstall | teardown then remove files | teardown then remove files | 400 (disable instead) |
+
+A failed `onEnable` rolls back to disabled on both activation surfaces. A
+failed re-enable is not special: stop what the gateway manages for a
+gateway-managed app, deregister its gateway-managed resources, and leave the
+record disabled.
+
+Local installs run `onInstall` in the copied app directory after admission and
+again re-admit the on-disk manifest before registration by comparing name and version and rerunning admission policy. A local manifest
+declaring the hook on native Windows without `/bin/bash` therefore fails the
+install closed.
+
+A local `onInstall` reaps its whole process group for every resource mode; a
+gateway-managed `onEnable` also reaps its group before registration consumes
+the re-admitted manifest. Self-managed and client-install `onEnable`/`onDisable`
+hooks own detached work. The reaper cannot follow a `setsid`: a child that
+creates a new session escapes it, so re-admission is not a defense against a
+script that detaches that way and mutates the manifest later.
 
 An unknown value in any of the three is repaired to that field's default with a
 warning rather than raising: `installed.json` is read on every boot, and a
@@ -1207,6 +1224,8 @@ decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
 **no code path executes it**. Treat the field as declared-not-wired: an app whose
 update correctness depends on it is broken, and the fix is an idempotent
 `onInstall` (a registry update re-runs it), not a new call site added quietly.
+`apps/manager.py::update_app` is the deferred updater: it deliberately runs no
+lifecycle hook today.
 
 Writers: `apps/routes.py::handle_uninstall_app`, `_deregister_crons_with_retry`,
 `_run_lifecycle_script`; `apps/manager.py::uninstall_app`.

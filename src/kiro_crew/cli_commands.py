@@ -40,6 +40,7 @@ from kiro_crew import (
 )
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import reset_agent_model
+from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.backend import recorded_backend_port
 from kiro_crew.apps.bridges import (
     SessionPointerCleanup,
@@ -49,6 +50,7 @@ from kiro_crew.apps.bridges import (
     register_app,
     register_app_crons_with_service,
 )
+from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script, sanitize_script_output
 from kiro_crew.apps.manager import (
     disable_app,
     enable_app,
@@ -1035,6 +1037,37 @@ def _warn_hooks_need_restart(app_name: str) -> bool:
     return True
 
 
+def _rollback_cli_enable(app_name: str) -> None:
+    """Tear an enable down exactly as the CLI's own disable branch does."""
+    _cleanup_app_crons_from_scheduler(app_name)
+    disable_app(app_name)
+    deregister_app(app_name)
+
+
+def _post_install_registration_denial(name: str) -> str:
+    """Re-read and re-admit a manifest immediately before CLI registration.
+
+    ``install_app`` re-admits after its own hook, but registration is a
+    separate step. A successful install can still race a writer (or a future
+    runner seam can widen that window), so the CLI trusts only the manifest
+    it reads after the manager returns: same identity and installed version,
+    then a fresh install-admission decision.
+    """
+    info = get_app(name)
+    if not info:
+        return "installed app metadata disappeared before registration"
+    expected_version = info.get("version")
+    manifest = get_app_manifest(name)
+    if manifest is None:
+        return "install removed or corrupted the app manifest"
+    if manifest.name != name or manifest.version != expected_version:
+        return (
+            f"app manifest changed after install: expected {name!r} "
+            f"v{expected_version}, found {manifest.name!r} v{manifest.version}"
+        )
+    return app_admission_denied(name, manifest=manifest, action="install") or ""
+
+
 def _run_app_mcp_server(app_name: str) -> None:
     """Run the named app's stdio MCP server in this process.
 
@@ -1196,6 +1229,21 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
+            denial = _post_install_registration_denial(result.name)
+            if denial:
+                # Do NOT uninstall here: the manifest is now untrusted, so an
+                # uninstall hook read from it could execute attacker-chosen
+                # shell. The app is disabled and unregistered; an operator can
+                # remove the directory deliberately after inspecting it.
+                sel().log_api_access(
+                    caller="cli",
+                    operation="app_install",
+                    outcome="denied",
+                    resources=result.name,
+                    error=denial,
+                )
+                print(f"❌ blocked after install: {denial}", file=sys.stderr)
+                sys.exit(1)
             reg = register_app(result.name)
             if reg.agents:
                 print(f"   Agents: {', '.join(reg.agents)}")
@@ -1229,6 +1277,114 @@ def _handle_app(args: argparse.Namespace) -> None:
             return
         result = enable_app(args.name)
         if result.ok:
+            # Run the manifest's setup.onEnable, matching the dashboard enable
+            # route: following the CLI's own "Run: kirocrew app enable <name>"
+            # hint must leave an app whose script installs its backend
+            # dependencies startable. A failure rolls the enable back (app
+            # stays disabled), same as the route.
+            app_manifest = get_app_manifest(args.name)
+            setup = app_manifest.setup if app_manifest is not None else None
+            on_enable = setup.onEnable if setup is not None else ""
+            enable_timeout = setup.onEnableTimeout if setup is not None else 30
+            # Mirror the dashboard route's two platform carve-outs: skip the
+            # script on an unsupported OS, and treat a client-install app's
+            # script as advisory (failure neither gates nor rolls back) — it
+            # launches a separately-distributed desktop companion that may
+            # legitimately not be installed yet.
+            platform_cfg = app_manifest.platform if app_manifest is not None else None
+            client_platform = (
+                platform_cfg
+                if platform_cfg is not None and platform_cfg.installMode == "client"
+                else None
+            )
+            skip_on_enable = bool(
+                on_enable
+                and client_platform is not None
+                and not client_platform.supports_platform(sys.platform)
+            )
+            app_info = get_app(args.name) or {}
+            is_gateway_app = app_info.get("resources", "gateway") == "gateway"
+            if skip_on_enable:
+                print("   onEnable: skipped (unsupported platform)")
+            elif on_enable:
+                # run_lifecycle_script converts sandbox refusals and launch
+                # failures into a failed result, so a scripted enable fails
+                # CLOSED through the rollback below instead of crashing with
+                # the app left enabled. The guard keeps that guarantee if a
+                # future exception escapes the runner.
+                try:
+                    script_output = asyncio.run(
+                        run_lifecycle_script(
+                            args.name,
+                            on_enable,
+                            timeout=enable_timeout,
+                            action="on_enable",
+                            reap_surviving_group=is_gateway_app,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - rollback over crash
+                    script_output = {"output": f"lifecycle runner failed: {exc}", "failed": True}
+                except BaseException:
+                    # A KeyboardInterrupt is not a normal script result: it
+                    # must not leave an enabled app whose activation did not
+                    # complete. Roll back, then let cancellation propagate.
+                    _rollback_cli_enable(args.name)
+                    raise
+                # Third-party script output never reaches the terminal raw:
+                # strip control sequences, then run the full shared chain
+                # (credentials + exfiltration URLs), matching the manager's
+                # install-failure surface.
+                raw_output = str(script_output.get("output", ""))
+                safe_output, _ = redact_credentials(sanitize_script_output(raw_output))
+                safe_output, _ = redact_exfiltration_urls(safe_output)
+                if script_output.get("failed") and client_platform is None:
+                    _rollback_cli_enable(args.name)
+                    print(
+                        "❌ onEnable script failed — app remains disabled\n" f"{safe_output}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if script_output.get("failed"):
+                    print(
+                        "⚠️  onEnable script failed (advisory for a client-install"
+                        f" app): {safe_output}"
+                    )
+                elif safe_output:
+                    print(f"   onEnable: {safe_output}")
+                # The script just ran with WRITE access to the app directory,
+                # so app.json on disk may not match the manifest this
+                # enable was admitted under — the same tamper window the
+                # dashboard route's post-onEnable re-check closes. Re-read,
+                # re-verify identity, and re-run admission BEFORE
+                # register_app reads the (possibly rewritten) manifest and
+                # hands it agents/skills/MCP servers/crons.
+                post_enable_manifest = get_app_manifest(args.name)
+                admitted_version = app_manifest.version if app_manifest is not None else None
+                if post_enable_manifest is None:
+                    denied_reason = "onEnable removed or corrupted the app manifest"
+                elif (
+                    post_enable_manifest.name != args.name
+                    or post_enable_manifest.version != admitted_version
+                ):
+                    denied_reason = (
+                        f"app manifest changed during onEnable: expected "
+                        f"{args.name!r} v{admitted_version}, found "
+                        f"{post_enable_manifest.name!r} v{post_enable_manifest.version}"
+                    )
+                else:
+                    denied_reason = (
+                        app_admission_denied(
+                            args.name, manifest=post_enable_manifest, action="enable"
+                        )
+                        or ""
+                    )
+                if denied_reason:
+                    _rollback_cli_enable(args.name)
+                    print(
+                        f"❌ blocked after onEnable: {denied_reason}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             reg = register_app(args.name)
             _print_file_only_app_result(args.name, enabled=True)
             if reg.agents:

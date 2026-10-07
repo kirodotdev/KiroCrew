@@ -259,6 +259,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # acp/client.py's sites.
     "acp/transport_errors.py": 1,
+    # +1: install-script failure audit line in the app-manager process, which
+    # never composes a companion context; the failure text is the payload of
+    # the registered "App install-script failures" sink.
+    "apps/manager.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_runner.py": 9,

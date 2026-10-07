@@ -931,7 +931,7 @@ the endpoint; it does not import provider code.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
+| `setup.onInstall` | string | `""` | Shell command run during a registry install and again on every registry update, after clone/build; a local install runs it after copying its source. The post-script manifest is re-admitted by comparing app name and version, then rerunning admission policy, before registration |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
 | `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
 | `setup.onEnable` | string | `""` | Shell command run when app is enabled |
@@ -941,10 +941,17 @@ the endpoint; it does not import provider code.
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
-stays disabled and any registered resources are deregistered. `onDisable`
-failures are logged as warnings but do not block the disable operation. Local-path
-installs do not run `onInstall`; build first, then install. Lifecycle scripts always
-invoke `/bin/bash`; on native Windows without that executable they fail cleanly.
+stays disabled and any registered resources are deregistered. This includes a
+failed re-enable: the prior enabled state is not preserved. `onDisable`
+failures are logged as warnings but do not block the disable operation.
+Local-path installs run `onInstall` in their copied app directory before
+registration and reap its whole process group for every resource mode.
+Lifecycle scripts always invoke `/bin/bash`; on native Windows without that
+executable they fail cleanly (and a local install declaring `onInstall` fails
+closed). Gateway-managed `onEnable` reaps leftover members of its process
+group; self-managed apps own detached work. A script that uses `setsid` moves
+into a new session the reaper cannot reach. Post-script re-admission therefore
+does not defend against that form of detachment and a later manifest rewrite.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as

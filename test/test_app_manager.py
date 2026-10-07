@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
+import signal
 import stat
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from kiro_crew.apps.manager import (
     AppResult,
     InstalledApp,
     _read_installed,
+    _remove_installed_tree_except_data,
     _validate_source_path,
     _write_installed,
     app_enabled_state,
@@ -374,7 +377,9 @@ class TestInstall:
         secret. The copied tree is now asked the data directory's own question
         before the record exists, and the whole copy goes with the refusal."""
         src = _make_app_source(tmp_path)
-        (src / "data").write_text("a file where the gateway's data directory goes\n", encoding="utf-8")
+        (src / "data").write_text(
+            "a file where the gateway's data directory goes\n", encoding="utf-8"
+        )
 
         result = install_app(src)
 
@@ -677,9 +682,7 @@ class TestUninstall:
         if not _mgr.platform_compat.IS_WINDOWS:
             linked_home = tmp_path / "home-link"
             linked_home.symlink_to(app_home)
-            monkeypatch.setattr(
-                _mgr, "app_dir", lambda name: linked_home / "apps" / name
-            )
+            monkeypatch.setattr(_mgr, "app_dir", lambda name: linked_home / "apps" / name)
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -789,9 +792,7 @@ class TestUninstall:
         assert marker.exists(), "preserved data must be restored to data/"
         assert not (app_home / "apps" / ".test-app-data-tmp").exists()
 
-    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(
-        self, tmp_path, app_home
-    ):
+    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(self, tmp_path, app_home):
         """The sweep deletes only the gateway's own generated names: an
         app-owned entry that merely shares the .kirocrew-deps prefix (a
         user's backup dir) is preserved data, not a purge target."""
@@ -815,9 +816,7 @@ class TestUninstall:
             app_root / "data" / ".kirocrew-deps-staging-assets" / "art.bin"
         ).exists(), "app-owned staging-prefix data must survive"
 
-    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(
-        self, tmp_path, app_home
-    ):
+    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(self, tmp_path, app_home):
         """rmtree refuses non-directories, so a FILE written at a deps-tree
         name survives every uninstall and poisons the next quarantine
         rename. Shape-aware removal purges it - and a second
@@ -1471,9 +1470,7 @@ class TestInstalledApp:
             "deploy:local-segment@host.example:Owner/Repo.git",
         ],
     )
-    def test_write_boundary_preserves_non_uri_source_metadata(
-        self, app_home, coordinate: str
-    ):
+    def test_write_boundary_preserves_non_uri_source_metadata(self, app_home, coordinate: str):
         _write_installed(
             "metadata-app",
             InstalledApp(
@@ -1929,9 +1926,7 @@ class TestCopyAppTree:
         assert not (orphan / "leftover.bin").exists()
         assert (orphan / APP_MANIFEST_FILENAME).is_file()
 
-    def test_local_install_cannot_claim_a_repository_bound_grant(
-        self, tmp_path, app_home
-    ):
+    def test_local_install_cannot_claim_a_repository_bound_grant(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1955,9 +1950,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_external_registration_cannot_claim_a_repository_bound_grant(
-        self, app_home
-    ):
+    def test_external_registration_cannot_claim_a_repository_bound_grant(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1981,9 +1974,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_install_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_install_repository_code(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -2002,9 +1993,7 @@ class TestCopyAppTree:
         assert "Secret" not in result.error
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_claim_fresh_local_install(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_claim_fresh_local_install(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -2117,9 +2106,7 @@ class TestCopyAppTree:
         assert persisted is not None
         assert persisted.sourceUrl == reviewed
 
-    def test_registry_context_rechecks_binding_at_replacement_boundary(
-        self, tmp_path, app_home
-    ):
+    def test_registry_context_rechecks_binding_at_replacement_boundary(self, tmp_path, app_home):
         """A source changed after registry preflight cannot reach the copy step."""
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2166,9 +2153,7 @@ class TestCopyAppTree:
         assert first == "https://example.test/owner/first"
         assert second == "https://example.test/owner/second"
 
-    def test_legacy_name_grant_cannot_update_to_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_update_to_repository_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2208,9 +2193,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_installed_legacy_local_grant_can_update_local_code(
-        self, tmp_path, app_home
-    ):
+    def test_installed_legacy_local_grant_can_update_local_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2244,7 +2227,9 @@ class TestCopyAppTree:
         assert secret.read_text(encoding="utf-8") == "s3cret"
 
     @requires_symlinks
-    def test_an_installed_data_link_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+    def test_an_installed_data_link_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
         """An installed `data` that is a LINK (an install from before the link
         refusal) cannot be preserved: the move would relocate the link beside the
         app directory, where its relative target does not resolve, put nothing
@@ -2271,10 +2256,14 @@ class TestCopyAppTree:
         assert result.error == _DATA_IS_A_LINK, result.error
         assert os.path.islink(dest / "data")
         assert (dest / "state" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
-        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'  # still reachable
+        assert (dest / "data" / "state.json").read_text(
+            encoding="utf-8"
+        ) == '{"k": 1}'  # still reachable
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
         # The source of the refused update is not the app's business: untouched too.
         assert (v2 / APP_MANIFEST_FILENAME).is_file()
 
@@ -2308,7 +2297,9 @@ class TestCopyAppTree:
             "kiro_crew.apps.manager.is_link_or_junction", lambda path: Path(path) == junction
         )
         assert _owned_data_dir(junction) is False  # not a directory the gateway may move
-        assert preserved_data_awaits("test-app") is False  # so the preview preserves nothing over it
+        assert (
+            preserved_data_awaits("test-app") is False
+        )  # so the preview preserves nothing over it
 
         result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
 
@@ -2317,7 +2308,9 @@ class TestCopyAppTree:
         assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     @requires_symlinks
     def test_an_installed_data_link_to_an_outside_directory_refuses_the_update_before_the_transaction(
@@ -2347,9 +2340,13 @@ class TestCopyAppTree:
         assert (elsewhere / "sentinel.json").read_text(encoding="utf-8") == '{"kept": true}'
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
-    def test_an_installed_data_file_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+    def test_an_installed_data_file_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
         """The FILE shape of the same loss: an installed `data` that is a regular
         file (an install from before the refusal, or the app's own runtime
         replacing its directory) is not a directory the gateway can move aside. A
@@ -2383,7 +2380,9 @@ class TestCopyAppTree:
         assert (dest / APP_MANIFEST_FILENAME).read_text(encoding="utf-8") == manifest_before
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
         # The source of the refused update is not the app's business: untouched too.
         assert (v2 / APP_MANIFEST_FILENAME).is_file()
 
@@ -2415,7 +2414,9 @@ class TestCopyAppTree:
         assert list(elsewhere.iterdir()) == []
         assert os.path.islink(planted)
         assert _read_installed("test-app") == before
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     @requires_symlinks
     @pytest.mark.parametrize("secret_installed", [True, False])
@@ -2597,9 +2598,7 @@ class TestCopyAppTree:
         assert get_app("test-app")["sessionApprovalConsentPending"] is False
 
     def test_fresh_install_with_session_approval_requires_consent(self, tmp_path, app_home):
-        result = install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        )
+        result = install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True}))
 
         assert result.ok, result.error
         assert result.notice == "session_approval_reconsent"
@@ -2616,9 +2615,7 @@ class TestCopyAppTree:
         # refresh that keeps it is not a new request.
         from kiro_crew.apps.manager import update_app
 
-        assert install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        ).ok
+        assert install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True})).ok
         assert enable_app("test-app", session_approval_consent=True).ok
         v2 = _make_app_source(
             tmp_path / "v2",
@@ -2713,9 +2710,7 @@ class TestCopyAppTree:
         assert get_app("ext-keypad")["enabled"] is False
         assert get_app("ext-keypad")["sessionApprovalConsentPending"] is False
 
-    def test_failed_self_registration_widening_restores_metadata(
-        self, app_home, monkeypatch
-    ):
+    def test_failed_self_registration_widening_restores_metadata(self, app_home, monkeypatch):
         from kiro_crew.apps import manager as manager_mod
 
         assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
@@ -2758,9 +2753,7 @@ class TestCopyAppTree:
             "version": "1.0.0",
             "permissions": {"sessionApproval": True},
         }
-        assert register_external_app(
-            "ext-keypad", "1.0.0", "Keypad", manifest_data=manifest
-        ).ok
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad", manifest_data=manifest).ok
         original = _read_installed("ext-keypad")
         assert original is not None
         real_write = manager_mod._write_installed
@@ -2908,9 +2901,7 @@ def _ship_test_builtin(monkeypatch, root, manifest_data):
     shipped = root / "shipped-builtins"
     shipped_app = shipped / manifest_data["name"]
     shipped_app.mkdir(parents=True)
-    (shipped_app / "app.json").write_text(
-        json.dumps(manifest_data), encoding="utf-8"
-    )
+    (shipped_app / "app.json").write_text(json.dumps(manifest_data), encoding="utf-8")
     monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
     return shipped_app
 
@@ -2997,9 +2988,7 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
 
         assert app_enabled_state("shape-probe") is None
 
-    def test_genuine_absence_stays_false_under_the_windows_error_class(
-        self, app_home, monkeypatch
-    ):
+    def test_genuine_absence_stays_false_under_the_windows_error_class(self, app_home, monkeypatch):
         """The control for the above: the shape check must not swallow real absence.
 
         Uninstall depends on this False, so a fix for the wrong-shape case that also
@@ -3495,9 +3484,7 @@ class TestBootSkillReconcile:
         assert "test-app/kept-skill" in registered
         # symlink on POSIX, directory junction on non-admin Windows.
         assert platform_compat.is_link_or_junction(skills_root / "test-app" / "kept-skill")
-        assert (
-            skills_root / "test-app" / "kept-skill"
-        ).resolve() == kept_skill.resolve()
+        assert (skills_root / "test-app" / "kept-skill").resolve() == kept_skill.resolve()
         # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()
@@ -3951,9 +3938,7 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.sourceUrl == self._REPOSITORY
         assert meta.origin == "registry"
 
-    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(
-        self, app_home, monkeypatch
-    ):
+    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(self, app_home, monkeypatch):
         from kiro_crew.apps import registry
 
         self._seed_registry_app()
@@ -3982,9 +3967,7 @@ class TestRegisterExternalPreservesServerProvenance:
             "gitUrl": self._REPOSITORY,
             "_registry": self._REGISTRY,
         }
-        monkeypatch.setattr(
-            registry, "_registry_app_candidates", lambda name: [attacker, pinned]
-        )
+        monkeypatch.setattr(registry, "_registry_app_candidates", lambda name: [attacker, pinned])
 
         def _bare_name_lookup(name):
             raise AssertionError(f"bare-name lookup attempted for {name}")
@@ -3992,9 +3975,7 @@ class TestRegisterExternalPreservesServerProvenance:
         monkeypatch.setattr(registry, "get_registry_app", _bare_name_lookup)
         assert registry._resolve_install_entry("self-app") == (pinned, "")
 
-    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(
-        self, app_home
-    ):
+    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         self._seed_registry_app()
@@ -4160,7 +4141,9 @@ class TestCopyAppTreeAsInstalled:
         with pytest.raises(InstalledTreeRefused) as refused:
             copy_app_tree_as_installed(root, dest, data_preserved=False)
         assert str(refused.value) == _DATA_IS_A_FILE
-        assert gateway_data_dir_obstruction(dest) == _DATA_IS_A_FILE  # the tree it refused, as copied
+        assert (
+            gateway_data_dir_obstruction(dest) == _DATA_IS_A_FILE
+        )  # the tree it refused, as copied
         dest = tmp_path / "installed-update"
         copy_app_tree_as_installed(root, dest, data_preserved=True)
         assert not os.path.lexists(dest / "data")
@@ -4320,3 +4303,292 @@ class TestCopyAppTreeAsInstalled:
         assert (dest / "absolute.txt").resolve() == (dest / "requirements" / "prod.txt")
         # Kept verbatim: from the copy it reaches the checkout, outside the copy.
         assert (dest / "climbing.txt").resolve() == (root / "requirements" / "prod.txt").resolve()
+
+
+# ---------------------------------------------------------------------------
+# Local-directory install: setup.onInstall
+# ---------------------------------------------------------------------------
+
+
+class TestLocalInstallScript:
+    """``setup.onInstall`` must run on the local-directory install path.
+
+    A Node app installed from a folder needs the hook to produce
+    ``node_modules``; without it the backend cannot start.
+    """
+
+    @pytest.fixture(autouse=True)
+    def unsandboxed_spawn(self, monkeypatch):
+        """Decouple the scripted-install tests from the host's sandbox capability.
+
+        These tests run REAL bash children (markers, exit codes, timeouts), so
+        on a CI runner where unprivileged user namespaces are restricted
+        ``wrap_argv`` fail-closes by design and every test would fail with
+        "sandbox unavailable". Allowing unsandboxed exec here is the same
+        autouse convention ``test_apps_registry.py`` uses; sandbox construction
+        itself is covered by ``test_sandbox_*.py``.
+        """
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+
+    def _make_scripted_app_source(self, tmp_path, name="oninstall-app", on_install=""):
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        manifest = {
+            "name": name,
+            "version": "1.0.0",
+            "displayName": "OnInstall Test App",
+            "description": "App for onInstall testing",
+            "author": "tester",
+        }
+        if on_install:
+            manifest["setup"] = {"onInstall": on_install}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        return src
+
+    # The scripted-install tests assert REAL bash semantics (markers, exit
+    # codes, sleep timeouts). App lifecycle scripts are bash by contract and
+    # Windows runners do not ship one, so they are POSIX-gated the same way the
+    # registry install-script tests in test_apps_registry.py are.
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_runs_on_install(self, tmp_path, app_home):
+        src = self._make_scripted_app_source(tmp_path, on_install="printf ran > install-marker")
+        result = install_app(src)
+        assert result.ok, result.error
+        marker = app_home / "apps" / "oninstall-app" / "install-marker"
+        assert marker.is_file(), "onInstall must run in the copied app dir"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_cannot_mutate_the_source_tree(self, tmp_path, app_home):
+        src = self._make_scripted_app_source(
+            tmp_path, on_install="printf ran > source-mutation-marker"
+        )
+        result = install_app(src)
+        assert result.ok, result.error
+        assert not (
+            src / "source-mutation-marker"
+        ).exists(), "onInstall runs in the COPIED app dir, never in the source tree"
+
+    def test_install_script_denied_by_execution_policy(self, tmp_path, monkeypatch):
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # No apps_allow_third_party grant: the script must not execute.
+        (home / "config.json").write_text("{}", encoding="utf-8")
+        src = self._make_scripted_app_source(tmp_path, on_install="printf ran > install-marker")
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "app_execution_denied"
+        assert "install-marker" not in [p.name for p in home.rglob("*")]
+        assert _read_installed("oninstall-app") is None
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_fails_install_and_preserves_data(self, tmp_path, app_home):
+        """A FRESH install whose hook fails leaves NOTHING behind.
+
+        The data/ tree a failed fresh install leaves must not be preserved: it
+        was written by the source package or by the failed hook itself, and a
+        retry would silently restore that partial, unverified state as if it
+        were established user data. A fresh failure is a clean failure.
+        """
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        (src / "data").mkdir()
+        (src / "data" / "state.json").write_text('{"saved": true}')
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        assert "exit code 3" in result.error
+        # No metadata written — the app is NOT installed.
+        assert _read_installed("oninstall-app") is None
+        # Nothing lingers inside dest — not even the hook's partial data/ —
+        # so the next attempt starts from a clean dest.
+        dest = app_home / "apps" / "oninstall-app"
+        assert (
+            not dest.exists() or list(dest.iterdir()) == []
+        ), "a failed FRESH install must not leave any tree (incl. data/) behind"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_preserves_pre_existing_user_data(self, tmp_path, app_home):
+        """Data that existed BEFORE the install attempt still survives a failure."""
+        # Simulate a prior uninstall's leave-behind: dest carries only data/.
+        prior = app_home / "apps" / "oninstall-app" / "data"
+        prior.mkdir(parents=True)
+        (prior / "state.json").write_text('{"user": true}')
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        # The user's own data survives for the next attempt; the copied tree
+        # does not linger.
+        assert (prior / "state.json").is_file()
+        leftovers = [
+            p.name for p in (app_home / "apps" / "oninstall-app").iterdir() if p.name != "data"
+        ]
+        assert leftovers == []
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_restores_data_the_script_corrupted(self, tmp_path, app_home):
+        """A script that mutates data/ then fails must not strand the mutation.
+
+        tmp_data is already consumed (moved into dest/data) before the script
+        runs, so it cannot serve as the failure fallback — the failing
+        script's own write to data/ would otherwise become the "preserved"
+        state, silently promoting corrupted/partial data as if it were the
+        user's own.
+        """
+        prior = app_home / "apps" / "oninstall-app" / "data"
+        prior.mkdir(parents=True)
+        (prior / "state.json").write_text('{"user": true}')
+        src = self._make_scripted_app_source(
+            tmp_path,
+            on_install="printf corrupted > data/state.json && exit 3",
+        )
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        restored = app_home / "apps" / "oninstall-app" / "data" / "state.json"
+        assert restored.is_file()
+        assert restored.read_text() == '{"user": true}', (
+            "a failed install script must not leave its own corrupting write "
+            "in place of the pre-existing user data"
+        )
+        # The script-window backup must not linger after the outcome is
+        # resolved (success or failure).
+        assert not (app_home / "apps" / ".oninstall-app-data-script-backup").exists()
+
+    @pytest.mark.skipif(
+        not hasattr(os, "symlink"),
+        reason="a symlink is a POSIX-only path shape",
+    )
+    def test_cleanup_unlinks_a_symlinked_dest_instead_of_traversing_it(self, tmp_path):
+        """A dest replaced by a symlink must be UNLINKED, never followed.
+
+        The failed script ran with write access to dest, so dest itself could
+        be a symlink to a sibling app (or any host path); iterating it would
+        delete whatever it points at.
+        """
+        target = tmp_path / "sibling-app"
+        target.mkdir()
+        (target / "precious.txt").write_text("keep me")
+        link = tmp_path / "oninstall-app"
+        link.symlink_to(target)
+        _remove_installed_tree_except_data(link, preserve_data=True)
+        assert link.is_symlink() is False, "the link itself is removed"
+        assert (target / "precious.txt").is_file(), "the target must be untouched"
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_preserves_sole_survivor_tmp_data(self, tmp_path, app_home):
+        """The sole-survivor ``.{name}-data-tmp`` copy is pre-existing data too.
+
+        A crashed sibling operation can leave ONLY the tmp copy behind (no live
+        ``data/`` dir). A failed install attempt must still not destroy it.
+        """
+        tmp_copy = app_home / "apps" / ".oninstall-app-data-tmp"
+        tmp_copy.mkdir(parents=True)
+        (tmp_copy / "state.json").write_text('{"crash survivor": true}')
+        src = self._make_scripted_app_source(tmp_path, on_install="exit 3")
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        # The restored user data survives inside dest; nothing else lingers.
+        restored = app_home / "apps" / "oninstall-app" / "data" / "state.json"
+        assert restored.is_file()
+        leftovers = [
+            p.name for p in (app_home / "apps" / "oninstall-app").iterdir() if p.name != "data"
+        ]
+        assert leftovers == []
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_timeout(self, tmp_path, app_home, monkeypatch):
+        import kiro_crew.apps.manager as manager_mod
+
+        monkeypatch.setattr(manager_mod, "_INSTALL_SCRIPT_TIMEOUT", 1)
+        src = self._make_scripted_app_source(tmp_path, on_install="sleep 10")
+        result = install_app(src)
+        assert result.ok is False
+        assert "timed out" in result.error
+        assert _read_installed("oninstall-app") is None
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_background_descendant_is_reaped(self, tmp_path, app_home):
+        """A backgrounded descendant must not survive its reaped leader.
+
+        The bash wrapper exits immediately; its backgrounded child keeps the
+        process group alive and, if the straggler kill resolves the group
+        through the already-reaped leader's PID, it would write into the
+        copied tree AFTER this install succeeds — rewriting app.json behind
+        the post-script re-admission check. The kill must go through the
+        process-group id captured before the wait.
+        """
+        src = self._make_scripted_app_source(
+            tmp_path,
+            on_install=("( sleep 1 && printf done > late-marker ) &" " printf $! > bg.pid"),
+        )
+        result = install_app(src)
+        assert result.ok, result.error
+        bg_pid_file = app_home / "apps" / "oninstall-app" / "bg.pid"
+        bg_pid = int(bg_pid_file.read_text().strip())
+        try:
+            os.kill(bg_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            # Cleanup so a failing assertion does not leak a sleeper.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(bg_pid, signal.SIGKILL)
+            pytest.fail(
+                "a backgrounded descendant outlived the install script — "
+                "the straggler kill did not reach the process group"
+            )
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_registry_path_does_not_run_on_install_twice(self, tmp_path, app_home):
+        """The registry path executes the hook in its checkout BEFORE the copy.
+
+        ``install_app`` runs inside the ``registry_source_repository`` scope on
+        that path, so it must skip the hook: re-running it in the copied dest
+        would double every non-idempotent side effect (repeated package
+        installs, migrations, generated files).
+        """
+        src = self._make_scripted_app_source(tmp_path, on_install="printf ran >> install-count")
+        from kiro_crew.apps.manager import registry_source_repository
+
+        with registry_source_repository("https://registry.example/app.git"):
+            result = install_app(src)
+        assert result.ok, result.error
+        # No marker in the COPIED dir proves install_app skipped the hook; the
+        # checkout-side execution (which the registry owns) is covered by the
+        # registry tests.
+        copied = app_home / "apps" / "oninstall-app"
+        assert copied.is_dir()
+        assert not (
+            copied / "install-count"
+        ).exists(), "install_app must not re-run setup.onInstall on the registry path"

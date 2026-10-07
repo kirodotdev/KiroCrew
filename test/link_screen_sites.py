@@ -82,6 +82,7 @@ DECLARED_SITES = frozenset(
         ("apps/manager.py", "_owned_data_dir"),
         ("apps/manager.py", "_path_is_occupied"),
         ("apps/manager.py", "_remove_any_shape"),
+        ("apps/manager.py", "_remove_installed_tree_except_data"),
         ("apps/manager.py", "app_enabled_state"),
         ("apps/manager.py", "gateway_data_dir_obstruction"),
         ("apps/manager.py", "migrated_builtin_cleanup_applies"),

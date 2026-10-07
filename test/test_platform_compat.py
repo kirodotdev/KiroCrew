@@ -11,6 +11,7 @@ output we can assert directly), and the process-helper return contracts.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import io
@@ -4149,6 +4150,83 @@ class TestKillSubprocessPosix:
                 child.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX killpg path; Windows uses taskkill /T")
+    def test_kill_pgid_kills_captured_group_posix(self):
+        # kill_pgid signals an ALREADY-CAPTURED group: the leader is killed
+        # (reaped) FIRST, then the surviving group members are signalled via
+        # the captured pgid — the exact sequence _run_install_script needs
+        # once its bash wrapper has exited but a descendant still holds the
+        # group alive.
+        # The leader spawns the member itself, so the member lands in the
+        # leader's new process group (inherited) — the shape that matters:
+        # leader reaped, member still holds the group.
+        leader = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess, sys, time\n"
+                    "member = subprocess.Popen("
+                    "[sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+                    "print(member.pid, flush=True)\n"
+                    "time.sleep(30)\n"
+                ),
+            ],
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        try:
+            member_pid = int(leader.stdout.readline().strip())
+            pgid = os.getpgid(leader.pid)
+            assert pgid == leader.pid
+            assert pc.pid_exists(member_pid) is True
+            os.kill(leader.pid, pc.SIGKILL)
+            leader.wait(timeout=5)
+            # The leader is reaped; the member must still be alive in the
+            # group the capture pinned.
+            assert pc.pid_exists(member_pid) is True
+            assert pc.kill_pgid(pgid, pc.SIGKILL) is True
+            deadline = time.monotonic() + 2.0
+            while pc.pid_exists(member_pid) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert pc.pid_exists(member_pid) is False
+        finally:
+            if leader.poll() is None:
+                leader.kill()
+            try:
+                leader.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # Failure assertions must not leak the spawned group member: kill
+            # the CAPTURED group after the leader is gone, then clean up by
+            # pid as a belt-and-braces guard for the exceptional case where
+            # the captured pgid itself could not be signalled.
+            with contextlib.suppress(OSError, ProcessLookupError, ValueError):
+                pc.kill_pgid(pgid, pc.SIGKILL)
+            with contextlib.suppress(OSError, ProcessLookupError):
+                os.kill(member_pid, pc.SIGKILL)
+
+    @pytest.mark.skipif(
+        pc.IS_WINDOWS, reason="kill_pgid is POSIX-only; Windows uses kill_process_tree"
+    )
+    def test_kill_pgid_refuses_reserved_and_own_group(self, monkeypatch):
+        monkeypatch.setattr(pc, "_OWN_PGID", 4242)
+        with pytest.raises(ValueError):
+            pc.kill_pgid(1, pc.SIGKILL)
+        with pytest.raises(ValueError):
+            pc.kill_pgid(0, pc.SIGKILL)
+        with pytest.raises(ValueError):
+            pc.kill_pgid(4242, pc.SIGKILL)
+        with pytest.raises(ValueError):
+            pc.kill_pgid("4242", pc.SIGKILL)  # type: ignore[arg-type]
+
+    def test_kill_pgid_is_posix_only(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        with pytest.raises(NotImplementedError):
+            pc.kill_pgid(9999, pc.SIGKILL)
 
 
 class TestTaskkillErrorMapping:
