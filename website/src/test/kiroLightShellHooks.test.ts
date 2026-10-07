@@ -76,10 +76,14 @@ describe('kiro-light shell hooks', () => {
 
   it('the user bubble tint is scoped to the non-steer branch only', () => {
     // The steer bubble keeps bg-accent-subtle; tinting it too would erase the
-    // one cue that distinguishes a steer from an ordinary turn.
+    // one cue that distinguishes a steer from an ordinary turn. Both non-steer
+    // tones (#17839: the crewmate chat's accent fill and the default) keep the
+    // hook leading, so the kiro-light tint rule still selects the default one
+    // and the accent rules (keyed on `.user-bubble.user-bubble-accent`) win
+    // over it on the other.
     const src = read('pages', 'chat', 'UserMessage.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(
-      /isSteer \? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'/,
+      /isSteer \? 'bg-accent-subtle text-text' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
     )
   })
 

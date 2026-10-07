@@ -1539,10 +1539,32 @@ is a 1:1 thread with one speaker besides the user, and the DM header's identity
 chip already names that speaker (#16617 retired the per-run author line #15167
 had made redundant); for assistive tech each message row is a `group`
 labelled with the crewmate's name, which draws nothing. Every message is its
-own OUTLINED bubble (`bg-transparent`, `border-border-strong`, `max-w-[72ch]`)
-in the full text column, left-aligned, so it never shares a surface with the
-user's filled right-aligned `bg-card` bubble; consecutive
-bubbles read as one speaker through their grouped corners alone. Corner rule on
+own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
+text column, left-aligned; the user's bubble opposite is filled with the theme
+ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
+`UserMessage`), the iMessage pairing #17839 chose, so colour tells the two
+speakers apart before alignment does. `--bg-hover` is the gray because
+`--bg-elevated` and `--card` equal the page background in kiro-light,
+highcontrast-light and everforest-light (the bubble would vanish), while
+`--bg-hover` sits above the page in every shipped theme; in forced-colors mode
+the gray bubble draws a border instead. The `.crewmate-bubble` rule in
+`index.css` also scopes the surface tokens the reply's contents paint with
+(`--bg-hover`, `--bg-elevated`, `--card`) one step off the fill for its subtree
+— kiro-light's inline-code patch IS `var(--bg-hover)`, and so is every
+`hover:bg-bg-hover` control, so on the bare fill they would vanish; kiro-dark's
+literal code patch gets the same step by one scoped rule. Inside the accent bubble the
+`user-bubble-accent` hook in `index.css` REDEFINES the theme tokens for the
+subtree (`--text`, `--muted`, `--accent`, `--border`, the `--bg*` surfaces, …)
+as values derived from `--accent-fg` — text and strokes as `--accent-fg` mixes,
+surfaces as translucent black so a patch darkens the fill rather than pulling
+it toward the text colour — so everything the message renders (inline code,
+link pills, the sent quote card, whatever is added later) inherits readable
+colours with no per-element rule; the fill itself reads `--bubble-accent`,
+snapshotted from the outer accent on the bubble's parent. Links keep a link
+signal (an underline) once their colour is the body colour. The single-chat
+page's user bubble is untouched.
+Consecutive bubbles read as one speaker through their grouped corners alone.
+Corner rule on
 the run's (left) side:
 single = all corners full; first = bottom-left small; middle = top-left and
 bottom-left small; last = top-left small; right corners always full. A run is
@@ -1565,7 +1587,7 @@ suppression (`turnHadPolicyBlock`) reads the UNFILTERED transcript the pane
 passes as `crewmateTranscript`, because the policy-block marker lives on an
 `inject` row the filter drops, and reading the filtered list would credit a
 system-forced continuation to the user. User messages keep their existing
-rendering. The run position is exported (`crewmateRunPosition`) for a
+rendering apart from the accent fill above. The run position is exported (`crewmateRunPosition`) for a
 reply-thread footer to reuse; no DOM attribute is stamped until that reader
 exists. The reply thread's own panel
 (`pages/members/ThreadPanel`, see history.md) is that reader: it draws the

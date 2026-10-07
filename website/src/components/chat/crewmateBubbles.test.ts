@@ -315,11 +315,16 @@ describe('crewmateBubbleClass', () => {
     expect(crewmateBubbleClass('end')).not.toMatch(/rounded-bl-md|rounded-l-md/)
     for (const pos of ['single', 'start', 'cont', 'end'] as const) {
       expect(crewmateBubbleClass(pos)).not.toMatch(/rounded-(r|tr|br)-/)
-      // Outlined, never filled: the user's bubble is the filled `bg-card` one,
-      // so the two speakers must not share a surface.
-      expect(crewmateBubbleClass(pos)).toMatch(/\bbg-transparent\b/)
-      expect(crewmateBubbleClass(pos)).not.toMatch(/\bbg-card\b/)
-      expect(crewmateBubbleClass(pos)).toMatch(/\bborder-border-strong\b/)
+      // Filled neutral gray, no border (#17839): the user's bubble opposite is
+      // the accent-filled one, so the two speakers never share a surface. The
+      // fill and its token scope are the `.crewmate-bubble` rule in index.css
+      // (the gray is `--bg-hover`, with nested surfaces moved one step off it),
+      // not a bare utility that would paint the fill in its contents' colour.
+      expect(crewmateBubbleClass(pos)).toMatch(/\bcrewmate-bubble\b/)
+      expect(crewmateBubbleClass(pos)).not.toMatch(/\bbg-(card|transparent|elevated|accent|bg-hover)\b/)
+      expect(crewmateBubbleClass(pos)).not.toMatch(/(^|\s)border(\s|$)/)
+      // Forced-colors mode drops fills, so a border is drawn there and only there.
+      expect(crewmateBubbleClass(pos)).toMatch(/\bforced-colors:border\b/)
     }
   })
 })

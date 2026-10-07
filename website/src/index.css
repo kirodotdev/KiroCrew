@@ -1708,6 +1708,69 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
 [data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
 [data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
+   `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
+   the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
+   `hover:bg-bg-hover` control, a `bg-card` / `bg-bg-elevated` card — so on this fill they would
+   vanish (Design review on #17918). The bubble therefore scopes those surface tokens one step off
+   its fill for its subtree; `--crewmate-fill` is snapshotted on the PARENT first because the rule
+   that re-points `--bg-hover` would already see the new value. */
+:has(>.message-bubble.crewmate-bubble){--crewmate-fill:var(--bg-hover)}
+.message-bubble.crewmate-bubble{
+  background-color:var(--crewmate-fill);
+  --bg-hover:color-mix(in srgb,var(--text) 10%,var(--crewmate-fill));
+  --bg-elevated:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --card:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --bg:var(--crewmate-fill);
+}
+/* Kiro dark paints inline code with the LITERAL #28242e, which is kiro-dark's --bg-hover — the
+   fill — so the token scope above cannot reach it; same step off the fill, by hand. (0,3,2) beats
+   the (0,2,2) literal rule. */
+[data-theme="kiro-dark"] .message-bubble.crewmate-bubble :not(pre)>code{background:var(--bg-hover)}
+/* Accent-filled user bubble (`tone="accent"` on UserMessage; a crewmate's chat, #17839). The
+   bubble is `--accent` with `--accent-fg` text, and everything drawn INSIDE it was styled for the
+   neutral surface: inline code, link pills, the sent quote card (`text-muted` excerpt, `bg-accent`
+   bar, `border-border`, `hover:bg-bg-hover`), and whatever user-message rendering gains later.
+   Rather than re-pointing those one selector at a time (Design review on #17918: anything not on
+   the list keeps neutral colours on the fill), the bubble REDEFINES the theme tokens for its
+   subtree: utilities compile to `var(--text)` etc. (tailwind-theme.css, `@theme inline`), so
+   every descendant inherits colours derived from `--accent-fg` with no per-element rule and no
+   specificity argument. `--accent` itself is re-pointed (a quote bar or chip on the fill must
+   not paint accent-on-accent), so the fill reads `--bubble-accent`, snapshotted from the outer
+   accent on the bubble's PARENT: a custom property declared in the same rule that redefines
+   `--accent` would already see the redefined value.
+   Specificity (0,3,0) on purpose: it beats the kiro-light `.user-bubble` tint (0,2,0) and the
+   Kiro code rules (0,2,2); the chip rules are (0,3,2) but now say `color:var(--text)` /
+   `var(--accent)`, which resolve to the redefined tokens anyway. The two Kiro-dark literals
+   (`#b07fff` links / code, `#28242e` code bg) are the one thing tokens cannot reach, hence the
+   two code / link rules that stay. */
+:has(>.msg-content.user-bubble.user-bubble-accent){--bubble-accent:var(--accent)}
+.msg-content.user-bubble.user-bubble-accent{
+  --text:var(--accent-fg);--text-strong:var(--accent-fg);--card-fg:var(--accent-fg);
+  /* Text and strokes are accent-fg mixes; SURFACES are translucent black. A lighter patch
+     (accent-fg mixed in) would pull the fill toward the text colour and cost contrast where it
+     is scarcest (white at 88% on a 14%-white-over-#8e48ff card measured 3.2:1); a darker patch
+     moves the fill away from light text and barely dents dark text on a light accent. 90%, not
+     the ~78% a neutral surface's muted would be: that was 4.1:1 on kiro's accent. */
+  --muted:color-mix(in srgb,var(--accent-fg) 90%,transparent);
+  --muted-strong:color-mix(in srgb,var(--accent-fg) 72%,transparent);
+  --accent:var(--accent-fg);--accent-hover:var(--accent-fg);
+  --accent-subtle:rgba(0,0,0,.18);
+  --border:color-mix(in srgb,var(--accent-fg) 45%,transparent);
+  --border-strong:color-mix(in srgb,var(--accent-fg) 60%,transparent);
+  --bg:rgba(0,0,0,.12);--bg-elevated:rgba(0,0,0,.15);--bg-hover:rgba(0,0,0,.18);--card:rgba(0,0,0,.12);
+  background-color:var(--bubble-accent);color:var(--accent-fg);
+}
+.msg-content.user-bubble.user-bubble-accent :not(pre)>code{background:var(--bg-hover);color:var(--accent-fg)}
+/* A link keeps a link SIGNAL once its colour is the body colour: a solid underline (UX review on
+   #17918: white-on-accent with the colour cue gone read as a label). The two link pills
+   (`.mc-md-ref-chip` in MarkdownRenderer, `LinkChip` in LinkPreview: `bg-accent/10` +
+   `border-border/60`, label `no-underline`) read the redefined tokens for their patch and
+   outline and get their label's underline back here. */
+.msg-content.user-bubble.user-bubble-accent a{color:var(--accent-fg);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent-fg) 75%,transparent);text-underline-offset:2px}
+.msg-content.user-bubble.user-bubble-accent span.group:has(>a){background:var(--bg-hover);border-color:var(--border)}
+.msg-content.user-bubble.user-bubble-accent span.group>a.no-underline{text-decoration:underline}
+.msg-content.user-bubble.user-bubble-accent .text-accent{color:var(--accent-fg)}
 /* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
    Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
    (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
@@ -3625,9 +3688,10 @@ html[data-font-family="opendyslexic"] .nav-item {
    column widths and heights. Hosts that do
    not publish the property fall back to ordinary markdown sizing. */
 /* Only top-level assistant tables may escape the reading column, and only
-   from an unbordered bubble: a host that draws the reply as a bordered card
-   (a crewmate's chat, AssistantMessage's `bubbleClassName` → `data-bordered`)
-   keeps its table inside the card. The
+   from a surfaceless bubble: a host that draws the reply as its own framed
+   card (a crewmate's chat, AssistantMessage's `bubbleClassName` →
+   `data-bordered`; a fill counts as much as a border) keeps its table inside
+   the card. The
    intervening div is rehypeStableRootKeys' display:contents wrapper;
    quoted/list tables and formatted code cards retain their own bounds. */
 .chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table),

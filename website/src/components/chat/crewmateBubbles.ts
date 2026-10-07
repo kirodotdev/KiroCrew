@@ -218,14 +218,25 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
   end: 'rounded-2xl rounded-tl-md',
 }
 
-/** Surface + padding + measure, every bubble alike. OUTLINED on the page
- *  background, never filled: the user's own bubble is the filled `bg-card` one
- *  on the right, so filled-right vs outlined-left tells the two speakers apart
- *  in every theme, and the text sits on the page background the theme already
- *  guarantees contrast for. Tokens only. The markdown's outermost first/last
- *  block margins are zeroed so the bubble's own padding is the whole inset. */
+/** Surface + padding + measure, every bubble alike. A FILLED neutral gray, no
+ *  border: the iMessage pairing #17839 chose — the user's own bubble on the
+ *  right is the filled accent one, the crewmate's on the left the gray one, so
+ *  colour tells the two speakers apart before alignment does. The fill and its
+ *  token scope live under `.crewmate-bubble` in index.css: the fill is the
+ *  theme's `--bg-hover` (`--bg-elevated` and `--card` equal the page background
+ *  in kiro-light, highcontrast-light and everforest-light — contrast 1.00, the
+ *  bubble vanishes — while `--bg-hover` sits at least 1.09 above the page in
+ *  every shipped theme, the same step iMessage's gray takes), and inside the
+ *  bubble the surface tokens its contents paint with (`--bg-hover` for the
+ *  kiro-light code patch and every `hover:bg-bg-hover` control, `--bg-elevated`,
+ *  `--card`) are moved one step off that fill, or a patch painted in the fill's
+ *  own colour would disappear. Text is the page's own `--text`, which every
+ *  theme already keeps readable on `--bg-hover`. In forced-colors mode the fill
+ *  is taken away, so a border is drawn there and only there. The markdown's
+ *  outermost first/last block margins are zeroed so the bubble's own padding is
+ *  the whole inset. */
 const BUBBLE_BASE =
-  'bg-transparent border border-border-strong px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
+  'crewmate-bubble forced-colors:border px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
 
 /** Classes for the crewmate's message bubble at `pos`. */
 export function crewmateBubbleClass(pos: CrewmateRunPosition): string {

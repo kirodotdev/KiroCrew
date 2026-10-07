@@ -4,7 +4,11 @@
  * a user message, a two-bubble crewmate run, a second user message and a lone
  * crewmate reply. What the page proves is how one message of the crewmate is
  * placed -- whether an author line (avatar + name + time) and an avatar gutter
- * precede the bubble -- so no header, composer or side panel is drawn.
+ * precede the bubble -- so no header, composer or side panel is drawn. The
+ * second user message carries inline code, a bare URL and a quote of the
+ * crewmate's reply, so the page also proves the iMessage colouring (#17839): the user's bubble filled with the
+ * theme accent, code, link and the quote card recoloured onto `--accent-fg`,
+ * the crewmate's bubble the neutral `--bg-hover` gray with no border.
  *
  * Query string: ?theme=dark|light
  *
@@ -51,7 +55,13 @@ const TRANSCRIPT: ChatMessage[] = [
     'Builds are all green, so it is the test, not the code.',
   ].join('\n'), '2026-10-05T07:40:21Z', 'm2'),
   row('assistant', 'Filed it as #16628 with the `asyncio.to_thread` fix sketched. Waiting on triage.', '2026-10-05T07:40:24Z', 'm3'),
-  row('user', 'Good. And the dispatcher?', '2026-10-05T07:52:00Z', 'm4'),
+  // Quotes the crewmate's "Filed it as #16628" bubble, so the sent quote card
+  // (muted excerpt, accent bar, bordered surface) is drawn INSIDE the accent
+  // bubble too.
+  {
+    ...row('user', 'Good. And the dispatcher? Check `push_slot.py` first, then https://github.com/kirodotdev/KiroCrew/issues/17839', '2026-10-05T07:52:00Z', 'm4'),
+    meta: { mid: 'm4', quote: { role: 'assistant', text: 'Filed it as #16628 with the `asyncio.to_thread` fix sketched. Waiting on triage.', ts: '2026-10-05T07:40:24Z', mid: 'm3' } },
+  },
   row('assistant', 'Back up since 08:22Z: it no longer mints an owner token, it presents the cron\'s own credential. First cycle dispatched 4 of the backlog.', '2026-10-05T08:24:02Z', 'm5'),
 ]
 

@@ -584,6 +584,10 @@ export function createTranscriptRenderers(
                   messageTs: m.ts,
                 })}
                 hideSteerBadge
+                // The accent fill pairs with the crewmate's gray bubble above
+                // (#17839); a host that hides the steer badge without a
+                // crewmate (none today) keeps the neutral surface.
+                tone={crewmate ? 'accent' : 'default'}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />
