@@ -210,7 +210,13 @@ def _authorize_upload(
             caller=caller,
             operation=operation,
         )
-    granted, reason = aws_consent.is_granted(aws_consent.SERVICE_S3, profile=profile, region=region)
+    # ONE read of the grant: the profile+region check below and the account check
+    # after it both judge this record, so they cannot disagree about which grant
+    # is in force.
+    grant = aws_consent.read_grant(aws_consent.SERVICE_S3)
+    granted, reason = aws_consent.is_granted(
+        aws_consent.SERVICE_S3, profile=profile, region=region, grant=grant
+    )
     if not granted:
         _refuse_upload(
             account,
@@ -229,7 +235,6 @@ def _authorize_upload(
     # the package's single sync chokepoint, so the grant's account is compared
     # here instead. A grant naming no account is refused for the same reason
     # `authorize` refuses one: it cannot be verified against anything.
-    grant = aws_consent.read_grant(aws_consent.SERVICE_S3)
     if grant is None:
         _refuse_upload(
             account,
@@ -511,11 +516,8 @@ def _authorize_recovery_read(profile: str, region: str, *, account: str) -> Opti
     # reading the grant AGAIN for its account compares two different snapshots: a
     # re-grant landing between them passes the profile check against the old record
     # and the account check against the new one, which turns a refusal into an allow.
-    # One snapshot cannot disagree with itself.
-    #
-    # `_authorize_upload` asks in a two-read shape instead. That gate is working and
-    # separately tested, and changing it reaches outside this path, so it keeps its
-    # own shape here and is tracked on its own; the module spec records where.
+    # One snapshot cannot disagree with itself. `_authorize_upload` reads the grant
+    # once in the same way.
     grant = aws_consent.read_grant(aws_consent.SERVICE_S3)
     if grant is None:
         return "S3 use is not confirmed, so no consent covers reading the recorded version"

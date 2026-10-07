@@ -1314,9 +1314,9 @@ each half from a different record, turning a refusal into an allow. The parity b
 the two gates is in the four questions they ask, not in the mechanism underneath them.
 They differ in what a refusal does -- the upload raises, because a refused upload is a
 failed run, while this returns a reason, so the recovery does not run and the caller
-keeps exactly the refusal it already had -- and in how the grant is reached: the upload
-gate still asks `is_granted` and then reads the grant again for its account, which is
-a pre-existing race recorded in #12705 for its own review rather than changed here.
+keeps exactly the refusal it already had. Both gates read the grant once: the upload
+gate passes that one record to `is_granted` for profile and region, then checks its
+account.
 
 That further read is authorized against `s3:GetObjectVersion` rather than
 `s3:GetObject` -- S3 treats a version-pinned `GetObject` as a distinct action -- and

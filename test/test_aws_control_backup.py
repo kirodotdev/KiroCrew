@@ -135,6 +135,49 @@ class TestAuthorizeUpload:
                     payload_kind=backup.KIND_SNAPSHOT,
                 )
 
+    def test_profile_region_and_account_are_checked_against_one_grant_read(self):
+        # The stored grant can change between two reads. The first record matches
+        # this profile and region but names another account; the second names this
+        # account under another profile. Neither record allows the upload, so the
+        # gate must judge one record, not a half of each.
+        from kiro_crew import aws_consent
+
+        records = [
+            aws_consent.Grant(
+                service=aws_consent.SERVICE_S3,
+                profile="p",
+                region="us-west-2",
+                account="999988887777",
+                arn="",
+                granted_at="",
+            ),
+            aws_consent.Grant(
+                service=aws_consent.SERVICE_S3,
+                profile="other",
+                region="eu-west-1",
+                account=ACCOUNT,
+                arn="",
+                granted_at="",
+            ),
+        ]
+        with (
+            mock.patch(
+                "kiro_crew.deploy.engine._checked",
+                return_value=json.dumps({"Account": ACCOUNT}),
+            ),
+            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=True),
+            mock.patch("kiro_crew.aws_consent.read_grant", side_effect=records) as read,
+        ):
+            with pytest.raises(RuntimeError, match="does not name this account"):
+                backup._authorize_upload(
+                    ACCOUNT,
+                    "p",
+                    "us-west-2",
+                    caller=backup.CALLER_OWNER,
+                    payload_kind=backup.KIND_SNAPSHOT,
+                )
+        assert read.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # run_snapshot_backup / run_sessions_backup — the whole push path
