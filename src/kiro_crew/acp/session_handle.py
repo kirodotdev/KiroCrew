@@ -1193,6 +1193,13 @@ class AcpSessionHandle:
         # a yield in prompt().
         self._parked_total: float = 0.0
         self._parked_since: float | None = None
+        # Last /api/session-keepalive touch addressed to THIS session (monotonic,
+        # 0.0 for none), and `_parked_total` when it landed. Written by
+        # note_keepalive(); folded into the tool-idle clock in _dispatch_events.
+        # Never reset per turn: a touch from an earlier turn is older than this
+        # turn's own frames, so the fold can never pick it up.
+        self._keepalive_ts: float = 0.0
+        self._keepalive_parked: float = 0.0
         # Monotonic timestamp of a `failed` compaction status seen this turn
         # (None otherwise). Arms the post-failure budget in _dispatch_events,
         # which ends an abandoned turn instead of draining to the ceiling.
@@ -3095,6 +3102,25 @@ class AcpSessionHandle:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
         return self._last_steer_monotonic
 
+    def note_keepalive(self) -> None:
+        """Record a ``/api/session-keepalive`` touch addressed to this session.
+
+        A blocking MCP tool on this session (``wait``, ``spawn_sub_agents``)
+        sends no frame while it runs, so this is the only sign it is alive.
+        The runtime's ``_last_activity`` is process-wide and the tool-idle clock
+        deliberately ignores it (a co-tenant's traffic must not defer this
+        session's stall), so the touch is stamped here, where the clock reads it.
+        """
+        now = time.monotonic()
+        since = self._parked_since
+        self._keepalive_ts = now
+        # The park baseline at the touch, including a park still in progress:
+        # a touch can land while the consumer holds an event, and
+        # `_parked_total` banks a park only when it ends.
+        self._keepalive_parked = self._parked_total + (
+            max(0.0, now - since) if since is not None else 0.0
+        )
+
     @property
     def supports_steer(self) -> bool:
         """True when this session's host takes a user's mid-turn message.
@@ -4353,11 +4379,12 @@ class AcpSessionHandle:
                     # stderr: AcpRuntime's stderr drain only rings the
                     # _stderr_lines buffer, so a kiro-cli reasoning burst on
                     # stderr does not move this clock); the tool clock keys off
-                    # this session's OWN queue frames only (keepalive and
-                    # progress frames for the session reset last_own_data_ts, so
-                    # a legitimately-streaming tool keeps the watchdog
-                    # satisfied, while a co-tenant's ownerless fanned-out frame
-                    # does not defer it).
+                    # this session's OWN queue frames and keepalive touches only
+                    # (progress frames for the session reset last_own_data_ts,
+                    # and note_keepalive() stamps the touch the folding below
+                    # reads, so a legitimately-streaming or keepalive-pinging
+                    # tool keeps the watchdog satisfied, while a co-tenant's
+                    # ownerless fanned-out frame or keepalive does not defer it).
                     if self._cancelled:
                         continue
                     wd = self._watchdog
@@ -4385,6 +4412,14 @@ class AcpSessionHandle:
                         # branch QUICKER to cancel a live turn — the one
                         # direction a clock change here must never take by
                         # accident.
+                        #
+                        # A keepalive touch for THIS session counts as an own
+                        # frame: a blocking MCP tool (wait, spawn_sub_agents)
+                        # sends none while it runs and pings this instead. Its
+                        # park baseline is the one taken when the touch landed.
+                        if self._keepalive_ts > last_own_data_ts:
+                            last_own_data_ts = self._keepalive_ts
+                            parked_at_own_data = self._keepalive_parked
                         _own_parked = max(0.0, self._parked_total - parked_at_own_data)
                         _tool_idle = max(0.0, (now - last_own_data_ts) - _own_parked)
                         if _tool_idle <= wd.check_after_secs:
@@ -4408,6 +4443,7 @@ class AcpSessionHandle:
                         # either delivery path.
                         _ingress_before = self._ingress_seq
                         _q_depth_before = self._queue.qsize()
+                        _keepalive_before = self._keepalive_ts
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
                         # TOCTOU recheck — activity on either path prevents the cancel.
                         if (
@@ -4427,6 +4463,14 @@ class AcpSessionHandle:
                             last_data_ts = time.monotonic()
                             last_own_data_ts = last_data_ts
                             parked_at_own_data = self._parked_total
+                            continue
+                        if self._keepalive_ts > _keepalive_before:
+                            # A keepalive for THIS session landed during the
+                            # await: the same activity-in-flight rule as the
+                            # frames above, attributed to this session, so it
+                            # moves only the tool clock, to the touch's stamp.
+                            last_own_data_ts = self._keepalive_ts
+                            parked_at_own_data = self._keepalive_parked
                             continue
                         if verdict == VERDICT_WORKING:
                             # Stamped after the consult returns: the probe

@@ -448,6 +448,17 @@ class TestAcpSessionProviderErrorPropagation:
         provider.touch_activity()
         assert runtime._last_activity > 0.0
 
+    def test_touch_activity_stamps_its_own_handle(self):
+        """The keepalive also reaches this session's handle, the clock the
+        tool-stall watchdog reads (the runtime clock is process-wide)."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+
+        provider.touch_activity()
+
+        handle.note_keepalive.assert_called_once_with()
+
 
 class TestAcpSessionProviderClientCompat:
     """Tests for the AcpClient-compatible API surface."""

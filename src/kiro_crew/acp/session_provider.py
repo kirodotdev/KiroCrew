@@ -864,17 +864,21 @@ class AcpSessionProvider(LLMProvider):
         return proc.returncode if proc else None
 
     def touch_activity(self) -> None:
-        """Refresh activity timestamp on the runtime.
+        """Refresh activity timestamp on the runtime, and stamp this session's handle.
 
-        PROCESS-level: the clock belongs to the runtime, so one session's
-        activity refreshes it for every session on it. An idle co-tenant is
-        therefore never idle while a neighbour talks, which is the SAFE
-        direction for anything that reaps on idleness (it defers, never
+        The runtime half is PROCESS-level: the clock belongs to the runtime, so
+        one session's activity refreshes it for every session on it. An idle
+        co-tenant is therefore never idle while a neighbour talks, which is the
+        SAFE direction for anything that reaps on idleness (it defers, never
         signals early) and the wrong one for anything that reports idle time
-        as a fact about a session. A per-session activity stamp is the fix;
-        this method cannot be it, because it has only the runtime to write to.
+        as a fact about a session.
+
+        The handle half is per-session: the tool-stall watchdog ignores the
+        runtime clock, so without it a blocking tool's keepalive pings
+        (``wait``, ``spawn_sub_agents``) would not keep its own turn alive.
         """
         self._runtime._last_activity = time.monotonic()
+        self._handle.note_keepalive()
 
     def rekey(
         self,
