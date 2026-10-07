@@ -262,6 +262,31 @@ class CredentialPolicy(Protocol):
         """
         ...
 
+    def oauth_authorization_endpoints(self) -> "frozenset[tuple[str, str]]":
+        """Exact OAuth authorization endpoints the edition vouches for.
+
+        WIRED: ``security/exfil.py::_approved_oauth_authorization_endpoint``
+        unions this set with the code-owned builtin endpoints and the operator's
+        ``oauth_endpoints.json``. A ``(host, path)`` member lets the MCP OAuth
+        banner exempt ONLY the recognized OAuth parameters (``state``,
+        ``code_challenge``, ...) at that exact endpoint from the base64-blob /
+        query-length heuristics; fixed credential signatures, heavy percent
+        encoding, unknown parameters, HTTP, explicit ports, userinfo,
+        fragments and path suffixes stay rejected.
+
+        Members are ``(lowercase host, exact case-sensitive path)``. No
+        wildcards, suffix matching, ports, userinfo, queries, fragments or
+        percent escapes: a member that is not exactly that shape is dropped.
+        Do NOT derive members from RFC 8414 / 9728 metadata at runtime -- that
+        metadata is untrusted input; list endpoints the edition's code owns.
+
+        Optional (resolved with ``getattr``; v1 method addition, no
+        ``CONTRACT_VERSION`` bump). Public default = ``frozenset()``. A missing
+        method, a malformed result or a raising adapter degrades to the empty
+        set, the stricter direction. NEVER sourced from ``config.json``.
+        """
+        ...
+
 
 class SlackEnterpriseGate(Protocol):
     """Slack enterprise/workspace allowlist + per-message origin gate.

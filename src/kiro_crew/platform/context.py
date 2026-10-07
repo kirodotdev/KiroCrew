@@ -616,6 +616,14 @@ PEEK_CALLERS: "dict[str, str]" = {
         "credential survives — it is stricter than any companion-supplied "
         "exemption list could be."
     ),
+    "security/exfil.py::_platform_oauth_authorization_endpoints": (
+        "no-context answer is the empty edition endpoint set, so the OAuth "
+        "banner falls back to the builtin endpoints plus the operator's "
+        "oauth_endpoints.json and every other endpoint keeps the full base64-"
+        "blob / query-length heuristics. The lookup can only ever ADD exact "
+        "endpoints to the entropy exception, never relax the credential floor, "
+        "so an absent context is the stricter answer."
+    ),
     "platform/context.py::redact_log_via_context": (
         "no-context answer is the full OSS baseline redaction pass, which is "
         "byte-for-byte what each of these log sites did before adopting the "

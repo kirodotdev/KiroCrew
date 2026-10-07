@@ -5069,6 +5069,290 @@ class TestOperatorOAuthEndpointExtension:
         assert oauth_url_contains_credential(url) is False
 
 
+class TestPlatformOAuthAuthorizationEndpoints:
+    """``CredentialPolicy.oauth_authorization_endpoints()``.
+
+    An edition supplies exact, code-owned endpoints for the managed MCP servers
+    it ships. They join the builtin set and the operator file, earn exactly the
+    same banner-only exemption, and reach an existing home with the binary --
+    nothing is written to ``oauth_endpoints.json``.
+    """
+
+    HOST = "auth.managed.example.com"
+    PATH = "/oauth2/authorize"
+    CONSENT_URL = (
+        "https://auth.managed.example.com/oauth2/authorize"
+        "?client_id=4f2k8m1q9z7x3c5v6b0n2a1s"
+        "&response_type=code"
+        "&scope=openid%20profile%20email"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A49152%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Qm7rT2kV" * 12)
+    )
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, _floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _floor_monkeypatch.setattr(security, "_OAUTH_EXTENSION_AUDITED", set())
+        _floor_monkeypatch.setattr(security, "_OAUTH_EXTENSION_MEMO", {})
+        return tmp_path
+
+    @staticmethod
+    def _install(monkeypatch: pytest.MonkeyPatch, policy: object) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import context as platform_context
+
+        ctx = SimpleNamespace(credentials=policy)
+        monkeypatch.setattr(platform_context, "installed_context", lambda: ctx)
+
+    def _install_endpoints(self, monkeypatch: pytest.MonkeyPatch, endpoints: object) -> None:
+        from types import SimpleNamespace
+
+        self._install(monkeypatch, SimpleNamespace(oauth_authorization_endpoints=lambda: endpoints))
+
+    # ── Public default: byte-identical standalone behaviour ──
+
+    def test_public_default_policy_returns_empty_set(self) -> None:
+        from kiro_crew.platform.defaults import DefaultCredentialPolicy
+
+        assert DefaultCredentialPolicy().oauth_authorization_endpoints() == frozenset()
+
+    def test_public_default_keeps_rejecting_the_consent_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform.defaults import DefaultCredentialPolicy
+
+        self._install(monkeypatch, DefaultCredentialPolicy())
+        assert security._platform_oauth_authorization_endpoints() == frozenset()
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+
+    def test_no_installed_context_yields_empty_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.platform import context as platform_context
+
+        monkeypatch.setattr(platform_context, "installed_context", lambda: None)
+        assert security._platform_oauth_authorization_endpoints() == frozenset()
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+
+    # ── Degradation: every defect is the empty set ──
+
+    def test_pre_method_adapter_yields_empty_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        self._install(monkeypatch, SimpleNamespace(redact=lambda t: t))
+        assert security._platform_oauth_authorization_endpoints() == frozenset()
+
+    def test_raising_adapter_yields_empty_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        def _boom() -> frozenset:
+            raise RuntimeError("companion bug")
+
+        self._install(monkeypatch, SimpleNamespace(oauth_authorization_endpoints=_boom))
+        assert security._platform_oauth_authorization_endpoints() == frozenset()
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+
+    @pytest.mark.parametrize(
+        "result",
+        [None, 42, "auth.managed.example.com", {"auth.managed.example.com": "/oauth2/authorize"}],
+        ids=["none", "int", "string", "dict"],
+    )
+    def test_malformed_result_yields_empty_set(
+        self, monkeypatch: pytest.MonkeyPatch, result: object
+    ) -> None:
+        self._install_endpoints(monkeypatch, result)
+        assert security._platform_oauth_authorization_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "member",
+        [
+            ("*.managed.example.com", PATH),
+            ("example.com", PATH),
+            ("Auth.Managed.Example.com", PATH),
+            ("auth.managed.example.com:443", PATH),
+            ("user@auth.managed.example.com", PATH),
+            ("auth.%6danaged.example.com", PATH),
+            ("192.168.1.1", PATH),
+            (HOST, "oauth2/authorize"),
+            (HOST, "/oauth2/authorize?x=1"),
+            (HOST, "/oauth2/authorize#frag"),
+            (HOST, "/oauth2/autho%72ize"),
+            (HOST, "/../oauth2/authorize"),
+            (HOST,),
+            (HOST, PATH, "extra"),
+            [HOST, PATH],
+            (HOST, None),
+        ],
+        ids=[
+            "wildcard",
+            "bare-parent-no-match",
+            "uppercase-host",
+            "explicit-port",
+            "userinfo",
+            "percent-host",
+            "ipv4",
+            "no-leading-slash",
+            "query",
+            "fragment",
+            "percent-path",
+            "dotdot",
+            "one-tuple",
+            "three-tuple",
+            "list-not-tuple",
+            "none-path",
+        ],
+    )
+    def test_invalid_member_is_dropped_alone(
+        self, monkeypatch: pytest.MonkeyPatch, member: object
+    ) -> None:
+        self._install_endpoints(monkeypatch, [member, ("ok.example.com", "/authorize")])
+        got = security._platform_oauth_authorization_endpoints()
+        assert ("ok.example.com", "/authorize") in got
+        if member != ("example.com", self.PATH):
+            assert len(got) == 1, got
+
+    # ── Gate: exactly the builtin exemption, nothing more ──
+
+    def test_platform_endpoint_allows_pkce_state_consent_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda u: u.replace("auth.managed.example.com", "auth.other.example.com", 1),
+            lambda u: u.replace(
+                "auth.managed.example.com", "auth.managed.example.com.attacker.example", 1
+            ),
+            lambda u: u.replace("/oauth2/authorize", "/oauth2/token", 1),
+            lambda u: u.replace("/oauth2/authorize", "/oauth2/authorize/extra", 1),
+            lambda u: u.replace("/oauth2/authorize", "/OAuth2/authorize", 1),
+            lambda u: u.replace("https://", "http://", 1),
+            lambda u: u.replace("auth.managed.example.com", "auth.managed.example.com:443", 1),
+            lambda u: u.replace("https://", "https://user@", 1),
+            lambda u: u + "#frag",
+            lambda u: u.replace("state=", "state=AKIA" "IOSFODNN7EXAMPLE", 1),
+            lambda u: u.replace("state=", "state=xoxb-1234567890-abcdefghijkl", 1),
+            lambda u: u + "&exfil=" + ("Zm9vYmFyYmF6" * 8),
+            lambda u: u + "&q=" + "%41" * 40,
+        ],
+        ids=[
+            "wrong-host",
+            "lookalike-suffix",
+            "wrong-path",
+            "path-suffix",
+            "path-case",
+            "http",
+            "explicit-port",
+            "userinfo",
+            "fragment",
+            "aws-key-in-state",
+            "slack-token-in-state",
+            "unknown-high-entropy-param",
+            "heavy-percent-encoding",
+        ],
+    )
+    def test_non_matching_or_hostile_urls_still_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, mutate: Callable[[str], str]
+    ) -> None:
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(mutate(self.CONSENT_URL)) is True
+
+    def test_general_redactors_ignore_platform_endpoints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        cleaned, warnings = redact_exfiltration_urls(self.CONSENT_URL)
+        assert cleaned != self.CONSENT_URL
+        assert warnings
+
+    # ── Composition with the operator file ──
+
+    def test_operator_extension_keeps_working_alongside_platform_set(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated: Path
+    ) -> None:
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        operator_url = TestOperatorOAuthEndpointExtension.CONSENT_URL
+        assert oauth_url_contains_credential(operator_url) is True
+        (_isolated / "oauth_endpoints.json").write_text(
+            json.dumps(
+                {
+                    "additional_authorization_endpoints": [
+                        {"host": "acme.okta.com", "path": "/oauth2/v1/authorize"}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert oauth_url_contains_credential(operator_url) is False
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    def test_existing_home_gets_platform_endpoints_without_writing_config(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated: Path
+    ) -> None:
+        ext = _isolated / "oauth_endpoints.json"
+        ext.write_text(json.dumps({"additional_authorization_endpoints": []}), encoding="utf-8")
+        os.utime(ext, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        before = (ext.read_bytes(), ext.stat().st_mtime_ns)
+        listing_before = sorted(p.name for p in _isolated.iterdir())
+
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+        assert (ext.read_bytes(), ext.stat().st_mtime_ns) == before
+        assert sorted(p.name for p in _isolated.iterdir()) == listing_before
+
+    def test_absent_operator_file_is_not_created(
+        self, monkeypatch: pytest.MonkeyPatch, _isolated: Path
+    ) -> None:
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+        assert not (_isolated / "oauth_endpoints.json").exists()
+
+    # ── SEL audit ──
+
+    def test_platform_approval_emits_deduped_audit_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.security import exfil
+
+        logged: list = []
+
+        class _RecorderLog:
+            def log(self, event: object) -> None:
+                logged.append(event)
+
+        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+        events = [e for e in logged if e.event_type == "oauth_endpoint_platform_used"]
+        assert len(events) == 1
+        assert events[0].metadata == {
+            "host": self.HOST,
+            "path": self.PATH,
+            "mechanism": "OAUTH_ENDPOINT_PLATFORM",
+        }
+        assert not [e for e in logged if e.event_type == "oauth_endpoint_extension_used"]
+
+    def test_audit_failure_does_not_break_the_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.security import exfil
+
+        class _BrokenLog:
+            def log(self, event: object) -> None:
+                raise RuntimeError("SEL unavailable")
+
+        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _BrokenLog())
+        self._install_endpoints(monkeypatch, frozenset({(self.HOST, self.PATH)}))
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+
 class TestRedactExfiltrationUrls:
     """Tests for redact_exfiltration_urls — domain-agnostic payload detection."""
 

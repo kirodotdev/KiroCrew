@@ -193,6 +193,13 @@ class DefaultCredentialPolicy:
         # host set (empty = MORE redaction, the safe direction).
         return frozenset()
 
+    def oauth_authorization_endpoints(self) -> "frozenset[tuple[str, str]]":
+        # The public edition adds no OAuth authorization endpoints: the banner
+        # gate uses the builtin set plus the operator's oauth_endpoints.json,
+        # byte-identical to before. A companion returns the exact endpoints of
+        # the managed MCP servers it ships.
+        return frozenset()
+
 
 class DefaultSlackEnterpriseGate:
     """Default-open gate delegating to ``slack/enterprise.py``.

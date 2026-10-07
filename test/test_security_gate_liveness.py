@@ -194,7 +194,14 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised again, from 28,572, for the edition-supplied OAuth authorization
+#: endpoints in ``exfil.py``: one loader that reads the optional
+#: ``CredentialPolicy.oauth_authorization_endpoints()`` and filters it through
+#: the operator-entry validators, one more source in the endpoint union, and a
+#: ``platform`` flag on the existing audit emitter. No pattern, threshold or
+#: exempted parameter moved.
+_PACKAGE_LINE_BUDGET = 28_621
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -407,6 +407,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_oauth_query_diagnostic",
     "_oauth_shape_profile",
     "_oauth_url_payload_diagnostic",
+    "_platform_oauth_authorization_endpoints",
     "_operand_span_end",
     "_operand_targets_self",
     "_operands_lead_with",

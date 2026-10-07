@@ -525,62 +525,108 @@ def _validate_operator_oauth_entries(raw: object) -> frozenset[tuple[str, str]]:
 
 # Per-process dedupe for the extension-used audit event, so repeated checks of
 # the same URL (every banner emit/redraw re-validates) do not spam the SEL.
-_OAUTH_EXTENSION_AUDITED: set[tuple[str, str]] = set()
+_OAUTH_EXTENSION_AUDITED: set[tuple[str, ...]] = set()
 
 
-def _emit_oauth_extension_used_event(host: str, path: str) -> None:
-    """SEL-audit that an OPERATOR extension entry approved a consent endpoint.
+def _emit_oauth_extension_used_event(host: str, path: str, *, platform: bool = False) -> None:
+    """SEL-audit that an OPERATOR entry (or, with *platform*, an EDITION entry)
+    approved a consent endpoint.
 
     Best-effort: an audit failure must not break the user's ability to
-    authorize their MCP server — the operator explicitly allowlisted the
-    endpoint, so the approval stands regardless of audit success.
+    authorize their MCP server — the operator or the edition's code explicitly
+    vouched for the endpoint, so the approval stands regardless of audit success.
     """
-    if (host, path) in _OAUTH_EXTENSION_AUDITED:
+    dedupe_key = ("platform", host, path) if platform else (host, path)
+    if dedupe_key in _OAUTH_EXTENSION_AUDITED:
         return
-    _OAUTH_EXTENSION_AUDITED.add((host, path))
+    _OAUTH_EXTENSION_AUDITED.add(dedupe_key)
     try:
-        # Function-local for the same loader-cycle reason as
-        # _load_operator_oauth_endpoints.
-        from kiro_crew.config import loader as config_loader
+        if platform:
+            event_type = "oauth_endpoint_platform_used"
+            metadata = {"host": host, "path": path, "mechanism": "OAUTH_ENDPOINT_PLATFORM"}
+        else:
+            # Function-local for the same loader-cycle reason as
+            # _load_operator_oauth_endpoints.
+            from kiro_crew.config import loader as config_loader
 
+            event_type = "oauth_endpoint_extension_used"
+            metadata = {
+                "host": host,
+                "path": path,
+                "file": str(config_loader.oauth_endpoints_path()),
+                "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+            }
         SecurityEventLog().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
+                event_type=event_type,
                 caller_identity="",
                 agent="kirocrew",
                 source="security",
                 operation="oauth_banner_check",
                 outcome="allowed",
                 resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
+                metadata=metadata,
             )
         )
     except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
+        logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
+
+
+def _platform_oauth_authorization_endpoints() -> frozenset[tuple[str, str]]:
+    """Exact OAuth authorization endpoints supplied by the active edition.
+
+    Read from the installed context's optional
+    ``CredentialPolicy.oauth_authorization_endpoints()`` (public Default: empty),
+    so an existing home gets an edition's endpoints with the binary and nothing
+    is written to ``oauth_endpoints.json``. No context, a pre-method adapter, a
+    raising adapter or a non-iterable result yields the EMPTY set (full
+    heuristics, the stricter answer). Each member must pass the operator-entry
+    validators (lowercase host only); an invalid member is dropped alone.
+    No logging: this runs inside the stdio MCP servers.
+    """
+    from kiro_crew.platform.context import installed_context
+
+    ctx = installed_context()
+    if ctx is None:
+        return frozenset()
+    try:
+        getter = getattr(ctx.credentials, "oauth_authorization_endpoints", None)
+        raw = getter() if getter is not None else ()
+        if isinstance(raw, (str, bytes, dict)):
+            return frozenset()
+        # The host regex admits lowercase only, so a mixed-case host is dropped.
+        return frozenset(
+            m
+            for m in list(raw)[:_ENDPOINT_EXTENSION_CAP]
+            if isinstance(m, tuple)
+            and len(m) == 2
+            and all(isinstance(part, str) for part in m)
+            and _OAUTH_EXTENSION_HOST_RE.fullmatch(m[0])
+            and _valid_oauth_extension_path(m[1])
         )
+    except Exception:
+        return frozenset()
 
 
 def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
     """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
 
-    Union of the code-owned builtin set and the operator's keystone extension,
-    computed at check time so a hand-edited file takes effect without a
-    restart. The builtin set is consulted first so the common providers never
-    touch the disk; an approval that came from an operator entry is SEL-audited
-    (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
-    — this helper only answers endpoint identity.
+    Union of three sources, consulted cheapest first: the code-owned builtin
+    set, the active edition's code-owned set
+    (``CredentialPolicy.oauth_authorization_endpoints``), and the operator's
+    keystone extension, which is computed at check time so a hand-edited file
+    takes effect without a restart. An approval from the edition or the
+    operator set is SEL-audited (deduped per process); a builtin approval is
+    not. Callers keep enforcing HTTPS-only / no-explicit-port -- this helper
+    only answers endpoint identity.
     """
     key = (host.lower(), path)
     if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
+        return True
+    if key in _platform_oauth_authorization_endpoints():
+        _emit_oauth_extension_used_event(*key, platform=True)
         return True
     if key in _load_operator_oauth_endpoints():
         _emit_oauth_extension_used_event(*key)

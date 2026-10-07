@@ -50,7 +50,7 @@ omit the policy.
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
+| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`; `oauth_authorization_endpoints()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts + exact OAuth authorization endpoints of managed MCP servers |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
@@ -692,6 +692,16 @@ Wired sites:
   that number and records which PROCESS the site runs in and why the baseline is
   correct there. A count that has fallen must be lowered, so a converted module
   does not leave free slots behind.
+- OAuth authorization endpoints (`CredentialPolicy.oauth_authorization_endpoints()`,
+  optional, #8423) — exact `(lowercase host, path)` pairs an edition vouches for,
+  unioned by `security/exfil.py::_approved_oauth_authorization_endpoint` with the
+  builtin set and the operator's `oauth_endpoints.json`, earning only the MCP
+  OAuth banner's recognized-parameter entropy exception. Read via
+  `installed_context()` (declared in `PEEK_CALLERS`) and `getattr`; a missing
+  method, malformed result or raising adapter degrades to the empty set (the
+  stricter direction), so no `CONTRACT_VERSION` bump. Members are validated like
+  operator entries (no wildcards, ports, userinfo, queries, fragments or percent
+  escapes) and never sourced from config. Details in the security spec.
 - Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
   `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
   companion-supplied exact-host set and, for a URL whose domain is an EXACT
