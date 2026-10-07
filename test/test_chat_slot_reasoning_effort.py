@@ -94,6 +94,7 @@ class TestSlotSelectionCapabilities:
             "effort_supported": True,
             "effort_levels": levels,
             "model_effort_pair_ids": pair_ids,
+            "models_backend": backend,
         }
 
     @pytest.mark.asyncio
@@ -111,13 +112,20 @@ class TestSlotSelectionCapabilities:
             "load",
             load_config,
         )
+        # The cold answer reads the model this slot will run; the stub config resolves none.
+        monkeypatch.setattr(chat_handlers, "resolve_effective_model", lambda _cfg, _agent: "")
         state = _mock_state(_ChatSlot("test"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/test/selection-capabilities")
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {
+            "known": False,
+            "model_effort_pair_ids": True,
+            "effort_supported": None,
+            "effort_levels": [],
+        }
 
     @pytest.mark.asyncio
     async def test_cold_member_session_uses_member_backend_for_pair_ids(self, monkeypatch):
@@ -128,13 +136,20 @@ class TestSlotSelectionCapabilities:
                 agent=SimpleNamespace(acp_backend="claude", member_acp_backend="codex")
             ),
         )
+        monkeypatch.setattr(chat_handlers, "resolve_effective_model", lambda _cfg, _agent: "")
         state = _mock_state(_ChatSlot("member-test"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/member-test/selection-capabilities")
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {
+            "known": False,
+            "model_effort_pair_ids": True,
+            "models_backend": "codex",
+            "effort_supported": None,
+            "effort_levels": [],
+        }
 
     @pytest.mark.asyncio
     async def test_live_provider_can_report_effort_unsupported(self):
@@ -154,6 +169,7 @@ class TestSlotSelectionCapabilities:
             "effort_supported": False,
             "effort_levels": [],
             "model_effort_pair_ids": False,
+            "models_backend": "opencode",
         }
         provider.get_valid_effort_levels.assert_not_called()
 

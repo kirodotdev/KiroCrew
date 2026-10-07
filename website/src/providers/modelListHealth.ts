@@ -66,5 +66,12 @@ export function modelListRefetchInterval(
   query: { queryKey: readonly unknown[] },
 ): number | false {
   const providerId = typeof query.queryKey[1] === 'string' ? query.queryKey[1] : ''
-  return modelsDegraded(providerId) ? 8_000 : false
+  // Another backend's list (`['available-models', <providerId>, <backend>]`) heals on its own flag.
+  const backend = typeof query.queryKey[2] === 'string' ? query.queryKey[2] : undefined
+  return modelsDegraded(modelHealthKey(providerId, backend)) ? 8_000 : false
+}
+
+/** The degraded-flag key for the configured list, or for one backend's own list. */
+export function modelHealthKey(providerId: string, backend?: string): string {
+  return backend === undefined ? providerId : `${providerId}:${backend}`
 }

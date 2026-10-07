@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { api } from '../../../api/client'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { useAgents } from '../../../hooks/useAgents'
-import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { useAvailableModelsQuery } from '../../../hooks/useAvailableModels'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
 import { useRemoteCapabilities } from '../../../hooks/useRemoteCapabilities'
 import type { ModelInfo } from '../../../providers/types'
@@ -17,6 +17,8 @@ interface SessionRostersOptions {
   refreshTrigger: number
   slots: ChatSlot[]
   dispatch: AppDispatch
+  /** The active session's `models_backend`: its harness lists other models than the configured one. */
+  modelsBackend?: string
 }
 
 /**
@@ -25,7 +27,7 @@ interface SessionRostersOptions {
  * the peer's, substituted rather than merged. Also the agent picker's filter
  * state and its "set as default" write.
  */
-export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, slots, dispatch }: SessionRostersOptions) {
+export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, slots, dispatch, modelsBackend }: SessionRostersOptions) {
   const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
@@ -70,7 +72,11 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
-  const localModels = useAvailableModels()
+  const ownModelsQuery = useAvailableModelsQuery({ backend: modelsBackend })
+  const localModels = ownModelsQuery.data
+  // Another harness's list keeps no last-good copy, so a failed fetch leaves only Auto.
+  const ownModelsFailed = !remoteCrew.isRemote && modelsBackend !== undefined
+    && (ownModelsQuery.isError || ownModelsQuery.isDegraded)
   // A peer-bound session's shelf must offer the PEER's rosters. Both hooks above
   // read THIS machine same-origin, so a remote session left on them would list
   // crews and models that do not exist over there — accepted by the picker, then
@@ -92,6 +98,6 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
     installedAgents, defaultAgent, remoteCrew, effectiveAgents,
     defaultAgentFailed, toggleDefaultAgent,
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
-    effectiveModels,
+    effectiveModels, ownModelsQuery, ownModelsFailed,
   }
 }

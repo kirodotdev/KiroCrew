@@ -2268,6 +2268,8 @@ _PROVIDER_EFFORT_ID_SITES = (
     "the capability answer in ``supports_effort``, for a harness whose ADVERTISED "
     "option decides that a level applies at all "
     "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",
+    "the build check in ``supports_effort``, for a harness that takes a level only "
+    "through its advertised option (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``)",
 )
 
 

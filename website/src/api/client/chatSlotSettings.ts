@@ -16,14 +16,19 @@ export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
 export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    /** The configured backend's model list, or `backend`'s own (`''` is kiro-cli). */
+    models: (backend?: string) =>
+      fetch(backend === undefined ? '/api/models' : '/api/models?backend=' + encodeURIComponent(backend)).then(j),
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean
         backend?: string
-        effort_supported?: boolean
+        /** `null` before a session reports, where only a live session on its harness can say. */
+        effort_supported?: boolean | null
         effort_levels?: string[]
         model_effort_pair_ids?: boolean
+        /** Present when this session's harness lists other models than the configured backend. */
+        models_backend?: string
       }>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,

@@ -82,8 +82,8 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
     triggers, setTriggers, displayName, setDisplayName, sessionColor, setSessionColor,
     editModel, setEditModel, editEffort, setEditEffort, editAvatar,
     kiroAgentOptions, workspaceOptions, modelOptions, availableModels, templateProvenance,
-    templateFieldLabel, kirocrewCfg, editorOptionsError, modelsDegraded,
-    resolved, resolvedError, effortCapable, effortModel,
+    templateFieldLabel, kirocrewCfg, editorOptionsError, modelsDegraded, retryModels, retryingModels, pinHarness,
+    resolved, resolvedError, effortCapable, effortLevels, effortModel,
     collidingCrews, sharingWorkspace, sharingMemoryStore,
     pane, requestPane, goToPane, panelId, sections, routingWords, templatePaneActive,
     wakeJobs, wakeUnknown, boundWebhooks, webhooksUnknown,
@@ -249,7 +249,13 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
 
               {pane === 'model' && (
                 <>
-                  <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
+                  <ModelField
+                    options={modelOptions}
+                    value={editModel}
+                    onChange={setEditModel}
+                    servedAs={editModel === editingAgent?.model ? resolved?.pin_served_as : undefined}
+                    harness={pinHarness}
+                  />
                   {/* The model list resolved DEGRADED (transport failure → the
                       adapter returned an auto-only/cached list). Surfaced through
                       ErrorNotice per errors-use-error-notice, not a hand-rolled
@@ -257,19 +263,29 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
                       /members ungated and would discard the parent page's
                       Schedules create draft the modal left mounted. */}
                   {modelsDegraded && (
-                    <ErrorNotice
-                      className="mt-1"
-                      message={i18nT('pages.chatSidebar.model_list_failed')}
-                      askAgent={false}
-                      testId="crew-editor-models-degraded"
-                    />
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <ErrorNotice
+                        className="min-w-[12rem] flex-1"
+                        // Another harness's list keeps no last-good copy, so a failure leaves only Inherited.
+                        message={resolved?.models_backend === undefined
+                          ? i18nT('pages.chatSidebar.model_list_failed')
+                          : i18nT('pages.kiroCrewAgentsPage.harness_models_failed', { harness: pinHarness })}
+                        askAgent={false}
+                        testId="crew-editor-models-degraded"
+                      />
+                      <Btn type="button" className="shrink-0" onClick={retryModels} disabled={retryingModels}>
+                        {i18nT('pages.chatSidebar.retry')}
+                      </Btn>
+                    </div>
                   )}
                   {(effortCapable || !!editEffort) && (
-                    <EffortField value={editEffort} onChange={setEditEffort} />
+                    <EffortField value={editEffort} onChange={setEditEffort} levels={effortLevels} />
                   )}
                   {!effortCapable && !!editEffort && (
                     <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                      {effortModel
+                      {resolved?.effort_supported === false
+                        ? i18nT('pages.kiroCrewAgentsPage.effort_ignored_by_this_backend', { harness: pinHarness })
+                        : effortModel
                         ? i18nT('pages.kiroCrewAgentsPage.effort_ignored_on_this_model', { model: effortModel })
                         : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
                     </div>

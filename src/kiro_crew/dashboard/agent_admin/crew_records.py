@@ -32,15 +32,18 @@ if TYPE_CHECKING:
         _sel,
         _UnverifiableLineage,
         discovery_executor,
+        harness_effort,
         key_new_crew,
         list_agents,
         logger,
         memory_store_binding_defect,
         normalize_agent_model,
+        own_models_backend,
         persist_member_config,
         provision_member_memory,
         resolve_agent_identity,
         resolve_effective_model,
+        resolve_pin_spelling_on,
         retire_unpublished_allocation,
         teams_mod,
         validate_member_name,
@@ -71,6 +74,28 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
     # configured default crew rather than for no crew at all.
     crew_effort = cfg.crew_pinned_effort(None, alias)
     session_effort = cfg.resolve_session_effort(kiro_agent, alias)
+    pin_backend = _pin_entitlement_backend(cfg)
+    own = own_models_backend(pin_backend, cfg.agent.acp_backend)
+    models_field = {} if own is None else {"models_backend": own}
+    effort = harness_effort(
+        request.app.get("state"), pin_backend, model, alias, model_answers=False
+    )
+    if "effort_levels" in effort:
+        # A pin saves through _crew_effort_rejected, which takes the shared vocabulary only.
+        effort["effort_levels"] = [lvl for lvl in effort["effort_levels"] if lvl in EFFORT_VALUES]
+    # circular import: see _model_pin_rejected.
+    from kiro_crew.dashboard.handlers.core import _active_advertised_ids
+
+    advertised = (
+        _active_advertised_ids(request, backend=pin_backend)
+        if model_pin not in ("", "auto")
+        else None
+    )
+    served_field = (
+        {}
+        if advertised is None
+        else {"pin_served_as": resolve_pin_spelling_on(model_pin, advertised, backend=pin_backend)}
+    )
     return web.json_response(
         {
             "model": model,
@@ -83,6 +108,16 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             # and the model's own default applies.
             "reasoning_effort": session_effort,
             "effort_pinned": bool(crew_effort),
+            # The backend whose list the editor offers, when the pin is judged by
+            # another harness's catalog than the configured one.
+            **models_field,
+            # The id that harness serves the crew's pin as ("" for none), off a live
+            # session's advertised list; absent while no session has advertised one.
+            **served_field,
+            # Whether and at which levels that harness takes an effort pin, where its
+            # build decides rather than the model; null until a live session on it
+            # answers. Otherwise the editor judges the model.
+            **effort,
         }
     )
 

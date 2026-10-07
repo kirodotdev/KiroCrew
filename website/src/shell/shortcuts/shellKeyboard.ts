@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
 import { createSlot, setAgentSwitchNotice } from '../../store/chatSlice'
@@ -16,9 +16,23 @@ import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
 import { useCommandPalette } from '../../hooks/useCommandPalette'
 import { useProvider } from '../../providers/context'
+import { modelsQueryKey } from '../../hooks/useAvailableModels'
+import { i18nT } from '../../i18n/t'
+import { modelSupportsEffort } from '../../lib/effort'
 import { useAgents } from '../../hooks/useAgents'
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/** What an effort cycle steps over on *slot*, which runs *model*: its harness's levels, '' (default)
+ *  first, or the notice saying there are none (see the composer's effort control). */
+function sessionEffortLevels(queryClient: QueryClient, slot: string, model: string): string[] | string {
+  const caps = queryClient.getQueryData<{ effort_supported?: boolean | null; effort_levels?: string[] }>(['slot-selection-capabilities', slot])
+  // null is "no live session on that harness has said yet": the model answers, as in the composer.
+  const supported = caps?.effort_supported === null ? modelSupportsEffort(model) : caps?.effort_supported !== false
+  if (!supported) return i18nT('pages.chatPage.effort_cycle_unavailable')
+  const levels = caps?.effort_levels?.filter(l => l && l !== 'default')
+  return levels?.length ? ['', ...levels] : REASONING_EFFORT_LEVELS
+}
 // Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
 // Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
@@ -66,6 +80,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
   const provider = useProvider()
+  // The model a slot runs before it reports: its own pick, else what the composer resolved its crew to.
+  const slotModel = (slot: { model?: string; agent?: string } | undefined) => slot?.model
+    || queryClient.getQueryData<string>(['resolved-model', slot?.agent || defaultAgent || 'default', provider.id]) || ''
   const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
   useEffect(() => {
     if (!agentSwitchNotice) return
@@ -120,11 +137,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // is a REAL effort target (provider default), so this base uses the
       // null-aware accessor — the ''-falsy one would misread an in-flight
       // "back to default" as "nothing pending" and mis-step the burst.
+      const levels = sessionEffortLevels(queryClient, activeSlot, slotModel(currentSlot))
+      // A shortcut that silently does nothing reads as broken, so say why instead.
+      if (typeof levels === 'string') { store.dispatch(setAgentSwitchNotice(levels)); return }
       const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
         ?? (currentSlot?.reasoning_effort || '')
-      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
-      const nextIdx = (idx + 1) % REASONING_EFFORT_LEVELS.length
-      const level = REASONING_EFFORT_LEVELS[nextIdx]
+      const idx = levels.indexOf(base)
+      const nextIdx = (idx + 1) % levels.length
+      const level = levels[nextIdx]
       try {
         await performSlotSwitch('reasoning_effort', activeSlot, level,
           async () => {
@@ -144,11 +164,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleReasoningEffort above.
+      const levels = sessionEffortLevels(queryClient, activeSlot, slotModel(currentSlot))
+      // A shortcut that silently does nothing reads as broken, so say why instead.
+      if (typeof levels === 'string') { store.dispatch(setAgentSwitchNotice(levels)); return }
       const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
         ?? (currentSlot?.reasoning_effort || '')
-      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
-      const prevIdx = (idx - 1 + REASONING_EFFORT_LEVELS.length) % REASONING_EFFORT_LEVELS.length
-      const level = REASONING_EFFORT_LEVELS[prevIdx]
+      const idx = levels.indexOf(base)
+      const prevIdx = (idx - 1 + levels.length) % levels.length
+      const level = levels[prevIdx]
       try {
         await performSlotSwitch('reasoning_effort', activeSlot, level,
           async () => {
@@ -183,7 +206,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCycleModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active session's own list when its harness is not the configured one (see ChatPage).
+      const caps = queryClient.getQueryData<{ models_backend?: string }>(['slot-selection-capabilities', activeSlot])
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, caps?.models_backend))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
@@ -215,7 +240,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCyclePrevModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active session's own list when its harness is not the configured one (see ChatPage).
+      const caps = queryClient.getQueryData<{ models_backend?: string }>(['slot-selection-capabilities', activeSlot])
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, caps?.models_backend))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)

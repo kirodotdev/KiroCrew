@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { X, LoaderCircle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
 import type { ThreadHooks } from '../app-sdk/messageRenderers'
@@ -50,7 +50,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
@@ -105,6 +105,7 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
+import { acpBackendName } from '../api/acpBackend'
 
 /**
  * ChatPane — one live chat session in the native session grid.
@@ -643,7 +644,18 @@ export default function ChatPane({
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const localModels = useAvailableModels()
+  const selectionCapabilitiesQ = useQuery({
+    queryKey: ['slot-selection-capabilities', slotKey],
+    queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
+    enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
+    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
+  })
+  // A session on another harness than the configured one lists that harness's models, as in ChatPage.
+  const ownModelsQuery = useAvailableModelsQuery({ backend: selectionCapabilitiesQ.data?.models_backend })
+  const localModels = ownModelsQuery.data
+  // Another harness's list keeps no last-good copy, so a failed fetch leaves only Auto.
+  const ownModelsFailed = !paneRemoteCrew.isRemote && selectionCapabilitiesQ.data?.models_backend !== undefined
+    && (ownModelsQuery.isError || ownModelsQuery.isDegraded)
   const effectiveModels = useMemo<ModelInfo[]>(() => {
     if (!paneRemoteCrew.isRemote) return localModels
     return (paneRemoteCrew.capabilities?.models ?? []).map(model => ({
@@ -652,12 +664,6 @@ export default function ChatPane({
       contextWindow: model.context_window || undefined,
     }))
   }, [paneRemoteCrew.isRemote, paneRemoteCrew.capabilities, localModels])
-  const selectionCapabilitiesQ = useQuery({
-    queryKey: ['slot-selection-capabilities', slotKey],
-    queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
-    enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
-    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
-  })
   const selectionCapabilities = selectionCapabilitiesQ.data?.known ? selectionCapabilitiesQ.data : undefined
   const codexPairModels = shouldSeparateModelEffort(
     selectionCapabilitiesQ.data?.model_effort_pair_ids, effectiveModels,
@@ -708,7 +714,7 @@ export default function ChatPane({
   // a cached list served while /api/models fails is stale and cannot disprove
   // entitlement — and is subscribed to, since it can flip while the served list
   // stays identical.
-  const _modelsDegraded = useModelsDegraded(provider.id)
+  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -719,13 +725,17 @@ export default function ChatPane({
     paneSlot?.model_withheld,
     codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
+  // Before a session reports, its own harness answers when the server gave one. A null answer is
+  // "no session on that harness has said yet", so the model answers then, as in the crew editor.
+  const effortCaps = selectionCapabilities
+    ?? (selectionCapabilitiesQ.data?.effort_supported == null ? undefined : selectionCapabilitiesQ.data)
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
-    selectionCapabilities
-      ? selectionCapabilities.effort_supported === true
+    effortCaps
+      ? effortCaps.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities
-    ? selectionCapabilities.effort_levels
+  const effortLevelsOverride = effortCaps
+    ? effortCaps.effort_levels
     : paneRemoteCrew.isRemote ? (paneRemoteCrew.capabilities?.effort_levels ?? []) : undefined
   const readKirocrewConfig = useKirocrewConfigReader()
   const { data: defaultEffort = '' } = useQuery({
@@ -2229,17 +2239,24 @@ export default function ChatPane({
                 </Btn>
               </div>
             )}
-            {paneRemoteCrew.failed && (
+            {(paneRemoteCrew.failed || ownModelsFailed) && (
               <div className="flex shrink-0 items-center gap-2 px-1.5 py-1">
                 {/* No hand-off: this pane's composer may hold an unsent draft.
                     Retry keeps the user in the owning chat. */}
                 <ErrorNotice
                   className="min-w-0 flex-1"
                   variant="inline"
-                  message={i18nT('components.modelEffortDropdown.models_failed')}
+                  message={paneRemoteCrew.failed
+                    ? i18nT('components.modelEffortDropdown.models_failed')
+                    : i18nT('components.modelEffortDropdown.harness_models_failed', { harness: acpBackendName({ id: selectionCapabilitiesQ.data?.models_backend ?? '' }) })}
                 />
-                <Btn type="button" className="shrink-0" onClick={() => paneRemoteCrew.refetch()} disabled={paneRemoteCrew.retrying}>
-                  {paneRemoteCrew.retrying && <LoaderCircle className="lucide-inline animate-spin" aria-hidden />}
+                <Btn
+                  type="button"
+                  className="shrink-0"
+                  onClick={() => (paneRemoteCrew.failed ? paneRemoteCrew.refetch() : ownModelsQuery.refetch())}
+                  disabled={paneRemoteCrew.failed ? paneRemoteCrew.retrying : ownModelsQuery.isFetching}
+                >
+                  {(paneRemoteCrew.failed ? paneRemoteCrew.retrying : ownModelsQuery.isFetching) && <LoaderCircle className="lucide-inline animate-spin" aria-hidden />}
                   {i18nT('pages.settings.chatPanel.retry')}
                 </Btn>
               </div>

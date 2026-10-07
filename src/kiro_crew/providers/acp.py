@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
@@ -1760,6 +1761,12 @@ class AcpProvider(LLMProvider):
             return self._client.supports_config_option(
                 effort_config_option_id(self._client.backend)
             )
+        # A pair-id harness takes a level only through its effort option, so a build
+        # that advertises none drops every pick (change_effort skips it).
+        if self._client.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS and not (
+            self._client.supports_config_option(effort_config_option_id(self._client.backend))
+        ):
+            return False
         return model_supports_effort(self._client._model)
 
     def _resolve_effort(self) -> str | None:

@@ -38,6 +38,8 @@ interface Props {
    *  Renders an `ErrorNotice` row: without it the failure would wear the
    *  empty list's "No matches" clothes and read as "this crew has no models". */
   modelsFailed?: boolean
+  /** The failure row's text, when the list that failed is not a peer crew's. */
+  modelsFailedMessage?: string
   /** In-place retry for that failure; omit to hide the button. */
   onRetryModels?: () => void
   /** True while that retry is in flight. The failed state persists until the
@@ -98,7 +100,7 @@ export default function ModelEffortDropdown({
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
-  modelsFailed = false, onRetryModels, retryingModels = false,
+  modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false,
 }: Props) {
   const ime = useImeGuard()
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
@@ -167,7 +169,7 @@ export default function ModelEffortDropdown({
                 <ErrorNotice
                   className="min-w-0 flex-1"
                   variant="inline"
-                  message={i18nT('components.modelEffortDropdown.models_failed')}
+                  message={modelsFailedMessage ?? i18nT('components.modelEffortDropdown.models_failed')}
                 />
                 {onRetryModels && (
                   <Btn type="button" className="shrink-0" onClick={onRetryModels} disabled={retryingModels}>

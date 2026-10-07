@@ -43,10 +43,16 @@ from aiohttp import BodyPartReader, web  # noqa: F401
 from kiro_crew import agent_state  # noqa: F401
 from kiro_crew import crew_teams as teams_mod  # noqa: F401
 from kiro_crew import model_registry, model_scope
-from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.client import (  # noqa: F401
+    advertised_model_ids,
+    model_is_unusable,
+    resolve_pin_spelling_on,
+)
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -266,13 +272,17 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _UnverifiableLineage,
     _write_spec_file,
 )
-from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
+from kiro_crew.dashboard.chat_persistence import (
+    cap_effort_capability_levels,
+    get_reasoning_effort_ordered,
+)
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
     drained_to_thread,
+    effective_session_key,
     is_deprecated_model,
     run_config_write,
 )
@@ -297,7 +307,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES  # noqa: F401
+from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES, model_supports_effort  # noqa: F401
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.external_text import redact_external_text as _redact_external  # noqa: F401
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
@@ -1264,15 +1274,100 @@ def _consume_refresh_exception(task: "asyncio.Task[list[dict]]") -> None:
         logger.debug("api_models: background catalog refresh failed (serving cached)", exc_info=exc)
 
 
+def own_models_backend(backend: str, configured: str) -> str | None:
+    """*backend* when its pickers need its own ``GET /api/models?backend=`` list.
+
+    ``None`` when it shares the configured backend's model-id namespace (kiro-cli
+    and kas read one catalog) or is not selectable, which ``?backend=`` refuses.
+    """
+    if model_registry_namespace(backend) == model_registry_namespace(configured):
+        return None
+    return backend if backend in selectable_backend_values() else None
+
+
+def _live_on(state: Any, backend: str, crew: str) -> Any:
+    """A live provider on *backend*, *crew*'s own session's first, then the newest.
+
+    The levels a pair-id harness advertises can follow the model a session runs, and the
+    crew's own session is the likeliest to run the crew's. Newest first, as
+    ``core._advertised_evidence_provider`` reads: an older session still holds what its
+    build said at its own ``session/new``.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return None
+    on = [
+        p
+        for p in reversed(list(sessions.active_providers()))
+        if capabilities_of(p).backend == backend
+    ]
+    mine = {
+        id(sessions.get_provider(effective_session_key(s)))
+        for s in getattr(state, "_slots", {}).values()
+        if crew and s.agent == crew
+    }
+    return next((p for p in on if id(p) in mine), next(iter(on), None))
+
+
+def harness_effort(
+    state: Any, backend: str, model: str | None, crew: str = "", *, model_answers: bool = True
+) -> dict:
+    """``effort_supported`` and ``effort_levels`` for a session on *backend* before it reports its own.
+
+    Where the level rides the model (kiro-cli, claude) *model* answers over the shared
+    vocabulary, as the live provider's own gate does. ``model_answers=False`` returns
+    nothing there instead, for a caller that judges the model itself: the crew editor
+    follows the pick the user is making, which a saved model would contradict.
+
+    Where the harness carries it in a session option (pi) or splits a model pair onto one
+    (codex), only that harness's build can say, and with no live session on it
+    ``effort_supported`` is ``None``: unknown, not unsupported.
+
+    A live session there, even one of *crew*'s own, is evidence of the BUILD alone --
+    whether it advertises the effort option, and at which levels -- because its own
+    ``supports_effort`` judges the model IT runs, which a slot pick can make another than
+    *model*: a pair-id harness (codex) would otherwise report that pick as this harness
+    taking no effort, and tell the crew to clear a pin that works. So *model* answers for
+    the pair, as the live gate does.
+    """
+    if backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION | ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        live = _live_on(state, backend, crew)
+        if live is None:
+            return {"effort_supported": None, "effort_levels": []}
+        levels = live.get_valid_effort_levels()
+        supported = bool(levels) and (
+            backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS or model_supports_effort(model)
+        )
+        levels = levels if supported else []
+    elif not model_answers or model is None:
+        return {}
+    else:
+        supported = model_supports_effort(model)
+        levels = list(EFFORT_LEVELS) if supported else []
+    return {
+        "effort_supported": supported,
+        "effort_levels": cap_effort_capability_levels(levels, source="harness"),
+    }
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
     live session's entitlement); advertised-selection backends read their own
     adapter's namespace, because they do not accept ids from that catalog.
+
+    ``?backend=<id>`` serves that backend's list instead, for a session or crew
+    on another harness (``models_backend`` names it); a 400 for an unselectable id.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    if "backend" in request.query:
+        backend = request.query["backend"]
+        if backend not in selectable_backend_values():
+            return web.json_response(
+                {"error": "backend is not selectable", "code": "invalid_backend"}, status=400
+            )
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))

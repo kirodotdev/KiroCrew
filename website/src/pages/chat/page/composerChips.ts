@@ -11,7 +11,7 @@ import { i18nT } from '../../../i18n/t'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
-import { useModelsDegraded } from '../../../providers/modelListHealth'
+import { modelHealthKey, useModelsDegraded } from '../../../providers/modelListHealth'
 import type { ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
@@ -31,7 +31,11 @@ interface ComposerChipsOptions {
   codexPairModels: boolean
   /** The slot's ACP capability answer, once known. */
   selectionCapabilities: Awaited<ReturnType<typeof api.chatSlotSelectionCapabilities>> | undefined
-  selectionCapabilitiesQ: { isError: boolean; error?: unknown }
+  selectionCapabilitiesQ: {
+    isError: boolean
+    error?: unknown
+    data?: { models_backend?: string; effort_supported?: boolean | null; effort_levels?: string[] }
+  }
   remoteCrew: ReturnType<typeof useRemoteCapabilities>
   dispatch: AppDispatch
   queryClient: QueryClient
@@ -114,7 +118,8 @@ export function useComposerChips({
   // verdict — a cached list served while /api/models fails is stale, not
   // authoritative — and is subscribed to rather than read, because it can flip
   // without the list changing.
-  const _modelsDegraded = useModelsDegraded(provider.id)
+  // The flag of the list the chip reads: a session on another harness reads that harness's own list.
+  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -129,13 +134,17 @@ export function useComposerChips({
     // a bare `auto` for a session running one specific model.
     codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
   )
+  // Before a session reports, its own harness answers when the server gave one. A null answer is
+  // "no session on that harness has said yet", so the model answers then, as in the crew editor.
+  const effortCaps = selectionCapabilities
+    ?? (selectionCapabilitiesQ.data?.effort_supported == null ? undefined : selectionCapabilitiesQ.data)
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
-    selectionCapabilities
-      ? selectionCapabilities.effort_supported === true
+    effortCaps
+      ? effortCaps.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities
-    ? selectionCapabilities.effort_levels
+  const effortLevelsOverride = effortCaps
+    ? effortCaps.effort_levels
     : remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined
   // The same answer WITHOUT that substitution, for the pin-to-agent row: that
   // row asks about the PIN, and it must stay disabled for a withheld one even
