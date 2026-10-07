@@ -2419,6 +2419,7 @@ function ChatSidebar({
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
+    hiddenTagIds, toggleTagHide, clearTagHide,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
   } = useSessionFilterState()
   const {
@@ -2685,8 +2686,9 @@ function ChatSidebar({
   const { data: folders = [], isSuccess: foldersLoaded, isError: foldersFailed, error: foldersError, refetch: refetchFolders } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
 
   const {
-    tagsData, tagsQueryFailed, refetchTags, tagById, activeTagIds, tagFilterRows, activeTagNames,
-  } = useSidebarTags({ filterTagIds, localSlots })
+    tagsData, tagsQueryFailed, refetchTags, tagById, activeTagIds, activeHiddenTagIds, tagFilterRows, activeTagNames,
+    hiddenTagNames,
+  } = useSidebarTags({ filterTagIds, hiddenTagIds, localSlots })
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
     hideEmptyFolderBody, orderedColumns,
@@ -2764,11 +2766,12 @@ function ChatSidebar({
     },
     filters: {
       tags: { resolved: activeTagIds, raw: filterTagIds },
+      tagHides: { resolved: activeHiddenTagIds, raw: hiddenTagIds },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
       status: { active: activeFilters, paused: filtersPaused, recentWindowMs },
       folders: { hiddenSubtree: filterHiddenSubtree, active: folderFilterActive },
     },
-    clears: { tags: clearTagFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide },
+    clears: { tags: clearTagFilter, tagHides: clearTagHide, search: clearSearch, status: clearAllFilters, folder: clearFolderHide },
     crewGroups: shownCrewGroups,
     sortKey,
     clock: Date.now,
@@ -5029,9 +5032,26 @@ function ChatSidebar({
                     <FilterMenuLabel>
                       {i18nT('pages.chatSidebar.tags')}
                     </FilterMenuLabel>
-                    {tagFilterRows.map(({ tag: t, count, selected }) => (
+                    {tagFilterRows.map(({ tag: t, count, selected, hidden }) => {
+                      const hideLabel = hidden
+                        ? i18nT('pages.chatSidebar.stop_hiding_sessions_tagged', { name: t.name })
+                        : i18nT('pages.chatSidebar.hide_sessions_tagged', { name: t.name })
+                      // Two menu items drawn as one row, not a button nested in one: a
+                      // focusable control inside a menuitem is skipped by the menu's
+                      // roving focus and read as part of the row's name. The hide item
+                      // sits after the count and is offered only while the tag is NOT
+                      // selected: selecting and hiding are exclusive, so a selected row
+                      // is cleared by its own click first. A lit eye-slash marks a
+                      // hidden tag; otherwise the icon shows on hover or focus, and
+                      // always on touch screens, which have no hover (#13801).
+                      return (
+                    <div
+                      key={t.id}
+                      role="group"
+                      className="group/tagrow flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
+                    >
                       <DropdownMenuItem
-                        key={t.id}
+                        className="flex-1 min-w-0"
                         title={selected
                           ? i18nT('pages.chatSidebar.stop_filtering_by_tag', { name: t.name })
                           : i18nT('pages.chatSidebar.show_only_sessions_tagged', { name: t.name })}
@@ -5055,7 +5075,31 @@ function ChatSidebar({
                             the one that blanks the list when selected. */}
                         <span className="text-muted text-[11px] shrink-0">{count}</span>
                       </DropdownMenuItem>
-                    ))}
+                      {!selected && (
+                        <DropdownMenuItem
+                          aria-label={hideLabel}
+                          title={hideLabel}
+                          // Keep the menu open so several tags can be hidden.
+                          onSelect={e => { e.preventDefault(); toggleTagHide(t.id) }}
+                          className="group/taghide shrink-0"
+                          data-testid={`tag-hide-${t.id}`}
+                          data-tag-hidden={hidden ? 'true' : undefined}
+                        >
+                          <span
+                            className={hidden
+                              ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                              : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/taghide:text-text'}
+                          >
+                            <EyeOff
+                              size={12}
+                              className={hidden ? undefined : 'opacity-0 group-hover/tagrow:opacity-100 group-focus-within/tagrow:opacity-100 [@media(hover:none)]:opacity-100'}
+                            />
+                          </span>
+                        </DropdownMenuItem>
+                      )}
+                    </div>
+                      )
+                    })}
                   </>
                 )}
                 {/* Folders sit LAST on purpose: the list grows with the user's
@@ -5168,6 +5212,20 @@ function ChatSidebar({
             </span>
             <X size={11} className="shrink-0" />
           </button>
+        </div>
+      )}
+      {/* The tag hides, as ONE aggregate chip in their own row for the same reason
+          as the tag chip above. After it, so the strip reads what is kept, then what
+          is dropped. One click stops every hide (#13801). */}
+      {activeHiddenTagIds.size > 0 && (
+        <div className="px-3 pb-1">
+          <FilterChip
+            aggregate
+            label={i18nT('pages.chatSidebar.hiding_tags', { tags: fmtList(hiddenTagNames) })}
+            clearLabel={i18nT('pages.chatSidebar.stop_hiding_tags', { tags: fmtList(hiddenTagNames) })}
+            onClear={clearTagHide}
+            testId="tag-hide-chip"
+          />
         </div>
       )}
       {activeFilters.size > 0 && (

@@ -329,3 +329,67 @@ describe('chat sidebar — filter menu Tags section', () => {
     }
   })
 })
+
+describe('chat sidebar — hiding sessions by tag (#13801)', () => {
+  it('hides every session carrying the tag and leaves the rest, untagged included', async () => {
+    const utils = renderSidebar()
+    await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+    openFilterMenu(utils)
+    const hide = await utils.findByTestId('tag-hide-t2')
+    expect(hide).toHaveAccessibleName('Hide sessions tagged Beta')
+    fireEvent.click(hide)
+    await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
+    expect(utils.queryByText('alpha session')).not.toBeNull()
+    expect(utils.queryByText('untagged session')).not.toBeNull()
+    expect(JSON.parse(localStorage.getItem('mc-session-tag-hidden') || '[]')).toEqual(['t2'])
+  })
+
+  it('hides several tags at once and shows them in one chip that stops every hide', async () => {
+    localStorage.setItem('mc-session-tag-hidden', JSON.stringify(['t1', 't2']))
+    const utils = renderSidebar()
+    await waitFor(() => expect(utils.queryByText('untagged session')).not.toBeNull())
+    await waitFor(() => expect(utils.queryByText('alpha session')).toBeNull())
+    expect(utils.queryByText('beta session')).toBeNull()
+    const chip = await utils.findByTestId('tag-hide-chip')
+    expect(chip).toHaveTextContent('Hiding Alpha and Beta')
+    expect(chip).toHaveAccessibleName('Stop hiding Alpha and Beta')
+    fireEvent.click(chip)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    expect(utils.queryByText('beta session')).not.toBeNull()
+    expect(JSON.parse(localStorage.getItem('mc-session-tag-hidden') || '[]')).toEqual([])
+  })
+
+  it('composes with a selected tag as AND NOT, not as a union', async () => {
+    const both = { key: 'k-both', title: 'both session', running: false, messages: 2, tags: ['t1', 't2'] }
+    localStorage.setItem('mc-session-tag-filter', JSON.stringify(['t1']))
+    localStorage.setItem('mc-session-tag-hidden', JSON.stringify(['t2']))
+    const utils = renderSidebar([...SLOTS, both])
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    await waitFor(() => expect(utils.queryByText('both session')).toBeNull())
+    expect(utils.queryByText('beta session')).toBeNull()
+    expect(utils.queryByText('untagged session')).toBeNull()
+  })
+
+  it('makes selecting and hiding one tag exclusive', async () => {
+    localStorage.setItem('mc-session-tag-hidden', JSON.stringify(['t2']))
+    const utils = renderSidebar()
+    await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
+    openFilterMenu(utils)
+    // Selecting a hidden tag stops hiding it.
+    fireEvent.click(await utils.findByTestId('tag-filter-t2'))
+    await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+    expect(JSON.parse(localStorage.getItem('mc-session-tag-hidden') || '[]')).toEqual([])
+    expect(JSON.parse(localStorage.getItem('mc-session-tag-filter') || '[]')).toEqual(['t2'])
+    // A selected tag offers no hide control until its selection is cleared.
+    expect(utils.queryByTestId('tag-hide-t2')).toBeNull()
+    expect(utils.queryByTestId('tag-hide-t1')).not.toBeNull()
+  })
+
+  it('ignores a persisted hide whose tag no longer exists', async () => {
+    localStorage.setItem('mc-session-tag-hidden', JSON.stringify(['t-deleted']))
+    const utils = renderSidebar()
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    expect(utils.queryByText('beta session')).not.toBeNull()
+    expect(utils.queryByTestId('tag-hide-chip')).toBeNull()
+  })
+})

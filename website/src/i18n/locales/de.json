@@ -11784,7 +11784,11 @@
       "archived_sessions_kept_other": "{{count}} archivierte Sitzungen bleiben in Ältere Sitzungen",
       "archived_count_one": "{{count}} archiviert",
       "archived_count_other": "{{count}} archiviert",
-      "waiting_for_memory": "Wartet auf freien Arbeitsspeicher"
+      "waiting_for_memory": "Wartet auf freien Arbeitsspeicher",
+      "hide_sessions_tagged": "Sitzungen mit dem Tag {{name}} ausblenden",
+      "stop_hiding_sessions_tagged": "Sitzungen mit dem Tag {{name}} nicht mehr ausblenden",
+      "hiding_tags": "Ausgeblendet: {{tags}}",
+      "stop_hiding_tags": "{{tags}} nicht mehr ausblenden"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

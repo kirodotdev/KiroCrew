@@ -12148,7 +12148,11 @@
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
       "archived_count_other": "{{count}} в архиве",
-      "waiting_for_memory": "Ожидание свободной RAM"
+      "waiting_for_memory": "Ожидание свободной RAM",
+      "hide_sessions_tagged": "Скрыть сессии с тегом {{name}}",
+      "stop_hiding_sessions_tagged": "Больше не скрывать сессии с тегом {{name}}",
+      "hiding_tags": "Скрыто: {{tags}}",
+      "stop_hiding_tags": "Больше не скрывать {{tags}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

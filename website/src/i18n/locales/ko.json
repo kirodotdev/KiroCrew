@@ -11602,7 +11602,11 @@
       "deleting_folders": "삭제 중…",
       "archived_sessions_kept_other": "보관된 세션 {{count}}개는 이전 세션에 남습니다",
       "archived_count_other": "보관됨 {{count}}개",
-      "waiting_for_memory": "여유 RAM 대기 중"
+      "waiting_for_memory": "여유 RAM 대기 중",
+      "hide_sessions_tagged": "{{name}} 태그가 지정된 세션 숨기기",
+      "stop_hiding_sessions_tagged": "{{name}} 태그가 지정된 세션 숨기기 해제",
+      "hiding_tags": "숨김: {{tags}}",
+      "stop_hiding_tags": "{{tags}} 숨기기 해제"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

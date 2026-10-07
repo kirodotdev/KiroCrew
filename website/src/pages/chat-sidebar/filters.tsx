@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, readStoredTagHide, TAG_HIDE_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
 import { useAppSelector } from '../../store'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
@@ -139,6 +139,10 @@ export function useSessionFilterState() {
    *  Waiting"), matching how a board column with several tags already behaves, so
    *  the two surfaces cannot disagree about what a multi-tag selection means. */
   const [filterTagIds, setFilterTagIds] = useState<Set<string>>(() => readStoredTagFilter())
+  /** Tag ids whose sessions are HIDDEN (#13801). Exclusive with `filterTagIds`:
+   *  turning one on for a tag turns the other off, because "show only Done" and
+   *  "hide Done" together can only mean an empty list. */
+  const [hiddenTagIds, setHiddenTagIds] = useState<Set<string>>(() => readStoredTagHide())
   const toggleTagFilter = useCallback((id: string) => {
     setFilterTagIds(prev => {
       const next = new Set(prev)
@@ -146,10 +150,36 @@ export function useSessionFilterState() {
       safeSetItem(TAG_FILTER_LS_KEY, JSON.stringify([...next]))
       return next
     })
+    setHiddenTagIds(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      safeSetItem(TAG_HIDE_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
+  const toggleTagHide = useCallback((id: string) => {
+    setHiddenTagIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      safeSetItem(TAG_HIDE_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+    setFilterTagIds(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      safeSetItem(TAG_FILTER_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
   }, [])
   const clearTagFilter = useCallback(() => {
     setFilterTagIds(new Set())
     safeSetItem(TAG_FILTER_LS_KEY, '[]')
+  }, [])
+  const clearTagHide = useCallback(() => {
+    setHiddenTagIds(new Set())
+    safeSetItem(TAG_HIDE_LS_KEY, '[]')
   }, [])
   // Shelved = the Folders section is rolled up to its heading, so a long folder
   // list stops crowding the Filter and Sort rows. Purely cosmetic: shelving
@@ -215,7 +245,8 @@ export function useSessionFilterState() {
   return {
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
-    showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
+    showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter,
+    hiddenTagIds, toggleTagHide, clearTagHide, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
   }
 }

@@ -11,8 +11,9 @@ import type { Slot } from './types'
 const NO_TAGS: ChatTag[] = []
 
 /** The tag vocabulary query and the lookups built from it. */
-export function useSidebarTags({ filterTagIds, localSlots }: {
+export function useSidebarTags({ filterTagIds, hiddenTagIds, localSlots }: {
   filterTagIds: Set<string>
+  hiddenTagIds: Set<string>
   localSlots: Slot[]
 }) {
   // Tags via React Query (dynamic vocabulary, defaults seeded server-side).
@@ -46,6 +47,12 @@ export function useSidebarTags({ filterTagIds, localSlots }: {
     () => new Set([...filterTagIds].filter(id => tagById[id])),
     [filterTagIds, tagById],
   )
+  /** Hidden ids narrowed to tags that still exist, for the same reason as above:
+   *  a deleted hidden tag must not keep a "Hiding" chip with no name to show. */
+  const activeHiddenTagIds = useMemo(
+    () => new Set([...hiddenTagIds].filter(id => tagById[id])),
+    [hiddenTagIds, tagById],
+  )
   /** Rows for the filter menu's Tags section, in the tag vocabulary's own order.
    *  Counts come from all `slots`, NOT `filteredSlots`, so they describe the
    *  vocabulary rather than the current selection — otherwise every unselected tag
@@ -58,8 +65,9 @@ export function useSidebarTags({ filterTagIds, localSlots }: {
         tag: t,
         count: localSlots.filter(s => (s.tags ?? []).includes(t.id)).length,
         selected: filterTagIds.has(t.id),
+        hidden: hiddenTagIds.has(t.id),
       })),
-    [tags, localSlots, filterTagIds],
+    [tags, localSlots, filterTagIds, hiddenTagIds],
   )
   /** Names of the selected tags, in vocabulary order. Disjunction, not a comma
    *  join: selection is a union, so a screen reader should hear "Blocked or
@@ -68,5 +76,10 @@ export function useSidebarTags({ filterTagIds, localSlots }: {
     () => tagFilterRows.filter(({ tag: t }) => activeTagIds.has(t.id)).map(({ tag: t }) => t.name),
     [tagFilterRows, activeTagIds],
   )
-  return { tagsData, tagsQueryFailed, refetchTags, tagById, activeTagIds, tagFilterRows, activeTagNames }
+  /** Names of the hidden tags, in vocabulary order, for the "Hiding" chip. */
+  const hiddenTagNames = useMemo(
+    () => tagFilterRows.filter(({ tag: t }) => activeHiddenTagIds.has(t.id)).map(({ tag: t }) => t.name),
+    [tagFilterRows, activeHiddenTagIds],
+  )
+  return { tagsData, tagsQueryFailed, refetchTags, tagById, activeTagIds, activeHiddenTagIds, tagFilterRows, activeTagNames, hiddenTagNames }
 }

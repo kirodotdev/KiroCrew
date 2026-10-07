@@ -11602,7 +11602,11 @@
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
       "archived_count_other": "アーカイブ済み {{count}} 件",
-      "waiting_for_memory": "空きRAM待ち"
+      "waiting_for_memory": "空きRAM待ち",
+      "hide_sessions_tagged": "{{name}} タグが付いたセッションを非表示",
+      "stop_hiding_sessions_tagged": "{{name}} タグが付いたセッションの非表示を解除",
+      "hiding_tags": "非表示中: {{tags}}",
+      "stop_hiding_tags": "{{tags}} の非表示を解除"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

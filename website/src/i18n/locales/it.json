@@ -11966,7 +11966,11 @@
       "archived_count_many": "{{count}} archiviate",
       "archived_count_one": "{{count}} archiviata",
       "archived_count_other": "{{count}} archiviate",
-      "waiting_for_memory": "In attesa di RAM libera"
+      "waiting_for_memory": "In attesa di RAM libera",
+      "hide_sessions_tagged": "Nascondi le sessioni con il tag {{name}}",
+      "stop_hiding_sessions_tagged": "Smetti di nascondere le sessioni con il tag {{name}}",
+      "hiding_tags": "Nascoste: {{tags}}",
+      "stop_hiding_tags": "Smetti di nascondere {{tags}}"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

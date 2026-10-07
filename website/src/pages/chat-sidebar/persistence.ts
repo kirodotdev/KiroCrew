@@ -80,8 +80,24 @@ export const TAG_FILTER_LS_KEY = 'mc-session-tag-filter'
  *  render, so a throwing localStorage (private mode / disabled storage) or a
  *  hand-corrupted value must fall back to "no filter", never crash. */
 export function readStoredTagFilter(): Set<string> {
+  return readStoredIdSet(TAG_FILTER_LS_KEY)
+}
+
+/** Tag ids whose sessions the list HIDES, as a JSON array under this key (#13801).
+ *  The inverse of `TAG_FILTER_LS_KEY`: empty means no tag is hidden, so a newly
+ *  created tag hides nothing until the person asks it to. A tag id is never in
+ *  both sets -- the filter menu moves it from one to the other. */
+export const TAG_HIDE_LS_KEY = 'mc-session-tag-hidden'
+
+export function readStoredTagHide(): Set<string> {
+  return readStoredIdSet(TAG_HIDE_LS_KEY)
+}
+
+/** A JSON string array from localStorage. Runs in useState initializers, so a
+ *  throwing localStorage or a hand-corrupted value reads as empty, never a crash. */
+function readStoredIdSet(key: string): Set<string> {
   try {
-    const raw = localStorage.getItem(TAG_FILTER_LS_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return new Set()
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return new Set()

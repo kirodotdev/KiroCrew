@@ -64,6 +64,9 @@ export interface SidebarRowFilters {
    *  selection a reveal clears, so a reveal arriving before the vocabulary loads still
    *  clears it instead of leaving the row to be re-hidden mid-flight. */
   tags: { resolved: ReadonlySet<string>; raw: ReadonlySet<string> }
+  /** The filter menu's tag HIDES (#13801): a row carrying any of these tags is
+   *  dropped. `resolved` / `raw` split exactly as for `tags`. */
+  tagHides: { resolved: ReadonlySet<string>; raw: ReadonlySet<string> }
   /** The search box. `folderMatches` is the folders (with their subtrees) whose NAME
    *  the query matched, or null when none did. */
   search: { text: string; folderMatches: ReadonlySet<string> | null }
@@ -77,6 +80,7 @@ export interface SidebarRowFilters {
 /** How a reveal drops each dimension. Carried, never called, by this module. */
 export interface SidebarRowClears {
   tags: () => void
+  tagHides: () => void
   search: () => void
   status: () => void
   /** Un-hide this folder and its ancestor chain; a no-op for `undefined`. */
@@ -460,7 +464,7 @@ function makeDimensions(
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
 ): FilterDimension[] {
-  const { tags, search, status, folders: folderFilter } = filters
+  const { tags, tagHides, search, status, folders: folderFilter } = filters
   // A paused set keeps its chips but narrows nothing, so the whole status dimension
   // goes inert while the pause is on.
   const activeStatus = status.paused ? [] : (Object.keys(matches) as SessionFilterKey[]).filter(key => status.active.has(key))
@@ -536,6 +540,22 @@ function makeDimensions(
         return !!folderId && folderFilter.hiddenSubtree.has(folderId)
       },
       clear: slot => clears.folder(folderOf(slot)),
+    },
+    {
+      // Tag hides (#13801). Its own dimension, not part of the tag entry above,
+      // because it composes the other way: selected tags OR together, while a hide
+      // drops its matches from whatever the rest of the list kept, so "Blocked +
+      // hide Done" is Blocked AND not Done. Being separate also means a reveal clears
+      // only the hide, never the tags the person selected beside it. Unlike the
+      // include filter a hide applies to PINNED rows too: like a folder hide it means
+      // "hide all of these", and pinning a Done session does not un-say that.
+      // Appended LAST so the reveal registry's existing positions do not move.
+      filtersRow: slot => tagHides.resolved.size === 0 || !(slot.tags ?? []).some(id => tagHides.resolved.has(id)),
+      narrows: () => tagHides.resolved.size > 0,
+      // Answers for one row on its own: it hides exactly the rows carrying a hidden
+      // tag, so a row the search dropped never clears a hide that never matched it.
+      hides: slot => tagHides.raw.size > 0 && (slot.tags ?? []).some(id => tagHides.raw.has(id)),
+      clear: () => clears.tagHides(),
     },
   ]
 }
@@ -684,9 +704,9 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
   const dimensions = reuse(prev?.dimensions, [
-    status.active, status.paused, tags.resolved, tags.raw, search.text, search.folderMatches, searchRanks,
+    status.active, status.paused, tags.resolved, tags.raw, filters.tagHides.resolved, filters.tagHides.raw, search.text, search.folderMatches, searchRanks,
     statusMatches.value, folderFilter.hiddenSubtree, slotFolders,
-    clears.tags, clears.search, clears.status, clears.folder,
+    clears.tags, clears.tagHides, clears.search, clears.status, clears.folder,
   ], () => makeDimensions(filters, statusMatches.value, searchRanks, folderOf, clears))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a

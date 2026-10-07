@@ -11784,7 +11784,11 @@
       "archived_sessions_kept_other": "{{count}}টি আর্কাইভ করা সেশন পুরোনো সেশনে থাকবে",
       "archived_count_one": "{{count}}টি আর্কাইভ করা",
       "archived_count_other": "{{count}}টি আর্কাইভ করা",
-      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়"
+      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়",
+      "hide_sessions_tagged": "{{name}} ট্যাগ দেওয়া সেশন লুকাও",
+      "stop_hiding_sessions_tagged": "{{name}} ট্যাগ দেওয়া সেশন লুকানো বন্ধ করো",
+      "hiding_tags": "{{tags}} লুকানো হচ্ছে",
+      "stop_hiding_tags": "{{tags}} লুকানো বন্ধ করো"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
