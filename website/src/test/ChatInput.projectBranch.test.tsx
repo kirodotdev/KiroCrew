@@ -54,10 +54,12 @@ describe('ChatInput project chip branch label', () => {
     expect(screen.getByRole('button', { name: 'Copy commit a1b2c3d' })).toBeInTheDocument()
   })
 
-  it('keeps the branch out of the accessible name while a response is running', () => {
+  it('names the same project and branch while a response is running, plus when a pick lands', () => {
     renderWithProviders(<ChatInput {...defaultProps} projectBranch="main" isRunning onStop={vi.fn()} />)
-    const btn = screen.getByRole('button', { name: /Stop the current response to switch project/ })
-    expect(btn).toBeDisabled()
+    const btn = chip()
+    expect(btn).toBeEnabled()
+    expect(btn).toHaveAccessibleName(/Branch: main/)
+    expect(btn).toHaveAccessibleName(/Changes apply from the next response\./)
   })
 
   it('leaves the branch copyable while a response is running', () => {
@@ -170,5 +172,37 @@ describe('ChatInput project chip branch copy', () => {
 
     expect(input).toHaveFocus()
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('feat/example'))
+  })
+})
+
+// #7263: a project pick made while a response is streaming is staged, not
+// refused -- the project route arms a deferred reset that the NEXT turn
+// consumes -- so the chip stays clickable mid-turn and says when the change
+// lands. The agent and model chips stay locked: their routes answer 409.
+describe('ChatInput project chip while a response is running', () => {
+  it('stays enabled, opens the picker, and says the change applies from the next response', () => {
+    const onProjectClick = vi.fn()
+    renderWithProviders(<ChatInput {...defaultProps} onProjectClick={onProjectClick} isRunning onStop={vi.fn()} />)
+    const btn = chip()
+    expect(btn).toBeEnabled()
+    const title = btn.getAttribute('title') || ''
+    expect(title).toContain('Project: /home/u/work/KiroCrew')
+    expect(title).toContain('Changes apply from the next response.')
+    expect(btn.getAttribute('aria-label')).toBe(title)
+    fireEvent.click(btn)
+    expect(onProjectClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('omits the next-response line when no response is running', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />)
+    expect(chip().getAttribute('title')).not.toContain('next response')
+  })
+
+  it('keeps the agent and model chips locked mid-turn', () => {
+    renderWithProviders(
+      <ChatInput {...defaultProps} isRunning onStop={vi.fn()} agentName="kirocrew" onAgentClick={vi.fn()} modelName="claude-sonnet-4" onModelClick={vi.fn()} />,
+    )
+    expect(screen.getByRole('button', { name: /switch agents/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /switch model/ })).toBeDisabled()
   })
 })

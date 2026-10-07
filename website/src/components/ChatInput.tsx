@@ -1386,9 +1386,15 @@ function ChatInput({
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
-            disabled={isRunning}
-            title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
-            aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
+            /* Stays enabled mid-turn (#7263): the project route never touches
+               the running turn. It writes slot.project and arms the deferred
+               session reset, which is consumed at the NEXT turn's start (and
+               the eager pre-spawn stands down while a turn runs), so the reply
+               in flight finishes in its old directory and the next one starts
+               in the new one. The agent and model chips stay locked: their
+               routes answer 409 turn_in_flight instead of staging. */
+            title={isRunning ? `${projectChipTitle}\n${i18nT('components.chatInput.project_switch_applies_next_turn')}` : projectChipTitle}
+            aria-label={isRunning ? `${projectChipTitle}\n${i18nT('components.chatInput.project_switch_applies_next_turn')}` : projectChipTitle}
           >
             <FolderOpen size={13} className="shrink-0 opacity-70" />
             {/* Budget favours the branch: the folder name is also in the tooltip
