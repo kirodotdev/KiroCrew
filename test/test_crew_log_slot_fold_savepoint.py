@@ -35,6 +35,7 @@ from kiro_crew.crew_log import checkpoint as savepoints
 from kiro_crew.crew_log import eager as crew_log_eager
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log import store as crew_log_store
 from kiro_crew.projection import DirectoryCheckpointStore
 from kiro_crew.session_ledger import _MAX_ARTIFACTS
 
@@ -258,10 +259,17 @@ def _reuse_the_tail_seqs(unit_id: str, keep_through_seq: int, fresh: int) -> Non
     away and appends closers with the seqs continuing from the cut, and a reader holds
     no append lock while that runs. To every stat and to every seq comparison the file
     has simply GROWN, and to a digest that stops at an earlier boundary it has not
-    changed at all -- which is the whole reason a cell's digest has to cover the bytes
+    changed at all -- which is the whole reason a cell's evidence has to cover the bytes
     its own pass folded rather than the bytes its savepoint was written at.
+
+    THE CUT IS COUNTED, because the store counts it: every one of those paths raises the
+    unit's cut counter before it truncates. A stand-in that rewrote the file and left the
+    counter alone would stand for a hand-edit instead, which is a different event with
+    different evidence -- and the real repair is exercised end to end against the counter
+    in ``test_crew_log_cut_counter.py``.
     """
     path = lg.store.crew_log_path(lg.KIND_SESSION, unit_id)
+    _a_completed_cut(path.parent)
     kept: list[bytes] = []
     for line in path.read_bytes().split(b"\n"):
         if not line:
@@ -428,11 +436,10 @@ def test_two_restarts_in_a_row_each_resume_from_disk(_cheap_writes):
     """A resumed read leaves a savepoint the NEXT restart can use.
 
     The second half of the same defect, and the one that is pure cost rather than a
-    wrong answer: a resumed pass that carried its savepoint's digest would write a
-    witness whose ``seq`` sits above its own ``prefix_records``, and ``prefix_admit``
-    refuses exactly that -- a prefix through ``seq`` holds at least one record per
-    surviving entry. So every other restart would cold-fold, and the savepoint would
-    look present and healthy on disk the whole time.
+    wrong answer: a resumed pass that carried its savepoint's own witness would write one
+    describing the boundary it RESUMED from rather than the one it reached, and the next
+    read refuses exactly that. So every other restart would cold-fold, and the savepoint
+    would look present and healthy on disk the whole time.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -446,7 +453,7 @@ def test_two_restarts_in_a_row_each_resume_from_disk(_cheap_writes):
     assert second_parsed == 0, "restart two finds the savepoint restart one wrote"
     assert first_value == second_value == _cold((FIRST,))
     witness = json.loads(_savepoint_path(FIRST).read_text(encoding="utf-8"))["witness"]
-    assert witness["prefix_records"] >= witness["seq"], "the witness covers its own span"
+    assert witness["seq"] == 12, "the witness names the boundary this pass reached"
 
 
 def test_a_slot_below_the_write_threshold_leaves_no_savepoint():
@@ -485,12 +492,16 @@ def _grow_an_earlier_unit(units: tuple[str, ...]) -> None:
 
 
 def _rewrite_the_prefix(units: tuple[str, ...]) -> None:
-    """Change an already-folded record in place, leaving its seq and the height alone.
+    """Change an already-folded record, leaving its seq and the height alone.
 
     This is the one shape no stat can see: the store rewrites a committed prefix on its
     truncation recovery paths, and a reader holds no append lock while one runs, so the
-    file grows and reuses seqs the fold already consumed. The digest is the only
-    evidence that tells it from a pure append.
+    file grows and reuses seqs the fold already consumed. Nothing in an identity or a
+    height tells it from a pure append.
+
+    The CUT IS COUNTED, as those paths count theirs, so what this stands for is the
+    store's own mutation rather than a hand-edit. The counter is the evidence that
+    catches it, and on a unit that states none the digest is.
     """
     path = lg.store.crew_log_path(lg.KIND_SESSION, units[-1])
     lines = path.read_bytes().split(b"\n")
@@ -500,6 +511,7 @@ def _rewrite_the_prefix(units: tuple[str, ...]) -> None:
             break
     else:  # pragma: no cover - the fixture always appends an event to the newest unit
         raise AssertionError("no folded entry to rewrite")
+    _a_completed_cut(path.parent)
     path.write_bytes(b"\n".join(lines))
 
 
@@ -742,6 +754,10 @@ def test_the_savepoint_names_the_bytes_its_state_came_from(_cheap_writes):
     An empty witness is a payload nothing can check, which ``prefix_admit`` refuses --
     so a write that forgot one would cost this slot every savepoint it ever wrote,
     silently, and every test above would still pass by folding cold.
+
+    A unit the store seeded a cut counter on carries the COUNT, which is every unit
+    created by this build. The digest spelling is what a log from before the counter
+    gets, and ``test_crew_log_cut_counter.py`` holds that case.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -753,8 +769,8 @@ def test_the_savepoint_names_the_bytes_its_state_came_from(_cheap_writes):
     assert payload["identity"]["units"] == [FIRST]
     assert payload["identity"]["marks"] == []
     assert payload["witness"]["seq"] > 0
-    assert len(payload["witness"]["prefix_sha"]) == 64
-    assert payload["witness"]["prefix_records"] >= payload["witness"]["seq"]
+    assert payload["witness"]["prefix_cuts"] == 0, "no cut yet, and 0 is a real reading"
+    assert "prefix_sha" not in payload["witness"], "one spelling, never both"
     assert payload["watermark"] == payload["witness"]["seq"], "one unit, so base zero"
 
 
@@ -764,6 +780,11 @@ def test_the_savepoint_records_every_earlier_unit_s_whole_mark(_cheap_writes):
     So the identity carries each earlier unit's fingerprint too, which is what makes an
     in-place rewrite of an already-folded entry a cold fold rather than an equal
     comparison.
+
+    EVERY field of the mark, cut count included. The block exists to be admitted on the
+    shapes a warm continuation is admitted on, and that comparison is whole-mark, so a
+    field left out here would let a savepoint stand on an earlier unit the warm path
+    refuses.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 4)
@@ -772,13 +793,14 @@ def test_the_savepoint_records_every_earlier_unit_s_whole_mark(_cheap_writes):
     _read((FIRST, SECOND))
 
     payload = json.loads(_savepoint_path(SECOND).read_text(encoding="utf-8"))
-    origin, height, size, mtime_ns = payload["identity"]["marks"][0]
+    origin, height, size, mtime_ns, cuts = payload["identity"]["marks"][0]
 
     assert payload["identity"]["units"] == [FIRST, SECOND]
     assert isinstance(origin, str) and origin
     assert height == 4
     assert isinstance(size, int) and size > 0
     assert isinstance(mtime_ns, int) and mtime_ns > 0
+    assert cuts == 0, "the earlier unit's own cut count, and 0 is a real reading"
     assert payload["watermark"] == height + payload["witness"]["seq"], "base plus the unit seq"
 
 
@@ -802,3 +824,16 @@ def test_a_savepoint_whose_two_positions_disagree_is_refused(_cheap_writes):
 
     assert value == _cold((FIRST,))
     assert parsed == 6
+
+
+def _a_completed_cut(directory) -> None:
+    """Record a cut of *directory*'s log that has FINISHED, as the store records one.
+
+    The store brackets every cut with a raise on either side of the bytes
+    (``_open_cut`` / ``_close_cut``), so a stand-in that raised the counter once would
+    leave it odd -- reported as a cut still in flight, which is a different reading with
+    a different answer. Both halves, in the store's own order, so what this stands for is
+    a completed mutation.
+    """
+    crew_log_store._open_cut(directory)
+    crew_log_store._close_cut(directory)

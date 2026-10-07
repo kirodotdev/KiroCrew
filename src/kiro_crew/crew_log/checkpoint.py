@@ -58,9 +58,19 @@ shape, and hands the witness to :func:`prefix_admit`.
   and a change to it retires the file. Identity block.
 * the prefix CHANGED after it was folded -- a line damaged afterwards is skipped by
   a cold fold while a savepoint keeps the value that line contributed, and no
-  equality above reads the prefix at all. ``prefix_sha`` is a digest of the consumed
-  prefix's raw record bytes, recomputed on resume from ``prefix_records``. Witness,
-  because a reader cannot name that count before opening the file that states it.
+  equality above reads the prefix at all. Witness, in one of two spellings, because
+  a reader cannot name either value before opening the file that states it.
+
+  ``prefix_cuts`` is the cheap one and the one a current log gets: the unit's cut
+  count (:meth:`~kiro_crew.crew_log.store.CrewLog.cuts`), read when the savepoint was
+  written. A cut is the only thing this store does that can change a committed
+  record, and the count rises durably before each one, so the same count again means
+  the records the state was folded from are the same bytes -- settled by a file a few
+  bytes long whatever the log's size, on the write side as well as the read side.
+
+  ``prefix_sha`` is a digest of the consumed prefix's raw record bytes, recomputed on
+  resume from ``prefix_records``. It is what a log with no cut counter is settled by,
+  and it charges a walk of the whole consumed prefix to each write and each resume.
 * the log is SHORTER than the savepoint -- most of its causes are caught above,
   but it is checked on its own because a fold resumed past the end of a file is
   the one state no later read recovers from. Witness, against the live ``last_seq``.
@@ -222,6 +232,12 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
     *first_seq* is the oldest surviving entry's seq, which bounds how few raw records
     a prefix through the witness's seq can possibly hold.
 
+    TWO WITNESS SPELLINGS, and a payload carries exactly one. ``prefix_cuts`` is the
+    unit's cut count and settles the question in a few bytes; ``prefix_sha`` settles it
+    by hashing the consumed prefix, and is what a log with no cut counter has. The
+    counter is taken only when the digest keys are ABSENT, so a payload carrying both
+    is judged by the digest rather than downgraded to the cheaper half of itself.
+
     The digest is memoized per record count, because the folds of one read share a
     boundary and hashing it once per fold would walk the same bytes five times.
     """
@@ -231,6 +247,7 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
         seq = witness.get("seq")
         sha = witness.get("prefix_sha")
         records = witness.get("prefix_records")
+        cuts = witness.get("prefix_cuts")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             return False
         if seq > handle.last_seq:
@@ -245,6 +262,8 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
                 handle.last_seq,
             )
             return False
+        if sha is None and records is None and cuts is not None:
+            return _cuts_admit(handle, cuts)
         if (
             not isinstance(sha, str)
             or len(sha) != 64
@@ -273,14 +292,43 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
     return admit
 
 
-def witness_mapping(prefix: PrefixWitness) -> dict[str, Any]:
+def _cuts_admit(handle: CrewLog, stored: Any) -> bool:
+    """Whether *handle*'s cut count still reads as *stored*, so its prefix is intact.
+
+    The counter rises durably BEFORE each cut, and a cut is the only thing this store
+    does that can change a record already committed. So two equal readings bracket a
+    window in which no committed record changed, which is the whole of what the digest
+    proves and all a resume needs.
+
+    The live reading being ``None`` refuses. An absent or unreadable counter is NOT
+    PROVEN rather than zero: a counter lost after a cut would otherwise compare equal
+    across it, which is the one reading this evidence exists to prevent. A log with no
+    counter writes a digest witness instead, so refusing here costs nothing it had.
+    """
+    if not isinstance(stored, int) or isinstance(stored, bool) or stored < 0:
+        return False
+    live = handle.cuts()
+    if live is None:
+        logger.debug("crew log savepoint cites a cut count the unit no longer states; folding cold")
+        return False
+    if live != stored:
+        logger.debug("crew log savepoint was written %d cuts ago; folding cold", live - stored)
+        return False
+    return True
+
+
+def witness_mapping(prefix: "PrefixWitness | CutWitness") -> dict[str, Any]:
     """*prefix* as the opaque mapping a savepoint stores beside its identity.
 
-    The three keys :func:`prefix_admit` reads, written in one place so a second
-    client cannot store a witness under names the shared predicate does not look up
-    -- which would read as "carries no evidence" and cost that client every
-    savepoint it ever wrote, silently.
+    The keys :func:`prefix_admit` reads, written in one place so a second client cannot
+    store a witness under names the shared predicate does not look up -- which would
+    read as "carries no evidence" and cost that client every savepoint it ever wrote,
+    silently. One spelling per witness, never both: a cut count is evidence on its own,
+    and a payload carrying a digest beside it would be judged by the digest and pay for
+    it on every resume.
     """
+    if isinstance(prefix, CutWitness):
+        return {"seq": prefix.seq, "prefix_cuts": prefix.cuts}
     return {"seq": prefix.seq, "prefix_sha": prefix.sha, "prefix_records": prefix.records}
 
 
@@ -396,6 +444,50 @@ class PrefixWitness(NamedTuple):
     seq: int
     records: int
     sha: str
+
+
+class CutWitness(NamedTuple):
+    """The unit's cut count when the records through *seq* were folded.
+
+    What :class:`PrefixWitness` proves, proved by a COUNT instead. A cut is the only
+    mutation this store performs on a committed record and the count rises durably
+    before each one, so the same count again means those records are the same bytes.
+
+    It costs a few bytes to read where the digest costs a walk of the whole consumed
+    prefix -- and it costs them on the WRITE side too, which is where a savepoint's own
+    share of the saving is: a digest witness has to resolve a record boundary by
+    decoding every record up to it, every time one is written.
+    """
+
+    seq: int
+    cuts: int
+
+
+def cut_witness(handle: CrewLog, seq: int) -> "CutWitness | None":
+    """*handle*'s cut count as the witness for a fold that reached *seq*, or ``None``.
+
+    ``None`` when the unit states no readable count, which is every log created before
+    the counter existed. Such a log is settled by :func:`prefix_witness` instead, so the
+    caller's fallback is a digest rather than no savepoint.
+
+    Read BEFORE the pass that consumes the file, for the reason :func:`prefix_witness`
+    gives -- but with one less thing to go wrong. A digest read before a pass certifies
+    bytes a concurrent cut may change during it, and every later resume recomputes the
+    same changed bytes and matches. A count cannot: a cut during the pass RAISES it, so
+    the pre-pass reading differs from the live one and the write is refused.
+    """
+    live = handle.cuts()
+    return None if live is None else CutWitness(seq=seq, cuts=live)
+
+
+def cuts_unchanged(handle: CrewLog, witness: CutWitness) -> bool:
+    """Whether *handle*'s cut count still reads as *witness* recorded it.
+
+    :func:`prefix_unchanged` for the counter: asked after a pass about a witness read
+    before it, so a cut that landed in between refuses the write rather than recording a
+    savepoint whose own resume could never admit it.
+    """
+    return _cuts_admit(handle, witness.cuts)
 
 
 def write_is_earned(last_seq: int, saved_seq: int) -> bool:
@@ -801,7 +893,7 @@ def save_slot(
     ordinal_base: int,
     state: Any,
     watermark: int,
-    prefix: PrefixWitness,
+    prefix: "PrefixWitness | CutWitness",
     expect_origin: str,
 ) -> bool:
     """Write one slot fold's savepoint. ``True`` when it reached the file.
@@ -809,9 +901,11 @@ def save_slot(
     Whether a write is OWED is the caller's to ask (:func:`write_is_earned`), because the
     position it measures is the kernel ordinal and only the caller holds it. What this
     function owes in return is that nothing is written whose state it cannot tie to
-    bytes: *prefix* is the digest the caller read BEFORE its pass and re-checked after
-    it, *watermark* must be ``ordinal_base + prefix.seq``, and *expect_origin* is the
-    identity the pass folded under.
+    bytes: *prefix* is the evidence the caller read BEFORE its pass and re-checked after
+    it -- a cut count (:class:`CutWitness`) on a unit that states one, a digest
+    (:class:`PrefixWitness`) on one that does not -- *watermark* must be
+    ``ordinal_base + prefix.seq``, and *expect_origin* is the identity the pass folded
+    under.
 
     *expect_origin* is not redundant with the block built below. A unit removed and
     recreated between the pass and this call gives a FRESH origin here, and writing the
@@ -839,7 +933,7 @@ def save_slot(
     origin, first_seq = identity
     if origin != expect_origin:
         return False
-    if prefix.records < max(0, prefix.seq - first_seq + 1):
+    if isinstance(prefix, PrefixWitness) and prefix.records < max(0, prefix.seq - first_seq + 1):
         # The witness cannot cover its own seq span: a prefix through ``seq`` holds at
         # least one raw record per surviving entry, so a count below that describes a
         # SHORTER stretch of the file than the state was folded from. It is the same
@@ -847,6 +941,10 @@ def save_slot(
         # that could only ever be refused is never written -- and so a caller that
         # carried a digest from a lower boundary than its own pass is told no at the
         # write rather than on the restart after it.
+        #
+        # A cut witness has no span to fall short of: it says the records this unit holds
+        # are the ones they were, whichever records those are, so retention taking the
+        # front off is caught by ``first_seq`` in the identity block rather than here.
         logger.debug(
             "crew log slot savepoint %s/%s has a witness of %d records for seq %d; not written",
             slot,
