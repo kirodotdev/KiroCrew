@@ -17688,7 +17688,13 @@
       "schedule_new": "Novo agendamento",
       "schedule_load_failed": "Não foi possível carregar os agendamentos deste colega.",
       "schedule_open_all": "Todos os agendamentos",
-      "panel_toggle": "Painel e arquivos"
+      "panel_toggle": "Painel e arquivos",
+      "dashboard_kept_last_good": "Uma versão mais recente deste painel não carregou, portanto esta é a última que carregou.",
+      "dashboard_none_yet": "Ainda não há painel configurado para este membro.",
+      "dashboard_unavailable": "Nao foi possivel carregar este painel.",
+      "dashboard_render_error": "Nao foi possivel desenhar este painel.",
+      "dashboard_frame_title": "Painel de {{crew}}",
+      "dashboard_rendering": "Desenhando o painel…"
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

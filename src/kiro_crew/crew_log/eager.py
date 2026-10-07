@@ -103,6 +103,17 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "panel/published",
         "ledger/recorded",
         "radar/recorded",
+        "dashboard/agentic_value",
+        "dashboard/agentic_refused",
+        # The project report's fold costs each task by its worker's spend, so it reads
+        # the opener that names a unit's session and the three closers that carry a
+        # charge. The widest set here, and the reason is that the spend is in the
+        # worker's own entries and nowhere else.
+        "session/opened",
+        "turn/completed",
+        "subagent/completed",
+        "subagent/failed",
+        "background/completed",
     }
 )
 

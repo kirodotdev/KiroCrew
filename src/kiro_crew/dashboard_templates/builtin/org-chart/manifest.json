@@ -1,0 +1,37 @@
+{
+  "id": "org-chart",
+  "version": 1,
+  "title": "Who dispatched whom",
+  "description": "The crew as the shape it really has, and then one card per worker saying what that worker last actually did. The graph is drawn from the binds the record already holds: a board's conductor is a lead, each of its tasks is a dispatch, and a board whose parent names a task of another board is that task's worker running as a SUB-LEAD -- so lead to sub-lead to worker is read off the fold's own parent link rather than assumed from a depth number. The three roles are labelled apart, because a sub-lead both answers to someone and dispatches others, and a chart that calls it a worker hides half the crew. Under the graph, one latest-run card per worker session replaces a chip that could only say how long a row had been quiet: the card carries the worker's own last status, the last thing it said cleaned down to one line, how long ago that was beside the absolute stamp, and what the session cost -- dashed rather than zeroed when nobody measured it. A worker that has never reported says so in its own words, which is a different fact from a long silence and gets a different card. A card names the two lookup keys a host needs to open that session on the reader's behalf, and NOT the session key: the fold aliases that key on purpose, because this page is embedded in a document any dashboard caller can read, and a page is not where that boundary gets relaxed. Nothing here is agentic -- the graph, the roles, the statuses, the stamps and the costs are all folded.",
+  "source": "builtin",
+  "fields": {
+    "items": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "items"
+      }
+    },
+    "omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "omitted"
+      }
+    },
+    "spenders_omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "spenders_omitted"
+      }
+    },
+    "last_entry_at": {
+      "type": "string",
+      "source": {
+        "fold": "workstreams",
+        "path": "last_entry_at"
+      }
+    }
+  }
+}

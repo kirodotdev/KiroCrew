@@ -17960,7 +17960,13 @@
       "schedule_new": "Новое расписание",
       "schedule_load_failed": "Не удалось загрузить расписания этого напарника.",
       "schedule_open_all": "Все расписания",
-      "panel_toggle": "Панель и файлы"
+      "panel_toggle": "Панель и файлы",
+      "dashboard_kept_last_good": "Более новая версия этой панели не загрузилась, поэтому показана последняя загруженная.",
+      "dashboard_none_yet": "Для этого участника панель пока не настроена.",
+      "dashboard_unavailable": "Не удалось загрузить эту панель.",
+      "dashboard_render_error": "Не удалось отрисовать эту панель.",
+      "dashboard_frame_title": "Панель {{crew}}",
+      "dashboard_rendering": "Отрисовка панели..."
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

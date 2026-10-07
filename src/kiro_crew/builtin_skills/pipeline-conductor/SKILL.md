@@ -315,6 +315,12 @@ via `monitor_update`, see "Live steering"):
 
 ## Your panel: publish JUDGMENTS, never numbers
 
+The panel is STORED and read back through the panel route; the Dashboard tab beside
+your chat draws the crewmate's own dashboard instead. So an item under `you` reaches
+a reader only if you also write it to an agentic dashboard field with
+`dashboard_write`, where it appears under "Needs you" with the act it needs. Publish
+the panel for a reader who asks for it; write the dashboard for one who has not.
+
 `panel_publish` with template `kirocrew-pipeline-conductor` takes exactly four keys,
 and nothing else — an unknown key is refused and the refusal names it:
 

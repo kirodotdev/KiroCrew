@@ -11,10 +11,14 @@ from __future__ import annotations
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
+from kiro_crew.agent_files import (
+    DASHBOARD_MANAGER_AGENT_FILENAME as _DASHBOARD_MANAGER_AGENT_FILENAME,
+)
 from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.agent_materialization import auto_approve, managed_mcp
 
 
 def _install_guest_agent() -> None:
@@ -123,3 +127,75 @@ def _install_research_agent() -> None:
     path = agent_mod.kiro_agents_dir_path() / _RESEARCH_AGENT_FILENAME
     agent_mod._atomic_json_write(path, config)
     agent_mod.logger.info("Installed research agent config: %s", path)
+
+
+def _install_dashboard_manager_agent() -> None:
+    """Generate and install the ``kirocrew-dashboard-manager`` subagent config.
+
+    The agent a crewmate hands page work to. It is a SERVICE agent and not a
+    conductor: it is installed here, beside guest and knowledge, because like them
+    it mounts a fixed minimal surface rather than deriving the kirocrew agent's
+    whole governance ceiling. Carrying nothing it does not need is the point -- it
+    runs on a request forwarded from a chat it did not read.
+
+    The mounted surface is ``@kirocrew-panel`` and ``fs_read`` and nothing else.
+
+    * ``@kirocrew-panel`` whole, auto-approved verb by verb from
+      ``_MEMBER_PANEL_GRANTS`` -- the SAME tuple the crewmate gets, reused rather
+      than copied, so the two cannot drift into a surface this agent may call and
+      its caller may not.
+
+      The server is also CONFIGURED here, in ``mcpServers``, and not only declared
+      in ``tools``. Neither spec-writing loop emits an ``opt_in`` server, so an
+      installer that grants one builds the entry itself through
+      ``managed_mcp._managed_opt_in_entry`` -- the same call
+      ``worker_agent`` makes for ``@kirocrew-work``. Declared without being
+      configured, the grant is DEAD: kiro-cli reports "MCP servers unusable in
+      this session - declared by the agent spec but not configured", mounts no
+      tool, and this agent is dispatched with nothing to answer with.
+    * ``fs_read`` because the two skills it works from are files it must read, and
+      because the fold catalogue it must not guess a path out of is one of them.
+    * No ``fs_write`` and no ``execute_bash``. Every page this agent produces goes
+      through ``dashboard_preview``, which validates the pair and stages it where
+      only ``dashboard_apply`` can commit it. A file-writing tool would let it put
+      a template into the user catalogue directly, skipping the validation and the
+      person's yes -- which are the two things the preview step exists to be.
+    * No ``@kirocrew-core`` and no ``@kirocrew-dashboard``: it neither dispatches
+      work nor reads anybody's sessions. A page is all it touches.
+
+    The assembled ``allowedTools`` goes through the governance ceiling before it is
+    written. This installer states its grants as literals rather than deriving them
+    from ``build_agent_config``, so it inherits no filter, and ``allowedTools`` is the
+    one list whose entries never reach the PreToolUse gate: a ceiling that withholds
+    one of the panel verbs from the crewmate has to withhold it here too, or this
+    agent becomes the way around it. A withheld ref stays MOUNTED and its calls go
+    through the gate.
+
+    Model follows the user's chat model, like the guest agent's: a page is prose
+    and markup written for a person to read, not a background extraction.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        model = KiroCrewConfig.load().agent.model or "auto"
+    except Exception:
+        model = "auto"
+    config: dict[str, object] = {
+        "name": agent_mod.DASHBOARD_MANAGER_AGENT_NAME,
+        "description": (
+            "Changes ONE crewmate's Dashboard page on request: searches the "
+            "template catalog, stages a preview, asks before keeping it, and "
+            "rolls back to an earlier version. Never does the crewmate's own work."
+        ),
+        "model": model,
+        "includeMcpJson": False,
+        "prompt": agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT,
+        "tools": ["fs_read", "@kirocrew-panel"],
+        "allowedTools": ["fs_read", *agent_mod._MEMBER_PANEL_GRANTS],
+        "mcpServers": {"kirocrew-panel": managed_mcp._managed_opt_in_entry("mcp-panel")},
+    }
+    auto_approve._apply_allowed_tools_ceiling(config, source="_install_dashboard_manager_agent")
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = agent_mod.kiro_agents_dir_path() / _DASHBOARD_MANAGER_AGENT_FILENAME
+    agent_mod._atomic_json_write(path, config)
+    agent_mod.logger.info("Installed dashboard-manager agent config: %s", path)

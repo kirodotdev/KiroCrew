@@ -74,10 +74,24 @@ export const THEME_VAR_NAMES = [
 // A null-origin iframe cannot use 'self', which is why the origin is spelled out.
 // jsdelivr/cdnjs remain for widget-authored Chart.js/D3 (same-origin + SRI is a
 // follow-up). Tailwind v4 emits CSS as inline <style>, so style-src needs no CDN.
-const cspFor = (scriptOrigin: string): string =>
+//
+// `offlineScripts` DROPS those two origins, and a crewmate's dashboard sets it.
+// `connect-src 'none'` stops a page phoning home with fetch or a WebSocket, but a
+// permitted script ORIGIN is a second channel: a page may append
+// `<script src="https://cdn.jsdelivr.net/x.js?d=<encoded fields>">` and the browser
+// sends that query out. For a widget that is the accepted trade recorded above --
+// the author is the person reading it. A crewmate's dashboard page is different on
+// both counts: it is filled with that crewmate's own task titles, summaries and
+// costs, and since the preview/apply pair it can be authored by an AGENT and
+// accepted by somebody who read the rendering rather than the markup. The product
+// already states the property -- "a chart drawn from a CDN renders as a hole rather
+// than as a call home" -- so a dashboard document permitting those origins
+// contradicted the frame's own contract. A page draws its chart from the inline
+// script it ships, which stays permitted.
+const cspFor = (scriptOrigin: string, offlineScripts = false): string =>
   "default-src 'none'; " +
-  `script-src 'unsafe-inline' ${scriptOrigin}${TAILWIND_RUNTIME_PATH} ` +
-  "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; " +
+  `script-src 'unsafe-inline' ${scriptOrigin}${TAILWIND_RUNTIME_PATH}` +
+  (offlineScripts ? '; ' : ' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; ') +
   "style-src 'unsafe-inline'; " +
   "img-src data: blob:; font-src data:; connect-src 'none'; " +
   "form-action 'none'; base-uri 'none';"
@@ -899,6 +913,13 @@ interface BuildSrcdocOptions {
    * injected its compiled CSS. Set for widgets heavy enough that the compile is
    * perceptible; without it a slow widget renders as a blank box. */
   showLoadingOverlay?: boolean
+  /** Drop the CDN script origins from this document's CSP, leaving inline script
+   * and the pinned same-origin Tailwind runtime. Set by a crewmate's dashboard: its
+   * page is filled with that crewmate's own crew-log data and can be authored by an
+   * agent, so a permitted script origin is an exfiltration channel that
+   * `connect-src 'none'` does not close. Off by default, so no widget surface
+   * changes. */
+  offlineScripts?: boolean
   /** Localized label for that indicator. Required when `showLoadingOverlay` is
    * set — the iframe cannot reach the parent's i18n catalog, so an untranslated
    * default here would visibly flip to English mid-load in every non-English
@@ -925,6 +946,7 @@ export function buildSrcdoc({
   showLoadingOverlay = false,
   loadingLabel = '',
   rewriteBareLinks = true,
+  offlineScripts = false,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -967,7 +989,7 @@ export function buildSrcdoc({
   // <meta CSP>
   const csp = doc.createElement('meta')
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
-  csp.setAttribute('content', cspFor(scriptOrigin))
+  csp.setAttribute('content', cspFor(scriptOrigin, offlineScripts))
   head.appendChild(csp)
 
   // Tailwind v4 dark-mode directives (compiled by the runtime on load). Placed

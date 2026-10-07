@@ -1,0 +1,19 @@
+{
+  "id": "pr-watch",
+  "version": 1,
+  "title": "PR watch",
+  "description": "Why a pull request is still red, and who clears it. The red and never-ran lanes are listed first with an owner each, because a check that FAILED and a check that never started are different facts and one red dot for both spends a reader's attention on nothing. No fold reads a code host, so the lanes are the crewmate's own last reading of the board and the page marks them as written rather than folded; everything beside them -- the items, their PR numbers, what is waiting on a human -- comes from the work and approvals folds.",
+  "source": "builtin",
+  "fields": {
+    "lanes": { "type": "array", "source": { "agentic": true } },
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "approvals_pending": { "type": "number", "source": { "fold": "approvals", "path": "pending" } },
+    "approvals_requested": { "type": "number", "source": { "fold": "approvals", "path": "requested" } },
+    "pending_requests": { "type": "array", "source": { "fold": "approvals", "path": "pending_requests" } },
+    "lifecycle": { "type": "string", "source": { "fold": "status", "path": "lifecycle" } }
+  }
+}

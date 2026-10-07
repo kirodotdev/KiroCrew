@@ -242,6 +242,31 @@ export function handleMemberProjection(data: FrameData): void {
   }
 }
 
+/** The query key prefix every open Dashboard tab reads under. Slug-only, so a
+ *  frame carrying no crew name still reaches `['member-dashboard', slug, member]`
+ *  -- the refetch re-asks the server, which re-checks ownership. */
+export const MEMBER_DASHBOARD_QUERY_PREFIX = 'member-dashboard'
+
+/** A crewmate's dashboard moved, so an open tab must re-read it.
+ *
+ *  Two frames reach here and both mean the same thing to this tab. A
+ *  `dashboard_value_written` is the crewmate filling one of its own agentic
+ *  fields. A `member_projection` is a FOLD advancing, which is where every other
+ *  number on the page comes from. The tab's read sets no finite staleTime (the
+ *  client's default is freshness-by-push), so without this a dashboard opened at
+ *  the start of a long turn still shows the numbers it had then -- which is the
+ *  one thing a live project report must not do.
+ *
+ *  Invalidate rather than write a value in: the page is composed server-side with
+ *  its data island, its agentic marks and its stale band already decided, so there
+ *  is no client-side shape to patch. */
+export function handleDashboardMoved(queryClient: QueryClient, data: FrameData): void {
+  const slug = String(((data ?? {}) as { slug?: unknown }).slug || '')
+  if (slug) {
+    queryClient.invalidateQueries({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, slug] })
+  }
+}
+
 /** Sent once per connection before any member_projection frame: the server's
  *  authoritative lastSeq per slug. Truncate held rows that ran ahead of it (a
  *  torn tail rolled back after a restart). */

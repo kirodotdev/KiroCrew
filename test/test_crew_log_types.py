@@ -244,6 +244,35 @@ CANONICAL: dict[str, dict] = {
         "crew": "Fleet Conductor",
         "crew_key": "9f2c" + "0" * 60,
     },
+    "dashboard/instance_changed": {
+        "slug": "fleet-conductor",
+        "instance_version": 3,
+        "action": "rolled_back",
+        "template_id": "crew-log-kpis",
+        "template_version": 2,
+        "from_version": 1,
+        "fields": 6,
+        "html_bytes": 1842,
+        "at_ms": 1_759_490_000_000,
+    },
+    "dashboard/agentic_value": {
+        "field": "risk_note",
+        "type": "string",
+        "value": {"v": "two workers blocked on the same review"},
+        "instance_version": 4,
+        "crew_key": "9f2c" + "0" * 60,
+    },
+    # The REFUSAL shape. Its sibling shape -- a correction, which carries
+    # ``corrects`` and the field that worked and no ``code`` -- is exercised in
+    # ``test_dynamic_dashboard``; one canonical example per type is what this table
+    # holds, and the coded refusal is the one the type is named for.
+    "dashboard/agentic_refused": {
+        "code": "unknown_field",
+        "field": "credits_total",
+        "reason": "'credits_total' is not a field of template 'conductor' (version 3)",
+        "corrects": [],
+        "crew_key": "9f2c" + "0" * 60,
+    },
 }
 
 
@@ -289,7 +318,19 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # Subagents panel's durable half is a fold of this log, so a card the user cleared
     # has to be recorded here. It was held in a registry keyed on the run's folder, and
     # when that folder was reclaimed first the dismissed card came back.
-    assert len(SESSION_ENTRY_TYPES) == 35
+    #
+    # The one past THAT is the dynamic dashboard's ``dashboard/instance_changed``. A
+    # crewmate's dashboard instance is a copy it edits and rolls back, so what a reader
+    # needs is the sequence of changes rather than the current page -- and a sequence is
+    # what only an append-only log holds.
+    #
+    # The two past that are the dynamic dashboard's agentic pair, which join their
+    # siblings for a reason the panel entry's own note gives twice over: an agentic
+    # value's ONLY record is this log (no host Python computes a dashboard value, so
+    # there is no file beside it), and a refused write's whole worth is its history --
+    # a mistake book is a fold over refusals, and one overwritable document could hold
+    # none of it.
+    assert len(SESSION_ENTRY_TYPES) == 38
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -367,6 +408,10 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         ("work/recorded", "verdict"),
         ("work/recorded", "status"),
         ("work/recorded", "event_kind"),
+        # The dashboard instance store clamps its action the same way, and imports the
+        # vocabulary from the declaration beside the type, so the closed enum and the
+        # writer's set are one tuple.
+        ("dashboard/instance_changed", "action"),
     }
     emitted = set(_types_with_a_producing_site())
     assert {spec_type for spec_type, _ in closed} <= emitted
@@ -383,6 +428,12 @@ _EMIT_PRIMITIVES: dict[str, int] = {
     "_write": 1,
     "append": 0,
     "_append_body_entry": 1,
+    # The dashboard pair's shared awaited append. One helper for both types because
+    # they differ only in the type and must not differ in anything else -- a refusal
+    # that landed while the write it refused did not would leave the mistake book
+    # and the dashboard disagreeing. Its two callers pass the type as a LITERAL so
+    # this extractor can still read the vocabulary off the syntax.
+    "_append_dashboard": 1,
 }
 
 

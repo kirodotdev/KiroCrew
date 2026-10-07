@@ -1,0 +1,526 @@
+{
+ "note": "Write ``sample_timeline.json``: the fixture group B's two pages are shot from.\n\nNOT a capture, and its name says so, the same way ``sample_workstreams.json`` does. It\nis a ``workstreams`` fold value in the shape the fold now renders -- including the\n``created_at`` and ``closed_at`` the spans change added -- arranged so that every case\nthe ``timeline`` and ``org-chart`` pages have to tell apart is actually on the screen\nrather than only described in a manifest:\n\n- five worker sessions running AT THE SAME TIME, which is the thing a timeline exists\n  to show and the thing no single-session page can\n- one worker session bound to TWO tasks, so the one-bill-per-session rule is visible\n- a blocked task and a question task, which need a person rather than more time\n- a task quiet past twenty minutes and one quiet past two hours\n- a task with no report at all, which is not the same fact as a long silence\n- a task with NO START STAMP, which must be listed as unplaceable, not dropped\n- a terminal task with NO CLOSE STAMP, which must say so rather than draw to now\n- a nested board, so a sub-lead appears in both the timeline's lead section and the\n  org chart's graph\n- messy multi-line summaries, so the card's one-line cleaning is exercised\n- a board with ``tasks_omitted``, so the truncation line renders\n\n``now`` pins the page's clock, so a screenshot taken any day shows the elapsed figures\nthis fixture means.\n\nRun: python scripts/make_sample_timeline.py\n",
+ "slot": "member-crew-lead.memory-member-crew-lead-6f1a2c",
+ "agentic": {},
+ "agentic_written_at": {},
+ "now": "2026-10-06T00:40:00+00:00",
+ "folds": {
+  "workstreams": {
+   "seq": 918,
+   "value": {
+    "schema": 1,
+    "slot": "member-crew-lead.memory-member-crew-lead-6f1a2c",
+    "items": [
+     {
+      "id": "board-1",
+      "goal": "Round 5: manage the crew from the page",
+      "round": 5,
+      "parent": null,
+      "total": 8,
+      "accepted": 2,
+      "open": 5,
+      "needs_you": 1,
+      "credits": 41.86,
+      "credits_reported": true,
+      "last_activity_at": "2026-10-06T00:35:00+00:00",
+      "tasks_omitted": 0,
+      "series": [],
+      "tasks": [
+       {
+        "item_id": "it_a",
+        "title": "Needs-you desk and the card action route",
+        "state": "open",
+        "status": "progress",
+        "summary": "  Route and the two postMessage types are in;\n  the undo window is wired to the\tserver's own deadline  ",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "1",
+        "credits": 9.14,
+        "credits_reported": true,
+        "duration_ms": 16800000,
+        "last_report_at": "2026-10-06T00:31:00+00:00",
+        "created_at": "2026-10-05T18:10:00+00:00",
+        "closed_at": "",
+        "decision": "The page never names a button. The card's own actions array is the whole vocabulary.",
+        "events": [
+         {
+          "at": "2026-10-06T00:31:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "action route green, 11 tests"
+         },
+         {
+          "at": "2026-10-05T22:40:00+00:00",
+          "kind": "decide",
+          "status": null,
+          "text": "owner-gated, same two auth gates as the GET"
+         },
+         {
+          "at": "2026-10-05T18:10:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 14
+       },
+       {
+        "item_id": "it_b",
+        "title": "Timeline and the reporting graph",
+        "state": "open",
+        "status": "progress",
+        "summary": "Fold spans landed with 11 tests; both templates drawing, shots next",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "2",
+        "credits": 7.52,
+        "credits_reported": true,
+        "duration_ms": 15400000,
+        "last_report_at": "2026-10-06T00:26:00+00:00",
+        "created_at": "2026-10-05T18:12:00+00:00",
+        "closed_at": "",
+        "decision": "New built-in templates rather than another section of the report page.",
+        "events": [
+         {
+          "at": "2026-10-06T00:26:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "timeline renders at 430 and wide"
+         },
+         {
+          "at": "2026-10-05T21:40:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "created_at/closed_at on the task row"
+         },
+         {
+          "at": "2026-10-05T18:12:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 9
+       },
+       {
+        "item_id": "it_c",
+        "title": "Live session rail",
+        "state": "open",
+        "status": "blocked",
+        "summary": "The rail needs a session-open message the host does not have yet",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "3",
+        "credits": 4.31,
+        "credits_reported": true,
+        "duration_ms": 7200000,
+        "last_report_at": "2026-10-05T21:40:00+00:00",
+        "created_at": "2026-10-05T18:15:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T21:40:00+00:00",
+          "kind": "report",
+          "status": "blocked",
+          "text": "blocked on the host handler"
+         },
+         {
+          "at": "2026-10-05T18:15:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 2
+       },
+       {
+        "item_id": "it_d",
+        "title": "Plan lane: what the crew will do next",
+        "state": "open",
+        "status": "progress",
+        "summary": "Two mockups drawn, waiting on a pick",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "4",
+        "credits": 6.08,
+        "credits_reported": true,
+        "duration_ms": 9000000,
+        "last_report_at": "2026-10-05T22:05:00+00:00",
+        "created_at": "2026-10-05T18:20:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T22:05:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "mockups up, which one"
+         },
+         {
+          "at": "2026-10-05T18:20:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 2
+       },
+       {
+        "item_id": "it_e",
+        "title": "Merge the five branches and shoot the demo",
+        "state": "open",
+        "status": null,
+        "summary": "",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "5",
+        "credits": 0.0,
+        "credits_reported": false,
+        "duration_ms": 0,
+        "last_report_at": "",
+        "created_at": "2026-10-05T23:50:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T23:50:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created once the five were dispatched"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_f",
+        "title": "Round-4 report page",
+        "state": "accepted",
+        "status": "done",
+        "summary": "One report page replaces the three round-3 boards",
+        "verdict": "pass",
+        "pr": "14982",
+        "round": 5,
+        "spender": "6",
+        "credits": 14.81,
+        "credits_reported": true,
+        "duration_ms": 21600000,
+        "last_report_at": "2026-10-05T16:28:00+00:00",
+        "created_at": "2026-10-05T12:00:00+00:00",
+        "closed_at": "2026-10-05T16:40:00+00:00",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T16:40:00+00:00",
+          "kind": "close",
+          "status": null,
+          "text": "accepted"
+         },
+         {
+          "at": "2026-10-05T16:28:00+00:00",
+          "kind": "report",
+          "status": "done",
+          "text": "shots in, PR green"
+         }
+        ],
+        "events_seen": 2
+       },
+       {
+        "item_id": "it_g",
+        "title": "The spend half of the workstreams fold",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Cost counts only what a worker reported",
+        "verdict": "pass",
+        "pr": null,
+        "round": 5,
+        "spender": "6",
+        "credits": 14.81,
+        "credits_reported": true,
+        "duration_ms": 21600000,
+        "last_report_at": "2026-10-05T16:00:00+00:00",
+        "created_at": "2026-10-05T14:00:00+00:00",
+        "closed_at": "2026-10-05T16:10:00+00:00",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T16:10:00+00:00",
+          "kind": "close",
+          "status": null,
+          "text": "accepted"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_h",
+        "title": "Rebuilt from a baseline: its opener never reached this fold",
+        "state": "open",
+        "status": "progress",
+        "summary": "Carried over from the pruned round-3 board",
+        "verdict": null,
+        "pr": null,
+        "round": 5,
+        "spender": "7",
+        "credits": 2.19,
+        "credits_reported": true,
+        "duration_ms": 0,
+        "last_report_at": "2026-10-05T19:40:00+00:00",
+        "created_at": "",
+        "closed_at": "",
+        "decision": "",
+        "events": [],
+        "events_seen": 6
+       }
+      ]
+     },
+     {
+      "id": "board-2",
+      "goal": "Views: a timeline and a reporting graph",
+      "round": 1,
+      "parent": {
+       "board": "board-1",
+       "item_id": "it_b",
+       "title": "Timeline and the reporting graph"
+      },
+      "total": 3,
+      "accepted": 1,
+      "open": 2,
+      "needs_you": 1,
+      "credits": 12.44,
+      "credits_reported": true,
+      "last_activity_at": "2026-10-06T00:35:00+00:00",
+      "tasks_omitted": 0,
+      "series": [],
+      "tasks": [
+       {
+        "item_id": "it_b1",
+        "title": "Task spans on the fold, with tests",
+        "state": "accepted",
+        "status": "done",
+        "summary": "created_at and closed_at per task; two mutations caught",
+        "verdict": "pass",
+        "pr": null,
+        "round": 1,
+        "spender": "8",
+        "credits": 5.02,
+        "credits_reported": true,
+        "duration_ms": 7800000,
+        "last_report_at": "2026-10-05T21:20:00+00:00",
+        "created_at": "2026-10-05T19:00:00+00:00",
+        "closed_at": "2026-10-05T21:30:00+00:00",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T21:30:00+00:00",
+          "kind": "close",
+          "status": null,
+          "text": "accepted"
+         },
+         {
+          "at": "2026-10-05T21:20:00+00:00",
+          "kind": "report",
+          "status": "done",
+          "text": "11 tests, both mutations caught"
+         }
+        ],
+        "events_seen": 2
+       },
+       {
+        "item_id": "it_b2",
+        "title": "The timeline page",
+        "state": "open",
+        "status": "progress",
+        "summary": "Overlap strip, now-line and the silence tail all drawing",
+        "verdict": null,
+        "pr": null,
+        "round": 1,
+        "spender": "9",
+        "credits": 4.77,
+        "credits_reported": true,
+        "duration_ms": 9600000,
+        "last_report_at": "2026-10-06T00:35:00+00:00",
+        "created_at": "2026-10-05T21:35:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-06T00:35:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "430 and wide both read"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_b3",
+        "title": "The reporting graph and the latest-run cards",
+        "state": "open",
+        "status": "question",
+        "summary": "A card cannot link to a session: the fold aliases the key on purpose. Which way?",
+        "verdict": null,
+        "pr": null,
+        "round": 1,
+        "spender": "10",
+        "credits": 2.65,
+        "credits_reported": true,
+        "duration_ms": 5400000,
+        "last_report_at": "2026-10-05T23:55:00+00:00",
+        "created_at": "2026-10-05T22:00:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T23:55:00+00:00",
+          "kind": "report",
+          "status": "question",
+          "text": "needs a ruling on the session link"
+         },
+         {
+          "at": "2026-10-05T22:00:00+00:00",
+          "kind": "create",
+          "status": null,
+          "text": "created from the views plan"
+         }
+        ],
+        "events_seen": 2
+       }
+      ]
+     },
+     {
+      "id": "board-3",
+      "goal": "Feature recording: the side panel beside chat",
+      "round": 2,
+      "parent": null,
+      "total": 7,
+      "accepted": 0,
+      "open": 2,
+      "needs_you": 0,
+      "credits": 9.3,
+      "credits_reported": true,
+      "last_activity_at": "2026-10-05T20:40:00+00:00",
+      "tasks_omitted": 3,
+      "series": [],
+      "tasks": [
+       {
+        "item_id": "it_r1",
+        "title": "Record the panel",
+        "state": "rejected",
+        "status": "done",
+        "summary": "A dialog covered the feature in every take",
+        "verdict": "fail",
+        "pr": null,
+        "round": 2,
+        "spender": "11",
+        "credits": 5.4,
+        "credits_reported": true,
+        "duration_ms": 12000000,
+        "last_report_at": "2026-10-05T17:50:00+00:00",
+        "created_at": "2026-10-05T14:00:00+00:00",
+        "closed_at": "2026-10-05T18:00:00+00:00",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T18:00:00+00:00",
+          "kind": "close",
+          "status": null,
+          "text": "rejected"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_r2",
+        "title": "Pick the playwright interpreter",
+        "state": "abandoned",
+        "status": null,
+        "summary": "",
+        "verdict": null,
+        "pr": null,
+        "round": 2,
+        "spender": "12",
+        "credits": 0.0,
+        "credits_reported": false,
+        "duration_ms": 0,
+        "last_report_at": "",
+        "created_at": "2026-10-05T15:00:00+00:00",
+        "closed_at": "2026-10-05T15:30:00+00:00",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T15:30:00+00:00",
+          "kind": "close",
+          "status": null,
+          "text": "abandoned"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_r3",
+        "title": "Re-shoot without the dialog",
+        "state": "open",
+        "status": "progress",
+        "summary": "Second take running",
+        "verdict": null,
+        "pr": null,
+        "round": 2,
+        "spender": "11",
+        "credits": 5.4,
+        "credits_reported": true,
+        "duration_ms": 12000000,
+        "last_report_at": "2026-10-05T20:30:00+00:00",
+        "created_at": "2026-10-05T20:00:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [
+         {
+          "at": "2026-10-05T20:30:00+00:00",
+          "kind": "report",
+          "status": "progress",
+          "text": "take two rolling"
+         }
+        ],
+        "events_seen": 1
+       },
+       {
+        "item_id": "it_r4",
+        "title": "An accept whose close stamp this fold never saw",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Folded from a unit whose conductor entry is not in this read",
+        "verdict": "pass",
+        "pr": null,
+        "round": 2,
+        "spender": "13",
+        "credits": 3.9,
+        "credits_reported": true,
+        "duration_ms": 0,
+        "last_report_at": "2026-10-05T15:40:00+00:00",
+        "created_at": "2026-10-05T15:00:00+00:00",
+        "closed_at": "",
+        "decision": "",
+        "events": [],
+        "events_seen": 4
+       }
+      ]
+     }
+    ],
+    "omitted": 1,
+    "series": [],
+    "unattributed": {
+     "credits": 0.42,
+     "credits_reported": true
+    },
+    "spenders_omitted": 2,
+    "last_entry_at": "2026-10-06T00:35:00+00:00"
+   }
+  }
+ }
+}

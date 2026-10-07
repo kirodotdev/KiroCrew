@@ -17144,7 +17144,13 @@
       "schedule_new": "새 일정",
       "schedule_load_failed": "이 크루메이트의 일정을 불러올 수 없습니다.",
       "schedule_open_all": "모든 일정",
-      "panel_toggle": "대시보드 및 파일"
+      "panel_toggle": "대시보드 및 파일",
+      "dashboard_kept_last_good": "이 대시보드의 최신 버전을 불러오지 못해, 마지막으로 불러온 버전을 표시합니다.",
+      "dashboard_none_yet": "이 크루메이트의 대시보드가 아직 설정되지 않았습니다.",
+      "dashboard_unavailable": "이 대시보드를 불러올 수 없습니다.",
+      "dashboard_render_error": "이 대시보드를 그릴 수 없습니다.",
+      "dashboard_frame_title": "{{crew}}의 대시보드",
+      "dashboard_rendering": "대시보드 그리는 중…"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

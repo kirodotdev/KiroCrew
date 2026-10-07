@@ -44,6 +44,7 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
+  handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
   handleSourceStatus,
@@ -67,6 +68,11 @@ import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatch
    constants and thaw grace test/test_ws_status_cadence_contract.py reads
    from this file. Every export below keeps its original import path. */
 export { __resetRedactionHealForTests, healRedactionSwitchAfterReconnect } from './websocket/serverState'
+// The crewmate dashboard's cache prefix and its frame handler, reached through
+// this facade like every other owner binding. Both are named so a caller can
+// invalidate the same key the handler invalidates: a second spelling of that
+// prefix would let a refresh reach a different cache entry from the frame.
+export { MEMBER_DASHBOARD_QUERY_PREFIX, handleDashboardMoved } from './websocket/serverState'
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
@@ -326,6 +332,12 @@ export function useWebSocket() {
             }
             break
           }
+          case 'dashboard_value_written':
+            // A crewmate wrote one of its own dashboard fields mid-turn. The frame
+            // carries only {slug}; the tab's refetch re-asks the server, which
+            // re-composes the page and re-checks ownership.
+            handleDashboardMoved(queryClient, data)
+            break
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break
@@ -409,6 +421,10 @@ export function useWebSocket() {
           }
           case 'member_projection':
             handleMemberProjection(data)
+            // A fold advanced. Every number on a crewmate's dashboard but its own
+            // agentic writes comes from a fold, so this is the other half of the
+            // tab's liveness -- see `handleDashboardMoved`.
+            handleDashboardMoved(queryClient, data)
             break
           case 'members_subscribed':
             handleMembersSubscribed(queryClient, data)

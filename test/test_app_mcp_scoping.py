@@ -1304,10 +1304,12 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
 
         Every Crew-authored agent-spec writer in ``agent.py``, or in the
         ``agent_materialization`` modules it is composed from, must either
-        derive from ``build_agent_config`` (which filters), filter what it
-        writes through ``_may_auto_approve``, or not write an ``allowedTools``
-        key at all. ``_install_research_agent`` failed this before the fix:
-        it derived from a then-unfiltered constructor.
+        derive from ``build_agent_config`` (which filters), hand its own
+        assembled spec to ``_apply_allowed_tools_ceiling`` (the same filter the
+        constructor runs, pinned by the case above), filter what it writes
+        through ``_may_auto_approve``, or not write an ``allowedTools`` key at
+        all. ``_install_research_agent`` failed this before the fix: it derived
+        from a then-unfiltered constructor.
         """
         import importlib
         import inspect
@@ -1334,6 +1336,7 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
             src = inspect.getsource(fn)
             covered = (
                 "build_agent_config(" in src
+                or "_apply_allowed_tools_ceiling(" in src
                 or "_may_auto_approve(" in src
                 or "allowedTools" not in src
             )

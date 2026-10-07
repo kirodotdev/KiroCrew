@@ -1,0 +1,278 @@
+<div class="swl">
+  <style>
+    .swl { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .swl h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .swl .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .swl .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .swl .sub { font-size: 10px; color: var(--muted, #9aa); }
+
+    .lane { margin-top: 10px; border: 1px solid var(--border, #333); border-radius: 14px; background: var(--card, #181818); overflow: hidden; }
+    .lane .lh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: color-mix(in oklab, var(--border, #333) 35%, transparent); }
+    .lane .lh b { font-size: 11.5px; font-weight: 700; color: var(--text-strong, #fff); }
+    .lane .lh span { font-size: 10px; color: var(--muted, #9aa); }
+    .lane .lh .fill { margin-left: auto; display: flex; gap: 2px; width: 92px; height: 6px; border-radius: 3px; overflow: hidden; background: color-mix(in oklab, var(--border, #333) 60%, transparent); }
+    .lane .lh .fill i { display: block; height: 100%; }
+
+    .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(152px, 1fr)); gap: 7px; padding: 8px 10px 10px; }
+    .col .ch { display: flex; align-items: baseline; gap: 5px; padding-bottom: 4px; border-bottom: 2px solid var(--border-strong, #444); }
+    .col .ch b { font-size: 10.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+    .col .ch i { font-size: 10px; font-style: normal; color: var(--muted, #9aa); margin-left: auto; }
+
+    .card { border: 1px solid var(--border, #333); border-radius: 9px; padding: 6px 8px; margin-top: 5px; background: var(--bg-elevated, #1f1f1f); }
+    .card .id { font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted, #9aa); }
+    .card .t { font-size: 11px; font-weight: 600; color: var(--text-strong, #fff); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .card .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .card .chip { font-size: 9.5px; font-weight: 600; padding: 0 6px; border-radius: 8px; background: var(--bg-hover, #222); color: var(--muted-strong, #889); }
+    .card .quiet { font-size: 9.5px; color: var(--muted, #9aa); margin-top: 3px; }
+    .card .quiet.late { color: var(--warn, #ffd230); }
+    .none { font-size: 10px; color: var(--muted, #9aa); padding: 6px 0 2px; }
+  </style>
+
+  <h2>Swimlanes</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>depth <span data-dashboard-field="depth">-</span></span>
+    <span>entries <span data-dashboard-field="entries">-</span></span>
+    <span>generation <span data-dashboard-field="generation">-</span></span>
+    <span>last write <span data-dashboard-field="last_entry_at">-</span></span>
+  </div>
+
+  <div id="lanes"></div>
+  <div class="sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> item(s) in all lanes,
+    <span data-dashboard-field="omitted">-</span> not shown (list truncated)
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+      var QUIET_MS = 15 * 60 * 1000;
+
+      // Four columns, in the order work moves through them. `await` exists because the
+      // item a conductor opens this page to find -- a worker said done, nothing has
+      // ruled on it -- is named by neither state nor status on its own.
+      var COLUMNS = [
+        ['prog', 'In progress', '#00d492'],
+        ['await', 'Awaiting verdict', '#6aa9ff'],
+        ['acc', 'Accepted', '#8ab4ff'],
+        ['shut', 'Rejected or left', '#ff5c5c']
+      ];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function fields() { return (window.kirocrew || {}).fields || {}; }
+      function items() {
+        var v = fields().items;
+        return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      function stamp(v) {
+        var n = num(v);
+        if (n !== null) return n;
+        var s = text(v);
+        if (!s) return null;
+        var t = Date.parse(s);
+        return isFinite(t) ? t : null;
+      }
+      function ago(ms) {
+        var m = Math.floor(ms / 60000);
+        if (m < 1) return 'under a minute';
+        if (m < 60) return m + 'm';
+        var h = Math.floor(m / 60);
+        return h + 'h ' + (m % 60) + 'm';
+      }
+      function columnOf(it) {
+        var state = text(it.state);
+        if (state === 'accepted') return 'acc';
+        if (state === 'rejected' || state === 'abandoned') return 'shut';
+        // Still open. The worker's own last word decides, and `done` is a CLAIM the
+        // conductor has not ruled on rather than a finish.
+        if (text(it.status) === 'done') return 'await';
+        return 'prog';
+      }
+      function colourOf(key) {
+        for (var i = 0; i < COLUMNS.length; i++) if (COLUMNS[i][0] === key) return COLUMNS[i][2];
+        return 'var(--muted-strong, #778)';
+      }
+      function chip(host, label, colour) {
+        var el = document.createElement('span');
+        el.className = 'chip';
+        el.textContent = label;
+        if (colour) el.style.color = colour;
+        host.appendChild(el);
+      }
+
+      function card(it) {
+        var el = document.createElement('div');
+        el.className = 'card';
+        var id = document.createElement('div');
+        id.className = 'id';
+        id.textContent = text(it.item_id) || DASH;
+        el.appendChild(id);
+        var t = document.createElement('div');
+        t.className = 't';
+        t.textContent = text(it.title) || DASH;
+        el.appendChild(t);
+        var chips = document.createElement('div');
+        chips.className = 'chips';
+        var verdict = text(it.verdict);
+        if (verdict) chip(chips, verdict, verdict === 'pass' ? 'var(--ok, #35d07f)' : 'var(--danger, #ff5c5c)');
+        var fails = num(it.fails);
+        if (fails) chip(chips, fails + ' fail(s)', 'var(--danger, #ff5c5c)');
+        var pr = num(it.pr);
+        if (pr) chip(chips, 'PR ' + pr, 'var(--info, #6aa9ff)');
+        var status = text(it.status);
+        if (status) chip(chips, 'worker ' + status, null);
+        var spender = text(it.spender);
+        if (spender) chip(chips, 'w' + spender, null);
+        // An evidence pointer on the row itself, so a row that asserts also shows: an
+        // artifact key named here is the thing a reader would otherwise have to ask for.
+        var artifacts = it.artifacts && typeof it.artifacts === 'object' ? Object.keys(it.artifacts) : [];
+        if (artifacts.length) chip(chips, artifacts.length + ' artifact(s)', null);
+        if (chips.childNodes.length) el.appendChild(chips);
+
+        var closed = stamp(it.closed_at);
+        var last = stamp(it.last_report_at);
+        var q = document.createElement('div');
+        q.className = 'quiet';
+        if (closed !== null) {
+          var born = stamp(it.created_at);
+          q.textContent = born !== null ? 'took ' + ago(closed - born) : 'closed';
+        } else if (last !== null) {
+          var silent = Date.now() - last;
+          q.textContent = 'quiet ' + ago(silent);
+          if (silent >= QUIET_MS) q.className = 'quiet late';
+        } else {
+          // Silence with no report at all is its own state and must not look like a
+          // fresh one: a worker that never reported is the case nothing else surfaces.
+          q.textContent = 'no report yet';
+          q.className = 'quiet late';
+        }
+        el.appendChild(q);
+        return el;
+      }
+
+      // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
+      // timestamp in a meta row is three times the width of the fact it carries. The
+      // cell is reformatted rather than the value replaced, so an unparseable stamp is
+      // left exactly as the record wrote it instead of becoming an invalid date.
+      function shortenStamps(names) {
+        for (var i = 0; i < names.length; i++) {
+          var cell = document.querySelector('[data-dashboard-field="' + names[i] + '"]');
+          if (!cell) continue;
+          var raw = (cell.textContent || '').trim();
+          if (!raw || raw === DASH) continue;
+          var t = Date.parse(raw);
+          if (!isFinite(t)) continue;
+          var d = new Date(t);
+          cell.textContent =
+            ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2) +
+            ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) +
+            ' UTC';
+        }
+      }
+
+      function render() {
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        shortenStamps(['last_entry_at']);
+        var list = items();
+        var host = document.getElementById('lanes');
+        if (!host) return;
+        host.textContent = '';
+
+        var byRound = {};
+        var order = [];
+        for (var i = 0; i < list.length; i++) {
+          var r = num(list[i].round);
+          var key = r === null ? 'none' : String(r);
+          if (!byRound[key]) { byRound[key] = []; order.push(key); }
+          byRound[key].push(list[i]);
+        }
+        order.sort(function (x, y) {
+          if (x === 'none') return 1;
+          if (y === 'none') return -1;
+          return Number(y) - Number(x);
+        });
+
+        for (var g = 0; g < order.length; g++) {
+          var key2 = order[g];
+          var group = byRound[key2];
+          var lane = document.createElement('div');
+          lane.className = 'lane';
+
+          var lh = document.createElement('div');
+          lh.className = 'lh';
+          var b = document.createElement('b');
+          b.textContent = key2 === 'none' ? 'No round stamped' : 'Round ' + key2;
+          lh.appendChild(b);
+          var cnt = document.createElement('span');
+          cnt.textContent = group.length + ' item(s)';
+          lh.appendChild(cnt);
+
+          var buckets = { prog: [], await: [], acc: [], shut: [] };
+          for (var j = 0; j < group.length; j++) buckets[columnOf(group[j])].push(group[j]);
+
+          var fill = document.createElement('div');
+          fill.className = 'fill';
+          for (var s = 0; s < COLUMNS.length; s++) {
+            var n = buckets[COLUMNS[s][0]].length;
+            if (!n) continue;
+            var seg = document.createElement('i');
+            seg.style.background = COLUMNS[s][2];
+            seg.style.width = ((n / group.length) * 100) + '%';
+            fill.appendChild(seg);
+          }
+          lh.appendChild(fill);
+          lane.appendChild(lh);
+
+          var cols = document.createElement('div');
+          cols.className = 'cols';
+          for (var k = 0; k < COLUMNS.length; k++) {
+            var ckey = COLUMNS[k][0];
+            var col = document.createElement('div');
+            col.className = 'col';
+            var ch = document.createElement('div');
+            ch.className = 'ch';
+            ch.style.borderBottomColor = COLUMNS[k][2];
+            var cb = document.createElement('b');
+            cb.textContent = COLUMNS[k][1];
+            cb.style.color = COLUMNS[k][2];
+            ch.appendChild(cb);
+            var ci = document.createElement('i');
+            ci.textContent = String(buckets[ckey].length);
+            ch.appendChild(ci);
+            col.appendChild(ch);
+            for (var m = 0; m < buckets[ckey].length; m++) col.appendChild(card(buckets[ckey][m]));
+            if (!buckets[ckey].length) {
+              var none = document.createElement('div');
+              none.className = 'none';
+              none.textContent = DASH;
+              col.appendChild(none);
+            }
+            cols.appendChild(col);
+          }
+          lane.appendChild(cols);
+          host.appendChild(lane);
+        }
+
+        if (!order.length) {
+          var empty = document.createElement('div');
+          empty.className = 'none';
+          empty.textContent = 'No item on this board yet, so there is no lane to draw.';
+          host.appendChild(empty);
+        }
+
+        var cell = document.querySelector('[data-dashboard-field="items"]');
+        if (cell) cell.textContent = String(list.length);
+        if (colourOf('prog') === undefined) return;
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

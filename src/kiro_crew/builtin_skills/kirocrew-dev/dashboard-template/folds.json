@@ -689,6 +689,119 @@
           "optional": false
         }
       ]
+    },
+    {
+      "name": "agentic",
+      "mode": "slot",
+      "advertised": true,
+      "affects": [
+        "dashboard/agentic_value"
+      ],
+      "answers": "Which dashboard fields this crewmate filled itself, with what value, of what declared type and when",
+      "fields": [
+        {
+          "name": "fields",
+          "type": "dict",
+          "optional": false
+        },
+        {
+          "name": "fields_omitted",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "wrote",
+          "type": "int",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "mistakes",
+      "mode": "slot",
+      "advertised": true,
+      "affects": [
+        "dashboard/agentic_refused"
+      ],
+      "answers": "Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead",
+      "fields": [
+        {
+          "name": "groups",
+          "type": "list",
+          "optional": false
+        },
+        {
+          "name": "groups_omitted",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "refused",
+          "type": "int",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "workstreams",
+      "mode": "slot",
+      "advertised": true,
+      "affects": [
+        "background/completed",
+        "session/opened",
+        "subagent/completed",
+        "subagent/failed",
+        "turn/completed",
+        "work/recorded"
+      ],
+      "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
+      "fields": [
+        {
+          "name": "items",
+          "type": "list",
+          "optional": false
+        },
+        {
+          "name": "last_entry_at",
+          "type": "str",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "schema",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "series",
+          "type": "list",
+          "optional": false
+        },
+        {
+          "name": "slot",
+          "type": "str",
+          "optional": false
+        },
+        {
+          "name": "spenders_omitted",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "unattributed",
+          "type": "dict",
+          "optional": false
+        },
+        {
+          "name": "units_omitted",
+          "type": "int",
+          "optional": false
+        }
+      ]
     }
   ]
 }

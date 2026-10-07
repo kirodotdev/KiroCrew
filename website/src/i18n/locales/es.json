@@ -17688,7 +17688,13 @@
       "schedule_new": "Nueva programación",
       "schedule_load_failed": "No se pudieron cargar los horarios de este compañero.",
       "schedule_open_all": "Todas las programaciones",
-      "panel_toggle": "Panel y archivos"
+      "panel_toggle": "Panel y archivos",
+      "dashboard_kept_last_good": "No se cargó una versión más reciente de este panel, así que esta es la última que sí se cargó.",
+      "dashboard_none_yet": "Aún no hay un panel configurado para este miembro.",
+      "dashboard_unavailable": "No se pudo cargar este panel.",
+      "dashboard_render_error": "No se pudo dibujar este panel.",
+      "dashboard_frame_title": "Panel de {{crew}}",
+      "dashboard_rendering": "Dibujando el panel…"
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",

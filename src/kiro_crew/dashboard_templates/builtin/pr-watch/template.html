@@ -1,0 +1,366 @@
+<div class="prw">
+  <style>
+    .prw { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .prw h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .prw .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .prw .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .prw .sub { font-size: 10px; color: var(--muted, #9aa); }
+    .prw .wrote { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted-strong, #778); border: 1px solid var(--border, #333); border-radius: 8px; padding: 0 5px; }
+
+    .verdict { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 2px; padding: 9px 11px; border-radius: 12px; border: 1px solid var(--border, #333); background: color-mix(in oklab, #ff5c5c 7%, var(--card, #181818)); }
+    .verdict .word { font-size: 13px; font-weight: 700; color: var(--text-strong, #fff); }
+    .verdict .say { font-size: 11.5px; color: var(--muted-strong, #889); }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 7px; margin-top: 9px; }
+    .kpi { border: 1px solid var(--border, #333); border-radius: 14px; padding: 8px 10px; background: var(--card, #181818); }
+    .kpi .lab { font-size: 10px; color: var(--muted, #9aa); }
+    .kpi .val { font-size: 21px; font-weight: 700; line-height: 1.15; color: var(--text-strong, #fff); }
+    .kpi .val u { font-size: 10.5px; font-weight: 600; text-decoration: none; color: var(--muted, #9aa); margin-left: 3px; }
+
+    .lane { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border, #333); border-left-width: 3px; border-radius: 8px; padding: 6px 9px; margin-top: 5px; background: var(--card, #181818); }
+    .lane .nm { flex: 1 1 auto; font-weight: 600; color: var(--text-strong, #fff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lane .st { font-size: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+    .lane .own { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: var(--bg-hover, #222); color: var(--muted-strong, #889); }
+    .lane .pr { font-size: 10px; color: var(--info, #6aa9ff); font-weight: 600; }
+
+    .item { border: 1px solid var(--border, #333); border-radius: 10px; padding: 8px 9px; margin-top: 6px; background: var(--card, #181818); }
+    .item .t { font-weight: 600; color: var(--text-strong, #fff); }
+    .item .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .chip { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--bg-hover, #222); }
+    .ask { font-size: 10.5px; color: var(--muted-strong, #889); margin-top: 4px; }
+  </style>
+
+  <h2>PR watch</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>session <span data-dashboard-field="lifecycle">-</span></span>
+    <span>last write <span data-dashboard-field="last_entry_at">-</span></span>
+  </div>
+
+  <div class="verdict">
+    <span class="word" id="vword">-</span>
+    <span class="say" id="vsay"></span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="meta" style="margin-top: 11px;">
+    <span style="font-weight: 600; color: var(--text-strong, #fff);">Still in the way</span>
+    <span class="wrote" id="wrote"></span>
+  </div>
+  <div id="lanes"></div>
+  <div class="sub" style="margin-top: 5px;">
+    <span data-dashboard-field="lanes">-</span> lane(s) read in all; green ones are not listed.
+  </div>
+
+  <div class="meta" style="margin-top: 11px;">
+    <span style="font-weight: 600; color: var(--text-strong, #fff);">Waiting on a person</span>
+    <span>pending <span data-dashboard-field="approvals_pending">-</span></span>
+    <span>asked <span data-dashboard-field="approvals_requested">-</span></span>
+  </div>
+  <div id="asks"></div>
+  <div class="sub"><span data-dashboard-field="pending_requests">-</span> request(s) named.</div>
+
+  <div class="meta" style="margin-top: 11px;">
+    <span style="font-weight: 600; color: var(--text-strong, #fff);">Items carrying a PR</span>
+  </div>
+  <div id="items"></div>
+  <div class="sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> on the board,
+    <span data-dashboard-field="omitted">-</span> not shown (list truncated)
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      // The four lane readings this page knows, and the ONE distinction it exists for:
+      // `fail` is a check that ran and returned a finding; `skipped` is a check that
+      // never started. Printing one red dot for both is worse than printing nothing,
+      // because a lane that never ran needs a re-run and a lane that failed needs a fix.
+      var LANE_STATES = [
+        ['fail', 'red', 'var(--danger, #ff5c5c)', true],
+        ['skipped', 'did not run', 'var(--warn, #ffd230)', true],
+        ['running', 'running', 'var(--info, #6aa9ff)', true],
+        ['pass', 'green', 'var(--ok, #35d07f)', false]
+      ];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function bag() { return window.kirocrew || {}; }
+      function fields() { return bag().fields || {}; }
+      function arr(name) {
+        var v = fields()[name];
+        return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      function laneRow(state) {
+        for (var i = 0; i < LANE_STATES.length; i++) if (LANE_STATES[i][0] === state) return LANE_STATES[i];
+        // A reading this page has no row for is shown as itself rather than dropped:
+        // an unknown lane state hidden from the strip reads as a clear board.
+        return [state, state, 'var(--muted-strong, #778)', true];
+      }
+      function chip(label, colour) {
+        var el = document.createElement('span');
+        el.className = 'chip';
+        el.textContent = label;
+        if (colour) el.style.color = colour;
+        return el;
+      }
+      function kpi(label, value, unit, colour) {
+        var card = document.createElement('div');
+        card.className = 'kpi';
+        var lab = document.createElement('div');
+        lab.className = 'lab';
+        lab.textContent = label;
+        var val = document.createElement('div');
+        val.className = 'val';
+        val.textContent = value === null ? DASH : String(value);
+        if (colour && value) val.style.color = colour;
+        if (unit) {
+          var u = document.createElement('u');
+          u.textContent = unit;
+          val.appendChild(u);
+        }
+        card.appendChild(lab);
+        card.appendChild(val);
+        return card;
+      }
+
+      function drawLanes(lanes) {
+        var host = document.getElementById('lanes');
+        if (!host) return;
+        host.textContent = '';
+        var shown = [];
+        for (var i = 0; i < lanes.length; i++) {
+          var row = laneRow(text(lanes[i].state) || 'unknown');
+          if (row[3]) shown.push([lanes[i], row]);
+        }
+        // Red before never-ran before running: a finding is the thing a reader acts on
+        // first, and a strip sorted by name buries it under whatever is alphabetically
+        // ahead of it.
+        shown.sort(function (a, b) {
+          function rank(r) { return r[0] === 'fail' ? 0 : r[0] === 'skipped' ? 1 : r[0] === 'running' ? 2 : 3; }
+          return rank(a[1]) - rank(b[1]);
+        });
+        for (var j = 0; j < shown.length; j++) {
+          var lane = shown[j][0];
+          var meta = shown[j][1];
+          var el = document.createElement('div');
+          el.className = 'lane';
+          el.style.borderLeftColor = meta[2];
+          var nm = document.createElement('span');
+          nm.className = 'nm';
+          nm.textContent = text(lane.name) || DASH;
+          el.appendChild(nm);
+          var st = document.createElement('span');
+          st.className = 'st';
+          st.style.color = meta[2];
+          st.textContent = meta[1];
+          el.appendChild(st);
+          // WHO clears it. A red lane nobody can name an owner for is the one a reader
+          // stares at, so an absent owner says so rather than being left blank.
+          var own = document.createElement('span');
+          own.className = 'own';
+          own.textContent = text(lane.owner) || 'owner not said';
+          el.appendChild(own);
+          var pr = num(lane.pr);
+          if (pr) {
+            var prl = document.createElement('span');
+            prl.className = 'pr';
+            prl.textContent = 'PR ' + pr;
+            el.appendChild(prl);
+          }
+          host.appendChild(el);
+        }
+        if (!shown.length) {
+          var ok = document.createElement('div');
+          ok.className = 'ask';
+          ok.textContent = lanes.length
+            ? 'Every lane the crewmate read came back green.'
+            : 'No lane reading yet. The crewmate has not written one.';
+          host.appendChild(ok);
+        }
+        return shown.length;
+      }
+
+      function drawAsks(requests) {
+        var host = document.getElementById('asks');
+        if (!host) return;
+        host.textContent = '';
+        for (var i = 0; i < requests.length; i++) {
+          var r = requests[i];
+          var el = document.createElement('div');
+          el.className = 'ask';
+          var who = text(r.tool) || text(r.kind) || text(r.approval_id) || DASH;
+          var why = text(r.cause) || text(r.reason) || '';
+          el.textContent = why ? who + ' \u00b7 ' + why : who;
+          host.appendChild(el);
+        }
+        if (!requests.length) {
+          var none = document.createElement('div');
+          none.className = 'ask';
+          none.textContent = 'Nothing is waiting on a person right now.';
+          host.appendChild(none);
+        }
+      }
+
+      function drawItems(items, lanes) {
+        var host = document.getElementById('items');
+        if (!host) return;
+        host.textContent = '';
+        var worst = {};
+        for (var l = 0; l < lanes.length; l++) {
+          var p = num(lanes[l].pr);
+          if (!p) continue;
+          var s = text(lanes[l].state) || 'unknown';
+          // One PR's worst lane decides its chip: a PR with nine greens and one red is
+          // red, and reporting the majority would call it green.
+          if (s === 'fail' || worst[p] === undefined || (worst[p] === 'pass' && s !== 'pass')) {
+            if (worst[p] !== 'fail') worst[p] = s;
+          }
+        }
+        var drawn = 0;
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          var pr = num(it.pr);
+          if (!pr) continue;
+          drawn += 1;
+          var card = document.createElement('div');
+          card.className = 'item';
+          var t = document.createElement('div');
+          t.className = 't';
+          t.textContent = text(it.title) || text(it.item_id) || DASH;
+          card.appendChild(t);
+          var chips = document.createElement('div');
+          chips.className = 'chips';
+          var meta = laneRow(worst[pr] || 'unknown');
+          chips.appendChild(chip('PR ' + pr, 'var(--info, #6aa9ff)'));
+          chips.appendChild(chip(worst[pr] ? meta[1] : 'no lane read', worst[pr] ? meta[2] : 'var(--muted-strong, #778)'));
+          var state = text(it.state);
+          if (state) chips.appendChild(chip(state, null));
+          var verdict = text(it.verdict);
+          // The acceptance verdict is NOT a CI result and the two are kept apart: a
+          // green board with a failed acceptance is the case a reader must see.
+          if (verdict) chips.appendChild(chip('acceptance ' + verdict, null));
+          card.appendChild(chips);
+          host.appendChild(card);
+        }
+        if (!drawn) {
+          var none = document.createElement('div');
+          none.className = 'ask';
+          none.textContent = 'No item on this board carries a PR number.';
+          host.appendChild(none);
+        }
+      }
+
+      function drawVerdict(lanes, reds, pendingApprovals) {
+        var word = document.getElementById('vword');
+        var say = document.getElementById('vsay');
+        if (!word || !say) return;
+        var host = word.parentNode;
+        var colour, label, sentence;
+        if (!lanes.length) {
+          // The honest fourth value. A verdict with no silence state becomes a stale
+          // lie the moment the crewmate stops writing, and that is the normal case.
+          colour = '#9aa'; label = 'No word yet';
+          sentence = 'The crewmate has not written a lane reading, so this page cannot say.';
+        } else if (reds) {
+          colour = '#ff5c5c'; label = 'Still red';
+          sentence = reds + ' lane(s) in the way' + (pendingApprovals ? ', and ' + pendingApprovals + ' ask(s) waiting on a person.' : '.');
+        } else if (pendingApprovals) {
+          colour = '#ffd230'; label = 'Needs you';
+          sentence = 'Every lane is green; ' + pendingApprovals + ' ask(s) are waiting on a person.';
+        } else {
+          colour = '#35d07f'; label = 'Checks green';
+          sentence = 'Every lane the crewmate read came back green. Green is not merged.';
+        }
+        word.textContent = label;
+        word.style.color = colour;
+        say.textContent = sentence;
+        if (host && host.style) host.style.background = 'color-mix(in oklab, ' + colour + ' 7%, var(--card, #181818))';
+      }
+
+      // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
+      // timestamp in a meta row is three times the width of the fact it carries. The
+      // cell is reformatted rather than the value replaced, so an unparseable stamp is
+      // left exactly as the record wrote it instead of becoming an invalid date.
+      function shortenStamps(names) {
+        for (var i = 0; i < names.length; i++) {
+          var cell = document.querySelector('[data-dashboard-field="' + names[i] + '"]');
+          if (!cell) continue;
+          var raw = (cell.textContent || '').trim();
+          if (!raw || raw === DASH) continue;
+          var t = Date.parse(raw);
+          if (!isFinite(t)) continue;
+          var d = new Date(t);
+          cell.textContent =
+            ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2) +
+            ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) +
+            ' UTC';
+        }
+      }
+
+      function render() {
+        var f = fields();
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        shortenStamps(['last_entry_at']);
+        var lanes = arr('lanes');
+        var items = arr('items');
+        var requests = arr('pending_requests');
+        var pending = num(f.approvals_pending) || 0;
+
+        var reds = 0, never = 0, green = 0;
+        for (var i = 0; i < lanes.length; i++) {
+          var s = text(lanes[i].state);
+          if (s === 'fail') reds += 1;
+          else if (s === 'skipped') never += 1;
+          else if (s === 'pass') green += 1;
+        }
+
+        var kpis = document.getElementById('kpis');
+        if (kpis) {
+          kpis.textContent = '';
+          kpis.appendChild(kpi('red', lanes.length ? reds : null, 'lane(s)', 'var(--danger, #ff5c5c)'));
+          kpis.appendChild(kpi('did not run', lanes.length ? never : null, 'lane(s)', 'var(--warn, #ffd230)'));
+          kpis.appendChild(kpi('green', lanes.length ? green : null, 'lane(s)', 'var(--ok, #35d07f)'));
+          kpis.appendChild(kpi('waiting on you', pending || (num(f.approvals_pending) === 0 ? 0 : null), 'ask(s)', 'var(--warn, #ffd230)'));
+        }
+
+        var shown = drawLanes(lanes);
+        drawAsks(requests);
+        drawItems(items, lanes);
+        drawVerdict(lanes, reds + never, pending);
+
+        // The host marks an agentic field, and this page draws the tag only from that
+        // mark: a value arriving some other way must not borrow the label. The mark is
+        // the host's own ARRAY of names (dashboard_frame.read_payload sorts a list into
+        // `agentic`), so it is read by membership -- asking an array for a property
+        // named 'lanes' answers no on every render and the tag would never appear.
+        var wrote = document.getElementById('wrote');
+        if (wrote) {
+          var agentic = bag().agentic;
+          var marked = Array.isArray(agentic) && agentic.indexOf('lanes') !== -1;
+          wrote.textContent = marked ? 'crewmate wrote this' : '';
+        }
+
+        // Each array cell gets a count: the host binds by textContent, so left alone
+        // it reads as dumped JSON.
+        var counts = { lanes: lanes.length, items: items.length, pending_requests: requests.length };
+        for (var key in counts) {
+          if (!Object.prototype.hasOwnProperty.call(counts, key)) continue;
+          var cell = document.querySelector('[data-dashboard-field="' + key + '"]');
+          if (cell) cell.textContent = String(counts[key]);
+        }
+        if (shown === undefined) return;
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

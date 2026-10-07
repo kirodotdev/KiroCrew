@@ -1,0 +1,660 @@
+{
+  "captured_at": "2026-10-03T11:41:29+00:00",
+  "folds": {
+    "approvals": {
+      "seq": 77,
+      "value": {
+        "by_decision": {
+          "rejected": 1
+        },
+        "decided": 1,
+        "last": {
+          "approval_id": "5",
+          "by": "",
+          "cause": "",
+          "decision": "rejected",
+          "seq": 28,
+          "time": 1791027487966,
+          "tool": "",
+          "turn": 5
+        },
+        "pending": 0,
+        "pending_dropped": 0,
+        "pending_omitted": 0,
+        "pending_requests": [],
+        "requested": 1,
+        "unidentified_requests": 0,
+        "unmatched_decisions": 0
+      }
+    },
+    "ledger": {
+      "seq": 77,
+      "value": {
+        "artifacts": {
+          "branch": "feat/dyndash-context",
+          "worktree": "dyndash-context"
+        },
+        "created_at": "2026-10-03T11:39:38+00:00",
+        "events": [
+          {
+            "kind": "progress",
+            "text": "started the fixture capture",
+            "ts": "2026-10-03T11:39:38+00:00"
+          },
+          {
+            "kind": "decision",
+            "text": "rejected the synthetic fixture",
+            "ts": "2026-10-03T11:39:41+00:00"
+          }
+        ],
+        "finished_at": "",
+        "goal": "Populate every crew-log fold for the dynamic dashboard fixture",
+        "last_progress_at": "2026-10-03T11:39:41+00:00",
+        "next": "capture the folds and commit the fixture",
+        "phase": "implementing",
+        "schema": 1,
+        "tried": [
+          {
+            "approach": "hand-write a synthetic fold fixture",
+            "at": "2026-10-03T11:39:41+00:00",
+            "rejected_because": "a synthetic value proves nothing about the real fold shape"
+          }
+        ]
+      }
+    },
+    "status": {
+      "seq": 77,
+      "value": {
+        "agent": "dash-demo",
+        "close_reason": null,
+        "closed_at": null,
+        "cwd": "/home/you/kirocrew/workspace",
+        "dropped": {
+          "bytes": 0,
+          "count": 0
+        },
+        "entries": 77,
+        "last_error": null,
+        "last_stop_reason": "end_turn",
+        "last_time": 1791027667276,
+        "lifecycle": "open",
+        "model": "",
+        "opened_at": 1791027047741,
+        "owner": "default",
+        "previous": null,
+        "provider": "acp",
+        "resumed": false,
+        "seeded": false,
+        "slot": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57",
+        "turn": null,
+        "turn_open": false,
+        "turns_completed": 5,
+        "turns_refused": 0
+      }
+    },
+    "subagents": {
+      "seq": 77,
+      "value": {
+        "by_id": {},
+        "omitted": 0,
+        "running": 0,
+        "running_exact": true,
+        "totals": {
+          "closed_unmatched": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned": 0,
+          "stopped": 0,
+          "unknown": 0
+        }
+      }
+    },
+    "timeline": {
+      "seq": 77,
+      "value": {
+        "dropped": 0,
+        "first_seq": 1,
+        "last_seq": 68,
+        "limit": 200,
+        "moments": [
+          {
+            "agent": "dash-demo",
+            "resumed": false,
+            "seq": 1,
+            "time": 1791027047741,
+            "type": "session/opened"
+          },
+          {
+            "actor": "user",
+            "seq": 5,
+            "time": 1791027048273,
+            "turn": 1,
+            "type": "turn/started"
+          },
+          {
+            "credits": 0.3426186752902156,
+            "duration_ms": 6922,
+            "seq": 15,
+            "stop_reason": "end_turn",
+            "time": 1791027055210,
+            "turn": 1,
+            "type": "turn/completed"
+          },
+          {
+            "actor": "user",
+            "seq": 19,
+            "time": 1791027061114,
+            "turn": 5,
+            "type": "turn/started"
+          },
+          {
+            "approval_id": "5",
+            "reason": "Write File",
+            "seq": 27,
+            "time": 1791027065484,
+            "turn": 5,
+            "type": "approval/requested"
+          },
+          {
+            "approval_id": "5",
+            "decision": "rejected",
+            "seq": 28,
+            "time": 1791027487966,
+            "turn": 5,
+            "type": "approval/decided"
+          },
+          {
+            "credits": 0.31690095439469324,
+            "duration_ms": 430881,
+            "seq": 34,
+            "stop_reason": "end_turn",
+            "time": 1791027491998,
+            "turn": 5,
+            "type": "turn/completed"
+          },
+          {
+            "actor": "user",
+            "seq": 37,
+            "time": 1791027569586,
+            "turn": 12,
+            "type": "turn/started"
+          },
+          {
+            "credits": 0.7552795839137645,
+            "duration_ms": 17145,
+            "seq": 54,
+            "stop_reason": "end_turn",
+            "time": 1791027586737,
+            "turn": 12,
+            "type": "turn/completed"
+          },
+          {
+            "actor": "subagent",
+            "seq": 57,
+            "time": 1791027587126,
+            "turn": 17,
+            "type": "turn/started"
+          },
+          {
+            "credits": 0.12466358142620232,
+            "duration_ms": 2604,
+            "seq": 61,
+            "stop_reason": "end_turn",
+            "time": 1791027589742,
+            "turn": 17,
+            "type": "turn/completed"
+          },
+          {
+            "actor": "subagent",
+            "seq": 64,
+            "time": 1791027590133,
+            "turn": 19,
+            "type": "turn/started"
+          },
+          {
+            "credits": 0.13818166832504147,
+            "duration_ms": 3804,
+            "seq": 68,
+            "stop_reason": "end_turn",
+            "time": 1791027593938,
+            "turn": 19,
+            "type": "turn/completed"
+          }
+        ]
+      }
+    },
+    "tools": {
+      "seq": 77,
+      "value": {
+        "by_name": {
+          "": {
+            "calls": 8,
+            "completed": 10,
+            "elapsed_ms": 423190,
+            "errors": 2,
+            "last_status": "completed",
+            "last_time": 1791027583963,
+            "servers": [],
+            "servers_omitted": 0,
+            "servers_omitted_saturated": false
+          }
+        },
+        "calls": 8,
+        "completed": 10,
+        "elapsed_ms": 423190,
+        "errors": 2,
+        "names_omitted": 0,
+        "names_omitted_saturated": false,
+        "open": 0,
+        "open_calls": [],
+        "open_calls_omitted": 0,
+        "open_dropped": 0,
+        "unidentified_calls": 0,
+        "unmatched_completions": 2
+      }
+    },
+    "usage": {
+      "seq": 77,
+      "value": {
+        "by_model": {
+          "": {
+            "credits": 1.677644,
+            "credits_reported": 5,
+            "tokens": 0,
+            "turns": 5
+          }
+        },
+        "compactions": {
+          "count": 0,
+          "freed_pct": 0.0
+        },
+        "context": {
+          "blocks": 44,
+          "by_source": {
+            "agent_identity": {
+              "blocks": 1,
+              "chars": 25,
+              "tokens": 6
+            },
+            "agent_instructions": {
+              "blocks": 1,
+              "chars": 40279,
+              "tokens": 10070
+            },
+            "critical_rules": {
+              "blocks": 1,
+              "chars": 4045,
+              "tokens": 1011
+            },
+            "date": {
+              "blocks": 1,
+              "chars": 47,
+              "tokens": 12
+            },
+            "docs_pointer": {
+              "blocks": 1,
+              "chars": 286,
+              "tokens": 72
+            },
+            "memory_tools": {
+              "blocks": 1,
+              "chars": 459,
+              "tokens": 115
+            },
+            "reply_format_rules": {
+              "blocks": 5,
+              "chars": 6625,
+              "tokens": 1655
+            },
+            "request_header": {
+              "blocks": 5,
+              "chars": 210,
+              "tokens": 50
+            },
+            "resource_advisory": {
+              "blocks": 5,
+              "chars": 1555,
+              "tokens": 390
+            },
+            "session_wrapper": {
+              "blocks": 1,
+              "chars": 224,
+              "tokens": 56
+            },
+            "skill_index": {
+              "blocks": 1,
+              "chars": 4915,
+              "tokens": 1229
+            },
+            "surface": {
+              "blocks": 5,
+              "chars": 1720,
+              "tokens": 431
+            },
+            "unclassified": {
+              "blocks": 5,
+              "chars": 103081,
+              "tokens": 25771
+            },
+            "working_folder": {
+              "blocks": 5,
+              "chars": 1500,
+              "tokens": 375
+            },
+            "workspace_identity": {
+              "blocks": 1,
+              "chars": 419,
+              "tokens": 105
+            },
+            "your_message": {
+              "blocks": 5,
+              "chars": 2482,
+              "tokens": 620
+            }
+          },
+          "chars": 167872,
+          "estimated_turns": 5,
+          "sources_omitted": 0,
+          "tokens": 41967,
+          "turns": [
+            {
+              "chars": 74522,
+              "model": "",
+              "ordinal": 1,
+              "phase": "session_start",
+              "sources": {
+                "agent_identity": 25,
+                "agent_instructions": 40279,
+                "critical_rules": 4045,
+                "date": 47,
+                "docs_pointer": 286,
+                "memory_tools": 459,
+                "reply_format_rules": 1325,
+                "request_header": 42,
+                "resource_advisory": 311,
+                "session_wrapper": 224,
+                "skill_index": 4915,
+                "surface": 1020,
+                "unclassified": 20637,
+                "working_folder": 300,
+                "workspace_identity": 419,
+                "your_message": 188
+              },
+              "ts": 1791027048266,
+              "turn": 1,
+              "window": 0
+            },
+            {
+              "chars": 22969,
+              "model": "",
+              "ordinal": 2,
+              "phase": "per_turn",
+              "sources": {
+                "reply_format_rules": 1325,
+                "request_header": 42,
+                "resource_advisory": 311,
+                "surface": 175,
+                "unclassified": 20611,
+                "working_folder": 300,
+                "your_message": 205
+              },
+              "ts": 1791027061112,
+              "turn": 5,
+              "window": 0
+            },
+            {
+              "chars": 23933,
+              "model": "",
+              "ordinal": 3,
+              "phase": "per_turn",
+              "sources": {
+                "reply_format_rules": 1325,
+                "request_header": 42,
+                "resource_advisory": 311,
+                "surface": 175,
+                "unclassified": 20611,
+                "working_folder": 300,
+                "your_message": 1169
+              },
+              "ts": 1791027569582,
+              "turn": 12,
+              "window": 0
+            },
+            {
+              "chars": 23218,
+              "model": "",
+              "ordinal": 4,
+              "phase": "per_turn",
+              "sources": {
+                "reply_format_rules": 1325,
+                "request_header": 42,
+                "resource_advisory": 311,
+                "surface": 175,
+                "unclassified": 20611,
+                "working_folder": 300,
+                "your_message": 454
+              },
+              "ts": 1791027587122,
+              "turn": 17,
+              "window": 0
+            },
+            {
+              "chars": 23230,
+              "model": "",
+              "ordinal": 5,
+              "phase": "per_turn",
+              "sources": {
+                "reply_format_rules": 1325,
+                "request_header": 42,
+                "resource_advisory": 311,
+                "surface": 175,
+                "unclassified": 20611,
+                "working_folder": 300,
+                "your_message": 466
+              },
+              "ts": 1791027590130,
+              "turn": 19,
+              "window": 0
+            }
+          ],
+          "window": 0
+        },
+        "credits": 1.697755,
+        "credits_by_source": {
+          "background": {
+            "credits": 0.020111,
+            "reported": 1
+          },
+          "subagent": {
+            "credits": 0.0,
+            "reported": 0
+          },
+          "turn": {
+            "credits": 1.677644,
+            "reported": 5
+          }
+        },
+        "duration_ms": 461356,
+        "models_omitted": 0,
+        "models_omitted_saturated": false,
+        "steps": {
+          "completed": 8,
+          "ms": 461415
+        },
+        "tokens": {
+          "cache_read": 0,
+          "cache_write": 0,
+          "input": 0,
+          "output": 0,
+          "total": 0
+        },
+        "turns": {
+          "completed": 5,
+          "credits_reported": 5,
+          "duration_reported": 5,
+          "tokens_reported": 5
+        }
+      }
+    },
+    "work": {
+      "seq": 77,
+      "value": {
+        "conductor": {
+          "created_at": "2026-10-03T11:40:54+00:00",
+          "depth": 0,
+          "entries": 9,
+          "first_entry_at": "2026-10-03T11:40:54+00:00",
+          "generation": "c05041d372b9c312",
+          "goal": "Dynamic dashboard built-in templates",
+          "goal_version": 1,
+          "last_entry_at": "2026-10-03T11:41:07+00:00",
+          "parent_item": null,
+          "round": 1,
+          "schema": 1,
+          "slot_key": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57"
+        },
+        "items": [
+          {
+            "acceptance": {
+              "kind": "file",
+              "path": "src/kiro_crew/dashboard_templates/builtin/crewmate-overview/manifest.json"
+            },
+            "artifacts": {},
+            "closed_at": "2026-10-03T11:41:07+00:00",
+            "created_at": "2026-10-03T11:41:07+00:00",
+            "decision": "Draw it from the status, usage, timeline and tools folds; no agentic field, every number has a fold",
+            "events": [
+              {
+                "id": "e2e522623dfdd658",
+                "item_id": "it_e43eb716",
+                "kind": "create",
+                "status": null,
+                "text": "Crewmate overview template",
+                "ts": "2026-10-03T11:41:07+00:00"
+              },
+              {
+                "id": "5b5783cbcebca2da",
+                "item_id": "it_e43eb716",
+                "kind": "decision",
+                "status": null,
+                "text": "Draw it from the status, usage, timeline and tools folds; no agentic field, every number has a fold",
+                "ts": "2026-10-03T11:41:07+00:00"
+              },
+              {
+                "id": "4747f150478bc41a",
+                "item_id": "it_e43eb716",
+                "kind": "verdict",
+                "status": null,
+                "text": "pass",
+                "ts": "2026-10-03T11:41:07+00:00"
+              },
+              {
+                "id": "c5b220d71f57c09c",
+                "item_id": "it_e43eb716",
+                "kind": "close",
+                "status": null,
+                "text": "accepted",
+                "ts": "2026-10-03T11:41:07+00:00"
+              }
+            ],
+            "fails": 0,
+            "item_id": "it_e43eb716",
+            "last_report_at": null,
+            "pr": null,
+            "round": 1,
+            "schema": 1,
+            "state": "accepted",
+            "status": null,
+            "summary": "",
+            "title": "Crewmate overview template",
+            "verdict": "pass",
+            "spender": null
+          },
+          {
+            "acceptance": {
+              "kind": "file",
+              "path": "src/kiro_crew/dashboard_templates/builtin/goal-board/manifest.json"
+            },
+            "artifacts": {},
+            "closed_at": null,
+            "created_at": "2026-10-03T11:41:07+00:00",
+            "decision": "Read the work slot fold; bind items as one array and draw the state strip in the page's own JS",
+            "events": [
+              {
+                "id": "563c7c4073905074",
+                "item_id": "it_6fa72959",
+                "kind": "create",
+                "status": null,
+                "text": "Goal board template",
+                "ts": "2026-10-03T11:41:07+00:00"
+              },
+              {
+                "id": "c58d9b11a1eea23f",
+                "item_id": "it_6fa72959",
+                "kind": "decision",
+                "status": null,
+                "text": "Read the work slot fold; bind items as one array and draw the state strip in the page's own JS",
+                "ts": "2026-10-03T11:41:07+00:00"
+              }
+            ],
+            "fails": 0,
+            "item_id": "it_6fa72959",
+            "last_report_at": null,
+            "pr": null,
+            "round": 1,
+            "schema": 1,
+            "state": "open",
+            "status": null,
+            "summary": "",
+            "title": "Goal board template",
+            "verdict": null,
+            "spender": null
+          },
+          {
+            "acceptance": {
+              "kind": "file",
+              "path": "src/kiro_crew/dashboard_templates/builtin/session-ledger/manifest.json"
+            },
+            "artifacts": {},
+            "closed_at": null,
+            "created_at": "2026-10-03T11:41:07+00:00",
+            "decision": "",
+            "events": [
+              {
+                "id": "7d82a14ae364193f",
+                "item_id": "it_9404fbe7",
+                "kind": "create",
+                "status": null,
+                "text": "Session ledger template",
+                "ts": "2026-10-03T11:41:07+00:00"
+              },
+              {
+                "id": "76b1cc9752fc745a",
+                "item_id": "it_9404fbe7",
+                "kind": "verdict",
+                "status": null,
+                "text": "fail",
+                "ts": "2026-10-03T11:41:07+00:00"
+              }
+            ],
+            "fails": 1,
+            "item_id": "it_9404fbe7",
+            "last_report_at": null,
+            "pr": null,
+            "round": 1,
+            "schema": 1,
+            "state": "open",
+            "status": null,
+            "summary": "",
+            "title": "Session ledger template",
+            "verdict": "fail",
+            "spender": null
+          }
+        ],
+        "omitted": 0
+      }
+    }
+  },
+  "pod": "dyndash-context",
+  "slot": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57"
+}

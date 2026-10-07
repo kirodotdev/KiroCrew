@@ -1,0 +1,276 @@
+<div class="rmap">
+  <style>
+    .rmap { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .rmap h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .rmap .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .rmap .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .rmap .sub { font-size: 10px; color: var(--muted, #9aa); }
+
+    .ruler { position: relative; height: 15px; margin: 11px 0 1px; border-bottom: 1px solid var(--border, #333); }
+    .ruler i { position: absolute; top: 0; font-size: 9.5px; font-style: normal; color: var(--muted, #9aa); white-space: nowrap; transform: translateX(-50%); }
+    .ruler i:first-child { transform: none; }
+    .ruler i:last-child { transform: translateX(-100%); }
+
+    .lane { margin-top: 9px; }
+    .lane .lh { display: flex; align-items: baseline; gap: 7px; font-size: 10.5px; color: var(--muted-strong, #889); }
+    .lane .lh b { font-size: 11px; font-weight: 600; color: var(--text-strong, #fff); }
+
+    .track { position: relative; height: 20px; margin-top: 3px; border-radius: 5px; background: color-mix(in oklab, var(--border, #333) 40%, transparent); }
+    .track .bar { position: absolute; top: 3px; height: 14px; border-radius: 7px; min-width: 5px; display: flex; align-items: center; }
+    .track .bar u { font-size: 9.5px; text-decoration: none; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--bg, #111); font-weight: 700; }
+    .track .bar.open { border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .track .bar.open:after { content: ''; position: absolute; right: -7px; top: 0; border: 7px solid transparent; border-left-color: inherit; }
+    .track .now { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--accent, #00d492); opacity: .8; }
+    .cap { font-size: 9.5px; color: var(--muted, #9aa); margin-top: 2px; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--muted, #9aa); margin-top: 10px; }
+    .legend b { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+  </style>
+
+  <h2>Roadmap</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>goal version <span data-dashboard-field="goal_version">-</span></span>
+    <span>depth <span data-dashboard-field="depth">-</span></span>
+    <span>entries <span data-dashboard-field="entries">-</span></span>
+  </div>
+  <div class="meta">
+    <span>opened <span data-dashboard-field="created_at">-</span></span>
+    <span>first write <span data-dashboard-field="first_entry_at">-</span></span>
+    <span>last write <span data-dashboard-field="last_entry_at">-</span></span>
+  </div>
+
+  <div class="ruler" id="ruler"></div>
+  <div id="lanes"></div>
+  <div class="legend" id="legend"></div>
+  <div class="sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> item(s) drawn,
+    <span data-dashboard-field="omitted">-</span> not shown (list truncated)
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      var STATES = [
+        ['accepted', '#6aa9ff'],
+        ['open', '#00d492'],
+        ['rejected', '#ff5c5c'],
+        ['abandoned', '#8b8f99']
+      ];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function fields() { return (window.kirocrew || {}).fields || {}; }
+      function items() {
+        var v = fields().items;
+        return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      function stamp(v) {
+        var n = num(v);
+        if (n !== null) return n;
+        var s = text(v);
+        if (!s) return null;
+        var t = Date.parse(s);
+        return isFinite(t) ? t : null;
+      }
+      function colourFor(state) {
+        for (var i = 0; i < STATES.length; i++) if (STATES[i][0] === state) return STATES[i][1];
+        return '#b0b4bd';
+      }
+      function clock(ms) {
+        var d = new Date(ms);
+        return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2);
+      }
+      function day(ms) {
+        var d = new Date(ms);
+        return (d.getUTCMonth() + 1) + '/' + d.getUTCDate();
+      }
+      function span(ms) {
+        var m = Math.round(ms / 60000);
+        if (m < 60) return m + 'm';
+        var h = Math.floor(m / 60);
+        return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+      }
+
+      // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
+      // timestamp in a meta row is three times the width of the fact it carries. The
+      // cell is reformatted rather than the value replaced, so an unparseable stamp is
+      // left exactly as the record wrote it instead of becoming an invalid date.
+      function shortenStamps(names) {
+        for (var i = 0; i < names.length; i++) {
+          var cell = document.querySelector('[data-dashboard-field="' + names[i] + '"]');
+          if (!cell) continue;
+          var raw = (cell.textContent || '').trim();
+          if (!raw || raw === DASH) continue;
+          var t = Date.parse(raw);
+          if (!isFinite(t)) continue;
+          var d = new Date(t);
+          cell.textContent =
+            ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2) +
+            ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) +
+            ' UTC';
+        }
+      }
+
+      function render() {
+        var f = fields();
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        shortenStamps(['created_at', 'first_entry_at', 'last_entry_at']);
+        var list = items();
+        var lanes = document.getElementById('lanes');
+        var ruler = document.getElementById('ruler');
+        var legend = document.getElementById('legend');
+        if (!lanes || !ruler || !legend) return;
+        lanes.textContent = '';
+        ruler.textContent = '';
+        legend.textContent = '';
+
+        var now = Date.now();
+        // The window is the board's own, taken from the earliest open and the latest
+        // close -- never from the clock alone. A fixed last-N-hours window would push
+        // a board that ran yesterday entirely off the left edge and draw nothing.
+        var lo = stamp(f.first_entry_at) || stamp(f.created_at);
+        var hi = stamp(f.last_entry_at);
+        for (var i = 0; i < list.length; i++) {
+          var a = stamp(list[i].created_at);
+          var b = stamp(list[i].closed_at) || stamp(list[i].last_report_at);
+          if (a !== null && (lo === null || a < lo)) lo = a;
+          if (b !== null && (hi === null || b > hi)) hi = b;
+        }
+        var anyOpen = false;
+        for (var o = 0; o < list.length; o++) if (text(list[o].state) === 'open') anyOpen = true;
+        if (anyOpen && (hi === null || hi < now)) hi = now;
+        if (lo === null || hi === null || hi <= lo) {
+          var none = document.createElement('div');
+          none.className = 'cap';
+          none.textContent = list.length
+            ? 'No item carries both an open and a close time, so no bar can be placed.'
+            : 'No item on this board yet.';
+          lanes.appendChild(none);
+          var cell0 = document.querySelector('[data-dashboard-field="items"]');
+          if (cell0) cell0.textContent = String(list.length);
+          return;
+        }
+        var width = hi - lo;
+        function pct(t) { return ((t - lo) / width) * 100; }
+
+        var ticks = 5;
+        var multiDay = width > 20 * 3600 * 1000;
+        for (var t = 0; t < ticks; t++) {
+          var at = lo + (width * t) / (ticks - 1);
+          var lab = document.createElement('i');
+          lab.style.left = ((t / (ticks - 1)) * 100) + '%';
+          lab.textContent = multiDay ? day(at) + ' ' + clock(at) : clock(at);
+          ruler.appendChild(lab);
+        }
+
+        // Group into a row per round, highest round last so the newest work reads at
+        // the bottom where a reader's eye lands after the ruler.
+        var byRound = {};
+        var order = [];
+        for (var k = 0; k < list.length; k++) {
+          var r = num(list[k].round);
+          var key = r === null ? 'none' : String(r);
+          if (!byRound[key]) { byRound[key] = []; order.push(key); }
+          byRound[key].push(list[k]);
+        }
+        order.sort(function (x, y) {
+          if (x === 'none') return 1;
+          if (y === 'none') return -1;
+          return Number(x) - Number(y);
+        });
+
+        for (var g = 0; g < order.length; g++) {
+          var key2 = order[g];
+          var group = byRound[key2];
+          var lane = document.createElement('div');
+          lane.className = 'lane';
+          var lh = document.createElement('div');
+          lh.className = 'lh';
+          var b = document.createElement('b');
+          b.textContent = key2 === 'none' ? 'no round stamped' : 'round ' + key2;
+          lh.appendChild(b);
+          var cnt = document.createElement('span');
+          cnt.textContent = group.length + ' item(s)';
+          lh.appendChild(cnt);
+          lane.appendChild(lh);
+
+          for (var j = 0; j < group.length; j++) {
+            var it = group[j];
+            var start = stamp(it.created_at);
+            var end = stamp(it.closed_at);
+            var open = end === null;
+            if (open) end = stamp(it.last_report_at) || now;
+            var track = document.createElement('div');
+            track.className = 'track';
+            if (start === null) {
+              var miss = document.createElement('div');
+              miss.className = 'cap';
+              miss.textContent = (text(it.title) || DASH) + ' \u00b7 no open time stamped';
+              lane.appendChild(miss);
+              continue;
+            }
+            var bar = document.createElement('div');
+            bar.className = 'bar' + (open ? ' open' : '');
+            var colour = colourFor(text(it.state) || 'unknown');
+            bar.style.background = colour;
+            bar.style.borderLeftColor = colour;
+            var left = Math.max(0, pct(start));
+            var right = Math.min(100, pct(end));
+            bar.style.left = left + '%';
+            bar.style.width = Math.max(1.2, right - left) + '%';
+            var u = document.createElement('u');
+            u.textContent = text(it.title) || text(it.item_id) || DASH;
+            bar.appendChild(u);
+            track.appendChild(bar);
+            if (now >= lo && now <= hi) {
+              var nowline = document.createElement('div');
+              nowline.className = 'now';
+              nowline.style.left = pct(now) + '%';
+              track.appendChild(nowline);
+            }
+            lane.appendChild(track);
+            var cap = document.createElement('div');
+            cap.className = 'cap';
+            var bits = [span(end - start) + (open ? ' so far' : '')];
+            var verdict = text(it.verdict);
+            if (verdict) bits.push('acceptance ' + verdict);
+            var pr = num(it.pr);
+            if (pr) bits.push('PR ' + pr);
+            bits.push(text(it.state) || 'state not stamped');
+            cap.textContent = bits.join(' \u00b7 ');
+            lane.appendChild(cap);
+          }
+          lanes.appendChild(lane);
+        }
+
+        var seen = {};
+        for (var s = 0; s < list.length; s++) seen[text(list[s].state) || 'unknown'] = true;
+        for (var n = 0; n < STATES.length; n++) {
+          if (!seen[STATES[n][0]]) continue;
+          var row = document.createElement('span');
+          var sw = document.createElement('b');
+          sw.style.background = STATES[n][1];
+          row.appendChild(sw);
+          row.appendChild(document.createTextNode(STATES[n][0]));
+          legend.appendChild(row);
+        }
+        var openNote = document.createElement('span');
+        openNote.textContent = 'an arrow end means still open';
+        legend.appendChild(openNote);
+
+        var cell = document.querySelector('[data-dashboard-field="items"]');
+        if (cell) cell.textContent = String(list.length);
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

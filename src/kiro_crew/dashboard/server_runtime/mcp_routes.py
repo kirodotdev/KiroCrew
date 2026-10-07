@@ -187,7 +187,38 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/agent-panel/publish", _deferred("agent_panel", "api_agent_panel_publish")
     )
+    # The dynamic dashboard's agent surface. Under the same prefix, which is what
+    # gives it the same auth: `_STRICT_INTERNAL_API_PATHS` lists `/api/agent-panel`
+    # and the middleware matches by prefix, so these are MCP-only without a second
+    # entry there.
+    app.router.add_get(
+        "/api/agent-panel/dashboard/fields", _deferred("agent_panel", "api_dashboard_fields")
+    )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/write", _deferred("agent_panel", "api_dashboard_write")
+    )
+    app.router.add_get(
+        "/api/agent-panel/dashboard/templates", _deferred("agent_panel", "api_dashboard_templates")
+    )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/preview", _deferred("agent_panel", "api_dashboard_preview")
+    )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/apply", _deferred("agent_panel", "api_dashboard_apply")
+    )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/rollback", _deferred("agent_panel", "api_dashboard_rollback")
+    )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # The crewmate's dynamic dashboard. Registered through the deferred binder for the
+    # reason the panel's routes are: calling the module's own
+    # `register_member_dashboard_routes` would import it at boot, which the boot-path
+    # rule forbids for an optional subsystem. The path is duplicated from that
+    # function, and `test_member_dashboard_routes` pins both spellings against each
+    # other.
+    app.router.add_get(
+        "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
+    )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

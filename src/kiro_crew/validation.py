@@ -4427,9 +4427,88 @@ PANEL_PUBLISH_SCHEMA = ToolSchema(
 # would pass it through unvalidated.
 PANEL_TEMPLATES_SCHEMA = ToolSchema(tool_name="panel_templates")
 
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason: the tool takes no
+#: arguments, and an empty registered schema REJECTS an unexpected one where no
+#: schema at all would pass it through unvalidated.
+DASHBOARD_FIELDS_SCHEMA = ToolSchema(tool_name="dashboard_fields")
+
+DASHBOARD_WRITE_SCHEMA = ToolSchema(
+    tool_name="dashboard_write",
+    fields=[
+        FieldSpec("field", str, required=True, max_len=64),
+        # EVERY JSON SCALAR AND CONTAINER, spelled out, because the field's type is
+        # the MANIFEST's to declare and not this schema's. A schema that pinned one
+        # type would either contradict the manifest or restate it, and a value may
+        # be a number, a phrase, a boolean, a list or an object depending on which
+        # field it is.
+        #
+        # ``bool`` is listed FIRST and separately from the rest for a reason that
+        # bit once already: a bare ``object`` here rejects ``True``, so a crewmate
+        # writing into a ``boolean`` field was refused by the schema -- with a
+        # message about an expected object, which is neither the real problem nor
+        # something the agent could act on. ``dashboard_agentic.check_write`` is
+        # the one place that knows what each field wants, and it refuses with a
+        # code the mistake book can group and teach; this schema's only job is to
+        # reject an unexpected ARGUMENT.
+        FieldSpec("value", (bool, int, float, str, list, dict), required=True),
+    ],
+)
+
+DASHBOARD_TEMPLATES_SCHEMA = ToolSchema(
+    tool_name="dashboard_templates",
+    fields=[
+        # Optional, and the absence is a real case rather than a default: no query
+        # means "list them all", which is what an agent asks for when the person has
+        # not said what they want to see yet.
+        FieldSpec("query", str, max_len=200),
+    ],
+)
+
+DASHBOARD_PREVIEW_SCHEMA = ToolSchema(
+    tool_name="dashboard_preview",
+    fields=[
+        # ``template_id`` is the only argument this tool acts on, and it is NOT marked
+        # required: a missing one is refused by the tool with the sentence that names
+        # what to call instead, where a schema refusal would name only the field.
+        FieldSpec("template_id", str, max_len=64),
+        # ``manifest`` and ``html`` are still ACCEPTED here, and refused one layer up.
+        # A page the caller wrote cannot be previewed or adopted -- see
+        # ``instance.AUTHORED_PAGE_REFUSAL`` -- and dropping these two specs would make
+        # that refusal read "unknown field", which tells a caller to try a different
+        # spelling rather than that the whole capability is a later change. The caps
+        # bound what reaches the refusal; ``html`` matches the store's own
+        # ``MAX_INSTANCE_HTML_BYTES`` ceiling spelled in characters.
+        FieldSpec("manifest", dict),
+        FieldSpec("html", str, max_len=64 * 1024),
+    ],
+)
+
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason -- and here the
+#: emptiness is also the safety property the tool advertises: apply installs the page
+#: that was STAGED, so an accepted argument would be a way to make the thing applied
+#: differ from the thing the person looked at.
+DASHBOARD_APPLY_SCHEMA = ToolSchema(tool_name="dashboard_apply")
+
+DASHBOARD_ROLLBACK_SCHEMA = ToolSchema(
+    tool_name="dashboard_rollback",
+    fields=[
+        # No upper bound: the ceiling is whatever version this instance has reached,
+        # which this schema cannot know. The store refuses a version above the current
+        # one with a sentence naming the current one, which is the number the caller
+        # needs; a fixed maximum here would refuse with a limit that means nothing.
+        FieldSpec("to_version", int, required=True, min_val=1),
+    ],
+)
+
 MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
+    "dashboard_fields": DASHBOARD_FIELDS_SCHEMA,
+    "dashboard_write": DASHBOARD_WRITE_SCHEMA,
+    "dashboard_templates": DASHBOARD_TEMPLATES_SCHEMA,
+    "dashboard_preview": DASHBOARD_PREVIEW_SCHEMA,
+    "dashboard_apply": DASHBOARD_APPLY_SCHEMA,
+    "dashboard_rollback": DASHBOARD_ROLLBACK_SCHEMA,
 }
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {

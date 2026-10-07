@@ -59,6 +59,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     project_agent_names,
 )
+from kiro_crew.agent_files import DASHBOARD_MANAGER_AGENT_NAME  # noqa: F401
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
 )
@@ -252,10 +253,12 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         without_marker,
     )
     from kiro_crew.agent_materialization.service_agents import (  # noqa: F401
+        _DASHBOARD_MANAGER_AGENT_FILENAME,
         _GUEST_AGENT_FILENAME,
         _KNOWLEDGE_AGENT_FILENAME,
         _LITE_AGENT_FILENAME,
         _RESEARCH_AGENT_FILENAME,
+        _install_dashboard_manager_agent,
         _install_guest_agent,
         _install_knowledge_agent,
         _install_lite_agent_fallback,
@@ -1920,6 +1923,8 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
         "_install_research_agent",
+        "_install_dashboard_manager_agent",
+        "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
         "_LITE_AGENT_FILENAME",
@@ -3746,6 +3751,15 @@ def rebuild_agent_config(
     except Exception:
         logger.debug("kirocrew-research agent install failed", exc_info=True)
 
+    # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
+    # work to). Degrades to a debug line like the two above: with the spec absent a
+    # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
+    # keeps working and only CHANGING the page is unavailable.
+    try:
+        service_agents._install_dashboard_manager_agent()
+    except Exception:
+        logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
+
     # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
     try:
         _install_heartbeat_agent()
@@ -4742,10 +4756,97 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: with nobody at the keyboard, so an approval prompt on the write verb stalls
 #: exactly the unattended loop the drawer is watched during, and the operator's
 #: real switch for that is ``agent.crew_panel``.
+#:
+#: The dynamic dashboard's verbs join on the same invariant. ``dashboard_fields``
+#: is a read of the crewmate's own fields and mistake book. ``dashboard_write``
+#: writes an agentic value into the calling crewmate's OWN dashboard, resolved from
+#: the calling session exactly as ``panel_publish`` is, and every write is
+#: type-checked against that crewmate's manifest before it lands. A prompt on
+#: either would stall the unattended cycle the dashboard is refreshed from.
+#:
+#: The PAGE's four join them, and the bound is worth stating because these are the
+#: first of this server's verbs that change what a person sees rather than what it
+#: says. ``dashboard_templates`` is a read of the catalog. ``dashboard_preview``
+#: records nothing at all: it stages a page beside the record, moves no version and
+#: writes no history row, so the page somebody is reading is untouched.
+#: ``dashboard_apply`` and ``dashboard_rollback`` do change the page -- and they are
+#: granted rather than prompted on the same ownership test the tuple above is judged
+#: by. The page is the calling crewmate's own, resolved from the calling session and
+#: not from any argument; apply installs the page that was STAGED and takes no
+#: argument at all, so it cannot be pointed at a page nobody looked at; and every
+#: earlier version stays on disk, so the worst case is a crewmate changing its own
+#: page and the person saying "go back".
+#:
+#: What makes the person's YES part of the flow is the preview/apply SPLIT and the
+#: ``dashboard`` skill that drives it, not an approval dialog: a prompt on apply
+#: would ask the person to confirm a page the agent has not shown them yet, which is
+#: the wrong question at the wrong time.
 _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_templates",
     "@kirocrew-panel/panel_publish",
+    "@kirocrew-panel/dashboard_fields",
+    "@kirocrew-panel/dashboard_write",
+    "@kirocrew-panel/dashboard_templates",
+    "@kirocrew-panel/dashboard_preview",
+    "@kirocrew-panel/dashboard_apply",
+    "@kirocrew-panel/dashboard_rollback",
 )
+
+_DASHBOARD_MANAGER_SYSTEM_PROMPT = """# Kiro Crew Dashboard Manager
+
+You change ONE crewmate's Dashboard page, and you change nothing else.
+
+A crewmate hands you a request because somebody said one of three things about
+the page in front of them: "show me another one", "keep this one", "go back".
+Your whole job is to carry that out and say what happened.
+
+## The flow
+
+1. `dashboard_templates` -- list the catalog, or pass `query` to search it. The
+   search covers each template's title, its description AND the fold paths its
+   fields read, so a person asking for "cost" finds the page that shows a usage
+   number whose author never used the word.
+2. `dashboard_preview` -- stage the one that fits, by `template_id`. That is the
+   only argument. This records NOTHING: no version is written and the page they
+   are reading is untouched. It hands back a link.
+3. ASK. Give them the link and wait for an answer. This is not a formality: the
+   page is theirs, and a page swapped without asking is one they have to undo.
+4. `dashboard_apply` -- only after they say yes. It takes no arguments, so what
+   lands is the page they looked at.
+
+"Go back" skips all of that: `dashboard_fields` lists the versions a rollback can
+still reach, and `dashboard_rollback` restores one. A rollback moves FORWARD --
+version 1 over version 2 becomes version 3 -- so going back is itself undoable.
+
+## You cannot write the page
+
+Only a template that shipped with the product can be previewed or kept. A
+dashboard page runs its own script against this crewmate's task titles and
+summaries, inside a frame that can navigate itself, so a page nobody here has
+looked at could carry them out. Custom templates come later, behind a wrapper
+document this gateway mints.
+
+So if nothing in the catalog fits, say so and name the one that came closest. Do
+not write a manifest and html: the preview refuses them, and the refusal is a
+cycle you can spend on the answer instead.
+
+## The rule behind the whole design
+
+**Read every number from a fold. Never type one.** A number you type is true at
+the moment you typed it and wrong every time the page is opened afterwards. A
+template already declares which fold each of its fields reads; the fields it
+leaves to you are the ones marked `{"agentic": true}`, and `dashboard_fields`
+lists them.
+
+## What you do not do
+
+You do not do the crewmate's work. You do not answer the question its page is
+about, read its task list for the user, or report what the page shows -- they are
+looking at it. You change the page, or you say why you did not, and you stop.
+
+Load the `dashboard` skill first. It carries this flow in full; this prompt is
+the charter, not the procedure.
+"""
 
 
 #: The kirocrew-core verbs the goal conductor may call WITHOUT an approval

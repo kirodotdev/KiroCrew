@@ -1,0 +1,19 @@
+{
+  "id": "roadmap",
+  "version": 1,
+  "title": "Roadmap",
+  "description": "The board as a timeline: one row per item, a bar from when it was opened to when it closed, grouped into a swim row per round. An item still open draws to now with an open end, so a long-running item is visible as a long bar rather than as a row that looks the same as a short one. Every value is folded -- the work fold stamps each item's created_at and closed_at and carries its round -- so this page declares no agentic field.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "goal_version": { "type": "number", "source": { "fold": "work", "path": "conductor.goal_version" } },
+    "depth": { "type": "number", "source": { "fold": "work", "path": "conductor.depth" } },
+    "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
+    "created_at": { "type": "string", "source": { "fold": "work", "path": "conductor.created_at" } },
+    "first_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.first_entry_at" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+  }
+}

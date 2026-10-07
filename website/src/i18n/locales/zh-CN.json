@@ -17144,7 +17144,13 @@
       "schedule_new": "新建日程",
       "schedule_load_failed": "无法加载这位队友的日程。",
       "schedule_open_all": "所有日程",
-      "panel_toggle": "仪表板和文件"
+      "panel_toggle": "仪表板和文件",
+      "dashboard_kept_last_good": "此仪表板较新版本未能加载，因此显示上一个成功加载的版本。",
+      "dashboard_none_yet": "该成员还没有设置仪表板。",
+      "dashboard_unavailable": "无法加载该仪表板。",
+      "dashboard_render_error": "无法绘制该仪表板。",
+      "dashboard_frame_title": "{{crew}} 的仪表板",
+      "dashboard_rendering": "正在绘制仪表板…"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

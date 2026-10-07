@@ -608,13 +608,48 @@ def slug_for_name(name: str) -> str:
     return validate_slug(base)
 
 
+def canonical_member_key(name: str, config=None) -> str:
+    """The ROSTER's own spelling of *name*, or *name* unchanged when it has none.
+
+    The roster is keyed by the display name somebody typed, so its keys carry case:
+    ``Atlas``. Every per-member path is then derived from the key's ``member_id``
+    through :func:`member_slug` -- and a caller holding ``atlas`` misses the key, gets
+    no ``member_id``, and falls through to ``slug_for_name("atlas")``. That is a
+    DIFFERENT slug from the one the member's own session writes under, so a write and
+    a read of one crewmate land in two directories, both succeeding and neither
+    seeing the other.
+
+    An exact hit wins, so a roster that really holds two keys differing only in case
+    keeps answering each of them as itself. A unique case-insensitive hit is then
+    taken as the same member, because that is what it is. An AMBIGUOUS fold -- two
+    keys, neither matching exactly -- returns *name* unchanged rather than picking
+    one: those two already collide at the slug level, and the surfaces that care
+    refuse that slug outright (``dashboard_slug_ambiguous``). Guessing here would
+    turn a refusal into a write on whichever key sorted first.
+    """
+    if not isinstance(name, str) or not name:
+        return name
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    agents = getattr(config, "agents", None) or {}
+    if name in agents:
+        return name
+    folded = name.casefold()
+    hits = [key for key in agents if isinstance(key, str) and key.casefold() == folded]
+    return hits[0] if len(hits) == 1 else name
+
+
 def member_slug(name: str, config=None) -> str:
     """Use persisted member identity; legacy members retain their existing slug."""
     if config is None:
         from kiro_crew.config.loader import KiroCrewConfig
 
         config = KiroCrewConfig.load()
-    agent = config.agents.get(name)
+    # Through the roster's own spelling first. A caller that holds `atlas` for the key
+    # `Atlas` otherwise reads no `member_id` and derives a second slug for one member.
+    agent = config.agents.get(canonical_member_key(name, config))
     member_id = getattr(agent, "member_id", "") if agent else ""
     return validate_slug(member_id) if member_id else slug_for_name(name)
 
@@ -623,7 +658,7 @@ def _stable_member_slug(slug: str, name: str) -> bool:
     from kiro_crew.config.loader import KiroCrewConfig
 
     cfg = KiroCrewConfig.load()
-    agent = cfg.agents.get(name)
+    agent = cfg.agents.get(canonical_member_key(name, cfg))
     return bool(agent and getattr(agent, "member_id", "") == slug)
 
 

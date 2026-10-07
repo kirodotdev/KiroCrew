@@ -17416,7 +17416,13 @@
       "schedule_new": "Neuer Zeitplan",
       "schedule_load_failed": "Die Zeitpläne dieses Crewmates konnten nicht geladen werden.",
       "schedule_open_all": "Alle Zeitpläne",
-      "panel_toggle": "Dashboard und Dateien"
+      "panel_toggle": "Dashboard und Dateien",
+      "dashboard_kept_last_good": "Eine neuere Version dieses Dashboards wurde nicht geladen; dies ist die letzte, die geladen wurde.",
+      "dashboard_none_yet": "Für dieses Crewmitglied ist noch kein Dashboard eingerichtet.",
+      "dashboard_unavailable": "Dieses Dashboard konnte nicht geladen werden.",
+      "dashboard_render_error": "Dieses Dashboard konnte nicht gezeichnet werden.",
+      "dashboard_frame_title": "Dashboard von {{crew}}",
+      "dashboard_rendering": "Dashboard wird gezeichnet…"
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

@@ -47,6 +47,19 @@ DASHBOARD_AUTHOR_AGENT_FILENAME = "kirocrew-dashboard-author.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
+DASHBOARD_MANAGER_AGENT_FILENAME = "kirocrew-dashboard-manager.json"
+
+# The dashboard manager's agent NAME, derived from its filename rather than spelled
+# a second time. kiro-cli resolves an agent by reading ``<agents dir>/<name>.json``,
+# so the two are the same string by construction -- and this one is also a wire
+# string in the member base prompt, which routes a crewmate's page work to it. A
+# name that drifts from the filename routes the member to an agent that does not
+# resolve, which fails the turn rather than the feature.
+#
+# It lives HERE, with the filenames, because this module imports nothing from the
+# package: ``context_assembly.member`` needs the name for the prompt it builds, and
+# reading it off ``agent.py`` would close an import cycle at module scope.
+DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
 
 # Collective allowlists — the EXACT filenames KiroCrew owns in each dir. Used by
 # the Playwright convergence sweep (browser/setup.py) so it rewrites only files
@@ -65,6 +78,7 @@ OWNED_KIRO_AGENT_FILES = (
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,
+    DASHBOARD_MANAGER_AGENT_FILENAME,
 )
 
 # The specs that MUST exist for the product to work at all. kiro-cli resolves an

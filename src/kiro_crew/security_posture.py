@@ -121,6 +121,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
+        "Fold values filled into a crewmate's dashboard page",
+        "dashboard/handlers/member_dashboard.py",
+        "Every string a template's fold paths resolve to, on its way into the page's "
+        "own data island. A fold value is whatever a conductor wrote into the crew "
+        "log, so a `session_ledger_record(goal=...)` carrying a pasted private key is "
+        "rendered verbatim by any template that binds that fold -- and a mapping's "
+        "KEYS are agent-authored on the same terms, an artifact name being a free "
+        "string. This is the one step that hands fold values to a page's own script, "
+        "so the pass sits here rather than in the feed, which the conductor also "
+        "reads. Recursive over the resolved value rather than a named list of fields, "
+        "because which fold reaches a page is a decision each TEMPLATE makes. A "
+        "snapshot is taken from what the page holds, so it inherits this pass. The "
+        "same traversal drops `worker_session_key` and empties a `bind` event's "
+        "text, which covers the fields known to be secrets and says nothing about "
+        "prose that happens to contain one.",
+    ),
+    (
         "Conductor work items shown on the Crew page",
         "dashboard/handlers/work_ledger_board.py",
         "Every string in one conductor's work-item board on its way to a browser: "
@@ -1639,6 +1656,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Command and argument display values persisted in the sealed approval store "
         "and returned by dashboard status. Both shared redactors run before storage, "
         "so raw launch values do not enter durable operator-facing state.",
+    ),
+    (
+        "Crewmate-written dashboard field values",
+        "dashboard_agentic.py",
+        "Every string a crewmate writes into its own dashboard's agentic fields, on "
+        "its way to the rendered page. The scrub runs on the way IN, so what the "
+        "registry stores is already redacted and no later reader has to remember to "
+        "scrub it. Both shared redactors run, exfiltration URLs first, and the walk "
+        "is recursive over arrays and objects rather than a named list of fields, "
+        "because a template declares its own agentic fields and a value's strings sit "
+        "inside containers as often as they stand alone. An object's KEY is scrubbed "
+        "beside its value, since a page draws a key as a label in the same characters "
+        "it draws the value. The type and size questions are asked again about the "
+        "scrubbed result, because a value that fit before the scrub can be over the "
+        "cap after it.",
     ),
 )
 

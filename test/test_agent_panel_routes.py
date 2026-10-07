@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -2136,3 +2137,1043 @@ async def test_the_drawer_read_reports_the_templates_docked_opt_in(vetted):
         )
         opted = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
         assert opted["panel"]["docked_height"] == 180
+
+
+# ----------------------------------- the dynamic dashboard's agentic surface
+
+
+#: A template with one field of each SOURCE. Both are needed: the field list has
+#: to say where every value comes from, and the write path has to refuse the one
+#: the host fills.
+DASHBOARD_MANIFEST: dict[str, Any] = {
+    "id": "demo",
+    "version": 2,
+    "title": "Demo",
+    "description": "A demo dashboard",
+    "source": "builtin",
+    "fields": {
+        "open_items": {"type": "number", "source": {"agentic": True}},
+        "entries": {"type": "number", "source": {"fold": "work", "path": "count"}},
+    },
+}
+
+#: The page an unadopted crewmate is shown. Its one agentic field is an ARRAY because
+#: the "needs you" answer is a list of lines, and the write path has to accept it AS a
+#: list rather than stringify it.
+DEFAULT_MANIFEST: dict[str, Any] = {
+    "id": "the-default",
+    "version": 1,
+    "title": "The default",
+    "description": "What a crewmate renders before it adopts anything",
+    "source": "builtin",
+    "fields": {
+        "for_you": {"type": "array", "source": {"agentic": True}},
+        "entries": {"type": "number", "source": {"fold": "work", "path": "count"}},
+    },
+}
+
+FIELDS_PATH = "/api/agent-panel/dashboard/fields"
+WRITE_PATH = "/api/agent-panel/dashboard/write"
+
+
+def _adopt_dashboard(monkeypatch, *, state: str = "live", version: int = 4) -> None:
+    """Present an adopted dashboard to the one function that reads the registry.
+
+    Through the registry SEAM rather than by committing a real instance: what
+    these routes need from the registry is a parsed manifest and a version, and
+    driving the store's own adopt path would bind every case here to the
+    catalogue's shipped templates.
+
+    Both spellings are replaced because ``read_instance`` imports inside the
+    call: once the real module is imported, ``from kiro_crew.dashboard_templates
+    import instance`` reads the package attribute rather than ``sys.modules``.
+    """
+    record = SimpleNamespace(
+        slug=SLUG,
+        instance_version=version,
+        state=state,
+        manifest=dict(DASHBOARD_MANIFEST),
+    )
+    store = SimpleNamespace(read=lambda _slug: record, STATE_LIVE="live")
+    monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", store)
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    monkeypatch.setattr(templates_pkg, "instance", store, raising=False)
+
+
+def _default_dashboard(monkeypatch, *, ships_default: bool = True) -> None:
+    """Present a crewmate that adopted NOTHING, beside a registry default to fall to.
+
+    Through the same registry seam ``_adopt_dashboard`` uses, and for the same reason:
+    the shipped built-in pages arrive in the stacked page change, so a case driven off
+    the catalogue would pin this surface to a directory this change does not carry.
+    What these routes need from the EMPTY state is that ``read`` answers a record in it
+    and ``default_instance`` answers the page being shown, which is what this presents.
+
+    ``ships_default=False`` presents the other half -- a registry carrying the loader
+    and no template -- by answering ``None`` rather than raising, because that is what
+    the real ``default_instance`` does when the id it resolves is absent.
+    """
+    empty = SimpleNamespace(slug=SLUG, instance_version=0, state="empty", manifest={})
+    fallback = (
+        SimpleNamespace(
+            slug=SLUG,
+            instance_version=0,
+            state="empty",
+            manifest=dict(DEFAULT_MANIFEST),
+        )
+        if ships_default
+        else None
+    )
+    store = SimpleNamespace(
+        read=lambda _slug: empty,
+        default_instance=lambda _slug: fallback,
+        STATE_LIVE="live",
+        STATE_STALE="stale",
+        STATE_EMPTY="empty",
+    )
+    monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", store)
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    monkeypatch.setattr(templates_pkg, "instance", store, raising=False)
+
+
+async def test_the_dashboard_field_list_needs_the_internal_secret(vetted):
+    """It reports a crewmate's own refused writes, which is state about that
+    crewmate and nobody else's to read, so it sits behind the publish route's
+    gate rather than beside the drawer's browser read."""
+    async with _client(internal=False) as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "internal_secret_required"
+
+
+async def test_a_dashboard_write_needs_the_internal_secret(vetted):
+    """A write lands in the crewmate's own crew log, so a caller holding only a
+    dashboard cookie must not reach it."""
+    async with _client(internal=False) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "internal_secret_required"
+
+
+async def test_the_dashboard_surface_inherits_the_no_slot_refusal(vetted):
+    """The shared resolver's refusals reach both routes.
+
+    A state with no allocation to resolve cannot say which crew is asking, and
+    the field list is keyed by crew -- answering anyway would report one
+    crewmate's mistakes to another.
+    """
+    async with _client(agent=None) as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_dashboard_slot"
+
+
+async def test_the_field_list_reports_where_every_value_comes_from(vetted, monkeypatch):
+    """Every field, not only the writable ones, and each with its source.
+
+    A crewmate that cannot see a fold-sourced field has no way to know the number
+    is already recorded, and will either try to write it or duplicate it under an
+    agentic name so the page draws the same quantity twice.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+
+    assert body["template"] == {"id": "demo", "version": 2}
+    assert body["instance_version"] == 4
+    assert body["agentic"] == ["open_items"]
+    rows = {row["field"]: row for row in body["fields"]}
+    assert rows["open_items"]["source"] == "agentic"
+    assert rows["entries"]["source"] == "fold"
+    assert rows["entries"]["fold"] == "work"
+    assert rows["entries"]["path"] == "count"
+
+
+async def test_a_body_that_is_not_json_is_refused_before_the_manifest(vetted, monkeypatch):
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            data="not json",
+            headers={"X-Session-Key": "dashboard:chat-1", "Content-Type": "application/json"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "invalid_json"
+
+
+async def test_a_body_that_is_not_an_object_is_refused(vetted, monkeypatch):
+    """A list parses as JSON and carries no field name, so it is a distinct
+    refusal from unparseable bytes."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json=["open_items", 3],
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "invalid_body"
+
+
+async def test_an_argument_the_schema_rejects_never_reaches_the_manifest(vetted, monkeypatch):
+    """The schema's job is to reject an unexpected ARGUMENT; the manifest decides
+    the value. A field name past the schema's length bound is the former, so it
+    is refused with ``validation_error`` rather than grouped as a crewmate's
+    field-name mistake.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "x" * 200, "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "validation_error"
+
+
+async def test_a_field_the_template_does_not_declare_is_refused_with_the_valid_names(
+    vetted, monkeypatch
+):
+    """The refusal is answerable on the next cycle because it carries the list."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["code"] == "unknown_field"
+        assert body["field"] == "open"
+        assert "open_items" in body["error"]
+
+
+async def test_a_host_filled_field_is_refused_rather_than_overwritten(vetted, monkeypatch):
+    """A write into a fold-sourced cell would be replaced on the next fold, so
+    reporting it as stored would promise a value that does not survive."""
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "entries", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "field_not_agentic"
+
+
+async def test_a_value_of_the_wrong_declared_type_is_refused(vetted, monkeypatch):
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": "three"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "wrong_type"
+
+
+async def test_a_write_is_still_refused_when_no_manifest_parses(vetted, monkeypatch):
+    """``no_instance`` survives for the state it actually describes.
+
+    ERROR is the state in which the stored manifest does not parse, so there is
+    nothing to validate a field name against. Keeping this case is what stops the
+    default fallback above from being read as "writes are never refused".
+    """
+    import kiro_crew.dashboard.handlers.agent_panel as panel
+
+    monkeypatch.setattr(panel, "read_instance", lambda slug, member: None)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": []},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_instance"
+
+
+async def test_a_refusal_is_recorded_so_the_next_cycle_is_cheaper(vetted, monkeypatch):
+    """The mistake book is written BEFORE the response.
+
+    The refusal is already decided, so the append costs the caller nothing it was
+    going to get -- and a crewmate that is refused and then stops has still
+    taught its successor. The field list is where that lands, so the round trip
+    is what proves it.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        refused = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert refused.status == 400, await refused.text()
+
+        crew_log_projection.forget_slot_folds()
+        listed = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert listed.status == 200, await listed.text()
+        book = (await listed.json())["mistakes"]
+
+    assert book, "the refusal was not recorded where the next read finds it"
+    assert any(row.get("field") == "open" for row in book), book
+
+
+async def test_a_value_lands_and_an_open_dashboard_is_told(vetted, monkeypatch):
+    """The fold's own event drives the frame's refill; this frame is for a client
+    watching the panel surface, and it carries the SLUG only."""
+    _adopt_dashboard(monkeypatch)
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 7},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["written"] == {"field": "open_items", "type": "number"}
+        assert body["corrected"] is False
+        sent = app["state"].broadcasts
+        assert ("dashboard_value_written", {"slug": SLUG}) in sent, f"nothing pushed: {sent}"
+        assert agent_panel.crew_key(CREW) not in json.dumps(sent)
+
+
+async def test_a_write_that_answers_a_recorded_mistake_reports_the_correction(vetted, monkeypatch):
+    """The correction comes after the value lands, never before.
+
+    A correction for a write that failed to append would tell the crewmate a
+    wrong field name was fixed by one that was never stored.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        assert (
+            await c.post(
+                WRITE_PATH,
+                json={"field": "open", "value": 3},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+        ).status == 400
+
+        crew_log_projection.forget_slot_folds()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["corrected"] is True
+
+
+async def test_a_write_is_refused_when_the_gateway_records_no_crew_log(vetted, monkeypatch):
+    """The log is an agentic value's ONLY record -- no host Python computes one,
+    so there is no file beside it. Reporting success would promise a cell that
+    never fills, which is why this refuses rather than shrugging the way a panel
+    publish does.
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        crew_log_emit.reset_caches()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "crew_log_off"
+    crew_log_emit.reset_caches()
+
+
+async def test_a_refusal_with_the_log_off_still_refuses_the_write(vetted, monkeypatch):
+    """Recording the mistake is best-effort, unlike the value append.
+
+    By the time it runs the caller is already being refused, so a log that is off
+    costs the mistake book this row and nothing else. Failing here would turn
+    "we could not remember your mistake" into "your write was not refused".
+    """
+    _adopt_dashboard(monkeypatch)
+    async with _client() as c:
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        crew_log_emit.reset_caches()
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "unknown_field"
+    crew_log_emit.reset_caches()
+
+
+async def test_a_refusal_whose_append_raises_still_refuses_the_write(vetted, monkeypatch):
+    """The recorder never raises, so a damaged log cannot turn a refusal into a
+    500 that tells the caller nothing about its field name."""
+    _adopt_dashboard(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("the log is unwritable")
+
+    monkeypatch.setattr(crew_log_emit, "on_dashboard_refused", _boom)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "unknown_field"
+
+
+async def test_a_caller_with_no_crew_log_unit_is_told_the_value_did_not_land(vetted, monkeypatch):
+    """No unit means nowhere to append, which is a failed write and not a stored
+    one -- the response must not claim a cell that is empty."""
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(routes, "_session_unit", lambda *_a, **_k: "")
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+
+
+async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(vetted, monkeypatch):
+    """Asked BEFORE the append, like the panel route asks its own.
+
+    An entry over the log's whole-line ceiling can never land, so writing it
+    would report a value as stored that no fold will ever see.
+    """
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(crew_log_emit, "dashboard_entry_fits", lambda *_a, **_k: False)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+
+
+async def test_an_append_that_does_not_land_is_reported_as_failed(vetted, monkeypatch):
+    """The caller is told to try again on its next cycle rather than being told
+    the value is there."""
+    _adopt_dashboard(monkeypatch)
+    monkeypatch.setattr(crew_log_emit, "on_dashboard_agentic", lambda *_a, **_k: False)
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "append_failed"
+        assert not app["state"].broadcasts, "a write that did not land must push nothing"
+
+
+async def test_an_unreadable_mistake_fold_costs_the_book_and_not_the_write(vetted, monkeypatch):
+    """A crewmate with no readable mistakes is in the same position as one that
+    has made none, so a damaged fold reads as an empty book. Failing the write
+    would be the book costing the feature it exists to improve.
+    """
+    _adopt_dashboard(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("the fold is unreadable")
+
+    monkeypatch.setattr(crew_log_projection, "read_slot_projection", _boom)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "open_items", "value": 3},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+
+        listed = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert listed.status == 200, await listed.text()
+        assert (await listed.json())["mistakes"] == []
+
+
+async def test_a_crewmate_that_adopted_nothing_is_told_the_page_it_renders(vetted, monkeypatch):
+    """The read answers with the DEFAULT before a template is adopted.
+
+    It reports the default rather than an empty list because the default IS the page
+    that crewmate renders: ``api_member_dashboard`` falls back to it for the same
+    state. An empty list told the crewmate it had no cell to write while the page it
+    was being shown had one, and the one it had is the "needs you" answer.
+    """
+    _default_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["template"]["id"] == DEFAULT_MANIFEST["id"], body["template"]
+        names = {row["field"] for row in body["fields"]}
+        assert "for_you" in names, f"the default's agentic field is not offered: {names}"
+        assert body["retry_budget"] > 0
+
+
+async def test_a_write_succeeds_for_a_crewmate_that_adopted_nothing(vetted, monkeypatch):
+    """The write path resolves the same default the read path renders.
+
+    REPLACES a pin that asserted ``no_instance`` here. That refusal named adopting a
+    template as the remedy, and nothing in P1 calls the adopt route -- so the one
+    agentic field on the page every crewmate is shown, the "needs you" answer, could
+    never be written by anyone, and the conductor skill writes it every cycle.
+    """
+    _default_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": [{"what": "approve the plan"}]},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["ok"] is True
+        # Accepted AS the declared type, which is what proves it was validated against
+        # the default's manifest rather than waved through.
+        assert body["written"] == {"field": "for_you", "type": "array"}, body["written"]
+
+
+async def test_an_unadopted_crewmate_is_refused_when_the_registry_ships_no_default(
+    vetted, monkeypatch
+):
+    """``default_instance`` ANSWERS ``None`` rather than raising, so the EMPTY branch
+    has to read its answer and not merely guard the call.
+
+    This is the state of a build whose registry carries the loader and no template,
+    and it is the one case where ``no_instance`` still describes the world: there is
+    no manifest to validate a write against and no page being shown to write for. A
+    branch that treated the ``None`` as a resolved record would hand ``parse_manifest``
+    an attribute lookup on ``None`` and report a crewmate's write as a server fault.
+    """
+    _default_dashboard(monkeypatch, ships_default=False)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": [{"what": "approve the plan"}]},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_instance"
+
+
+async def test_two_crews_sharing_one_slug_cannot_reach_the_dashboard_surface(vetted, monkeypatch):
+    """``Oncall`` and ``oncall`` resolve to ONE instance directory.
+
+    Slugification is lossy and an instance is one directory per slug, so either
+    crew could replace the other's staged or installed page, and a rollback by one
+    would restore a version the other wrote. The browser's own resolver refuses
+    that slug outright (``dashboard_slug_ambiguous``); this surface reaches the same
+    files through MCP and owes the same refusal.
+
+    Asked at ``_resolve_dashboard_caller``, so the refusal covers fields and write
+    as well as the page's four -- and a route added later inherits it.
+    """
+    upper, lower = "Oncall", "oncall"
+    shared = members_mod.member_slug(lower)
+    assert members_mod.member_slug(upper) == shared, "fixture no longer collides"
+
+    real_load = routes.KiroCrewConfig.load
+
+    def _roster_with_both(*a, **kw):
+        cfg = real_load(*a, **kw)
+        cfg.agents.clear()
+        for name in (upper, lower):
+            cfg.agents[name] = SimpleNamespace(name=name)
+        return cfg
+
+    monkeypatch.setattr(routes.KiroCrewConfig, "load", staticmethod(_roster_with_both))
+
+    async with _client(lower) as caller:
+        for path in (
+            "/api/agent-panel/dashboard/preview",
+            "/api/agent-panel/dashboard/apply",
+            "/api/agent-panel/dashboard/rollback",
+        ):
+            response = await caller.post(
+                path,
+                json={"template_id": "x", "to_version": 1},
+                headers={"X-Session-Key": "dashboard:chat-9"},
+            )
+            assert response.status == 409, (path, await response.text())
+            assert (await response.json())["code"] == "dashboard_slug_ambiguous"
+        read = await caller.get(
+            "/api/agent-panel/dashboard/fields", headers={"X-Session-Key": "dashboard:chat-9"}
+        )
+        assert read.status == 409, await read.text()
+
+
+async def test_a_crew_that_is_not_a_configured_member_still_reaches_its_own_page(vetted):
+    """EMPTY owners is not the ambiguous case, and refusing it would be a regression.
+
+    ``_member_names_for_slug`` lists addressable MEMBERS, and a publishing crew need
+    not be one -- ``_resolve_publishing_crew`` has already vetted a caller that is
+    not. So no configured member claiming the slug means nobody else owns it, which
+    is the opposite of the collision this gate is for.
+    """
+    async with _client(CREW) as caller:
+        response = await caller.get(
+            "/api/agent-panel/dashboard/fields", headers={"X-Session-Key": "dashboard:chat-1"}
+        )
+        assert response.status == 200, await response.text()
+
+
+# ------------------------------------- the page's four routes, over HTTP
+
+TEMPLATES_PATH = "/api/agent-panel/dashboard/templates"
+PREVIEW_PATH = "/api/agent-panel/dashboard/preview"
+APPLY_PATH = "/api/agent-panel/dashboard/apply"
+ROLLBACK_PATH = "/api/agent-panel/dashboard/rollback"
+
+
+def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
+    """A store standing in for the instance module, through this file's own seam.
+
+    The same `sys.modules` + package-attribute pair `_adopt_dashboard` uses, and for
+    the same reason: these four handlers are being tested, not the store underneath
+    them, and driving the real store would bind every case here to the shipped
+    catalogue's twelve directories and their sizes.
+
+    ``InstanceRefused`` is a REAL exception class rather than a sentinel, because
+    ``_instance_refusal`` separates a refusal from an unexpected failure with
+    ``isinstance`` -- a stub that got that wrong would make a 400 case pass as a 503.
+    """
+
+    class InstanceRefused(Exception):
+        pass
+
+    staged = {
+        "template_id": "fixture-board",
+        "template_version": 1,
+        "title": "Fixture board",
+        "fields": ["credits", "phase"],
+        "html_bytes": 120,
+        "staged_ms": 1,
+        "preview_url": f"/api/members/{SLUG}/dashboard?preview=1",
+    }
+    store = SimpleNamespace(
+        InstanceRefused=InstanceRefused,
+        InstanceError=Exception,
+        read=lambda _slug: SimpleNamespace(template_id="fixture-board"),
+        stage_preview=lambda _slug, **_kw: SimpleNamespace(wire=lambda: dict(staged)),
+        apply_preview=lambda _slug, **_kw: SimpleNamespace(
+            instance_version=5, template_id="fixture-board"
+        ),
+        rollback=lambda _slug, _to, **_kw: SimpleNamespace(
+            instance_version=7, template_id="fixture-board"
+        ),
+        STATE_LIVE="live",
+    )
+    for key, value in over.items():
+        setattr(store, key, value)
+    monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", store)
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    monkeypatch.setattr(templates_pkg, "instance", store, raising=False)
+    return store
+
+
+class TestTheTemplatesRouteOverHttp:
+    async def test_it_answers_the_catalog_and_marks_the_current_template(
+        self, vetted, monkeypatch
+    ) -> None:
+        _page_store(monkeypatch)
+        monkeypatch.setattr(
+            routes,
+            "_templates_for_agent",
+            lambda slug, query: {
+                "templates": [{"id": "fixture-board", "current": True}],
+                "current_template_id": "fixture-board",
+                "query": query,
+                "problems": [],
+            },
+        )
+        async with _client() as c:
+            resp = await c.get(
+                f"{TEMPLATES_PATH}?query=cost", headers={"X-Session-Key": "dashboard:chat-1"}
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert body["current_template_id"] == "fixture-board"
+        assert body["query"] == "cost", "the query did not reach the lister"
+
+    async def test_the_query_is_bounded_before_it_reaches_the_lister(
+        self, vetted, monkeypatch
+    ) -> None:
+        """200 characters, because the handler slices it rather than refusing.
+
+        A query is a person's own words relayed by an agent, and a long one is a
+        clumsy ask rather than an attack -- so it is cut and answered, not rejected.
+        """
+        seen: list[str] = []
+
+        def _lister(_slug, query):
+            seen.append(query)
+            return {"templates": [], "current_template_id": "", "query": query, "problems": []}
+
+        _page_store(monkeypatch)
+        monkeypatch.setattr(routes, "_templates_for_agent", _lister)
+        async with _client() as c:
+            resp = await c.get(
+                f"{TEMPLATES_PATH}?query={'x' * 400}",
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 200, await resp.text()
+        assert seen and len(seen[0]) == 200, f"query reached the lister at {len(seen[0])} chars"
+
+    async def test_a_registry_failure_is_a_refusal_and_not_a_500(self, vetted, monkeypatch) -> None:
+        store = _page_store(monkeypatch)
+
+        def _boom(_slug, _query):
+            raise store.InstanceRefused("the registry cannot be read")
+
+        monkeypatch.setattr(routes, "_templates_for_agent", _boom)
+        async with _client() as c:
+            resp = await c.get(TEMPLATES_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "refused"
+
+
+class TestThePreviewRouteOverHttp:
+    async def test_a_staged_template_comes_back_with_its_link(self, vetted, monkeypatch) -> None:
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                json={"template_id": "fixture-board"},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert body["ok"] is True
+        assert body["preview"]["preview_url"].endswith("preview=1")
+        assert "html" not in body["preview"], "the staged page itself came back on the wire"
+
+    async def test_a_non_string_template_id_is_refused(self, vetted, monkeypatch) -> None:
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                json={"template_id": 7},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "validation_error"
+
+    async def test_a_body_that_is_not_json_is_refused(self, vetted, monkeypatch) -> None:
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                data="not json",
+                headers={
+                    "X-Session-Key": "dashboard:chat-1",
+                    "Content-Type": "application/json",
+                },
+            )
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "invalid_json"
+
+    async def test_a_json_body_that_is_not_an_object_is_refused(self, vetted, monkeypatch) -> None:
+        """A list parses as JSON and carries no fields, so it needs its own answer."""
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                json=["fixture-board"],
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "invalid_body"
+
+    async def test_an_authored_page_is_refused_with_the_stores_own_sentence(
+        self, vetted, monkeypatch
+    ) -> None:
+        """The handler passes `html`/`manifest` through so the STORE can refuse them.
+
+        It must not drop them and stage a template the caller never asked for: a
+        caller that sent a page it wrote has to read why its page cannot render.
+        """
+        store = _page_store(monkeypatch)
+        seen: list[dict[str, Any]] = []
+
+        def _stage(_slug, **kw):
+            seen.append(kw)
+            raise store.InstanceRefused("custom templates come later")
+
+        monkeypatch.setattr(store, "stage_preview", _stage)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                json={"manifest": {"id": "mine"}, "html": "<p></p>"},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 400, await resp.text()
+            body = await resp.json()
+        assert body["code"] == "refused"
+        assert "come later" in body["error"]
+        assert seen and seen[0]["html"] == "<p></p>", "the handler swallowed the page"
+        assert seen[0]["manifest"] == {"id": "mine"}
+
+    async def test_an_unexpected_store_failure_is_503_and_leaks_nothing(
+        self, vetted, monkeypatch
+    ) -> None:
+        """A refusal is written for an agent; an OSError carries a path.
+
+        So the path goes to the log and the caller gets a fixed sentence.
+        """
+        store = _page_store(monkeypatch)
+
+        def _boom(_slug, **_kw):
+            raise OSError("/home/someone/.kirocrew/members/x/instance.json: no space")
+
+        monkeypatch.setattr(store, "stage_preview", _boom)
+        async with _client() as c:
+            resp = await c.post(
+                PREVIEW_PATH,
+                json={"template_id": "fixture-board"},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 503, await resp.text()
+            body = await resp.json()
+        assert body["code"] == "store_failed"
+        assert ".kirocrew" not in body["error"], "the refusal carried a filesystem path"
+
+
+class TestTheApplyAndRollbackRoutesOverHttp:
+    async def test_apply_reports_the_new_version_and_tells_the_open_tab(
+        self, vetted, monkeypatch
+    ) -> None:
+        """The broadcast is what makes the tab refetch, and it carries the slug only."""
+        _page_store(monkeypatch)
+        frames: list[tuple[str, Any]] = []
+        async with _client() as c:
+            state = c.server.app["state"]
+            monkeypatch.setattr(
+                state, "broadcast_ws", lambda kind, data: frames.append((kind, data))
+            )
+            resp = await c.post(APPLY_PATH, json={}, headers={"X-Session-Key": "dashboard:chat-1"})
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert body["instance_version"] == 5 and body["template_id"] == "fixture-board"
+        assert "saved_template_id" not in body, "apply still promises a saved template"
+        assert frames == [("dashboard_instance_changed", {"slug": SLUG})], frames
+
+    async def test_apply_with_nothing_staged_is_a_refusal(self, vetted, monkeypatch) -> None:
+        store = _page_store(monkeypatch)
+
+        def _nothing(_slug, **_kw):
+            raise store.InstanceRefused("there is no page staged to keep")
+
+        monkeypatch.setattr(store, "apply_preview", _nothing)
+        async with _client() as c:
+            resp = await c.post(APPLY_PATH, json={}, headers={"X-Session-Key": "dashboard:chat-1"})
+            assert resp.status == 400, await resp.text()
+            body = await resp.json()
+        assert body["code"] == "refused" and "no page staged" in body["error"]
+
+    async def test_rollback_reports_the_version_it_landed_on(self, vetted, monkeypatch) -> None:
+        """Two different numbers: the one asked for, and the one now current.
+
+        A caller that reported the first would tell a person they are on a version
+        nobody is on.
+        """
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                ROLLBACK_PATH,
+                json={"to_version": 2},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert body["restored_from"] == 2, "the route lost the version asked for"
+        assert body["instance_version"] == 7, "a rollback moves FORWARD"
+
+    @pytest.mark.parametrize(
+        "to_version",
+        [0, -1, "2", 1.5, True, None],
+        ids=["zero", "negative", "string", "float", "bool", "absent"],
+    )
+    async def test_a_version_that_is_not_a_positive_integer_is_refused(
+        self, vetted, monkeypatch, to_version: Any
+    ) -> None:
+        """``True`` is included on purpose: it is an ``int`` to ``isinstance``.
+
+        Without the explicit bool check a rollback to ``True`` would reach the store
+        as version 1 -- a real version, restored because a caller sent a flag.
+        """
+        _page_store(monkeypatch)
+        async with _client() as c:
+            resp = await c.post(
+                ROLLBACK_PATH,
+                json={"to_version": to_version},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "validation_error"
+
+
+class TestTheCatalogListingTheAgentReads:
+    """`_templates_for_agent` itself, against a real registry scan.
+
+    The route cases above replace this function, because what they are about is the
+    HTTP contract. This class is about the LISTING, so it runs the real thing over a
+    fixture built-in directory.
+    """
+
+    @staticmethod
+    def _fixture_catalog(monkeypatch, tmp_path) -> None:
+        from kiro_crew.dashboard_templates import catalog
+
+        root = tmp_path / "builtin"
+        for tid, title, description, fold, path in (
+            ("fixture-board", "Fixture board", "What this crewmate did.", "usage", "cost_usd"),
+            ("fixture-plain", "Fixture plain", "A second page.", "workstreams", "items"),
+        ):
+            directory = root / tid
+            directory.mkdir(parents=True)
+            (directory / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "id": tid,
+                        "version": 1,
+                        "title": title,
+                        "description": description,
+                        "source": "builtin",
+                        "fields": {
+                            "shown": {"type": "number", "source": {"fold": fold, "path": path}}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (directory / "template.html").write_text(
+                '<p data-dashboard-field="shown"></p>', encoding="utf-8"
+            )
+        monkeypatch.setattr(catalog, "builtin_dir", lambda: root)
+
+    def test_it_marks_the_current_template_rather_than_hiding_it(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A list that omitted the page on screen would read as a missing template."""
+        self._fixture_catalog(monkeypatch, tmp_path)
+        _page_store(monkeypatch)
+        body = routes._templates_for_agent(SLUG, "")
+        rows = {row["id"]: row for row in body["templates"]}
+        assert set(rows) == {"fixture-board", "fixture-plain"}
+        assert rows["fixture-board"]["current"] is True
+        assert rows["fixture-plain"]["current"] is False
+        assert body["current_template_id"] == "fixture-board"
+
+    def test_a_query_matches_a_word_only_a_fold_path_carries(self, monkeypatch, tmp_path) -> None:
+        """The reason the listing carries `paths` at all.
+
+        "the one that shows cost" names what the reader wants to SEE, and the template
+        that shows it is the one whose field reads a cost out of a usage fold -- a word
+        its author never put in the title or the description.
+        """
+        self._fixture_catalog(monkeypatch, tmp_path)
+        _page_store(monkeypatch)
+        body = routes._templates_for_agent(SLUG, "cost")
+        assert [row["id"] for row in body["templates"]] == ["fixture-board"]
+        assert body["query"] == "cost"
+
+    def test_a_query_that_matches_nothing_answers_an_empty_list(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        self._fixture_catalog(monkeypatch, tmp_path)
+        _page_store(monkeypatch)
+        assert routes._templates_for_agent(SLUG, "latency")["templates"] == []
+
+    def test_a_directory_that_will_not_load_is_reported_not_dropped(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A template nobody can see is a template nobody can fix.
+
+        The scan reports it, so the agent reading this listing can tell the human.
+        """
+        self._fixture_catalog(monkeypatch, tmp_path)
+        broken = tmp_path / "builtin" / "fixture-broken"
+        broken.mkdir()
+        (broken / "manifest.json").write_text("{ not json", encoding="utf-8")
+        (broken / "template.html").write_text("<p></p>", encoding="utf-8")
+        _page_store(monkeypatch)
+        body = routes._templates_for_agent(SLUG, "")
+        assert [p["template"] for p in body["problems"]] == ["fixture-broken"]
+        assert {row["id"] for row in body["templates"]} == {"fixture-board", "fixture-plain"}
+
+    def test_an_unreadable_current_template_leaves_the_listing_answerable(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A damaged record must not take the catalog down with it.
+
+        The list is how a reader gets OFF a broken page, so a record this cannot read
+        marks nothing as current rather than refusing the only route out.
+        """
+        self._fixture_catalog(monkeypatch, tmp_path)
+
+        def _unreadable(_slug):
+            raise OSError("instance.json is a directory")
+
+        _page_store(monkeypatch, read=_unreadable)
+        body = routes._templates_for_agent(SLUG, "")
+        assert body["current_template_id"] == ""
+        assert len(body["templates"]) == 2
+        assert all(row["current"] is False for row in body["templates"])
+
+
+class TestTheHistorySessionLookup:
+    """`_history_session`: which DM unit a change is attributed to."""
+
+    def test_no_slot_is_no_session_and_not_a_failure(self) -> None:
+        assert routes._history_session("") == ""
+
+    def test_the_newest_unit_of_the_slot_is_the_one_chosen(self, monkeypatch) -> None:
+        """The NEWEST, because a change is being recorded now.
+
+        A clock that stepped backward between two units would otherwise attribute a
+        later change to a session that is already over.
+        """
+        monkeypatch.setattr(
+            crew_log_projection, "units_in_succession", lambda _slot: ["older", "newest"]
+        )
+        assert routes._history_session("dashboard:chat-1") == "newest"
+
+    def test_a_slot_with_no_unit_yet_answers_empty(self, monkeypatch) -> None:
+        monkeypatch.setattr(crew_log_projection, "units_in_succession", lambda _slot: [])
+        assert routes._history_session("dashboard:chat-1") == ""
+
+    def test_a_projection_failure_degrades_to_no_history_rather_than_refusing(
+        self, monkeypatch
+    ) -> None:
+        """The record is the file; the entry is history.
+
+        So a crewmate whose DM thread cannot be read gets a working dashboard with no
+        history row, not a refused change.
+        """
+
+        def _boom(_slot):
+            raise RuntimeError("the projection kernel is not up")
+
+        monkeypatch.setattr(crew_log_projection, "units_in_succession", _boom)
+        assert routes._history_session("dashboard:chat-1") == ""

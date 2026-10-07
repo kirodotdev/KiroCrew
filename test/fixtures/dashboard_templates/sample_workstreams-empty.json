@@ -1,0 +1,17 @@
+{
+  "note": "A crewmate that has done nothing yet -- the FIRST thing a new crewmate's Dashboard tab shows, which is the state most readers meet before any other. Every fold path the manifest binds is present and empty, because an absent path is a fold that did not resolve and renders the frame's stale band instead of this page's own empty card.",
+  "now": "2026-10-04T17:12:00Z",
+  "folds": {
+    "workstreams": {
+      "seq": 0,
+      "value": {
+        "items": [],
+        "omitted": 0,
+        "series": [],
+        "last_entry_at": ""
+      }
+    }
+  },
+  "agentic": {},
+  "agentic_written_at": {}
+}

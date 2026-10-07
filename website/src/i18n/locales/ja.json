@@ -17144,7 +17144,13 @@
       "schedule_new": "新しいスケジュール",
       "schedule_load_failed": "このクルーメイトのスケジュールを読み込めませんでした。",
       "schedule_open_all": "すべてのスケジュール",
-      "panel_toggle": "ダッシュボードとファイル"
+      "panel_toggle": "ダッシュボードとファイル",
+      "dashboard_kept_last_good": "このダッシュボードの新しいバージョンは読み込めなかったため、最後に読み込めたものを表示しています。",
+      "dashboard_none_yet": "このクルーメイトのダッシュボードはまだ設定されていません。",
+      "dashboard_unavailable": "このダッシュボードを読み込めませんでした。",
+      "dashboard_render_error": "このダッシュボードを描画できませんでした。",
+      "dashboard_frame_title": "{{crew}} のダッシュボード",
+      "dashboard_rendering": "ダッシュボードを描画中…"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

@@ -1,0 +1,19 @@
+{
+  "id": "work-kanban",
+  "version": 1,
+  "title": "Work kanban",
+  "description": "The conductor's board as columns: what a worker still holds, what is waiting on the conductor's own verdict, what was accepted, and what was rejected or left. A column is chosen from the item's state AND its worker's last status, because an item still open whose worker reported done is waiting on the conductor rather than on anyone else, and no single field says that. Read from the work slot fold.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "generation": { "type": "string", "source": { "fold": "work", "path": "conductor.generation" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "goal_version": { "type": "number", "source": { "fold": "work", "path": "conductor.goal_version" } },
+    "depth": { "type": "number", "source": { "fold": "work", "path": "conductor.depth" } },
+    "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
+    "created_at": { "type": "string", "source": { "fold": "work", "path": "conductor.created_at" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+  }
+}

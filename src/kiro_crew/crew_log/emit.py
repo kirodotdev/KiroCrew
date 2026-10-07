@@ -4199,6 +4199,114 @@ def on_panel_published(session_id: str, data: dict[str, Any], *, timeout: float 
     return False
 
 
+def _append_dashboard(
+    session_id: str, entry_type: str, data: dict[str, Any], timeout: float
+) -> bool:
+    """Append one dashboard entry and report whether it landed. Shared by both types.
+
+    ONE helper for the accepted write and the refusal, because the two differ only
+    in their entry type and must not differ in anything else: a refusal that landed
+    while the write it refused did not, or the reverse, would leave the mistake book
+    and the dashboard disagreeing about what happened.
+
+    WAITS, like :func:`on_panel_published`, and for a sharper reason than that one
+    has: this log IS the dashboard's record. An agentic value lives nowhere else --
+    there is no file beside it, by design, because no host Python computes a
+    dashboard value -- so a caller told its write succeeded when the append did not
+    land would see the cell stay empty with nothing saying why. ``False`` is FINAL:
+    an entry the waiter gave up on is abandoned and will not land later, so one
+    write cannot end up as two values.
+
+    Queued through the same writer as every other entry, for the reason the session
+    ledger gives: an append takes the unit's WRITE OWNERSHIP, and while the emitter
+    holds a running session's handle a second handle in this process is refused.
+    Going through the writer also orders the entry against the turn the crewmate
+    wrote inside, which is what makes the mistake book's own ordering true.
+    """
+    if not session_id or not enabled():
+        return False
+    landed = threading.Event()
+    gate = threading.Lock()
+    outcome = {"ok": False, "abandoned": False}
+
+    def _job() -> None:
+        with gate:
+            # A waiter that gave up has abandoned the entry: it must not land later,
+            # or a write the crewmate was told failed would reappear on the next
+            # fold. Under the gate the two outcomes cannot cross.
+            if outcome["abandoned"]:
+                return
+            log = _handle(session_id)
+            if log is None:
+                return
+            entry = log.append(entry_type, data, src=_SRC_GATEWAY)
+            _note_eager(entry, entry_type, session_id, data)
+            outcome["ok"] = True
+
+    _submit(_job, f"appending {entry_type}", session_id, after=landed.set)
+    if landed.wait(timeout):
+        return outcome["ok"]
+    with gate:
+        if outcome["ok"]:
+            return True
+        outcome["abandoned"] = True
+    return False
+
+
+def on_dashboard_agentic(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One accepted agentic dashboard value, appended to the crewmate's DM log.
+
+    *data* is the ``dashboard/agentic_value`` payload the write path has already
+    checked against the live manifest: the field exists, it is agentic, and the
+    value is of the declared type. This emitter does not re-check -- the caller is
+    the only party holding the manifest -- and the FOLD re-checks on read, which is
+    where a line off disk needs it.
+
+    Each write replaces ONE field. There is no whole-document form of this entry
+    and deliberately so: the fields are independent cells, so a crewmate that
+    learns one number writes that one rather than restating the other twenty-three.
+    """
+    # THE TYPE IS A LITERAL HERE, not the imported constant, and that is the
+    # convention this module already follows (``on_panel_published`` appends
+    # ``"panel/published"`` the same way). It is what makes the declared vocabulary
+    # and the APPENDED vocabulary provably equal: the ratchet in
+    # ``test_crew_log_types`` reads the appended set out of this file's own syntax,
+    # so a type reaching ``log.append`` through a variable is a type it cannot see
+    # -- and a declaration no site provably produces is exactly what that test
+    # exists to refuse.
+    return _append_dashboard(session_id, "dashboard/agentic_value", data, timeout)
+
+
+def on_dashboard_refused(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One refused agentic write -- or one correction of an earlier refusal.
+
+    TWO shapes on one type, which the fold tells apart by which keys are present: a
+    refusal carries ``code``, and a correction carries ``corrects`` and the field
+    that worked. One type because they are one story -- the mistake and its answer
+    -- and a reader that had to join two types to tell whether a mistake was ever
+    fixed would be joining them on exactly the thing that is hard to get right.
+
+    BEST-EFFORT at the call site, unlike the accepted write: by the time this is
+    called the refusal is already on its way back to the caller, which is the part
+    that matters. A log that is off costs the mistake book this row and nothing
+    else, so a caller treats ``False`` as "not recorded" and never as "not refused".
+    """
+    # A literal, for the reason its sibling above spells out.
+    return _append_dashboard(session_id, "dashboard/agentic_refused", data, timeout)
+
+
+def dashboard_entry_fits(entry_type: str, data: dict[str, Any]) -> bool:
+    """Whether *data* would fit one entry of *entry_type*.
+
+    Asked beside the write rather than inside it, for :func:`panel_entry_fits`'
+    reason: the caller can act on the answer and ``_write`` cannot. An agentic value
+    over the ceiling can never land, so a crewmate told its write succeeded would
+    watch the cell stay empty -- and the refusal it should have had instead is one
+    the mistake book can teach.
+    """
+    return _entry_line_fits(entry_type, data, src=_SRC_GATEWAY)
+
+
 def panel_entry_fits(data: dict[str, Any]) -> bool:
     """Whether *data* would fit one ``panel/published`` entry.
 
@@ -4211,6 +4319,31 @@ def panel_entry_fits(data: dict[str, Any]) -> bool:
     fits.
     """
     return _entry_line_fits("panel/published", data, src=_SRC_GATEWAY)
+
+
+def on_dashboard_instance_changed(session_id: str, data: dict[str, Any]) -> None:
+    """Append ONE ``dashboard/instance_changed`` entry -- a crewmate's dashboard history.
+
+    The history half of the dynamic dashboard instance. The current value is a file
+    under the member's own space and the route has already written it, so this append
+    is the HISTORY: the instance's change log is a fold over these entries.
+
+    Does NOT wait, which is the difference from ``on_panel_published`` and is decided by
+    what the caller can do with the answer. The instance store's caller is told the
+    change landed because the record file landed; the entry is the record of HOW it got
+    there, and a caller that cannot undo the committed version has nothing to do with
+    "the history row is still queued". The store flushes once after the append so the
+    row is durable by the time the call returns in the ordinary case.
+
+    The entry carries what changed and never the page, so it is bounded by construction
+    and no size check is needed beside it -- unlike the ledger's and the panel's, whose
+    payloads are caller-sized.
+
+    *session_id* is the crewmate's own DM session, the unit a dashboard change belongs
+    to. A session with no crew log is a policy no-op here, as it is for every other
+    ``_write``.
+    """
+    _write(session_id, "dashboard/instance_changed", data, src=_SRC_GATEWAY)
 
 
 def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:

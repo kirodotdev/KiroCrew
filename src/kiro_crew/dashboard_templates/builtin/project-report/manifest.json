@@ -1,0 +1,55 @@
+{
+  "id": "project-report",
+  "version": 1,
+  "title": "Project report",
+  "description": "One page for the question a person actually opens a dashboard with: what did this crewmate do, what did each thing cost, what came of it, and what still needs me. The work is drawn as the tree it really is -- a board's goal is an EPIC, a round of it a STORY, a work item a TASK, and an item on a board that task's own worker runs a SUBTASK -- with done/total, a progress bar and credits on every row, rolled up from the leaves. A pill row switches between every workstream at once and one workstream on its own; both views are the same tree at their own scale, and the two-ring sunburst beside it is always a share of the root and a share of that share, so nothing is a drill-down into a different vocabulary. Read from the slot's workstreams fold, which groups the work entries by board, links a nested board to the task whose bind created it, and joins each task to the spend of the worker session bound to it -- the cost half has no other home, because a work entry never carries it, and the session key is how a roll-up bills one worker once however many tasks it served. Three fields are the lead's own, because each answers a question no fold can. for_you is the lead's action cards for the person, the way a manager hands a CEO a short stack: each item is {text, ask, context, why, how, options, workstream}, where text is the one-line ask, ask is decide (pick one of options), approve (I mean to do this, may I) or do (only you can do this), context is where things stand, why is why it matters now and how is what happens next, each one line; the page draws one card per item with buttons that put the reply in the person's chat box, and a card leaves when the lead drops it from the list. verdict is one line above everything else -- on_track, needs_you, blocked, or no_word -- plus the headline and the one thing most in the way: which of six reds matters is a judgment, and the lead already knows it while no fold ranks them; the page falls back to no_word on its own when the fold has advanced since the verdict was written, so a lead that died mid-run leaves an honest silence rather than a stale claim. ci carries the lane board a babysitting worker already reads every cycle: per-task check counts and the red lanes by name, each tagged yours or maintainer because that split is what decides whether the reader can act, and a lane that never started is its own state rather than a red one. A GitHub-polling fold is the correct source for ci and is the next round's work, not this one's. Every NUMBER on the page is still the record's: a field names a fold path or names itself agentic, never both. verdict.words is the desk's labels in the language the lead speaks with this person -- the page has no language of its own. Keys: blocked, asks, pick, approve, only_you, go, not_now, done, cant, redispatch, drop, own, yes, no, earlier, answered, undo, context, why, how, words; each a short label, any key left out shows in English. Write every for_you item, and its options, in that same language; an approve or do item may carry its own options too.",
+  "source": "builtin",
+  "fields": {
+    "items": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "items"
+      }
+    },
+    "omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "omitted"
+      }
+    },
+    "series": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "series"
+      }
+    },
+    "last_entry_at": {
+      "type": "string",
+      "source": {
+        "fold": "workstreams",
+        "path": "last_entry_at"
+      }
+    },
+    "for_you": {
+      "type": "array",
+      "source": {
+        "agentic": true
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "source": {
+        "agentic": true
+      }
+    },
+    "ci": {
+      "type": "object",
+      "source": {
+        "agentic": true
+      }
+    }
+  }
+}

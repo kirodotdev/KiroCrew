@@ -238,8 +238,13 @@ _STABLE_TEXT = {
     "critical_rules": lambda: ctx._CRITICAL_RULES,
     "critical_rules_channel": lambda: ctx._CRITICAL_RULES_CHANNEL,
     "member_how_you_work": lambda: ctx._MEMBER_HOW_YOU_WORK,
+    # Item 7 included, because the ASSEMBLY includes it on this variant too: the
+    # Dashboard tab is rendered from the instance store and does not depend on
+    # layer 4. A pin built without it would freeze text the builder never emits.
     "member_how_you_work_unavailable": lambda: (
-        ctx._MEMBER_HOW_YOU_WORK_COMMON + ctx._MEMBER_BRIEFING_ITEM_UNAVAILABLE
+        ctx._MEMBER_HOW_YOU_WORK_COMMON
+        + ctx._MEMBER_BRIEFING_ITEM_UNAVAILABLE
+        + ctx._MEMBER_DASHBOARD_ITEM
     ),
     "reply_concise": lambda: ctx._reply_style_rules("concise"),
     "reply_answer_only": lambda: ctx._reply_style_rules("answer_only"),
@@ -256,8 +261,8 @@ _STABLE_TEXT_SHA256 = {
     "critical_rules": "06ea61438802e0538dbf1f107e2e6b07cf2416348734f330e0cf0ec3ef52e899",
     "critical_rules_channel": "7e0dc53a1e4db382d51bb8ead062cd94ed5752dbb30b40149b6d9728ba734742",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "a815570887d9b4d15feb491fb49de2db00d5d7ca765f1762000dc0e9898bc248",
-    "member_how_you_work_unavailable": "0c77e7625768a1a10f8a5ea309f85a10137457e94699a9ac22ac0f08c1676d25",
+    "member_how_you_work": "fee6317b439c1bfc2799b25e4a278080985a48eb9fe77d778ccad22e09166180",
+    "member_how_you_work_unavailable": "c236aa71c582826abc550052cc35bcb2c3eefae8c914c056a915c7a0a3c990f3",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",

@@ -11,7 +11,12 @@ from aiohttp import web
 
 from kiro_crew import agent_state
 from kiro_crew.agent_discovery import AgentInfo, list_agents
-from kiro_crew.agent_files import AGENT_FILENAME, GUEST_AGENT_FILENAME, LITE_AGENT_FILENAME
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+    DASHBOARD_MANAGER_AGENT_FILENAME,
+    GUEST_AGENT_FILENAME,
+    LITE_AGENT_FILENAME,
+)
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     dispatch_kiro_agent,
@@ -30,14 +35,24 @@ from kiro_crew.platform import current_context, safe_context_call
 
 logger = logging.getLogger(__name__)
 
-# The managed specs that are not a sensible thing to run a chat AS. Only the
-# bare cheap agent behind auto-titles and compaction (no prompt, no tools) is
-# here; it is reached by the runtime itself, never picked by a person. The
-# primary ``kirocrew`` spec is deliberately NOT here: a chat session is a
-# template choice, and the main managed agent is the default one. The other
-# owned specs (conductor, worker, research, ...) are ordinary choices; hiding
-# every owned file would drop them from a fresh install.
-_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME})
+# The managed specs that are not a sensible thing to run a chat AS. The bare
+# cheap agent behind auto-titles and compaction (no prompt, no tools) is here,
+# reached by the runtime itself and never picked by a person; so is the guest
+# agent, which is a trust boundary. The primary ``kirocrew`` spec is deliberately
+# NOT here: a chat session is a template choice, and the main managed agent is the
+# default one. The other owned specs (conductor, worker, research, ...) are
+# ordinary choices; hiding every owned file would drop them from a fresh install.
+#
+# The dashboard manager is here because of what it CANNOT do rather than what it
+# is for. It holds the panel server and ``fs_read`` and nothing else: no shell, no
+# file write, no session tools. A person who picked it for a chat would get an
+# agent that can change one page and cannot answer anything, which reads as the
+# product being broken rather than as a narrow agent doing its job. It is reached
+# by a crewmate handing it page work, which is what the member base prompt's item
+# 7 routes.
+_BACKGROUND_ONLY_FILES = frozenset(
+    {LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME, DASHBOARD_MANAGER_AGENT_FILENAME}
+)
 
 
 def _is_background_only(agent: AgentInfo) -> bool:

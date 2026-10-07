@@ -1,0 +1,339 @@
+<div class="flw">
+  <style>
+    .flw { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .flw h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .flw .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .flw .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .flw .sub { font-size: 10px; color: var(--muted, #9aa); }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 7px; margin-top: 9px; }
+    .kpi { border: 1px solid var(--border, #333); border-radius: 14px; padding: 8px 10px; background: var(--card, #181818); }
+    .kpi .lab { font-size: 10px; color: var(--muted, #9aa); }
+    .kpi .val { font-size: 21px; font-weight: 700; line-height: 1.15; color: var(--text-strong, #fff); }
+    .kpi .val u { font-size: 10.5px; font-weight: 600; text-decoration: none; color: var(--muted, #9aa); margin-left: 3px; }
+    .kpi .bar { height: 3px; border-radius: 2px; margin-top: 6px; background: color-mix(in oklab, var(--border, #333) 60%, transparent); overflow: hidden; }
+    .kpi .bar i { display: block; height: 100%; background: var(--accent, #00d492); }
+
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 9px; margin-top: 10px; }
+    .chart { border: 1px solid var(--border, #333); border-radius: 14px; padding: 9px 11px 7px; background: var(--card, #181818); position: relative; overflow: hidden; }
+    .chart .ct { font-size: 11px; font-weight: 600; color: var(--text-strong, #fff); }
+    .chart .cc { font-size: 10px; color: var(--muted, #9aa); margin-top: 1px; }
+    .chart .glow { position: absolute; inset: auto -20% -40% -20%; height: 150px; background: radial-gradient(ellipse at 50% 100%, color-mix(in oklab, #ff8a7a 22%, transparent), transparent 70%); pointer-events: none; }
+    .chart .plot { position: relative; margin-top: 7px; }
+    .chart .ax { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--muted, #9aa); margin-top: 3px; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 9px; font-size: 10px; color: var(--muted, #9aa); margin-top: 6px; }
+    .legend b { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+  </style>
+
+  <h2>Flow</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>entries <span data-dashboard-field="entries">-</span></span>
+    <span>generation <span data-dashboard-field="generation">-</span></span>
+  </div>
+  <div class="meta">
+    <span>opened <span data-dashboard-field="created_at">-</span></span>
+    <span>first write <span data-dashboard-field="first_entry_at">-</span></span>
+    <span>last write <span data-dashboard-field="last_entry_at">-</span></span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="charts">
+    <div class="chart">
+      <div class="glow"></div>
+      <div class="ct">Burndown</div>
+      <div class="cc">items still open at each step, against a straight pace</div>
+      <div class="plot" id="burn"></div>
+      <div class="ax" id="burnax"></div>
+    </div>
+    <div class="chart">
+      <div class="ct">Cumulative flow</div>
+      <div class="cc">how many items sat in each state at each step</div>
+      <div class="plot" id="cfd"></div>
+      <div class="ax" id="cfdax"></div>
+      <div class="legend" id="cfdlegend"></div>
+    </div>
+  </div>
+
+  <div class="sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> item(s) counted,
+    <span data-dashboard-field="omitted">-</span> not shown (list truncated, so both charts are drawn on a part of the board)
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+      var SVG = 'http://www.w3.org/2000/svg';
+      var STEPS = 24;
+      var W = 300;
+      var H = 96;
+
+      // Stack order, bottom up: finished at the bottom so the band that GROWS is the
+      // one a reader wants flat, and the open band on top is the pile-up.
+      var BANDS = [
+        ['accepted', 'accepted', '#6aa9ff'],
+        ['rejected', 'rejected or left', '#ff5c5c'],
+        ['open', 'open', '#ffb59a']
+      ];
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function fields() { return (window.kirocrew || {}).fields || {}; }
+      function items() {
+        var v = fields().items;
+        return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      function stamp(v) {
+        var n = num(v);
+        if (n !== null) return n;
+        var s = text(v);
+        if (!s) return null;
+        var t = Date.parse(s);
+        return isFinite(t) ? t : null;
+      }
+      function clock(ms) {
+        var d = new Date(ms);
+        return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2);
+      }
+      function svg(tag, attrs) {
+        var el = document.createElementNS(SVG, tag);
+        for (var k in attrs) {
+          if (Object.prototype.hasOwnProperty.call(attrs, k)) el.setAttribute(k, String(attrs[k]));
+        }
+        return el;
+      }
+      function frame() {
+        var s = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, preserveAspectRatio: 'none' });
+        s.style.display = 'block';
+        s.style.overflow = 'visible';
+        return s;
+      }
+      function bandOf(it, at) {
+        var closed = stamp(it.closed_at);
+        if (closed !== null && closed <= at) {
+          var state = text(it.state);
+          return state === 'accepted' ? 'accepted' : 'rejected';
+        }
+        return 'open';
+      }
+      function empty(host, why) {
+        host.textContent = '';
+        var p = document.createElement('div');
+        p.className = 'cc';
+        p.textContent = why;
+        host.appendChild(p);
+      }
+      function kpi(label, value, unit, ratio) {
+        var card = document.createElement('div');
+        card.className = 'kpi';
+        var lab = document.createElement('div');
+        lab.className = 'lab';
+        lab.textContent = label;
+        var val = document.createElement('div');
+        val.className = 'val';
+        val.textContent = value === null ? DASH : String(value);
+        if (unit) {
+          var u = document.createElement('u');
+          u.textContent = unit;
+          val.appendChild(u);
+        }
+        card.appendChild(lab);
+        card.appendChild(val);
+        if (ratio !== null && ratio !== undefined) {
+          var bar = document.createElement('div');
+          bar.className = 'bar';
+          var fill = document.createElement('i');
+          fill.style.width = Math.max(0, Math.min(100, ratio * 100)) + '%';
+          bar.appendChild(fill);
+          card.appendChild(bar);
+        }
+        return card;
+      }
+
+      // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
+      // timestamp in a meta row is three times the width of the fact it carries. The
+      // cell is reformatted rather than the value replaced, so an unparseable stamp is
+      // left exactly as the record wrote it instead of becoming an invalid date.
+      function shortenStamps(names) {
+        for (var i = 0; i < names.length; i++) {
+          var cell = document.querySelector('[data-dashboard-field="' + names[i] + '"]');
+          if (!cell) continue;
+          var raw = (cell.textContent || '').trim();
+          if (!raw || raw === DASH) continue;
+          var t = Date.parse(raw);
+          if (!isFinite(t)) continue;
+          var d = new Date(t);
+          cell.textContent =
+            ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2) +
+            ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) +
+            ' UTC';
+        }
+      }
+
+      function render() {
+        var f = fields();
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        shortenStamps(['created_at', 'first_entry_at', 'last_entry_at']);
+        var list = items();
+        var burn = document.getElementById('burn');
+        var cfd = document.getElementById('cfd');
+        var burnax = document.getElementById('burnax');
+        var cfdax = document.getElementById('cfdax');
+        var legend = document.getElementById('cfdlegend');
+        var kpis = document.getElementById('kpis');
+        if (!burn || !cfd || !burnax || !cfdax || !legend || !kpis) return;
+        burnax.textContent = '';
+        cfdax.textContent = '';
+        legend.textContent = '';
+        kpis.textContent = '';
+
+        var done = 0, open = 0, shut = 0;
+        for (var i = 0; i < list.length; i++) {
+          var st = text(list[i].state);
+          if (st === 'accepted') done += 1;
+          else if (st === 'open') open += 1;
+          else shut += 1;
+        }
+        kpis.appendChild(kpi('accepted', list.length ? done : null, 'of ' + list.length, list.length ? done / list.length : null));
+        kpis.appendChild(kpi('still open', list.length ? open : null, 'item(s)', null));
+        kpis.appendChild(kpi('rejected or left', list.length ? shut : null, 'item(s)', null));
+
+        var lo = stamp(f.first_entry_at) || stamp(f.created_at);
+        var hi = stamp(f.last_entry_at);
+        for (var j = 0; j < list.length; j++) {
+          var a = stamp(list[j].created_at);
+          var b = stamp(list[j].closed_at);
+          if (a !== null && (lo === null || a < lo)) lo = a;
+          if (b !== null && (hi === null || b > hi)) hi = b;
+        }
+        if (open && hi !== null && hi < Date.now()) hi = Date.now();
+        if (lo === null || hi === null || hi <= lo || !list.length) {
+          var why = list.length
+            ? 'No open and close stamps span a window, so neither chart can be drawn.'
+            : 'No item on this board yet.';
+          empty(burn, why);
+          empty(cfd, why);
+          var cell0 = document.querySelector('[data-dashboard-field="items"]');
+          if (cell0) cell0.textContent = String(list.length);
+          return;
+        }
+        var width = hi - lo;
+
+        // One sample per step across the board's own window. Sampling, not one point
+        // per event: an event series has as many x positions as there were writes, so
+        // two boards of the same length would draw at different resolutions and could
+        // not be read against each other.
+        var at = [];
+        for (var s = 0; s < STEPS; s++) at.push(lo + (width * s) / (STEPS - 1));
+
+        var remaining = [];
+        var stacks = [];
+        var peak = 0;
+        for (var k = 0; k < at.length; k++) {
+          var counts = { accepted: 0, rejected: 0, open: 0 };
+          var opened = 0;
+          for (var m = 0; m < list.length; m++) {
+            var born = stamp(list[m].created_at);
+            if (born === null || born > at[k]) continue;
+            opened += 1;
+            counts[bandOf(list[m], at[k])] += 1;
+          }
+          remaining.push(counts.open);
+          stacks.push(counts);
+          if (opened > peak) peak = opened;
+        }
+        if (!peak) peak = 1;
+
+        // BURNDOWN
+        burn.textContent = '';
+        var bs = frame();
+        for (var g = 0; g <= 2; g++) {
+          bs.appendChild(svg('line', {
+            x1: 0, x2: W, y1: (H * g) / 2, y2: (H * g) / 2,
+            stroke: 'currentColor', 'stroke-opacity': 0.12, 'stroke-width': 1
+          }));
+        }
+        function x(idx) { return (idx / (at.length - 1)) * W; }
+        function y(v) { return H - (v / peak) * (H - 6) - 3; }
+        var first = remaining[0];
+        bs.appendChild(svg('line', {
+          x1: 0, y1: y(first), x2: W, y2: y(0),
+          stroke: 'currentColor', 'stroke-opacity': 0.45, 'stroke-width': 1,
+          'stroke-dasharray': '4 3'
+        }));
+        var area = 'M0,' + H;
+        var line = '';
+        for (var p = 0; p < remaining.length; p++) {
+          area += ' L' + x(p).toFixed(1) + ',' + y(remaining[p]).toFixed(1);
+          line += (p ? ' L' : 'M') + x(p).toFixed(1) + ',' + y(remaining[p]).toFixed(1);
+        }
+        area += ' L' + W + ',' + H + ' Z';
+        bs.appendChild(svg('path', { d: area, fill: '#ff8a7a', 'fill-opacity': 0.16, stroke: 'none' }));
+        bs.appendChild(svg('path', {
+          d: line, fill: 'none', stroke: '#ff8a7a', 'stroke-width': 2,
+          'stroke-linejoin': 'round', 'stroke-linecap': 'round'
+        }));
+        bs.appendChild(svg('circle', {
+          cx: x(remaining.length - 1), cy: y(remaining[remaining.length - 1]), r: 3,
+          fill: '#ff8a7a'
+        }));
+        burn.appendChild(bs);
+        var bl = document.createElement('span');
+        bl.textContent = clock(lo) + ' \u00b7 ' + first + ' open';
+        var br = document.createElement('span');
+        br.textContent = remaining[remaining.length - 1] + ' open \u00b7 ' + clock(hi);
+        burnax.appendChild(bl);
+        burnax.appendChild(br);
+
+        // CUMULATIVE FLOW
+        cfd.textContent = '';
+        var cs = frame();
+        var base = [];
+        for (var z = 0; z < at.length; z++) base.push(0);
+        for (var n = 0; n < BANDS.length; n++) {
+          var key = BANDS[n][0];
+          var top = [];
+          for (var q = 0; q < at.length; q++) top.push(base[q] + stacks[q][key]);
+          var d = 'M' + x(0).toFixed(1) + ',' + y(base[0]).toFixed(1);
+          for (var up = 0; up < top.length; up++) d += ' L' + x(up).toFixed(1) + ',' + y(top[up]).toFixed(1);
+          for (var dn = base.length - 1; dn >= 0; dn--) d += ' L' + x(dn).toFixed(1) + ',' + y(base[dn]).toFixed(1);
+          d += ' Z';
+          cs.appendChild(svg('path', {
+            d: d, fill: BANDS[n][2], 'fill-opacity': 0.62,
+            stroke: BANDS[n][2], 'stroke-opacity': 0.9, 'stroke-width': 1
+          }));
+          base = top;
+          var row = document.createElement('span');
+          var sw = document.createElement('b');
+          sw.style.background = BANDS[n][2];
+          row.appendChild(sw);
+          row.appendChild(document.createTextNode(BANDS[n][1] + ' ' + stacks[at.length - 1][key]));
+          legend.appendChild(row);
+        }
+        cfd.appendChild(cs);
+        var cl = document.createElement('span');
+        cl.textContent = clock(lo);
+        var cr = document.createElement('span');
+        cr.textContent = 'top of band = ' + peak + ' opened';
+        var cr2 = document.createElement('span');
+        cr2.textContent = clock(hi);
+        cfdax.appendChild(cl);
+        cfdax.appendChild(cr);
+        cfdax.appendChild(cr2);
+
+        var cell = document.querySelector('[data-dashboard-field="items"]');
+        if (cell) cell.textContent = String(list.length);
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

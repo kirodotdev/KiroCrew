@@ -1,0 +1,49 @@
+{
+  "id": "office",
+  "version": 1,
+  "title": "Office desk",
+  "description": "One page for a person whose crewmate writes the deck, the email and the report: what landed today, what is waiting on their eye, what is still being written, and what the week cost. Every number is the record's. The page reads ONE fold, workstreams, which is the crewmate's own work across every session it ran under -- a session-keyed fold would answer for a slice and a reader could not tell a slice from the whole. items is the boards, each with goal, total, accepted, open, needs_you and credits, and each board's tasks with title, state, status, summary, verdict, credits and last_report_at; series is the hourly credits-and-accepted buckets; omitted is what the fold dropped; last_entry_at is when the record last advanced. From those four paths the page derives the whole layout, and each derivation is named here because none of them is a fold path of its own. DELIVERED TODAY is the accepted tasks whose last_report_at falls on the same UTC day as the clock -- state accepted is the conductor's own verdict, so a delivered row is never the crewmate's claim about itself. WAITING FOR YOUR REVIEW is the tasks still open whose worker reported done or question: a draft claimed finished with nothing ruled on it, and a draft whose writer is asking something. Those two are different asks and get different primary actions, which is why they are not one count. IN PROGRESS is one row per board with open work, the bar being that board's accepted over total, because a bar on a single task would need a percentage no fold carries and the board's own done/total is a real number. CREDITS THIS WEEK sums the series buckets inside seven days of the clock; the series holds at most 48 active hours, so the page says the figure is a floor whenever it is sitting on the cap, and prints the all-time board total beside it rather than letting one number stand for both. TYPE -- deck, mail, sheet or doc -- is read off the crewmate's drafts entry when it wrote one and otherwise guessed from the title's own words, and a guess is drawn differently from a told type so a reader is never shown an inference as a record. Two fields are the crewmate's own, each answering a question no fold has a field for. drafts is keyed by item_id, each value {type, file, action, meta}: type is deck/mail/sheet/doc, file the deliverable's name, action the label for the row's primary button, meta one line about the draft; a row with no entry still renders from the record, so a crewmate that never wrote the field loses the file name and nothing else. steps is keyed by board id, each value one line naming the step that board is on right now -- the fold records what is open, never what the writer is doing inside it. The two buttons on a review row put a line in the person's chat box and never send it: the page posts kirocrew-dashboard:act to the host, the host fills the composer, and the person presses send, so this page can offer a reply and can never speak as them.",
+  "source": "builtin",
+  "fields": {
+    "items": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "items"
+      }
+    },
+    "series": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "series"
+      }
+    },
+    "omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "omitted"
+      }
+    },
+    "last_entry_at": {
+      "type": "string",
+      "source": {
+        "fold": "workstreams",
+        "path": "last_entry_at"
+      }
+    },
+    "drafts": {
+      "type": "object",
+      "source": {
+        "agentic": true
+      }
+    },
+    "steps": {
+      "type": "object",
+      "source": {
+        "agentic": true
+      }
+    }
+  }
+}

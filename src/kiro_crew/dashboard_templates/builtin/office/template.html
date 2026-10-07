@@ -1,0 +1,800 @@
+<div class="of">
+  <style>
+    /* THE SHEET project-report's page is written in, copied rule for rule: the same
+       14px page padding and 12px gap, the same 14px card radius, the same type scale,
+       the same KPI card, section header, Needs-you card, kind tag, result pill and
+       epic-row progress bar.
+
+       One thing is deliberately NOT copied. project-report fixes a warm accent and
+       three series colours as literals and mixes them over the theme's surfaces. That
+       page has a chart and a sunburst to colour; this one has neither, so it needs
+       none of them -- and a literal here would render a colour the product never
+       serves on one of the two canvases. Every colour below is a theme variable with
+       the product's own dark value as the fallback. */
+    .of {
+      --of-line: var(--border, #27272a);
+      --of-radius: 14px;
+      /* Motion is a token, as it is on project-report: every transition names one of
+         these and the reduced-motion block at the end zeroes it in one place. */
+      --of-motion-fast: 140ms;
+      --of-ease: cubic-bezier(.16, 1, .3, 1);
+      font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text, #e4e4e7);
+      background: var(--bg, #12141a);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .of * { box-sizing: border-box; }
+
+    /* ---- cards: project-report's .pr-card and its header ---- */
+    .of-card { background: var(--card, #181b22); border: 1px solid var(--of-line);
+      border-radius: var(--of-radius); padding: 12px 13px; min-width: 0; }
+    .of-card-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+    .of-card-t { font-size: 13px; font-weight: 600; color: var(--text, #e4e4e7); }
+    .of-card-c { font-size: 11px; color: var(--muted, #7f7f88); }
+
+    /* ---- section header: project-report's .pr-shelf-h ---- */
+    .of-shelf-h { font-size: 10px; font-weight: 700; letter-spacing: .05em;
+      text-transform: uppercase; color: var(--muted, #7f7f88);
+      padding-bottom: 5px; border-bottom: 1px solid var(--of-line); margin-bottom: 2px; }
+
+    /* ---- KPI row: project-report's .pr-kpis / .pr-kpi ----
+       Three cards drawn exactly alike. No tile is highlighted: a card that wears the
+       warning colour because its own number is above zero makes the colour mean
+       "nonzero" rather than "look at this", and the count is already the message. */
+    .of-kpis { display: grid; gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(164px, 1fr)); }
+    .of-kpi { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 6px; }
+    .of-kpi-label { grid-column: 1 / -1; font-size: 11px; color: var(--muted, #7f7f88); }
+    .of-kpi-v { font-size: 26px; font-weight: 640; line-height: 1.05;
+      color: var(--text-strong, #fafafa); font-variant-numeric: tabular-nums; }
+    .of-kpi-u { font-size: 12px; font-weight: 500; color: var(--muted, #7f7f88);
+      margin-left: 3px; }
+    .of-kpi-sub { grid-column: 1 / -1; font-size: 11px; color: var(--muted, #7f7f88); }
+
+    /* The one sentence under the row: project-report's .pr-sentence. */
+    .of-sentence { font-size: 12.5px; color: var(--muted-strong, #52525b); }
+
+    /* ---- the kind tag: project-report's .pr-chip ----
+       Outlined and muted, so the four kinds are told apart by the WORD and not by
+       four fills competing with the page's one accent. There is no hollow-versus-
+       filled pair any more: a type nobody wrote is drawn nowhere at all, which is the
+       strongest form of never showing an inference in the ink of a record. */
+    .of-ty { font: 600 10px/1 system-ui, sans-serif; letter-spacing: .04em;
+      min-width: 34px; text-align: center; padding: 3px 6px; border-radius: 5px;
+      border: 1px solid var(--of-line); color: var(--muted, #7f7f88);
+      white-space: nowrap;
+      /* The tag is a grid item in its row, and a grid item stretches by default: at
+         the panel's width that drew the four-letter label as a full-width bar. */
+      justify-self: start; align-self: start; }
+
+    /* ---- the result pill: project-report's .pr-vp ----
+       Colours are set per verdict where the pill is built, from the theme's own ok,
+       danger and muted families. */
+    .of-vp { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+      white-space: nowrap; }
+
+    /* ---- needs-you card: project-report's .pr-todo-i and everything inside it ----
+       --of-todo-c is the per-item kind token, set where the card is built: the accent
+       family for a draft owed a verdict, the info family for one owed an answer.
+       Neither is the warning colour: a card bordered in amber reads as a warning, and
+       a draft waiting its turn is not one. */
+    .of-todo { display: grid; gap: 7px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .of-todo-i { display: grid; grid-template-columns: auto 1fr; gap: 9px;
+      align-items: start; padding: 8px 10px; border-radius: 10px;
+      --of-todo-c: var(--accent, #00d492);
+      border: 1px solid color-mix(in oklab, var(--of-todo-c) 24%, var(--of-line));
+      background: color-mix(in oklab, var(--of-todo-c) 9%, var(--card, #181b22));
+      transition: opacity var(--of-motion-fast) var(--of-ease),
+        transform var(--of-motion-fast) var(--of-ease); }
+    /* A card for a draft whose kind nobody wrote has no tag, so it has no tag column
+       either: an empty first column would indent the title by a tag that is not there. */
+    .of-todo-i.of-notag { grid-template-columns: 1fr; }
+    .of-todo-i.of-going { opacity: 0; transform: scale(0.97); }
+    .of-todo-x { min-width: 0; }
+    .of-todo-x b { display: block; font-size: 12.5px; font-weight: 500;
+      color: var(--text, #e4e4e7); overflow-wrap: anywhere; }
+    .of-todo-m { font-size: 10.5px; color: var(--muted, #7f7f88); margin-top: 1px;
+      overflow-wrap: anywhere; }
+    .of-todo-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .of-todo-opt { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 999px;
+      border: 1px solid var(--border-strong, #3f3f46); background: var(--bg, transparent);
+      color: var(--text, #e4e4e7); cursor: pointer;
+      transition: border-color var(--of-motion-fast) var(--of-ease),
+        background var(--of-motion-fast) var(--of-ease); }
+    .of-todo-opt:hover { border-color: var(--of-todo-c, var(--accent, #00d492)); }
+    .of-todo-opt:focus-visible { outline: 2px solid var(--accent, #00d492);
+      outline-offset: 1px; }
+    .of-todo-opt.of-rec { border-color: var(--of-todo-c, var(--accent, #00d492)); }
+    .of-todo-sent { display: flex; gap: 8px; align-items: center; font-size: 11px;
+      color: var(--muted, #7f7f88); padding: 6px 10px; border-radius: 8px;
+      border: 1px dashed var(--border-strong, #3f3f46); align-self: start; }
+    .of-todo-sent b { color: var(--text, #e4e4e7); font-weight: 500; }
+    .of-todo-sent button { font: inherit; background: none; border: 0; padding: 0;
+      color: var(--muted, #7f7f88); text-decoration: underline; cursor: pointer;
+      margin-left: auto; }
+
+    /* ---- delivered rows: project-report's task row inside the epic tree ---- */
+    .of-rows { display: grid; gap: 3px; }
+    .of-row { display: grid; grid-template-columns: auto 1fr auto; gap: 8px;
+      align-items: center; padding: 7px 9px; border-radius: 9px; }
+    .of-row.of-notag { grid-template-columns: 1fr auto; }
+    .of-row:hover { background: color-mix(in oklab, var(--of-line) 45%, transparent); }
+    .of-row-x { min-width: 0; }
+    .of-row-t { font-size: 12.5px; color: var(--text, #e4e4e7); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .of-row-s { font-size: 10.5px; line-height: 1.4; color: var(--muted, #7f7f88);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .of-row-r { display: flex; align-items: center; gap: 8px;
+      justify-content: flex-end; flex-wrap: wrap; }
+    .of-row-m { font-size: 11px; color: var(--muted, #7f7f88);
+      font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* ---- in-progress rows: project-report's epic row and its progress bar ----
+       The meta line is the row's provenance, which a reader skims, so it is the same
+       grey every other meta line on the page is. The danger colour is kept for one
+       fact: the record says a worker on this board is BLOCKED. A count of things
+       waiting on you is not a fault and was wearing red for no reason. */
+    .of-tree { display: grid; gap: 3px; }
+    .of-n { border-radius: 9px; min-width: 0; }
+    .of-n-h { display: grid; grid-template-columns: 1fr auto; gap: 8px;
+      align-items: center; padding: 7px 9px; border-radius: 9px; }
+    .of-n-x { min-width: 0; }
+    .of-n-t { font-size: 13px; font-weight: 620; color: var(--text-strong, #fafafa);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .of-n-s { font-size: 10.5px; line-height: 1.4; color: var(--muted, #7f7f88);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .of-n-m { font-size: 10.5px; color: var(--muted, #7f7f88);
+      font-variant-numeric: tabular-nums; }
+    .of-n-m .of-blk { color: var(--danger, #ef4444); }
+    .of-n-r { display: flex; align-items: center; gap: 8px;
+      justify-content: flex-end; flex-wrap: wrap; }
+    .of-n-done { font-size: 11px; font-variant-numeric: tabular-nums;
+      color: var(--muted, #7f7f88); white-space: nowrap; }
+    .of-n-bar { width: 54px; height: 3px; border-radius: 999px; overflow: hidden;
+      background: color-mix(in oklab, var(--of-line) 70%, var(--card, #181b22)); }
+    .of-n-bar > i { display: block; height: 100%; border-radius: 999px;
+      background: color-mix(in oklab, var(--accent, #00d492) 80%, var(--card, #181b22)); }
+    @media (max-width: 719px) {
+      /* At the panel's width the right-hand group wraps under the name rather than
+         squeezing the title to nothing -- project-report's own narrow rule. The tag
+         keeps its column, so a delivered row still reads tag-then-title on one line. */
+      .of-n-h { grid-template-columns: 1fr; }
+      .of-row { grid-template-columns: auto 1fr; }
+      .of-row.of-notag { grid-template-columns: 1fr; }
+      .of-n-r, .of-row-r { grid-column: 1 / -1; justify-content: flex-start; }
+    }
+
+    /* An empty section says what WOULD be here, in the same grey every other empty
+       state uses. A blank area reads as a page that failed to load. */
+    .of-empty { font-size: 12px; color: var(--muted, #7f7f88); padding: 4px 0; }
+
+    @media (prefers-reduced-motion: reduce) { .of { --of-motion-fast: 0ms; } }
+  </style>
+
+  <div class="of-kpis" id="hl"></div>
+  <div class="of-sentence" id="hl-note"></div>
+
+  <div class="of-card">
+    <div class="of-card-h">
+      <div class="of-card-t">Waiting for your review</div>
+      <div class="of-card-c" id="rv-head">each one is a draft</div>
+    </div>
+    <div class="of-todo" id="rv"></div>
+  </div>
+
+  <div class="of-card">
+    <div class="of-card-h">
+      <div class="of-card-t">Delivered today</div>
+      <div class="of-card-c">accepted and ruled on</div>
+    </div>
+    <div class="of-rows" id="dl"></div>
+  </div>
+
+  <div class="of-card">
+    <div class="of-card-h">
+      <div class="of-card-t">In progress</div>
+      <div class="of-card-c">still being written</div>
+    </div>
+    <div class="of-tree" id="ip"></div>
+  </div>
+
+  <!-- THE RECORD'S OWN PROVENANCE LINE, kept and not painted. The contract is one
+       bound element per field and the host fills each one with the value's raw JSON
+       before any script runs, so the spans stay and keep their field names and the
+       page still overwrites each with the readable count it stands for. What changed
+       is that the line is no longer drawn: read against the three sections above it
+       restated numbers a reader had already been given and read as a debug trailer.
+       `hidden` rather than deleted, because deleting it would leave six published
+       values with nowhere to land. -->
+  <div class="of-note" id="note" hidden>
+    <span data-dashboard-field="items">&mdash;</span>,
+    <span data-dashboard-field="omitted">&mdash;</span> more not shown,
+    <span data-dashboard-field="series">&mdash;</span> with spend,
+    <span data-dashboard-field="drafts">&mdash;</span>,
+    <span data-dashboard-field="steps">&mdash;</span>,
+    record last advanced <span data-dashboard-field="last_entry_at">&mdash;</span>.
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+
+      //: The series cap in the fold itself (WORKSTREAMS_SERIES_LIMIT). The week figure is
+      //: a sum over these buckets, so a series sitting ON the cap may have dropped older
+      //: hours and the figure is then a floor rather than the total. Named once so the
+      //: sum and the sentence that qualifies it cannot drift apart.
+      var SERIES_CAP = 48;
+      var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+      function bag() { return window.kirocrew || {}; }
+      function fields() { return bag().fields || {}; }
+      function txt(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function obj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : null; }
+      function list(name) {
+        var v = fields()[name];
+        return Array.isArray(v) ? v.filter(function (e) { return obj(e); }) : [];
+      }
+      function el(tag, cls, text) {
+        var n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text !== undefined && text !== null) n.textContent = String(text);
+        return n;
+      }
+      function put(name, value) {
+        var cell = document.querySelector('[data-dashboard-field="' + name + '"]');
+        if (cell) cell.textContent = value === null || value === undefined ? DASH : String(value);
+      }
+      function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+      function stamp(v) {
+        var s = txt(v);
+        if (!s) return null;
+        var t = Date.parse(s);
+        return isFinite(t) ? t : null;
+      }
+      function clip(s, n) {
+        var t = txt(s);
+        if (!t) return null;
+        return t.length > n ? t.slice(0, n - 1).replace(/\s+$/, '') + '\u2026' : t;
+      }
+      function ago(ms) {
+        if (ms === null || ms < 0) return null;
+        var m = Math.floor(ms / 60000);
+        if (m < 1) return 'under a minute ago';
+        if (m < 60) return m + 'm ago';
+        var h = Math.floor(m / 60);
+        if (h < 24) return h + 'h ' + (m % 60) + 'm ago';
+        return Math.floor(h / 24) + 'd ago';
+      }
+      function clock(t) {
+        var d = new Date(t);
+        return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) + ' UTC';
+      }
+      function sameUtcDay(a, b) {
+        var x = new Date(a), y = new Date(b);
+        return x.getUTCFullYear() === y.getUTCFullYear() && x.getUTCMonth() === y.getUTCMonth()
+          && x.getUTCDate() === y.getUTCDate();
+      }
+
+      //: THE FOUR KINDS OF THING THIS CREWMATE MAKES. A deck, a mail, a sheet, a doc.
+      //: Each carries only the label its tag prints: the tag is outlined and muted like
+      //: every other kind tag on project-report, so the kind is read off the word and
+      //: there is no per-kind fill to pick a colour for.
+      var TYPES = {
+        deck: { label: 'PPT' },
+        mail: { label: 'MAIL' },
+        sheet: { label: 'XLS' },
+        doc: { label: 'DOC' }
+      };
+      var TYPE_ORDER = ['deck', 'mail', 'sheet', 'doc'];
+
+      //: WHAT KIND OF THING THIS IS, and whether anyone said so. `told` is the whole
+      //: point of the return. A type the crewmate wrote is the record of a deliverable;
+      //: a type this page matched out of a title is a guess, and a guess drawn anywhere
+      //: at all is a guess the reader has to discount. So nothing is guessed: `id` is
+      //: null unless the crewmate named one of the four kinds, and `chip` then draws no
+      //: tag rather than a hollow one with a question mark after it.
+      function typeOf(task, draft) {
+        var said = draft ? txt(draft.type) : null;
+        if (said && Object.prototype.hasOwnProperty.call(TYPES, said.toLowerCase())) {
+          return { id: said.toLowerCase(), told: true };
+        }
+        return { id: null, told: false };
+      }
+      function chip(kind) {
+        if (!kind.told || !kind.id) return null;
+        return el('span', 'of-ty', TYPES[kind.id].label);
+      }
+
+      //: THE RESULT PILL, project-report's verdictPill: the acceptance evaluator's own
+      //: answer in the theme's ok or danger family. Every row it is drawn on is already
+      //: `accepted`, so a row the conductor ruled on without a recorded verdict still
+      //: says Accepted -- in the muted family, because the ruling is the record's and
+      //: the verdict behind it is not there to show.
+      function verdictPill(task) {
+        var v = txt(task.verdict);
+        var pill = el('span', 'of-vp');
+        if (v === 'fail') {
+          pill.textContent = 'Rejected';
+          pill.style.background = 'var(--danger-subtle, rgba(239,68,68,.12))';
+          pill.style.color = 'var(--danger, #ef4444)';
+          return pill;
+        }
+        pill.textContent = 'Accepted';
+        if (v === 'pass') {
+          pill.style.background = 'var(--ok-subtle, rgba(34,197,94,.12))';
+          pill.style.color = 'var(--ok, #22c55e)';
+        } else {
+          pill.style.background = 'var(--bg-hover, #262a35)';
+          pill.style.color = 'var(--muted, #7f7f88)';
+        }
+        return pill;
+      }
+
+      //: THE CREWMATE'S OWN MAPS, each read with the three answers a published value
+      //: has: a usable entry, nothing written, or something written that this page
+      //: cannot read. The third is given its own wording wherever it is drawn, because
+      //: folding it into the second would show a crewmate's broken write as silence.
+      function written(name) {
+        var raw = fields()[name];
+        if (raw === undefined) return { map: null, state: 'absent' };
+        var o = obj(raw);
+        if (!o) return { map: null, state: 'unreadable' };
+        return { map: o, state: 'ok' };
+      }
+      function entry(name, key) {
+        var w = written(name);
+        if (w.state !== 'ok' || !key) return { value: null, state: w.state };
+        if (!Object.prototype.hasOwnProperty.call(w.map, key)) {
+          return { value: null, state: 'absent' };
+        }
+        var v = w.map[key];
+        if (name === 'steps') {
+          var s = txt(v);
+          return s ? { value: s, state: 'ok' } : { value: null, state: 'unreadable' };
+        }
+        var o = obj(v);
+        return o ? { value: o, state: 'ok' } : { value: null, state: 'unreadable' };
+      }
+
+      function boards() { return list('items'); }
+      function tasksOf(board) {
+        return Array.isArray(board.tasks)
+          ? board.tasks.filter(function (t) { return obj(t); })
+          : [];
+      }
+      function everyTask() {
+        var out = [], bs = boards(), i, j, ts;
+        for (i = 0; i < bs.length; i++) {
+          ts = tasksOf(bs[i]);
+          for (j = 0; j < ts.length; j++) out.push({ board: bs[i], task: ts[j] });
+        }
+        return out;
+      }
+
+      //: DELIVERED is the conductor's own verdict, never the writer's claim. `accepted`
+      //: is the only state that says a thing is finished and ruled on; a task whose
+      //: worker reported done sits in the review queue instead, which is the whole
+      //: difference between the two sections.
+      function delivered(now) {
+        return everyTask().filter(function (r) {
+          var at = stamp(r.task.last_report_at);
+          return txt(r.task.state) === 'accepted' && at !== null && sameUtcDay(at, now);
+        }).sort(function (a, b) {
+          return (stamp(b.task.last_report_at) || 0) - (stamp(a.task.last_report_at) || 0);
+        });
+      }
+
+      //: TWO ASKS, not one. A draft reported done is waiting on a verdict; a draft whose
+      //: writer asked something is waiting on an answer. They need different primary
+      //: buttons, so one "waiting on you" count would hide which move the person owes.
+      function waiting() {
+        return everyTask().filter(function (r) {
+          var st = txt(r.task.status);
+          return txt(r.task.state) === 'open' && (st === 'done' || st === 'question');
+        }).sort(function (a, b) {
+          return (stamp(b.task.last_report_at) || 0) - (stamp(a.task.last_report_at) || 0);
+        });
+      }
+
+      function inFlight() {
+        return boards().filter(function (b) { return (num(b.open) || 0) > 0; })
+          .sort(function (a, b) {
+            return (stamp(b.last_activity_at) || 0) - (stamp(a.last_activity_at) || 0);
+          });
+      }
+
+      //: THE ONE FACT THAT STILL WEARS THE DANGER COLOUR: the record says a worker on
+      //: this board reported itself blocked. Read off the tasks' own status rather than
+      //: off a count of things waiting on the person, because waiting is ordinary and
+      //: blocked is not.
+      function blockedOn(board) {
+        return tasksOf(board).filter(function (t) {
+          return txt(t.state) === 'open' && txt(t.status) === 'blocked';
+        }).length;
+      }
+
+      //: THE WEEK'S SPEND, summed over the hourly buckets inside seven days of the
+      //: clock. `atCap` rides along because the fold keeps at most SERIES_CAP active
+      //: hours: on the cap the sum is a floor, and a floor presented as a total is the
+      //: one way a cost figure misleads without being wrong anywhere.
+      function weekCredits(now) {
+        var s = list('series'), total = 0, counted = 0, i, at, c;
+        for (i = 0; i < s.length; i++) {
+          at = stamp(s[i].hour);
+          c = num(s[i].credits);
+          if (at === null || c === null) continue;
+          if (now - at > WEEK_MS) continue;
+          total += c;
+          counted += 1;
+        }
+        return { total: total, hours: counted, atCap: s.length >= SERIES_CAP, buckets: s.length };
+      }
+      function allTimeCredits() {
+        var bs = boards(), total = 0, known = 0, i, c;
+        for (i = 0; i < bs.length; i++) {
+          c = num(bs[i].credits);
+          if (c === null) continue;
+          total += c;
+          known += 1;
+        }
+        return { total: total, known: known, of: bs.length };
+      }
+
+      //: THE CHAT BOX, never the wire. The host fills the person's composer with this
+      //: text and the person presses send, so the page can offer a reply and can never
+      //: speak as them.
+      function act(text) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+        catch (e) { /* no host: the choice simply does nothing */ }
+      }
+      //: Rows the person already picked a choice on, by item id. Kept across refills so a
+      //: row stays folded until the record itself drops it; a reload forgets them, which
+      //: shows the row again if it is still waiting -- the honest answer.
+      var picked = {};
+
+      function ref(task) {
+        var t = clip(task.title, 70) || txt(task.item_id) || 'this draft';
+        var id = txt(task.item_id);
+        return '"' + t + '"' + (id ? ' (' + id + ')' : '');
+      }
+
+      //: THREE KPI CARDS, built the way project-report builds its four: the label, the
+      //: value with its unit, a spacer that keeps the value row's baseline where the
+      //: grid puts it, and one grey subline. Nothing here takes a highlight.
+      function kpi(label, value, unit, sub) {
+        var card = el('div', 'of-card of-kpi');
+        card.appendChild(el('div', 'of-kpi-label', label));
+        var v = el('div', 'of-kpi-v', value);
+        if (unit) v.appendChild(el('span', 'of-kpi-u', unit));
+        card.appendChild(v);
+        card.appendChild(el('div'));
+        if (sub) card.appendChild(el('div', 'of-kpi-sub', sub));
+        return card;
+      }
+
+      function drawHeadline(now) {
+        var host = document.getElementById('hl');
+        var note = document.getElementById('hl-note');
+        if (!host || !note) return;
+        host.textContent = '';
+        note.textContent = '';
+        var bs = boards();
+        var dn = delivered(now).length;
+        var wt = waiting().length;
+        var wk = weekCredits(now);
+        var all = allTimeCredits();
+        var tiles = [
+          { label: 'delivered today', big: bs.length ? String(dn) : DASH,
+            unit: bs.length ? (dn === 1 ? 'item' : 'items') : '',
+            sub: bs.length ? 'accepted and ruled on' : 'the fold carries no board' },
+          { label: 'waiting for your review', big: bs.length ? String(wt) : DASH,
+            unit: bs.length ? (wt === 1 ? 'draft' : 'drafts') : '',
+            sub: wt ? 'each one is a draft below' : 'nothing is waiting on you' },
+          { label: 'credits this week', big: wk.hours ? wk.total.toFixed(2) : DASH,
+            unit: wk.hours ? 'credits' : '',
+            sub: wk.hours
+              ? plural(wk.hours, 'hour', 'hours') + ' with spend' + (wk.atCap ? ', at least' : '')
+              : 'no hour in the last seven days carries spend' }
+        ];
+        for (var i = 0; i < tiles.length; i++) {
+          host.appendChild(kpi(tiles[i].label, tiles[i].big, tiles[i].unit, tiles[i].sub));
+        }
+        var said = [];
+        if (wk.atCap) {
+          said.push('The record keeps ' + SERIES_CAP + ' hours with spend and is holding '
+            + SERIES_CAP + ', so the week figure is a floor: older hours were dropped.');
+        }
+        said.push(all.known
+          ? 'All time across ' + plural(all.of, 'board', 'boards') + ': ' + all.total.toFixed(2)
+            + ' credits' + (all.known < all.of
+              ? ' (' + (all.of - all.known) + ' board(s) report no cost)' : '') + '.'
+          : 'No board reports a cost, so there is no all-time figure to compare the week to.');
+        note.textContent = said.join(' ');
+      }
+
+      function drawReview(now) {
+        var host = document.getElementById('rv');
+        var head = document.getElementById('rv-head');
+        if (!host || !head) return;
+        host.textContent = '';
+        var rows = waiting();
+        head.textContent = rows.length
+          ? plural(rows.length, 'draft', 'drafts') + ', each one says what to do'
+          : 'nothing is waiting on you';
+        var w = written('drafts');
+        if (!rows.length) {
+          host.appendChild(el('div', 'of-empty', boards().length
+            ? 'No draft is waiting on you. Every open piece of work is still being written.'
+            : 'The record carries no board for this crewmate yet, so there is nothing to review.'));
+          return;
+        }
+        rows.forEach(function (r) {
+          var task = r.task;
+          var id = txt(task.item_id) || '';
+          var got = entry('drafts', id);
+          var draft = got.value;
+          var kind = typeOf(task, draft);
+          var asking = txt(task.status) === 'question';
+          var card = el('div', 'of-todo-i');
+          //: The kind token. The accent family for a verdict owed, the info family for
+          //: an answer owed -- the two asks this section keeps apart, in the same place
+          //: project-report puts its own kind colour. Neither is the warning colour.
+          card.style.setProperty('--of-todo-c',
+            asking ? 'var(--info, #0891b2)' : 'var(--accent, #00d492)');
+
+          //: The kind tag, when the crewmate named a kind. When nobody did there is no
+          //: tag AND no column for one, so the title is flush rather than indented past
+          //: an empty cell.
+          var tag = chip(kind);
+          if (tag) {
+            card.appendChild(tag);
+          } else {
+            card.classList.add('of-notag');
+          }
+
+          var x = el('div', 'of-todo-x');
+          x.appendChild(el('b', null, clip(task.title, 160) || id || DASH));
+
+          //: ONE LINE OF META, in the order a reader needs it: what the writer said, how
+          //: long it has been sitting, what it cost. `summary` is the worker's own words
+          //: and is the only part of the row the record guarantees.
+          var bits = [];
+          var said = clip(draft ? draft.meta : null, 120) || clip(task.summary, 120);
+          if (said) bits.push(said);
+          var at = stamp(task.last_report_at);
+          bits.push(at === null
+            ? 'no report time on the record'
+            : 'reported ' + clock(at) + ', ' + (ago(now - at) || 'just now'));
+          var cr = num(task.credits);
+          if (cr !== null && task.credits_reported !== false) bits.push(cr.toFixed(2) + ' credits');
+          //: THE FILE, and the three answers its absence can have. A crewmate that wrote
+          //: nothing and a crewmate whose write this page cannot read are different
+          //: facts, and only one of them is anybody's fault. Both go on the SAME meta
+          //: line as the rest of the provenance: project-report's card carries one grey
+          //: line under its title, and a second and a third turned the card into a
+          //: paragraph with the buttons pushed off the bottom of the panel.
+          var file = draft ? clip(draft.file, 90) : null;
+          if (file) {
+            bits.push(file);
+          } else if (got.state === 'unreadable') {
+            bits.push('the crewmate wrote a file name here this page cannot read');
+          } else {
+            bits.push('No file name written');
+          }
+          x.appendChild(el('div', 'of-todo-m', bits.join(' \u00b7 ')));
+
+          if (picked[id]) {
+            var sent = el('div', 'of-todo-sent');
+            sent.appendChild(el('b', null, 'In your chat box:'));
+            sent.appendChild(el('span', null, '\u2192 ' + picked[id]));
+            var undo = el('button', null, 'Undo');
+            undo.type = 'button';
+            undo.addEventListener('click', function () { delete picked[id]; render(); });
+            sent.appendChild(undo);
+            x.appendChild(sent);
+            card.appendChild(x);
+            host.appendChild(card);
+            return;
+          }
+
+          //: THE PRIMARY MOVE depends on which ask this is. A draft reported done needs a
+          //: verdict; a draft whose writer asked something needs an answer. The crewmate
+          //: may name the label itself in its drafts entry, which is how a page that
+          //: speaks English ends up offering a button in the person's own language.
+          var primary = clip(draft ? draft.action : null, 40)
+            || (asking ? 'Answer it' : 'Approve it');
+          var acts = el('div', 'of-todo-opts');
+          [{ label: primary, say: ref(task) + ': ' + primary, rec: true },
+            { label: 'Revise', say: ref(task) + ': revise it', rec: false }
+          ].forEach(function (c) {
+            var b = el('button', 'of-todo-opt' + (c.rec ? ' of-rec' : ''), c.label);
+            b.type = 'button';
+            b.title = c.say;
+            b.addEventListener('click', function () {
+              act(c.say);
+              picked[id] = c.label;
+              card.classList.add('of-going');
+              setTimeout(render, 160);
+            });
+            acts.appendChild(b);
+          });
+          x.appendChild(acts);
+          card.appendChild(x);
+          host.appendChild(card);
+        });
+        if (w.state === 'unreadable') {
+          host.appendChild(el('div', 'of-empty',
+            'The crewmate published a drafts value this page cannot read, so every row '
+            + 'above is drawn from the record alone.'));
+        }
+      }
+
+      function drawDelivered(now) {
+        var host = document.getElementById('dl');
+        if (!host) return;
+        host.textContent = '';
+        var rows = delivered(now);
+        if (!rows.length) {
+          host.appendChild(el('div', 'of-empty', boards().length
+            ? 'Nothing has been accepted today. The In progress list below is what is moving.'
+            : 'The record carries no board for this crewmate yet.'));
+          return;
+        }
+        rows.forEach(function (r) {
+          var task = r.task;
+          var id = txt(task.item_id) || '';
+          var draft = entry('drafts', id).value;
+          var kind = typeOf(task, draft);
+          var row = el('div', 'of-row');
+          var tag = chip(kind);
+          if (tag) {
+            row.appendChild(tag);
+          } else {
+            row.classList.add('of-notag');
+          }
+          //: TITLE first, file underneath. The title is the thing the person asked for
+          //: and the only one of the two the record guarantees; the file is what they
+          //: open, and it is there only when the crewmate wrote it.
+          var what = el('div', 'of-row-x');
+          what.appendChild(el('div', 'of-row-t', clip(task.title, 150) || id || DASH));
+          var file = draft ? clip(draft.file, 110) : null;
+          if (file) what.appendChild(el('div', 'of-row-s', file));
+          row.appendChild(what);
+          var right = el('div', 'of-row-r');
+          var at = stamp(task.last_report_at);
+          right.appendChild(el('span', 'of-row-m', at === null ? DASH : clock(at)));
+          //: The verdict, not the state: `accepted` is already true of every row here,
+          //: so the pill carries the acceptance evaluator's own answer in the theme's
+          //: ok family and falls back to a muted Accepted when none was recorded.
+          right.appendChild(verdictPill(task));
+          row.appendChild(right);
+          host.appendChild(row);
+        });
+      }
+
+      function drawInProgress(now) {
+        var host = document.getElementById('ip');
+        if (!host) return;
+        host.textContent = '';
+        var rows = inFlight();
+        if (!rows.length) {
+          host.appendChild(el('div', 'of-empty', boards().length
+            ? 'Every board on the record is closed out. Nothing is being written.'
+            : 'The record carries no board for this crewmate yet.'));
+          return;
+        }
+        rows.forEach(function (board) {
+          var id = txt(board.id) || '';
+          var node = el('div', 'of-n');
+          var h = el('div', 'of-n-h');
+          var x = el('div', 'of-n-x');
+          x.appendChild(el('div', 'of-n-t', clip(board.goal, 150) || id || DASH));
+
+          //: THE STEP. No fold records what a writer is doing inside an open piece of
+          //: work, so this is the crewmate's own line. Absent, the page falls back to the
+          //: titles of the tasks actually open -- which is the record's answer to a
+          //: narrower question, and is labelled as such rather than dressed as a step.
+          var got = entry('steps', id);
+          var s = el('div', 'of-n-s');
+          if (got.state === 'ok') {
+            s.textContent = clip(got.value, 150);
+          } else if (got.state === 'unreadable') {
+            s.textContent = 'The crewmate wrote a step here this page cannot read.';
+          } else {
+            var open = tasksOf(board).filter(function (t) { return txt(t.state) === 'open'; })
+              .map(function (t) { return clip(t.title, 60); })
+              .filter(function (t) { return t; });
+            s.textContent = open.length
+              ? 'No step written. Open: ' + open.slice(0, 2).join('; ')
+                + (open.length > 2 ? ' and ' + (open.length - 2) + ' more' : '')
+              : 'No step written, and the record names no open task on this board.';
+          }
+          x.appendChild(s);
+
+          //: THE META LINE: where this row came from, and nothing to act on. Grey, like
+          //: every other meta line here, and it does NOT restate the accepted-over-total
+          //: that the bar beside it already carries. One fragment of it can be coloured:
+          //: the record saying a worker on this board is BLOCKED, which is the only fact
+          //: on this page worth the danger colour -- and it is that fragment that wears
+          //: it, not the whole line, so the colour still points at something.
+          var blocked = blockedOn(board);
+          var meta = el('div', 'of-n-m');
+          var total = num(board.total), done = num(board.accepted);
+          var line = [];
+          if (total === null || done === null) {
+            line.push('the record does not count this board');
+          }
+          var needs = num(board.needs_you);
+          if (needs) line.push(plural(needs, 'needs you', 'need you'));
+          var last = stamp(board.last_activity_at);
+          line.push(last === null ? 'no activity time on the record' : (ago(now - last) || 'just now'));
+          if (blocked) {
+            meta.appendChild(el('span', 'of-blk',
+              plural(blocked, 'worker blocked', 'workers blocked')));
+            meta.appendChild(document.createTextNode(' \u00b7 ' + line.join(' \u00b7 ')));
+          } else {
+            meta.textContent = line.join(' \u00b7 ');
+          }
+          x.appendChild(meta);
+          h.appendChild(x);
+
+          //: THE BAR IS THE BOARD'S, not a task's. A per-task percentage is a number no
+          //: fold carries, and inventing one would put the only made-up figure on the
+          //: page right next to the real ones. accepted-over-total is the record's, and
+          //: it sits beside its own counts the way project-report's epic row does.
+          var right = el('div', 'of-n-r');
+          right.appendChild(el('div', 'of-n-done', total === null || done === null
+            ? DASH : done + ' / ' + total + ' accepted'));
+          var bar = el('div', 'of-n-bar');
+          var fill = el('i');
+          fill.style.width = (total && done !== null
+            ? Math.max(0, Math.min(100, (done / total) * 100)) : 0).toFixed(1) + '%';
+          bar.appendChild(fill);
+          right.appendChild(bar);
+          h.appendChild(right);
+
+          node.appendChild(h);
+          host.appendChild(node);
+        });
+      }
+
+      function render() {
+        //: ONE clock read for the whole render. Four sections compare stamps against
+        //: "now", and reading it per section lets two of them disagree about which day
+        //: it is -- which is how a row can be delivered today in one list and not in
+        //: another on the same page.
+        var now = Date.now();
+        drawHeadline(now);
+        drawReview(now);
+        drawDelivered(now);
+        drawInProgress(now);
+
+        //: The host fills each bound cell with the raw JSON of the value, which is
+        //: unreadable in a sentence, so each is overwritten with the count it stands for.
+        var bs = boards();
+        put('items', plural(bs.length, 'workstream', 'workstreams'));
+        put('omitted', num(fields().omitted));
+        put('series', plural(list('series').length, 'hour', 'hours'));
+        var dw = written('drafts'), sw = written('steps');
+        put('drafts', dw.state === 'ok'
+          ? plural(Object.keys(dw.map).length, 'draft written', 'drafts written')
+          : (dw.state === 'unreadable' ? 'a drafts value this page cannot read'
+            : 'no draft written'));
+        put('steps', sw.state === 'ok'
+          ? plural(Object.keys(sw.map).length, 'step written', 'steps written')
+          : (sw.state === 'unreadable' ? 'a steps value this page cannot read'
+            : 'no step written'));
+        var since = stamp(fields().last_entry_at);
+        put('last_entry_at', since === null ? null : ago(now - since));
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

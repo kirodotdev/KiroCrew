@@ -1,0 +1,315 @@
+<div class="sup">
+  <style>
+    .sup { font: 12px/1.45 system-ui, sans-serif; color: var(--text, #e6e6e6); padding: 10px; }
+    .sup h2 { font-size: 12px; font-weight: 600; margin: 0 0 6px; color: var(--text-strong, #fff); }
+    .sup .goal { font-size: 13px; font-weight: 600; color: var(--text-strong, #fff); }
+    .sup .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
+    .sup .sub { font-size: 10px; color: var(--muted, #9aa); }
+    .sup .wrote { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted-strong, #778); border: 1px solid var(--border, #333); border-radius: 8px; padding: 0 5px; }
+
+    .head { margin: 9px 0 0; padding: 9px 11px; border: 1px solid var(--border, #333); border-radius: 12px; background: color-mix(in oklab, #00d492 6%, var(--card, #181818)); }
+    .head .say { font-size: 12.5px; font-weight: 600; color: var(--text-strong, #fff); }
+    .head .who { margin-top: 3px; }
+
+    .quiet { margin-top: 7px; padding: 6px 10px; border: 1px solid var(--border, #333); border-left: 3px solid var(--warn, #ffd230); border-radius: 8px; font-size: 11px; color: var(--muted-strong, #889); }
+
+    .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
+    .col { border: 1px solid var(--border, #333); border-radius: 14px; padding: 8px 10px; background: var(--card, #181818); }
+    .col .ch { display: flex; align-items: baseline; gap: 6px; }
+    .col .ch b { font-size: 11px; font-weight: 600; color: var(--text-strong, #fff); }
+    .col .ch i { font-size: 18px; font-weight: 700; font-style: normal; margin-left: auto; }
+    .col .ch u { font-size: 10px; color: var(--muted, #9aa); text-decoration: none; }
+    .col .row { font-size: 11px; color: var(--text, #e6e6e6); margin-top: 5px; padding-left: 8px; border-left: 2px solid var(--border-strong, #444); }
+    .col .row span { display: block; font-size: 10px; color: var(--muted, #9aa); }
+    .col u { display: block; font-size: 10px; text-decoration: none; color: var(--muted, #9aa); margin-top: 1px; }
+
+    .spark { display: flex; align-items: flex-end; gap: 3px; height: 28px; max-width: 320px; margin: 8px 0 4px; }
+    .spark i { display: block; flex: 1 1 0; max-width: 16px; min-width: 3px; border-radius: 2px 2px 0 0; background: var(--accent, #00d492); opacity: .8; }
+
+    .feed { margin-top: 5px; }
+    .mom { display: flex; gap: 8px; font-size: 11px; padding: 3px 0; border-bottom: 1px solid color-mix(in oklab, var(--border, #333) 55%, transparent); }
+    .mom b { font-weight: 600; color: var(--text-strong, #fff); min-width: 108px; }
+    .mom span { color: var(--muted, #9aa); }
+  </style>
+
+  <h2>Standup</h2>
+  <div class="goal" data-dashboard-field="goal">-</div>
+  <div class="meta">
+    <span>round <span data-dashboard-field="round">-</span></span>
+    <span>turns <span data-dashboard-field="turns_completed">-</span></span>
+    <span>last board write <span data-dashboard-field="last_entry_at">-</span></span>
+    <span>last ledger write <span data-dashboard-field="last_progress_at">-</span></span>
+  </div>
+
+  <div class="head">
+    <div class="say" data-dashboard-field="headline">-</div>
+    <div class="who"><span class="wrote" id="wrote"></span></div>
+  </div>
+
+  <div id="quiet"></div>
+
+  <div class="cols" id="cols"></div>
+
+  <div class="meta" style="margin-top: 11px;">
+    <span style="font-weight: 600; color: var(--text-strong, #fff);">Turns, newest last</span>
+    <span>entry <span data-dashboard-field="last_seq">-</span></span>
+    <span>asks waiting <span data-dashboard-field="approvals_pending">-</span></span>
+  </div>
+  <div class="spark" id="spark"></div>
+  <div class="feed" id="feed"></div>
+  <div class="sub" style="margin-top: 5px;">
+    <span data-dashboard-field="moments">-</span> moment(s) kept,
+    <span data-dashboard-field="moments_dropped">-</span> dropped (feed truncated).
+    Clock read at <span data-dashboard-field="last_time">-</span>.
+  </div>
+  <div class="sub">
+    <span data-dashboard-field="items">-</span> item(s) on the board,
+    <span data-dashboard-field="omitted">-</span> not shown.
+  </div>
+
+  <script>
+    (function () {
+      var DASH = '\u2014';
+      var QUIET_MS = 15 * 60 * 1000;
+
+      function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+      function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+      function bag() { return window.kirocrew || {}; }
+      function fields() { return bag().fields || {}; }
+      function arr(name) {
+        var v = fields()[name];
+        return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      function ago(ms) {
+        if (ms === null || ms < 0) return null;
+        var m = Math.floor(ms / 60000);
+        if (m < 1) return 'under a minute';
+        if (m < 60) return m + 'm';
+        var h = Math.floor(m / 60);
+        return h + 'h ' + (m % 60) + 'm';
+      }
+      function stamp(v) {
+        var n = num(v);
+        if (n !== null) return n;
+        var s = text(v);
+        if (!s) return null;
+        var t = Date.parse(s);
+        return isFinite(t) ? t : null;
+      }
+
+      // The three buckets, each a question a reader actually asks. `stuck` is
+      // deliberately widened past the ledger's own `blocked` state: a worker whose
+      // last word was `blocked` or `question`, and an item carrying a failed
+      // acceptance, are all things not moving, and only one of them is a state.
+      function bucket(it) {
+        var state = text(it.state);
+        var status = text(it.status);
+        if (state === 'accepted') return 'done';
+        if (state === 'rejected' || state === 'abandoned') return 'stuck';
+        if (status === 'blocked' || status === 'question') return 'stuck';
+        if (num(it.fails)) return 'stuck';
+        if (text(it.verdict) === 'fail') return 'stuck';
+        if (status === 'done') return 'await';
+        return 'new';
+      }
+
+      var COLS = [
+        ['done', 'Finished', 'items the conductor accepted', 'var(--ok, #35d07f)'],
+        ['await', 'Claimed done', 'waiting on the conductor\u2019s own verdict', 'var(--info, #6aa9ff)'],
+        ['new', 'Still moving', 'open, nobody reported a blocker', 'var(--accent, #00d492)'],
+        ['stuck', 'Stuck', 'blocked, asking, rejected or failed', 'var(--danger, #ff5c5c)']
+      ];
+
+      function drawCols(items) {
+        var host = document.getElementById('cols');
+        if (!host) return;
+        host.textContent = '';
+        var by = { done: [], await: [], new: [], stuck: [] };
+        for (var i = 0; i < items.length; i++) by[bucket(items[i])].push(items[i]);
+        for (var c = 0; c < COLS.length; c++) {
+          var key = COLS[c][0];
+          var list = by[key];
+          var col = document.createElement('div');
+          col.className = 'col';
+          var ch = document.createElement('div');
+          ch.className = 'ch';
+          var b = document.createElement('b');
+          b.textContent = COLS[c][1];
+          var i2 = document.createElement('i');
+          i2.textContent = items.length ? String(list.length) : DASH;
+          i2.style.color = COLS[c][3];
+          ch.appendChild(b);
+          ch.appendChild(i2);
+          col.appendChild(ch);
+          var u = document.createElement('u');
+          u.textContent = COLS[c][2];
+          col.appendChild(u);
+          // Three rows at most per column: a reader skimming four columns wants the
+          // names, and a column that lists thirty is a board, not a standup.
+          for (var j = 0; j < list.length && j < 3; j++) {
+            var row = document.createElement('div');
+            row.className = 'row';
+            row.textContent = text(list[j].title) || text(list[j].item_id) || DASH;
+            var sub = document.createElement('span');
+            var quiet = ago(Date.now() - (stamp(list[j].last_report_at) || 0));
+            var when = stamp(list[j].last_report_at) ? 'quiet ' + quiet : 'no report yet';
+            var who = text(list[j].spender) ? 'worker ' + text(list[j].spender) + ' \u00b7 ' : '';
+            sub.textContent = who + when;
+            row.appendChild(sub);
+            col.appendChild(row);
+          }
+          if (list.length > 3) {
+            var more = document.createElement('u');
+            more.textContent = (list.length - 3) + ' more not listed';
+            col.appendChild(more);
+          }
+          host.appendChild(col);
+        }
+      }
+
+      function drawFeed(moments) {
+        var feed = document.getElementById('feed');
+        var spark = document.getElementById('spark');
+        if (!feed || !spark) return;
+        feed.textContent = '';
+        spark.textContent = '';
+        // One bar per completed turn, height by its duration. The feed below names
+        // the turn; the bars say whether the pace changed, which the names cannot.
+        var durations = [];
+        for (var i = 0; i < moments.length; i++) {
+          var d = num(moments[i].duration_ms);
+          if (d !== null) durations.push(d);
+        }
+        var max = 0;
+        for (var k = 0; k < durations.length; k++) if (durations[k] > max) max = durations[k];
+        for (var b = 0; b < durations.length; b++) {
+          var bar = document.createElement('i');
+          bar.style.height = (max ? Math.max(8, (durations[b] / max) * 100) : 8) + '%';
+          spark.appendChild(bar);
+        }
+        if (!durations.length) {
+          var flat = document.createElement('i');
+          flat.style.height = '4%';
+          flat.style.opacity = '.3';
+          spark.appendChild(flat);
+        }
+        var tail = moments.slice(Math.max(0, moments.length - 6));
+        for (var m = 0; m < tail.length; m++) {
+          var mo = tail[m];
+          var row = document.createElement('div');
+          row.className = 'mom';
+          var what = document.createElement('b');
+          what.textContent = text(mo.type) || DASH;
+          row.appendChild(what);
+          var say = document.createElement('span');
+          var bits = [];
+          if (num(mo.turn) !== null) bits.push('turn ' + num(mo.turn));
+          var dur = num(mo.duration_ms);
+          if (dur !== null) bits.push((dur / 1000).toFixed(1) + 's');
+          var cr = num(mo.credits);
+          if (cr !== null) bits.push(cr.toFixed(2) + ' credits');
+          var sr = text(mo.stop_reason);
+          if (sr) bits.push(sr);
+          var tool = text(mo.tool);
+          if (tool) bits.push(tool);
+          say.textContent = bits.length ? bits.join(' \u00b7 ') : DASH;
+          row.appendChild(say);
+          feed.appendChild(row);
+        }
+        if (!tail.length) {
+          var none = document.createElement('div');
+          none.className = 'mom';
+          var nb = document.createElement('b');
+          nb.textContent = 'nothing yet';
+          none.appendChild(nb);
+          var ns = document.createElement('span');
+          ns.textContent = 'the timeline fold has no moment for this session';
+          none.appendChild(ns);
+          feed.appendChild(none);
+        }
+      }
+
+      function drawQuiet(f) {
+        var host = document.getElementById('quiet');
+        if (!host) return;
+        host.textContent = '';
+        // Silence, not work time. A reader who restarts the gateway cannot otherwise
+        // tell a crewmate that is thinking from one that died, and the two look the
+        // same on every other element of this page.
+        var last = stamp(f.last_time) || stamp(f.last_entry_at) || stamp(f.last_progress_at);
+        if (last === null) {
+          var unk = document.createElement('div');
+          unk.className = 'quiet';
+          unk.textContent = 'No write time on the record, so this page cannot say whether anything is still moving.';
+          host.appendChild(unk);
+          return;
+        }
+        var silent = Date.now() - last;
+        if (silent < QUIET_MS) return;
+        var band = document.createElement('div');
+        band.className = 'quiet';
+        band.textContent = 'No new entry for ' + ago(silent) + '. Nothing has written to the record since.';
+        host.appendChild(band);
+      }
+
+      // A bound ISO stamp reaches its cell verbatim, and a full offset-bearing
+      // timestamp in a meta row is three times the width of the fact it carries. The
+      // cell is reformatted rather than the value replaced, so an unparseable stamp is
+      // left exactly as the record wrote it instead of becoming an invalid date.
+      function shortenStamps(names) {
+        for (var i = 0; i < names.length; i++) {
+          var cell = document.querySelector('[data-dashboard-field="' + names[i] + '"]');
+          if (!cell) continue;
+          var raw = (cell.textContent || '').trim();
+          if (!raw || raw === DASH) continue;
+          var t = Date.parse(raw);
+          if (!isFinite(t)) continue;
+          var d = new Date(t);
+          cell.textContent =
+            ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2) +
+            ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2) +
+            ' UTC';
+        }
+      }
+
+      function render() {
+        var f = fields();
+        var cells = document.body.querySelectorAll('[data-dashboard-field]');
+        for (var c = 0; c < cells.length; c++) {
+          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        }
+        shortenStamps(['last_entry_at', 'last_progress_at']);
+        var items = arr('items');
+        var moments = arr('moments');
+        drawCols(items);
+        drawFeed(moments);
+        drawQuiet(f);
+
+        // The mark is the host's own ARRAY of names (dashboard_frame.read_payload sorts
+        // a list into `agentic`), so membership is the question. Asking an array for a
+        // property named 'headline' answers no on every render, which would label a
+        // written headline as one nobody wrote.
+        var wrote = document.getElementById('wrote');
+        if (wrote) {
+          var agentic = bag().agentic;
+          var marked = Array.isArray(agentic) && agentic.indexOf('headline') !== -1;
+          wrote.textContent = marked ? 'crewmate wrote this' : 'no headline written';
+        }
+
+        var counts = { items: items.length, moments: moments.length };
+        for (var key in counts) {
+          if (!Object.prototype.hasOwnProperty.call(counts, key)) continue;
+          var cell = document.querySelector('[data-dashboard-field="' + key + '"]');
+          if (cell) cell.textContent = String(counts[key]);
+        }
+        var clock = document.querySelector('[data-dashboard-field="last_time"]');
+        var t = stamp(f.last_time);
+        if (clock && t !== null) clock.textContent = new Date(t).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+      }
+
+      render();
+      window.addEventListener('load', render);
+      window.addEventListener('message', function () { setTimeout(render, 0); });
+    }());
+  </script>
+</div>

@@ -90,6 +90,7 @@ describe('one public surface', () => {
   it('the facade exports exactly its original names', () => {
     expect(Object.keys(facade).sort()).toEqual([
       'CONTEXT_TRACE_COALESCE_MS',
+      'MEMBER_DASHBOARD_QUERY_PREFIX',
       'ROW_STALL_MS',
       'ROW_STALL_TICK_MS',
       'UPDATE_RESTART_LATCH_KEY',
@@ -106,6 +107,7 @@ describe('one public surface', () => {
       'crewLogProjectionsKey',
       'emitSlotFocused',
       'fetchingAnyFoldQuery',
+      'handleDashboardMoved',
       'healRedactionSwitchAfterReconnect',
       'identityOf',
       'invalidateBelowFloor',
@@ -131,6 +133,11 @@ describe('one public surface', () => {
     // would let a reset or a bind reach a different variable from the reader.
     expect(facade.__resetRedactionHealForTests).toBe(serverState.__resetRedactionHealForTests)
     expect(facade.healRedactionSwitchAfterReconnect).toBe(serverState.healRedactionSwitchAfterReconnect)
+    // The crewmate dashboard's cache prefix and its frame handler. The prefix is
+    // pinned beside the handler because a caller invalidating a second spelling
+    // of it would reach a different cache entry from the one the frame moves.
+    expect(facade.MEMBER_DASHBOARD_QUERY_PREFIX).toBe(serverState.MEMBER_DASHBOARD_QUERY_PREFIX)
+    expect(facade.handleDashboardMoved).toBe(serverState.handleDashboardMoved)
     expect(facade.identityOf).toBe(composerCards.identityOf)
     expect(facade.askIdsOf).toBe(composerCards.askIdsOf)
     expect(facade.reconcileQuestions).toBe(composerCards.reconcileQuestions)

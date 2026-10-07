@@ -331,6 +331,12 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ]],
   ['members_subscribed truncating a torn tail', [{ type: 'member_projection', data: { slug: 'ada', key: 'roster', seq: 9, value: 1 } }], [{ type: 'members_subscribed', data: { lastSeqs: { ada: 3 } } }]],
   ['members_subscribed with nothing to drop', [], [{ type: 'members_subscribed', data: { lastSeqs: { ada: 3 } } }]],
+  // A crewmate filled one of its own dashboard fields. Metadata only, so the only
+  // effect is the tab's re-read; a frame with no slug must do nothing at all.
+  ['dashboard_value_written', [], [
+    { type: 'dashboard_value_written', data: { slug: 'ada' } },
+    { type: 'dashboard_value_written', data: {} },
+  ]],
   ['chat_message user row in the active slot', [], [{ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'hi', ts: TS } }]],
   ['chat_message assistant row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'assistant', content: 'done', ts: TS } }]],
   ['chat_message permission row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'permission', content: '[agent] shell', ts: TS } }]],
@@ -1059,12 +1065,20 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "slot_agent_switch": [
     'action dashboard/fetchSlots/pending',
   ],
-  "member_projection": [],
+  // Two frames, two invalidations: a fold advancing is what makes a crewmate's open
+  // Dashboard tab stale, and the store apply is silent (it is not a query).
+  "member_projection": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
   "members_subscribed truncating a torn tail": [
     'query resetQueries ["kirocrew-agents","members-roster"]',
     'query resetQueries ["kirocrew-agents","member-projections"]',
   ],
   "members_subscribed with nothing to drop": [],
+  "dashboard_value_written": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
   "chat_message user row in the active slot": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"user","content":"hi","ts":"2026-09-01T00:00:00.000Z"}',
     'send {"type":"slot_read","slot":"slot-a","read_ts":"2026-09-01T00:00:00.000Z"}',

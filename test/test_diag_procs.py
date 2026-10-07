@@ -1144,10 +1144,17 @@ def test_two_reads_too_close_together_decline_the_rate(tmp_path: Path) -> None:
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
 
     baseline = procs.RateBaseline()
-    table.scan_rated(baseline)
-    # No ageing: two back-to-back reads are a fraction of a second apart.
+    # The CLOCK IS PINNED and the gap is set by hand, like the sibling reads above.
+    # Two unpinned back-to-back calls are a fraction of a second apart on a fast
+    # machine and so below the floor -- but they also write a fake /proc tree to
+    # disk between them, so on a slow runner more than MIN_RATE_GAP_SECS of real
+    # time elapses, a rate IS computed, and this test fails for being run somewhere
+    # slow rather than for the behaviour it names. Pinning makes the gap the
+    # subject: 0.5s is below the floor on every machine.
+    table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
+    _age_baseline(baseline, 0.5)
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=table.clk_tck * 5)
-    second = table.scan_rated(baseline)
+    second = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
 
     assert second.nodes[CHAT].cpu_pct is None
     assert any("at least" in note for note in second.degraded_report())

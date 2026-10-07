@@ -2924,7 +2924,7 @@ def test_usage_units_order_by_succession_not_wall_clock(monkeypatch):
     monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("a", "b"))
     monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: created.get(uid))
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
-    assert crew_log._usage_units_in_succession("chat-1") == ("a", "b")
+    assert crew_log.units_in_succession("chat-1") == ("a", "b")
 
 
 def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
@@ -2950,7 +2950,7 @@ def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
     # A's run (root createdAt 100) precedes B's run (root createdAt 200); each run is
     # predecessor-first and unbroken.
-    assert crew_log._usage_units_in_succession("chat-1") == ("a0", "a1", "b0", "b1", "b2")
+    assert crew_log.units_in_succession("chat-1") == ("a0", "a1", "b0", "b1", "b2")
 
 
 def test_usage_units_unrelated_roots_without_a_clock_keep_store_order(monkeypatch):
@@ -2964,7 +2964,7 @@ def test_usage_units_unrelated_roots_without_a_clock_keep_store_order(monkeypatc
     monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("older", "newer"))
     monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: None)
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: None)
-    assert crew_log._usage_units_in_succession("chat-1") == ("older", "newer")
+    assert crew_log.units_in_succession("chat-1") == ("older", "newer")
 
 
 def test_usage_units_single_unit_skips_the_chain_read(monkeypatch):
@@ -2975,10 +2975,37 @@ def test_usage_units_single_unit_skips_the_chain_read(monkeypatch):
         raise AssertionError("unit_opened_previous must not be read for a single unit")
 
     monkeypatch.setattr(crew_log, "unit_opened_previous", _boom)
-    assert crew_log._usage_units_in_succession("chat-1") == ("only",)
+    assert crew_log.units_in_succession("chat-1") == ("only",)
 
 
 def test_usage_fold_uses_the_succession_order(monkeypatch):
     """The usage fold's unit resolver routes through the durable-succession helper."""
-    monkeypatch.setattr(crew_log, "_usage_units_in_succession", lambda slot: ("x", "y"))
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("x", "y"))
     assert crew_log._slot_units_for_fold("chat-1", "usage") == ("x", "y")
+
+
+def test_agentic_fold_uses_the_succession_order(monkeypatch):
+    """The agentic fold's unit resolver routes through the durable-succession helper.
+
+    This fold keeps the LATEST value per field, so whichever unit is folded last wins
+    each cell. Under the header clock a backward step between two units of one slot
+    sorts the retired unit last, and its stale value would overwrite one the live
+    session wrote and the write path accepted -- silently, because both are well-formed.
+    """
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("x", "y"))
+    assert crew_log._slot_units_for_fold("chat-1", crew_log.DASHBOARD_FOLD_NAME) == ("x", "y")
+
+
+def test_agentic_fold_does_not_fall_through_to_the_header_clock(monkeypatch):
+    """The header fallthrough must not be what answers for this fold.
+
+    Asserted by making the fallthrough the ONLY thing that could answer: if the
+    resolver reached ``session_units_for_slot`` for the agentic fold it would return
+    the clock order below, which is the inversion the succession read exists to undo.
+    """
+    monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("retired", "live"))
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("live", "retired"))
+    assert crew_log._slot_units_for_fold("chat-1", crew_log.DASHBOARD_FOLD_NAME) == (
+        "live",
+        "retired",
+    )

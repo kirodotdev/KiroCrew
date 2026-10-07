@@ -35,6 +35,9 @@ slot ran under.
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
 | `panel` | slot | The publisher's own record, in the shape the crew drawer consumes |
+| `agentic` | slot | Which dashboard fields this crewmate filled itself, with what value, of what declared type and when |
+| `mistakes` | slot | Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead |
+| `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
 
 ## `status`
 
@@ -243,3 +246,45 @@ Moved by: `panel/published`.
 | `schema` | `int` | no |
 | `template` | `str` | no |
 | `title` | `str` | no |
+
+## `agentic`
+
+Which dashboard fields this crewmate filled itself, with what value, of what declared type and when.
+
+Moved by: `dashboard/agentic_value`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `fields` | `dict` | no |
+| `fields_omitted` | `int` | no |
+| `wrote` | `int` | no |
+
+## `mistakes`
+
+Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead.
+
+Moved by: `dashboard/agentic_refused`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `groups` | `list` | no |
+| `groups_omitted` | `int` | no |
+| `refused` | `int` | no |
+
+## `workstreams`
+
+Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session.
+
+Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `items` | `list` | no |
+| `last_entry_at` | `str` | no |
+| `omitted` | `int` | no |
+| `schema` | `int` | no |
+| `series` | `list` | no |
+| `slot` | `str` | no |
+| `spenders_omitted` | `int` | no |
+| `unattributed` | `dict` | no |
+| `units_omitted` | `int` | no |

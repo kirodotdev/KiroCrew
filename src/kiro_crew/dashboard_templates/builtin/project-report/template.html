@@ -1,0 +1,3050 @@
+<style>
+  /* Warm dark, per STYLE-v2. Base surfaces and text come from the theme variables so
+     the page works on the light canvas too; the warmth is a small MIX over them
+     rather than a second palette, which is what keeps one stylesheet honest in both
+     themes. The accent and the three series colours are fixed values -- the theme has
+     no warm accent -- and every one of them is mixed with `--card` before it is used
+     as a fill, so none of them sits on light as a saturated patch. */
+  .pr {
+    --pr-bg: color-mix(in oklab, var(--bg, #12141a) 94%, #48291f 6%);
+    --pr-card: color-mix(in oklab, var(--card, #181b22) 92%, #48291f 8%);
+    --pr-line: var(--border, #27272a);
+    --pr-accent: #ef9a85;
+    --pr-s1: #efb399;
+    --pr-s2: #b7a6df;
+    --pr-s3: #8ed8b5;
+    --pr-s4: #e0a6c0;
+    --pr-radius: 14px;
+    /* Motion is a token, as in Paperclip's motion-tokens.css: every transition and
+       animation on this page names one of these, and the reduced-motion block at the
+       end zeroes them in one place instead of chasing each rule. */
+    --pr-motion-fast: 140ms;
+    --pr-motion-slow: 1100ms;
+    --pr-ease: cubic-bezier(.16, 1, .3, 1);
+    /* Values a machine produced (credits, ids, times) read as machine values. */
+    --pr-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text, #e4e4e7);
+    background: var(--pr-bg);
+    padding: 14px;
+    display: grid;
+    gap: 12px;
+  }
+  .pr * { box-sizing: border-box; }
+
+  /* ---- header: title, pills, the one summary sentence ---- */
+  .pr-head { display: grid; gap: 10px; }
+  .pr-titles { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .pr-eyebrow { font-size: 11px; color: var(--muted, #7f7f88); }
+  .pr-title { font-size: 19px; font-weight: 650; letter-spacing: .01em;
+    color: var(--text-strong, #fafafa); }
+  .pr-sentence { font-size: 12.5px; color: var(--muted-strong, #52525b); }
+  .pr-sentence b { color: var(--text, #e4e4e7); font-weight: 600; }
+  .pr-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pr-pill { font: 500 12px/1 system-ui, sans-serif; padding: 7px 11px;
+    border-radius: 999px; border: 1px solid var(--pr-line);
+    background: color-mix(in oklab, var(--pr-card) 88%, transparent);
+    color: var(--muted, #7f7f88); cursor: pointer; max-width: 230px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-pill:hover { color: var(--text, #e4e4e7); }
+  .pr-pill[aria-current="true"] {
+    background: color-mix(in oklab, var(--pr-accent) 20%, var(--pr-card));
+    border-color: color-mix(in oklab, var(--pr-accent) 42%, var(--pr-line));
+    color: var(--text-strong, #fafafa); }
+  .pr-pill-n { opacity: .62; margin-left: 5px; }
+
+  /* ---- cards ---- */
+  .pr-card { background: var(--pr-card); border: 1px solid var(--pr-line);
+    border-radius: var(--pr-radius); padding: 12px 13px; min-width: 0; }
+  .pr-card-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .pr-card-t { font-size: 13px; font-weight: 600; color: var(--text, #e4e4e7); }
+  .pr-card-c { font-size: 11px; color: var(--muted, #7f7f88); }
+
+  /* ---- KPI row ---- */
+  .pr-kpis { display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(164px, 1fr)); }
+  .pr-kpi { display: grid; grid-template-columns: 1fr auto; align-items: end;
+    gap: 6px; }
+  .pr-kpi-label { grid-column: 1 / -1; font-size: 11px; color: var(--muted, #7f7f88); }
+  .pr-kpi-v { font-size: 26px; font-weight: 640; line-height: 1.05;
+    color: var(--text-strong, #fafafa); font-variant-numeric: tabular-nums; }
+  .pr-kpi-u { font-size: 12px; font-weight: 500; color: var(--muted, #7f7f88);
+    margin-left: 3px; }
+  .pr-kpi-sub { grid-column: 1 / -1; font-size: 11px;
+    color: color-mix(in oklab, var(--pr-accent) 72%, var(--text, #e4e4e7)); }
+  .pr-kpi-sub.pr-quiet { color: var(--muted, #7f7f88); }
+  .pr-kpi-spark { align-self: center; }
+  .pr-bar { grid-column: 1 / -1; height: 4px; border-radius: 999px; margin-top: 2px;
+    background: color-mix(in oklab, var(--pr-line) 70%, var(--pr-card)); overflow: hidden; }
+  .pr-bar > i { display: block; height: 100%; border-radius: 999px;
+    background: color-mix(in oklab, var(--pr-accent) 76%, var(--pr-card)); }
+
+  /* ---- hero chart, and the legend rows the sunburst shares with it ---- */
+  .pr-hero { position: relative; overflow: hidden; }
+  /* The glow is a gradient, not an image: the frame blocks the network. */
+  .pr-hero::before { content: ""; position: absolute; inset: -40% -10% auto -10%;
+    height: 180%; pointer-events: none;
+    background: radial-gradient(60% 55% at 42% 68%,
+      color-mix(in oklab, var(--pr-accent) 24%, transparent), transparent 72%); }
+  .pr-hero > * { position: relative; }
+  .pr-plot { display: block; width: 100%; min-height: 156px; }
+  .pr-plot svg { display: block; }
+  .pr-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
+    color: var(--muted, #7f7f88); }
+  .pr-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    margin-right: 5px; vertical-align: 1px; }
+  .pr-rows { display: grid; gap: 7px; min-width: 0; }
+  .pr-row { display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    align-items: baseline; min-width: 0; }
+  /* Without `min-width: 0` a grid item refuses to shrink below its content, so the
+     name pushes the right-aligned percent off the card instead of ellipsising. */
+  .pr-row-l { min-width: 0; }
+  .pr-row-n { font-size: 12px; color: var(--text, #e4e4e7); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pr-row-s { font-size: 10.5px; color: var(--muted, #7f7f88); }
+  .pr-row-p { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text-strong, #fafafa); }
+
+  /* ---- needs-you desk ---- */
+  /* --pr-todo-c is the per-item kind token: red family for Blocked, purple for
+     Asks you. Set inline by JS; the fallback keeps the item visible on a browser
+     that does not run the script (accessibility auditors, crawlers). */
+  .pr-desk { display: grid; gap: 14px; }
+  .pr-shelf-h { font-size: 10px; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--muted, #7f7f88);
+    padding-bottom: 5px; border-bottom: 1px solid var(--pr-line); margin-bottom: 2px; }
+  .pr-bundle-h { font-size: 10.5px; color: var(--muted, #7f7f88);
+    padding: 3px 0 3px 2px; }
+  .pr-todo { display: grid; gap: 7px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .pr-todo-i { display: grid; grid-template-columns: auto 1fr; gap: 9px;
+    align-items: start; padding: 8px 10px; border-radius: 10px;
+    --pr-todo-c: var(--pr-s2);
+    border: 1px solid color-mix(in oklab, var(--pr-todo-c) 24%, var(--pr-line));
+    background: color-mix(in oklab, var(--pr-todo-c) 9%, var(--pr-card)); }
+  .pr-todo-k { font-size: 10px; font-weight: 600; letter-spacing: .03em;
+    padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+    background: color-mix(in oklab, var(--pr-todo-c) 24%, var(--pr-card));
+    /* Mixed toward the text colour so the label reads on the light canvas too. */
+    color: color-mix(in oklab, var(--pr-todo-c) 55%, var(--text, #e4e4e7)); }
+  .pr-todo-x { min-width: 0; }
+  .pr-todo-x b { display: block; font-size: 12.5px; font-weight: 500;
+    color: var(--text, #e4e4e7); }
+  .pr-todo-x span { font-size: 10.5px; color: var(--muted, #7f7f88); }
+  /* Owner line on a Blocked item. .pr-todo-noowner uses the warning amber to say
+     "no owner was named" rather than looking like a normal meta line. */
+  .pr-todo-owner { font-size: 10.5px; color: var(--muted, #7f7f88); margin-top: 1px; }
+  /* The worker's own words, folded away under the one-line headline. */
+  .pr-todo-more { margin-top: 3px; font-size: 10px; color: var(--muted, #7f7f88); }
+  .pr-todo-more summary { cursor: pointer; list-style: none; text-decoration: underline;
+    text-underline-offset: 2px; width: max-content; }
+  .pr-todo-more summary::-webkit-details-marker { display: none; }
+  .pr-todo-raw { margin-top: 3px; line-height: 1.45; }
+  /* Why-now: the worker's last word, cleaned of markdown. Muted because it is
+     evidence, not an instruction. */
+  .pr-todo-why { font-size: 10.5px; color: var(--muted, #7f7f88); margin-top: 2px;
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; }
+  /* Ends-when: how this item leaves the desk. One tone lighter than the step,
+     because knowing it will leave is background, not the thing to act on. */
+  .pr-todo-when { margin-top: 2px; font-size: 10px; color: var(--muted, #7f7f88);
+    font-style: italic; }
+  /* The row's next step: INSTRUCTION TEXT, and nothing a reader could take for a
+     control. Bold accent-coloured text inside a card reads as a link, and a step that
+     invites a click it cannot answer is worse than a quieter one -- the act happens in
+     chat, not here. It still sits above the meta line, which is provenance a reader
+     skims, by being full-strength text where that line is muted. */
+  .pr-todo-s { margin-top: 4px; font-size: 10.5px; font-weight: 400;
+    color: var(--text, #e4e4e7); }
+  .pr-empty { font-size: 12px; color: var(--muted, #7f7f88); padding: 4px 0; }
+  /* Context / Why / How on a manager's card: a label column and one line each. */
+  .pr-todo-brief { display: grid; grid-template-columns: max-content 1fr; gap: 2px 8px;
+    margin: 5px 0 0; font-size: 11px; line-height: 1.4; }
+  .pr-todo-brief dt { color: var(--muted, #7f7f88); }
+  .pr-todo-brief dd { margin: 0; color: var(--text, #e4e4e7); }
+  /* The card's choices. Real buttons: picking one puts a reply in the chat box. */
+  .pr-todo-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+  .pr-todo-opt { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border, #3a3a40); background: var(--bg, transparent);
+    color: var(--text, #e4e4e7); cursor: pointer;
+    transition: border-color var(--pr-motion-fast) var(--pr-ease), background var(--pr-motion-fast) var(--pr-ease); }
+  .pr-todo-opt:hover { border-color: var(--pr-todo-c, var(--accent)); }
+  .pr-todo-opt:focus-visible { outline: 2px solid var(--accent, #8b5cf6); outline-offset: 1px; }
+  .pr-todo-opt.pr-rec { border-color: var(--pr-todo-c, var(--accent)); }
+  .pr-todo-opt.pr-own { border-style: dashed; color: var(--muted, #7f7f88); }
+  /* A picked card folds away to one line; it leaves for good when the board moves. */
+  .pr-todo-i { transition: opacity var(--pr-motion-fast) var(--pr-ease), transform var(--pr-motion-fast) var(--pr-ease); }
+  .pr-todo-i.pr-going { opacity: 0; transform: scale(0.97); }
+  .pr-todo-sent { display: flex; gap: 8px; align-items: center; font-size: 11px;
+    color: var(--muted, #7f7f88); padding: 6px 10px; border-radius: 8px;
+    border: 1px dashed var(--border, #3a3a40); align-self: start; }
+  .pr-picked { display: grid; gap: 6px; }
+  .pr-fold > summary { cursor: pointer; font-size: 10px; font-weight: 700; letter-spacing: .05em;
+    color: var(--muted, #7f7f88); list-style: none; padding: 2px 0; }
+  .pr-fold > summary::-webkit-details-marker { display: none; }
+  .pr-fold > summary::before { content: '\25b8  '; }
+  .pr-fold[open] > summary::before { content: '\25be  '; }
+  .pr-fold[open] > summary { margin-bottom: 8px; }
+  .pr-todo-sent b { color: var(--text, #e4e4e7); font-weight: 500; }
+  .pr-todo-sent button { font: inherit; background: none; border: 0; padding: 0;
+    color: var(--muted, #7f7f88); text-decoration: underline; cursor: pointer; margin-left: auto; }
+
+  /* ---- the verdict band: one lead-written line above everything else ----
+     A left rule in the state's own colour, because the state has to be readable
+     before any of the words are. The grey state is Linear's and is kept: a verdict
+     with no honest silence value becomes a stale lie the moment a lead dies
+     mid-run, which on a box that restarts often is the ordinary case. */
+  .pr-vd { display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: start; padding: 11px 13px; border-radius: var(--pr-radius);
+    border: 1px solid var(--pr-line); border-left: 3px solid var(--pr-vd-c);
+    background: color-mix(in oklab, var(--pr-card) 92%, var(--pr-vd-c) 8%); }
+  .pr-vd-state { font-size: 12.5px; font-weight: 650; color: var(--pr-vd-c);
+    display: flex; align-items: center; gap: 7px; }
+  .pr-vd-state::before { content: ""; width: 7px; height: 7px; border-radius: 999px;
+    background: var(--pr-vd-c); flex: none; }
+  .pr-vd-head { margin-top: 4px; font-size: 13px; color: var(--text, #e4e4e7); }
+  .pr-vd-block { margin-top: 3px; font-size: 12px; color: var(--muted, #7f7f88); }
+  .pr-vd-block b { color: var(--text, #e4e4e7); font-weight: 600; }
+  .pr-vd-meta { text-align: right; font-size: 10px; color: var(--muted, #7f7f88);
+    display: grid; gap: 4px; justify-items: end; white-space: nowrap; }
+
+  /* ---- the red-lane strip: only the lanes that are red, each with its owner ----
+     The owner tag is the point. `yours` is a lane the reader can act on and
+     `maintainer` is one they can only wait for, and a strip that does not say which
+     spends their attention on a row they cannot move. */
+  .pr-lanes { padding: 10px 13px; border-radius: var(--pr-radius);
+    border: 1px solid var(--pr-line);
+    background: color-mix(in oklab, var(--pr-card) 94%, var(--pr-s1) 6%); }
+  .pr-lanes-h { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    font-size: 12px; }
+  .pr-lanes-h b { font-size: 12.5px; color: var(--text-strong, #fafafa); }
+  .pr-lanes-h span { font-size: 10.5px; color: var(--muted, #7f7f88);
+    font-variant-numeric: tabular-nums; }
+  .pr-lane { display: grid; grid-template-columns: 13px 1fr auto auto; gap: 9px;
+    align-items: center; padding: 6px 0; border-top: 1px solid var(--pr-line);
+    margin-top: 6px; }
+  .pr-lane-m { font-size: 11px; font-weight: 700; text-align: center; }
+  .pr-lane-n { font-size: 12px; color: var(--text, #e4e4e7); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-lane-w { font-size: 10.5px; color: var(--muted, #7f7f88); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---- the stale band: the fold itself has stopped advancing ----
+     Distinct from the frame's own band, which says a FIELD did not resolve. This
+     one says every field resolved and none of them is being produced any more,
+     which is the difference between "working" and "dead". */
+  .pr-stale { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    padding: 9px 13px; border-radius: var(--pr-radius);
+    border: 1px solid color-mix(in oklab, var(--pr-s1) 45%, var(--pr-line));
+    background: color-mix(in oklab, var(--pr-card) 88%, var(--pr-s1) 12%);
+    font-size: 12px; color: var(--text, #e4e4e7); }
+  .pr-stale b { font-weight: 650; }
+  .pr-stale i { margin-left: auto; font-style: normal; font-size: 10px;
+    color: var(--muted, #7f7f88); white-space: nowrap; }
+
+  /* ---- the live indicator: whether this page is being fed, and as of when ----
+     Two different facts in one row, kept apart. The dot answers "is anything
+     arriving"; the time answers "as of when is what I am reading true". A page that
+     showed only the second looks current while its feed is dead. */
+  .pr-live { display: inline-flex; align-items: center; gap: 7px;
+    font-size: 10.5px; color: var(--muted, #7f7f88); white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .pr-live-dot { width: 7px; height: 7px; border-radius: 999px; flex: none;
+    background: var(--pr-s3); }
+  .pr-live[data-live="false"] .pr-live-dot { background: var(--pr-s1); }
+  .pr-live b { font-weight: 600; color: var(--text, #e4e4e7); }
+
+  /* A row whose own values moved on the last refresh. Brief, once, and never on
+     first paint -- a page that flashed every row the moment it opened would be
+     telling the reader that everything just changed. Honoured only where motion is
+     wanted; see the reduced-motion block at the end of this sheet. */
+  @keyframes pr-flash {
+    from { background: color-mix(in oklab, var(--pr-accent) 26%, transparent); }
+    to { background: transparent; }
+  }
+  .pr-flash { animation: pr-flash var(--pr-motion-slow) var(--pr-ease) 1; }
+
+  /* ---- the per-epic pipeline: worker -> verdict -> accepted ----
+     Three stages in the order the work moves through them, with the connector
+     naming the gate between two stages rather than leaving an arrow to imply it. */
+  .pr-pipe { display: grid; gap: 7px; }
+  .pr-pipe-bar { height: 5px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in oklab, var(--pr-line) 70%, transparent); }
+  .pr-pipe-bar > i { display: block; height: 100%; border-radius: 999px;
+    background: var(--pr-s3); }
+  .pr-pipe-h { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    font-size: 12px; }
+  .pr-pipe-h b { font-size: 12.5px; color: var(--text-strong, #fafafa); }
+  .pr-pipe-h span { margin-left: auto; font-size: 11px; color: var(--muted, #7f7f88);
+    font-variant-numeric: tabular-nums; }
+  .pr-pipe-stage { font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted, #7f7f88); margin-top: 3px; }
+  .pr-pipe-row { display: grid; grid-template-columns: 1fr auto auto; gap: 9px;
+    align-items: center; padding: 7px 9px; border-radius: 9px;
+    border: 1px solid var(--pr-line);
+    background: color-mix(in oklab, var(--pr-card) 90%, transparent); }
+  .pr-pipe-row > div:first-child { min-width: 0; }
+  .pr-pipe-t { font-size: 12px; color: var(--text, #e4e4e7); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pr-pipe-w { font-size: 10px; color: var(--muted, #7f7f88); }
+  .pr-pipe-gate { font-size: 10.5px; color: var(--muted, #7f7f88); text-align: center;
+    padding: 1px 0; }
+
+  /* ---- the task drawer: one item's own record, beside the page ----
+     An overlay rather than an in-flow column: this page is rendered at the side
+     panel's 430 px as often as wide, and a column that narrows the tree to nothing
+     is worse than one that covers it while it is being read. */
+  .pr-dr-back { position: fixed; inset: 0; z-index: 40;
+    background: color-mix(in oklab, var(--pr-bg) 62%, transparent); }
+  .pr-dr { position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
+    width: min(460px, 100vw); display: flex; flex-direction: column;
+    background: var(--pr-card); border-left: 1px solid var(--pr-line);
+    box-shadow: -18px 0 46px -24px rgba(0, 0, 0, .6); }
+  .pr-dr-h { display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: start; padding: 13px; border-bottom: 1px solid var(--pr-line); }
+  .pr-dr-t { font-size: 14px; font-weight: 620; color: var(--text-strong, #fafafa); }
+  .pr-dr-s { margin-top: 3px; font-size: 10.5px; color: var(--muted, #7f7f88); }
+  .pr-dr-x { font: 600 14px/1 system-ui, sans-serif; width: 26px; height: 26px;
+    border-radius: 7px; border: 1px solid var(--pr-line); cursor: pointer;
+    background: transparent; color: var(--muted, #7f7f88); }
+  .pr-dr-x:hover { color: var(--text, #e4e4e7); }
+  .pr-dr-b { overflow-y: auto; padding: 13px; display: grid; gap: 13px; }
+  .pr-dr-sec { display: grid; gap: 5px; }
+  .pr-dr-k { font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted, #7f7f88); }
+  .pr-dr-v { font-size: 12.5px; color: var(--text, #e4e4e7); white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+  /* An empty section says what WOULD be here, in the same grey every other empty
+     state on this page uses. A blank area reads as a page that failed to load. */
+  .pr-dr-none { font-size: 12px; color: var(--muted, #7f7f88); }
+  .pr-dr-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pr-dr-ev { display: grid; gap: 4px; }
+  .pr-dr-e { display: grid; grid-template-columns: auto 1fr; gap: 9px;
+    align-items: baseline; padding: 6px 0; border-top: 1px solid var(--pr-line); }
+  .pr-dr-e-m { font-size: 10px; color: var(--muted, #7f7f88);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pr-dr-e-t { font-size: 12px; color: var(--text, #e4e4e7); min-width: 0;
+    overflow-wrap: anywhere; }
+  .pr-dr-e-k { font-size: 10px; font-weight: 600; color: var(--muted, #7f7f88); }
+
+  /* ---- shared small pieces: a chip, a verdict pill, a chevron, a truncation line.
+     Read by the tree rows and by the "needs you" card, so they live above both. ---- */
+  .pr-chip { font-size: 10px; padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--pr-line); color: var(--muted, #7f7f88);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pr-chip-cr { color: var(--text, #e4e4e7); }
+  /* A row that has been quiet past the threshold. Amber rather than red: a long
+     silence is something to check, not something known to be broken. */
+  .pr-chip-quiet { border-color: color-mix(in oklab, var(--pr-s1) 55%, var(--pr-line));
+    color: var(--pr-s1); }
+  /* The PR chip's build state. Three spellings, because a lane that never started
+     is not a failure and telling them apart is the whole ask. */
+  .pr-chip-pass { color: var(--pr-s3); border-color:
+    color-mix(in oklab, var(--pr-s3) 45%, var(--pr-line)); }
+  .pr-chip-fail { color: var(--pr-s1); border-color:
+    color-mix(in oklab, var(--pr-s1) 55%, var(--pr-line)); }
+  .pr-chip-idle { color: var(--muted, #7f7f88); }
+  .pr-vp { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    white-space: nowrap; }
+  .pr-held { font-size: 10.5px; color: var(--muted, #7f7f88); padding: 2px; }
+  .pr-chev { font-size: 10px; color: var(--muted, #7f7f88); width: 11px;
+    transition: transform var(--pr-motion-fast) var(--pr-ease); }
+  .pr-n[data-open="true"] > .pr-n-h .pr-chev { transform: rotate(90deg); }
+
+  /* ---- epic tree: one row per node, four levels, a tint per level ----
+     Each row sets `--pr-lv` to its own level's colour, so the tag, the guide line
+     and the progress bar of that row are one family without a class per level. */
+  .pr-tree { display: grid; gap: 3px; }
+  .pr-n { border-radius: 9px; min-width: 0; }
+  .pr-n-h { display: grid; grid-template-columns: 11px auto 1fr auto; gap: 8px;
+    align-items: center; padding: 7px 9px; border-radius: 9px; }
+  .pr-n[data-kids="true"] > .pr-n-h { cursor: pointer; }
+  .pr-n[data-kids="true"] > .pr-n-h:hover {
+    background: color-mix(in oklab, var(--pr-lv) 10%, transparent); }
+  .pr-n-h:focus-visible { outline: 1px solid var(--pr-lv); outline-offset: -1px; }
+  /* The level tag. One tint each, every one mixed with the card so it sits on the
+     light canvas as well as the warm dark one. */
+  .pr-lv { font: 700 9px/1 system-ui, sans-serif; letter-spacing: .06em;
+    padding: 4px 5px; border-radius: 4px; white-space: nowrap;
+    background: color-mix(in oklab, var(--pr-lv) 24%, var(--pr-card));
+    color: color-mix(in oklab, var(--pr-lv) 42%, var(--text-strong, #fafafa)); }
+  .pr-n-x { min-width: 0; }
+  .pr-n-t { font-size: 12.5px; color: var(--text, #e4e4e7); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pr-n-epic > .pr-n-h .pr-n-t { font-size: 13px; font-weight: 620;
+    color: var(--text-strong, #fafafa); }
+  .pr-n-t[role="button"] { cursor: pointer; }
+  .pr-n-t[role="button"]:hover { text-decoration: underline;
+    text-decoration-color: var(--pr-lv); text-underline-offset: 3px; }
+  .pr-n-s { font-size: 10.5px; line-height: 1.4; color: var(--muted, #7f7f88);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-n-r { display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    flex-wrap: wrap; }
+  .pr-n-done { font-size: 11px; font-variant-numeric: tabular-nums;
+    color: var(--muted, #7f7f88); white-space: nowrap; }
+  .pr-n-bar { width: 54px; height: 3px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in oklab, var(--pr-line) 70%, var(--pr-card)); }
+  .pr-n-bar > i { display: block; height: 100%; border-radius: 999px;
+    background: color-mix(in oklab, var(--pr-lv) 80%, var(--pr-card)); }
+  .pr-n-cr { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text, #e4e4e7); min-width: 40px; text-align: right; }
+  /* The guide line is the PARENT's tint, so a deep row still says what it hangs
+     under even when its own tag has scrolled out of view. */
+  .pr-kids { display: none; margin-left: 18px; padding-left: 9px;
+    border-left: 1px solid color-mix(in oklab, var(--pr-lv) 34%, var(--pr-line)); }
+  .pr-n[data-open="true"] > .pr-kids { display: grid; gap: 3px; }
+  @media (max-width: 719px) {
+    /* At the panel's width the right-hand group wraps under the name instead of
+       squeezing the title to nothing. */
+    .pr-n-h { grid-template-columns: 11px auto 1fr; }
+    .pr-n-r { grid-column: 2 / -1; justify-content: flex-start; }
+    .pr-kids { margin-left: 10px; }
+  }
+
+  /* ---- cost, as one line with the chart behind a toggle ---- */
+  .pr-cost { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  /* `--text`, which is the variable THIS PAGE's other primary text reads. An
+     invented name (`--fg`) is not defined by either theme, so it silently took the
+     dark fallback and the line was near-invisible on the light one -- and the
+     evidence renders are dark, so 34 screenshots could not show it. */
+  .pr-cost-l { font-size: 12px; color: var(--text, #e4e4e7); }
+  .pr-cost-l b { font-variant-numeric: tabular-nums; }
+  .pr-cost-t { color: var(--muted, #7f7f88); }
+  .pr-cost-b { font: inherit; font-size: 11px; cursor: pointer;
+    color: var(--muted-strong, #52525b); background: none; padding: 2px 8px;
+    border: 1px solid var(--line, #2a2a30); border-radius: 999px; }
+  .pr-cost-b:hover { color: var(--text, #e4e4e7); }
+  /* The button is reachable and visibly focused: it is the only way to the charts. */
+  .pr-cost-b:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: 2px; }
+
+  /* ---- sunburst: two rings of spend beside the tree ---- */
+  .pr-tree-wrap { display: grid; gap: 12px; grid-template-columns: 1fr;
+    align-items: start; }
+  @media (min-width: 980px) { .pr-tree-wrap { grid-template-columns: 1fr 252px; } }
+  .pr-sun { display: grid; gap: 10px; justify-items: center; }
+  .pr-sun svg { display: block; }
+  .pr-sun-rows { display: grid; gap: 6px; width: 100%; min-width: 0; }
+  .pr-sun-k { font-size: 10px; color: var(--muted-strong, #52525b);
+    text-align: center; }
+
+  .pr-note { font-size: 10.5px; color: var(--muted-strong, #52525b);
+    border-top: 1px solid var(--pr-line); padding-top: 9px; }
+  .pr-agent { font-size: 10px; letter-spacing: .03em; padding: 2px 6px;
+    border-radius: 999px; color: var(--muted, #7f7f88);
+    border: 1px dashed color-mix(in oklab, var(--pr-s2) 48%, var(--pr-line)); }
+
+  /* A reader who asked their system for less motion gets the page without any. The
+     flash is the only thing here that MEANS something by moving, so it is replaced
+     rather than merely disabled: a left rule in the accent marks the same rows, and
+     stays until the next refresh paints over it. */
+  /* ---- who is working: one row per worker with work still open ----
+     Paperclip's Latest Run card (AgentDetail.tsx) answers "what is this member doing
+     right now"; the tree above answers "what is the work". This list is the first
+     question asked of the second, one line per worker. */
+  .pr-crew { display: grid; gap: 2px; }
+  .pr-crew-r { display: grid; grid-template-columns: 9px 82px 1fr auto; gap: 4px 10px;
+    align-items: baseline; padding: 7px 8px; border-radius: 9px; cursor: pointer; }
+  .pr-crew-r:hover, .pr-crew-r:focus-visible {
+    background: color-mix(in oklab, var(--pr-line) 45%, transparent); outline: none; }
+  .pr-crew-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center;
+    background: var(--pr-crew-c, var(--muted, #7f7f88)); }
+  .pr-crew-who { font: 500 11.5px/1.3 var(--pr-mono); color: var(--muted, #7f7f88);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pr-crew-main { min-width: 0; }
+  .pr-crew-t { color: var(--text, #e4e4e7); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .pr-crew-said { font-size: 11.5px; color: var(--muted, #7f7f88); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .pr-crew-side { display: flex; gap: 6px; align-items: center; justify-content: end; }
+  .pr-crew-st { font-size: 11px; font-weight: 600;
+    color: color-mix(in oklab, var(--pr-crew-c, var(--muted, #7f7f88)) 80%, var(--text, #e4e4e7)); }
+  .pr-crew-more { font-size: 11px; color: var(--muted, #7f7f88); padding: 4px 8px; }
+  .pr-mono { font-family: var(--pr-mono); }
+  /* Narrow: worker label and state share the first line, the task and its last
+     line take the full width under them. */
+  @media (max-width: 719px) {
+    .pr-crew-r { grid-template-columns: 9px 1fr auto;
+      grid-template-areas: "dot who side" ". main main"; }
+    .pr-crew-dot { grid-area: dot; }
+    .pr-crew-who { grid-area: who; }
+    .pr-crew-side { grid-area: side; }
+    .pr-crew-main { grid-area: main; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pr { --pr-motion-fast: 0ms; }
+    .pr-n-h, .pr-chev { transition: none; }
+    .pr-flash { animation: none; box-shadow: inset 2px 0 0 0 var(--pr-accent); }
+  }
+</style>
+
+<div class="pr">
+  <div class="pr-head">
+    <div class="pr-titles">
+      <div>
+        <div class="pr-eyebrow">What this crewmate is doing</div>
+        <div class="pr-title" id="pr-title">Project report</div>
+        <!-- Whether the page is being fed, and as of when. Under the title rather
+             than in a footer: it qualifies every number above it. -->
+        <div class="pr-live" id="pr-live" data-live="true" hidden>
+          <i class="pr-live-dot"></i><span id="pr-live-t"></span>
+        </div>
+      </div>
+      <div class="pr-sentence" id="pr-sentence" style="margin-left:auto"></div>
+    </div>
+    <div class="pr-pills" id="pr-pills"></div>
+  </div>
+
+  <!-- Filled by the script, in this order: the band that says whether these numbers
+       are still being produced, then the lead's verdict, then the red lanes under it.
+       Above `pr-view` because a reader who learns the page is dead should learn it
+       before reading a number off it. -->
+  <div id="pr-stale-host"></div>
+  <div id="pr-verdict-host"></div>
+  <div id="pr-lanes-host"></div>
+
+  <div id="pr-view"></div>
+
+  <!-- One task's own record, opened by clicking its row. Empty until then, and
+       emptied on close, so nothing of a closed drawer is left in the page. -->
+  <div id="pr-drawer-host"></div>
+
+  <!-- THE NOUNS ARE INSIDE THE SPANS, because the number and the word it governs have
+       to agree and only the page knows the number. Left outside, this line read "1
+       workstreams, 1 hours with spend" on a one-board crewmate -- which is every new
+       one. The spans stay, and keep their field names: the contract requires one bound
+       element per field, and the host fills them before the page does. -->
+  <div class="pr-note" id="pr-note">
+    <span data-dashboard-field="items">&mdash;</span>,
+    <span data-dashboard-field="omitted">&mdash;</span> more not shown,
+    <span data-dashboard-field="series">&mdash;</span> with spend,
+    <span data-dashboard-field="for_you">&mdash;</span> raised by the crewmate,
+    <span data-dashboard-field="verdict">&mdash;</span> verdict,
+    <span data-dashboard-field="ci">&mdash;</span>,
+    last entry <span data-dashboard-field="last_entry_at">&mdash;</span>.
+  </div>
+</div>
+
+<script>
+(function () {
+  var DASH = '—';
+  var SVGNS = 'http://www.w3.org/2000/svg';
+
+  //: The four levels of the tree, each with the tag a row wears and its one tint. A
+  //: level is named here rather than derived from the data's depth because the tag is
+  //: what tells a reader WHICH record a row is -- a board's goal, a round of it, a work
+  //: item, or an item on a board one of those items' workers runs.
+  var LEVELS = {
+    epic:  ['EPIC',  'var(--pr-accent)'],
+    story: ['STORY', 'var(--pr-s2)'],
+    task:  ['TASK',  'var(--pr-s1)'],
+    sub:   ['SUB',   'var(--pr-s3)']
+  };
+  //: How many boards deep below a task the walk goes. A nested board's own task can
+  //: bind a worker running a third board, so the nesting has no natural floor; this is
+  //: the floor, and a subtree cut here says so on the page rather than vanishing.
+  var SUB_DEPTH = 4;
+  //: An item whose record carries no round. Grouped under its own story rather than
+  //: folded into round 0, which is a round some boards really have.
+  var NO_ROUND = -1;
+  var ALL = '__all__';
+
+  //: Section order of the global view. The question the page answers is "what was
+  //: done, what did it cost, what came of it, what do I have to do", and these four
+  //: blocks are that sentence in that order.
+  var LAYOUT = ['kpi', 'hero', 'todo', 'crew', 'tree'];
+
+  var view = ALL;
+  //: Which tree rows are expanded, keyed by the node's own path key so a re-render
+  //: puts the reader back where they were. Seeded ONCE per page (`treeInit`): a reader
+  //: who collapsed a row does not have it re-open under them on the next push.
+  var treeOpen = {};
+  //: The task whose drawer is open, as (board, item), or null. MODULE state, so a
+  //: refresh re-renders the drawer's contents from the new read instead of closing
+  //: it -- a drawer that shut every time the fold advanced would be unusable on a
+  //: page whose whole point is that it advances.
+  var costOpen = false;
+  var drawerAt = null;
+  //: Per task, a digest of the values its row draws, from the LAST render. What
+  //: makes a flash mean "this moved" rather than "this exists": a row is marked only
+  //: when its own digest differs from the one it had, and `flashSeen` is what keeps
+  //: the first paint from marking every row at once.
+  var rowWas = {};
+  var flashSeen = false;
+  //: Which rows moved, for the render in flight. Set once per render, read by every
+  //: row the tree walk builds.
+  var flashes = {};
+  var treeInit = false;
+  //: Charts awaiting a width. Reset at the top of every render, filled while the view
+  //: is built, drained once it is attached. See `heroChart`.
+  var plots = [];
+
+  function txt(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+  function svgEl(tag, attrs) {
+    var n = document.createElementNS(SVGNS, tag);
+    for (var k in attrs) {
+      if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+    }
+    return n;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  function fields() { return (window.kirocrew || {}).fields || {}; }
+  function agenticNames() {
+    var a = (window.kirocrew || {}).agentic;
+    return Array.isArray(a) ? a : [];
+  }
+
+  //: Absent cost is NOT zero. The fold says so with `credits_reported`, and every
+  //: credit on this page is read through here, so a board nobody measured draws a dash
+  //: instead of claiming it was free.
+  function credits(holder) {
+    if (!holder || holder.credits_reported !== true) return null;
+    return num(holder.credits);
+  }
+  function fmtCr(v) {
+    if (v === null) return DASH;
+    if (v >= 100) return String(Math.round(v));
+    if (v >= 10) return v.toFixed(1);
+    return v.toFixed(2);
+  }
+  //: English needs the unit to agree with the count, and the count comes from the
+  //: record, so it is decided here rather than guessed at each call site.
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
+  function fmtDur(ms) {
+    var v = num(ms);
+    if (v === null || v <= 0) return DASH;
+    var mins = Math.round(v / 60000);
+    if (mins < 60) return mins + 'm';
+    return Math.floor(mins / 60) + 'h' + (mins % 60 ? (mins % 60) + 'm' : '');
+  }
+  //: Stamps are SLICED, not parsed: `new Date` re-expresses a UTC hour in whoever is
+  //: looking, so the page would quietly disagree with the record it is showing.
+  function hourLabel(iso) {
+    var s = txt(iso);
+    if (!s) return '';
+    var m = /^\d{4}-(\d{2})-(\d{2})T(\d{2})/.exec(s);
+    return m ? m[3] + ':00' : s;
+  }
+
+  function streams() {
+    var list = fields().items;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (s) { return s && typeof s === 'object'; });
+  }
+  function tasksOf(s) {
+    return Array.isArray(s.tasks)
+      ? s.tasks.filter(function (t) { return t && typeof t === 'object'; }) : [];
+  }
+  function seriesOf(holder) {
+    var list = holder && holder.series;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (p) { return p && typeof p === 'object'; });
+  }
+  function forYou() {
+    var list = fields().for_you;
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (r) { return r && typeof r === 'object' && txt(r.text); });
+  }
+  function forYouIsAgentic() { return agenticNames().indexOf('for_you') !== -1; }
+
+  //: ELAPSED TIME, which is the one thing a stamp may be parsed for on this page.
+  //: `hourLabel` slices rather than parses because re-expressing a UTC hour in
+  //: whoever is looking makes the page disagree with the record -- but a DIFFERENCE
+  //: between two instants is the same number in every timezone, so `Date.parse`
+  //: here says nothing about where the reader is.
+  //:
+  //: `null` for an unparseable stamp and for one in the FUTURE: the reader's clock
+  //: can sit ahead of the gateway's, and `quiet -5m` is worse than no chip at all.
+  function sinceMs(iso) {
+    var s = txt(iso);
+    if (!s) return null;
+    var then = Date.parse(s);
+    if (!isFinite(then)) return null;
+    var delta = Date.now() - then;
+    return delta >= 0 ? delta : null;
+  }
+
+  //: Coarse on purpose. A reader deciding whether to go and look at a worker needs
+  //: the order of magnitude, and a second-by-second count on a page that refetches
+  //: every minute would be precision the number does not have.
+  function fmtSince(ms) {
+    var mins = Math.floor(ms / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm';
+    var hrs = Math.floor(mins / 60);
+    return hrs + 'h' + (mins % 60 ? (mins % 60) + 'm' : '');
+  }
+
+  //: THE SAME ELAPSED TIME AS A PHRASE A READER CAN READ ALOUD. `fmtSince` returns a
+  //: bare length ("2m", "1h40m") for the chips, where the column header supplies the
+  //: sense; four other callers wanted a sentence and each appended " ago" itself. Under
+  //: a minute that produced "entry just now ago", which was on the page the moment a
+  //: fresh crewmate wrote anything -- the first thing a demo shows.
+  //:
+  //: One function rather than four fixes, because the next caller would have appended
+  //: " ago" too. "just now" already carries its own tense and takes no suffix.
+  function fmtAgo(ms) {
+    var s = fmtSince(ms);
+    return s === 'just now' ? s : s + ' ago';
+  }
+
+  //: Past this, a row's silence is worth a reader's attention. One number, named,
+  //: because it is a judgment rather than a fact and the next person to argue with
+  //: it should find it in one place.
+  var QUIET_MS = 20 * 60 * 1000;
+
+  //: How far back a report still belongs on the "New since you looked" shelf. An
+  //: hour is the boundary the Paperclip desk uses for "Decide now"; here it marks
+  //: the items a reader should see immediately. Longer silences go to "Earlier".
+  var DESK_NEW_MS = 60 * 60 * 1000;
+
+  //: THE SUMMARY CLEANING ALGORITHM (team/REPORT.md idea #8, AgentDetail.tsx:1592).
+  //: A worker's raw summary can be nine lines of shell transcript. This strips
+  //: markdown structure (headers, lists, tables, fences), takes the first three
+  //: non-empty prose lines, and caps at 280 characters -- the same bounds Paperclip
+  //: uses for the Latest Run card. Returns '' for an empty or structure-only input.
+  function cleanSummary(raw) {
+    if (!raw || !raw.trim()) return '';
+    var lines = raw.replace(/^#{1,6}\s+/gm, '').split('\n')
+      .map(function (l) { return l.trim(); })
+      .filter(function (l) {
+        return l.length > 0 && !l.startsWith('---') && !l.startsWith('|')
+          && !l.startsWith('```') && !/^[-*>]/.test(l) && !/^\d+\./.test(l);
+      });
+    var out = [], chars = 0, k;
+    for (k = 0; k < lines.length; k++) {
+      if (out.length >= 3) break;
+      if (chars + lines[k].length > 280) {
+        //: A first line longer than the cap is cut, not dropped: real worker
+        //: reports are often one long line, and dropping it left the card with no
+        //: reason at all.
+        if (!out.length) out.push(lines[k].slice(0, 279).trimEnd() + '\u2026');
+        break;
+      }
+      out.push(lines[k]);
+      chars += lines[k].length;
+    }
+    return out.join(' ');
+  }
+
+  //: ONE LINE FOR THE CARD FACE. A worker's report opens with what it DID
+  //: ("Enumerated all 308 .md files ...") and only later says why it stopped, so the
+  //: first sentence is the wrong one to show under "Blocked". This picks the first
+  //: sentence that names a stop (need / expired / waiting / denied / cannot / missing
+  //: / approval ...), falls back to the first sentence, drops a leading
+  //: "Blocked:" the badge already says, and caps at 120 characters.
+  var STOP_WORDS = /\b(block|blocked|need|needs|expired|waiting|wait|denied|cannot|can't|unable|missing|requires?|approval|approve|decide|confirm|which|whether)\b/i;
+  function headline(text) {
+    var t = (text || '').replace(/`/g, '').trim();
+    if (!t) return '';
+    //: A sentence ends at . ! ? followed by space and a capital letter, so ".md",
+    //: "docs/." and "(incl. nested)" do not cut a sentence in half.
+    var parts = t.split(/(?<=[.!?])\s+(?=[A-Z])/);
+    var pick = '', k;
+    for (k = 0; k < parts.length; k++) {
+      if (STOP_WORDS.test(parts[k])) { pick = parts[k]; break; }
+    }
+    if (!pick) pick = parts[0];
+    pick = pick.trim().replace(/^(blocked|question)\s*[:\u2014-]\s*/i, '');
+    pick = pick.charAt(0).toUpperCase() + pick.slice(1);
+    if (pick.length > 120) pick = pick.slice(0, 119).trimEnd() + '\u2026';
+    return pick;
+  }
+
+  //: The four values, in the order a reader meets them. `no_word` is Linear's grey
+  //: and is deliberately last: it is what the page falls back to, never a state a
+  //: lead picks.
+  var VERDICTS = {
+    on_track: ['On track', 'var(--pr-s3)'],
+    needs_you: ['Needs you', 'var(--pr-s1)'],
+    blocked: ['Blocked', 'var(--pr-s4)'],
+    no_word: ['No word yet', 'var(--muted, #7f7f88)']
+  };
+
+  //: The lead's verdict, or `null` when there is none to draw.
+  //:
+  //: THE FALLBACK IS THE POINT. A verdict written before the log last advanced is
+  //: a statement about a board that has since moved, so it is downgraded to
+  //: `no_word` rather than shown as current -- which is what keeps a lead that died
+  //: mid-run from leaving a green page over a dead run. The comparison uses the
+  //: HOST's record of when the cell was written (`written_at`), never a time inside
+  //: the value: a time the writer supplied would be the writer's own claim about its
+  //: own freshness, which is precisely the claim in doubt.
+  function verdict() {
+    var v = fields().verdict;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    var state = txt(v.state);
+    if (!state || !VERDICTS[state]) return null;
+    var wroteAt = txt(((window.kirocrew || {}).written_at || {}).verdict);
+    var moved = txt(fields().last_entry_at);
+    var superseded = false;
+    if (wroteAt && moved) {
+      var w = Date.parse(wroteAt);
+      var m = Date.parse(moved);
+      // Only a parse of BOTH can supersede. One unparseable stamp is a reason to
+      // leave the lead's own word standing, not a reason to silence it.
+      superseded = isFinite(w) && isFinite(m) && m > w;
+    }
+    return {
+      state: superseded ? 'no_word' : state,
+      headline: txt(v.headline),
+      blocker: txt(v.blocker),
+      wroteAt: wroteAt,
+      superseded: superseded,
+      claimed: state
+    };
+  }
+
+  //: The lane board, as a babysitting worker last saw it. `checks` is keyed by the
+  //: fold's own `item_id`, so a row finds its own build without the page having to
+  //: match on a title.
+  function ciBoard() {
+    var c = fields().ci;
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+    var checks = (c.checks && typeof c.checks === 'object' && !Array.isArray(c.checks))
+      ? c.checks : {};
+    var lanes = Array.isArray(c.lanes)
+      ? c.lanes.filter(function (l) { return l && typeof l === 'object' && txt(l.name); })
+      : [];
+    return { checks: checks, lanes: lanes, pr: txt(c.pr), head: txt(c.head) };
+  }
+
+  //: One task's build counts, or null. Read by `item_id` because that is the only
+  //: identifier the fold guarantees is stable across a render.
+  function checksOf(t) {
+    var board = ciBoard();
+    if (!board) return null;
+    var row = board.checks[txt(t.item_id) || ''];
+    if (!row || typeof row !== 'object') return null;
+    var pass = num(row.pass), fail = num(row.fail), running = num(row.running);
+    if (pass === null && fail === null && running === null) return null;
+    return { pass: pass || 0, fail: fail || 0, running: running || 0 };
+  }
+
+  //: A task's identity across renders: its board and its own id.
+  //:
+  //: BOTH, because an item id is unique within a board and not across them -- a
+  //: board rebuilt under a new generation keeps its predecessor's ids, which is also
+  //: why the fold keys its event tails this way.
+  function taskKey(boardId, t) { return (boardId || '') + '/' + (txt(t.item_id) || ''); }
+
+  //: Find a task by the key a drawer or a flash remembered it under. Returns the
+  //: task AND its board, because the drawer titles itself with the workstream.
+  function taskAt(key) {
+    var list = streams();
+    for (var i = 0; i < list.length; i++) {
+      var tasks = tasksOf(list[i]);
+      var bid = txt(list[i].id) || String(i);
+      for (var j = 0; j < tasks.length; j++) {
+        if (taskKey(bid, tasks[j]) === key) return { board: list[i], task: tasks[j] };
+      }
+    }
+    return null;
+  }
+
+  //: What a row DRAWS, as one string. Only the drawn values: a row whose credits
+  //: moved in the sixth decimal looks identical to a reader, and flashing it would
+  //: teach them to ignore the mark.
+  function rowDigest(t) {
+    return [
+      txt(t.state), txt(t.status), txt(t.verdict), txt(t.summary), txt(t.pr),
+      fmtCr(credits(t)), fmtDur(t.duration_ms), txt(t.last_report_at),
+      txt(t.decision), num(t.events_seen),
+    ].join('\u0001');
+  }
+
+  //: Which rows moved since the last render, and remember the new state.
+  //:
+  //: Computed in ONE pass before anything is drawn, because a row is built by the
+  //: tree walk and cannot ask "did I change" without this already being decided.
+  function flashed() {
+    var now = {}, marks = {};
+    var list = streams();
+    for (var i = 0; i < list.length; i++) {
+      var bid = txt(list[i].id) || String(i);
+      var tasks = tasksOf(list[i]);
+      for (var j = 0; j < tasks.length; j++) {
+        var key = taskKey(bid, tasks[j]);
+        var digest = rowDigest(tasks[j]);
+        now[key] = digest;
+        // A row absent from the previous render is NEW, not changed. Marking it
+        // would flash the whole tree the first time a board appears.
+        if (flashSeen && rowWas[key] !== undefined && rowWas[key] !== digest) {
+          marks[key] = true;
+        }
+      }
+    }
+    rowWas = now;
+    flashSeen = true;
+    return marks;
+  }
+
+  //: Is anything still arriving, and as of when.
+  //:
+  //: The dot is the fold's own advance, which is the same reading the stale band is
+  //: raised from -- one source, so the two cannot disagree. The time is when THIS
+  //: page last read, which is a different fact: a page can read every minute and
+  //: still be reading a log that stopped an hour ago.
+  function renderLive() {
+    var host = document.getElementById('pr-live');
+    var label = document.getElementById('pr-live-t');
+    if (!host || !label) return;
+    var at = txt(fields().last_entry_at);
+    var since = sinceMs(at);
+    var live = since !== null && since < QUIET_MS;
+    host.hidden = false;
+    host.setAttribute('data-live', live ? 'true' : 'false');
+    clear(label);
+    label.appendChild(el('b', null, live ? 'Live' : 'No new entry'));
+    // A WALL-CLOCK read time, which is the one place this page spells a local hour:
+    // "updated" is about the reader's own now, not about an hour in the record.
+    //
+    // Through `Date.now()` and not `new Date()`, so this page reads ONE clock. Both
+    // forms answer the same thing in a browser; they part company in the evidence
+    // harness, which pins `Date.now` to the instant its fixture describes. A page
+    // mixing them renders a different "Updated" on every shoot, which makes the
+    // committed screenshots differ byte for byte from one run to the next -- and an
+    // image nobody can reproduce is a claim rather than a reading.
+    var d = new Date(Date.now());
+    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    label.appendChild(document.createTextNode(
+      '\u00a0\u00b7 Updated ' + hh + (since === null ? '' : ' \u00b7 entry ' + fmtAgo(since))
+    ));
+  }
+
+  //: STATE is the conductor's own stamp; STATUS is the worker's last claim. The board
+  //: needs both, because the one column a reader opens this page to find -- a task whose
+  //: worker says done and which nothing has ruled on yet -- is named by neither alone.
+  function columnOf(t) {
+    var state = txt(t.state);
+    if (state === 'accepted') return 'acc';
+    if (state === 'rejected' || state === 'abandoned') return 'shut';
+    return txt(t.status) === 'done' ? 'await' : 'prog';
+  }
+  function needsMe(t) {
+    var st = txt(t.status);
+    return st === 'question' || st === 'blocked';
+  }
+
+  // ---------------------------------------------------------------- the tree model
+
+  //: WHAT A SUBTREE'S COST IS. A task row reports the WHOLE bill of the worker session
+  //: bound to it, which is the fold's own posture: that is what the task cost to run.
+  //: One session bound to two tasks therefore shows the same amount twice, so a tree
+  //: that ADDED its rows up would bill that session once per task it served -- the
+  //: error the fold refuses to make in a board total. So a node does not carry a
+  //: number; it carries the SET of sessions its subtree was billed through, and the
+  //: number is that set's values summed. A roll-up then reproduces the fold's rule
+  //: instead of contradicting it, at every level.
+  //:
+  //: The key is the session. A task with a measured cost and no session key (an older
+  //: fold value) falls back to its own item id, so the credit still counts, once.
+  function billKey(t) {
+    return txt(t.spender) || ('item:' + (txt(t.item_id) || ''));
+  }
+  function bills(t) {
+    var out = {}, c = credits(t);
+    if (c !== null) out[billKey(t)] = c;
+    return out;
+  }
+  function mergeBills(into, from) {
+    for (var k in from) {
+      if (Object.prototype.hasOwnProperty.call(from, k)) into[k] = from[k];
+    }
+  }
+  //: `null` for an empty set, never 0: a subtree nobody measured draws a dash, which
+  //: is the same promise `credits()` keeps for one row.
+  function billTotal(set) {
+    var n = null;
+    for (var k in set) {
+      if (Object.prototype.hasOwnProperty.call(set, k)) n = (n || 0) + set[k];
+    }
+    return n;
+  }
+
+  //: Nested boards by the task they hang under. The fold hands the boards back FLAT
+  //: with a `parent` link on each nested one, so this is the index that turns the list
+  //: into a tree without a second read.
+  function nestIndex(list) {
+    var map = {}, i;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i].parent;
+      if (!p || typeof p !== 'object') continue;
+      var k = (txt(p.board) || '') + '\u0000' + (txt(p.item_id) || '');
+      if (!map[k]) map[k] = [];
+      map[k].push(list[i]);
+    }
+    return map;
+  }
+  function nestedUnder(nest, boardId, itemId) {
+    return nest[(txt(boardId) || '') + '\u0000' + (txt(itemId) || '')] || [];
+  }
+  //: The roots: a board nobody bound, and a board whose parent the fold dropped.
+  //: The second case matters -- a nested board whose parent fell off the board cap
+  //: would otherwise be on the page nowhere at all.
+  function rootBoards(list) {
+    var ids = {}, out = [], i;
+    for (i = 0; i < list.length; i++) ids[txt(list[i].id) || String(i)] = true;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i].parent;
+      if (p && typeof p === 'object' && ids[txt(p.board) || '']) continue;
+      out.push(list[i]);
+    }
+    return out;
+  }
+
+  //: One node. `kids` are the rows under it; `total`/`done` and `bill` are its whole
+  //: subtree, itself included, which is what makes a parent's numbers the sum of its
+  //: children's. `task` is set on a leaf level so the row can draw its result pill,
+  //: and `focus` on an epic so its name can switch the page to that workstream.
+  function node(level, key, name, sub, task) {
+    return { level: level, key: key, name: name, sub: sub || '', task: task || null,
+      //: The board this node's task belongs to, which a drawer needs: a task is
+      //: identified by (board, item) and a sub-board's task is NOT on the epic whose
+      //: tree it is drawn under.
+      boardId: '', focus: '', kids: [], total: 0, done: 0, bill: {}, held: 0 };
+  }
+  function absorb(parent, child) {
+    parent.kids.push(child);
+    parent.total += child.total;
+    parent.done += child.done;
+    mergeBills(parent.bill, child.bill);
+  }
+
+  //: A task, and under it every item of every board its own worker runs. Recursive,
+  //: because that worker's board can itself bind workers running boards; `depth` is
+  //: what stops it, and `seen` is what stops a bind cycle from being one.
+  function taskNode(level, key, board, t, nest, depth, seen) {
+    var n = node(level, key, txt(t.title) || DASH, txt(t.summary) || '', t);
+    n.boardId = txt(board.id) || '';
+    n.total = 1;
+    n.done = columnOf(t) === 'acc' ? 1 : 0;
+    mergeBills(n.bill, bills(t));
+    var subs = nestedUnder(nest, board.id, t.item_id), i, j;
+    for (i = 0; i < subs.length; i++) {
+      var sb = subs[i], sid = txt(sb.id) || String(i);
+      if (seen[sid]) continue;
+      if (depth <= 0) { n.held += tasksOf(sb).length; continue; }
+      seen[sid] = true;
+      var st = tasksOf(sb);
+      for (j = 0; j < st.length; j++) {
+        absorb(n, taskNode('sub', key + '/s:' + sid + ':' + (txt(st[j].item_id) || j),
+          sb, st[j], nest, depth - 1, seen));
+      }
+      n.held += num(sb.tasks_omitted) || 0;
+    }
+    return n;
+  }
+
+  //: An epic: one board, its tasks grouped into a story per round. The rounds run
+  //: NEWEST first, which is the order the board was worked in reverse and puts the
+  //: story a reader came for at the top.
+  function epicNode(board, nest, seen) {
+    var bid = txt(board.id) || '';
+    var n = node('epic', 'e:' + bid, txt(board.goal) || bid || DASH,
+      'round ' + (num(board.round) === null ? DASH : num(board.round)));
+    n.focus = bid;
+    var ts = tasksOf(board), order = [], groups = {}, i;
+    for (i = 0; i < ts.length; i++) {
+      var r = num(ts[i].round);
+      if (r === null) r = NO_ROUND;
+      if (!groups[r]) { groups[r] = []; order.push(r); }
+      groups[r].push(ts[i]);
+    }
+    order.sort(function (a, b) { return b - a; });
+    for (i = 0; i < order.length; i++) {
+      var r2 = order[i], rows = groups[r2];
+      var story = node('story', n.key + '/r:' + r2,
+        r2 === NO_ROUND ? 'No round recorded' : ('Round ' + r2), '');
+      for (var j = 0; j < rows.length; j++) {
+        absorb(story, taskNode('task',
+          story.key + '/t:' + (txt(rows[j].item_id) || j),
+          board, rows[j], nest, SUB_DEPTH, seen));
+      }
+      story.sub = plural(story.total, 'item', 'items');
+      absorb(n, story);
+    }
+    n.held = num(board.tasks_omitted) || 0;
+    return n;
+  }
+
+  //: The whole forest. `scope` is null for every workstream, or one board for the
+  //: one-workstream view -- in which case that board is the single root even if the
+  //: fold says it is itself nested, because the pill the reader pressed names it.
+  function buildTree(list, scope) {
+    var nest = nestIndex(list), seen = {}, roots, i, out = [];
+    if (scope) {
+      roots = [scope];
+    } else {
+      roots = rootBoards(list);
+    }
+    for (i = 0; i < roots.length; i++) {
+      var rid = txt(roots[i].id) || String(i);
+      if (seen[rid]) continue;
+      seen[rid] = true;
+      out.push(epicNode(roots[i], nest, seen));
+    }
+    return out;
+  }
+
+  //: Which rows start open: every epic, and the newest story of each -- the first in
+  //: the story order, which `epicNode` already sorted newest first. Tasks start shut,
+  //: so an epic opens onto its rounds rather than onto every item at once.
+  function seedOpen(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      treeOpen[nodes[i].key] = true;
+      if (nodes[i].kids.length) treeOpen[nodes[i].kids[0].key] = true;
+    }
+  }
+
+  // ---------------------------------------------------------------- small pieces
+
+  function sparkline(points, width, height, colour) {
+    var w = width, h = height;
+    var svg = svgEl('svg', { width: w, height: h, viewBox: '0 0 ' + w + ' ' + h,
+      'aria-hidden': 'true' });
+    var vals = [], i;
+    for (i = 0; i < points.length; i++) vals.push(num(points[i].credits) || 0);
+    if (vals.length < 2) return svg;
+    var max = Math.max.apply(null, vals) || 1;
+    var step = w / (vals.length - 1), d = '';
+    for (i = 0; i < vals.length; i++) {
+      d += (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' +
+        (h - 1 - (vals[i] / max) * (h - 2)).toFixed(1) + ' ';
+    }
+    svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: colour,
+      'stroke-width': '1.4', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    return svg;
+  }
+
+  function kpi(label, value, unit, sub, subQuiet, extra) {
+    var card = el('div', 'pr-card pr-kpi');
+    card.appendChild(el('div', 'pr-kpi-label', label));
+    var v = el('div', 'pr-kpi-v', value);
+    if (unit) v.appendChild(el('span', 'pr-kpi-u', unit));
+    card.appendChild(v);
+    if (extra && extra.spark) {
+      var s = el('div', 'pr-kpi-spark');
+      s.appendChild(extra.spark);
+      card.appendChild(s);
+    } else {
+      card.appendChild(el('div'));
+    }
+    if (sub) card.appendChild(el('div', 'pr-kpi-sub' + (subQuiet ? ' pr-quiet' : ''), sub));
+    if (extra && typeof extra.bar === 'number') {
+      var bar = el('div', 'pr-bar');
+      var fill = el('i');
+      fill.style.width = Math.max(0, Math.min(100, extra.bar * 100)).toFixed(1) + '%';
+      bar.appendChild(fill);
+      card.appendChild(bar);
+    }
+    return card;
+  }
+
+  //: The hero: credits per hour as soft bars, with what was ACCEPTED in that hour as a
+  //: glowing line over them. Two scales, because a count of items and an amount of
+  //: credits share no unit and one axis would flatten whichever is smaller.
+  //:
+  //: Built in TWO steps. An element that is not in the document yet measures zero, so
+  //: a chart sized at construction time would be drawn into a 240-wide viewBox and then
+  //: stretched to the card's real width -- bars and axis labels distorted by whatever
+  //: the ratio happened to be. So this returns an empty host, registers it, and
+  //: `drawPlots` fills it once the view is attached and the width is a real number.
+  function heroChart(points, lineLabel) {
+    var host = el('div');
+    var plot = el('div', 'pr-plot');
+    host.appendChild(plot);
+    if (!points.length) {
+      plot.appendChild(el('div', 'pr-empty',
+        'No hourly record yet'));
+      return host;
+    }
+    //: Every hour at zero credits is not a chart. The fold's series carries an hour
+    //: whenever anything happened in it, so a run of zeroes means nobody REPORTED a
+    //: cost -- and a flat line along the axis would read as "it was free" rather than
+    //: "nobody said". The accepted counts are still worth drawing when there are any.
+    var measured = false, accepted = false, i;
+    for (i = 0; i < points.length; i++) {
+      if ((num(points[i].credits) || 0) > 0) measured = true;
+      if ((num(points[i].accepted) || 0) > 0) accepted = true;
+    }
+    if (!measured && !accepted) {
+      plot.appendChild(el('div', 'pr-empty',
+        'These ' + points.length +
+        ' hours carry a record; none of them reported a cost' +
+        ', and nothing was accepted in them'));
+      return host;
+    }
+    plots.push({ plot: plot, points: points, measured: measured });
+
+    var legend = el('div', 'pr-legend');
+    if (measured) {
+      var a = el('span');
+      var sw1 = el('span', 'pr-swatch');
+      sw1.style.background = 'color-mix(in oklab, var(--pr-s1) 56%, transparent)';
+      a.appendChild(sw1);
+      a.appendChild(document.createTextNode('credits that hour'));
+      legend.appendChild(a);
+    } else {
+      legend.appendChild(el('span', null,
+        'no hour reported a cost'));
+    }
+    var b = el('span');
+    var sw2 = el('span', 'pr-swatch');
+    sw2.style.background = 'var(--pr-accent)';
+    b.appendChild(sw2);
+    b.appendChild(document.createTextNode(lineLabel));
+    legend.appendChild(b);
+    host.appendChild(legend);
+    return host;
+  }
+
+  function drawHero(plot, points, w, measured) {
+    var H = 156, padL = 6, padR = 6, padT = 12, padB = 20;
+    var svg = svgEl('svg', { width: w, height: H, viewBox: '0 0 ' + w + ' ' + H,
+      role: 'img' });
+    var i, cr = [], ac = [];
+    for (i = 0; i < points.length; i++) {
+      cr.push(num(points[i].credits) || 0);
+      ac.push(num(points[i].accepted) || 0);
+    }
+    var crMax = Math.max.apply(null, cr) || 1;
+    var acMax = Math.max.apply(null, ac) || 1;
+    var plotW = w - padL - padR, plotH = H - padT - padB;
+    var slot = plotW / points.length;
+    var barW = Math.max(3, Math.min(30, slot * 0.5));
+
+    var defs = svgEl('defs', {});
+    var filt = svgEl('filter', { id: 'pr-glow', x: '-30%', y: '-80%',
+      width: '160%', height: '260%' });
+    filt.appendChild(svgEl('feGaussianBlur', { stdDeviation: '3.4', result: 'b' }));
+    var merge = svgEl('feMerge', {});
+    merge.appendChild(svgEl('feMergeNode', { in: 'b' }));
+    merge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
+    filt.appendChild(merge);
+    defs.appendChild(filt);
+    svg.appendChild(defs);
+
+    if (measured) {
+      for (i = 0; i < points.length; i++) {
+        var bh = Math.max(1, (cr[i] / crMax) * plotH);
+        svg.appendChild(svgEl('rect', {
+          x: (padL + i * slot + (slot - barW) / 2).toFixed(1),
+          y: (padT + plotH - bh).toFixed(1),
+          width: barW.toFixed(1), height: bh.toFixed(1), rx: '2',
+          fill: 'color-mix(in oklab, var(--pr-s1) 34%, transparent)' }));
+      }
+    }
+
+    var pts = [];
+    for (i = 0; i < points.length; i++) {
+      pts.push([padL + i * slot + slot / 2, padT + plotH - (ac[i] / acMax) * plotH * 0.86]);
+    }
+    var d;
+    if (pts.length === 1) {
+      d = 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1) +
+          'L' + (pts[0][0] + 1).toFixed(1) + ' ' + pts[0][1].toFixed(1);
+    } else {
+      // Catmull-Rom through the points, emitted as cubics: a smooth line without a
+      // library, which the frame could not load anyway.
+      d = 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1);
+      for (i = 0; i < pts.length - 1; i++) {
+        var p0 = pts[i > 0 ? i - 1 : 0], p1 = pts[i], p2 = pts[i + 1];
+        var p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1];
+        d += 'C' + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(1) + ' ' +
+                   (p1[1] + (p2[1] - p0[1]) / 6).toFixed(1) + ' ' +
+                   (p2[0] - (p3[0] - p1[0]) / 6).toFixed(1) + ' ' +
+                   (p2[1] - (p3[1] - p1[1]) / 6).toFixed(1) + ' ' +
+                   p2[0].toFixed(1) + ' ' + p2[1].toFixed(1);
+      }
+    }
+    svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: 'var(--pr-accent)',
+      'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      filter: 'url(#pr-glow)' }));
+
+    // The peak, marked -- the reference's one labelled point. Only when a cost was
+    // reported: a marker on a zero would point at an amount nobody claimed.
+    if (measured) {
+      var peak = 0;
+      for (i = 1; i < cr.length; i++) if (cr[i] > cr[peak]) peak = i;
+      svg.appendChild(svgEl('circle', {
+        cx: (padL + peak * slot + slot / 2).toFixed(1),
+        cy: (padT + plotH - (cr[peak] / crMax) * plotH).toFixed(1),
+        r: '3', fill: 'var(--pr-bg)', stroke: 'var(--pr-accent)',
+        'stroke-width': '1.6' }));
+    }
+
+    //: Labels are thinned to what FITS: a 760 px panel cannot carry eight stamps, and
+    //: the alternative to dropping some is drawing them on top of each other.
+    var every = Math.max(1, Math.ceil(points.length / Math.max(2, Math.floor(w / 72))));
+    for (i = 0; i < points.length; i++) {
+      if (i % every && i !== points.length - 1) continue;
+      var t = svgEl('text', { x: (padL + i * slot + slot / 2).toFixed(1),
+        y: String(H - 6), 'text-anchor': 'middle', 'font-size': '9.5',
+        fill: 'var(--muted, #7f7f88)' });
+      t.textContent = hourLabel(points[i].hour);
+      svg.appendChild(t);
+    }
+    clear(plot);
+    plot.appendChild(svg);
+  }
+
+  function drawPlots() {
+    for (var i = 0; i < plots.length; i++) {
+      var p = plots[i];
+      drawHero(p.plot, p.points, Math.max(220, Math.round(p.plot.clientWidth) || 220),
+               p.measured);
+    }
+  }
+
+  var SERIES_COLOURS = ['var(--pr-s1)', 'var(--pr-s2)', 'var(--pr-s3)', 'var(--pr-s4)',
+    'color-mix(in oklab, var(--pr-accent) 70%, var(--pr-card))'];
+
+  //: THE SUNBURST, the page's one ring of spend and the tree's companion: two rings of
+  //: the same money, the inner one a level of the tree and the outer one the level
+  //: under it. An SVG arc whose start and end coincide draws NOTHING, so a lone 100%
+  //: segment is a circle -- on either ring, because one epic holding every credit and
+  //: one story inside it is a real board and not a corner case.
+  function ringSeg(svg, c, r, band, from, span, colour, label) {
+    if (span <= 0) return;
+    var seg;
+    if (span >= Math.PI * 2 - 1e-6) {
+      seg = svgEl('circle', { cx: c, cy: c, r: r, fill: 'none', stroke: colour,
+        'stroke-width': String(band) });
+    } else {
+      var to = from + span;
+      seg = svgEl('path', {
+        d: 'M' + (c + r * Math.cos(from)).toFixed(2) + ' ' +
+           (c + r * Math.sin(from)).toFixed(2) +
+           'A' + r + ' ' + r + ' 0 ' + (span > Math.PI ? 1 : 0) + ' 1 ' +
+           (c + r * Math.cos(to)).toFixed(2) + ' ' + (c + r * Math.sin(to)).toFixed(2),
+        fill: 'none', stroke: colour, 'stroke-width': String(band),
+        'stroke-linecap': 'butt' });
+    }
+    //: Hover is a native SVG `<title>`, so the name and the amount are there with no
+    //: listener and no second element to keep in step with the geometry.
+    var tip = svgEl('title', {});
+    tip.textContent = label;
+    seg.appendChild(tip);
+    svg.appendChild(seg);
+  }
+
+  //: A bill key already drawn, so one session is on the ring ONCE. A worker that
+  //: served two stories is drawn under the first of them: the alternative is a ring
+  //: whose segments add up to more than the total in its own centre.
+  function exclusive(set, claimed) {
+    var n = null;
+    for (var k in set) {
+      if (!Object.prototype.hasOwnProperty.call(set, k) || claimed[k]) continue;
+      claimed[k] = true;
+      n = (n || 0) + set[k];
+    }
+    return n;
+  }
+
+  //: *src* are the nodes of the inner ring; each one's own children are its outer
+  //: band. Only MEASURED money is on the ring, so a node nobody costed is absent
+  //: rather than drawn at zero.
+  function spendGroups(src) {
+    var claimed = {}, groups = [], i, j;
+    for (i = 0; i < src.length; i++) {
+      var kids = [], sum = 0, kv;
+      for (j = 0; j < src[i].kids.length; j++) {
+        kv = exclusive(src[i].kids[j].bill, claimed);
+        if (kv === null || kv <= 0) continue;
+        kids.push({ label: src[i].kids[j].name, value: kv });
+        sum += kv;
+      }
+      // Whatever the node holds that none of its children do. Zero in practice,
+      // since a parent's bill is its children's union -- kept so a level that gains
+      // a cost of its own does not silently drop off the ring.
+      kv = exclusive(src[i].bill, claimed);
+      if (kv !== null) sum += kv;
+      if (sum <= 0) continue;
+      groups.push({ label: src[i].name, value: sum, kids: kids });
+    }
+    return groups;
+  }
+
+  //: *inner* and *outer* are each a [singular, plural] pair, because the legend's
+  //: sub-line counts the outer band's segments and English wants the unit to agree.
+  function sunburst(groups, inner, outer) {
+    var host = el('div', 'pr-sun');
+    var R = 80, size = R * 2, c = R;
+    var innerR = 46, innerBand = 19, outerR = 68, outerBand = 13;
+    var svg = svgEl('svg', { width: size, height: size,
+      viewBox: '0 0 ' + size + ' ' + size, role: 'img' });
+    svg.setAttribute('aria-label', inner[1] + ' inside, ' + outer[1] + ' outside');
+    var total = 0, i, j;
+    for (i = 0; i < groups.length; i++) total += groups[i].value;
+
+    var track = 'color-mix(in oklab, var(--pr-line) 80%, var(--pr-card))';
+    svg.appendChild(svgEl('circle', { cx: c, cy: c, r: innerR, fill: 'none',
+      stroke: track, 'stroke-width': String(innerBand) }));
+    svg.appendChild(svgEl('circle', { cx: c, cy: c, r: outerR, fill: 'none',
+      stroke: track, 'stroke-width': String(outerBand) }));
+
+    //: Three shades of the parent's own colour, so an outer band reads as belonging to
+    //: the segment under it rather than as a fifth series.
+    var SHADES = [88, 66, 48];
+    if (total > 0) {
+      var from = -Math.PI / 2;
+      for (i = 0; i < groups.length; i++) {
+        var span = (groups[i].value / total) * Math.PI * 2;
+        var colour = SERIES_COLOURS[i % SERIES_COLOURS.length];
+        ringSeg(svg, c, innerR, innerBand, from, span, colour,
+          groups[i].label + ' — ' + fmtCr(groups[i].value) + ' credits');
+        var kids = groups[i].kids, ksum = 0;
+        for (j = 0; j < kids.length; j++) ksum += kids[j].value;
+        var at = from;
+        for (j = 0; j < kids.length && ksum > 0; j++) {
+          var kspan = span * (kids[j].value / ksum);
+          ringSeg(svg, c, outerR, outerBand, at, kspan,
+            'color-mix(in oklab, ' + colour + ' ' + SHADES[j % SHADES.length] +
+            '%, var(--pr-card))',
+            kids[j].label + ' — ' + fmtCr(kids[j].value) + ' credits');
+          at += kspan;
+        }
+        from += span;
+      }
+    }
+    var mid = svgEl('text', { x: c, y: c - 1, 'text-anchor': 'middle',
+      'font-size': '17', 'font-weight': '640', fill: 'var(--text-strong, #fafafa)' });
+    mid.textContent = fmtCr(total > 0 ? total : null);
+    svg.appendChild(mid);
+    var cap = svgEl('text', { x: c, y: c + 14, 'text-anchor': 'middle',
+      'font-size': '9.5', fill: 'var(--muted, #7f7f88)' });
+    cap.textContent = 'credits';
+    svg.appendChild(cap);
+    host.appendChild(svg);
+
+    host.appendChild(el('div', 'pr-sun-k',
+      inner[1] + ' inside \u00b7 ' + outer[1] + ' outside \u00b7 hover for a name'));
+
+    var rows = el('div', 'pr-sun-rows');
+    if (!groups.length) {
+      rows.appendChild(el('div', 'pr-empty', 'No cost was reported'));
+    }
+    for (i = 0; i < groups.length; i++) {
+      var row = el('div', 'pr-row');
+      var left = el('div', 'pr-row-l');
+      var nm = el('div', 'pr-row-n', groups[i].label);
+      var dot = el('span', 'pr-swatch');
+      dot.style.background = SERIES_COLOURS[i % SERIES_COLOURS.length];
+      dot.style.borderRadius = '999px';
+      nm.insertBefore(dot, nm.firstChild);
+      left.appendChild(nm);
+      left.appendChild(el('div', 'pr-row-s', fmtCr(groups[i].value) + ' credits \u00b7 ' +
+        plural(groups[i].kids.length, outer[0], outer[1])));
+      row.appendChild(left);
+      row.appendChild(el('div', 'pr-row-p',
+        total > 0 ? Math.round((groups[i].value / total) * 100) + '%' : DASH));
+      rows.appendChild(row);
+    }
+    host.appendChild(rows);
+    return host;
+  }
+
+  function verdictPill(t) {
+    var v = txt(t.verdict);
+    var pill = el('span', 'pr-vp');
+    if (v === 'pass') {
+      pill.textContent = 'Accepted';
+      pill.style.background = 'var(--ok-subtle, rgba(34,197,94,.12))';
+      pill.style.color = 'var(--ok, #22c55e)';
+      return pill;
+    }
+    if (v === 'fail') {
+      pill.textContent = 'Rejected';
+      pill.style.background = 'var(--danger-subtle, rgba(239,68,68,.12))';
+      pill.style.color = 'var(--danger, #ef4444)';
+      return pill;
+    }
+    var st = txt(t.status);
+    if (st === 'blocked' || st === 'question') {
+      //: The SAME WORD the Needs-you card uses for this item, whose step reads
+      //: "Unblock it in chat" or "Answer in chat". A reader matching the tree against
+      //: the card was given two names for one thing and had to guess they were one.
+      pill.textContent = st === 'blocked'
+        ? 'Unblock' : 'Answer';
+      pill.style.background = 'var(--warn-subtle, rgba(234,179,8,.12))';
+      pill.style.color = 'var(--warn, #eab308)';
+      return pill;
+    }
+    if (columnOf(t) === 'await') {
+      pill.textContent = 'Awaiting crewmate review';
+      pill.style.background = 'color-mix(in oklab, var(--pr-s2) 20%, var(--pr-card))';
+      pill.style.color = 'var(--text, #e4e4e7)';
+      return pill;
+    }
+    return null;
+  }
+
+  //: The PR, and what its build is doing. The state rides the SAME chip rather than
+  //: a second one beside it, because "which PR" and "is it green" are one question
+  //: for a reader scanning a column of rows.
+  //:
+  //: Three spellings, and the third is why this exists: a lane that never started
+  //: is not a failure. Drawing both as red spends a reader's attention deciding
+  //: which kind of red it is, every time.
+  function prChip(t) {
+    var pr = txt(t.pr);
+    if (!pr) return null;
+    var label = /^\d+$/.test(pr) ? 'PR ' + pr : pr;
+    var c = checksOf(t);
+    if (!c) return el('span', 'pr-chip', label);
+    var mark, cls;
+    if (c.fail > 0) { mark = '\u2717 ' + c.fail; cls = 'pr-chip pr-chip-fail'; }
+    else if (c.running > 0) { mark = '\u21bb ' + c.running; cls = 'pr-chip pr-chip-idle'; }
+    else if (c.pass > 0) { mark = '\u2713 ' + c.pass; cls = 'pr-chip pr-chip-pass'; }
+    else { return el('span', 'pr-chip', label); }
+    return el('span', cls, label + '  ' + mark);
+  }
+
+  //: How long this row has been quiet, or null when there is nothing to say.
+  //:
+  //: Only for a row that is still OPEN: an accepted task has stopped reporting
+  //: because it finished, and `quiet 3h` on a done row reads as a problem where
+  //: there is none. Only for one whose worker has reported at least once, because a
+  //: task nobody has picked up has no silence to measure.
+  function quietChip(t) {
+    if (txt(t.state) === 'accepted') return null;
+    var ms = sinceMs(t.last_report_at);
+    if (ms === null) return null;
+    var chip = el('span', 'pr-chip', 'quiet ' + fmtSince(ms));
+    if (ms >= QUIET_MS) chip.className = 'pr-chip pr-chip-quiet';
+    return chip;
+  }
+
+  //: ONE ROW of the tree: chevron, level tag, name, then the right-hand group --
+  //: done/total with a progress bar for a node that has children, the leaf's own
+  //: result pill and PR for a task, and the subtree's credits on every row.
+  function treeRow(n) {
+    var wrap = el('div', 'pr-n pr-n-' + n.level);
+    wrap.style.setProperty('--pr-lv', LEVELS[n.level][1]);
+    //: MARKED, not animated here: the class carries the animation, and under
+    //: reduced motion the same class carries a left rule instead. Only a row whose
+    //: own drawn values moved, which `flashes` decided in one pass before any of
+    //: this was built.
+    if (n.task && flashes[taskKey(n.boardId, n.task)]) wrap.className += ' pr-flash';
+    var expandable = n.kids.length > 0 || n.held > 0;
+    var open = expandable && treeOpen[n.key] === true;
+    wrap.setAttribute('data-kids', expandable ? 'true' : 'false');
+    wrap.setAttribute('data-open', open ? 'true' : 'false');
+
+    var h = el('div', 'pr-n-h');
+    h.appendChild(el('div', 'pr-chev', expandable ? '\u25b8' : ''));
+    h.appendChild(el('div', 'pr-lv', LEVELS[n.level][0]));
+
+    var x = el('div', 'pr-n-x');
+    var title = el('div', 'pr-n-t', n.name);
+    if (n.focus) {
+      //: An epic's name is also the way into its own view, which is what the pill row
+      //: does -- the same gesture the round-4 board had on a workstream title.
+      title.setAttribute('role', 'button');
+      title.setAttribute('tabindex', '0');
+      title.setAttribute('title', 'Show only this workstream');
+    }
+    x.appendChild(title);
+    if (n.sub) x.appendChild(el('div', 'pr-n-s', n.sub));
+    h.appendChild(x);
+
+    var r = el('div', 'pr-n-r');
+    if (n.task) {
+      var pill = verdictPill(n.task);
+      if (pill) r.appendChild(pill);
+      var chip = prChip(n.task);
+      if (chip) r.appendChild(chip);
+      //: Before the duration, because the two answer different questions and the
+      //: silence is the one a reader is scanning for: duration is WORK time, so a
+      //: worker thinking for twenty minutes and one that died twenty minutes ago
+      //: read identically in it.
+      var quiet = quietChip(n.task);
+      if (quiet) r.appendChild(quiet);
+      //: How long its worker's turns ran. Only when measured, because `fmtDur`'s dash
+      //: in a chip of its own would be a column of dashes saying nothing.
+      var ran = fmtDur(n.task.duration_ms);
+      if (ran !== DASH) r.appendChild(el('span', 'pr-chip', ran));
+    }
+    //: A leaf is one item, so "1 / 1" and a full bar say nothing its pill has not
+    //: already said. The progress pair is for a node that rolls something up.
+    if (n.kids.length) {
+      r.appendChild(el('div', 'pr-n-done', n.done + ' / ' + n.total));
+      var bar = el('div', 'pr-n-bar');
+      var fill = el('i');
+      fill.style.width = (n.total ? (n.done / n.total) * 100 : 0).toFixed(1) + '%';
+      bar.appendChild(fill);
+      r.appendChild(bar);
+    }
+    r.appendChild(el('div', 'pr-n-cr', fmtCr(billTotal(n.bill))));
+    h.appendChild(r);
+    wrap.appendChild(h);
+
+    if (expandable) {
+      h.setAttribute('role', 'button');
+      h.setAttribute('tabindex', '0');
+      h.setAttribute('aria-expanded', open ? 'true' : 'false');
+      var kids = el('div', 'pr-kids');
+      for (var i = 0; i < n.kids.length; i++) kids.appendChild(treeRow(n.kids[i]));
+      if (n.held) {
+        kids.appendChild(el('div', 'pr-held',
+          plural(n.held, 'task', 'tasks') + ' not shown (list truncated)'));
+      }
+      wrap.appendChild(kids);
+    }
+
+    (function (key, focus, head, name) {
+      head.addEventListener('click', function (ev) {
+        if (focus && ev.target === name) { view = focus; render(); return; }
+        //: A TASK ROW OPENS ITS DRAWER. Checked before the expand, because a leaf
+        //: has nothing to expand and its click would otherwise do nothing at all --
+        //: and a row that answers no click is a row a reader stops trying.
+        if (openDrawerFor(n)) return;
+        if (!expandable) return;
+        treeOpen[key] = treeOpen[key] !== true;
+        render();
+      });
+      head.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        if (focus && ev.target === name) { view = focus; render(); return; }
+        if (openDrawerFor(n)) return;
+        if (!expandable) return;
+        treeOpen[key] = treeOpen[key] !== true;
+        render();
+      });
+      if (focus) {
+        name.addEventListener('keydown', function (ev) {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          view = focus;
+          render();
+        });
+      }
+    }(n.key, n.focus, h, title));
+
+    return wrap;
+  }
+
+  // ---------------------------------------------------------------- sections
+
+  function sectionKpi(list, points) {
+    var wrap = el('div', 'pr-kpis');
+    var open = 0, acc = 0, total = 0, cr = null, measured = 0, i;
+    for (i = 0; i < list.length; i++) {
+      open += num(list[i].open) || 0;
+      acc += num(list[i].accepted) || 0;
+      total += num(list[i].total) || 0;
+      var c = credits(list[i]);
+      if (c !== null) { cr = (cr || 0) + c; measured += 1; }
+    }
+    var need = needsYou(list, null);
+    //: EPICS, where the card says "workstreams". The money and the blocked items above
+    //: are summed over every board including the nested ones -- a charge is a charge
+    //: wherever it was billed -- but a nested board is not a workstream of its own, and
+    //: this number sits beside a tree that draws one root per epic.
+    var epics = rootBoards(list).length;
+
+    wrap.appendChild(kpi('In flight', String(open), open === 1 ? 'item' : 'items',
+      plural(epics, 'workstream', 'workstreams'), true,
+      { spark: sparkline(points, 62, 26, 'color-mix(in oklab, var(--pr-s2) 85%, var(--pr-card))') }));
+    wrap.appendChild(kpi('Accepted', String(acc), acc === 1 ? 'item' : 'items',
+      acc + ' / ' + plural(total, 'item', 'items'), true,
+      { bar: total ? acc / total : 0 }));
+
+    //: NO SPEND CARD HERE. The money was on this row, in the full-width chart under it
+    //: and in the rings beside the tree, which is three statements of one number above
+    //: the work it was spent on -- and the page is read to find out what the work is
+    //: doing. It is now the one line in `sectionCost`, which keeps this card's exact
+    //: value and subtitle, and the charts are a click away.
+
+    wrap.appendChild(kpi('Needs you', String(need.total),
+      need.total === 1 ? 'item' : 'items',
+      //: The subtitle describes the SAME set the number counts, so it says how many of
+      //: that set the crewmate raised -- "of which", never "plus". A subtitle that adds
+      //: to the number above it puts two totals on one card and leaves the reader to
+      //: work out which is the one waiting.
+      need.total
+        ? (need.mine
+            ? need.mine + ' of them raised by the crewmate'
+            : need.total === 1 ? 'one answer needed' : 'answers needed')
+        : 'nothing waiting on you',
+      !need.total, {}));
+    return wrap;
+  }
+
+  //: COST, AS ONE LINE, with the chart behind a toggle.
+  //:
+  //: The same numbers the KPI row used to carry -- the total, and either the last
+  //: hour or how many boards reported nothing -- because the honest part of the old
+  //: card was never its size. `credits_reported` is why the second clause exists: a
+  //: board that reported no cost is NOT a board that cost nothing, and a total that
+  //: quietly leaves one out while reading like a full total is the one way this line
+  //: could lie.
+  //:
+  //: `costOpen` is module state, so the choice survives a refresh exactly as an
+  //: expanded tree row and an open drawer do. A reader who opened the breakdown to
+  //: watch an hour land would otherwise have it shut under them by the next read.
+  function sectionCost(list, points, caption) {
+    var card = el('div', 'pr-card');
+    var cr = null, measured = 0, i;
+    for (i = 0; i < list.length; i++) {
+      var c = credits(list[i]);
+      if (c !== null) { cr = (cr || 0) + c; measured += 1; }
+    }
+    //: With no board at all the boards cannot disagree with the total, so the hourly
+    //: series is the only record of the money and the line reads from it. Summing the
+    //: series when boards DO exist would be a second, differently-sourced total for a
+    //: number the page already states.
+    if (!list.length) {
+      cr = null;
+      for (i = 0; i < points.length; i++) {
+        var pc = num(points[i].credits);
+        if (pc) cr = (cr || 0) + pc;
+      }
+    }
+    var tail = points.length ? num(points[points.length - 1].credits) : null;
+    var row = el('div', 'pr-cost');
+    var line = el('div', 'pr-cost-l');
+    line.appendChild(document.createTextNode('spent '));
+    line.appendChild(el('b', null, fmtCr(cr)));
+    line.appendChild(document.createTextNode(' credits'));
+    var trail = list.length && measured !== list.length
+      ? '\u00a0\u00b7 ' + (list.length - measured) + ' reported no cost'
+      : (tail === null ? '' : '\u00a0\u00b7 last hour ' + fmtCr(tail));
+    if (trail) line.appendChild(el('span', 'pr-cost-t', trail));
+    row.appendChild(line);
+    var btn = el('button', 'pr-cost-b', costOpen ? 'hide breakdown' : 'show breakdown');
+    btn.type = 'button';
+    btn.setAttribute('aria-expanded', costOpen ? 'true' : 'false');
+    btn.onclick = function () { costOpen = !costOpen; render(); };
+    row.appendChild(btn);
+    card.appendChild(row);
+    //: BUILT ONLY WHEN OPEN, not built and hidden. The chart measures its own host to
+    //: size itself, and a host with no layout measures zero -- so a hidden chart would
+    //: be drawn once at zero width and stay that shape after being revealed.
+    if (costOpen) card.appendChild(sectionHero(points, caption));
+    return card;
+  }
+
+  //: The hero on its own, full width. Its old companion was a donut of spend per
+  //: workstream, and that question is now the sunburst's inner ring beside the tree --
+  //: where the same money is also broken down one level further.
+  function sectionHero(points, caption) {
+    var hero = el('div', 'pr-card pr-hero');
+    var hh = el('div', 'pr-card-h');
+    hh.appendChild(el('div', 'pr-card-t', 'Credits per hour'));
+    hh.appendChild(el('div', 'pr-card-c', caption));
+    hero.appendChild(hh);
+    hero.appendChild(heroChart(points, 'items accepted that hour'));
+    return hero;
+  }
+
+  //: Everything the "Needs you" question has in it, computed ONCE and read by the header
+  //: sentence, the KPI card and the list itself -- three places that showed the same
+  //: quantity and so must not be able to count it differently. A page saying "2 need you"
+  //: above a list reading "Nothing needs you" has told the reader nothing it can act on.
+  //:
+  //: `rows` are the lines it can actually draw; `total` is what the RECORD says, which
+  //: is the larger number when the fold truncated a task list (`tasks_omitted`) -- the
+  //: fold's own `needs_you` counts that board's whole board, and the tasks it retained
+  //: are a bounded view of it. The gap is drawn as a gap rather than hidden either way.
+  //:
+  //: `scope` is null for the global view, or `{id, goal}` for one workstream. A `for_you`
+  //: line is scoped by naming its workstream's goal or its id exactly; a line matching
+  //: neither still appears in the GLOBAL view, so a mislabelled one is never lost.
+  //:
+  //: TWO KINDS, not one. Paperclip's decision queue collapsed eleven source kinds into
+  //: two by borrowing the task-status colour: a blocked worker (red) and an ask for a
+  //: verdict (purple). The fold carries `status === 'blocked'` vs `'question'` --
+  //: exactly the same split. A single "Waiting on you" label made both rows look like
+  //: the same thing; two labels with two colours make the difference visible before
+  //: any text is read.
+  //: THE CHOICES ON A CARD. Each one is a label a person reads and the exact
+  //: line it puts in the chat box. The page never sends: the host only fills the
+  //: composer and the person presses send, so a page can offer a reply but can
+  //: never speak as the user.
+  //:
+  //: A worker's question in the RULING shape ("RULING: q -- (a) x (b) y -- rec")
+  //: carries its own options; those are offered as written, the recommended one
+  //: outlined. A crewmate item may carry `options` (an array of strings) in the
+  //: for_you field it writes. A blocked item gets the two moves a lead has.
+  var OPT_MAX = 6;
+  //: THE DESK'S WORDS. The page has no language of its own: the crewmate writes
+  //: `verdict.words` in whatever language it speaks with this person, and the page
+  //: reads every desk label from it. It rides on the verdict, which the lead
+  //: already rewrites every round, rather than a fourth agentic field. A word the crewmate left out falls back to
+  //: English, so a crewmate that never wrote the field still gets a working desk.
+  var WORD_DEFAULTS = {
+    blocked: 'Blocked', asks: 'Asks you', pick: 'Pick one', approve: 'OK to go?',
+    only_you: 'Only you', go: 'Go ahead', not_now: 'Not now', done: 'Done it',
+    cant: "Can't now", redispatch: 'Re-dispatch it', drop: 'Drop it',
+    own: 'Write my own', yes: 'Yes', no: 'No', earlier: 'Earlier',
+    answered: 'Answered', undo: 'Undo', context: 'Context', why: 'Why', how: 'How',
+    words: "worker's words"
+  };
+  function W(key) {
+    var vd = fields().verdict;
+    var u = vd && typeof vd === 'object' && !Array.isArray(vd) ? vd.words : null;
+    var v = u && typeof u === 'object' && !Array.isArray(u) ? txt(u[key]) || '' : '';
+    return v && v.length <= 40 ? v : WORD_DEFAULTS[key];
+  }
+  var KIND_WORD = { 'Blocked': 'blocked', 'Asks you': 'asks', 'Pick one': 'pick',
+    'OK to go?': 'approve', 'Only you': 'only_you' };
+  //: THE THREE THINGS A MANAGER ASKS OF A CEO, which is what a crewmate's item is.
+  //: `decide`: here are the options, pick one. `approve`: I mean to do this, may I.
+  //: `do`: only you can do this (a login, a key, a person to talk to). The crewmate
+  //: names the kind in the item's `ask`; an item without one is a decision.
+  var ASK_KINDS = {
+    decide: { id: 'decide', badge: 'Pick one', color: 'var(--pr-s2)' },
+    approve: { id: 'approve', badge: 'OK to go?', color: 'var(--accent, #8b5cf6)' },
+    'do': { id: 'do', badge: 'Only you', color: 'var(--pr-s1)' }
+  };
+  //: The brief a manager writes on the card: context (where things stand), why (why
+  //: it matters now), how (what happens next if you say yes). Each one line, capped,
+  //: so a card is read in seconds and never becomes a report.
+  function briefOf(item) {
+    var out = [], keys = [['context', W('context')], ['why', W('why')], ['how', W('how')]], k;
+    for (k = 0; k < keys.length; k++) {
+      var v = txt(item[keys[k][0]]) || '';
+      if (!v) continue;
+      out.push([keys[k][1], v.length > 200 ? v.slice(0, 199).trimEnd() + '\u2026' : v]);
+    }
+    return out;
+  }
+  function parseRuling(raw) {
+    var m = /RULING:\s*([\s\S]+?)\s+--\s+([\s\S]+?)\s+--\s+([\s\S]+?)\s*$/m.exec(raw || '');
+    if (!m) return null;
+    var body = m[2], opts;
+    if (/\(\s*[a-z1-9]\s*\)/i.test(body)) {
+      opts = body.split(/\(\s*[a-z1-9]\s*\)\s*/i);
+    } else {
+      opts = body.split(/\s+\|\s+|\s*;\s*|\s+or\s+/i);
+    }
+    opts = opts.map(function (o) { return o.trim().replace(/[,;.]+$/, ''); })
+      .filter(function (o) { return o.length > 0; }).slice(0, OPT_MAX);
+    if (!opts.length) return null;
+    var rec = m[3].toLowerCase(), recIdx = -1, k;
+    var letter = /\(?\b([a-z1-9])\)?/i.exec(m[3]);
+    for (k = 0; k < opts.length; k++) {
+      if (rec.indexOf(opts[k].toLowerCase().slice(0, 24)) !== -1) { recIdx = k; break; }
+    }
+    if (recIdx < 0 && letter && /^(recommend|i recommend|pick|go with)?\s*\(?[a-z1-9]\)?/i.test(m[3])) {
+      var c = letter[1].toLowerCase();
+      var at = /[1-9]/.test(c) ? parseInt(c, 10) - 1 : c.charCodeAt(0) - 97;
+      if (at >= 0 && at < opts.length) recIdx = at;
+    }
+    return { question: m[1].trim(), options: opts, rec: recIdx };
+  }
+  function shortLabel(s) {
+    var t = txt(s) || '';
+    return t.length > 48 ? t.slice(0, 47).trimEnd() + '\u2026' : t;
+  }
+  function refOf(title, id) {
+    return '"' + (title || 'this item') + '"' + (id ? ' (' + id + ')' : '');
+  }
+  function choicesFor(kind, title, id, raw, written) {
+    var ref = refOf(title, id), out = [], k;
+    if (kind === 'Blocked') {
+      out.push({ label: W('redispatch'), say: ref + ': ' + W('redispatch'), rec: true });
+      out.push({ label: W('drop'), say: ref + ': ' + W('drop') });
+    } else if (written && Array.isArray(written.options) && written.options.length) {
+      var wo = written.options.slice(0, OPT_MAX);
+      for (k = 0; k < wo.length; k++) {
+        if (!txt(wo[k])) continue;
+        out.push({ label: shortLabel(wo[k]), say: ref + ': ' + txt(wo[k]), rec: k === 0 });
+      }
+    } else if (kind === 'approve') {
+      out.push({ label: W('go'), say: ref + ': ' + W('go'), rec: true });
+      out.push({ label: W('not_now'), say: ref + ': ' + W('not_now') });
+    } else if (kind === 'do') {
+      out.push({ label: W('done'), say: ref + ': ' + W('done'), rec: true });
+      out.push({ label: W('cant'), say: ref + ': ' + W('cant') });
+    } else {
+      var r = parseRuling(raw);
+      if (r) {
+        for (k = 0; k < r.options.length; k++) {
+          out.push({ label: shortLabel(r.options[k]), say: ref + ': ' + r.options[k],
+            rec: k === r.rec });
+        }
+      } else {
+        out.push({ label: W('yes'), say: ref + ': ' + W('yes') });
+        out.push({ label: W('no'), say: ref + ': ' + W('no') });
+      }
+    }
+    out.push({ label: W('own'), say: ref + ': ', own: true });
+    return out;
+  }
+
+  //: The cards a person already picked a choice on, by key. Kept across refills so
+  //: a card stays folded until the board itself drops it; a reload forgets them,
+  //: which shows the card again if the board still holds it -- the honest answer.
+  var deskPicked = {};
+  function act(text) {
+    try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+    catch (e) { /* no host: the choice simply does nothing */ }
+  }
+
+  function needsYou(list, scope) {
+    var rows = [], workers = 0, mine = 0, i, j;
+    for (i = 0; i < list.length; i++) {
+      workers += num(list[i].needs_you) || 0;
+      var ts = tasksOf(list[i]);
+      for (j = 0; j < ts.length; j++) {
+        if (!needsMe(ts[j])) continue;
+        var st = txt(ts[j].status);
+        var isBlocked = st === 'blocked';
+        var since = sinceMs(txt(ts[j].last_report_at));
+        //: A row is "new" when it reported in the last hour. Absent `last_report_at`
+        //: means the fold did not stamp it; treat that as not new so a missing field
+        //: does not inflate the top shelf.
+        var isNew = since !== null && since < DESK_NEW_MS;
+        var raw = txt(ts[j].summary) || '';
+        //: BLOCKED: owner stays null, because the fold carries no owner/action
+        //: field. The display rule exists so a future fold that adds those fields only
+        //: needs to fill in `row.owner` and `row.action`; the card reads them there.
+        if (isBlocked) {
+          var bid = txt(ts[j].item_id) || txt(ts[j].id) || '';
+          rows.push({ kind: 'Blocked',
+            step: 'Unblock it in chat',
+            key: 'w:' + (bid || txt(ts[j].title)),
+            choices: choicesFor('Blocked', txt(ts[j].title), bid, raw, null),
+            kindColor: 'var(--pr-s1)',
+            text: txt(ts[j].title) || DASH,
+            where: txt(list[i].goal) || '',
+            why: cleanSummary(raw),
+            when: 'when the blocker is resolved',
+            owner: null, action: null,
+            spender: txt(ts[j].spender) || '',
+            boardId: txt(list[i].id) || '',
+            isNew: isNew, note: raw, agent: false });
+        } else {
+          var qid = txt(ts[j].item_id) || txt(ts[j].id) || '';
+          var ruling = parseRuling(raw);
+          rows.push({ kind: 'Asks you',
+
+            step: 'Answer in chat',
+            key: 'w:' + (qid || txt(ts[j].title)),
+            choices: choicesFor('Asks you', txt(ts[j].title), qid, raw, null),
+            kindColor: 'var(--pr-s2)',
+            text: txt(ts[j].title) || DASH,
+            where: txt(list[i].goal) || '',
+            why: ruling ? ruling.question : cleanSummary(raw),
+            when: 'when you answer in chat',
+            owner: null, action: null,
+            spender: txt(ts[j].spender) || '',
+            boardId: txt(list[i].id) || '',
+            isNew: isNew, note: raw, agent: false });
+        }
+      }
+    }
+    var written = forYou();
+    for (i = 0; i < written.length; i++) {
+      var label = txt(written[i].workstream);
+      if (scope && label !== scope.goal && label !== scope.id) continue;
+      //: WAITING ON YOU, with the act it needs. This is the channel the conductor's
+      //: own instructions point at: an item under `you` reaches a reader only by being
+      //: written here, "where it appears under Needs you with the act it needs". Drawing
+      //: it as a note with nothing to do contradicted the instruction that puts it here
+      //: and left the one question this field answers looking answered by nobody.
+      //: `agent` stays, because WHO raised it is worth showing; it no longer decides
+      //: which group the row lands in. Crewmate items are always "new": the crewmate
+      //: just wrote them, and there is no last_report_at to compare.
+      var ask = ASK_KINDS[txt(written[i].ask)] || ASK_KINDS.decide;
+      rows.push({ kind: ask.badge,
+        step: 'Answer in chat',
+        key: 'c:' + txt(written[i].text),
+        choices: choicesFor(ask.id, txt(written[i].text), '', '', written[i]),
+        kindColor: ask.color,
+        text: txt(written[i].text),
+        brief: briefOf(written[i]),
+        where: label || '',
+        why: '', when: 'when you answer in chat',
+        owner: null, action: null,
+        spender: '', boardId: '',
+        isNew: true, note: '', agent: true
+      });
+      mine += 1;
+    }
+    //: `workers` is the fold's own count for the boards in view, not a count of the rows
+    //: drawn: the retained task list is bounded, so the fold can legitimately know of
+    //: more than the page can show. Attributing the gap to either side would be a guess,
+    //: so each half keeps its own number and the gap is drawn as a gap.
+    //: The headline counts EVERY row, because every row now asks for something. The
+    //: two halves are counted separately before being added: `workers` is the fold's
+    //: own number for the boards in view, which can exceed the worker rows drawn, while
+    //: `mine` is a count of rows actually in hand. Adding a bounded number to an
+    //: unbounded one without saying so is how a headline starts disagreeing with the
+    //: list under it.
+    var drawn = rows.length;
+    var fromWorkers = drawn - mine;
+    //: The record cannot report FEWER worker items than the page can draw: a count
+    //: below the rows in hand would be the fold disagreeing with its own task list, and
+    //: the rows are the thing a reader can act on, so they win.
+    if (workers < fromWorkers) workers = fromWorkers;
+    var total = workers + mine;
+    return { rows: rows, notes: [], total: total, workers: workers, mine: mine };
+  }
+
+  //: THE NEEDS-YOU DESK, shelved by recency and coloured by kind.
+  //:
+  //: Two shelves: "New since you looked" (reported in the last hour) and "Earlier".
+  //: A shelf is only drawn when it has rows, so an all-new or all-earlier board does
+  //: not see an empty heading above nothing.
+  //:
+  //: Within a shelf, multiple asks from the same session (same `spender`) on the same
+  //: board are preceded by one header line so a reader who sees "session 2 asked 3
+  //: things" is not surprised to find three consecutive cards about the same source.
+  //:
+  //: Two zero states: a global "Nothing needs you." and a scoped "Nothing in this
+  //: workstream needs you." so a filtered view that genuinely has nothing says so
+  //: rather than looking like a failed load.
+  function todoCard(list, scope) {
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('div', 'pr-card-t', 'Needs you'));
+    h.appendChild(el('div', 'pr-card-c', 'each one says what to do'));
+    card.appendChild(h);
+
+    var need = needsYou(list, scope);
+    var rows = need.rows, i;
+
+    if (!rows.length && !need.total) {
+      card.appendChild(el('div', 'pr-empty',
+        scope ? 'Nothing in this workstream needs you.' : 'Nothing needs you.'));
+      return card;
+    }
+
+    //: ONE row builder for all groups. Two builders would be two places for the step
+    //: line and the agentic tag to drift apart, and the groups differ only in what
+    //: they are ABOUT, not in how a row is drawn.
+    function todoRow(row) {
+      var it = el('div', 'pr-todo-i');
+      it.style.setProperty('--pr-todo-c', row.kindColor);
+      it.appendChild(el('div', 'pr-todo-k', KIND_WORD[row.kind] ? W(KIND_WORD[row.kind]) : row.kind));
+      var x = el('div', 'pr-todo-x');
+      x.appendChild(el('b', null, row.text));
+      //: BLOCKED: owner/action line when the fold has one. The fold
+      //: carries no owner field today, so every blocked item shows the warning. When
+      //: the fold adds owner/action, only `row.owner` has to change.
+      //: The owner line is drawn only when the fold names one. A warning printed on
+      //: EVERY blocked card (that no owner was named) said nothing a reader could act on and
+      //: was read as noise, so its absence is now silent; the class stays for the day
+      //: the fold carries an owner.
+      if (row.kind === 'Blocked' && row.owner) {
+        x.appendChild(el('div', 'pr-todo-owner',
+          'Waiting on ' + row.owner + (row.action ? ': ' + row.action : '')));
+      }
+      //: WHY NOW: ONE short line, never the worker's report. The card used to print
+      //: up to 280 characters of the worker's own words, which on a real board is
+      //: shell talk ("Verified read-only: workspace root holds ONLY docs, .kiro ...")
+      //: and buried the one thing to do. The headline is the first sentence, capped;
+      //: the rest is one click away behind "worker's words", never on the card face.
+      if (row.brief && row.brief.length) {
+        var br = el('dl', 'pr-todo-brief');
+        row.brief.forEach(function (b) {
+          br.appendChild(el('dt', null, b[0]));
+          br.appendChild(el('dd', null, b[1]));
+        });
+        x.appendChild(br);
+      }
+      if (row.why) {
+        var head = headline(row.why);
+        x.appendChild(el('div', 'pr-todo-why', head));
+        if (head.length < row.why.length) {
+          var more = el('details', 'pr-todo-more');
+          more.appendChild(el('summary', null, W('words')));
+          more.appendChild(el('div', 'pr-todo-raw', row.why));
+          x.appendChild(more);
+        }
+      }
+      var meta = el('span');
+      if (row.where) meta.textContent = row.where;
+      x.appendChild(meta);
+      if (row.agent && forYouIsAgentic()) {
+        x.appendChild(document.createTextNode(' '));
+        x.appendChild(el('span', 'pr-agent', 'crewmate wrote this'));
+      }
+      //: The next step, on its own line and never folded into the meta line: the meta
+      //: line is where the task came from, which a reader skims, and the step is the
+      //: one thing on the row they are meant to act on.
+      //: The choices replace the "do this in chat" line: the card itself is
+      //: where you answer. Picking one fills the chat box and folds the card.
+      if (row.choices && row.choices.length) {
+        var opts = el('div', 'pr-todo-opts');
+        row.choices.forEach(function (c) {
+          var b = el('button', 'pr-todo-opt' + (c.rec ? ' pr-rec' : '') + (c.own ? ' pr-own' : ''),
+            c.label);
+          b.type = 'button';
+          b.title = c.say;
+          b.addEventListener('click', function () {
+            act(c.say);
+            deskPicked[row.key] = c.own ? W('own') : c.label;
+            it.classList.add('pr-going');
+            //: Redraw, so the other cards close the gap this one leaves; the picked
+            //: card moves to the one-line strip under the desk.
+            setTimeout(render, 160);
+          });
+          opts.appendChild(b);
+        });
+        x.appendChild(opts);
+      } else if (row.step) {
+        x.appendChild(el('div', 'pr-todo-s', row.step));
+      }
+      it.appendChild(x);
+      return it;
+    }
+    //: A picked card, folded: what was picked, and that it waits in the chat box.
+    //: "Undo" only unfolds the card; text already in the chat box is the person's.
+    function sentLine(row) {
+      var s = el('div', 'pr-todo-sent');
+      s.appendChild(el('b', null, row.text));
+      s.appendChild(el('span', null, '\u2192 ' + deskPicked[row.key]));
+      var u = el('button', null, W('undo'));
+      u.type = 'button';
+      u.addEventListener('click', function () {
+        delete deskPicked[row.key];
+        render();
+      });
+      s.appendChild(u);
+      return s;
+    }
+
+    //: Build a bundle-header index: for each (boardId, spender) pair that appears more
+    //: than once in a shelf, record the total count and an ordinal (first new spender
+    //: seen = 1, second = 2, …) so the header can read "Session 2 asked 3 things"
+    //: without printing the raw session key.
+    function bundleIndex(shelfRows) {
+      var counts = {}, spenderOrd = {}, ord = 1, k2;
+      for (k2 = 0; k2 < shelfRows.length; k2++) {
+        var r2 = shelfRows[k2];
+        if (!r2.spender || !r2.boardId) continue;
+        var bk = r2.boardId + '\u0000' + r2.spender;
+        counts[bk] = (counts[bk] || 0) + 1;
+        if (!spenderOrd[r2.spender]) spenderOrd[r2.spender] = ord++;
+      }
+      return { counts: counts, spenderOrd: spenderOrd };
+    }
+
+    function drawShelf(shelfRows, label) {
+      if (!shelfRows.length) return null;
+      var shelf = el('div');
+      if (label) shelf.appendChild(el('div', 'pr-shelf-h', label));
+      var box = el('div', 'pr-todo');
+      var idx = bundleIndex(shelfRows);
+      var seen = {}, k3;
+      for (k3 = 0; k3 < shelfRows.length; k3++) {
+        var row = shelfRows[k3];
+        if (row.spender && row.boardId) {
+          var bk2 = row.boardId + '\u0000' + row.spender;
+          if (idx.counts[bk2] >= 2 && !seen[bk2]) {
+            seen[bk2] = true;
+            var n2 = idx.counts[bk2];
+            var sn = idx.spenderOrd[row.spender];
+            box.appendChild(el('div', 'pr-bundle-h',
+              'Session ' + sn + ' asked ' + plural(n2, 'thing', 'things')));
+          }
+        }
+        box.appendChild(todoRow(row));
+      }
+      shelf.appendChild(box);
+      return shelf;
+    }
+
+    //: Picked cards leave the shelves, so the cards still open sit side by side
+    //: with no holes; the picked ones stack as single lines under the desk.
+    var picked = rows.filter(function (r) { return r.key && deskPicked[r.key]; });
+    var open = rows.filter(function (r) { return !(r.key && deskPicked[r.key]); });
+    var newRows = open.filter(function (r) { return r.isNew; });
+    var oldRows = open.filter(function (r) { return !r.isNew; });
+
+    var desk = el('div', 'pr-desk');
+    var ns = drawShelf(newRows, 'New since you looked');
+    if (ns) desk.appendChild(ns);
+    //: Older items and items already answered are FOLDED, one line each when
+    //: closed: they are still true, but they are not what a reader acts on now.
+    function fold(label, n, body) {
+      var d = el('details', 'pr-fold');
+      d.appendChild(el('summary', null, label + ' \u00b7 ' + n));
+      d.appendChild(body);
+      return d;
+    }
+    var os = drawShelf(oldRows, '');
+    if (os) desk.appendChild(fold(W('earlier'), oldRows.length, os));
+    if (picked.length) {
+      var ps = el('div', 'pr-picked');
+      picked.forEach(function (r) { ps.appendChild(sentLine(r)); });
+      desk.appendChild(fold(W('answered'), picked.length, ps));
+    }
+    if (!open.length && picked.length) {
+      desk.insertBefore(el('div', 'pr-empty', 'Nothing left to pick.'), desk.firstChild);
+    }
+    card.appendChild(desk);
+
+    if (need.total > rows.length) {
+      //: The record counts more than the retained tasks can show, so the difference is
+      //: NAMED. Drawing only the rows would under-report what is waiting; printing only
+      //: the count would send the reader looking for lines that are not on the page.
+      var held = el('div', 'pr-held',
+        (need.total - rows.length) + ' more not shown (list truncated)');
+      card.appendChild(held);
+    }
+    return card;
+  }
+
+  //: THE EPIC TREE, and the page's one board. Four levels of the record -- a board's
+  //: goal, a round of it, a work item, an item on a board that item's worker runs --
+  //: with the sunburst of the same money beside it.
+  //:
+  //: `scope` is null for every workstream, where the rings are epic inside and story
+  //: outside, or one board, where the tree has a single root and the rings move down
+  //: with it to story inside and task outside. The rings are always the two levels
+  //: UNDER the tree's root, which is what keeps "inside" and "outside" meaning the
+  //: same thing in both views: a share of the root, and a share of that share.
+  //: `nodes` is the forest, already built: the one-workstream header reports the same
+  //: roll-up as the root row, so the view builds it ONCE and hands it to both. Two
+  //: builds would be two chances to disagree about the number the page states twice.
+  //: `one` is a BOOLEAN -- whether this is the one-workstream view -- and not the
+  //: board, so there is nothing here to pass the wrong object to.
+  function sectionTree(nodes, one) {
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('div', 'pr-card-t', one ? 'This epic' : 'Every epic'));
+    h.appendChild(el('div', 'pr-card-c', one
+      ? 'story \u00b7 task \u00b7 subtask, with what each cost in credits'
+      : 'epic \u00b7 story \u00b7 task \u00b7 subtask, with what each cost in credits'));
+    card.appendChild(h);
+
+    if (!treeInit && nodes.length) {
+      treeInit = true;
+      seedOpen(nodes);
+    }
+    if (!nodes.length) {
+      card.appendChild(el('div', 'pr-empty', 'No workstream yet.'));
+      return card;
+    }
+
+    var wrap = el('div', 'pr-tree-wrap');
+    var tree = el('div', 'pr-tree');
+    for (var i = 0; i < nodes.length; i++) tree.appendChild(treeRow(nodes[i]));
+    wrap.appendChild(tree);
+    var inner = one ? ['story', 'stories'] : ['epic', 'epics'];
+    var outer = one ? ['task', 'tasks'] : ['story', 'stories'];
+    wrap.appendChild(sunburst(
+      spendGroups(one ? nodes[0].kids : nodes), inner, outer));
+    card.appendChild(wrap);
+    return card;
+  }
+
+  // ---------------------------------------------------------------- views
+
+  //: One pill per EPIC, not per board. A nested board is a subtask list reached by
+  //: opening its parent task, so a pill of its own would be a second door to the same
+  //: rows -- and would make the `All` count disagree with the number of epics the
+  //: tree beside it draws, which is the one thing a count next to a tree must not do.
+  function renderPills(list) {
+    var host = document.getElementById('pr-pills');
+    clear(host);
+    function pill(id, label, count) {
+      var b = el('button', 'pr-pill');
+      b.setAttribute('type', 'button');
+      b.setAttribute('aria-current', view === id ? 'true' : 'false');
+      b.appendChild(document.createTextNode(label));
+      if (count !== null && count !== undefined) {
+        b.appendChild(el('span', 'pr-pill-n', String(count)));
+      }
+      b.addEventListener('click', function () { view = id; render(); });
+      return b;
+    }
+    var roots = rootBoards(list);
+    host.appendChild(pill(ALL, 'All', roots.length));
+    for (var i = 0; i < roots.length; i++) {
+      var s = roots[i];
+      host.appendChild(pill(txt(s.id) || String(i), txt(s.goal) || String(i),
+        num(s.open)));
+    }
+  }
+
+  function sentenceAll(list) {
+    var open = 0, cr = null, i;
+    for (i = 0; i < list.length; i++) {
+      open += num(list[i].open) || 0;
+      var c = credits(list[i]);
+      if (c !== null) cr = (cr || 0) + c;
+    }
+    var need = needsYou(list, null).total;
+    var host = document.getElementById('pr-sentence');
+    clear(host);
+    function bit(strong, after) {
+      host.appendChild(el('b', null, strong));
+      host.appendChild(document.createTextNode(after));
+    }
+    bit(String(open), ' in flight, spent ');
+    bit(fmtCr(cr), ' credits, ');
+    bit(String(need), need === 1 ? ' needs you' : ' need you');
+  }
+
+  //: WHO IS WORKING, AND ON WHAT (Paperclip's Latest Run card, team/REPORT.md #7).
+  //:
+  //: The tree answers "what is the work"; nothing on the page answered "what is each
+  //: worker doing right now". One row per worker (`spender`, the fold's own name for
+  //: who ran a task) with a task still OPEN: its state in one word, the task, the
+  //: last thing it said, cleaned, and how long it has been quiet. A worker on two open
+  //: tasks shows the one it reported on last and says how many more it holds.
+  //:
+  //: The state word comes from the worker's own status and nothing else, except one
+  //: case: `progress` that has been quiet past QUIET_MS reads "gone quiet", because a
+  //: worker that died and one still thinking otherwise share a word. Paperclip makes
+  //: the same split (characterStateForAgent: running vs error).
+  var CREW_STATES = {
+    blocked: ['blocked', 'var(--pr-s1)', 0],
+    question: ['asks you', 'var(--pr-s2)', 1],
+    quiet: ['gone quiet', 'var(--pr-accent)', 2],
+    progress: ['working', 'var(--pr-s3)', 3],
+    done: ['awaiting review', 'var(--muted, #7f7f88)', 4],
+    none: ['no report yet', 'var(--muted, #7f7f88)', 5]
+  };
+  var CREW_CAP = 12;
+
+  function crewState(t) {
+    var st = txt(t.status);
+    if (st === 'progress') {
+      var ms = sinceMs(t.last_report_at);
+      return ms !== null && ms >= QUIET_MS ? 'quiet' : 'progress';
+    }
+    return CREW_STATES[st] ? st : 'none';
+  }
+
+  //: What the worker last said: its summary (the drawer's "what the worker last
+  //: said"), else the newest report event's text. Cleaned either way.
+  function crewSaid(t) {
+    var s = cleanSummary(txt(t.summary) || '');
+    if (s) return s;
+    var ev = Array.isArray(t.events) ? t.events : [];
+    for (var k = 0; k < ev.length; k++) {
+      if (ev[k] && ev[k].kind === 'report' && txt(ev[k].text)) return cleanSummary(ev[k].text);
+    }
+    return '';
+  }
+
+  function sectionCrew(list) {
+    var by = {}, order = [], unbound = 0, i, j;
+    for (i = 0; i < list.length; i++) {
+      var ts = tasksOf(list[i]);
+      for (j = 0; j < ts.length; j++) {
+        var t = ts[j];
+        if (txt(t.state) !== 'open') continue;
+        var who = txt(t.spender);
+        if (!who) { unbound++; continue; }
+        var at = sinceMs(t.last_report_at);
+        var cur = by[who];
+        if (!cur) {
+          by[who] = { who: who, t: t, boardId: txt(list[i].id) || '', n: 1, at: at };
+          order.push(who);
+        } else {
+          cur.n++;
+          if (at !== null && (cur.at === null || at < cur.at)) {
+            cur.t = t; cur.boardId = txt(list[i].id) || ''; cur.at = at;
+          }
+        }
+      }
+    }
+    var rows = order.map(function (w) { return by[w]; });
+    rows.sort(function (a, b) {
+      var d = CREW_STATES[crewState(a.t)][2] - CREW_STATES[crewState(b.t)][2];
+      if (d) return d;
+      return (a.at === null ? 1e15 : a.at) - (b.at === null ? 1e15 : b.at);
+    });
+
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('span', 'pr-card-t', 'Who is working'));
+    h.appendChild(el('span', 'pr-card-c', rows.length
+      ? plural(rows.length, 'worker', 'workers') + ' with work open, the stuck ones first'
+      : 'each worker, what it is on, and what it last said'));
+    card.appendChild(h);
+    if (!rows.length) {
+      card.appendChild(el('div', 'pr-empty', unbound
+        ? 'No worker is bound yet. ' + plural(unbound, 'open task waits', 'open tasks wait')
+          + ' for one.'
+        : 'No worker has open work.'));
+      return card;
+    }
+    var box = el('div', 'pr-crew');
+    var shown = crewShowAll ? rows.length : Math.min(rows.length, CREW_CAP);
+    for (i = 0; i < shown; i++) box.appendChild(crewRow(rows[i]));
+    card.appendChild(box);
+    if (rows.length > shown) {
+      var more = el('button', 'pr-cost-b', 'show ' + (rows.length - shown) + ' more');
+      more.type = 'button';
+      more.addEventListener('click', function () { crewShowAll = true; render(); });
+      card.appendChild(more);
+    }
+    if (unbound) {
+      card.appendChild(el('div', 'pr-crew-more',
+        plural(unbound, 'open task has', 'open tasks have') + ' no worker bound yet.'));
+    }
+    return card;
+  }
+  var crewShowAll = false;
+
+  function crewRow(r) {
+    var key = crewState(r.t);
+    var spec = CREW_STATES[key];
+    var row = el('div', 'pr-crew-r');
+    row.style.setProperty('--pr-crew-c', spec[1]);
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('data-crew-state', key);
+    row.appendChild(el('i', 'pr-crew-dot'));
+    row.appendChild(el('span', 'pr-crew-who', 'worker ' + r.who));
+    var main = el('div', 'pr-crew-main');
+    var title = txt(r.t.title) || DASH;
+    main.appendChild(el('div', 'pr-crew-t',
+      r.n > 1 ? title + '  \u00b7 +' + (r.n - 1) + ' more' : title));
+    //: One line, as on the needs-you cards; the row opens the drawer for the rest.
+    var said = headline(crewSaid(r.t));
+    main.appendChild(el('div', 'pr-crew-said', said || 'nothing said yet'));
+    row.appendChild(main);
+    var side = el('div', 'pr-crew-side');
+    side.appendChild(el('span', 'pr-crew-st', spec[0]));
+    var q = quietChip(r.t);
+    if (q) side.appendChild(q);
+    row.appendChild(side);
+    var open = function () {
+      drawerAt = taskKey(r.boardId, r.t);
+      renderDrawer();
+    };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+    return row;
+  }
+
+  function renderGlobal(list) {
+    document.getElementById('pr-title').textContent = 'Project report';
+    sentenceAll(list);
+    var host = document.getElementById('pr-view');
+    clear(host);
+    if (!list.length) {
+      //: AN EMPTY BOARD IS ONE FACT ABOUT ONE RECORD, and this branch used to speak for
+      //: three. `items` is the conductor's board; `for_you` is written straight by the
+      //: crewmate through an agentic field; the hourly `series` is the crew log's own
+      //: rollup. Neither of the last two is silenced by the first being empty, so
+      //: returning here hid them -- and the header, which counts `for_you`, went on
+      //: saying "1 needs you" over a body saying "Nothing needs you". Of those two the
+      //: reader can only act on the one that was wrong.
+      //:
+      //: It is also the exact state a crewmate is in before it is ever given a goal:
+      //: answer one turn and it has written `for_you` and spent credits, with no board.
+      var need = needsYou(list, null);
+      var pts = seriesOf(fields());
+      var spent = false, k;
+      for (k = 0; k < pts.length; k++) {
+        if ((num(pts[k].credits) || 0) > 0) { spent = true; break; }
+      }
+      //: THE FIRST THING a new crewmate shows, so it says what will appear here
+      //: rather than only that nothing has. A bare "No workstream yet." leaves a
+      //: reader unsure whether the page is empty or broken. Kept for the case it is
+      //: actually about: nothing, from any of the three records.
+      if (!need.total && !spent) {
+        var card = el('div', 'pr-card');
+        card.appendChild(el('div', 'pr-empty',
+          'No workstream yet. Nothing needs you, and nothing has been spent.'));
+        card.appendChild(el('div', 'pr-empty',
+          'Give this crewmate a goal in the chat, and its work shows up here: what '
+          + 'is in flight, what it cost, and anything waiting on you.'));
+        host.appendChild(card);
+        //: The accounting line counts things that do not exist yet, so every clause
+        //: would read "0". Hidden rather than reworded: a row of zeroes is not a
+        //: smaller version of the sentence, it is noise over the one card that matters.
+        var note = document.getElementById('pr-note');
+        if (note) note.hidden = true;
+        return;
+      }
+      var box = el('div');
+      box.style.display = 'grid';
+      box.style.gap = '12px';
+      //: Said first and plainly, because the tree is the page's spine and a reader who
+      //: cannot see it needs to know it is EMPTY rather than broken. What follows is
+      //: then introduced as having come from somewhere else.
+      var lead = el('div', 'pr-card');
+      lead.appendChild(el('div', 'pr-empty',
+        'No workstream yet, so there is no tree to show. What is below was not '
+        + 'raised by a board.'));
+      box.appendChild(lead);
+      if (need.total) box.appendChild(todoCard(list, null));
+      if (spent) box.appendChild(sectionCost(list, pts, 'every hour on record'));
+      host.appendChild(box);
+      var note2 = document.getElementById('pr-note');
+      if (note2) note2.hidden = false;
+      return;
+    }
+    var note = document.getElementById('pr-note');
+    if (note) note.hidden = false;
+    var points = seriesOf(fields());
+    var box = el('div');
+    box.style.display = 'grid';
+    box.style.gap = '12px';
+    for (var i = 0; i < LAYOUT.length; i++) {
+      if (LAYOUT[i] === 'kpi') box.appendChild(sectionKpi(list, points));
+      else if (LAYOUT[i] === 'hero') {
+        box.appendChild(sectionCost(list, points, 'every workstream together'));
+      } else if (LAYOUT[i] === 'todo') box.appendChild(todoCard(list, null));
+      else if (LAYOUT[i] === 'crew') box.appendChild(sectionCrew(list));
+      else if (LAYOUT[i] === 'tree') {
+        box.appendChild(sectionTree(buildTree(list, null), false));
+      }
+    }
+    host.appendChild(box);
+  }
+
+  //: *list* comes in beside *s* because a nested board is a SIBLING row of the fold's
+  //: flat list, not a child of `s` -- so the tree of one epic still needs the whole
+  //: list to find the boards hanging under this one's tasks.
+  function renderStream(s, list) {
+    var goal = txt(s.goal) || txt(s.id) || DASH;
+    document.getElementById('pr-title').textContent = goal;
+    var scope = { id: txt(s.id) || '', goal: txt(s.goal) || '' };
+    //: ONE build, and the header reads the root of it. The board row's own `accepted`,
+    //: `total` and `credits` count that board ALONE, so on an epic with a nested board
+    //: they are smaller than the epic row directly below them -- the same two numbers,
+    //: stated twice, disagreeing. The roll-up is the honest one here: the subtasks are
+    //: on the page, under this epic, and their cost was spent getting this epic done.
+    var nodes = buildTree(list, s);
+    var root = nodes.length ? nodes[0] : null;
+    var acc = root ? root.done : (num(s.accepted) || 0);
+    var tot = root ? root.total : (num(s.total) || 0);
+    var cr = root ? billTotal(root.bill) : credits(s);
+    var need = needsYou([s], scope).total;
+    var host = document.getElementById('pr-sentence');
+    clear(host);
+    host.appendChild(document.createTextNode('done '));
+    host.appendChild(el('b', null, acc + ' / ' + tot));
+    host.appendChild(document.createTextNode(', spent '));
+    host.appendChild(el('b', null, fmtCr(cr)));
+    host.appendChild(document.createTextNode(' credits, '));
+    host.appendChild(el('b', null, String(need)));
+    host.appendChild(document.createTextNode(need === 1 ? ' needs you' : ' need you'));
+
+    var box = el('div');
+    box.style.display = 'grid';
+    box.style.gap = '12px';
+
+    box.appendChild(todoCard([s], scope));
+    box.appendChild(sectionCrew([s]));
+    //: ONE EPIC ONLY. The pipeline answers "where does the work stop", which is a
+    //: question about one workstream: across every workstream at once the three
+    //: stages would mix boards whose gates are different conductors', and the
+    //: progress bar would count a number nobody is responsible for.
+    box.appendChild(pipelineCard(s));
+    //: The tree of this one epic REPLACES the flat task list that was here. The list
+    //: drew one row per task with its cost and result; a task row of the tree draws
+    //: the same three things and also says which round it belongs to and what its own
+    //: worker's board did under it, which the flat list had no room for.
+    box.appendChild(sectionTree(nodes, true));
+    //: One board's own hours, behind the same toggle: a reader who collapsed cost on
+    //: the global view and then opened an epic did not ask to see it again.
+    box.appendChild(sectionCost([s], seriesOf(s), 'this workstream only'));
+
+    var host2 = document.getElementById('pr-view');
+    clear(host2);
+    host2.appendChild(box);
+  }
+
+  // ---------------------------------------------------------------- render
+
+  function render() {
+    var list = streams();
+    plots = [];
+    var found = null;
+    if (view !== ALL) {
+      for (var j = 0; j < list.length; j++) {
+        if ((txt(list[j].id) || String(j)) === view) { found = list[j]; break; }
+      }
+      if (!found) view = ALL;   // the fold dropped the board this pill named
+    }
+    renderPills(list);
+    //: The bound cells are filled by the host with the raw JSON of an array, which is
+    //: unreadable in a sentence, so each one is overwritten with its count here.
+    put('items', plural(list.length, 'workstream', 'workstreams'));
+    put('omitted', num(fields().omitted));
+    put('series', plural(seriesOf(fields()).length, 'hour', 'hours'));
+    put('for_you', forYou().length);
+    var vd = verdict();
+    put('verdict', vd ? VERDICTS[vd.state][0] : null);
+    var board = ciBoard();
+    //: THE NOUN SURVIVES THE ABSENT CASE. `ci` is the only slot here that is both
+    //: conditional and carries its own noun, so passing null left the line reading
+    //: "..., —, last entry 34m ago" -- a dash governing nothing. The other conditional
+    //: slot, `verdict`, keeps its noun in the markup and so reads "— verdict" already.
+    put('ci', board
+      ? plural(redLanes(board).length, 'red lane', 'red lanes')
+      : DASH + ' red lanes');
+    //: ELAPSED, not the stamp's hour. `hourLabel` buckets to the hour, which would
+    //: print "17:00" for an entry at 17:09 -- and this line's reader is asking how
+    //: old the page is, which an hour bucket cannot answer to within an hour.
+    var since = sinceMs(fields().last_entry_at);
+    put('last_entry_at', since === null ? null : fmtAgo(since));
+    //: ABOVE the view, in the order a reader needs them: whether these numbers are
+    //: still being produced, then the lead's word on them, then the lanes in the way.
+    renderStale();
+    renderVerdict(vd);
+    renderLanes(board);
+    renderLive();
+    //: BEFORE the tree is built, because a row cannot ask whether it changed while
+    //: it is being built -- and after this, `rowWas` already holds the new state, so
+    //: a second render with no new read marks nothing.
+    flashes = flashed();
+    if (found) renderStream(found, list); else renderGlobal(list);
+    //: AFTER the view, and from the new read. `drawerAt` survives the render, which
+    //: is what makes a refresh update an open drawer rather than close it.
+    renderDrawer();
+    //: Only now does a card have a width, so only now can a chart be drawn to one.
+    drawPlots();
+  }
+
+  //: Only the lanes a reader has to do something about. A green lane in a strip
+  //: titled by its reds is noise, and there are usually ninety of them.
+  function redLanes(board) {
+    return board.lanes.filter(function (l) {
+      var s = txt(l.state);
+      return s === 'fail' || s === 'did_not_run';
+    });
+  }
+
+  function renderVerdict(vd) {
+    var host = document.getElementById('pr-verdict-host');
+    if (!host) return;
+    clear(host);
+    if (!vd) return;
+    var pair = VERDICTS[vd.state];
+    var card = el('div', 'pr-vd');
+    card.style.setProperty('--pr-vd-c', pair[1]);
+    var left = el('div');
+    left.appendChild(el('div', 'pr-vd-state', pair[0]));
+    if (vd.state === 'no_word') {
+      //: THE HONEST SILENCE. Two different ways to arrive here and a reader needs to
+      //: know which: nobody has posted at all, or somebody posted and the board has
+      //: moved since. The second is the dangerous one, so it names what it is
+      //: downgrading rather than quietly hiding the lead's own word.
+      left.appendChild(el('div', 'pr-vd-head', vd.superseded
+        ? 'The crewmate has not posted since the log last advanced.'
+        : 'The crewmate has not posted a verdict yet.'));
+      if (vd.superseded && vd.headline) {
+        left.appendChild(el('div', 'pr-vd-block',
+          'Its last word was "' + vd.headline + '". Read it as a past reading.'));
+      }
+    } else {
+      if (vd.headline) left.appendChild(el('div', 'pr-vd-head', vd.headline));
+      if (vd.blocker) {
+        var b = el('div', 'pr-vd-block');
+        b.appendChild(el('b', null, 'The one in the way: '));
+        b.appendChild(document.createTextNode(vd.blocker));
+        left.appendChild(b);
+      }
+    }
+    card.appendChild(left);
+    var meta = el('div', 'pr-vd-meta');
+    //: Marked as the crewmate's own, the same way an agentic cell is marked
+    //: elsewhere: a reader deciding whether to act on a judgment is entitled to know
+    //: it is a judgment. Only when the host says this cell IS agentic, so a page
+    //: rendered from a manifest that changed does not claim it on the host's behalf.
+    if (agenticNames().indexOf('verdict') !== -1) {
+      meta.appendChild(el('span', 'pr-chip', 'crewmate wrote this'));
+    }
+    var age = sinceMs(vd.wroteAt);
+    if (age !== null) meta.appendChild(el('span', null, fmtAgo(age)));
+    if (meta.firstChild) card.appendChild(meta);
+    host.appendChild(card);
+  }
+
+  function renderLanes(board) {
+    var host = document.getElementById('pr-lanes-host');
+    if (!host) return;
+    clear(host);
+    if (!board) return;
+    var reds = redLanes(board);
+    if (!reds.length) return;
+    var failed = reds.filter(function (l) { return txt(l.state) === 'fail'; }).length;
+    var never = reds.length - failed;
+    var card = el('div', 'pr-lanes');
+    var head = el('div', 'pr-lanes-h');
+    var words = [];
+    if (failed) words.push(plural(failed, 'red', 'red'));
+    if (never) words.push(never + ' did not run');
+    head.appendChild(el('b', null, words.join(', ')));
+    var where = [];
+    if (board.pr) where.push(/^\d+$/.test(board.pr) ? 'PR #' + board.pr : board.pr);
+    if (board.head) where.push('head ' + board.head);
+    if (where.length) head.appendChild(el('span', null, where.join(' \u00b7 ')));
+    card.appendChild(head);
+    for (var i = 0; i < reds.length; i++) {
+      var l = reds[i];
+      var never_ran = txt(l.state) === 'did_not_run';
+      var row = el('div', 'pr-lane');
+      //: The mark carries the distinction too, not only the colour: this page is
+      //: read on a light canvas and in a screenshot, and a hue alone is not a word.
+      var mark = el('div', 'pr-lane-m', never_ran ? '\u25cb' : '\u2717');
+      mark.style.color = never_ran ? 'var(--muted, #7f7f88)' : 'var(--pr-s1)';
+      row.appendChild(mark);
+      row.appendChild(el('div', 'pr-lane-n', txt(l.name)));
+      row.appendChild(el('div', 'pr-lane-w', never_ran
+        ? (txt(l.why) || 'lane never started \u2014 not a finding')
+        : (txt(l.why) || '')));
+      //: WHO CAN CLEAR IT, which is what decides whether the reader can act at all.
+      //: A lane that never started is neither party's finding, so it is tagged with
+      //: the act instead: somebody has to re-run it.
+      var owner = txt(l.owner);
+      var tag = never_ran ? 'rerun it' : (owner === 'maintainer' ? 'maintainer' : 'yours');
+      row.appendChild(el('span', 'pr-chip', tag));
+      card.appendChild(row);
+    }
+    host.appendChild(card);
+  }
+
+  //: The band that says these numbers have stopped being produced.
+  //:
+  //: Distinct from the frame's own stale band, which says a FIELD did not resolve.
+  //: Here every field resolved and the log behind them has gone quiet, which is the
+  //: difference between "nothing is happening" and "nothing is reaching me" -- and
+  //: the second is what a restarted gateway leaves behind, with every number on the
+  //: page intact and correct as of a time nothing else on it names.
+  function renderStale() {
+    var host = document.getElementById('pr-stale-host');
+    if (!host) return;
+    clear(host);
+    var at = txt(fields().last_entry_at);
+    var ms = sinceMs(at);
+    if (ms === null || ms < QUIET_MS) return;
+    var band = el('div', 'pr-stale');
+    band.appendChild(el('b', null, 'No new entry for ' + fmtSince(ms) + '.'));
+    band.appendChild(document.createTextNode(
+      'Every number below is a last-known reading.'));
+    var seq = num((window.kirocrew || {}).seq);
+    if (seq !== null) band.appendChild(el('i', null, 'fold seq ' + seq));
+    host.appendChild(band);
+  }
+
+  // --------------------------------------------------------------- the drawer
+
+  //: One task's own record, beside the page.
+  //:
+  //: Everything it shows is already in the document: the frame it is minted into has
+  //: `connect-src 'none'`, so a drawer that wanted to go and fetch an item's detail
+  //: could not. That is why the fold carries a bounded tail per task rather than the
+  //: page asking for one.
+  //:
+  //: Re-rendered on every refresh from the NEW read, with `drawerAt` kept across it,
+  //: so an advancing fold updates what is open instead of closing it.
+  function renderDrawer() {
+    var host = document.getElementById('pr-drawer-host');
+    if (!host) return;
+    clear(host);
+    if (!drawerAt) return;
+    var found = taskAt(drawerAt);
+    if (!found) {
+      // The fold dropped the task this drawer named -- past the task cap, or its
+      // board rebuilt. Closed rather than left on a stale copy: a drawer showing an
+      // item the page no longer lists is the one thing worse than no drawer.
+      drawerAt = null;
+      return;
+    }
+    var t = found.task;
+    var back = el('div', 'pr-dr-back');
+    back.addEventListener('click', function () { drawerAt = null; renderDrawer(); });
+    var panel = el('div', 'pr-dr');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'false');
+    panel.setAttribute('aria-label', txt(t.title) || 'task');
+
+    var head = el('div', 'pr-dr-h');
+    var titles = el('div');
+    titles.appendChild(el('div', 'pr-dr-t', txt(t.title) || DASH));
+    titles.appendChild(el('div', 'pr-dr-s',
+      (txt(found.board.goal) || txt(found.board.id) || DASH)
+      + ' \u00b7 round ' + (num(found.board.round) || 0)));
+    head.appendChild(titles);
+    var shut = el('button', 'pr-dr-x', '\u2715');
+    shut.setAttribute('aria-label', 'Close');
+    shut.addEventListener('click', function () { drawerAt = null; renderDrawer(); });
+    head.appendChild(shut);
+    panel.appendChild(head);
+
+    var body = el('div', 'pr-dr-b');
+    //: STATE FIRST, as chips, because the three words a reader came for -- where it
+    //: is, what the lead ruled, how long it has been quiet -- fit on one row.
+    var chips = el('div', 'pr-dr-chips');
+    var pill = verdictPill(t);
+    if (pill) chips.appendChild(pill);
+    var prc = prChip(t);
+    if (prc) chips.appendChild(prc);
+    var quiet = quietChip(t);
+    if (quiet) chips.appendChild(quiet);
+    var ran = fmtDur(t.duration_ms);
+    if (ran !== DASH) chips.appendChild(el('span', 'pr-chip', ran));
+    chips.appendChild(el('span', 'pr-chip pr-chip-cr', fmtCr(credits(t))));
+    if (chips.firstChild) body.appendChild(chips);
+
+    body.appendChild(section('What the worker last said', txt(t.summary),
+      'The worker has not reported on this task yet.'));
+    body.appendChild(section('What the conductor decided', txt(t.decision),
+      'No ruling on this task. Nothing was asked of the conductor, or nothing has '
+      + 'been answered yet.'));
+    body.appendChild(section('Verdict', txt(t.verdict),
+      'Not adjudicated. A verdict appears once the conductor has run the acceptance '
+      + 'check over this task\u2019s own bar.'));
+
+    //: THE RESULT BLOCK, and its empty text is the point of it. A reader opening a
+    //: finished task wants the thing it produced; a blank area there reads as a
+    //: page that failed rather than as work that has not landed.
+    var out = [];
+    if (txt(t.pr)) out.push('Pull request ' + txt(t.pr));
+    if (txt(t.state) === 'accepted') out.push('Accepted by the conductor.');
+    body.appendChild(section('Result / handoff', out.join(' \u00b7 '),
+      'No output yet. A pull request, a branch or a handoff summary appears here when '
+      + 'the task produces one.'));
+
+    body.appendChild(lanesSection(t));
+    body.appendChild(eventsSection(t));
+    panel.appendChild(body);
+    host.appendChild(back);
+    host.appendChild(panel);
+  }
+
+  //: Open *n*'s drawer when it is a task, and say whether it did.
+  //:
+  //: ONE site for both gestures. The click and the Enter handler were the same two
+  //: lines twice, which is the shape where a keyboard reader quietly loses a
+  //: behaviour a pointer reader has.
+  function openDrawerFor(n) {
+    if (!n.task) return false;
+    drawerAt = taskKey(n.boardId, n.task);
+    renderDrawer();
+    return true;
+  }
+
+  //: One titled block, with the sentence to show when there is nothing in it.
+  function section(label, value, empty) {
+    var sec = el('div', 'pr-dr-sec');
+    sec.appendChild(el('div', 'pr-dr-k', label));
+    sec.appendChild(value ? el('div', 'pr-dr-v', value) : el('div', 'pr-dr-none', empty));
+    return sec;
+  }
+
+  //: This task's lanes, from the `ci` value. Only the ones that are red, like the
+  //: strip above the page: a drawer listing ninety green lanes buries the two rows
+  //: that brought the reader here.
+  function lanesSection(t) {
+    var sec = el('div', 'pr-dr-sec');
+    sec.appendChild(el('div', 'pr-dr-k', 'Lanes'));
+    var board = ciBoard();
+    var mine = board && txt(board.pr) && txt(board.pr) === txt(t.pr) ? redLanes(board) : [];
+    if (!mine.length) {
+      var c = checksOf(t);
+      sec.appendChild(el('div', 'pr-dr-none', c && c.fail === 0 && c.pass > 0
+        ? 'Every lane green on the last board the crewmate read.'
+        : 'No lane board for this task. The crewmate writes one when it reads a '
+          + 'pull request\u2019s checks.'));
+      return sec;
+    }
+    for (var i = 0; i < mine.length; i++) {
+      var l = mine[i];
+      var never = txt(l.state) === 'did_not_run';
+      var row = el('div', 'pr-dr-e');
+      row.appendChild(el('div', 'pr-dr-e-m', never ? '\u25cb' : '\u2717'));
+      var x = el('div', 'pr-dr-e-t', txt(l.name));
+      var why = txt(l.why) || (never ? 'lane never started \u2014 not a finding' : '');
+      if (why) x.appendChild(el('div', 'pr-dr-e-k', why));
+      row.appendChild(x);
+      sec.appendChild(row);
+    }
+    return sec;
+  }
+
+  //: The item's own narrative, newest first.
+  //:
+  //: The HEADING carries the count, because "20 of 34" and "no events recorded" are
+  //: different facts and a tail alone cannot tell them apart: the fold spends one
+  //: bounded ring across every task, so a quiet task's older lines are dropped
+  //: while its own count is kept exactly for this.
+  function eventsSection(t) {
+    var sec = el('div', 'pr-dr-sec');
+    var rows = Array.isArray(t.events)
+      ? t.events.filter(function (r) { return r && typeof r === 'object'; }) : [];
+    var seen = num(t.events_seen) || 0;
+    sec.appendChild(el('div', 'pr-dr-k', rows.length < seen
+      ? 'Events \u00b7 ' + rows.length + ' of ' + seen
+      : 'Events' + (seen ? ' \u00b7 ' + seen : '')));
+    if (!rows.length) {
+      sec.appendChild(el('div', 'pr-dr-none', seen
+        ? 'This task recorded ' + plural(seen, 'event', 'events')
+          + ', and the page is no longer carrying their text.'
+        : 'No events recorded against this task yet.'));
+      return sec;
+    }
+    var list = el('div', 'pr-dr-ev');
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var row = el('div', 'pr-dr-e');
+      row.appendChild(el('div', 'pr-dr-e-m', hourLabel(r.at) || DASH));
+      var x = el('div', 'pr-dr-e-t', txt(r.text) || DASH);
+      var mark = [txt(r.kind), txt(r.status)].filter(Boolean).join(' \u00b7 ');
+      if (mark) x.appendChild(el('div', 'pr-dr-e-k', mark));
+      row.appendChild(x);
+      list.appendChild(row);
+    }
+    sec.appendChild(list);
+    return sec;
+  }
+
+  // ------------------------------------------------------- the per-epic pipeline
+
+  //: One epic's work as the three stages it moves through: a worker runs a task, the
+  //: conductor's acceptance check rules on it, the lead accepts it.
+  //:
+  //: Drawn as the stages rather than as a status column, because the question it
+  //: answers is "where does the work stop" -- and the gate between two stages is
+  //: named, so a reader does not have to infer what has to happen next.
+  //:
+  //: Every number here is the fold's own: a task's `spender` is who ran it, its
+  //: `verdict` is what the check said, and `accepted` is the lead's own state.
+  function pipelineCard(board) {
+    var tasks = tasksOf(board);
+    var card = el('div', 'pr-card');
+    var h = el('div', 'pr-card-h');
+    h.appendChild(el('div', 'pr-card-t', 'How the work moves'));
+    h.appendChild(el('div', 'pr-card-c',
+      'worker \u00b7 acceptance check \u00b7 the lead accepts'));
+    card.appendChild(h);
+    if (!tasks.length) {
+      card.appendChild(el('div', 'pr-empty', 'No task on this workstream yet.'));
+      return card;
+    }
+
+    //: A PARTITION: each task sits in the FURTHEST stage it has reached, and never
+    //: in two. Overlapping sets read as a double count -- an accepted task has a
+    //: verdict too, so it would appear in both and the rows would add to more than
+    //: the board has. The three counts below sum to the total, which is the property
+    //: that makes the progress bar and the stages one statement.
+    var accepted = [], ruled = [], running = [];
+    for (var k = 0; k < tasks.length; k++) {
+      var row = tasks[k];
+      if (txt(row.state) === 'accepted') accepted.push(row);
+      else if (txt(row.verdict)) ruled.push(row);
+      else running.push(row);
+    }
+
+    var pipe = el('div', 'pr-pipe');
+    var head = el('div', 'pr-pipe-h');
+    head.appendChild(el('b', null, accepted.length === tasks.length
+      ? 'Every task accepted' : 'In progress'));
+    head.appendChild(el('span', null, accepted.length + ' / ' + tasks.length + ' accepted'));
+    pipe.appendChild(head);
+    var bar = el('div', 'pr-pipe-bar');
+    var fill = el('i');
+    fill.style.width = ((accepted.length / tasks.length) * 100).toFixed(1) + '%';
+    bar.appendChild(fill);
+    pipe.appendChild(bar);
+
+    stage(pipe, 'With a worker', running,
+      'Nothing in flight. Every task has reached the acceptance check.');
+    pipe.appendChild(el('div', 'pr-pipe-gate', '\u2193 when the worker reports done'));
+    stage(pipe, 'Ruled, not yet accepted', ruled,
+      'Nothing waiting on the lead.');
+    pipe.appendChild(el('div', 'pr-pipe-gate', '\u2193 when the lead takes the verdict'));
+    stage(pipe, 'Accepted', accepted,
+      'Nothing accepted yet.');
+    card.appendChild(pipe);
+    return card;
+  }
+
+  function stage(host, label, rows, empty) {
+    host.appendChild(el('div', 'pr-pipe-stage', label + (rows.length ? ' \u00b7 ' + rows.length : '')));
+    if (!rows.length) {
+      host.appendChild(el('div', 'pr-dr-none', empty));
+      return;
+    }
+    for (var i = 0; i < rows.length && i < 8; i++) {
+      var t = rows[i];
+      var row = el('div', 'pr-pipe-row');
+      var x = el('div');
+      x.appendChild(el('div', 'pr-pipe-t', txt(t.title) || DASH));
+      //: The worker is named by its per-render ALIAS, never its session key: this
+      //: page is a document, and the conductor ledger's rule is that no reader but
+      //: the conductor sees a key. The alias keeps the only property a reader needs,
+      //: which is that two rows run by one worker carry one token.
+      var who = txt(t.spender);
+      x.appendChild(el('div', 'pr-pipe-w', who ? 'worker ' + who : 'no worker bound'));
+      row.appendChild(x);
+      var v = verdictPill(t);
+      row.appendChild(v || el('span', 'pr-chip', txt(t.status) || txt(t.state) || DASH));
+      row.appendChild(el('div', 'pr-n-cr', fmtCr(credits(t))));
+      host.appendChild(row);
+    }
+    if (rows.length > 8) {
+      host.appendChild(el('div', 'pr-held',
+        plural(rows.length - 8, 'task', 'tasks') + ' not shown'));
+    }
+  }
+
+  function put(name, value) {
+    var node = document.querySelector('[data-dashboard-field="' + name + '"]');
+    if (!node) return;
+    node.textContent = (value === null || value === undefined || value === '')
+      ? DASH : String(value);
+  }
+
+  //: On load AND on every push: the order of the host's first fill against this script
+  //: is not the page's to assume, and a refill carries new values for the same page.
+  render();
+  window.addEventListener('message', function () { render(); });
+  //: AND AGAIN ONCE THE DOCUMENT IS PARSED, because the host's FIRST fill is deferred
+  //: to `DOMContentLoaded` while this script runs during parsing. The host writes every
+  //: bound element from the raw value -- an array as `JSON.stringify` -- so without
+  //: this the accounting line ended up reading as a wall of raw JSON on the real
+  //: gateway, under a page that was otherwise correct.
+  //:
+  //: ON `window`, NOT ON `document`, and that distinction is the whole fix. The event
+  //: is dispatched at `document` and BUBBLES to `window`, so every document-level
+  //: listener runs before any window-level one -- and the host's is on `window`. A
+  //: listener on `document` here therefore ran BEFORE the host's fill and was clobbered
+  //: by it, which is exactly what the first attempt at this did. Same target as the
+  //: host, registered later: window listeners run in registration order, the host's
+  //: bootstrap is injected ahead of this page, so its fill goes first and the page's
+  //: own text wins.
+  //:
+  //: Registered unconditionally: when the document is ALREADY parsed the host filled
+  //: synchronously before this script, the `render()` above is therefore the later
+  //: write, and this listener simply never fires. That is also why the evidence
+  //: renderer never saw the bug -- it runs the script after the fill, the one order in
+  //: which the page was right.
+  window.addEventListener('DOMContentLoaded', function () { render(); });
+  //: The host's own refill beacon, which it dispatches after a fill it was pushed.
+  window.addEventListener('kirocrew-dashboard', function () { render(); });
+  //: Escape closes the drawer, which is the gesture a reader tries first. Only the
+  //: drawer: this page has no other overlay, and swallowing the key when nothing is
+  //: open would take it from whatever the host put around the frame.
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !drawerAt) return;
+    drawerAt = null;
+    renderDrawer();
+  });
+  var timer = null;
+  window.addEventListener('resize', function () {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(render, 120);
+  });
+}());
+</script>

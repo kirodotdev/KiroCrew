@@ -1,0 +1,676 @@
+<div class="tl">
+  <style>
+  .tl {
+    /* ONE PALETTE FOR BOTH OF THIS PAIR'S PAGES (see org-chart), because a reader
+       moving between them should not have to relearn what a colour means. The
+       needs-a-person hue is deliberately the project report's own `--pr-s1`: that
+       page already says "needs you" in it, and a second spelling of the same fact
+       would read as a different fact. */
+    --tl-run: #7fd1b9;
+    --tl-idle: #e0b964;
+    /* A SEPARATE hue from `idle`, not the same one dimmed: the two appear as two
+       legend entries, and two entries sharing a swatch read as one fact described
+       twice rather than as a 20-minute silence and a two-hour one. */
+    --tl-cold: #b8822c;
+    --tl-need: #ef9a85;
+    --tl-done: #8fa8de;
+    /* Clearly darker than `--tl-need`. A rejected task and a task waiting on a person
+       are the two things a reader must not confuse -- one is finished and one is the
+       reason to put the page down and go do something -- so they are not neighbouring
+       shades of the same salmon. */
+    --tl-bad: #a8453c;
+    --tl-gone: #7e8289;
+    --tl-line: color-mix(in oklab, var(--border, #2a2d36) 86%, var(--text, #e4e4e7));
+    --tl-card: var(--card, #181b22);
+
+    font: 12px/1.45 system-ui, -apple-system, sans-serif;
+    color: var(--text, #e4e4e7);
+    padding: 11px 12px 14px;
+  }
+  .tl h2 { font-size: 12.5px; font-weight: 650; margin: 0; letter-spacing: .01em;
+    color: var(--text-strong, #fafafa); }
+  .tl .tl-sub { font-size: 10.5px; color: var(--muted, #7f7f88); margin-top: 3px; }
+  .tl .tl-head { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap; }
+
+  /* ------------------------------------------------------------------ *
+   * the overlap strip: concurrency as a shape, read before any row is  *
+   * ------------------------------------------------------------------ */
+  .tl-ov { margin-top: 12px; }
+  .tl-ov-t { font-size: 10px; color: var(--muted, #7f7f88); display: flex;
+    justify-content: space-between; gap: 8px; }
+  .tl-ov-t b { font-weight: 600; color: var(--text, #e4e4e7); }
+  .tl-ov-bars { display: flex; align-items: flex-end; gap: 1px; height: 30px;
+    margin-top: 3px; border-bottom: 1px solid var(--tl-line); }
+  .tl-ov-bars i { flex: 1 1 0; min-width: 0; display: block; border-radius: 1.5px 1.5px 0 0;
+    background: color-mix(in oklab, var(--tl-run) 52%, transparent); }
+  /* The busiest columns, in a BRIGHTER version of the same hue. Not the needs-a-person
+     salmon: peak concurrency is a fact about how much is running, and borrowing the
+     colour that means "a person is the next move" would say the peak needs attention. */
+  .tl-ov-bars i[data-peak="1"] { background: var(--tl-run); }
+  .tl-ov-bars i[data-zero="1"] { background: color-mix(in oklab, var(--tl-line) 70%, transparent);
+    height: 1px !important; }
+
+  /* the shared clock */
+  .tl-ruler { position: relative; height: 14px; }
+  .tl-ruler i { position: absolute; top: 1px; font-size: 9.5px; font-style: normal;
+    white-space: nowrap; color: var(--muted, #7f7f88); transform: translateX(-50%); }
+  .tl-ruler i:first-child { transform: none; }
+  .tl-ruler i:last-child { transform: translateX(-100%); }
+
+  .tl-sect { font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted-strong, #52525b); margin: 13px 0 2px; font-weight: 650; }
+
+  /* ------------------------------------------------------------------ *
+   * one row per agent                                                  *
+   * ------------------------------------------------------------------ */
+  .tl-row { display: grid; grid-template-columns: 124px 1fr; gap: 9px;
+    align-items: start; padding: 4px 0 5px; border-top: 1px solid
+    color-mix(in oklab, var(--tl-line) 55%, transparent); }
+  .tl-row:first-of-type { border-top: 0; }
+  .tl-who { min-width: 0; }
+  .tl-who b { display: block; font-size: 11px; font-weight: 600; color: var(--text-strong, #fafafa);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tl-who span { display: block; font-size: 9.5px; color: var(--muted, #7f7f88);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tl-who em { font-style: normal; font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted-strong, #52525b); }
+  .tl-in { min-width: 0; }
+
+  .tl-track { position: relative; height: 17px; border-radius: 4px;
+    background: color-mix(in oklab, var(--tl-line) 26%, transparent); }
+  .tl-track + .tl-track { margin-top: 3px; }
+  .tl-bar { position: absolute; top: 3px; height: 11px; border-radius: 6px; min-width: 3px;
+    box-sizing: border-box; }
+  /* A task that has produced NO REPORT AT ALL: an outline, not a fill.
+     Its absence is the fact, and the only other grey on this page is `abandoned` --
+     a task somebody closed. A reader must not read "nobody has said anything yet" in
+     the colour that means "this was given up on", so the difference is the fill
+     rather than another shade of the same grey. */
+  .tl-bar.tl-mute { background: none !important;
+    border: 1px dashed color-mix(in oklab, var(--tl-gone) 85%, var(--text, #e4e4e7)); }
+  .tl-bar.tl-mute.tl-open:after { background: none;
+    border-left: 5px solid color-mix(in oklab, var(--tl-gone) 85%, var(--text, #e4e4e7));
+    border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+    clip-path: none; width: 0; top: 50%; transform: translateY(-50%); height: 0; }
+  /* An OPEN bar has no right edge: the work has not ended, so neither does the shape. */
+  .tl-bar.tl-open { border-top-right-radius: 1px; border-bottom-right-radius: 1px; }
+  .tl-bar.tl-open:after { content: ''; position: absolute; right: -5px; top: 0; bottom: 0;
+    width: 5px; background: inherit;
+    clip-path: polygon(0 0, 100% 50%, 0 100%); }
+  /* The silence: a hatched tail from the worker's last word to the bar's live end, so
+     a long quiet has a LENGTH on the page rather than only a word. */
+  .tl-quiet { position: absolute; top: 4px; height: 9px; border-radius: 0 5px 5px 0;
+    background: repeating-linear-gradient(115deg,
+      color-mix(in oklab, var(--tl-idle) 52%, transparent) 0 2px,
+      transparent 2px 5px);
+    border-right: 1px solid color-mix(in oklab, var(--tl-idle) 60%, transparent); }
+  /* A tick where the worker last spoke. */
+  .tl-tick { position: absolute; top: 1px; bottom: 1px; width: 1.5px; border-radius: 1px;
+    background: var(--text-strong, #fafafa); opacity: .72; }
+  /* A lead's row: a RULE, not a bar. No fold records a conductor's own span, so this
+     is the extent of its tasks and is drawn as something that cannot be mistaken for
+     a measured one. */
+  .tl-ext { position: absolute; top: 7.5px; height: 2.5px; border-radius: 2px;
+    background: color-mix(in oklab, var(--tl-done) 80%, transparent); }
+  .tl-ext:before, .tl-ext:after { content: ''; position: absolute; top: -3.5px; width: 2px;
+    height: 9.5px; background: inherit; }
+  .tl-ext:before { left: 0; } .tl-ext:after { right: 0; }
+
+  .tl-now { position: absolute; top: -3px; bottom: -3px; width: 1px; z-index: 3;
+    background: var(--tl-need); }
+  .tl-now:before { content: ''; position: absolute; top: 0; left: -2px; width: 5px; height: 5px;
+    border-radius: 50%; background: var(--tl-need); }
+
+  .tl-cap { font-size: 9.5px; color: var(--muted, #7f7f88); margin-top: 2px;
+    display: flex; flex-wrap: wrap; gap: 4px 9px; }
+  .tl-cap b { font-weight: 600; color: var(--text, #e4e4e7); }
+  .tl-cap .tl-warn { color: var(--tl-need); font-weight: 600; }
+  .tl-cap .tl-wait { color: var(--tl-idle); }
+
+  .tl-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; font-size: 9.5px;
+    color: var(--muted, #7f7f88); margin-top: 13px; padding-top: 9px;
+    border-top: 1px solid color-mix(in oklab, var(--tl-line) 55%, transparent); }
+  .tl-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .tl-legend u { text-decoration: none; width: 14px; height: 7px; border-radius: 4px;
+    display: inline-block; flex: 0 0 auto; }
+  .tl-note { font-size: 9.5px; color: var(--muted, #7f7f88); margin-top: 7px; }
+  .tl-note b { color: var(--tl-need); font-weight: 600; }
+  .tl-empty { font-size: 11px; color: var(--muted, #7f7f88); padding: 16px 0;
+    border-top: 1px solid color-mix(in oklab, var(--tl-line) 55%, transparent);
+    margin-top: 10px; }
+
+  @media (max-width: 520px) {
+    .tl { padding: 10px 10px 13px; }
+    /* STACKED, because 124 px of label leaves nothing for the clock at panel width
+       and a bar narrower than its own label is not a timeline. */
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-who b { white-space: normal; }
+    .tl-who span { white-space: normal; }
+  }
+  </style>
+
+  <div class="tl-head">
+    <h2>Who was working when</h2>
+    <div class="tl-sub">last fold write <span data-dashboard-field="last_entry_at">-</span></div>
+  </div>
+  <div class="tl-sub" id="tl-scope">-</div>
+
+  <div class="tl-ov" id="tl-ov" hidden>
+    <div class="tl-ov-t">
+      <span>workers running at once</span>
+      <span>peak <b id="tl-peak">-</b></span>
+    </div>
+    <div class="tl-ov-bars" id="tl-ov-bars"></div>
+  </div>
+  <div class="tl-ruler" id="tl-ruler"></div>
+
+  <div id="tl-body"></div>
+  <div class="tl-legend" id="tl-legend"></div>
+  <div class="tl-note" id="tl-note"></div>
+
+  <div class="tl-sub" style="margin-top: 8px;">
+    <span data-dashboard-field="items">-</span> board(s) drawn,
+    <span data-dashboard-field="omitted">-</span> not shown,
+    <span data-dashboard-field="spenders_omitted">-</span> worker(s) past the fold's cap
+  </div>
+
+  <script>
+  (function () {
+    var DASH = '\u2014';
+    var MID = '\u00b7';
+
+    /* The project report's own threshold, on purpose: that page draws a `quiet` chip
+       at twenty minutes, and a second number here would have the two pages disagree
+       about the same worker on the same record. */
+    var QUIET_MS = 20 * 60 * 1000;
+    /* A second band, for a silence long enough that "idle" understates it. Stated in
+       the legend rather than only in the colour. */
+    var COLD_MS = 2 * 60 * 60 * 1000;
+    /* Columns of the overlap strip. Wide enough to show a shape, few enough that one
+       column is still several minutes on a normal board. */
+    var COLS = 46;
+
+    var SITU = {
+      run:  ['running', 'var(--tl-run)'],
+      idle: ['idle', 'var(--tl-idle)'],
+      cold: ['silent over 2h', 'var(--tl-cold)'],
+      need: ['needs a person', 'var(--tl-need)'],
+      done: ['accepted', 'var(--tl-done)'],
+      bad:  ['rejected', 'var(--tl-bad)'],
+      gone: ['abandoned', 'var(--tl-gone)'],
+      mute: ['open, no report yet', 'var(--tl-gone)']
+    };
+
+    function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+    function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+    function fields() { return (window.kirocrew || {}).fields || {}; }
+    function el(tag, cls, body) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (body !== undefined && body !== null) n.textContent = String(body);
+      return n;
+    }
+    function boards() {
+      var v = fields().items;
+      if (!Array.isArray(v)) return [];
+      return v.filter(function (b) { return b && typeof b === 'object' && Array.isArray(b.tasks); });
+    }
+    function stamp(v) {
+      var s = text(v);
+      if (!s) return null;
+      var t = Date.parse(s);
+      return isFinite(t) ? t : null;
+    }
+    function span(ms) {
+      if (ms < 60000) return Math.max(0, Math.round(ms / 1000)) + 's';
+      var m = Math.round(ms / 60000);
+      if (m < 60) return m + 'm';
+      var h = Math.floor(m / 60);
+      if (h < 48) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+      return Math.floor(h / 24) + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '');
+    }
+    function clock(ms) {
+      var d = new Date(ms);
+      return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2);
+    }
+    function dayClock(ms) {
+      var d = new Date(ms);
+      return ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2)
+        + ' ' + clock(ms);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * what one task IS right now                                       *
+     * ---------------------------------------------------------------- */
+    /* Four open cases that must not share a colour, which is the whole reason this is
+       a function rather than a lookup on `state`:
+         - its own status says blocked or question -> a PERSON is the next move
+         - it reported inside the window           -> a worker is producing
+         - it reported, and has been quiet since   -> idle, and for how long
+         - it never reported at all               -> absence of a report, which is
+           not the same fact as a long silence and must not be dressed as one. */
+    function situation(task, now) {
+      var state = text(task.state) || 'open';
+      if (state === 'accepted') return 'done';
+      if (state === 'rejected') return 'bad';
+      if (state === 'abandoned') return 'gone';
+      var status = text(task.status);
+      if (status === 'blocked' || status === 'question') return 'need';
+      var last = stamp(task.last_report_at);
+      if (last === null) return 'mute';
+      var quiet = now - last;
+      if (quiet >= COLD_MS) return 'cold';
+      if (quiet >= QUIET_MS) return 'idle';
+      return 'run';
+    }
+    function colourOf(key) { return (SITU[key] || SITU.gone)[1]; }
+
+    /* ---------------------------------------------------------------- *
+     * the rows                                                         *
+     * ---------------------------------------------------------------- */
+    /* One row per WORKER SESSION, across every board, which is what the fold's
+       `spender` alias makes possible: two task rows billed to one worker carry the
+       same token, so they belong on one row however many boards they came from.
+       A task with no bound worker is NOT dropped -- it goes on a row of its own that
+       says so, because a board's unbound work is work. */
+    function workerRows(list) {
+      var byWorker = {};
+      var order = [];
+      for (var b = 0; b < list.length; b++) {
+        var board = list[b];
+        var goal = text(board.goal) || text(board.id) || 'a board with no goal recorded';
+        for (var t = 0; t < board.tasks.length; t++) {
+          var task = board.tasks[t];
+          if (!task || typeof task !== 'object') continue;
+          var who = text(task.spender);
+          var key = who === null ? '\u0000unbound' : who;
+          var row = byWorker[key];
+          if (!row) {
+            row = byWorker[key] = {
+              key: key,
+              worker: who,
+              tasks: [],
+              goals: [],
+              credits: 0,
+              reported: false
+            };
+            order.push(key);
+          }
+          row.tasks.push(task);
+          if (row.goals.indexOf(goal) < 0) row.goals.push(goal);
+          /* A worker session's spend is ONE figure the fold repeats on each of its
+             task rows, so it is taken once per worker and never summed -- adding the
+             rows would multiply one bill by the tasks it served. */
+          var c = num(task.credits);
+          if (c !== null && c > row.credits) row.credits = c;
+          if (task.credits_reported === true) row.reported = true;
+        }
+      }
+      var rows = order.map(function (k) { return byWorker[k]; });
+      for (var i = 0; i < rows.length; i++) {
+        var starts = rows[i].tasks.map(function (x) { return stamp(x.created_at); })
+          .filter(function (x) { return x !== null; });
+        rows[i].first = starts.length ? Math.min.apply(null, starts) : null;
+      }
+      /* Earliest first, so a reader scans down the page in the order the crew
+         actually started. A row nothing can be placed from sinks to the bottom. */
+      rows.sort(function (a, b) {
+        if (a.first === null) return 1;
+        if (b.first === null) return -1;
+        return a.first - b.first;
+      });
+      return rows;
+    }
+
+    /* The bar's live end: its close stamp, or now while it is open. A close stamp the
+       fold never saw is EMPTY (the fold's own posture), so such a task is treated as
+       open and the caption says the end is not stamped rather than inventing one. */
+    function endOf(task, now) {
+      var closed = stamp(task.closed_at);
+      if (closed !== null) return { at: closed, open: false, unstamped: false };
+      var terminal = (text(task.state) || 'open') !== 'open';
+      return { at: now, open: !terminal, unstamped: terminal };
+    }
+
+    function render() {
+      var f = fields();
+      var cells = document.body.querySelectorAll('[data-dashboard-field]');
+      for (var c = 0; c < cells.length; c++) {
+        if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+      }
+      var stampCell = document.querySelector('[data-dashboard-field="last_entry_at"]');
+      if (stampCell) {
+        var raw = (stampCell.textContent || '').trim();
+        var rt = Date.parse(raw);
+        if (raw && raw !== DASH && isFinite(rt)) stampCell.textContent = dayClock(rt) + ' UTC';
+      }
+
+      var body = document.getElementById('tl-body');
+      var ruler = document.getElementById('tl-ruler');
+      var legend = document.getElementById('tl-legend');
+      var note = document.getElementById('tl-note');
+      var scope = document.getElementById('tl-scope');
+      var ov = document.getElementById('tl-ov');
+      var ovBars = document.getElementById('tl-ov-bars');
+      var peak = document.getElementById('tl-peak');
+      if (!body || !ruler || !legend || !note || !scope || !ov || !ovBars || !peak) return;
+      body.textContent = '';
+      ruler.textContent = '';
+      legend.textContent = '';
+      note.textContent = '';
+      ovBars.textContent = '';
+      ov.hidden = true;
+
+      var list = boards();
+      var cell = document.querySelector('[data-dashboard-field="items"]');
+      if (cell) cell.textContent = String(list.length);
+
+      var rows = workerRows(list);
+      var now = Date.now();
+
+      /* THE WINDOW is the crew's own: earliest start to latest end, widened to now
+         only when something is still open. A fixed last-N-hours window would push a
+         crew that ran yesterday off the left edge and draw an empty page. */
+      var lo = null, hi = null, placeable = 0, unplaceable = [];
+      for (var r = 0; r < rows.length; r++) {
+        for (var k = 0; k < rows[r].tasks.length; k++) {
+          var task = rows[r].tasks[k];
+          var a = stamp(task.created_at);
+          if (a === null) { unplaceable.push(task); continue; }
+          placeable++;
+          var e = endOf(task, now);
+          if (lo === null || a < lo) lo = a;
+          if (hi === null || e.at > hi) hi = e.at;
+        }
+      }
+
+      if (!list.length) {
+        body.appendChild(el('div', 'tl-empty', 'No board has reached this crewmate\u2019s record yet.'));
+        return;
+      }
+      if (lo === null || hi === null || hi <= lo) {
+        var why = placeable
+          ? 'Every task starts and ends in the same instant, so no bar has a width.'
+          : 'No task carries a start stamp, so no row can be placed on a clock.';
+        body.appendChild(el('div', 'tl-empty', why + ' ' + rows.length
+          + ' agent row(s) and ' + unplaceable.length + ' task(s) are in the record.'));
+        return;
+      }
+
+      var width = hi - lo;
+      function pct(t) { return ((Math.max(lo, Math.min(hi, t)) - lo) / width) * 100; }
+      var multiDay = width > 20 * 3600 * 1000;
+      /* THE NOW-LINE, and the one case it must NOT be drawn in.
+         The window's right edge is widened to now whenever anything is still open,
+         which is most reads -- and a line on top of that edge is a mark on every
+         single track that tells a reader nothing they cannot already see. So it is
+         drawn per track only when now sits INSIDE the window with room to be told
+         apart from the edge, which happens when the latest thing on the board
+         finished in the past. When it coincides with the edge, the ruler's last tick
+         says `now` instead: the same fact, in the one place it is worth a word. */
+      var nowIsEdge = !(now > lo && now < hi - width * 0.015);
+
+      scope.textContent = rows.length + ' agent row(s) over ' + span(width) + ', '
+        + dayClock(lo) + ' to ' + dayClock(hi) + ' UTC';
+
+      /* ---- the overlap strip --------------------------------------- */
+      /* Per column: how many WORKER tasks were open across it. Counted from the
+         spans themselves rather than from any total the fold carries, and the leads'
+         extents are left out -- an extent is a derived hull, and counting it would
+         double every one of its own tasks. */
+      var counts = [], top = 0;
+      for (var col = 0; col < COLS; col++) {
+        var from = lo + (width * col) / COLS;
+        var to = lo + (width * (col + 1)) / COLS;
+        var n = 0;
+        for (var w = 0; w < rows.length; w++) {
+          for (var j = 0; j < rows[w].tasks.length; j++) {
+            var tk = rows[w].tasks[j];
+            var s = stamp(tk.created_at);
+            if (s === null) continue;
+            var en = endOf(tk, now).at;
+            if (s < to && en > from) n++;
+          }
+        }
+        counts.push(n);
+        if (n > top) top = n;
+      }
+      if (top > 0) {
+        ov.hidden = false;
+        peak.textContent = top + (top === 1 ? ' task' : ' tasks');
+        for (var p = 0; p < counts.length; p++) {
+          var bar = el('i');
+          bar.style.height = counts[p] ? Math.max(3, (counts[p] / top) * 30) + 'px' : '1px';
+          if (!counts[p]) bar.setAttribute('data-zero', '1');
+          else if (counts[p] === top && top > 1) bar.setAttribute('data-peak', '1');
+          bar.title = counts[p] + ' open at ' + clock(lo + (width * p) / COLS) + ' UTC';
+          ovBars.appendChild(bar);
+        }
+      }
+
+      /* ---- the shared ruler --------------------------------------- */
+      var ticks = 5;
+      for (var ti = 0; ti < ticks; ti++) {
+        var at = lo + (width * ti) / (ticks - 1);
+        var last = ti === ticks - 1;
+        var lab = el('i', null, (last && nowIsEdge && now >= hi - 60000)
+          ? 'now ' + clock(at)
+          : (multiDay ? dayClock(at) : clock(at)));
+        if (last && nowIsEdge && now >= hi - 60000) lab.style.color = 'var(--tl-need)';
+        lab.style.left = ((ti / (ticks - 1)) * 100) + '%';
+        ruler.appendChild(lab);
+      }
+
+      function nowLine(track) {
+        if (nowIsEdge) return;
+        var n = el('div', 'tl-now');
+        n.style.left = pct(now) + '%';
+        n.title = 'now, ' + dayClock(now) + ' UTC';
+        track.appendChild(n);
+      }
+
+      /* ---- section 1: the leads ----------------------------------- */
+      /* A board per row. `parent` on a board names the task whose bind created it,
+         so a board that has one is a SUB-LEAD and is indented under its parent --
+         the same link the org-chart page draws as a graph. */
+      var byId = {};
+      for (var bi = 0; bi < list.length; bi++) byId[text(list[bi].id) || String(bi)] = list[bi];
+      function depthOf(board, guard) {
+        var p = board.parent;
+        if (!p || typeof p !== 'object') return 0;
+        var up = byId[text(p.board)];
+        if (!up || guard > 8) return 1;
+        return 1 + depthOf(up, guard + 1);
+      }
+
+      body.appendChild(el('div', 'tl-sect', 'leads \u00b7 the extent of each board\u2019s tasks'));
+      for (var L = 0; L < list.length; L++) {
+        var board = list[L];
+        var spans = [], ends = [];
+        for (var q = 0; q < board.tasks.length; q++) {
+          var s2 = stamp(board.tasks[q].created_at);
+          if (s2 === null) continue;
+          spans.push(s2);
+          ends.push(endOf(board.tasks[q], now).at);
+        }
+        var row = el('div', 'tl-row');
+        var who = el('div', 'tl-who');
+        var depth = depthOf(board, 0);
+        who.appendChild(el('em', null, depth ? 'sub-lead' : 'lead'));
+        var name = el('b', null, (depth ? '\u2514 ' : '') + (text(board.goal) || 'no goal recorded'));
+        name.title = text(board.goal) || '';
+        who.appendChild(name);
+        var sub = text(board.round) !== null || num(board.round) !== null
+          ? 'round ' + (num(board.round) === null ? DASH : board.round) : '';
+        who.appendChild(el('span', null, (sub ? sub + ' ' + MID + ' ' : '')
+          + board.tasks.length + ' task(s)'));
+        row.appendChild(who);
+
+        var inner = el('div', 'tl-in');
+        var track = el('div', 'tl-track');
+        if (spans.length) {
+          var a2 = Math.min.apply(null, spans), b2 = Math.max.apply(null, ends);
+          var ext = el('div', 'tl-ext');
+          ext.style.left = pct(a2) + '%';
+          ext.style.width = Math.max(0.6, pct(b2) - pct(a2)) + '%';
+          ext.title = 'its tasks run ' + dayClock(a2) + ' to ' + dayClock(b2) + ' UTC';
+          track.appendChild(ext);
+        }
+        nowLine(track);
+        inner.appendChild(track);
+        var cap = el('div', 'tl-cap');
+        if (spans.length) {
+          cap.appendChild(el('span', null, span(Math.max.apply(null, ends)
+            - Math.min.apply(null, spans)) + ' end to end'));
+        } else {
+          cap.appendChild(el('span', 'tl-wait', 'no task on this board carries a start stamp'));
+        }
+        var nd = num(board.needs_you);
+        if (nd) cap.appendChild(el('span', 'tl-warn', nd + ' need(s) you'));
+        var tom = num(board.tasks_omitted);
+        if (tom) cap.appendChild(el('span', null, tom + ' task(s) cut from this board'));
+        inner.appendChild(cap);
+        row.appendChild(inner);
+        body.appendChild(row);
+      }
+
+      /* ---- section 2: the workers --------------------------------- */
+      body.appendChild(el('div', 'tl-sect', 'worker sessions \u00b7 one row each, one clock'));
+      var seen = {};
+      for (var W = 0; W < rows.length; W++) {
+        var wrow = rows[W];
+        var rEl = el('div', 'tl-row');
+        var wWho = el('div', 'tl-who');
+        wWho.appendChild(el('em', null, wrow.worker === null ? 'unbound' : 'worker'));
+        wWho.appendChild(el('b', null, wrow.worker === null
+          ? 'not bound to a worker'
+          : 'worker ' + wrow.worker));
+        var where = wrow.goals.length === 1
+          ? wrow.goals[0]
+          : wrow.goals.length + ' boards';
+        var whereEl = el('span', null, where);
+        whereEl.title = wrow.goals.join(' \u00b7 ');
+        wWho.appendChild(whereEl);
+        rEl.appendChild(wWho);
+
+        var wIn = el('div', 'tl-in');
+        var drawn = 0;
+        for (var tIdx = 0; tIdx < wrow.tasks.length; tIdx++) {
+          var tsk = wrow.tasks[tIdx];
+          var start = stamp(tsk.created_at);
+          if (start === null) continue;
+          var end = endOf(tsk, now);
+          var situ = situation(tsk, now);
+          var colour = colourOf(situ);
+          seen[situ] = true;
+          drawn++;
+
+          var tr = el('div', 'tl-track');
+          var bar = el('div', 'tl-bar' + (end.open ? ' tl-open' : '')
+            + (situ === 'mute' ? ' tl-mute' : ''));
+          var left = pct(start), right = pct(end.at);
+          bar.style.left = left + '%';
+          bar.style.width = Math.max(0.7, right - left) + '%';
+          bar.style.background = colour;
+          bar.title = (text(tsk.title) || text(tsk.item_id) || DASH) + ' \u2014 '
+            + SITU[situ][0] + ', ' + dayClock(start) + ' to '
+            + (end.open ? 'now' : dayClock(end.at)) + ' UTC';
+          tr.appendChild(bar);
+
+          /* The silence, drawn only while the task is OPEN: a closed task's gap
+             between its last report and its close is the conductor's time, not the
+             worker's, and hatching it would blame a worker for a wait it did not own. */
+          var lastAt = stamp(tsk.last_report_at);
+          if (lastAt !== null && end.open && now - lastAt >= QUIET_MS) {
+            var qs = pct(lastAt), qe = pct(end.at);
+            if (qe > qs) {
+              var q2 = el('div', 'tl-quiet');
+              q2.style.left = qs + '%';
+              q2.style.width = (qe - qs) + '%';
+              q2.title = 'silent ' + span(now - lastAt) + ' since its last report';
+              tr.appendChild(q2);
+            }
+          }
+          if (lastAt !== null && lastAt >= lo && lastAt <= hi) {
+            var tick = el('div', 'tl-tick');
+            tick.style.left = pct(lastAt) + '%';
+            tick.title = 'last report ' + dayClock(lastAt) + ' UTC';
+            tr.appendChild(tick);
+          }
+          nowLine(tr);
+          wIn.appendChild(tr);
+
+          var tcap = el('div', 'tl-cap');
+          var titleLine = el('b', null, text(tsk.title) || text(tsk.item_id) || DASH);
+          tcap.appendChild(titleLine);
+          tcap.appendChild(el('span', null, span(end.at - start) + (end.open ? ' so far' : '')));
+          var word = el('span', situ === 'need' ? 'tl-warn'
+            : (situ === 'idle' || situ === 'cold' || situ === 'mute') ? 'tl-wait' : null,
+            SITU[situ][0]);
+          tcap.appendChild(word);
+          if (lastAt !== null) {
+            tcap.appendChild(el('span', null, 'last word ' + span(Math.max(0, now - lastAt)) + ' ago'));
+          }
+          if (end.unstamped) {
+            tcap.appendChild(el('span', 'tl-wait', 'close time not stamped'));
+          }
+          wIn.appendChild(tcap);
+        }
+        if (!drawn) {
+          wIn.appendChild(el('div', 'tl-cap', 'none of its '
+            + wrow.tasks.length + ' task(s) carries a start stamp'));
+        }
+        var money = el('div', 'tl-cap');
+        money.appendChild(el('span', null, wrow.reported
+          ? wrow.credits.toFixed(2) + ' credits'
+          : DASH + ' credits (nobody measured)'));
+        money.appendChild(el('span', null, wrow.tasks.length + ' task(s) on this session'));
+        wIn.appendChild(money);
+        rEl.appendChild(wIn);
+        body.appendChild(rEl);
+      }
+
+      /* ---- legend and the absences ------------------------------- */
+      var keys = ['run', 'idle', 'cold', 'need', 'mute', 'done', 'bad', 'gone'];
+      for (var g = 0; g < keys.length; g++) {
+        if (!seen[keys[g]]) continue;
+        var item = el('span');
+        var sw = el('u');
+        if (keys[g] === 'mute') {
+          sw.style.border = '1px dashed ' + SITU.mute[1];
+          sw.style.height = '6px';
+        } else {
+          sw.style.background = SITU[keys[g]][1];
+        }
+        item.appendChild(sw);
+        item.appendChild(document.createTextNode(SITU[keys[g]][0]));
+        legend.appendChild(item);
+      }
+      var extra = [
+        'idle starts at 20 minutes of silence, the project report\u2019s own threshold',
+        'a hatched tail is the silence itself',
+        'a pale tick is the worker\u2019s last report',
+        'an arrow end means still running',
+        'a thin rule is a lead\u2019s extent, not a measured session'
+      ];
+      for (var x = 0; x < extra.length; x++) legend.appendChild(el('span', null, extra[x]));
+
+      if (unplaceable.length) {
+        note.appendChild(el('b', null, unplaceable.length + ' task(s) cannot be placed: '));
+        var names = [];
+        for (var u = 0; u < unplaceable.length && u < 6; u++) {
+          names.push(text(unplaceable[u].title) || text(unplaceable[u].item_id) || DASH);
+        }
+        note.appendChild(document.createTextNode(names.join(', ')
+          + (unplaceable.length > names.length ? ' and ' + (unplaceable.length - names.length) + ' more' : '')
+          + ' \u2014 no start stamp reached the fold, so they are listed rather than dropped.'));
+      }
+    }
+
+    render();
+    window.addEventListener('load', render);
+    window.addEventListener('message', function () { setTimeout(render, 0); });
+  }());
+  </script>
+</div>

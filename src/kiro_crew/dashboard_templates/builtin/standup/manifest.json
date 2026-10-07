@@ -1,0 +1,22 @@
+{
+  "id": "standup",
+  "version": 1,
+  "title": "Standup",
+  "description": "What changed since you last looked, as three lists: finished, newly opened, and stuck. A reader who asks how things are going twice in one afternoon is asking for a DELTA, and a page that restates the whole board answers a different question. The split comes from the work fold's item states beside each worker's own last status, and the moment feed comes from the timeline fold, so both halves are the record's. One line is the crewmate's own headline, which no fold writes, and the page marks it as written.",
+  "source": "builtin",
+  "fields": {
+    "headline": { "type": "string", "source": { "agentic": true } },
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "moments": { "type": "array", "source": { "fold": "timeline", "path": "moments" } },
+    "moments_dropped": { "type": "number", "source": { "fold": "timeline", "path": "dropped" } },
+    "last_seq": { "type": "number", "source": { "fold": "timeline", "path": "last_seq" } },
+    "turns_completed": { "type": "number", "source": { "fold": "status", "path": "turns_completed" } },
+    "last_time": { "type": "number", "source": { "fold": "status", "path": "last_time" } },
+    "last_progress_at": { "type": "string", "source": { "fold": "ledger", "path": "last_progress_at" } },
+    "approvals_pending": { "type": "number", "source": { "fold": "approvals", "path": "pending" } }
+  }
+}

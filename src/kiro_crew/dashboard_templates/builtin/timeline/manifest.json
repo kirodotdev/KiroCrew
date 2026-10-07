@@ -1,0 +1,37 @@
+{
+  "id": "timeline",
+  "version": 1,
+  "title": "Who was working when",
+  "description": "One row per AGENT, every row on one clock: what each lead and each worker session was doing, and -- the question no other page answers -- what was running at the same time as what. Drawn from the workstreams fold's own task spans (created_at to closed_at, both added for this page), so a bar is a task's real extent rather than a figure derived from a duration. duration_ms cannot answer this: it is the worker SESSION's total work time, one number however many tasks that session served, and it names no instant, so two tasks of one worker are indistinguishable on a clock and overlap cannot be seen at all. An overlap strip above the ruler counts, per column of time, how many worker tasks were open in it, so concurrency reads as a shape before any row is examined. A now-line crosses every track. Three situations a bar must not share one colour with each other get three: a worker that reported recently is RUNNING, a worker whose task is open and silent past twenty minutes is IDLE -- the same threshold the project report's quiet chip uses, so the two pages do not disagree -- and a task whose own status is blocked or question is STUCK and needs a person, which is not a slow worker and must not read as one. The silence itself is drawn, as a hatched tail from the last report to the bar's live end, so idle time has a length rather than a label. A lead's row is the EXTENT of its board's tasks and is drawn as a thin rule rather than a bar, because no fold records a conductor's own session span and a solid bar would claim one. Absences are named, never filled: a task with no start stamp is listed as unplaceable instead of being dropped, a task with no report says so rather than reading as silent, and every truncation the fold reports is printed beside the list it cut. No agentic field -- every mark on this page has a fold behind it.",
+  "source": "builtin",
+  "fields": {
+    "items": {
+      "type": "array",
+      "source": {
+        "fold": "workstreams",
+        "path": "items"
+      }
+    },
+    "omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "omitted"
+      }
+    },
+    "spenders_omitted": {
+      "type": "number",
+      "source": {
+        "fold": "workstreams",
+        "path": "spenders_omitted"
+      }
+    },
+    "last_entry_at": {
+      "type": "string",
+      "source": {
+        "fold": "workstreams",
+        "path": "last_entry_at"
+      }
+    }
+  }
+}

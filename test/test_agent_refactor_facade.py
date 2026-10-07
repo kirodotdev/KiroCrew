@@ -206,6 +206,7 @@ def test_every_prompt_is_listed_by_dir() -> None:
     prompts = {name for name in dir(agent) if name.endswith("_SYSTEM_PROMPT")}
     assert prompts == {
         "_CONDUCTOR_SYSTEM_PROMPT",
+        "_DASHBOARD_MANAGER_SYSTEM_PROMPT",
         "_HEARTBEAT_SYSTEM_PROMPT",
         "_KNOWLEDGE_SYSTEM_PROMPT",
         "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT",

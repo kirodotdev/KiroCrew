@@ -17688,7 +17688,13 @@
       "schedule_new": "Nouvelle planification",
       "schedule_load_failed": "Impossible de charger les programmations de ce coéquipier.",
       "schedule_open_all": "Toutes les planifications",
-      "panel_toggle": "Tableau de bord et fichiers"
+      "panel_toggle": "Tableau de bord et fichiers",
+      "dashboard_kept_last_good": "Une version plus récente de ce tableau de bord ne s'est pas chargée ; voici la dernière qui s'est chargée.",
+      "dashboard_none_yet": "Aucun tableau de bord n'est encore configuré pour ce membre.",
+      "dashboard_unavailable": "Ce tableau de bord n'a pas pu etre charge.",
+      "dashboard_render_error": "Ce tableau de bord n'a pas pu etre dessine.",
+      "dashboard_frame_title": "Tableau de bord de {{crew}}",
+      "dashboard_rendering": "Affichage du tableau de bord…"
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

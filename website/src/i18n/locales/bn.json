@@ -17416,7 +17416,13 @@
       "schedule_new": "নতুন সময়সূচি",
       "schedule_load_failed": "এই ক্রুমেটের সময়সূচি লোড করা যায়নি।",
       "schedule_open_all": "সব সময়সূচি",
-      "panel_toggle": "ড্যাশবোর্ড ও ফাইল"
+      "panel_toggle": "ড্যাশবোর্ড ও ফাইল",
+      "dashboard_kept_last_good": "এই ড্যাশবোর্ডের নতুন সংস্করণ লোড হয়নি, তাই এটি সর্বশেষ লোড হওয়া সংস্করণ।",
+      "dashboard_none_yet": "এই ক্রুমেটের জন্য এখনও কোনো ড্যাশবোর্ড সেট করা হয়নি।",
+      "dashboard_unavailable": "এই ড্যাশবোর্ড লোড করা যায়নি।",
+      "dashboard_render_error": "এই ড্যাশবোর্ড আঁকা যায়নি।",
+      "dashboard_frame_title": "{{crew}}-এর ড্যাশবোর্ড",
+      "dashboard_rendering": "ড্যাশবোর্ড আঁকা হচ্ছে…"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

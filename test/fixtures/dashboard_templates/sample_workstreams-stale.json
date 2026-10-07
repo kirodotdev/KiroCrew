@@ -1,0 +1,664 @@
+{
+  "note": "The same session as sample_workstreams.json, read 1h40m later with nothing having arrived in between. Only `now` moved: every fold value, every task stamp and the lead's verdict are byte-identical, which is the point -- these two fixtures differ by the clock alone, so a page that draws them the same way is the bug. Renders the two states the live capture cannot show: the stale band above the page, and the verdict downgraded to `no word yet` because the fold advanced after the lead last wrote. The lead's own last word is still named underneath it, as a past reading rather than a current claim. Each task carries the conductor's ruling and its own event tail, which is what a drawer reads; one row in four carries a count with no tail, so the sentence for a task whose lines the fold has moved past is rendered rather than only asserted.",
+  "slot": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57",
+  "agentic": {
+    "for_you": [
+      {
+        "text": "Take a look at the round-4 report page: the pill switch and the stage-column board are both in it",
+        "workstream": "Dynamic dashboard round 4: one report replaces three boards"
+      },
+      {
+        "text": "Rule on where the workstreams fold's cost comes from: only what a worker reported, or the lead's own spend too",
+        "workstream": "Dynamic dashboard round 4: one report replaces three boards"
+      },
+      {
+        "text": "The recording script will not run; pick the playwright interpreter for it",
+        "workstream": "Feature recording: the side panel beside chat"
+      }
+    ],
+    "verdict": {
+      "state": "needs_you",
+      "headline": "PR #14982 is not green. 88 checks pass, 2 fail.",
+      "blocker": "First Principles reads the RFC from main only, so it cannot see the one in this PR. A maintainer clears it."
+    },
+    "ci": {
+      "pr": "14982",
+      "head": "f44a4e56",
+      "checks": {
+        "it_78450198": {
+          "pass": 88,
+          "fail": 2,
+          "running": 0
+        }
+      },
+      "lanes": [
+        {
+          "name": "First Principles Review",
+          "state": "fail",
+          "owner": "maintainer",
+          "why": "reads the RFC from main; this PR carries its own"
+        },
+        {
+          "name": "GPT 6.1 Review",
+          "state": "fail",
+          "owner": "yours",
+          "why": "fold text rendered without redaction"
+        },
+        {
+          "name": "Opus 5.5 Review",
+          "state": "did_not_run",
+          "owner": "yours"
+        },
+        {
+          "name": "Backend tests",
+          "state": "pass",
+          "owner": "yours"
+        }
+      ]
+    }
+  },
+  "folds": {
+    "workstreams": {
+      "seq": 412,
+      "value": {
+        "items": [
+          {
+            "id": "it_dd_round4",
+            "goal": "Dynamic dashboard round 4: one report replaces three boards",
+            "round": 4,
+            "parent": null,
+            "total": 6,
+            "accepted": 2,
+            "open": 3,
+            "needs_you": 1,
+            "credits": 18.42,
+            "credits_reported": true,
+            "last_activity_at": "2026-10-03T15:31:08+00:00",
+            "tasks": [
+              {
+                "item_id": "it_78450196",
+                "title": "project-report template: global view + stage-column workstream board + one-workstream view",
+                "state": "open",
+                "status": "progress",
+                "summary": "Two mockups drawn and one picked; the template and manifest are being written, screenshots run on sample data",
+                "verdict": "",
+                "pr": "",
+                "round": 4,
+                "credits": 7.31,
+                "credits_reported": true,
+                "duration_ms": 4260000,
+                "spender": "1",
+                "last_report_at": "2026-10-04T17:10:00Z",
+                "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+                "events": [
+                  {
+                    "at": "2026-10-04T17:10:00Z",
+                    "kind": "report",
+                    "status": "progress",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T16:10:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T15:10:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_78450197",
+                "title": "workstreams fold: join the work entries to each bound worker’s usage",
+                "state": "open",
+                "status": "question",
+                "summary": "The per-slot skeleton reads; whether cost counts only what a worker reported is your call",
+                "verdict": "",
+                "pr": "",
+                "round": 4,
+                "credits": 5.08,
+                "credits_reported": true,
+                "duration_ms": 3180000,
+                "spender": "2",
+                "last_report_at": "2026-10-04T16:41:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T16:41:00Z",
+                    "kind": "report",
+                    "status": "question",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T15:41:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T14:41:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_78450198",
+                "title": "Registry slim-down: drop the three round-3 boards",
+                "state": "open",
+                "status": "done",
+                "summary": "crewmate-overview / work-map / spend-and-tools removed, work-kanban kept, awaiting your verdict",
+                "verdict": "",
+                "pr": "14982",
+                "round": 4,
+                "credits": 1.94,
+                "credits_reported": true,
+                "duration_ms": 900000,
+                "spender": "3",
+                "last_report_at": "2026-10-04T15:32:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T15:32:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T14:32:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T13:32:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_78450120",
+                "title": "One-segment donut: draw a full ring at 100%",
+                "state": "accepted",
+                "status": "done",
+                "summary": "An arc whose ends coincide draws nothing in SVG, so 100% is a circle instead",
+                "verdict": "pass",
+                "pr": "14961",
+                "round": 3,
+                "credits": 2.17,
+                "credits_reported": true,
+                "duration_ms": 720000,
+                "spender": "4",
+                "last_report_at": "2026-10-04T17:07:00Z",
+                "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+                "events": [],
+                "events_seen": 14
+              },
+              {
+                "item_id": "it_78450121",
+                "title": "Dashboard tab carries only the dynamic dashboard",
+                "state": "accepted",
+                "status": "done",
+                "summary": "The Live / Crew log switch is gone; the raw record stays in developer mode",
+                "verdict": "pass",
+                "pr": "14960",
+                "round": 3,
+                "credits": 1.92,
+                "credits_reported": true,
+                "duration_ms": 660000,
+                "spender": "5",
+                "last_report_at": "2026-10-04T16:19:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T16:19:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T15:19:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T14:19:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_78450099",
+                "title": "The three round-3 boards, a page each",
+                "state": "rejected",
+                "status": "done",
+                "summary": "Unreadable, and every number was an engineering counter nobody acts on; sent back as one page",
+                "verdict": "fail",
+                "pr": "14940",
+                "round": 3,
+                "credits": 0,
+                "credits_reported": false,
+                "duration_ms": 0,
+                "spender": null,
+                "last_report_at": "2026-10-04T17:10:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T17:10:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T16:10:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T15:10:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              }
+            ],
+            "tasks_omitted": 0,
+            "series": [
+              {
+                "hour": "2026-10-03T08:00",
+                "credits": 0.4,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T09:00",
+                "credits": 1.8,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T10:00",
+                "credits": 3.2,
+                "accepted": 1
+              },
+              {
+                "hour": "2026-10-03T11:00",
+                "credits": 2.4,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T12:00",
+                "credits": 1.1,
+                "accepted": 1
+              },
+              {
+                "hour": "2026-10-03T13:00",
+                "credits": 3.9,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T14:00",
+                "credits": 3.1,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T15:00",
+                "credits": 2.52,
+                "accepted": 0
+              }
+            ]
+          },
+          {
+            "id": "it_dd_kanban",
+            "goal": "work-kanban template: closing it out",
+            "round": 2,
+            "parent": {
+              "board": "it_dd_round4",
+              "item_id": "it_78450196",
+              "title": "project-report template: global view + stage-column workstream board + one-workstream view"
+            },
+            "total": 4,
+            "accepted": 4,
+            "open": 0,
+            "needs_you": 0,
+            "credits": 5.3,
+            "credits_reported": true,
+            "last_activity_at": "2026-10-03T12:58:41+00:00",
+            "tasks": [
+              {
+                "item_id": "it_7843001",
+                "title": "State and worker status together decide the column",
+                "state": "accepted",
+                "status": "done",
+                "summary": "An item whose worker reported done but which nothing has ruled on gets its own column; no single field says that",
+                "verdict": "pass",
+                "pr": "14902",
+                "round": 2,
+                "credits": 2.6,
+                "credits_reported": true,
+                "duration_ms": 1080000,
+                "spender": "6",
+                "last_report_at": "2026-10-04T16:41:00Z",
+                "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+                "events": [
+                  {
+                    "at": "2026-10-04T16:41:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T15:41:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T14:41:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_7843002",
+                "title": "Cap each column at 12 cards and say what was held back",
+                "state": "accepted",
+                "status": "done",
+                "summary": "A hundred cards bury the three worth reading, so each column caps and reports the rest",
+                "verdict": "pass",
+                "pr": "14903",
+                "round": 2,
+                "credits": 1.4,
+                "credits_reported": true,
+                "duration_ms": 540000,
+                "spender": "7",
+                "last_report_at": "2026-10-04T15:32:00Z",
+                "decision": "",
+                "events": [],
+                "events_seen": 14
+              },
+              {
+                "item_id": "it_7843003",
+                "title": "Two columns at 760 px, four at 1040 px",
+                "state": "accepted",
+                "status": "done",
+                "summary": "No horizontal scroll at the side panel’s width",
+                "verdict": "pass",
+                "pr": "14904",
+                "round": 2,
+                "credits": 1.3,
+                "credits_reported": true,
+                "duration_ms": 480000,
+                "spender": "8",
+                "last_report_at": "2026-10-04T17:07:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T17:07:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T16:07:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T15:07:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_7843004",
+                "title": "Do not parse the timestamps",
+                "state": "accepted",
+                "status": "done",
+                "summary": "new Date re-expresses a UTC stamp in the viewer’s zone, so the page would disagree with the record",
+                "verdict": "pass",
+                "pr": "14905",
+                "round": 2,
+                "credits": 1.3,
+                "credits_reported": true,
+                "duration_ms": 420000,
+                "spender": "8",
+                "last_report_at": "2026-10-04T16:19:00Z",
+                "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+                "events": [
+                  {
+                    "at": "2026-10-04T16:19:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T15:19:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T14:19:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              }
+            ],
+            "tasks_omitted": 0,
+            "series": [
+              {
+                "hour": "2026-10-03T10:00",
+                "credits": 2.1,
+                "accepted": 2
+              },
+              {
+                "hour": "2026-10-03T11:00",
+                "credits": 2.3,
+                "accepted": 1
+              },
+              {
+                "hour": "2026-10-03T12:00",
+                "credits": 2.2,
+                "accepted": 1
+              }
+            ]
+          },
+          {
+            "id": "it_dd_record",
+            "goal": "Feature recording: the side panel beside chat",
+            "round": 1,
+            "parent": null,
+            "total": 5,
+            "accepted": 0,
+            "open": 2,
+            "needs_you": 2,
+            "credits": 1.72,
+            "credits_reported": true,
+            "last_activity_at": "2026-10-03T14:12:03+00:00",
+            "tasks": [
+              {
+                "item_id": "it_7846001",
+                "title": "Boot a clean gateway in a pod and record there",
+                "state": "open",
+                "status": "blocked",
+                "summary": "The playwright interpreter the recording needs is not on this machine",
+                "verdict": "",
+                "pr": "",
+                "round": 1,
+                "credits": 1.1,
+                "credits_reported": true,
+                "duration_ms": 1920000,
+                "spender": "9",
+                "last_report_at": "2026-10-04T17:10:00Z",
+                "decision": "",
+                "events": [
+                  {
+                    "at": "2026-10-04T17:10:00Z",
+                    "kind": "report",
+                    "status": "blocked",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T16:10:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T15:10:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              },
+              {
+                "item_id": "it_7846002",
+                "title": "Four screenshots: both themes at both widths",
+                "state": "open",
+                "status": "progress",
+                "summary": "The four on sample data are done",
+                "verdict": "",
+                "pr": "",
+                "round": 1,
+                "credits": 0.62,
+                "credits_reported": true,
+                "duration_ms": 600000,
+                "spender": "10",
+                "last_report_at": "2026-10-04T16:41:00Z",
+                "decision": "",
+                "events": [],
+                "events_seen": 14
+              },
+              {
+                "item_id": "it_7846003",
+                "title": "Cut the recording to 9:16",
+                "state": "abandoned",
+                "status": "done",
+                "summary": "Not doing a vertical cut this round",
+                "verdict": "",
+                "pr": "",
+                "round": 1,
+                "credits": 0,
+                "credits_reported": false,
+                "duration_ms": 0,
+                "spender": null,
+                "last_report_at": "2026-10-04T15:32:00Z",
+                "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+                "events": [
+                  {
+                    "at": "2026-10-04T15:32:00Z",
+                    "kind": "report",
+                    "status": "done",
+                    "text": "pushed 495c102, waiting on CI"
+                  },
+                  {
+                    "at": "2026-10-04T14:32:00Z",
+                    "kind": "decide",
+                    "status": null,
+                    "text": "rebase onto main and re-run the lane"
+                  },
+                  {
+                    "at": "2026-10-04T13:32:00Z",
+                    "kind": "create",
+                    "status": null,
+                    "text": "created from the round plan"
+                  }
+                ],
+                "events_seen": 3
+              }
+            ],
+            "tasks_omitted": 2,
+            "series": [
+              {
+                "hour": "2026-10-03T13:00",
+                "credits": 0,
+                "accepted": 0
+              },
+              {
+                "hour": "2026-10-03T14:00",
+                "credits": 0,
+                "accepted": 0
+              }
+            ]
+          }
+        ],
+        "omitted": 0,
+        "series": [
+          {
+            "hour": "2026-10-03T08:00",
+            "credits": 0.4,
+            "accepted": 0
+          },
+          {
+            "hour": "2026-10-03T09:00",
+            "credits": 1.8,
+            "accepted": 0
+          },
+          {
+            "hour": "2026-10-03T10:00",
+            "credits": 5.3,
+            "accepted": 3
+          },
+          {
+            "hour": "2026-10-03T11:00",
+            "credits": 4.7,
+            "accepted": 1
+          },
+          {
+            "hour": "2026-10-03T12:00",
+            "credits": 3.3,
+            "accepted": 2
+          },
+          {
+            "hour": "2026-10-03T13:00",
+            "credits": 3.9,
+            "accepted": 0
+          },
+          {
+            "hour": "2026-10-03T14:00",
+            "credits": 3.1,
+            "accepted": 0
+          },
+          {
+            "hour": "2026-10-03T15:00",
+            "credits": 2.52,
+            "accepted": 0
+          }
+        ],
+        "last_entry_at": "2026-10-04T17:09:00Z"
+      }
+    }
+  },
+  "agentic_written_at": {
+    "verdict": "2026-10-04T16:55:00Z"
+  },
+  "now": "2026-10-04T18:49:00Z"
+}

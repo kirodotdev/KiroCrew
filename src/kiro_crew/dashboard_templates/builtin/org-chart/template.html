@@ -1,0 +1,624 @@
+<div class="oc">
+  <style>
+  .oc {
+    /* THE SAME PALETTE AS `timeline`, deliberately: the two pages are read one after
+       the other, and a colour that meant "needs a person" there must mean it here. */
+    --oc-run: #7fd1b9;
+    --oc-idle: #e0b964;
+    /* Its own hue, not `idle` dimmed -- see the note on `--tl-cold` in `timeline`. */
+    --oc-cold: #b8822c;
+    --oc-need: #ef9a85;
+    --oc-done: #8fa8de;
+    /* Clearly darker than `--oc-need`: a rejected run and a run waiting on a person
+       are the two a reader must not confuse. */
+    --oc-bad: #a8453c;
+    --oc-gone: #7e8289;
+    --oc-line: color-mix(in oklab, var(--border, #2a2d36) 86%, var(--text, #e4e4e7));
+    --oc-card: var(--card, #181b22);
+
+    font: 12px/1.45 system-ui, -apple-system, sans-serif;
+    color: var(--text, #e4e4e7);
+    padding: 11px 12px 14px;
+  }
+  .oc h2 { font-size: 12.5px; font-weight: 650; margin: 0; letter-spacing: .01em;
+    color: var(--text-strong, #fafafa); }
+  .oc .oc-sub { font-size: 10.5px; color: var(--muted, #7f7f88); margin-top: 3px; }
+  .oc .oc-head { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap; }
+  .oc-sect { font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted-strong, #52525b); margin: 15px 0 5px; font-weight: 650; }
+
+  /* ------------------------------------------------------------------ *
+   * the graph: an indented tree with real connectors                   *
+   * ------------------------------------------------------------------ */
+  .oc-node { position: relative; padding: 3px 0 3px 0; }
+  .oc-kids { margin-left: 13px; padding-left: 11px; position: relative;
+    border-left: 1px solid color-mix(in oklab, var(--oc-line) 70%, transparent); }
+  /* The elbow into each child, so the line is a connector and not a margin. */
+  .oc-kids > .oc-node:before { content: ''; position: absolute; left: -11px; top: 13px;
+    width: 9px; height: 1px; background: color-mix(in oklab, var(--oc-line) 70%, transparent); }
+  /* The last child's rail stops at its own elbow instead of running past it. */
+  .oc-kids > .oc-node:last-child:after { content: ''; position: absolute; left: -12px;
+    top: 14px; bottom: 0; width: 1px; background: var(--oc-card); }
+
+  .oc-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+    padding: 4px 9px 4px 7px; border-radius: 7px; box-sizing: border-box;
+    border: 1px solid color-mix(in oklab, var(--oc-line) 62%, transparent);
+    background: color-mix(in oklab, var(--oc-card) 92%, var(--oc-line) 8%); }
+  .oc-chip.oc-is-lead { border-color: color-mix(in oklab, var(--oc-done) 46%, var(--oc-line));
+    background: color-mix(in oklab, var(--oc-card) 88%, var(--oc-done) 12%); }
+  .oc-chip.oc-is-sub { border-color: color-mix(in oklab, var(--oc-done) 32%, var(--oc-line)); }
+  .oc-role { font-size: 8.5px; letter-spacing: .08em; text-transform: uppercase;
+    font-weight: 700; padding: 1px 5px; border-radius: 3px; flex: 0 0 auto;
+    background: color-mix(in oklab, var(--oc-line) 55%, transparent);
+    color: var(--text, #e4e4e7); }
+  .oc-chip.oc-is-lead .oc-role { background: var(--oc-done); color: #10121a; }
+  .oc-chip.oc-is-sub .oc-role { background: color-mix(in oklab, var(--oc-done) 62%, transparent);
+    color: var(--text-strong, #fafafa); }
+  .oc-name { min-width: 0; }
+  .oc-name b { display: block; font-size: 11px; font-weight: 600; color: var(--text-strong, #fafafa);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oc-name span { display: block; font-size: 9.5px; color: var(--muted, #7f7f88);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oc-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  /* A RING, not a dot, for a worker that has never reported: the other grey on this
+     page is `abandoned`, and an absent report must not read as a given-up one. */
+  .oc-dot.oc-dot-mute { background: none !important; box-sizing: border-box;
+    border: 1.5px solid var(--oc-gone); }
+  .oc-stat.oc-stat-mute { border-style: dashed; }
+  .oc-none-line { font-size: 10px; color: var(--muted-strong, #52525b); padding-left: 2px; }
+
+  /* ------------------------------------------------------------------ *
+   * the latest-run cards                                               *
+   * ------------------------------------------------------------------ */
+  .oc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+    gap: 7px; }
+  .oc-card { border-radius: 8px; padding: 8px 10px 9px; box-sizing: border-box;
+    border: 1px solid color-mix(in oklab, var(--oc-line) 58%, transparent);
+    background: color-mix(in oklab, var(--oc-card) 94%, var(--oc-line) 6%);
+    border-left-width: 3px; border-left-style: solid; min-width: 0; }
+  .oc-card-top { display: flex; align-items: center; gap: 6px; }
+  .oc-card-top b { font-size: 11px; font-weight: 650; color: var(--text-strong, #fafafa);
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .oc-stat { font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+    font-weight: 700; padding: 1px 6px; border-radius: 9px; flex: 0 0 auto;
+    border: 1px solid currentColor; }
+  /* THE LINE THE OLD CHIP COULD NOT CARRY: what the worker actually last said,
+     cleaned to one line. Two lines of room, then an ellipsis. */
+  .oc-said { font-size: 10.5px; color: var(--text, #e4e4e7); margin-top: 5px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; }
+  .oc-said.oc-none { color: var(--muted, #7f7f88); font-style: italic; }
+  .oc-facts { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 6px;
+    font-size: 9.5px; color: var(--muted, #7f7f88); }
+  .oc-facts b { font-weight: 600; color: var(--text, #e4e4e7); }
+  .oc-facts .oc-warn { color: var(--oc-need); font-weight: 600; }
+  .oc-facts .oc-wait { color: var(--oc-idle); }
+  .oc-keys { margin-top: 6px; padding-top: 5px; font-size: 9px;
+    color: var(--muted-strong, #52525b);
+    border-top: 1px solid color-mix(in oklab, var(--oc-line) 45%, transparent);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oc-keys code { font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted, #7f7f88); }
+
+  .oc-foot { font-size: 9.5px; color: var(--muted, #7f7f88); margin-top: 12px;
+    padding-top: 9px; border-top: 1px solid color-mix(in oklab, var(--oc-line) 55%, transparent); }
+  .oc-foot p { margin: 0 0 3px; }
+  .oc-empty { font-size: 11px; color: var(--muted, #7f7f88); padding: 16px 0; }
+
+  @media (max-width: 520px) {
+    .oc { padding: 10px 10px 13px; }
+    .oc-cards { grid-template-columns: 1fr; }
+    .oc-kids { margin-left: 7px; padding-left: 9px; }
+    .oc-kids > .oc-node:before { left: -9px; width: 7px; }
+  }
+  </style>
+
+  <div class="oc-head">
+    <h2>Who dispatched whom</h2>
+    <div class="oc-sub">last fold write <span data-dashboard-field="last_entry_at">-</span></div>
+  </div>
+  <div class="oc-sub" id="oc-scope">-</div>
+
+  <div class="oc-sect">the reporting graph</div>
+  <div id="oc-graph"></div>
+
+  <div class="oc-sect" id="oc-cards-t">latest run, one card per worker session</div>
+  <div class="oc-cards" id="oc-cards"></div>
+
+  <div class="oc-foot" id="oc-foot"></div>
+  <div class="oc-sub" style="margin-top: 7px;">
+    <span data-dashboard-field="items">-</span> board(s) drawn,
+    <span data-dashboard-field="omitted">-</span> not shown,
+    <span data-dashboard-field="spenders_omitted">-</span> worker(s) past the fold's cap
+  </div>
+
+  <script>
+  (function () {
+    var DASH = '\u2014';
+    var MID = '\u00b7';
+
+    /* The project report's threshold, so the two pages do not disagree about the same
+       worker. See the note in `timeline`. */
+    var QUIET_MS = 20 * 60 * 1000;
+    var COLD_MS = 2 * 60 * 60 * 1000;
+    /* The cleaned summary's cut. Two rendered lines of room, so a value longer than
+       this could not be read anyway, and an ellipsis says it was cut. */
+    var SAID_CHARS = 150;
+
+    /* A worker's SITUATION, in the same six words the timeline uses. Four of them are
+       readings of an open task, and each needs its own word:
+         - `blocked` / `question` -> a PERSON is the next move
+         - reported inside the window -> producing
+         - reported, silent since -> idle, with the length said out loud
+         - never reported -> not a long silence, an absent one. */
+    var SITU = {
+      run:  ['working', 'var(--oc-run)'],
+      idle: ['idle', 'var(--oc-idle)'],
+      cold: ['silent 2h+', 'var(--oc-cold)'],
+      need: ['needs you', 'var(--oc-need)'],
+      mute: ['no report', 'var(--oc-gone)'],
+      done: ['accepted', 'var(--oc-done)'],
+      bad:  ['rejected', 'var(--oc-bad)'],
+      gone: ['abandoned', 'var(--oc-gone)']
+    };
+
+    function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+    function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+    function fields() { return (window.kirocrew || {}).fields || {}; }
+    function el(tag, cls, body) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (body !== undefined && body !== null) n.textContent = String(body);
+      return n;
+    }
+    function boards() {
+      var v = fields().items;
+      if (!Array.isArray(v)) return [];
+      return v.filter(function (b) { return b && typeof b === 'object' && Array.isArray(b.tasks); });
+    }
+    function stamp(v) {
+      var s = text(v);
+      if (!s) return null;
+      var t = Date.parse(s);
+      return isFinite(t) ? t : null;
+    }
+    function span(ms) {
+      if (ms < 60000) return Math.max(0, Math.round(ms / 1000)) + 's';
+      var m = Math.round(ms / 60000);
+      if (m < 60) return m + 'm';
+      var h = Math.floor(m / 60);
+      if (h < 48) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+      return Math.floor(h / 24) + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '');
+    }
+    function dayClock(ms) {
+      var d = new Date(ms);
+      return ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2)
+        + ' ' + ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2);
+    }
+
+    /* ONE LINE, whatever the record wrote. A summary is free text a worker typed, so
+       it arrives with newlines, tabs and runs of spaces in it; dropped into a card
+       unchanged it either collapses to an unreadable smear or blows the card's height
+       out. Cut with an ellipsis, so a reader can tell a short summary from a cut one. */
+    function oneLine(value) {
+      var s = text(value);
+      if (!s) return null;
+      s = s.replace(/\s+/g, ' ').trim();
+      if (s.length <= SAID_CHARS) return s;
+      return s.slice(0, SAID_CHARS - 1).replace(/[\s,;:.]+$/, '') + '\u2026';
+    }
+
+    function situation(task, now) {
+      var state = text(task.state) || 'open';
+      if (state === 'accepted') return 'done';
+      if (state === 'rejected') return 'bad';
+      if (state === 'abandoned') return 'gone';
+      var status = text(task.status);
+      if (status === 'blocked' || status === 'question') return 'need';
+      var last = stamp(task.last_report_at);
+      if (last === null) return 'mute';
+      var quiet = now - last;
+      if (quiet >= COLD_MS) return 'cold';
+      if (quiet >= QUIET_MS) return 'idle';
+      return 'run';
+    }
+
+    /* ---------------------------------------------------------------- *
+     * THE GRAPH                                                        *
+     * ---------------------------------------------------------------- */
+    /* Three roles, and the fold's own `parent` link is what separates them:
+         lead      a board with no parent -- nobody dispatched it
+         sub-lead  the WORKER of a task that another board hangs off. Its own board's
+                   `parent` names that task, so the link is read off the record and
+                   not guessed from how deep a node sits.
+         worker    a task's bound worker with no board of its own
+       Keeping sub-lead apart matters because it is the only role that both answers to
+       someone and dispatches someone, and collapsing it into `worker` hides half the
+       crew's structure. */
+    function buildGraph(list) {
+      var byId = {};
+      for (var i = 0; i < list.length; i++) {
+        var id = text(list[i].id);
+        if (id) byId[id] = list[i];
+      }
+      /* task key -> the board that task's worker conducts. Keyed by board+item,
+         because two boards can carry the same item id. */
+      var subOf = {};
+      for (var j = 0; j < list.length; j++) {
+        var p = list[j].parent;
+        if (!p || typeof p !== 'object') continue;
+        var pb = text(p.board), pi = text(p.item_id);
+        if (!pb || !pi) continue;
+        subOf[pb + '\u0000' + pi] = list[j];
+      }
+      function node(board, depth, guard) {
+        var kids = [];
+        var bid = text(board.id) || '';
+        for (var t = 0; t < board.tasks.length; t++) {
+          var task = board.tasks[t];
+          if (!task || typeof task !== 'object') continue;
+          var sub = guard < 8 ? subOf[bid + '\u0000' + (text(task.item_id) || '')] : null;
+          kids.push({
+            task: task,
+            board: board,
+            sub: sub ? node(sub, depth + 1, guard + 1) : null
+          });
+        }
+        return { board: board, depth: depth, kids: kids };
+      }
+      var roots = [];
+      for (var k = 0; k < list.length; k++) {
+        var par = list[k].parent;
+        var placed = par && typeof par === 'object' && byId[text(par.board)];
+        if (!placed) roots.push(node(list[k], 0, 0));
+      }
+      return { roots: roots, subOf: subOf };
+    }
+
+    function chip(role, title, sub, cls, colour) {
+      var c = el('div', 'oc-chip' + (cls ? ' ' + cls : ''));
+      c.appendChild(el('span', 'oc-role', role));
+      if (colour) {
+        var dot = el('span', 'oc-dot' + (colour === SITU.mute[1] ? ' oc-dot-mute' : ''));
+        dot.style.background = colour;
+        c.appendChild(dot);
+      }
+      var name = el('div', 'oc-name');
+      var b = el('b', null, title);
+      b.title = title;
+      name.appendChild(b);
+      if (sub) {
+        var s = el('span', null, sub);
+        s.title = sub;
+        name.appendChild(s);
+      }
+      c.appendChild(name);
+      return c;
+    }
+
+    /* A board's own counts, for the line under its name. */
+    function boardFacts(board) {
+      var out = [];
+      var r = num(board.round);
+      if (r !== null) out.push('round ' + r);
+      var total = num(board.total);
+      out.push((total === null ? board.tasks.length : total) + ' dispatched');
+      var acc = num(board.accepted);
+      if (acc !== null) out.push(acc + ' accepted');
+      var nd = num(board.needs_you);
+      if (nd) out.push(nd + ' need you');
+      out.push(board.credits_reported === true
+        ? (num(board.credits) || 0).toFixed(2) + ' credits'
+        : DASH + ' credits');
+      return out.join(' ' + MID + ' ');
+    }
+
+    /* One dispatch: a task, its worker, and -- when that worker runs a board of its
+       own -- that board's workers nested UNDER it.
+       ONE NODE CARRIES BOTH HALVES of a sub-lead's role, and it is the node for the
+       task its parent dispatched: a worker that answers to someone and dispatches
+       others is one agent, and splitting it into a board node plus a task node puts
+       the same agent on the page twice in two places. The node's name is what it was
+       asked to do, and the line under it is the board it is running to do it. */
+    function drawKid(kid, into, now) {
+      var task = kid.task;
+      var who = text(task.spender);
+      var situ = situation(task, now);
+      var node = el('div', 'oc-node');
+      var label = who === null ? 'unbound' : 'worker ' + who;
+      var line = SITU[situ][0];
+      var last = stamp(task.last_report_at);
+      if (last !== null) line += ' ' + MID + ' last word ' + span(Math.max(0, now - last)) + ' ago';
+
+      if (kid.sub) {
+        var sub = kid.sub.board;
+        node.appendChild(chip(
+          'sub-lead',
+          text(task.title) || text(task.item_id) || DASH,
+          label + ' ' + MID + ' ' + line,
+          'oc-is-sub',
+          SITU[situ][1]
+        ));
+        var kids = el('div', 'oc-kids');
+        /* The board it runs, named once, above the workers it dispatched -- so a
+           reader can see WHICH board the names below belong to. */
+        var own = el('div', 'oc-node');
+        own.appendChild(chip(
+          'its board',
+          text(sub.goal) || 'a board with no goal recorded',
+          boardFacts(sub),
+          null,
+          null
+        ));
+        kids.appendChild(own);
+        drawKids(kid.sub, kids, now);
+        node.appendChild(kids);
+        into.appendChild(node);
+        return;
+      }
+      node.appendChild(chip(
+        label,
+        text(task.title) || text(task.item_id) || DASH,
+        line,
+        null,
+        SITU[situ][1]
+      ));
+      into.appendChild(node);
+    }
+
+    function drawKids(n, into, now) {
+      if (!n.kids.length) {
+        into.appendChild(el('div', 'oc-node oc-none-line',
+          'nothing dispatched from this board yet'));
+        return;
+      }
+      for (var i = 0; i < n.kids.length; i++) drawKid(n.kids[i], into, now);
+    }
+
+    function drawNode(n, into, now) {
+      var board = n.board;
+      var wrap = el('div', 'oc-node');
+      wrap.appendChild(chip(
+        'lead',
+        text(board.goal) || 'a board with no goal recorded',
+        boardFacts(board),
+        'oc-is-lead',
+        null
+      ));
+      var kids = el('div', 'oc-kids');
+      drawKids(n, kids, now);
+      wrap.appendChild(kids);
+      into.appendChild(wrap);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * THE CARDS                                                        *
+     * ---------------------------------------------------------------- */
+    /* One per WORKER SESSION, not one per task: the `spender` alias is what says two
+       task rows were billed to the same worker, so a session serving three tasks gets
+       ONE card showing its latest run and is billed once.
+       "Latest" is by `last_report_at`, the worker's own last word -- not by a close
+       stamp, which is the conductor's move and not the worker's. A session none of
+       whose tasks ever reported falls back to its newest-started task, so it still
+       gets a card and the card says the report is absent. */
+    function cards(list, now) {
+      var byWorker = {};
+      var order = [];
+      for (var b = 0; b < list.length; b++) {
+        var board = list[b];
+        for (var t = 0; t < board.tasks.length; t++) {
+          var task = board.tasks[t];
+          if (!task || typeof task !== 'object') continue;
+          var who = text(task.spender);
+          var key = who === null ? '\u0000unbound' : who;
+          var row = byWorker[key];
+          if (!row) {
+            row = byWorker[key] = { worker: who, tasks: [], credits: 0, reported: false, boards: [] };
+            order.push(key);
+          }
+          row.tasks.push({ task: task, board: board });
+          var goal = text(board.goal) || text(board.id) || 'a board with no goal';
+          if (row.boards.indexOf(goal) < 0) row.boards.push(goal);
+          /* ONE figure per session, taken rather than summed: the fold repeats a
+             session's spend on each of its task rows, and adding them would multiply
+             one bill by the tasks it served. */
+          var c = num(task.credits);
+          if (c !== null && c > row.credits) row.credits = c;
+          if (task.credits_reported === true) row.reported = true;
+        }
+      }
+      var out = order.map(function (k) {
+        var row = byWorker[k];
+        var best = null, bestAt = null, fallback = null, fallbackAt = null;
+        for (var i = 0; i < row.tasks.length; i++) {
+          var pair = row.tasks[i];
+          var at = stamp(pair.task.last_report_at);
+          if (at !== null && (bestAt === null || at > bestAt)) { best = pair; bestAt = at; }
+          var start = stamp(pair.task.created_at);
+          if (start !== null && (fallbackAt === null || start > fallbackAt)) {
+            fallback = pair; fallbackAt = start;
+          }
+        }
+        row.latest = best || fallback || row.tasks[0];
+        row.latestAt = bestAt;
+        return row;
+      });
+      /* Newest word first: the worker a reader needs to look at is the one that just
+         spoke or the one that just stopped. A session that never reported sorts last,
+         because there is nothing about it to read. */
+      out.sort(function (a, b) {
+        if (a.latestAt === null) return 1;
+        if (b.latestAt === null) return -1;
+        return b.latestAt - a.latestAt;
+      });
+      return out;
+    }
+
+    function drawCard(row, now) {
+      var pair = row.latest;
+      var task = pair.task;
+      var situ = situation(task, now);
+      var colour = SITU[situ][1];
+      var card = el('div', 'oc-card');
+      card.style.borderLeftColor = colour;
+
+      var top = el('div', 'oc-card-top');
+      top.appendChild(el('b', null, row.worker === null
+        ? 'not bound to a worker'
+        : 'worker ' + row.worker));
+      var stat = el('span', 'oc-stat' + (situ === 'mute' ? ' oc-stat-mute' : ''), SITU[situ][0]);
+      stat.style.color = colour;
+      top.appendChild(stat);
+      card.appendChild(top);
+
+      /* THE REPLACEMENT FOR `quiet 24h`: what the worker said, not how long it has
+         been since it said something. The old chip could only ever carry the second,
+         and a reader seeing it still had to open the session to learn the first. */
+      var said = oneLine(task.summary);
+      if (said) {
+        var line = el('div', 'oc-said', said);
+        line.title = text(task.summary) || '';
+        card.appendChild(line);
+      } else if (row.latestAt === null) {
+        card.appendChild(el('div', 'oc-said oc-none',
+          'This session has never reported. Its newest task is '
+          + (text(task.title) || text(task.item_id) || DASH) + '.'));
+      } else {
+        card.appendChild(el('div', 'oc-said oc-none',
+          'It reported with no summary, so the record has a stamp and no words.'));
+      }
+
+      var facts = el('div', 'oc-facts');
+      var title = el('span');
+      title.appendChild(el('b', null, text(task.title) || text(task.item_id) || DASH));
+      facts.appendChild(title);
+
+      if (row.latestAt !== null) {
+        var ago = el('span', (situ === 'idle' || situ === 'cold') ? 'oc-wait' : null,
+          span(Math.max(0, now - row.latestAt)) + ' ago');
+        ago.title = 'last report ' + dayClock(row.latestAt) + ' UTC';
+        facts.appendChild(ago);
+      } else {
+        facts.appendChild(el('span', 'oc-wait', 'no report stamped'));
+      }
+
+      facts.appendChild(el('span', null, row.reported
+        ? row.credits.toFixed(2) + ' credits'
+        : DASH + ' credits (nobody measured)'));
+
+      var dur = num(task.duration_ms);
+      if (dur) facts.appendChild(el('span', null, span(dur) + ' worked'));
+
+      if (row.tasks.length > 1) {
+        var more = el('span', null, row.tasks.length + ' tasks on this session');
+        more.title = row.boards.join(' \u00b7 ');
+        facts.appendChild(more);
+      }
+      var pr = text(task.pr) || (num(task.pr) !== null ? String(task.pr) : null);
+      if (pr) facts.appendChild(el('span', null, 'PR ' + pr));
+      var verdict = text(task.verdict);
+      if (verdict) {
+        facts.appendChild(el('span', verdict === 'fail' ? 'oc-warn' : null,
+          'acceptance ' + verdict));
+      }
+      if (situ === 'need') {
+        facts.appendChild(el('span', 'oc-warn', text(task.status) === 'blocked'
+          ? 'blocked, waiting on someone'
+          : 'asking its conductor'));
+      }
+      card.appendChild(facts);
+
+      /* THE TWO LOOKUP KEYS A HOST NEEDS, and not a session key.
+         The fold aliases a worker's session key on purpose: this document is embedded
+         in a page any dashboard caller can read, and the ledger's rule is that no
+         reader but the conductor sees one. So the card names the board and the item --
+         the same pair group A's action route takes, resolved server-side against the
+         fold -- and a host that wants to open the session resolves it from those.
+         Printing an alias as if it were a link would be a dead link; printing the key
+         would be the leak the fold exists to prevent. */
+      var keys = el('div', 'oc-keys');
+      keys.appendChild(document.createTextNode('open via '));
+      keys.appendChild(el('code', null,
+        (text(pair.board.id) || DASH) + ' / ' + (text(task.item_id) || DASH)));
+      keys.title = 'The fold aliases a worker\u2019s session key, so the card carries the '
+        + 'board and item a host resolves the session from instead.';
+      card.appendChild(keys);
+      return card;
+    }
+
+    /* ---------------------------------------------------------------- */
+    function render() {
+      var cells = document.body.querySelectorAll('[data-dashboard-field]');
+      for (var c = 0; c < cells.length; c++) {
+        if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+      }
+      var stampCell = document.querySelector('[data-dashboard-field="last_entry_at"]');
+      if (stampCell) {
+        var raw = (stampCell.textContent || '').trim();
+        var rt = Date.parse(raw);
+        if (raw && raw !== DASH && isFinite(rt)) stampCell.textContent = dayClock(rt) + ' UTC';
+      }
+
+      var graph = document.getElementById('oc-graph');
+      var holder = document.getElementById('oc-cards');
+      var cardsTitle = document.getElementById('oc-cards-t');
+      var foot = document.getElementById('oc-foot');
+      var scope = document.getElementById('oc-scope');
+      if (!graph || !holder || !cardsTitle || !foot || !scope) return;
+      graph.textContent = '';
+      holder.textContent = '';
+      foot.textContent = '';
+
+      var list = boards();
+      var cell = document.querySelector('[data-dashboard-field="items"]');
+      if (cell) cell.textContent = String(list.length);
+      var now = Date.now();
+
+      if (!list.length) {
+        graph.appendChild(el('div', 'oc-empty',
+          'No board has reached this crewmate\u2019s record yet, so there is nobody to chart.'));
+        cardsTitle.hidden = true;
+        scope.textContent = DASH;
+        return;
+      }
+      cardsTitle.hidden = false;
+
+      var g = buildGraph(list);
+      for (var i = 0; i < g.roots.length; i++) drawNode(g.roots[i], graph, now);
+
+      var rows = cards(list, now);
+      for (var j = 0; j < rows.length; j++) holder.appendChild(drawCard(rows[j], now));
+
+      var subs = 0;
+      for (var s in g.subOf) if (Object.prototype.hasOwnProperty.call(g.subOf, s)) subs++;
+      scope.textContent = g.roots.length + ' lead(s) ' + MID + ' ' + subs + ' sub-lead(s) '
+        + MID + ' ' + rows.length + ' worker session(s)';
+
+      /* The absences, said rather than left to be noticed. */
+      var cut = 0;
+      for (var b = 0; b < list.length; b++) cut += num(list[b].tasks_omitted) || 0;
+      if (cut) {
+        foot.appendChild(el('p', null, cut
+          + ' task(s) were cut by the fold\u2019s per-board cap, so they are in neither the '
+          + 'graph nor the cards.'));
+      }
+      var mute = 0;
+      for (var m = 0; m < rows.length; m++) if (rows[m].latestAt === null) mute++;
+      if (mute) {
+        foot.appendChild(el('p', null, mute
+          + ' session(s) have never reported. Their cards say so rather than showing a '
+          + 'silence, which is a different fact.'));
+      }
+      foot.appendChild(el('p', null,
+        'A card carries the board and item a host opens the session from. The fold '
+        + 'aliases the session key itself, so no page here can name a worker\u2019s session.'));
+    }
+
+    render();
+    window.addEventListener('load', render);
+    window.addEventListener('message', function () { setTimeout(render, 0); });
+  }());
+  </script>
+</div>

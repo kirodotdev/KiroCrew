@@ -145,6 +145,7 @@ from kiro_crew.context_assembly.markers import (  # noqa: F401
 from kiro_crew.context_assembly.member import (  # noqa: F401
     _MEMBER_BRIEFING_ITEM,
     _MEMBER_BRIEFING_ITEM_UNAVAILABLE,
+    _MEMBER_DASHBOARD_ITEM,
     _MEMBER_HOW_YOU_WORK,
     _MEMBER_HOW_YOU_WORK_COMMON,
     _fit_folder_steering_into_envelope,

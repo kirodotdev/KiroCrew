@@ -546,6 +546,7 @@ def test_the_ownership_registry_is_the_documented_partition():
         "radar",
         "work",
         "panel",
+        "dashboard",
     }
 
 
