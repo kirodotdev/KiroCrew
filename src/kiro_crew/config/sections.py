@@ -3093,6 +3093,21 @@ class DashboardConfig:
             "(desktop app only). When off, the agent browses via playwright-cli.",
         ),
     )
+    browser_local_origins: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Built-in Browser Local Origins",
+            "Loopback origins the browser tool may open in the built-in panel, "
+            "each written host:port with host localhost, 127.0.0.1 or [::1] "
+            "(e.g. localhost:5173 for a Vite dev server). Empty (the default) "
+            "keeps every loopback, private and link-local address refused. The "
+            "port is required and matched exactly, so one entry opens one dev "
+            "server and never the rest of the machine; the gateway's own port is "
+            "refused even when listed. Entries in any other shape are dropped. "
+            "The agent cannot set this while its sandbox is on: config.json is "
+            "read-only inside the sandbox.",
+        ),
+    )
     browser_view_port: int = field(
         default=0,
         metadata=_meta(
@@ -5755,6 +5770,44 @@ def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
             allowed_forum_chat_ids=_coerce_int_ids(account.get("allowed_forum_chat_ids")),
             soft_threshold_pct=account.read("soft_threshold_pct", _threshold_pct),
         )
+    return out
+
+
+_BROWSER_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+
+def coerce_browser_local_origins(raw: object) -> list[str]:
+    """Coerce ``dashboard.browser_local_origins`` to canonical ``host:port`` entries.
+
+    Fails closed: a non-list yields ``[]`` and an entry is dropped unless it is
+    exactly one of the three loopback host spellings in
+    :data:`_BROWSER_LOCAL_HOSTS` followed by a plain ASCII port in 1-65535. A
+    scheme, path, userinfo, wildcard, a private/LAN address or a missing port is
+    rejected rather than sanitized: a bare host would open every port on the
+    machine (the gateway included), and widening past loopback is not what the
+    setting is for. The port is rebuilt canonically (``08080`` -> ``8080``) so
+    it compares equal to what ``urlsplit`` reports for the navigated URL.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        text = entry.strip().lower()
+        host, sep, port_text = text.rpartition(":")
+        if not sep or host not in _BROWSER_LOCAL_HOSTS:
+            continue
+        # The length cap runs before int(): a port of thousands of digits would
+        # otherwise raise past Python's int-string limit and abort config load.
+        if not (port_text.isascii() and port_text.isdigit() and len(port_text) <= 5):
+            continue
+        port = int(port_text)
+        if not 0 < port < 65536:
+            continue
+        canonical = f"{host}:{port}"
+        if canonical not in out:
+            out.append(canonical)
     return out
 
 
