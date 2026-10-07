@@ -455,7 +455,8 @@ commands, so there is nothing to gain).
 ```
 id, name, ssh_host, remote_port (default 5476), local_port (0 = unallocated),
 ttl (default "20h"), remote_bin, was_connected, forwarder_pid (0 = none),
-forwarder_start ("" = unknown), forwarder_sig ("" = unsigned)
+forwarder_start ("" = unknown), forwarder_sig ("" = unsigned),
+forwarder_argv_sig ("" = not recorded)
 ```
 
 That is the SSH core; the SSM fields are in §13, `provisioner_id` in §8, and the
@@ -492,7 +493,8 @@ port and its session to the remote. The next `connect()` reclaims exactly that
 child, best-effort (a failed reclaim never fails the connect). The registry is
 agent-writable state, so a recorded claim is honored only when it
 authenticates: the record must carry `forwarder_sig`, the gateway's own HMAC
-over (instance id, pid, start time, port) under a key derived from the SEL
+over (instance id, pid, start time, port, and, when `forwarder_argv_sig` is
+set, that fingerprint plus the spawn transport `ssh`/`ssm`) under a key derived from the SEL
 trust root (`sel_hmac_key_path()`, domain-separated exactly like the
 `session_pid_sig` sidecar protocol) — a root an agent can neither read nor
 replace, so a record written, edited, or re-pointed by anything but the
@@ -509,12 +511,25 @@ before the forwarder, or any order that cannot be settled, is refused. A
 refused orphan test is logged. Then, iff
 the recorded
 `local_port` probes occupied AND both identity halves are recorded AND the
-pid's live start time equals the recorded one AND its **full argv exactly
-equals** the forward command line the manager would construct for the recorded
-port (`platform_compat.process_argv_matches_exact`; on Windows, where a
+pid's live start time equals the recorded one AND its argv is confirmed, it is
+signalled. The argv half has two forms. A record carrying `forwarder_argv_sig`
+(the sha256 `platform_compat.process_argv_fingerprint` took of the child's
+kernel-reported argv right after spawn: `/proc/<pid>/cmdline` on Linux, the
+`KERN_PROCARGS2` vector on macOS; Windows records none) must have the live
+process fingerprint to the same value. Recorded
+and observed share one basis, so a shebang `aws` v1 entrypoint (the kernel
+shows `<interpreter> /path/aws ...`) or a compression/host/port setting edited
+since spawn no longer misses the reclaim (#5383). Because the fingerprint is
+inside the MAC, erasing it from a signed record fails verification rather than
+falling back. The spawn transport is signed with it because it picks the signal
+scope (pid for ssh, process group for SSM): a record whose settings switched
+transport since spawn fails verification and is never signalled. A record without one (written by an older gateway, or whose argv
+was unreadable at spawn; its MAC is the four-field form) keeps the older check:
+the **full argv exactly equals** the forward command line the manager would
+construct for the recorded port (`platform_compat.process_argv_matches_exact`; on Windows, where a
 process has one command-line string rather than an argv vector, the live
 `Win32_Process.CommandLine` must equal `subprocess.list2cmdline(argv)`
-character for character), it is signalled — SIGTERM
+character for character). The signal is SIGTERM
 escalating to SIGKILL on a bounded grace, with the start-time identity
 **re-verified before the SIGKILL** (the grace window is exactly where a pid can
 exit and be recycled); pid-scoped for ssh, whose child shares the dead

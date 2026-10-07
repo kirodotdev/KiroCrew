@@ -91,6 +91,7 @@ def _tunnel_double(instance_id: str, *, pid: int = 4321, local_port: int = 18022
     """
     return SimpleNamespace(
         pid=pid,
+        transport="ssh",
         status=TunnelStatus(instance_id=instance_id, local_port=local_port),
     )
 

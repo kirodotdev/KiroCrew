@@ -2226,6 +2226,44 @@ class TestProcessArgvMatchesExact:
         assert pc.process_argv_matches_exact(4242, []) is False
         assert seen == []
 
+    def test_argv_fingerprint_is_stable_and_tells_processes_apart(self):
+        """The same live process fingerprints the same every time; another
+        argv fingerprints differently; a pid nothing runs at answers None."""
+
+        def spawn(n):
+            if pc.IS_POSIX:
+                sleep_bin = shutil.which("sleep") or "/bin/sleep"
+                return subprocess.Popen([sleep_bin, str(300 + n)], start_new_session=True)
+            return self._spawn(f"kirocrew-argvsig-{n}")[0]
+
+        first = spawn(0)
+        try:
+            second = spawn(1)
+            try:
+                # Popen returns only after exec succeeded, so the argv is in place.
+                a = pc.process_argv_fingerprint(first.pid)
+                b = pc.process_argv_fingerprint(second.pid)
+                if pc.IS_POSIX:
+                    assert a is not None and len(a) == 64
+                    assert pc.process_argv_fingerprint(first.pid) == a
+                    assert b is not None and b != a
+                else:
+                    # Windows records no fingerprint: reclaim keeps the exact check.
+                    assert a is None and b is None
+            finally:
+                self._reap(second)
+        finally:
+            self._reap(first)
+        for bad in (0, 1, -5, True, "4242"):
+            assert pc.process_argv_fingerprint(bad) is None
+
+    def test_windows_records_no_argv_fingerprint(self, monkeypatch):
+        """Windows keeps the exact command-line check, so nothing is read."""
+        seen = self._as_windows(monkeypatch, "ssh.exe -N h")
+
+        assert pc.process_argv_fingerprint(4242) is None
+        assert seen == []
+
     def test_cmd_shim_target_never_matches_on_windows(self, monkeypatch):
         # A .cmd entrypoint runs under cmd.exe, whose command line differs.
         argv = [r"C:\Program Files\Amazon\AWSCLIV2\aws.cmd", "ssm", "start-session"]

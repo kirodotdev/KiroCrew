@@ -14,6 +14,7 @@ import ctypes.util
 import enum
 import errno
 import functools
+import hashlib
 import importlib
 import io
 import ipaddress
@@ -5431,6 +5432,44 @@ def process_argv_matches_exact(pid: int, expected_argv: Sequence[str]) -> bool:
     except Exception:
         return False
     return False
+
+
+def process_argv_fingerprint(pid: int) -> str | None:
+    """Return a sha256 hex fingerprint of *pid*'s live argv, or None if unreadable.
+
+    The point is ONE basis for "recorded" and "observed": the caller takes the
+    fingerprint of its own child right after spawning it, and later takes it
+    again from whatever runs at the recorded pid. Equal fingerprints mean the
+    kernel reports the same command line both times, whatever the kernel did to
+    it (a shebang ``aws`` entrypoint shows up as ``<interpreter> /path/aws ...``
+    in both reads). Comparing a stored fingerprint never depends on rebuilding
+    the command line from settings that may have changed since.
+
+    Linux: ``/proc/<pid>/cmdline`` as the NUL-separated vector. macOS: the
+    ``KERN_PROCARGS2`` vector from :func:`darwin_process_argv`, NUL-joined.
+    Windows answers None, so a Windows record keeps the exact command-line
+    check, which never matches a ``.cmd``/``.bat`` shim. An empty, unreadable or
+    unsupported argv answers None, never a fingerprint of nothing.
+    """
+    if IS_WINDOWS or type(pid) is not int or pid <= 1:
+        return None
+    try:
+        if sys.platform == "linux":
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if raw.endswith(b"\0"):
+                raw = raw[:-1]  # trailing NUL terminator
+        elif sys.platform == "darwin":
+            argv = darwin_process_argv(pid)
+            if not argv:
+                return None
+            raw = b"\0".join(a.encode("utf-8", errors="surrogatepass") for a in argv)
+        else:
+            return None
+    except Exception:
+        return None
+    if not raw:
+        return None  # zombie / kernel thread: no argv to fingerprint
+    return hashlib.sha256(raw).hexdigest()
 
 
 def listening_pid_tool() -> str:

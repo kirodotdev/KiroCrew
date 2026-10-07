@@ -310,6 +310,12 @@ class Instance:
     # what makes it the GATEWAY's own claim — a record an agent wrote or
     # redirected fails verification and is never reclaimed (fail closed).
     forwarder_sig: str = ""
+    # sha256 of the forwarder's argv as the kernel reported it right after
+    # spawn ("" = not recorded). When set, ``forwarder_sig`` covers it too, and
+    # reclaim compares it with the live process's fingerprint instead of a
+    # command line rebuilt from today's settings. A record without it (written
+    # before the field existed) keeps the rebuilt-argv check.
+    forwarder_argv_sig: str = ""
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -408,6 +414,11 @@ class Instance:
                 f"invalid forwarder_sig {self.forwarder_sig!r}: must be a "
                 f"string ('' = unsigned)"
             )
+        if not isinstance(self.forwarder_argv_sig, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_argv_sig {self.forwarder_argv_sig!r}: must "
+                f"be a string ('' = not recorded)"
+            )
 
     def _validate_aws_coordinates(self) -> None:
         """Reject a malformed ``aws_profile`` / ``aws_region`` (empty = default)."""
@@ -496,6 +507,7 @@ class Instance:
             "forwarder_pid": self.forwarder_pid,
             "forwarder_start": self.forwarder_start,
             "forwarder_sig": self.forwarder_sig,
+            "forwarder_argv_sig": self.forwarder_argv_sig,
         }
 
     @classmethod
@@ -555,6 +567,7 @@ class Instance:
             forwarder_pid=max(_NO_FORWARDER_PID, _as_int(data.get("forwarder_pid"), 0)),
             forwarder_start=str(data.get("forwarder_start", "") or ""),
             forwarder_sig=str(data.get("forwarder_sig", "") or ""),
+            forwarder_argv_sig=str(data.get("forwarder_argv_sig", "") or ""),
         )
 
 
@@ -937,7 +950,8 @@ class InstancesRegistry:
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``, ``provisioner_id``,
         ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
-        ``forwarder_start``, ``forwarder_sig``, ``via_instance_id``,
+        ``forwarder_start``, ``forwarder_sig``, ``forwarder_argv_sig``,
+        ``via_instance_id``,
         ``via_remote_port``.
         The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
@@ -963,6 +977,7 @@ class InstancesRegistry:
             "forwarder_pid",
             "forwarder_start",
             "forwarder_sig",
+            "forwarder_argv_sig",
             # A parent that reconnects lands on a new loopback port, so the hop
             # its children ride has to be re-pointed without re-adding them.
             "via_instance_id",
