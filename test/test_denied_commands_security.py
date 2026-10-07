@@ -37,6 +37,7 @@ from kiro_crew.security import perm_verb_mention as _perm_verb_mention
 from kiro_crew.security import (
     pinned_builtin_command_ids,
 )
+from kiro_crew.testing.wait import wait_until
 
 _GOLDEN = Path(__file__).parent / "fixtures" / "denied_commands_golden.json"
 
@@ -9139,8 +9140,23 @@ class TestSandboxEscapeSshSelf:
         assert "203.0.113.66" in resolved
         assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
 
+    _RESOLVER_THREAD = "kirocrew-own-host-resolve"
+
+    @classmethod
+    def _resolvers_now(cls) -> set[int]:
+        """The resolver daemons alive right now, by identity."""
+        return {id(t) for t in threading.enumerate() if t.name == cls._RESOLVER_THREAD}
+
     def _open_window(self, monkeypatch, *, netlink, fqdn=lambda: ""):
-        """A fresh process: nothing published, the worker free to start now."""
+        """A fresh process: nothing published, the worker free to start now.
+
+        Records the resolver daemons already alive, so :meth:`_join_resolver`
+        joins only the one this test starts. ``threading.enumerate()`` is
+        process-wide, and the unit tests below call the cache function directly,
+        where a macOS ``getfqdn`` for a ``*.local`` name takes seconds, so a
+        neighbour's daemon can still be running here under any test order.
+        """
+        self._foreign_resolvers = self._resolvers_now()
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
@@ -9150,11 +9166,24 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor.socket, "getfqdn", fqdn)
         monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
 
-    @staticmethod
-    def _join_resolver():
+    #: Lost-run bounds for the resolver tests below. Once released, the netlink
+    #: publish and the worker's exit take milliseconds; these only end a wedged
+    #: worker, inside half the suite's 120 s timeout.
+    _PUBLISH_DEADLINE_SECS = 30.0
+    _RESOLVER_JOIN_SECS = 30.0
+    #: How long a stubbed DNS lookup holds the worker. It must outlast the publish
+    #: wait, or a slow publish lets DNS return before the test can see it still
+    #: in flight. The test's ``finally`` releases it, so no passing run spends it.
+    _DNS_HOLD_SECS = 2 * _PUBLISH_DEADLINE_SECS
+
+    def _join_resolver(self):
+        """Join the resolver this test started, and fail if it outlives its bound."""
+        foreign = getattr(self, "_foreign_resolvers", frozenset())
+        bound = self._RESOLVER_JOIN_SECS
         for t in threading.enumerate():
-            if t.name == "kirocrew-own-host-resolve":
-                t.join(5)
+            if t.name == self._RESOLVER_THREAD and id(t) not in foreign:
+                t.join(bound)
+                assert not t.is_alive(), f"the own-host resolver still ran after {bound:.0f}s"
 
     def test_startup_warm_publishes_before_the_first_ip_literal(self, monkeypatch):
         # Without a boot-time read, the first IP-literal ssh of a gateway
@@ -9175,19 +9204,22 @@ class TestSandboxEscapeSshSelf:
         # The netlink dump runs BEFORE DNS: a host whose name is not in DNS
         # must not keep every IP literal refused for the length of the lookups,
         # and the warm returns without waiting for either.
+        # The lookup's hold outlasts the publish wait, so the in-flight check
+        # below runs while DNS is still held however long the publish took.
         release = threading.Event()
 
         def _slow_fqdn():
-            release.wait(5)
+            release.wait(self._DNS_HOLD_SECS)
             return ""
 
         self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"}, fqdn=_slow_fqdn)
         try:
             _argv_floor.warm_own_host_names()
-            deadline = time.monotonic() + 5
-            while not _argv_floor._NETLINK_ADDRS_PUBLISHED:
-                assert time.monotonic() < deadline, "netlink never published"
-                time.sleep(0.01)
+            wait_until(
+                lambda: _argv_floor._NETLINK_ADDRS_PUBLISHED,
+                timeout=self._PUBLISH_DEADLINE_SECS,
+                describe=lambda: "netlink never published",
+            )
             assert _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is True  # DNS still blocked
             assert "203.0.113.66" in _argv_floor._OWN_HOST_NAMES_CACHE
             assert _denied_by("ssh 198.51.100.9 id") is None

@@ -1158,6 +1158,7 @@ def test_two_reads_too_close_together_decline_the_rate(tmp_path: Path) -> None:
 
     assert second.nodes[CHAT].cpu_pct is None
     assert any("at least" in note for note in second.degraded_report())
+    assert any("reads 0.5s apart" in note for note in second.degraded_report())
 
 
 def test_a_read_refused_as_too_soon_does_not_restart_the_window(tmp_path: Path) -> None:

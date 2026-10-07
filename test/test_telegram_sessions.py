@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from chat_test_helpers import _make_state
+from off_loop_helpers import off_loop
 from test_telegram import FakeClient, FakeCtx, FakeProvider, _origin
 
 from kiro_crew.dashboard.channel_handoff import (
@@ -287,14 +288,24 @@ def _config() -> Any:
 
 
 def _log(tmp_path: Any, *, agent: str = "") -> ConversationLog:
-    from kiro_crew.history import allow_on_loop_persist
+    """A conversation log holding one titled dashboard session.
 
+    The seeding writes run on a worker thread, as the dashboard's own writers do.
+    Nearly every caller is an ``async`` test, and on the event-loop thread
+    ``replace_with_retry`` re-raises a Windows sharing violation on its first
+    attempt rather than sleep the loop, so a scanner briefly holding the fresh
+    temp file would fail the setup itself with WinError 5. Off the loop the
+    bounded retry applies.
+    """
     log = ConversationLog(base_dir=tmp_path / "sessions")
-    with allow_on_loop_persist():
+
+    def _seed() -> None:
         log.append("dashboard:chat-1", "assistant", "prior work")
         log.set_title("dashboard:chat-1", "Launch plan")
         if agent:
             log.update_metadata("dashboard:chat-1", {"agent": agent})
+
+    off_loop(_seed)
     return log
 
 

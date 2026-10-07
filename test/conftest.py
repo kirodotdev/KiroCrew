@@ -407,7 +407,9 @@ CREDENTIAL_STRADDLE_SHAPES = [
 ]
 
 
-def assert_rejected_without_backtracking(reject, build_pump) -> None:
+def assert_rejected_without_backtracking(
+    reject, build_pump, *, budget_seconds: float = REDOS_LARGE_BUDGET_SECONDS
+) -> None:
     """Assert a marker grammar handles an adversarial pump in linear CPU time.
 
     ``build_pump(n)`` returns an input with an ``n``-unit pump (a run of tabs, ``n``
@@ -448,7 +450,9 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
 
     The budgets are generous on purpose (a decade or more over the shipped cost):
     a real complexity regression is orders of magnitude, and a tight bound only
-    turns runner variance into red.
+    turns runner variance into red. ``budget_seconds`` is the long pumps' absolute
+    budget; a converted guard passes the constant it already carried, since a
+    ratchet may only tighten.
     """
     import time
 
@@ -471,7 +475,7 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
         )
 
     def refused(cost: float, bound: float) -> bool:
-        return cost >= REDOS_LARGE_BUDGET_SECONDS or cost > bound
+        return cost >= budget_seconds or cost > bound
 
     def floor_of_readings(text: str, settle_below: float, bound: float) -> float:
         # Up to three readings; stop at the first one under ``settle_below``, and
@@ -487,14 +491,14 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
 
     previous: tuple[int, float] | None = None
     for n in REDOS_LARGE_PUMPS:
-        bound = REDOS_LARGE_BUDGET_SECONDS
+        bound = budget_seconds
         if previous is not None:
             bound = max(REDOS_SCALING_RATIO * previous[1], REDOS_SCALING_FLOOR_SECONDS)
         # A size the next one is compared against keeps all three readings: its
         # cheapest is the baseline, and an inflated baseline would hide a regression.
         settle_below = bound if n == REDOS_LARGE_PUMPS[-1] else 0.0
         cost = floor_of_readings(build_pump(n), settle_below, bound)
-        assert cost < REDOS_LARGE_BUDGET_SECONDS, (
+        assert cost < budget_seconds, (
             f"handling a {n}-unit pump cost {cost:.2f}s of CPU -- superlinear in the "
             "pump length"
         )
