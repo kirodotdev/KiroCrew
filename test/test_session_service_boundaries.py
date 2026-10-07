@@ -161,7 +161,7 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
         side_effect=lambda _key: events.append("session-reset")
     )
 
-    async def eager_respawn(_key: str) -> None:
+    async def eager_respawn(_key: str, _session_mcp_servers: list[dict] | None = None) -> None:
         raise AssertionError("the scheduler double must not execute the coroutine")
 
     manager._eager_respawn = eager_respawn  # type: ignore[method-assign]

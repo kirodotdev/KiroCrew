@@ -374,12 +374,19 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_ask_question_answer,
         api_ask_question_dismiss,
         api_ask_question_pending,
+        api_ask_question_slot_answer,
+        api_ask_question_slot_pending,
     )
 
     app.router.add_post("/api/ask-question", api_ask_question)
     # Registered before the {ask_id} route so the literal path is not captured
     # as an ask_id.
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
+    app.router.add_get("/api/chat/slots/{slot_key}/questions", api_ask_question_slot_pending)
+    app.router.add_post(
+        "/api/chat/slots/{slot_key}/questions/{card_id}/answer",
+        api_ask_question_slot_answer,
+    )
     app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
 

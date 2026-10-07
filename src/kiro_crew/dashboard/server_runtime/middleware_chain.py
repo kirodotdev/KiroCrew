@@ -15,6 +15,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
+        _EXACT_MIXED_INTERNAL_API_PATHS,
         _STRICT_INTERNAL_API_PATHS,
         AMBIGUOUS_LOOPBACK_HOSTS,
         DashboardState,
@@ -223,6 +224,7 @@ def _install_dashboard_middlewares(
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
             mixed_internal_paths=_mixed_internal_api_paths(),
+            exact_mixed_internal_paths=_EXACT_MIXED_INTERNAL_API_PATHS,
             internal_secret=internal_secret,
             port=port,
             local_only=local_only,
@@ -335,6 +337,7 @@ def _install_api_middlewares(
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
             mixed_internal_paths=_mixed_internal_api_paths(),
+            exact_mixed_internal_paths=_EXACT_MIXED_INTERNAL_API_PATHS,
             internal_secret=internal_secret,
             port=port,
             local_only=local_only,

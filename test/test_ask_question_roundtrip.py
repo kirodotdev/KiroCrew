@@ -1393,8 +1393,10 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-        20 = the count pinned after the owner-denial migration. The earlier drop
-        from 21: the non-owner ``403`` is not written out here — its ``{"error":
+        33 = the count pinned after separating a missing slot-scoped card from
+        malformed answers while retaining the coded native-answer delivery
+        and concurrent-delivery refusals. The non-owner ``403`` is
+        not written out here — its ``{"error":
         "forbidden", "code": "owner_only"}`` body is now produced by
         ``handlers._shared._owner_denial_response``, which the module calls with
         exactly that message and code. The WIRE contract is unchanged -- only the
@@ -1402,7 +1404,7 @@ class TestErrorCodes:
         ``test_no_refusal_in_this_module_is_prose_only`` stays empty.
         """
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        assert len(coded) == 33, f"scanner reached {len(coded)} coded sites, expected 33"
         assert all(f.code_value for f in coded)
 
     # -- POST /api/ask-question (the MCP tool's leg) --

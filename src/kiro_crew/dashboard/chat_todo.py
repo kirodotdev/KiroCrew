@@ -129,7 +129,9 @@ async def api_chat_slot_todo(request: web.Request) -> web.Response:
         )
     changed = slot.set_todo_task_completed(str(task_id), completed)
     if changed:
-        state.broadcast_ws("todo_update", {"slot": slot.key, "todo": slot.todo_payload()})
+        payload = slot.todo_payload()
+        state.broadcast_ws("todo_update", {"slot": slot.key, "todo": payload})
+        state._broadcast_session_plan(slot.key, payload)
     # Audited whether or not the flag moved: an idempotent re-submit (two tabs
     # ticking the same row) is still an accepted write against the slot.
     sel().log_api_access(

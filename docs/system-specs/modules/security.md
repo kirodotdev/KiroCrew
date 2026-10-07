@@ -481,7 +481,10 @@ denied-command rules from a cron. Script crons drive the dashboard with their
 own internal-secret credential instead: `ScriptContext.open_session` and its
 siblings in [learn-cron-dashboard](learn-cron-dashboard.md). That secret is not
 admitted to `/api/security` or `/api/governance`, and the internal branch sets no
-`user` claim, so the owner gates refuse it. Pinned by
+`user` claim, so the owner gates refuse it -- including the owner-only surfaces of
+the Gateway session API (question-card answers, session MCP registration,
+turn-origin provenance, session-event subscriptions; see
+[Trusted local Gateway clients](#trusted-local-gateway-clients)). Pinned by
 `test/test_script_cron_owner_bootstrap.py` and
 `test/integration/test_script_cron_sessions.py`. This intentional owner-token
 bootstrap restriction
@@ -555,6 +558,69 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   enforced by the OS sandbox. Structure is the point: the product name in a path,
   search pattern, or commit message is not itself a verdict.
 - `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in the tool gate's `read-only` tier (`hook_runtime/gate_tiers.py`), together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (the approval flow, where the reason text becomes the refusal card) and the gate's `read-only` tier (the auto-approve branch, reading it through `hooks.py`). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in a dependency order whose top is the argv floor. Pinned by `test_trust_reads.py`.
+
+## Trusted local Gateway clients
+
+The generic session API adds a narrowly scoped out-of-process client surface.
+`X-Presigned-Token` is an alternative transport for an existing signed dashboard
+link credential; signature, expiry, peer pinning, nonce consumption, app scope,
+and ordinary handler authorization are unchanged. Header and query authentication
+on mixed Gateway routes, including `/api/chat` descendants and exact `/api/ws`, enter
+the same pre-handler link-to-session exchange. No mixed route validates a query link
+against its longer `session_exp`; its short link expiry remains authoritative until
+exchange. Mixed API routes exchange ordinary links but do not enroll the first device
+for a claimless `require_peer` link; that remains restricted to ordinary link entry
+points. The access cookie receives a distinct session credential, the raw link
+nonce is denylisted against cookie replay, and a global
+response-prepare finalizer attaches the staged access cookie before any handler sends
+headers. A `no_refresh` exchange uses that same finalizer to expire this port's
+residual refresh cookie for every prepared response, including file and other SSE
+streams, so an older chain cannot promote the bounded session. Ordinary unprepared
+responses apply the same staged mutations after the handler returns. An invalid
+explicit header never falls through to an attached browser cookie. The presigned
+carrier is accepted only on ordinary or mixed routes; presenting it on a strict
+machine route without `X-Internal-Secret` is denied before dashboard-token
+validation, so it never substitutes for the machine credential.
+
+The loopback internal secret is accepted on these existing mixed routes for the
+following reasons. The secret proves local transport, not owner identity: its
+branch sets no `user` claim and leaves the app claim absent, and it is held by
+every process the gateway spawns -- a script cron's agent-writable
+`ScriptContext` presents it on every `_post`, and `kirocrew-core`'s MCP relays
+present it too. So every surface the Gateway session API ADDS (the slot
+question-card routes, `POST /api/chat/slots/{slot}/mcp` in every mode, the
+project `return_previous` receipt, turn-origin / MCP-owner provenance on
+`/api/chat`, the dedicated session-event subscription on `/api/ws`) requires the
+owner's own signed dashboard credential, presented as a cookie, `?token=` or
+`X-Presigned-Token` and exchanged by the middleware into `request["user"]` /
+`request["app"]` before the handler's `is_owner_dashboard_request` gate. Only
+the pre-existing claimless relays (an ordinary `/api/chat` send, the
+`suggest_followup` compatibility route, folder and slot-opening routes) keep the
+`internal_auth` exemption, and only without a derived app identity. A positively
+derived app identity remains authoritative on this path too, so owner-only
+handlers reject it. Pinned by `test_gateway_session_api.py::TestOwnerCredentialRequired`
+and the dedicated-socket tests in `test_ws_event_scoping.py`.
+
+| Route | Local-client need | Remaining gate |
+|---|---|---|
+| `/api/chat` | Send a turn and consume its live SSE response | Slot ownership, member pin, app isolation, busy/stage boundaries; turn-origin and MCP-owner headers are honoured only for the owner credential and ignored for a claimless or app-derived internal caller |
+| `/api/chat/slots/...` | Read slots and mutate project state (pre-existing); the question-card, session-MCP and `return_previous` additions take the owner credential | Route-specific owner checks, slot existence, app/session isolation, reserved MCP names, generations, and idempotency receipts |
+| `/api/ws` | None for the secret itself; exact membership gives the presigned carrier the mixed-route link exchange | `api_ws` refuses every `internal_auth` request before upgrade; a session-event subscription requires the owner credential plus `caps=session_events`, `X-KiroCrew-Event-Subscription: sessions`, then an explicit `subscribe_sessions` key set; every other event is withheld |
+| `/api/models` | Populate a model selector from what this Gateway actually serves | Existing read-only model filtering and redaction |
+| `/api/effort-levels` | Populate effort choices for the selected model/backend | Existing read-only capability filtering |
+| `/api/slash-commands` | Discover commands supported by this Gateway | Existing read-only command projection |
+
+All entries remain browser-reachable mixed admission rather than strict because the
+dashboard browser already uses the same routes. The singleton discovery routes and
+`/api/ws` are exact-matched; future siblings do not inherit internal-secret admission.
+Routes that intentionally own sub-routes, such as `/api/chat`, retain prefix matching.
+Internal authentication is accepted only after a constant-time secret comparison on a
+local transport; possession of the secret does not bypass any handler-level
+authorization above. The WebSocket entry is additionally fail-closed before upgrade:
+an internal-secret caller is refused outright, and an owner socket enters
+session-events mode only when its narrow capability and header are both present. App
+tokens and non-owner dashboard tokens cannot opt into `session_message` or
+`session_plan`.
 
 ## Threat Model
 

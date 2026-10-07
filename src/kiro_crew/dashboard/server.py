@@ -356,6 +356,7 @@ from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     _cookie_port_from_host,
     _is_spa_shell_request,
+    install_pending_auth_cookie_finalizer,
     internal_path_matches,
     is_csrf_exempt,
     register_app_window_paths,
@@ -731,6 +732,20 @@ _VIA_PROXY_SUFFIX = "_via_proxy"
 #: GET-based exfiltration is covered by the Host barrier above, which runs on
 #: every method.
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+_EXACT_MIXED_INTERNAL_API_PATHS = frozenset(
+    {
+        # Trusted local clients use these singleton endpoints. Exact matching
+        # prevents unrelated future siblings from inheriting internal admission.
+        "/api/models",
+        "/api/effort-levels",
+        "/api/slash-commands",
+        # A trusted local client subscribes to explicitly selected session events.
+        # Exact matching keeps /api/ws/stt and /api/ws/terminal cookie-authorized.
+        "/api/ws",
+    }
+)
 
 
 # Mixed internal API paths — called by BOTH internal processes (loopback +
@@ -1609,6 +1624,7 @@ async def start_dashboard(
     # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
+    install_pending_auth_cookie_finalizer(app)
     app["state"] = state
 
     # Bind the serving loop once, here: this runs ON that loop, so every
@@ -2379,6 +2395,7 @@ async def start_api_server(
     # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
+    install_pending_auth_cookie_finalizer(app)
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots

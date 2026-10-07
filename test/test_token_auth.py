@@ -25,10 +25,12 @@ from kiro_crew.dashboard.token_auth import (
     _api_pattern_matches,
     _app_owns_path,
     app_token_path_allowed,
+    attach_pending_access_cookie,
     bind_token_ip,
     check_token_ip,
     claims_an_app_unverified,
     generate_token,
+    install_pending_auth_cookie_finalizer,
     is_consumed,
     mark_consumed,
     parse_duration,
@@ -285,11 +287,11 @@ def _make_request(
     return req
 
 
-# -- Property 5: Middleware accepts valid tokens via query param or cookie --
+# -- Property 5: Middleware accepts valid tokens via query, header, or cookie --
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("via", ["query", "cookie"])
+@pytest.mark.parametrize("via", ["query", "header", "cookie"])
 async def test_middleware_accepts_valid_token(via: str) -> None:
     mw = token_auth_middleware()
     token = generate_token("testuser", ttl_seconds=300)
@@ -299,12 +301,29 @@ async def test_middleware_accepts_valid_token(via: str) -> None:
         bind_token_ip(token, "127.0.0.1")
         mark_consumed(token)
         req = _make_request(cookies={"mc_token_5476": token})
+    elif via == "header":
+        req = _make_request(headers={"X-Presigned-Token": token})
     else:
         req = _make_request(query={"token": token})
 
     resp = await mw(req, _ok_handler)
     assert resp.status == 200
     assert resp.text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_middleware_rejects_expired_presigned_header() -> None:
+    mw = token_auth_middleware()
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0
+        token = generate_token("header-user", ttl_seconds=3600)
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1301.0
+        req = _make_request(headers={"X-Presigned-Token": token})
+        resp = await mw(req, _ok_handler)
+
+    assert resp.status == 403
+    assert "expired" in resp.text
 
 
 # -- Property 6: Cookie set with correct attributes on query-param auth --
@@ -1234,12 +1253,173 @@ async def test_mixed_path_non_loopback_with_valid_cookie_granted() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    ("/api/ws", "/api/models", "/api/effort-levels", "/api/slash-commands"),
+)
+async def test_exact_mixed_path_does_not_admit_sibling_routes(path: str) -> None:
+    secret = "test-secret-123"
+    mw = token_auth_middleware(
+        exact_mixed_internal_paths=frozenset({path}),
+        internal_secret=secret,
+    )
+    granted = await mw(
+        _make_request(path=path, headers={"X-Internal-Secret": secret}),
+        _ok_handler,
+    )
+    denied = await mw(
+        _make_request(path=f"{path}/sibling", headers={"X-Internal-Secret": secret}),
+        _ok_handler,
+    )
+    assert granted.status == 200
+    assert denied.status == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "middleware_kwargs"),
+    [
+        ("/api/chat", {"mixed_internal_paths": frozenset({"/api/chat"})}),
+        ("/api/ws", {"exact_mixed_internal_paths": frozenset({"/api/ws"})}),
+    ],
+)
+async def test_presigned_header_on_mixed_path_exchanges_before_handler(
+    path: str, middleware_kwargs: dict
+) -> None:
+    mw = token_auth_middleware(**middleware_kwargs)
+    link_token = generate_token("header-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+
+    async def handler(request: web.Request) -> web.Response:
+        valid, _uid, reason = validate_token(link_token, use_session_exp=True)
+        assert valid is False
+        assert reason == "session revoked"
+        return web.Response(text="ok")
+
+    req = _make_request(
+        path=path,
+        remote="10.0.0.1",
+        headers={"X-Presigned-Token": link_token},
+    )
+    resp = await mw(req, handler)
+
+    assert resp.status == 200
+    cookie = resp.cookies.get("mc_token_5476")
+    assert cookie is not None
+    assert cookie.value != link_token
+
+
+@pytest.mark.asyncio
+async def test_prefix_mixed_chat_child_exchanges_query_link_then_refuses_it_after_expiry() -> None:
+    """A link cannot mutate a chat child route past its five-minute click window."""
+    mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/chat"}))
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0
+        link_token = generate_token("query-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+
+    mutations: list[str] = []
+
+    async def mutate(request: web.Request) -> web.Response:
+        mutations.append(request.path)
+        raw_valid, _uid, raw_reason = validate_token(link_token, use_session_exp=True)
+        assert raw_valid is False
+        assert raw_reason == "session revoked"
+        return web.Response(text="mutated")
+
+    path = "/api/chat/slots/slot-a/mcp"
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1200.0
+        valid = await mw(
+            _make_request(path=path, method="POST", query={"token": link_token}),
+            mutate,
+        )
+
+    assert valid.status == 200
+    assert valid.text == "mutated"
+    access_cookie = valid.cookies.get("mc_token_5476")
+    assert access_cookie is not None
+    assert access_cookie.value != link_token
+    assert mutations == [path]
+
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1301.0
+        expired = await mw(
+            _make_request(path=path, method="POST", query={"token": link_token}),
+            mutate,
+        )
+
+    assert expired.status == 403
+    assert mutations == [path]
+
+
+@pytest.mark.asyncio
+async def test_expired_query_link_cannot_enter_exact_mixed_websocket() -> None:
+    """The WebSocket mixed-route gate preserves the link's short expiry."""
+    mw = token_auth_middleware(
+        exact_mixed_internal_paths=frozenset({"/api/ws"}),
+    )
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0
+        link_token = generate_token("query-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+
+    handler = AsyncMock(return_value=web.Response(text="ok"))
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1301.0
+        response = await mw(
+            _make_request(path="/api/ws", query={"token": link_token}),
+            handler,
+        )
+
+    assert response.status == 403
+    handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_presigned_header_cannot_enter_strict_internal_route() -> None:
+    """A dashboard bearer never substitutes for the machine-only secret."""
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/send-message"}),
+        internal_secret="test-secret-123",
+    )
+    link_token = generate_token("header-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+    handler = AsyncMock(return_value=web.Response(text="ok"))
+
+    response = await mw(
+        _make_request(
+            path="/api/send-message",
+            method="POST",
+            headers={"X-Presigned-Token": link_token},
+        ),
+        handler,
+    )
+
+    assert response.status == 403
+    handler.assert_not_awaited()
+    assert validate_token(link_token, use_session_exp=True)[0] is True
+
+
+@pytest.mark.asyncio
 async def test_mixed_path_non_loopback_without_cookie_denied() -> None:
     """Non-loopback + no cookie → still denied (security preserved)."""
     mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}))
     req = _make_request(path="/api/spawn", remote="10.0.0.1")
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+
+
+def test_single_endpoint_internal_admission_is_exact() -> None:
+    from kiro_crew.dashboard.server import (
+        _EXACT_MIXED_INTERNAL_API_PATHS,
+        _MIXED_INTERNAL_API_PATHS,
+    )
+
+    singleton_paths = {
+        "/api/ws",
+        "/api/models",
+        "/api/effort-levels",
+        "/api/slash-commands",
+    }
+    assert singleton_paths <= _EXACT_MIXED_INTERNAL_API_PATHS
+    assert singleton_paths.isdisjoint(_MIXED_INTERNAL_API_PATHS)
 
 
 @pytest.mark.asyncio
@@ -4590,6 +4770,102 @@ async def test_no_refresh_link_expires_a_refresh_cookie_the_browser_already_had(
     assert int(resp.cookies[stale]["max-age"]) == 0
 
 
+@pytest.mark.asyncio
+async def test_no_refresh_prepared_stream_expires_a_residual_refresh_cookie() -> None:
+    """Streaming handlers must apply no-refresh cleanup before prepare()."""
+    mw = token_auth_middleware()
+    token = generate_token("stream-user", ttl_seconds=300, extra={"no_refresh": "1"})
+    stale = refresh_cookie_name("5476")
+    request = _make_request(
+        headers={"X-Presigned-Token": token},
+        cookies={stale: "a-refresh-token-from-an-earlier-session"},
+        remote="10.0.0.5",
+    )
+    request_state: dict[str, object] = {}
+    request.__setitem__.side_effect = request_state.__setitem__
+    request.get.side_effect = request_state.get
+
+    async def prepared_stream(req: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        attach_pending_access_cookie(req, response)
+        response._payload_writer = MagicMock()
+        return response
+
+    response = await mw(request, prepared_stream)
+
+    assert response.prepared is True
+    assert response.cookies.get("mc_token_5476") is not None
+    assert stale in response.cookies
+    assert int(response.cookies[stale]["max-age"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_no_refresh_global_prepare_hook_covers_other_streams() -> None:
+    """Every prepared handler receives staged auth cookies before headers lock."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    middleware = token_auth_middleware()
+    app = web.Application(middlewares=[middleware])
+    install_pending_auth_cookie_finalizer(app)
+
+    async def prepared_stream(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write_eof()
+        return response
+
+    app.router.add_get("/api/test-stream", prepared_stream)
+    token = generate_token("stream-user", ttl_seconds=300, extra={"no_refresh": "1"})
+    async with TestClient(TestServer(app)) as client:
+        cookie_port = str(client.server.port)
+        access = f"mc_token_{cookie_port}"
+        stale = refresh_cookie_name(cookie_port)
+        response = await client.get(
+            "/api/test-stream",
+            headers={
+                "X-Presigned-Token": token,
+                "Cookie": f"{stale}=a-refresh-token-from-an-earlier-session",
+            },
+        )
+        await response.read()
+
+    assert response.status == 200
+    assert response.cookies.get(access) is not None
+    assert stale in response.cookies
+    assert int(response.cookies[stale]["max-age"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_global_prepare_hook_does_not_duplicate_ordinary_auth_cookies() -> None:
+    """Ordinary responses and the prepare finalizer share one attachment marker."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    middleware = token_auth_middleware()
+    app = web.Application(middlewares=[middleware])
+    install_pending_auth_cookie_finalizer(app)
+    app.router.add_get("/", _ok_handler)
+
+    token = generate_token("ordinary-user", ttl_seconds=300, extra={"no_refresh": "1"})
+    async with TestClient(TestServer(app)) as client:
+        cookie_port = str(client.server.port)
+        access = f"mc_token_{cookie_port}"
+        stale = refresh_cookie_name(cookie_port)
+        response = await client.get(
+            "/",
+            params={"token": token},
+            headers={"Cookie": f"{stale}=a-refresh-token-from-an-earlier-session"},
+        )
+        await response.read()
+        cookie_names = [
+            header.partition("=")[0] for header in response.headers.getall("Set-Cookie", [])
+        ]
+
+    assert response.status == 200
+    assert cookie_names.count(access) == 1
+    assert cookie_names.count("mc_token") == 1
+    assert cookie_names.count(stale) == 1
+
+
 # -- A non-ASCII credential is a wrong credential, never a crash --
 #
 # hmac.compare_digest raises TypeError on a str holding a non-ASCII character.
@@ -4652,3 +4928,55 @@ def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
     (app_dir / ".app_secret").write_text("real", encoding="utf-8")
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False
+
+
+@pytest.mark.asyncio
+async def test_presigned_header_websocket_upgrade_sends_exchanged_cookie() -> None:
+    from aiohttp import CookieJar
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import ws as dashboard_ws
+
+    state = MagicMock()
+    state._folders = []
+    state._yolo = False
+    state.serialize_slots.return_value = []
+    state.folders_generation.return_value = 0
+    state.send_members_subscribed = AsyncMock()
+
+    app = web.Application(
+        middlewares=[token_auth_middleware(exact_mixed_internal_paths=frozenset({"/api/ws"}))]
+    )
+    app["allowed_origins"] = set()
+    app["state"] = state
+    app.router.add_get("/api/ws", dashboard_ws.api_ws)
+    link_token = generate_token("header-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers.source_providers.ensure_gitlab_hosts_loaded",
+            new=AsyncMock(),
+        ),
+        patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            return_value=False,
+        ),
+        patch.object(dashboard_ws, "global_event_declared", return_value=False),
+    ):
+        async with TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True)) as client:
+            origin = str(client.make_url("/")).rstrip("/")
+            ws = await client.ws_connect(
+                "/api/ws",
+                headers={"Origin": origin, "X-Presigned-Token": link_token},
+            )
+            cookies = client.session.cookie_jar.filter_cookies(client.make_url("/"))
+            access = next(
+                morsel.value for name, morsel in cookies.items() if name.startswith("mc_token_")
+            )
+            assert access != link_token
+            valid, user_id, reason = validate_token(access, use_session_exp=True)
+            assert (valid, user_id, reason) == (True, "header-user", "")
+            raw_valid, _uid, raw_reason = validate_token(link_token, use_session_exp=True)
+            assert raw_valid is False
+            assert raw_reason == "session revoked"
+            await ws.close()

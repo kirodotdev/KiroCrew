@@ -32,6 +32,7 @@ async def _load(tmp_path, lock_text: str | None, side_effect: list) -> tuple[obj
     if lock_text is not None:
         (tmp_path / "sid.lock").write_text(lock_text, encoding="utf-8")
     provider = AcpProvider.__new__(AcpProvider)
+    provider._session_mcp_servers = None
     rt = _runtime(AsyncMock(side_effect=side_effect))
     with (
         patch("kiro_crew.providers.acp.kiro_sessions_dir", return_value=tmp_path),

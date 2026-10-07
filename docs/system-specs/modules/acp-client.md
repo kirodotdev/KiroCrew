@@ -651,6 +651,39 @@ Windows runtime teardown records the reaped return code after the owned-handle
 drain, before dropping the process reference, just as POSIX teardown does. The
 existing death summary is amended without changing its reason or stderr tail.
 
+## Explicit Gateway session MCP input
+
+`AcpRuntime.create_session` and `load_session` accept an optional explicit MCP
+array from the generic Gateway session API. Absence preserves native mirror and
+pooled-control-plane projection. Presence bypasses those ambient
+session-injected sources and is copied as request-owned input. Before transport
+narrowing, its names are intersected with the selected agent's existing MCP
+projection: undeclared or ungranted servers and whole-server disables are
+withheld; a bare `*` tool grant still admits only names present in that projection,
+and absence of a spec grants no request-owned name. Per-tool restrictions use the
+backend's established deny channel or withhold that server when no such channel exists. Retained entries keep the
+client's command, arguments, and environment. Codex admission compares the
+adapter's whitespace-to-underscore wire identities, then emits only the admitted
+request-owned entries under that spelling with a deterministic first-writer
+collision rule; an equivalent spec spelling can grant the name but cannot
+substitute its launch data. This does not attach Crew identity to the client-owned
+launch. A harness's own configuration
+remains authoritative outside the session array: kiro-cli still reads its agent
+spec, but the request cannot add to or widen that spec's declarations or grants.
+On KAS, admission resolves the user-level agent spec that the harness projects,
+not a same-named project checkout spec. Presence also removes the active custom
+agent's projected `mcpServers` block and skips managed-server hoisting, so the
+projected agent cannot widen the caller-owned subset. Direct `AcpClient` and
+multiplexed `AcpRuntime` sessions
+apply the same projection on both new and load paths, and the provider retains
+the canonical input so a resumed session redeclares the same request. Direct
+clients warm explicit-array projection off the event loop before either wire
+call; their synchronous composition accessor therefore remains cache-only.
+
+This is not a new grant path. The host harness remains the final authority over
+which requested entries can reach a session, and normal permission handling
+still applies to calls made through any retained server.
+
 ## Backend Selection
 
 `AcpSessionHandle.active_agent` records the mode named by session configuration,

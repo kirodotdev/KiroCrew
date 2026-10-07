@@ -34,6 +34,10 @@ from kiro_crew.dashboard.chat_utils import (
     SYNTHETIC_RECOVERY_KIND,
     slot_history_key,
 )
+from kiro_crew.gateway.constants import (
+    GATEWAY_TURN_ORIGIN_META_KEY,
+    QUEUED_GATEWAY_MCP_META_KEY,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -653,6 +657,45 @@ async def test_mixed_origin_merge_keeps_channel_provenance(tmp_path, monkeypatch
     assert captured["_directive_channel_origin"] is True
 
 
+@pytest.mark.asyncio
+async def test_origin_requeued_steer_drains_alone_with_admitted_mcp(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = state.get_or_create_slot("chat-1")
+    admitted = [{"name": "client-a", "command": "a", "args": [], "env": []}]
+    slot.session_mcp_servers = [{"name": "client-b", "command": "b", "args": [], "env": []}]
+    slot._session_mcp_configured = True
+    slot.queue_append(
+        "answer",
+        meta={QUEUED_GATEWAY_MCP_META_KEY: admitted},
+        directive_user_origin=True,
+    )
+    slot.queue_append("ordinary follow-up", directive_user_origin=True)
+    captured: dict = {}
+
+    async def _stub_run_chat(_state, _slot, _prompt, **_kwargs):
+        captured["origin"] = _slot._turn_origin.get()
+        captured["request"] = _slot._request_mcp_servers.get()
+        captured["effective"] = cr._turn_session_mcp_servers(_slot)
+
+    def _fake_spawn(_state, _slot, coro):
+        return asyncio.get_running_loop().create_task(coro)
+
+    config = MagicMock()
+    config.dashboard.merge_queued_messages = True
+    monkeypatch.setattr(cr.KiroCrewConfig, "load", lambda: config)
+    monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    await slot.task
+
+    assert captured == {"origin": "chat-1", "request": admitted, "effective": admitted}
+    assert [entry["content"] for entry in slot._queue] == ["ordinary follow-up"]
+    row_meta = [row for row in slot.messages if row.get("role") == "user"][-1].get("meta") or {}
+    assert QUEUED_GATEWAY_MCP_META_KEY not in row_meta
+
+
 def test_requeued_steer_in_a_plain_slot_carries_human_provenance(tmp_path):
     """A COMPOSER steer keeps the audience exemption: its author typed into this
     session's own surface, so linking the session is that owner's deliberate act.
@@ -721,12 +764,12 @@ async def test_drain_drops_stale_entry_and_starts_nothing(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatch):
-    """A surviving entry's snapshot is queue plumbing, consumed at the drain —
-    it must not ride into the transcript row's persisted meta."""
+    """Queue authority is consumed at drain, never copied to the row."""
     state = _make_state(tmp_path)
     state.subagents = None
     slot = _busy(state.get_or_create_slot("chat-1"))
     slot.enqueue_or_run_prompt("still fine", _never_runs, state)
+    slot._queue[0]["meta"][GATEWAY_TURN_ORIGIN_META_KEY] = "forged-origin"
     slot.task = None
 
     async def _stub_run_chat(_state, _slot, _prompt, **_kwargs):
@@ -748,6 +791,7 @@ async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatc
     assert user_rows, "the drained entry must land as a user row"
     row_meta = user_rows[-1].get("meta") or {}
     assert sc.QUEUED_CONTAINMENT_META_KEY not in row_meta
+    assert GATEWAY_TURN_ORIGIN_META_KEY not in row_meta
 
 
 # ── Constraint-set parity with authorize_target ──────────────────────

@@ -92,13 +92,21 @@ def _find_create_task_dispatches(path: Path) -> list[tuple[int, str]]:
       the older inline form, still used by the two gateway sites that attach
       their own done-callback to consume the exception.
 
+    * ``context.run(spawn_guarded_turn, state, slot, _run_chat(...))`` — the
+      copied-Context form used when an automatic successor must clear inherited
+      request provenance before the guarded task is created.
+
     Why a hand-rolled balanced-paren scan instead of regex: nested call
     expressions go three levels deep with embedded commas, which regex does not
     handle cleanly. We tokenize ``(`` / ``)`` until the depth returns to zero.
     """
     text = path.read_text(encoding="utf-8")
     out: list[tuple[int, str]] = []
-    for opener in ("asyncio.create_task(", "spawn_guarded_turn("):
+    for opener in (
+        "asyncio.create_task(",
+        "spawn_guarded_turn(",
+        "successor_context.run(",
+    ):
         i = 0
         while True:
             idx = text.find(opener, i)
