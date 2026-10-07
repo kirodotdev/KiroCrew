@@ -697,6 +697,36 @@ _MARKER_WRITE_WAIT_SECS = 5.0
 _CRON_MSG_LIMIT = 3000
 
 
+#: Session-key prefixes of a workflow RUN's step sessions, each followed by
+#: ``<run_id>:``: per-call (``wf:``), pooled worker, unpooled call, and the
+#: memory-scoped worker key.
+_WORKFLOW_STEP_PREFIXES = ("wf:", "wf-pool:", "wf-unpooled:", "wf-worker:")
+
+
+def _spawn_parent_slot(parent_key: str, workflow_service: Any) -> str:
+    """The dashboard slot whose Trust governs a spawn parented on *parent_key*.
+
+    A workflow step runs in its own ``<prefix>:<run_id>:...`` session, which no
+    tab displays. Its spawns answer to the chat that STARTED the run: the registry
+    records that origin ``session_key`` only after the run route proved the
+    caller is that session. An unknown run or a blank origin yields ``""``, so
+    the spawn prompts exactly as before.
+    """
+    if not parent_key:
+        return ""
+    if not parent_key.startswith(_WORKFLOW_STEP_PREFIXES):
+        return subagent_event_slot(parent_key)
+    run_id = parent_key.split(":", 2)[1]
+    registry = getattr(workflow_service, "registry", None)
+    try:
+        handle = registry.get(run_id) if run_id and registry is not None else None
+    except Exception:
+        logger.warning("spawn slot: workflow run %s lookup failed", run_id, exc_info=True)
+        return ""
+    origin = str(getattr(handle, "session_key", "") or "")
+    return subagent_event_slot(origin) if origin else ""
+
+
 def _live_session_work_dirs(sessions: Any) -> list[str]:
     """The work directories of every provider the session registry holds now."""
     if sessions is None:
@@ -10479,7 +10509,11 @@ class GatewayOrchestrator:
             """Resolve slot from spawn request_id (spawn:{agent_id})."""
             agent_id = request_id.removeprefix("spawn:")
             info = self.subagent_mgr.get(agent_id) if self.subagent_mgr is not None else None
-            slot = _event_slot(info.parent_session_key) if info and info.parent_session_key else ""
+            # A workflow step's spawn resolves to the run's origin chat.
+            slot = _spawn_parent_slot(
+                info.parent_session_key if info else "",
+                getattr(self.dashboard_state, "workflow_service", None),
+            )
             logger.info(
                 "_spawn_slot_resolver: rid=%s agent_id=%s info=%s slot=%s",
                 request_id,
