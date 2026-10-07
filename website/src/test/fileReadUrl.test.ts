@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fileReadUrl, fileDownloadUrl } from '../utils/fileReadUrl'
+import { fileReadUrl, fileDownloadUrl, downloadFileName } from '../utils/fileReadUrl'
 
 // Issue #2493: a dashboard file-read was captured with the leading slash
 // stripped from an absolute path (`path=home/<user>/…&resolve=1`), which the
@@ -83,5 +83,19 @@ describe('fileDownloadUrl', () => {
     expect(fileDownloadUrl('/tmp/report.pdf')).toBe('/api/file-download?path=' + encodeURIComponent('/tmp/report.pdf'))
     expect(fileDownloadUrl('/tmp/report.pdf')).not.toContain('resolve=1')
     expect(fileDownloadUrl('docs/report.pdf')).toContain('&resolve=1')
+  })
+})
+
+
+describe('downloadFileName', () => {
+  it.each([
+    ['/tmp/report.csv', 'report.csv'],
+    ['C:\\work\\report.csv', 'report.csv'],
+    ['C:/work/report.csv', 'report.csv'],
+    ['\\\\server\\share\\report.csv', 'report.csv'],
+    ['/tmp/report\\final.csv', 'report\\final.csv'],
+    ['src/report\\final.csv', 'report\\final.csv'],
+  ])('preserves the final filename in %s', (path, name) => {
+    expect(downloadFileName(path)).toBe(name)
   })
 })
