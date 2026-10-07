@@ -6175,7 +6175,17 @@
       "terminal_review": "检查并在终端中运行",
       "terminal_force_stop": "停止智能体",
       "terminal_pending": "请等待会话详情加载，或选择其他会话。",
-      "terminal_run_review": "审阅终端命令"
+      "terminal_run_review": "审阅终端命令",
+      "agent_backend": "代理运行框架",
+      "gateway_tools": "{{productName}} 工具",
+      "gateway_tools_connected": "可用",
+      "gateway_tools_failed": "{{productName}} 工具未能在此会话中启动。请新建会话后重试。",
+      "gateway_tools_sent": "已发送（运行框架不报告状态）",
+      "gateway_tools_not_sent": "{{productName}} 工具未发送到此会话，这里也无法添加。",
+      "gateway_tools_pending": "尚未报告",
+      "gateway_tools_missing": "此会话没有 {{productName}} 工具",
+      "gateway_tools_missing_short": "无工具",
+      "model_selected": "已选：{{name}}"
     },
     "chatPane": {
       "agent_list": "代理列表",

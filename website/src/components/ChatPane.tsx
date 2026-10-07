@@ -35,7 +35,7 @@ import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { sessionAgentLabel } from '../utils/agentLabel'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
@@ -86,7 +86,8 @@ import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { parseDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
-import { displayModel, modelChipMarker } from '../lib/model'
+import { displayModel, modelChipMarker, normalizeModelKey, reportedModel, reportedModelMarker } from '../lib/model'
+import { gatewayToolsState } from '../lib/mcpSessionReport'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import {
@@ -698,13 +699,19 @@ export default function ChatPane({
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
-  const shownModel = displayModel(
+  const _servedModel = codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || ''
+  const _turnModel = codexPairModels ? modelWithoutEffort(paneSlot?.turn_model || '') : paneSlot?.turn_model || ''
+  // What the live session reports running wins over the pin (see ChatPage).
+  const session = reportedModel(_turnModel, _servedModel, displayModels)
+  const shownModel = session.selected || displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
-    codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
+    _servedModel,
   )
+  const chipModel = session.chip || shownModel
+  const modelSelected = normalizeModelKey(chipModel) !== normalizeModelKey(shownModel) ? shownModel : ''
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
     selectionCapabilities
       ? selectionCapabilities.effort_supported === true
@@ -719,9 +726,9 @@ export default function ChatPane({
     queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
     enabled: provider.capabilities.reasoningEffort,
   })
-  const effectiveEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
+  const effectiveEffort = paneSlot?.served_effort ?? (paneSlot?.reasoning_effort || legacyCodexEffort(
     paneSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  ) || defaultEffort)
   // What the pin alone would say; differing from `shownModel` means the chip
   // is naming the served default an inheriting slot runs on (see ChatPage).
   const _pinShownModel = displayModel(
@@ -736,13 +743,14 @@ export default function ChatPane({
     paneRemoteCrew.isRemote,
     codexPairModels,
   )
-  const modelMarker = modelChipMarker(
+  const _modelMarker = modelChipMarker(
     paneSlot?.model || '',
-    shownModel,
+    chipModel,
     _pinShownModel,
     chipDefault.settingsDefault,
     chipDefault.agentPinned,
   )
+  const modelMarker = session.chip ? reportedModelMarker(_modelMarker, paneSlot?.model_withheld) : _modelMarker
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
@@ -2029,15 +2037,19 @@ export default function ChatPane({
           // SLOT's stored agent (not `paneAgentName`, which has already
           // collapsed empty->default) so an agent-less slot reads
           // `<default> · default` and a pinned one reads the bare alias (#8770).
-          agentLabel={agentOrDefaultLabel(paneSlot?.agent, paneEffectiveDefaultAgent)}
+          // The live session's own report of what it runs as wins over both.
+          agentLabel={sessionAgentLabel(paneSlot?.agent, paneSlot?.served_agent, paneEffectiveDefaultAgent)}
           agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
-          modelName={shownModel}
+          sessionBackend={paneSlot?.served_backend}
+          gatewayTools={gatewayToolsState(paneSlot?.mcp_report, paneSlot?.served_backend)}
+          modelSelected={modelSelected}
+          modelName={chipModel}
           reasoningEffort={effectiveEffort}
-          effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!defaultEffort}
+          effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!effectiveEffort}
           // Effort is edited inside the model picker below; the chip only
-          // names the level in force.
-          hasEffort={effortSupported}
+          // names the level in force, including a session-reported one (see ChatPage).
+          hasEffort={effortSupported || !!paneSlot?.served_effort}
           modelIsInheritedDefault={modelMarker === 'default'}
           modelIsAutoChosen={modelMarker === 'auto'}
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes

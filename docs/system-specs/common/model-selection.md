@@ -351,6 +351,27 @@ its own once the cache refreshes with a list that carries it.
   Claude, Codex, Pi, or another capable ACP harness. A session that reports no
   effort support gets no effort row inside the picker. The composer never grows a
   second, standalone effort control.
+- What the composer NAMES comes from the live session, not from config, once the
+  session has reported. The slots payload carries the session's facts beside
+  `served_model`: `turn_model` (the model its harness said served the last turn),
+  `served_backend`, `served_agent`, `served_effort` (the effort option's reported
+  value, a pair id's `[<effort>]` suffix when codex advertises no effort option,
+  or the level written to the kiro-family overlay). They are recorded when eager
+  spawn registers the session, when a turn starts on a new or reloaded session,
+  when a turn ends, and after a live model or effort change, and are cleared with
+  `served_model` on teardown. The model chip shows `turn_model`, else
+  `served_model`, leads with the backend's name, and names the selection in its
+  title when the harness ran something else; the effort shows `served_effort`.
+  Whether Crew's control-plane MCP servers reached the session is read off its
+  `mcp_report` and `served_backend` per harness (`gatewayToolsState` in
+  `website/src/lib/mcpSessionReport.ts`), so a report delta moves it without a
+  slots push. Until a session reports, the chips keep the configured prediction
+  (the pin, the crew's or global default model and effort). A harness can run a
+  model other than the one it accepted, so `turn_model` is the only one of these
+  that says what ran. The turn and Slack footers name it
+  (`read_reported_turn_model`); the usage record keeps the resolved id
+  (`read_turn_model`), so one model's history never splits across the harness's
+  spelling and the selection's.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;

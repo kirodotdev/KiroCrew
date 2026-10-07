@@ -6472,7 +6472,17 @@
       "terminal_review": "Проверить и выполнить в терминале",
       "terminal_force_stop": "Остановить агента",
       "terminal_pending": "Дождись загрузки сведений о сеансе или выбери другой сеанс.",
-      "terminal_run_review": "Проверить команду терминала"
+      "terminal_run_review": "Проверить команду терминала",
+      "agent_backend": "Оболочка агента",
+      "gateway_tools": "Инструменты {{productName}}",
+      "gateway_tools_connected": "Доступны",
+      "gateway_tools_failed": "Инструменты {{productName}} не запустились в этой сессии. Начни новую сессию, чтобы повторить попытку.",
+      "gateway_tools_sent": "Переданы (оболочка агента не сообщает статус)",
+      "gateway_tools_not_sent": "Инструменты {{productName}} не переданы в эту сессию, и отсюда их не добавить.",
+      "gateway_tools_pending": "Пока нет отчёта",
+      "gateway_tools_missing": "В этой сессии нет инструментов {{productName}}",
+      "gateway_tools_missing_short": "Нет инструментов",
+      "model_selected": "Выбрано: {{name}}"
     },
     "chatPane": {
       "agent_list": "Список агентов",

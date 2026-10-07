@@ -6137,6 +6137,57 @@ class TestAcpSessionHandleCommands:
             "value": "high",
         }
 
+    @pytest.mark.asyncio
+    async def test_set_config_option_keeps_the_options_the_response_carries(self):
+        """The response names every option's value after the write, so the
+        level the adapter accepted (here a step down from the one asked for)
+        is what the session reports, not the one before the write."""
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "s1")
+        handle = AcpSessionHandle("s1", q["s1"], rt)
+        handle._config_options = [{"id": "reasoning_effort", "currentValue": "medium"}]
+        answered = [{"id": "reasoning_effort", "currentValue": "high"}]
+
+        async def capture_send(method, params, **_kw):
+            await q["s1"].put(
+                JsonRpcMessage.from_dict({"id": 400, "result": {"configOptions": answered}})
+            )
+            return 400
+
+        rt.send_request = capture_send
+        await handle.set_config_option("reasoning_effort", "xhigh")
+        assert handle.config_options == answered
+
+    def test_turn_model_follows_the_prompt_response(self):
+        """The prompt response's ``model_usage`` names the model that ran."""
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "s1")
+        handle = AcpSessionHandle("s1", q["s1"], rt)
+        handle._track_prompt_usage(
+            {"_meta": {"quota": {"model_usage": [{"model": "gpt-5.5", "token_count": {}}]}}}
+        )
+        assert handle.turn_model == "gpt-5.5"
+        handle.store_session_config({})
+        assert handle.turn_model == ""
+
+    @pytest.mark.asyncio
+    async def test_a_new_turn_or_model_drops_the_last_turns_model(self):
+        """A turn that never answers, or a switch, would otherwise keep naming it."""
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "s1")
+        handle = AcpSessionHandle("s1", q["s1"], rt)
+        report = {"_meta": {"quota": {"model_usage": [{"model": "gpt-5.5", "token_count": {}}]}}}
+        handle._track_prompt_usage(report)
+        rt.send_request = AsyncMock(side_effect=AcpRuntimeDead("broken pipe"))
+        with pytest.raises(AcpRuntimeDead):
+            await handle.prompt("hi", timeout=3.0).__anext__()
+        assert handle.turn_model == ""
+
+        handle._track_prompt_usage(report)
+        rt.send_request = AsyncMock(return_value=5)
+        await handle.set_model("claude-sonnet-4")
+        assert handle.turn_model == ""
+
 
 class TestAcpSessionHandleState:
     """Tests for state tracking properties."""

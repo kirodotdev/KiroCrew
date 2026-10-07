@@ -104,3 +104,46 @@ describe('effort control gate on the capability read', () => {
     expect(hook.result.current.effortSupported).toBe(false)
   })
 })
+
+describe('what the live session reports running', () => {
+  // A claude session pinned to Fable whose harness ran Opus: the chip must name
+  // what ran, not the pick, and the effort the adapter reported, not the config.
+  function liveHarness(slot: Partial<ChatSlot>) {
+    const h = harness()
+    const provider = {
+      id: 'test-provider',
+      capabilities: { reasoningEffort: true },
+      resolveModel: vi.fn().mockResolvedValue('claude-fable-5.1'),
+      resolveDefaultEffort: vi.fn().mockResolvedValue('max'),
+    }
+    h.hook.rerender({
+      ...h.opts,
+      provider: provider as never,
+      currentSlot: { key: 'slot-a', agent: 'builder', model: '', ...slot } as ChatSlot,
+    })
+    return h
+  }
+
+  it('names the model the harness reported over the selection and the resolved default', async () => {
+    apiMock.kirocrewConfig.mockResolvedValue({ agent: { model: 'claude-fable-5.1' } })
+    const { hook } = liveHarness({
+      served_model: 'global.anthropic.claude-fable-5[1m]',
+      turn_model: 'global.anthropic.claude-opus-5[1m]',
+      served_effort: '',
+    })
+    await waitFor(() => expect(hook.result.current.chipModel).toBe('global.anthropic.claude-opus-5[1m]'))
+    // The picker keeps highlighting the selection; the chip's title names it.
+    expect(hook.result.current.shownModel).toBe('global.anthropic.claude-fable-5[1m]')
+    expect(hook.result.current.modelSelected).toBe('global.anthropic.claude-fable-5[1m]')
+    // The adapter reported its own default, so the configured `max` is not shown.
+    expect(hook.result.current.effectiveEffort).toBe('')
+  })
+
+  it('keeps the configured prediction until a session reports', async () => {
+    apiMock.kirocrewConfig.mockResolvedValue({ agent: { model: 'claude-fable-5.1' } })
+    const { hook } = liveHarness({})
+    await waitFor(() => expect(hook.result.current.chipModel).toBe('claude-fable-5.1'))
+    await waitFor(() => expect(hook.result.current.effectiveEffort).toBe('max'))
+    expect(hook.result.current.modelSelected).toBe('')
+  })
+})

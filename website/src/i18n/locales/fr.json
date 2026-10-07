@@ -6373,7 +6373,17 @@
       "terminal_review": "Vérifier et exécuter dans le terminal",
       "terminal_force_stop": "Arrêter l’agent",
       "terminal_pending": "Attends le chargement des détails de la session ou sélectionne une autre session.",
-      "terminal_run_review": "Vérifier la commande du terminal"
+      "terminal_run_review": "Vérifier la commande du terminal",
+      "agent_backend": "Harness de l’agent",
+      "gateway_tools": "Outils de {{productName}}",
+      "gateway_tools_connected": "Disponibles",
+      "gateway_tools_failed": "Les outils de {{productName}} n’ont pas démarré dans cette session. Démarre une nouvelle session pour réessayer.",
+      "gateway_tools_sent": "Envoyés (le harness ne signale pas leur état)",
+      "gateway_tools_not_sent": "Les outils de {{productName}} n’ont pas été envoyés à cette session, et rien ici ne permet de les ajouter.",
+      "gateway_tools_pending": "Pas encore signalés",
+      "gateway_tools_missing": "Cette session n’a pas les outils de {{productName}}",
+      "gateway_tools_missing_short": "Aucun outil",
+      "model_selected": "Sélectionné : {{name}}"
     },
     "chatPane": {
       "agent_list": "Liste des agents",

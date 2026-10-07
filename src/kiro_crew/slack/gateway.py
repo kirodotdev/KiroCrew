@@ -167,7 +167,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
-    read_turn_model,
+    read_reported_turn_model,
 )
 from kiro_crew.dashboard.listener_guard import listener_guard_exit_code
 from kiro_crew.dashboard.origin import (
@@ -5224,7 +5224,7 @@ class GatewayOrchestrator:
                         int(_turn_usage.duration_ms or (time.monotonic() - _turn_t0) * 1000),
                         float(_turn_usage.credits or 0.0),
                         float(_turn_usage.cost_usd or 0.0),
-                        read_turn_model(client),
+                        read_reported_turn_model(client),
                     )
                     await persist_token_record_async(
                         session_key,

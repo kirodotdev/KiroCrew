@@ -734,6 +734,30 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.reset.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_live_change_publishes_the_level_the_session_reports(self):
+        # The adapter stepped the push down to the model's ceiling; the slot
+        # shows that level, not the one the request asked for.
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.change_effort = AsyncMock(return_value=True)
+        provider.served_model = "claude-opus-4.7"
+        provider.turn_model = ""
+        provider.capabilities = SimpleNamespace(backend="claude")
+        provider.session_agent = "cr-writer"
+        provider.applied_effort = "xhigh"
+        slot = _ChatSlot("test")
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "max"},
+            )
+            assert resp.status == 200
+        assert slot.reasoning_effort == "max"
+        assert slot.served_effort == "xhigh"
+
+    @pytest.mark.asyncio
     async def test_live_clear_that_changed_nothing_commits_nothing_and_does_not_reset(self):
         # clear_effort's third outcome: the workspace overlay was locked, so
         # NOTHING changed -- the file still holds the level and the provider put

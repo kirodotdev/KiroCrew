@@ -401,6 +401,15 @@ class SlotProjection:
             # shown as "auto". "" = not known. DISPLAY only, like the verdict
             # above: never a write source.
             "served_model": slot.served_model,
+            # What the live session reports running, beside the selection above:
+            # the model its harness said served the last turn ("" = none yet),
+            # its backend ("" is kiro-cli), the crew or agent spec it runs as, and
+            # the effort in force ("" = the harness's own default). null = no live
+            # session reported. DISPLAY only.
+            "turn_model": getattr(slot, "turn_model", ""),
+            "served_backend": getattr(slot, "served_backend", None),
+            "served_agent": getattr(slot, "served_agent", None),
+            "served_effort": getattr(slot, "served_effort", None),
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             "surface": slot.mode,

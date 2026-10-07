@@ -1118,8 +1118,10 @@ const SessionRow = memo(function SessionRow({
     // gated on a non-empty value that actually differs from what is displayed —
     // never on inequality alone, which would fire during the boot window on a
     // healthy install. The `?? ''` is load-bearing: rows arrive from persisted
-    // and optimistically-added state that predates this field.
-    const effectiveAgent = s.effective_agent ?? ''
+    // and optimistically-added state that predates this field. The live
+    // session's own report of what it runs as outranks the gateway's
+    // resolution, which predicts the agent a session WOULD get.
+    const effectiveAgent = s.served_agent ?? s.effective_agent ?? ''
     const agentDiverged = effectiveAgent !== '' && effectiveAgent !== agentName
     const agentMeta = installedAgents.find(a => a.name === agentName)
     const isPackageAgent = agentMeta?.source === 'package'

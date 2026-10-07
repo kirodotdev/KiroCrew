@@ -416,6 +416,28 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def turn_model(self) -> str:
+        """The model the harness reported serving the last turn, or ``""``.
+
+        A harness report of what RAN, which can differ from ``served_model``
+        (what the session selected). Default: ``""``, nothing reported.
+        """
+        return ""
+
+    @property
+    def applied_effort(self) -> str | None:
+        """The reasoning effort the live session runs at, ``""`` for the harness default.
+
+        Default: ``None``, meaning this provider cannot say.
+        """
+        return None
+
+    @property
+    def session_agent(self) -> str:
+        """The crew or agent spec this session runs as, or ``""`` when unknown."""
+        return ""
+
+    @property
     def model_pin_refused(self) -> str:
         """The pinned model the backend refused at session start, or ``""``.
 

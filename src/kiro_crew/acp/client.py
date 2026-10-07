@@ -73,6 +73,7 @@ from kiro_crew.acp._dispatch import (
     _loggable_request_id,
     _measure_tool_output,
     agent_version_from_init,
+    bounded_config_options,
     build_permission_event,
     build_session_new_params,
     classify_tool_call,
@@ -91,6 +92,7 @@ from kiro_crew.acp._dispatch import (
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
     parse_prompt_token_usage,
+    parse_prompt_turn_model,
     parse_refusal,
     parse_session_modes,
     parse_usage_cost,
@@ -3848,6 +3850,9 @@ class AcpClient:
         # from self._model when that's the "auto" sentinel). Used to look up
         # the context window when usage_update isn't sent (see _track_metadata).
         self._resolved_model_id: str | None = None
+        # The model the last prompt response reported serving its turn
+        # (``parse_prompt_turn_model``); "" until a turn reports one.
+        self.turn_model: str = ""
         # Model the backend last substituted to via the -32603 admin-tier policy
         # advisory ("Using X instead"). Set by _wait_for_response when it sees the
         # advisory; consumed by the session/new path to re-issue creation on the
@@ -6861,6 +6866,8 @@ class AcpClient:
             )
         self._model = model_id
         self.model_pin_refused = ""
+        # The last turn's report names the model before this switch.
+        self.turn_model = ""
         self._resolved_model_id = self._last_substitution_model or model_id
         if self._seeds_local_settings:
             # Re-seed the per-session settings file: a pooled runtime seeded it at
@@ -7565,7 +7572,13 @@ class AcpClient:
             "session/set_config_option",
             {"sessionId": self._session_id, "configId": config_id, "value": value},
         )
-        await self._wait_for_response(req_id, timeout=10.0)
+        result = await self._wait_for_response(req_id, timeout=10.0)
+        # The response carries every option's value after the write, which is how
+        # the level the adapter actually accepted becomes readable.
+        config_options = bounded_config_options(result)
+        if config_options is not None:
+            self._acp_config_options = config_options
+            self._sync_effort_levels()
 
     # ── Dynamic Config from ACP ──
 
@@ -7646,6 +7659,8 @@ class AcpClient:
         # Assigned unconditionally so a re-init that omits `modes` clears any
         # stale state rather than guarding on it.
         self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
+        # A new or reloaded session has not reported a turn yet.
+        self.turn_model = ""
 
     def _verify_goose_routing(self, resp: dict) -> None:
         """Read this harness's OWN resolved mode back off the session response.
@@ -11227,6 +11242,8 @@ class AcpClient:
             # clear the active turn's tracked consult and so allow a second walk
             # while the first is still pending.
             self._retire_liveness_state()
+            # A turn that ends without a PromptResponse must not inherit the last one's model.
+            self.turn_model = ""
             self._compaction_failed_at = None
             self._compaction_failed_turn = False
             self._claude_compaction_pending = False
@@ -13357,6 +13374,9 @@ class AcpClient:
         tokens = parse_prompt_token_usage(result)
         if tokens is not None:
             self.last_prompt_stats.apply_prompt_token_usage(*tokens)
+        model = parse_prompt_turn_model(result)
+        if model:
+            self.turn_model = model
 
     async def _maybe_audit_tool_call(self, tool_event: "AcpEvent") -> None:
         """Emit a per-tool-call SEL audit for clients with no external audit loop.

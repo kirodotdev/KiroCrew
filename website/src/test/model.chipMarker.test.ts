@@ -4,7 +4,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
-import { displayModel, modelChipMarker } from '../lib/model'
+import { displayModel, modelChipMarker, reportedModel, reportedModelMarker } from '../lib/model'
 
 /** The composer chip's ` · default` marker must mean the Settings default, and
  *  nothing else. A model the backend or a router picked on its own (an Auto
@@ -115,5 +115,44 @@ describe('useSettingsDefaultModel', () => {
     const { result } = run('kirocrew', true)
     await waitFor(() => expect(result.current.settingsDefault).toBe('gpt-5-codex'))
     expect(result.current).toEqual({ settingsDefault: 'gpt-5-codex', agentPinned: true, failed: false })
+  })
+})
+
+/** A chip naming what the live session REPORTS: the model the harness said ran,
+ *  the selection in the picker's spelling, and no `auto` marker for a pin it
+ *  merely respells. */
+describe('reportedModel / reportedModelMarker', () => {
+  const list = [{ name: 'auto' }, { name: 'claude-opus-4-8' }]
+
+  it('names what the harness said ran over what the session selected', () => {
+    expect(reportedModel('global.anthropic.claude-opus-5[1m]', 'global.anthropic.claude-fable-5[1m]', list)).toEqual({
+      selected: 'global.anthropic.claude-fable-5[1m]',
+      chip: 'global.anthropic.claude-opus-5[1m]',
+    })
+    expect(reportedModel('', 'global.anthropic.claude-fable-5[1m]', list).chip).toBe('global.anthropic.claude-fable-5[1m]')
+  })
+
+  it("keeps the selection in the picker row's spelling, and the harness report as reported", () => {
+    // The picker highlights the selection on an exact name; the chip names the
+    // concrete id the harness reported even when a registry fold equates them.
+    expect(reportedModel('claude-opus-4-8', 'claude-opus-4.8', [{ name: 'claude-opus-4.8' }])).toEqual({
+      selected: 'claude-opus-4.8',
+      chip: 'claude-opus-4-8',
+    })
+  })
+
+  it('reports nothing for Auto, whose per-turn choice is not on the wire', () => {
+    expect(reportedModel('', 'auto', list)).toEqual({ selected: '', chip: '' })
+    expect(reportedModel('', '', list)).toEqual({ selected: '', chip: '' })
+  })
+
+  it('keeps `auto` only on the backend withhold verdict', () => {
+    // A pin and the wire id the harness reports for it compare as different
+    // spellings, which modelChipMarker reads as "chosen for you".
+    const respelt = modelChipMarker('claude-opus-5.5', 'global.anthropic.claude-opus-5-5[1m]', 'claude-opus-5.5', '')
+    expect(respelt).toBe('auto')
+    expect(reportedModelMarker(respelt, false)).toBeNull()
+    expect(reportedModelMarker(respelt, true)).toBe('auto')
+    expect(reportedModelMarker('default', null)).toBe('default')
   })
 })

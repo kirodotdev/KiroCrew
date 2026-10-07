@@ -6,6 +6,7 @@ import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
+import type { GatewayToolsState } from '../../lib/mcpSessionReport'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -141,6 +142,15 @@ export interface ChatInputProps {
    * gets it; a pinned chip has nothing to explain. */
   agentIsInheritedDefault?: boolean
   agentSource?: string
+  /** The ACP backend id the live session reports running on (`''` is kiro-cli);
+   *  null/absent until a session reports. The model chip names it. */
+  sessionBackend?: string | null
+  /** Whether Kiro Crew's own MCP servers reached the live session. The context
+   *  popover names the state and the agent chip warns when they did not. */
+  gatewayTools?: GatewayToolsState | null
+  /** What the session SELECTED, when `modelName` is a different model its
+   *  harness reported running; the model chip's title names both. */
+  modelSelected?: string
   modelName?: string
   /**
    * True when `modelName` is the model an INHERITING slot actually runs on (the

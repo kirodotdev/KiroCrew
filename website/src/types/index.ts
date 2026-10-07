@@ -1132,6 +1132,16 @@ export interface ChatSlot {
    *  `model_withheld`: it describes the session, so it must not drive a
    *  write. */
   served_model?: string
+  /** What the live session reports running, beside `served_model` (which is
+   *  what it SELECTED). `turn_model` is the model its harness said served the
+   *  last turn (`''` until one has); `served_backend` its ACP backend id (`''`
+   *  is kiro-cli); `served_agent` the crew or agent spec it runs as;
+   *  `served_effort` the reasoning effort in force (`''` is the harness's own
+   *  default). `null`/absent means no live session has reported. DISPLAY only. */
+  turn_model?: string
+  served_backend?: string | null
+  served_agent?: string | null
+  served_effort?: string | null
   /** Remote-execution binding. `executor` is "local" for an ordinary session and
    *  "remote" for one whose turns run on a connected crew; `instance_id` names
    *  that crew. The backend ships BOTH on every slot so "runs locally" is a

@@ -3,6 +3,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { sseMcpReportUpdate, sseSlots } from '../store/dashboardSlice'
 import McpToolsPanel, { DOT_CLASS, SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 import {
+  gatewayToolsState,
   mcpSessionExtraServers,
   mcpSessionFailureReason,
   mcpSessionHasReport,
@@ -209,6 +210,29 @@ describe('McpToolsPanel session report', () => {
     render(<McpToolsPanel {...base} sessionReport={report({ awaiting_auth: ['github-mcp'] })} />)
     expect(screen.getByTitle('Waiting for authorization')).toBeInTheDocument()
     expect(screen.queryByTitle('Started in this session')).not.toBeInTheDocument()
+  })
+})
+
+describe('gatewayToolsState', () => {
+  const controlPlane = ['kirocrew-core', 'kirocrew-cron']
+
+  // kiro-cli and KAS mount the spec's servers themselves and report them, so an
+  // empty roster there is no verdict; claude and codex get only what was sent.
+  it.each([
+    ['claude', report(), 'not_sent'],
+    ['claude', report({ configured: controlPlane }), 'sent'],
+    ['claude', report({ configured: ['kirocrew-core'] }), 'not_sent'],
+    ['', report({ ready: controlPlane }), 'connected'],
+    ['', report({ ready: ['kirocrew-core'] }), 'pending'],
+    ['kas', report(), 'pending'],
+    ['', report({ failed: ['kirocrew-core'] }), 'failed'],
+  ] as const)('reads backend %j with %j as %s', (backend, r, expected) => {
+    expect(gatewayToolsState(r, backend)).toBe(expected)
+  })
+
+  it('says nothing until a session has reported its harness and a report', () => {
+    expect(gatewayToolsState(null, 'claude')).toBeNull()
+    expect(gatewayToolsState(report(), null)).toBeNull()
   })
 })
 

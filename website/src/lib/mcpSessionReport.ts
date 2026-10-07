@@ -1,4 +1,13 @@
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO } from '../api/acpBackend'
 import type { McpSessionReport } from '../types'
+
+/** Kiro Crew's own servers, which a session gets whatever its spec names:
+ *  `CONTROL_PLANE_SERVERS` in `mcp_cleanup.py`, pinned equal by `test_session_facts.py`. */
+const CONTROL_PLANE_SERVERS = ['kirocrew-core', 'kirocrew-cron']
+
+/** Harnesses that mount a spec's servers themselves, so the `session/new` array is
+ *  not the whole delivery: `ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE`, pinned the same way. */
+const SPEC_SERVERS_OFF_WIRE = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
 
 /**
  * Per-server state derived from ONE session's MCP report.
@@ -26,6 +35,30 @@ export function mcpSessionServerState(
   if (report.failed?.includes(name)) return 'failed'
   if (report.awaiting_auth?.includes(name)) return 'awaiting_auth'
   return 'no_report'
+}
+
+/** Whether a session received Kiro Crew's own MCP servers. */
+export type GatewayToolsState = 'connected' | 'failed' | 'sent' | 'not_sent' | 'pending'
+
+/**
+ * Whether ``backend``'s session received Kiro Crew's own servers, read off its report.
+ *
+ * `connected` / `failed` when the harness reported every one started, or one
+ * failed. Otherwise it depends on the harness: one that mounts its spec's servers
+ * itself reports them, so silence is `pending`; on any other the `session/new`
+ * array is the whole delivery, so they were `sent`, or `not_sent` when Crew
+ * withheld them. `null` until a session has reported both its backend and a report.
+ */
+export function gatewayToolsState(
+  report: McpSessionReport | null | undefined,
+  backend: string | null | undefined,
+): GatewayToolsState | null {
+  if (!report || backend == null) return null
+  const states = CONTROL_PLANE_SERVERS.map(name => mcpSessionServerState(name, report))
+  if (states.includes('failed')) return 'failed'
+  if (states.every(state => state === 'started')) return 'connected'
+  if (SPEC_SERVERS_OFF_WIRE.includes(backend)) return 'pending'
+  return CONTROL_PLANE_SERVERS.every(name => report.configured?.includes(name)) ? 'sent' : 'not_sent'
 }
 
 /** The reported failure reason for ``name``, or '' when none was reported. */

@@ -6274,7 +6274,17 @@
       "terminal_review": "পর্যালোচনা করে টার্মিনালে চালাও",
       "terminal_force_stop": "এজেন্ট থামাও",
       "terminal_pending": "সেশনের তথ্য লোড হওয়া পর্যন্ত অপেক্ষা করো অথবা অন্য সেশন বেছে নাও।",
-      "terminal_run_review": "টার্মিনাল কমান্ড দেখে নাও"
+      "terminal_run_review": "টার্মিনাল কমান্ড দেখে নাও",
+      "agent_backend": "এজেন্ট হারনেস",
+      "gateway_tools": "{{productName}} টুল",
+      "gateway_tools_connected": "উপলব্ধ",
+      "gateway_tools_failed": "এই সেশনে {{productName}} টুল চালু হয়নি। আবার চেষ্টা করতে নতুন সেশন শুরু করো।",
+      "gateway_tools_sent": "পাঠানো হয়েছে (হারনেস অবস্থা জানায় না)",
+      "gateway_tools_not_sent": "এই সেশনে {{productName}} টুল পাঠানো হয়নি, আর এখান থেকে সেগুলো যোগ করা যায় না।",
+      "gateway_tools_pending": "এখনও জানানো হয়নি",
+      "gateway_tools_missing": "এই সেশনে {{productName}} টুল নেই",
+      "gateway_tools_missing_short": "টুল নেই",
+      "model_selected": "নির্বাচিত: {{name}}"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",

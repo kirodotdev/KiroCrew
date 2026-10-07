@@ -27,6 +27,12 @@ _TO_DICT_KEYS = (
     "jev_route",
     "model_withheld",
     "served_model",
+    # What the live session reports running, beside the selection: null until one
+    # has, so an absent key and "nothing reported" are not the same reading.
+    "turn_model",
+    "served_backend",
+    "served_agent",
+    "served_effort",
     "reasoning_effort",
     "mode",
     "surface",

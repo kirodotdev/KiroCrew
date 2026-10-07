@@ -6274,7 +6274,17 @@
       "terminal_review": "Prüfen und im Terminal ausführen",
       "terminal_force_stop": "Agent stoppen",
       "terminal_pending": "Warte, bis die Sitzungsdetails geladen sind, oder wähle eine andere Sitzung.",
-      "terminal_run_review": "Terminalbefehl prüfen"
+      "terminal_run_review": "Terminalbefehl prüfen",
+      "agent_backend": "Agent-Harness",
+      "gateway_tools": "{{productName}}-Tools",
+      "gateway_tools_connected": "Verfügbar",
+      "gateway_tools_failed": "Die {{productName}}-Tools konnten in dieser Sitzung nicht starten. Starte eine neue Sitzung, um es erneut zu versuchen.",
+      "gateway_tools_sent": "Übergeben (Harness meldet keinen Status)",
+      "gateway_tools_not_sent": "Die {{productName}}-Tools wurden dieser Sitzung nicht übergeben, und hier kannst du sie nicht hinzufügen.",
+      "gateway_tools_pending": "Noch nicht gemeldet",
+      "gateway_tools_missing": "Diese Sitzung hat keine {{productName}}-Tools",
+      "gateway_tools_missing_short": "Keine Tools",
+      "model_selected": "Ausgewählt: {{name}}"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

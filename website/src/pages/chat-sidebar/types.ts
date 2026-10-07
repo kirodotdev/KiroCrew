@@ -96,6 +96,9 @@ export interface Slot {
   // is not settled yet" (a cold snapshot during boot). So it must be read as a
   // positive claim only: a falsy value never means "mismatch".
   effective_agent?: string
+  // The crew (else agent spec) the LIVE session reports running as; null/absent
+  // until a session has reported.
+  served_agent?: string | null
   model?: string  // '' / absent = provider-default ("auto")
   // Message count from the slot payload. Already carried by every ChatSlot
   // (redux seeds it in addSlotOptimistic and SessionGridView renders it); it was

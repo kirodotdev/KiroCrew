@@ -6373,7 +6373,17 @@
       "terminal_review": "Rivedi ed esegui nel terminale",
       "terminal_force_stop": "Ferma agente",
       "terminal_pending": "Attendi il caricamento dei dettagli della sessione o seleziona un’altra sessione.",
-      "terminal_run_review": "Rivedi comando del terminale"
+      "terminal_run_review": "Rivedi comando del terminale",
+      "agent_backend": "Harness dell’agente",
+      "gateway_tools": "Strumenti di {{productName}}",
+      "gateway_tools_connected": "Disponibili",
+      "gateway_tools_failed": "Gli strumenti di {{productName}} non si sono avviati in questa sessione. Avvia una nuova sessione per riprovare.",
+      "gateway_tools_sent": "Inviati (l’harness non ne riporta lo stato)",
+      "gateway_tools_not_sent": "Gli strumenti di {{productName}} non sono stati inviati a questa sessione, e da qui non puoi aggiungerli.",
+      "gateway_tools_pending": "Non ancora segnalati",
+      "gateway_tools_missing": "Questa sessione non ha gli strumenti di {{productName}}",
+      "gateway_tools_missing_short": "Nessuno strumento",
+      "model_selected": "Selezionato: {{name}}"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",

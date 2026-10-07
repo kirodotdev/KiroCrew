@@ -6175,7 +6175,17 @@
       "terminal_review": "確認してターミナルで実行",
       "terminal_force_stop": "エージェントを停止",
       "terminal_pending": "セッション情報の読み込みを待つか、別のセッションを選択してください。",
-      "terminal_run_review": "ターミナルコマンドを確認"
+      "terminal_run_review": "ターミナルコマンドを確認",
+      "agent_backend": "エージェントハーネス",
+      "gateway_tools": "{{productName}} のツール",
+      "gateway_tools_connected": "利用可能",
+      "gateway_tools_failed": "このセッションで {{productName}} のツールを起動できませんでした。新しいセッションを開始して再試行してください。",
+      "gateway_tools_sent": "送信済み（ハーネスは状態を報告しません）",
+      "gateway_tools_not_sent": "このセッションには {{productName}} のツールが送信されていません。ここから追加する方法はありません。",
+      "gateway_tools_pending": "未報告",
+      "gateway_tools_missing": "このセッションには {{productName}} のツールがありません",
+      "gateway_tools_missing_short": "ツールなし",
+      "model_selected": "選択：{{name}}"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

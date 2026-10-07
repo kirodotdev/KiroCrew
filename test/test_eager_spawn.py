@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS
 from kiro_crew.config import live
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -553,6 +554,38 @@ class TestEagerSpawn:
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
         state.sessions.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawned_session_reports_what_it_runs_before_any_turn(self, tmp_path):
+        """The composer names the session's own facts from here, not a prediction.
+
+        A claude session whose MCP array was withheld must read as having none
+        of Crew's tools before its first prompt, not after.
+        """
+        slot = _ChatSlot("t1")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        report = McpSessionReport()
+        report.begin_session([])
+        provider = SimpleNamespace(
+            served_model="global.anthropic.claude-fable-5[1m]",
+            turn_model="",
+            capabilities=SimpleNamespace(backend=ACP_BACKEND_CLAUDE),
+            session_agent="default",
+            applied_effort="max",
+            session_id="sid",
+            mcp_session_report=lambda: report,
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await _eager_spawn(state, slot)
+        payload = slot.to_dict()
+        assert payload["served_model"] == "global.anthropic.claude-fable-5[1m]"
+        assert (payload["served_backend"], payload["served_effort"]) == (ACP_BACKEND_CLAUDE, "max")
+        # What the composer derives "no tools" from: an empty roster on a harness
+        # whose session/new array is the whole delivery.
+        assert payload["mcp_report"]["configured"] == []
+        state.push_slots_update.assert_called()
 
     @pytest.mark.asyncio
     async def test_lost_race_never_removes_the_winning_session(self, tmp_path):

@@ -1226,6 +1226,11 @@ class AcpSessionProvider(LLMProvider):
         return self._handle.served_model
 
     @property
+    def turn_model(self) -> str:
+        """The model the last prompt response reported serving — see the handle's field."""
+        return self._handle.turn_model
+
+    @property
     def agent_version(self) -> str:
         """The version the backing process runs — see :attr:`AcpSessionHandle.agent_version`."""
         return self._handle.agent_version

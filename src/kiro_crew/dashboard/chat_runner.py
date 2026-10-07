@@ -353,6 +353,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_reported_turn_model,
     read_turn_model,
 )
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -5911,7 +5912,7 @@ async def _spawn_admitted_prefetch(
         # get_or_create's docstring.
         _requested_model = slot.model or agent_model or default_model or ""
         try:
-            _, is_new, resumed = await sessions.get_or_create(
+            provider, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 # Canonical crew identity — the resolver's alias, which
@@ -5992,6 +5993,11 @@ async def _spawn_admitted_prefetch(
             sessions.allocation_requested_model(session_key) or _requested_model
         )
     _clear_eager_spawn_failures(slot)
+    # The live session already knows what it runs, so the composer names that
+    # from here on instead of the config prediction it shows until the first turn.
+    _sync_served_model(slot, provider)
+    _publish_session_mcp_report(state, slot, provider)
+    state.push_slots_update()
     logger.info(
         "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
         session_key,
@@ -11415,6 +11421,7 @@ async def _run_chat(
         _turn_credits = 0.0
         _turn_cost_usd = 0.0
         _turn_model = ""
+        _footer_model = ""
         _turn_msg_boundary = len(slot.messages)
         _turn_start_mid = row_mid(slot.messages[-1]) if slot.messages else ""
         # The crew log ordinal is the ABSOLUTE durable position, not the window
@@ -15067,6 +15074,12 @@ async def _run_chat(
                 # with a missing measurement. Still never guesses: an
                 # unattributable turn stays "" and the footer omits the field.
                 _turn_model = read_turn_model(client)
+                # The footer names the model the harness reported running, in its
+                # own spelling; the usage row and the metrics keep the id above.
+                _footer_model = read_reported_turn_model(client)
+                # The prompt response just reported what served the turn, so
+                # the slot's session facts move with it.
+                _sync_served_model(slot, client)
                 # ── Turn outcome for this turn's histogram sample ──
                 # ``exhausted`` mirrors the stop-reason branches below: the
                 # recovery-outcome exclusion from fault_rate is earned only by a
@@ -16701,7 +16714,7 @@ async def _run_chat(
                 _turn_credits,
                 _turn_cost_usd,
                 turn_boundary=_turn_msg_boundary,
-                model=_turn_model,
+                model=_footer_model,
                 ttft_ms=_ttft_visible.ms,
             )
             if _prompt_depth == 0 and _stats_attached:

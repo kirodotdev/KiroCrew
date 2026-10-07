@@ -9,7 +9,7 @@ import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import type { useRemoteCapabilities } from '../../../hooks/useRemoteCapabilities'
 import { i18nT } from '../../../i18n/t'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
-import { displayModel, modelChipMarker } from '../../../lib/model'
+import { displayModel, modelChipMarker, normalizeModelKey, reportedModel, reportedModelMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
 import { useModelsDegraded } from '../../../providers/modelListHealth'
 import type { ModelInfo } from '../../../providers/types'
@@ -120,15 +120,24 @@ export function useComposerChips({
     : availableModels
   const modelPin = currentSlot?.model || resolvedModel || ''
   const displayPin = codexPairModels ? modelWithoutEffort(modelPin) : modelPin
-  const shownModel = displayModel(
+  const _servedModel = codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model || ''
+  const _turnModel = codexPairModels ? modelWithoutEffort(currentSlot?.turn_model || '') : currentSlot?.turn_model || ''
+  // Once the live session reports what it runs, that wins; the pin and the
+  // resolved default are only a prediction until then. `shownModel` stays the
+  // selection (what the picker highlights), `chipModel` is what the chip names.
+  const session = reportedModel(_turnModel, _servedModel, displayModels)
+  const shownModel = session.selected || displayModel(
     displayPin,
     displayModels,
     _modelsDegraded,
     currentSlot?.model_withheld,
     // Names the backend's own choice when the slot inherits, so the chip is not
     // a bare `auto` for a session running one specific model.
-    codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
+    _servedModel,
   )
+  const chipModel = session.chip || shownModel
+  // The selection, when the harness reported running another model.
+  const modelSelected = normalizeModelKey(chipModel) !== normalizeModelKey(shownModel) ? shownModel : ''
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
     selectionCapabilities
       ? selectionCapabilities.effort_supported === true
@@ -149,13 +158,14 @@ export function useComposerChips({
   // The chip says `default` only for the Settings default; a model picked for
   // the user (Auto router, withheld pin's fallback) is marked `auto` instead.
   const chipDefault = useSettingsDefaultModel(_slotAgentName, remoteCrew.isRemote, codexPairModels)
-  const modelMarker = modelChipMarker(
+  const _modelMarker = modelChipMarker(
     currentSlot?.model || '',
-    shownModel,
+    chipModel,
     _pinShownModel,
     chipDefault.settingsDefault,
     chipDefault.agentPinned,
   )
+  const modelMarker = session.chip ? reportedModelMarker(_modelMarker, currentSlot?.model_withheld) : _modelMarker
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
   // wins; until then `provider.getContextWindow` would answer from THIS machine's
@@ -188,12 +198,13 @@ export function useComposerChips({
     enabled: provider.capabilities.reasoningEffort,
   })
   const defaultEffort = _defaultEffort || ''
-  // Effort actually in force for the active slot: per-slot override, else the
-  // configured default. Display only — the slot's raw value still drives the
-  // picker so "no override" stays distinguishable from an explicit pick.
-  const effectiveEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
+  // Effort actually in force for the active slot: what its live session
+  // reports, else the per-slot override, else the configured default. Display
+  // only — the slot's raw value still drives the picker so "no override" stays
+  // distinguishable from an explicit pick.
+  const effectiveEffort = currentSlot?.served_effort ?? (currentSlot?.reasoning_effort || legacyCodexEffort(
     currentSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  ) || defaultEffort)
   // Branch label for the active project chip. The user can check out a
   // different branch outside the dashboard at any time, so this refetches on a
   // slow interval and on window focus rather than being read once. A failure
@@ -217,7 +228,7 @@ export function useComposerChips({
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
   return {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
+    shownModel, chipModel, modelSelected, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,

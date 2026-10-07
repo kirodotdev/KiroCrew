@@ -6274,7 +6274,17 @@
       "terminal_review": "जाँचकर टर्मिनल में चलाओ",
       "terminal_force_stop": "एजेंट रोको",
       "terminal_pending": "सत्र का विवरण लोड होने का इंतज़ार करो या दूसरा सत्र चुनो।",
-      "terminal_run_review": "टर्मिनल कमांड की समीक्षा करो"
+      "terminal_run_review": "टर्मिनल कमांड की समीक्षा करो",
+      "agent_backend": "एजेंट हार्नेस",
+      "gateway_tools": "{{productName}} टूल",
+      "gateway_tools_connected": "उपलब्ध",
+      "gateway_tools_failed": "इस सत्र में {{productName}} टूल शुरू नहीं हो सके। फिर से कोशिश करने के लिए नया सत्र शुरू करें।",
+      "gateway_tools_sent": "भेजे गए (हार्नेस स्थिति नहीं बताता)",
+      "gateway_tools_not_sent": "इस सत्र को {{productName}} टूल नहीं भेजे गए, और यहाँ से उन्हें जोड़ा नहीं जा सकता।",
+      "gateway_tools_pending": "अभी रिपोर्ट नहीं हुई",
+      "gateway_tools_missing": "इस सत्र में {{productName}} टूल नहीं हैं",
+      "gateway_tools_missing_short": "टूल नहीं",
+      "model_selected": "चुना गया: {{name}}"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

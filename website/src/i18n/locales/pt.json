@@ -6373,7 +6373,17 @@
       "terminal_review": "Revisar e executar no terminal",
       "terminal_force_stop": "Parar agente",
       "terminal_pending": "Aguarde o carregamento dos detalhes da sessão ou selecione outra sessão.",
-      "terminal_run_review": "Revisar comando do terminal"
+      "terminal_run_review": "Revisar comando do terminal",
+      "agent_backend": "Harness do agente",
+      "gateway_tools": "Ferramentas do {{productName}}",
+      "gateway_tools_connected": "Disponíveis",
+      "gateway_tools_failed": "As ferramentas do {{productName}} não iniciaram nesta sessão. Inicie uma nova sessão para tentar novamente.",
+      "gateway_tools_sent": "Enviadas (o harness não informa o status)",
+      "gateway_tools_not_sent": "As ferramentas do {{productName}} não foram enviadas a esta sessão, e não há como adicioná-las por aqui.",
+      "gateway_tools_pending": "Ainda sem relatório",
+      "gateway_tools_missing": "Esta sessão não tem as ferramentas do {{productName}}",
+      "gateway_tools_missing_short": "Sem ferramentas",
+      "model_selected": "Selecionado: {{name}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

@@ -1380,6 +1380,26 @@ def read_turn_model(source: object) -> str:
     return "auto" if _source_requests_auto(source) else ""
 
 
+def read_reported_turn_model(source: object) -> str:
+    """The model the harness reported serving the turn, else :func:`read_turn_model`.
+
+    ``turn_model`` comes from the prompt response's ``model_usage``, so it names
+    what ran even when that is not the selection, and in the harness's own
+    spelling (``global.anthropic.claude-opus-5-5[1m]`` for ``claude-opus-5.5``).
+    Only the turn footers show it: a usage row keyed by that spelling would split
+    one model's history in two, so the usage path keeps :func:`read_turn_model`.
+    Never raises.
+    """
+    try:
+        for node in _wrapper_chain(source):
+            reported = getattr(node, "turn_model", "")
+            if isinstance(reported, str) and reported:
+                return reported
+    except Exception:
+        pass
+    return read_turn_model(source)
+
+
 def _resolve_model(model: str, model_source: object) -> str:
     """Resolve the model to record, retaining a known Auto selection.
 

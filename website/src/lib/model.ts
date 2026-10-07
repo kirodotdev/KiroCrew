@@ -178,3 +178,42 @@ export function modelChipMarker(
   }
   return !slotKey && !agentPinned && isDefault ? 'default' : null
 }
+
+/** What a live session reports running, or `''`s until it has.
+ *
+ *  `selected` is the model the session reports selecting (`servedModel`), in the
+ *  picker's spelling when a row matches so the picker keeps highlighting it.
+ *  `chip` is what the chip names: the model the harness said served the last
+ *  turn (`turnModel`), exactly as reported, else the selection. The two differ
+ *  when the harness ran something other than its selection, which is the case a
+ *  chip naming the selection hides. `auto` is a policy rather than a report, so
+ *  a session on Auto answers `''` and the chip keeps its prediction.
+ *
+ *  DISPLAY only, like `displayModel`.
+ */
+export function reportedModel(
+  turnModel: string,
+  servedModel: string,
+  models: { name: string }[],
+): { selected: string; chip: string } {
+  const served = servedModel.trim()
+  const key = normalizeModelKey(served)
+  const row = key && key !== 'auto' ? models.find(m => normalizeModelKey(m.name) === key) : undefined
+  const selected = !key || key === 'auto' ? '' : row ? row.name : served
+  const turn = turnModel.trim()
+  return { selected, chip: turn && normalizeModelKey(turn) !== 'auto' ? turn : selected }
+}
+
+/** `modelChipMarker` for a chip that names a REPORTED model.
+ *
+ *  A pin and the id a harness reports for it are often two spellings of one
+ *  model (a catalog id against a region-prefixed 1M-context wire id), and the
+ *  marker compares spellings, so its `auto` cannot tell a substitution from a
+ *  respelling there. It stands only on the backend's own withhold verdict.
+ */
+export function reportedModelMarker(
+  marker: 'default' | 'auto' | null,
+  withheld: boolean | null | undefined,
+): 'default' | 'auto' | null {
+  return marker === 'auto' && withheld !== true ? null : marker
+}

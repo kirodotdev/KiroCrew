@@ -12,7 +12,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncContextManager
 
-from kiro_crew import model_scope
+from kiro_crew import model_registry, model_scope
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
@@ -380,6 +381,9 @@ _RESUME_MAX_ATTEMPTS = 4  # total session/load attempts before fresh fallback
 # an RPC error's message, short enough that one line stays one line.
 _SETUP_FAILURE_LOG_CAP = 300
 _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s between attempts
+# The effort value claude-agent-acp reports when no level is set, so the model's own
+# default applies.
+_HARNESS_DEFAULT_EFFORT = "default"
 # Substrings (matched case-insensitively) of a session/load error that name a
 # TRANSIENT native-lock condition — one that clears once the previous holder
 # finishes dying — as opposed to a genuine load failure. Two shapes are known:
@@ -432,6 +436,17 @@ def _is_transient_resume_lock_error(exc: BaseException) -> bool:
     """True when *exc* from ``session/load`` names a lock race worth retrying."""
     text = str(exc).lower()
     return any(marker in text for marker in _RESUME_TRANSIENT_LOCK_MARKERS)
+
+
+def _reported_effort(level: str) -> str | None:
+    """A harness-reported effort level the slot may retain, or ``None``.
+
+    The level rides every slots snapshot, so only one the effort-name check
+    accepts (short, lowercase) is kept; anything else reads as no level reported.
+    """
+    from kiro_crew.dashboard.chat_persistence import cap_effort_capability_levels
+
+    return level if level and cap_effort_capability_levels([level], source="reported") else None
 
 
 class AcpProvider(LLMProvider):
@@ -529,6 +544,9 @@ class AcpProvider(LLMProvider):
         # runtime so per-agent watchdog windows key off the crew, never off a
         # cross-namespace name match.
         self._crew_agent: str = crew_agent or ""
+        # The agent spec this session spawned with. Kept here because the kiro
+        # path replaces ``_client``, the only other holder of the name.
+        self._agent_name: str = agent or ""
         # F2 load-recovery: set True by _start_kiro_runtime_impl when a resume
         # falls back to a FRESH native session (the prior session's lock never
         # cleared). Signals SessionManager.get_or_create to replay KiroCrew's
@@ -666,6 +684,49 @@ class AcpProvider(LLMProvider):
         else:
             model = str(getattr(client, "_resolved_model_id", "") or "").strip()
         return "" if model == DEFAULT_MODEL else model
+
+    @property
+    def turn_model(self) -> str:
+        """The model the harness reported serving the last turn (public — see LLMProvider).
+
+        Read off the prompt response's ``_meta.quota.model_usage``, so unlike
+        ``served_model`` it names what ran rather than what was selected. ``""``
+        until a turn reports one, and always on kiro-cli, which reports none.
+        """
+        return str(getattr(self._client, "turn_model", "") or "")
+
+    @property
+    def applied_effort(self) -> str | None:
+        """The reasoning effort this session runs at (public — see LLMProvider).
+
+        On the config-option channel it is the effort option's value as the
+        harness last reported it, so a level the adapter refused or never got
+        does not read as applied. The kiro family reads effort from the
+        ``cli.json`` overlay, so there it is the level Crew wrote for the
+        current model. A pair-id harness that advertises no effort option
+        carries the level in its current model id (``<model>[<effort>]``).
+        ``""`` is the harness's own default; ``None`` means this harness has no
+        effort channel or reported no level, or none that is an effort name.
+        """
+        backend = self._client.backend
+        if backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
+            option_id = effort_config_option_id(backend)
+            for option in self._client.acp_config_options:
+                if isinstance(option, dict) and option.get("id") == option_id:
+                    value = option.get("currentValue")
+                    if isinstance(value, str):
+                        return "" if value == _HARNESS_DEFAULT_EFFORT else _reported_effort(value)
+            if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+                return _reported_effort(model_registry.split_effort_suffix(self.served_model)[1])
+            return None
+        if backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            return self._resolve_effort() or ""
+        return None
+
+    @property
+    def session_agent(self) -> str:
+        """The crew this session runs as, else the agent spec it spawned with."""
+        return self._crew_agent or self._agent_name
 
     @property
     def agent_version(self) -> str:

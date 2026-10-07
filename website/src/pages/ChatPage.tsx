@@ -13,7 +13,7 @@ import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { sessionAgentLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
@@ -244,6 +244,7 @@ import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutSto
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { pinIsWithheld } from '../lib/model'
+import { gatewayToolsState } from '../lib/mcpSessionReport'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld, useComposerArrivals, useComposerSendHeld } from '../utils/composerSendHolds'
 import FollowUpCard from '../components/FollowUpCard'
@@ -2944,7 +2945,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const displayMode = slotApprovalMode(approvalMode, currentSlot)
   // What the composer's model, effort and project chips show.
   const {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
+    shownModel, chipModel, modelSelected, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, remoteContextWindow,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,
@@ -6323,10 +6324,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
+              // The live session's own report of what it runs as wins over both.
+              agentLabel={sessionAgentLabel(currentSlot?.agent, currentSlot?.served_agent, effectiveDefaultAgent)}
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
-              modelName={shownModel}
+              sessionBackend={currentSlot?.served_backend}
+              gatewayTools={gatewayToolsState(currentSlot?.mcp_report, currentSlot?.served_backend)}
+              modelSelected={modelSelected}
+              modelName={chipModel}
               modelIsInheritedDefault={modelMarker === 'default'}
               modelIsAutoChosen={modelMarker === 'auto'}
               // The turn's model is Jev's to pick exactly when the routing gate
@@ -6408,11 +6413,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
-              effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!defaultEffort}
+              effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!effectiveEffort}
               // Effort is edited INSIDE the model picker (one control, see
               // docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md);
-              // the chip only names the level in force.
-              hasEffort={effortSupported}
+              // the chip only names the level in force, including one the session
+              // reports through its model id on a harness that offers no control.
+              hasEffort={effortSupported || !!currentSlot?.served_effort}
               onAutomationClick={setAutomationOpen}
               automation={automation}
               automationOpen={automationOpen}

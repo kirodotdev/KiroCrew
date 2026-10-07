@@ -27,7 +27,7 @@ AssistantMessage renders the footer when its presentation gates permit it
 
 ## Backend (`src/kiro_crew/dashboard/chat_runner.py`, `chat_turn/turn_stats.py`)
 
-`_run_chat` captures a monotonic start time and message boundary at turn start. On `EVENT_COMPLETE`, it prefers `TurnUsage.duration_ms` when present and otherwise measures elapsed time locally; it reads credits and cost from `TurnUsage` and calls `read_turn_model(client)`. ACP credit telemetry is accumulated from `meteringUsage` entries whose unit is `credit` by `acp.client.AcpClient._track_metadata`; `acp._dispatch.parse_metadata` applies the same unit filter for the shared dispatch path.
+`_run_chat` captures a monotonic start time and message boundary at turn start. On `EVENT_COMPLETE`, it prefers `TurnUsage.duration_ms` when present and otherwise measures elapsed time locally; it reads credits and cost from `TurnUsage` and calls `read_reported_turn_model(client)`. ACP credit telemetry is accumulated from `meteringUsage` entries whose unit is `credit` by `acp.client.AcpClient._track_metadata`; `acp._dispatch.parse_metadata` applies the same unit filter for the shared dispatch path.
 
 `_attach_turn_stats(slot, elapsed_ms, credits, cost_usd, turn_boundary, model, ttft_ms)`, defined in `chat_turn/turn_stats.py` beside the first-token clock (`_FirstVisibleClock`, `_turn_clock`) whose reading `_run_chat` passes as `ttft_ms`, and bound on `chat_runner` (the binding tests import), writes `meta["turn_stats"]` on the last assistant message appended at or after `turn_boundary` and returns whether a row received it. `TestAttachTurnStats.test_error_only_turn_does_not_overwrite_previous_turn` and `test_boundary_scopes_to_current_turn_assistant` enforce this boundary: without it, an error-only turn could overwrite the prior turn's measurement. The helper does not fabricate a message, and it returns without a positive elapsed measurement. The post-turn persistence block skips the helper for `_retrying_empty` turns.
 
@@ -35,11 +35,13 @@ The helper preserves pre-existing `meta`, always records a positive `elapsed_ms`
 
 ### Cron run results
 
-`chat_runner.turn_stats_meta` builds the same `turn_stats` dict for both writers. The single-agent cron run in `slack/gateway.py` builds it from the run's `provider_last_turn_usage` and `read_turn_model`, and `cron_inject.inject_cron_result_to_dashboard` passes it as `meta` on the result row's `slot.append`, so the live broadcast and the slot window both carry it. It also passes it (as `row_meta`) to the durable `cron:{id}` append, so a restart before the slot save keeps the footer. Cron results have no `chat_done`; the broadcast is what an open tab renders. `test/test_cron_turn_stats_footer.py` pins all three — the broadcast row, the durable `cron:{id}` row (`test_durable_cron_row_carries_turn_stats`), and that an inject with no stats stamps nothing.
+`chat_runner.turn_stats_meta` builds the same `turn_stats` dict for both writers. The single-agent cron run in `slack/gateway.py` builds it from the run's `provider_last_turn_usage` and `read_reported_turn_model`, and `cron_inject.inject_cron_result_to_dashboard` passes it as `meta` on the result row's `slot.append`, so the live broadcast and the slot window both carry it. It also passes it (as `row_meta`) to the durable `cron:{id}` append, so a restart before the slot save keeps the footer. Cron results have no `chat_done`; the broadcast is what an open tab renders. `test/test_cron_turn_stats_footer.py` pins all three — the broadcast row, the durable `cron:{id}` row (`test_durable_cron_row_carries_turn_stats`), and that an inject with no stats stamps nothing.
 
 ### Model attribution
 
 `dashboard.handlers.usage.read_turn_model` returns a concrete resolved model identifier when one is available, the `auto` sentinel for an Auto request without a resolved identifier, or an empty string when neither is known. `TestReadTurnModel` enforces the precedence and the unattributable case. The sentinel distinguishes an explicit Auto selection from absent attribution; callers that need a concrete identifier for pricing or context-window lookup use `read_effective_model` instead.
+
+`read_reported_turn_model` is what both footers show: the model the harness reported serving the turn (`turn_model`, from the prompt response's `model_usage`), else `read_turn_model`. The harness spells a model its own way (`global.anthropic.claude-opus-5-5[1m]` for `claude-opus-5.5`), so the usage record keeps `read_turn_model` and one model's usage history does not split in two.
 
 ## Frontend
 

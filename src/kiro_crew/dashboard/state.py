@@ -2678,6 +2678,10 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "turn_model",
+        "served_backend",
+        "served_agent",
+        "served_effort",
         "_session_requested_model",
         "_crew_log_previous_sid",
         "_crew_log_previous_undecided",
@@ -2999,6 +3003,15 @@ class _ChatSlot:
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
         self.served_model: str = ""
+        # What the live session reports running, written through
+        # `record_session_facts`: the model its harness said served the last
+        # turn ("" = none reported), its backend id ("" is kiro-cli), the crew or
+        # agent spec it runs as, and the effort in force ("" = the harness's own
+        # default). None = no live session has reported.
+        self.turn_model: str = ""
+        self.served_backend: str | None = None
+        self.served_agent: str | None = None
+        self.served_effort: str | None = None
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
@@ -5220,6 +5233,28 @@ class _ChatSlot:
         """
         self.served_model = model_id or ""
 
+    def record_session_facts(
+        self,
+        *,
+        turn_model: str,
+        backend: str | None,
+        agent: str | None,
+        effort: str | None,
+    ) -> None:
+        """Record what the live session reports running, beside ``served_model``.
+
+        Each value is the session's own report, read through the provider's public
+        accessors, so the dashboard names what runs rather than what config says:
+        a config switch, a member-DM route or a refused pin moves only these. All
+        ``None`` (and ``turn_model`` ``""``) forgets them, as a teardown does.
+
+        DISPLAY only, like ``served_model``: never a write source.
+        """
+        self.turn_model = turn_model
+        self.served_backend = backend
+        self.served_agent = agent
+        self.served_effort = effort
+
     def latch_crew_log_previous(
         self, sid: str, *, undecided: bool | None = None, from_mapping: bool = False
     ) -> None:
@@ -5360,11 +5395,13 @@ class _ChatSlot:
         the session that advertised the list, not the slot, so a teardown that
         forgets one and keeps the other labels the next session with the
         previous one's answer. Every teardown site calls this one method so a
-        site added later cannot drop half the pair.
+        site added later cannot drop half the pair. The other session facts go
+        with them for the same reason.
         """
         self.record_model_withheld(None)
         self._session_requested_model = None
         self.record_served_model(None)
+        self.record_session_facts(turn_model="", backend=None, agent=None, effort=None)
 
     @property
     def is_restricted(self) -> bool:

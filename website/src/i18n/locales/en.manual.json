@@ -2075,7 +2075,17 @@
       "terminal_review": "Review and run in terminal",
       "terminal_run_review": "Review terminal command",
       "terminal_force_stop": "Stop agent",
-      "terminal_pending": "Wait for session details to load, or select another session."
+      "terminal_pending": "Wait for session details to load, or select another session.",
+      "agent_backend": "Agent harness",
+      "gateway_tools": "{{productName}} tools",
+      "gateway_tools_connected": "Available",
+      "gateway_tools_failed": "{{productName}} tools failed to start in this session. Start a new session to try again.",
+      "gateway_tools_sent": "Sent (harness doesn't report status)",
+      "gateway_tools_not_sent": "{{productName}} tools were not sent to this session, and nothing here can add them.",
+      "gateway_tools_pending": "Not reported yet",
+      "gateway_tools_missing": "This session has no {{productName}} tools",
+      "gateway_tools_missing_short": "No tools",
+      "model_selected": "Selected: {{name}}"
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
