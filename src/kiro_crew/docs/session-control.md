@@ -708,7 +708,6 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `memory_delegation_denied` | HTTP 403: session_create named a crew member's agent the caller may not bind (a cron, a fenced deputy, a peer member). Use a template agent, or ask the owner |
 | `model_owner_only` | HTTP 403: `auto` and **Auto (Jev)** can only be picked by the owner from the model picker |
 | `model_rejected` | The model id is missing, malformed, looks like a credential, or is one the target's backend would refuse |
-| `remote_target_unsupported` | HTTP 409: model change and reload are not supported on a session that runs on a remote crew |
 | `target_replaced` | HTTP 409: the target was replaced by another session under the same key while the call ran; nothing was changed. Try again |
 | `invalid_field_type` | An argument had the wrong type (for example a broadcast target list that is not a list of strings) |
 
