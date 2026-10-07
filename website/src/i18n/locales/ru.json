@@ -10809,6 +10809,8 @@
         "model_label": "Модель: {{model}}",
         "model_downgraded": "Запрошено {{requested}}, использовано {{resolved}}",
         "model_effective": "Работает на {{model}} (бэкэнд выбирает модель)",
+        "tool_calls": "Вызовы инструментов",
+        "tool_calls_not_listed": "Не показано ещё: {{count}}",
         "waiting_for_output": "Ожидание вывода…",
         "waiting_to_start_queued_behind_the_concurrency_l": "ожидает запуска — в очереди из-за лимита одновременных запусков",
         "workflows": "Рабочие процессы",

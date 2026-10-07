@@ -10515,6 +10515,8 @@
         "model_label": "Modell: {{model}}",
         "model_downgraded": "Angefordert {{requested}}, bereitgestellt {{resolved}}",
         "model_effective": "Läuft auf {{model}} (Backend wählt das Modell)",
+        "tool_calls": "Tool-Aufrufe",
+        "tool_calls_not_listed": "{{count}} weitere nicht aufgeführt",
         "waiting_for_output": "Warten auf Ausgabe…",
         "waiting_to_start_queued_behind_the_concurrency_l": "wartet auf den Start — in der Warteschlange hinter der Parallelitätsgrenze",
         "workflows": "Workflows",

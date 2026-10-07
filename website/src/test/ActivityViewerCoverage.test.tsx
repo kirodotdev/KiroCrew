@@ -1073,3 +1073,40 @@ describe('ActivityViewer — subagent panes render markdown', () => {
     expect(screen.getByTestId('subagent-output-body').textContent).toContain('Result:')
   })
 })
+
+/* ── Subagent card: tool-call timeline (#13628) ─────────────────────────────*/
+
+describe('ActivityViewer — subagent tool-call timeline', () => {
+  it('lists each tool call and says how many it leaves out', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', lastTool: 'Running: npm test', toolCount: 5,
+          toolCalls: [{ tool: 'Reading src/a.ts', ts: 1 }, { tool: 'Running: npm test', ts: 2 }],
+        }) }}
+      />,
+    )
+    const list = screen.getByTestId('subagent-tool-calls')
+    const items = within(list).getAllByRole('listitem')
+    // One "not listed" row (5 counted, 2 listed) plus the two calls.
+    expect(items).toHaveLength(3)
+    expect(items[0]).toHaveTextContent('3')
+    expect(items[1]).toHaveTextContent('Reading src/a.ts')
+    expect(items[2]).toHaveTextContent('Running: npm test')
+    expect(items[2]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('keeps the single last-tool line when no timeline was recorded', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'tool', streaming: 'x', lastTool: 'Terminal' }) }}
+      />,
+    )
+    expect(screen.queryByTestId('subagent-tool-calls')).toBeNull()
+    expect(screen.getByTestId('subagent-output-body')).toHaveTextContent('Terminal')
+  })
+})

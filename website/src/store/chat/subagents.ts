@@ -97,6 +97,34 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
   })
 }
 
+/** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
+ *  the front; the card states how many it is not listing, from `toolCount`. */
+export const SUBAGENT_TOOL_CALLS_CAP = 50
+
+/** Record one `subagent_tool` frame in the card's tool-call timeline (#13628).
+ *
+ *  `lastTool` alone is overwritten by every frame, so a long run showed one
+ *  tool name and nothing else. This keeps the recent calls in order.
+ *
+ *  A gated call sends TWO frames for one call: the tool_call update (which
+ *  bumps `tool_count`) and then the permission request (which repeats the
+ *  same count). A frame whose `tool_count` did not move is that second frame,
+ *  so it replaces the newest entry's title instead of listing the call twice.
+ *  Above the coalescing threshold the backend merges frames (latest wins), so
+ *  intermediate calls never reach the client; `toolCount` still counts them,
+ *  and the card reports the difference rather than implying a complete list.
+ *  Must run BEFORE the caller stores the frame's `tool_count`. */
+function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined) {
+  const calls = (a.toolCalls ??= [])
+  const repeat = typeof toolCount === 'number' && toolCount === a.toolCount && calls.length > 0
+  if (repeat) {
+    calls[calls.length - 1].tool = tool
+    return
+  }
+  calls.push({ tool, ts: Date.now() })
+  if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+}
+
 /**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
@@ -410,6 +438,7 @@ export const subagentReducers = {
     // creates the entry when this is the first frame naming the agent.
     const a = upsertSlotSub(state, slot, id)
     if (a) {
+      if (action.payload.tool) recordToolCall(a, action.payload.tool, action.payload.tool_count)
       a.lastTool = action.payload.tool; a.status = 'tool'
       if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
       a.stalled = false
@@ -454,7 +483,7 @@ export const subagentReducers = {
       // Order matters: retrying (attempt) applies FIRST so a tool field in
       // the same merged entry — meaning work resumed — clears it last.
       if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
-      if (typeof u.tool === 'string' && u.tool) { a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+      if (typeof u.tool === 'string' && u.tool) { recordToolCall(a, u.tool, u.tool_count); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
@@ -602,6 +631,9 @@ export const subagentReducers = {
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // A replay carries only the latest tool, so a card rebuilt after a reload
+      // keeps the timeline it already had, or starts one from that tool.
+      toolCalls: existing?.toolCalls?.length ? existing.toolCalls : (d.last_tool ? [{ tool: d.last_tool, ts: Date.now() }] : undefined),
       startedAt: d.started * 1000, elapsed: 0,
       toolCount: d.tool_count ?? 0, stalled,
       // Same pairing rule as sseSubagentStalled: the idle span lives and dies

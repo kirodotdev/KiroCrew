@@ -42,6 +42,7 @@ import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { sanitizeLlmOutput } from '../../utils/sanitize'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -107,6 +108,31 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
     </span>
   )
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
+}
+
+function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: boolean }) {
+  const calls = a.toolCalls ?? []
+  if (!calls.length) return null
+  // `toolCount` is the backend's own count; the timeline is capped and can
+  // miss frames the scale coalescer merged, so say how many it leaves out
+  // instead of implying the list is the whole run.
+  const unlisted = Math.max(0, (a.toolCount ?? 0) - calls.length)
+  return (
+    <div className="px-3 pb-2" data-testid="subagent-tool-calls">
+      <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.tool_calls')}</div>
+      <ol className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono max-h-[160px] overflow-y-auto space-y-0.5 list-none m-0">
+        {unlisted > 0 && <li className="text-muted/40 italic font-body">{i18nT('pages.chat.activityViewer.tool_calls_not_listed', { count: unlisted })}</li>}
+        {calls.map((c, i) => {
+          const current = isRunning && i === calls.length - 1
+          return (
+            <li key={`${c.ts}-${i}`} className={`truncate ${current ? 'text-accent' : 'text-muted/70'}`} title={sanitizeLlmOutput(c.tool)} aria-current={current ? 'step' : undefined}>
+              <Wrench className="lucide-inline" aria-hidden="true" /> {sanitizeLlmOutput(c.tool)}
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
 }
 
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
@@ -350,9 +376,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             half-typed fence until it closes. */}
         <div ref={bodyRef} onScroll={onScroll} data-testid="subagent-output-body" className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
           {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
-          {a.lastTool && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
+          {a.lastTool && !a.toolCalls?.length && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {sanitizeLlmOutput(a.lastTool)}</div>}
         </div>
       </div>
+      <SubagentToolCalls a={a} isRunning={isRunning} />
       {/* Error details — a backend-reported subagent failure, so it takes the
           shared notice (hand-off on: nothing in this panel is unsaved). */}
       {a.error && (

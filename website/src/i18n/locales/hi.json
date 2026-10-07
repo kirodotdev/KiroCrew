@@ -10515,6 +10515,8 @@
         "model_label": "मॉडल: {{model}}",
         "model_downgraded": "अनुरोधित {{requested}}, प्रयुक्त {{resolved}}",
         "model_effective": "{{model}} पर चल रहा है (बैकएंड मॉडल चुनता है)",
+        "tool_calls": "टूल कॉल",
+        "tool_calls_not_listed": "{{count}} और सूचीबद्ध नहीं हैं",
         "waiting_for_output": "आउटपुट की प्रतीक्षा…",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में",
         "workflows": "वर्कफ़्लो",

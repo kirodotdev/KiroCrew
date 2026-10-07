@@ -10662,6 +10662,8 @@
         "model_label": "Modello: {{model}}",
         "model_downgraded": "Richiesto {{requested}}, servito {{resolved}}",
         "model_effective": "In esecuzione su {{model}} (il backend seleziona il modello)",
+        "tool_calls": "Chiamate agli strumenti",
+        "tool_calls_not_listed": "Altre {{count}} non elencate",
         "waiting_for_output": "In attesa dell'output…",
         "waiting_to_start_queued_behind_the_concurrency_l": "in attesa di avvio — in coda a causa del limite di concorrenza",
         "workflows": "Workflow",
