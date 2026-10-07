@@ -143,7 +143,8 @@ class _OneAtATime:
     ``TORCH_THREADS`` cores. Concurrent requests then oversubscribe the CPU until
     each takes longer than the client waits, and an abandoned request is still
     computed to the end. A request that cannot start within ``QUEUE_WAIT_SECS``
-    is answered 503 at once, which the client treats like a timeout.
+    is answered 503 at once; the gate records it as a provider error and the
+    caller falls back as it does for any refused decision.
     """
 
     def __init__(self, inner: Any, wait_secs: float) -> None:

@@ -135,63 +135,116 @@ def test_other_routes_are_not_touched() -> None:
     assert body == raw
 
 
-def _gate_run(paths: list[str], hold: float, wait: float, fail: bool = False) -> tuple[list, int]:
-    """Send one request per path at once; return each one's outcome and peak overlap."""
-    running = {"now": 0, "peak": 0}
+#: Admission wait for a request that must be admitted. It only bounds a run that
+#: has lost its release; every ordering below is driven by events, not by time.
+_LOST_RUN_SECS = 30.0
+#: How long a held decision waits for its release before failing the test, so a
+#: gate that admits a second decision fails instead of blocking the run.
+_HOLD_BOUND_SECS = 5.0
+_DECIDE = "/v1/systemone"
 
-    async def inner(scope, receive, send):  # type: ignore[no-untyped-def]
-        running["now"] += 1
-        running["peak"] = max(running["peak"], running["now"])
+
+class _Inference:
+    """Stand-in app: a decision holds until ``release`` is set; other routes do not."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.now = 0
+        self.peak = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        self.now += 1
+        self.peak = max(self.peak, self.now)
+        self.entered.set()
         try:
-            await asyncio.sleep(hold)
-            if fail:
+            if scope["path"] == _DECIDE:
+                await asyncio.wait_for(self.release.wait(), _HOLD_BOUND_SECS)
+            if self.fail:
                 raise RuntimeError("inference failed")
             await send({"type": "http.response.start", "status": 200, "headers": []})
         finally:
-            running["now"] -= 1
+            self.now -= 1
 
-    gate = _Gate(inner, wait)
 
-    async def one(path: str) -> Any:
-        sent: list = []
+async def _call(gate: Any, path: str) -> Any:
+    sent: list = []
 
-        async def send(message):  # type: ignore[no-untyped-def]
-            sent.append(message)
+    async def send(message):  # type: ignore[no-untyped-def]
+        sent.append(message)
 
-        try:
-            await gate({"type": "http", "path": path, "headers": []}, None, send)
-        except RuntimeError:
-            return "raised"
-        return sent[0]["status"]
+    try:
+        await gate({"type": "http", "path": path, "headers": []}, None, send)
+    except RuntimeError:
+        return "raised"
+    return sent[0]["status"]
 
-    async def main() -> list:
-        return list(await asyncio.gather(*(one(p) for p in paths)))
 
-    return asyncio.run(main()), running["peak"]
+async def _yield_to_others() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
 
 
 def test_a_decision_that_cannot_start_in_time_is_refused_with_503() -> None:
-    outcomes, peak = _gate_run(["/v1/systemone"] * 3, hold=0.3, wait=0.05)
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, 0.01)
+        first = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        # The first decision holds the gate until both others have been refused.
+        refused = await asyncio.gather(_call(gate, _DECIDE), _call(gate, _DECIDE))
+        app.release.set()
+        return await first, list(refused), app.peak
 
-    assert sorted(outcomes) == [200, 503, 503]
+    first, refused, peak = asyncio.run(main())
+
+    assert first == 200
+    assert refused == [503, 503]
     assert peak == 1
 
 
 def test_decisions_that_fit_in_the_wait_run_one_after_another() -> None:
-    outcomes, peak = _gate_run(["/v1/systemone"] * 2, hold=0.05, wait=1.0)
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, _LOST_RUN_SECS)
+        first = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        second = asyncio.create_task(_call(gate, _DECIDE))
+        await _yield_to_others()
+        running_while_held = app.now
+        app.release.set()
+        return list(await asyncio.gather(first, second)), running_while_held, app.peak
+
+    outcomes, running_while_held, peak = asyncio.run(main())
 
     assert outcomes == [200, 200]
+    assert running_while_held == 1
     assert peak == 1
 
 
 def test_a_failed_inference_releases_the_gate() -> None:
-    outcomes, _ = _gate_run(["/v1/systemone"] * 2, hold=0.05, wait=1.0, fail=True)
+    async def main() -> list:
+        app = _Inference(fail=True)
+        app.release.set()
+        gate = _Gate(app, _LOST_RUN_SECS)
+        return [await _call(gate, _DECIDE), await _call(gate, _DECIDE)]
 
-    assert outcomes == ["raised", "raised"]
+    assert asyncio.run(main()) == ["raised", "raised"]
 
 
 def test_other_routes_bypass_the_gate() -> None:
-    outcomes, peak = _gate_run(["/v1/systemone", "/health"], hold=0.2, wait=0.01)
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, 0.01)
+        held = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        # The decision still holds the gate, so a gated health check could only 503.
+        health = await _call(gate, "/health")
+        app.release.set()
+        return await held, health, app.peak
 
-    assert outcomes == [200, 200]
+    held, health, peak = asyncio.run(main())
+
+    assert (held, health) == (200, 200)
     assert peak == 2
