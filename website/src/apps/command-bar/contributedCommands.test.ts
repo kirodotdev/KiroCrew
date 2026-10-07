@@ -74,6 +74,32 @@ describe('contributedCommands — what it accepts', () => {
     expect(cmd.argument).toBeNull()
   })
 
+  it('reads the agent the seeded session runs as', () => {
+    const [cmd] = contributedCommands([app([{ ...GOOD, agent: 'ticket-analyst' }])])
+    expect(cmd.agent).toBe('ticket-analyst')
+  })
+
+  it('defaults the agent to the dashboard default when unset', () => {
+    // '' is the dashboard default. The field only selects WHICH tool-enabled agent
+    // receives a prompt the reader already consented to, so its absence is not a refusal.
+    const [cmd] = contributedCommands([app([GOOD])])
+    expect(cmd.agent).toBe('')
+  })
+
+  it.each([
+    ['a slash (a path, not a stem)', 'agents/ticket-analyst'],
+    ['a backslash', 'a\\b'],
+    ['a space', 'ticket analyst'],
+    ['a value over the length cap', 'x'.repeat(121)],
+    ['a non-string', 42 as unknown as string],
+  ])('drops a bad agent to the default without dropping the row (%s)', (_label, agent) => {
+    // A wrong agent must not cost the row its visible prompt in a visible session, so
+    // the value is clamped to '' (the default) rather than the whole command refused.
+    const [cmd] = contributedCommands([app([{ ...GOOD, agent }])])
+    expect(cmd).toBeTruthy()
+    expect(cmd.agent).toBe('')
+  })
+
   it('attributes to the app name whatever the display name says', () => {
     // `displayName` is free text the app chooses, so it is never the provenance. Every
     // shape of it resolves to the same validated identifier, including the two that used

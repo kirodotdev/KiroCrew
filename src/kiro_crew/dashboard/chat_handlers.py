@@ -2072,6 +2072,27 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
         )
+    # A palette command naming its app's own agent stamps the owning app here, so
+    # every turn can refuse to run when the bare name resolves to any OTHER spec
+    # (see _ChatSlot.app_agent_owner). Only meaningful beside an explicit template
+    # pick of that agent; anything else is refused rather than half-applied.
+    app_agent_owner_raw = body.get("app_agent_owner", "")
+    app_agent_owner = ""
+    if app_agent_owner_raw:
+        from kiro_crew.apps.manifest import app_name_error
+
+        if (
+            not isinstance(app_agent_owner_raw, str)
+            or app_name_error(app_agent_owner_raw)
+            or not isinstance(agent, str)
+            or not agent
+            or agent_kind != "template"
+        ):
+            return web.json_response(
+                {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
+                status=400,
+            )
+        app_agent_owner = f"{app_agent_owner_raw}/{agent}"
     model = body.get("model", "")
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
@@ -2595,6 +2616,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if denied is not None:
                 return denied
             is_new_slot = _requested_key not in state._slots
+        # The binding is stamped only on the owner's own fresh local create below;
+        # any request that would skip that branch is refused, never left unbound.
+        if app_agent_owner and not (
+            is_new_slot
+            and cfg is not None
+            and not instance_id
+            and is_owner_dashboard_request(request)
+        ):
+            return web.json_response(
+                {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
+                status=400,
+            )
         try:
             slot = state.get_or_create_slot(
                 name,
@@ -2859,6 +2892,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     # Availability was settled before the mint; this records
                     # the namespace the pick was committed in.
                     slot.agent_kind = chosen.selection_kind
+                    if app_agent_owner:
+                        slot.app_agent_owner = app_agent_owner
                     selection_change = await _record_explicit_agent_selection(
                         assignment_key,
                         assignment_agent,

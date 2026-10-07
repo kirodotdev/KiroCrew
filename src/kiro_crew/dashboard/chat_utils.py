@@ -3820,6 +3820,13 @@ USAGE_LIMIT_KIND = "usage_limit"
 #: prose, which a reword or a translation moves.
 SESSION_START_FAILED_KIND = "session_start_failed"
 
+#: Row-level kind for the terminal `error` row a refused app-owned agent turn
+#: produces (``apps.manager.app_command_agent_refusal``: the app's agent is
+#: shadowed, ambiguous or not installed). A retry re-runs the same check against
+#: the same files, so the frontend withholds Resume on this row and the composer
+#: does not urge it; the prose names the fix.
+APP_AGENT_REFUSED_KIND = "app_agent_refused"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

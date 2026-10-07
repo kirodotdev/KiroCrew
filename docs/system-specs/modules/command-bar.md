@@ -431,6 +431,7 @@ A contribution is **data, not code**:
 | `argument` | the ONE value the command collects: `kind` (`url` / `text`), `hosts` for `url`, plus `placeholder`, `hint`, `patternError` |
 | `prompt` | the action — the text a new session is seeded with, interpolating `{argument}` |
 | `autoSend` | send that text immediately rather than leaving it in the composer |
+| `agent` | the agent the seeded session runs as (`createSlot({ agent, agent_kind: 'template', appAgentOwner })`; the backend stamps `app_agent_owner` and refuses any turn on which the bare name resolves to another spec, by declared name or filename stem, in the session's project or, with none, in every directory the provider falls back to); install refuses one the app does not itself ship, `list_apps` drops one its agent files do not register, and the launcher clamps anything outside `[A-Za-z0-9._-]{1,120}` to the default |
 
 **No app-supplied code, and no app-supplied image.** A contributed function would be
 third-party JavaScript running inside the host's own surface, on every keystroke,

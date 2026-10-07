@@ -1557,7 +1557,7 @@ export default function CommandBarOverlay({
    * it open with the field intact.
    */
   const seedNewSession = useCallback(
-    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean) => {
+    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean, agent?: string, appName?: string) => {
       const run = dialogRunRef.current
       const owned = () => dialogRunRef.current === run
       // Whether this seed belongs to a CONTRIBUTED command, decided before the awaits.
@@ -1579,8 +1579,16 @@ export default function CommandBarOverlay({
       // to type into it. Leaning on "create makes the new slot active" is only true at
       // the instant it resolves -- and this callback can resolve long after the user
       // has moved on, at which point the seed lands in whatever they moved to.
+      // The contributed row may name the agent the seeded session runs as; ''
+      // and undefined both mean the dashboard default. A named agent is always
+      // selected as a TEMPLATE: it is one the app ships, and without the kind a
+      // host crew member sharing that alias would win resolution and run the
+      // app's prompt with the member's template and private memory. The owning app
+      // rides along so the backend refuses any turn on which the bare name would
+      // resolve to a different spec (a project-local one, say).
       void dispatch(createSlot({
         activate: false,
+        ...(agent ? { agent, agent_kind: 'template' as const, ...(appName ? { appAgentOwner: appName } : {}) } : {}),
         ...(contributed ? { memory_mode: 'persistent' } : {}),
       }))
         .unwrap()
@@ -1680,7 +1688,7 @@ export default function CommandBarOverlay({
         if (!cmd) return
         if (!cmd.argument) {
           // Nothing to collect, so this is the whole action: seed and go.
-          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend)
+          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend, cmd.agent, cmd.appName)
           return
         }
         // No work yet -- this row's operation is defined by a value the user has not
@@ -2202,7 +2210,7 @@ export default function CommandBarOverlay({
       return
     }
     setActionError(null)
-    seedNewSession(live.id, now, live.title, live.autoSend)
+    seedNewSession(live.id, now, live.title, live.autoSend, live.agent, live.appName)
   }, [argCommand, commandById, exitArgumentState, pendingRow, query, seedNewSession])
 
   const onKeyDown = useCallback(
