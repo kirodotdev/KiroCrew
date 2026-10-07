@@ -170,8 +170,14 @@ def _log_safe_path(request: object) -> str:
     return repr(raw)
 
 
-def _warn_refused_once(path: str) -> None:
+def _warn_refused_once(path: str, *, degraded: bool = False) -> None:
     """WARNING on the transition into refusing, DEBUG thereafter.
+
+    ``degraded`` names the OTHER verdict this gate can reach: the caller did not
+    refuse, it answered without spawning kiro-cli (:func:`kiro_spawn_allowed`).
+    Both share one flag on purpose -- the condition reported is gateway-global
+    ("the CLI is not verified ready"), so a refusal and a degradation are two
+    views of one outage and must not each get their own hourly budget.
 
     Mirrors ``mcp_discovery._warn_probe_sandbox_unavailable_once``, and for the same
     reason. Every post-spawn failure branch in ``api_models`` logs a WARNING, so a
@@ -199,18 +205,23 @@ def _warn_refused_once(path: str) -> None:
     """
     global _refusal_warned_at
 
+    verdict = (
+        "spawned no kiro-cli subprocess"
+        if degraded
+        else f"refused with 503 {_KIRO_NOT_READY_CODE}"
+    )
     now = _clock()
     if _refusal_warned_at is not None and now - _refusal_warned_at < _REFUSAL_REWARN_SECS:
-        logger.debug("%s refused with 503 %s (already reported)", path, _KIRO_NOT_READY_CODE)
+        logger.debug("%s %s (already reported)", path, verdict)
         return
     _refusal_warned_at = now
     logger.warning(
-        "%s refused with 503 %s: Kiro CLI is not verified ready. Further refusals log "
+        "%s %s: Kiro CLI is not verified ready. Further occurrences log "
         "at DEBUG until it recovers or %.0fs elapse. Check the prerequisite snapshot "
         "for which condition — a missing binary, a sandbox refusal and a timed-out "
         "probe are three different failures.",
         path,
-        _KIRO_NOT_READY_CODE,
+        verdict,
         _REFUSAL_REWARN_SECS,
     )
 
@@ -239,6 +250,37 @@ def _service(request: web.Request) -> object:
     if service is None:
         service = getattr(request.app.get("state"), "kiro_prerequisite_service", None)
     return service
+
+
+async def kiro_spawn_allowed(
+    request: web.Request, *, max_age_secs: float = _VERIFY_MAX_AGE_SECS
+) -> bool:
+    """Whether this request may SPAWN a poll-driven ``kiro-cli`` subprocess.
+
+    The DEGRADE counterpart of :func:`reject_if_kiro_unverified`, and the right
+    gate for an endpoint that has something true to answer WITHOUT kiro-cli.
+
+    Both protect the same thing -- a timer-driven spawn of a CLI that opens an
+    interactive browser login while signed out -- and both read the same probe,
+    so they never disagree about readiness. They differ in what a not-ready
+    answer costs the caller. A 503 is correct when kiro-cli is the only possible
+    source: there is nothing to say, so saying nothing is honest. It is WRONG
+    when another source exists, because the endpoint then reports a failed read
+    for a reading it never attempted -- ``/api/sessions/usage`` 503'd on every
+    poll of an install that runs another harness, and the dashboard rendered that
+    as "could not read your balance" about a balance it had not asked anyone for.
+
+    So this returns a verdict instead of a response, and the caller keeps the
+    spawn-free part of its work. The guarantee is unchanged: a ``False`` here
+    means no ``kiro-cli`` process is started, which is the entire threat model --
+    not that the endpoint must fail.
+    """
+
+    if await kiro_verified_ready(_service(request), max_age_secs=max_age_secs):
+        _clear_refusal_warning()
+        return True
+    _warn_refused_once(_log_safe_path(request), degraded=True)
+    return False
 
 
 async def reject_if_kiro_unverified(

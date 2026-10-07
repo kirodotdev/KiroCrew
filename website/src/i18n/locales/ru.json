@@ -5890,7 +5890,7 @@
       "refreshing_balance": "Обновляем…",
       "remaining_credit_balance": "Остаток кредитов: {{count}}",
       "show_email": "Показать адрес электронной почты",
-      "usage_scope": "Ежемесячное использование кредитов Kiro по данным kiro-cli /usage в чатах, агентах, MCP и субагентах.",
+      "usage_scope": "Ежемесячное использование кредитов Kiro в чатах, агентах, MCP и субагентах.",
       "used_credits": "Использовано: {{used}} / {{total}}"
     },
     "agentDropdownList": {

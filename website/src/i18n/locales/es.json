@@ -5800,7 +5800,7 @@
       "refreshing_balance": "Actualizando…",
       "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
       "show_email": "Mostrar correo electrónico",
-      "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
+      "usage_scope": "Uso mensual de créditos de Kiro en chats, agentes, MCP y subagentes.",
       "used_credits": "Usados: {{used}} / {{total}}"
     },
     "agentDropdownList": {

@@ -188,6 +188,27 @@ def _reset_usage_globals():
     sessions_mod._usage_scrape_backoff_until = 0.0
 
 
+@pytest.fixture(autouse=True)
+def _no_crew_vault_identity(monkeypatch):
+    """Default every case in this file to "Crew owns no Kiro sign-in".
+
+    ``_fetch_usage_bg`` asks Crew's own vault before anything else, and that
+    question is real file IO against whichever machine runs the suite -- a test
+    must never reach it. ``None`` is also the state every pre-existing case here
+    was written against: a kiro-cli-owned install, where the refresh behaves
+    exactly as it did before that source existed. The cases that want the other
+    answer patch this themselves.
+
+    Coverage for the vault source itself lives in
+    ``test/test_usage_crew_credential.py``.
+    """
+    monkeypatch.setattr(
+        sessions_mod.usage_crew_credential,
+        "crew_vault_credential",
+        AsyncMock(return_value=None),
+    )
+
+
 def _api_result(usage, auth_state=None):
     """Wrap a fake usage value in the ``UsageResult`` fetch_usage_limits returns.
 
@@ -1066,8 +1087,8 @@ class TestPollNeverRefreshesInsideTheInterval:
     async def test_fresh_cache_never_refreshes(self):
         sessions_mod._usage_cache = {"credits_plan": 10.0}
         sessions_mod._usage_cache_ts = time.time()
-        with patch.object(sessions_mod, "reject_if_kiro_unverified",
-                          AsyncMock(return_value=None)), \
+        with patch.object(sessions_mod, "kiro_spawn_allowed",
+                          AsyncMock(return_value=True)), \
              patch.object(sessions_mod, "_fetch_usage_bg", AsyncMock()) as fetch:
             resp = await sessions_mod.api_sessions_usage(self._request())
         fetch.assert_not_called()
@@ -1078,8 +1099,8 @@ class TestPollNeverRefreshesInsideTheInterval:
         # The timer is still the trigger -- this is not "never refresh".
         sessions_mod._usage_cache = {"credits_plan": 10.0}
         sessions_mod._usage_cache_ts = time.time() - (sessions_mod._USAGE_REFRESH_SECS + 1)
-        with patch.object(sessions_mod, "reject_if_kiro_unverified",
-                          AsyncMock(return_value=None)), \
+        with patch.object(sessions_mod, "kiro_spawn_allowed",
+                          AsyncMock(return_value=True)), \
              patch.object(sessions_mod, "_fetch_usage_bg", AsyncMock()) as fetch:
             await sessions_mod.api_sessions_usage(self._request())
         fetch.assert_called_once()
@@ -2135,7 +2156,7 @@ class TestUsageRefreshRoute:
             sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro")
         )
         monkeypatch.setattr(sessions_mod, "_fetch_whoami", AsyncMock(return_value=dict(_IDENTITY_A)))
-        monkeypatch.setattr(sessions_mod, "reject_if_kiro_unverified", AsyncMock(return_value=None))
+        monkeypatch.setattr(sessions_mod, "kiro_spawn_allowed", AsyncMock(return_value=True))
         yield
         _reset_usage_globals()
 
@@ -2176,20 +2197,31 @@ class TestUsageRefreshRoute:
         assert spawn.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_the_unverified_kiro_guard_still_applies(self, monkeypatch):
-        from aiohttp import web
+    async def test_an_unverified_kiro_withholds_the_scrape_not_the_click(self, monkeypatch):
+        """The guard still protects the SPAWN; it no longer refuses the request.
+
+        It used to answer 503, and the dashboard rendered that refusal as a
+        failed balance read. The promise that matters is narrower: no ``kiro-cli``
+        subprocess may start on an unverified gateway, because a signed-out one
+        opens a browser login. That is what is asserted here, directly --
+        ``spawn.await_count == 0`` -- while the click still gets an answer.
+        """
         from aiohttp.test_utils import TestClient, TestServer
 
         monkeypatch.setattr(
             sessions_mod,
-            "reject_if_kiro_unverified",
-            AsyncMock(return_value=web.json_response({"error": "kiro"}, status=503)),
+            "kiro_spawn_allowed",
+            AsyncMock(return_value=False),
         )
+        # The autouse fixture leaves Crew holding no identity either, so this is
+        # the "nothing is readable at all" case -- the one state where the old
+        # 503 and this 200 describe the same world, and the payload has to say so.
         spawn = self._spawn_mock()
         async with TestClient(TestServer(_refresh_app())) as c:
             with patch("asyncio.create_subprocess_exec", spawn):
                 resp = await c.post("/api/sessions/usage/refresh")
-            assert resp.status == 503
+            assert resp.status == 200
+            assert (await resp.json())["usage"] == {"available": False}
         assert spawn.await_count == 0
 
     @pytest.mark.asyncio

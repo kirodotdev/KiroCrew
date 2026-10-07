@@ -98,6 +98,12 @@ _VAULT_IDENTITY_CLAIMS = (
     "identity",
     "provider",
     "profile_arn",
+    # Which directory the sign-in went to. Admitted deliberately (the allowlist
+    # refuses new fields by default): it is stable for an entry, not secret, and
+    # it is the one claim that distinguishes two organizations whose profile ARNs
+    # a reader cannot tell apart. An entry stored before this field existed keeps
+    # None and so keeps its fingerprint.
+    "start_url",
     "region",
     "client_id",
     "token_endpoint",

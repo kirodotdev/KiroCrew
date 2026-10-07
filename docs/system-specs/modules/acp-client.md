@@ -1935,29 +1935,48 @@ Subprocess lifecycle:
 - **Poll-driven spawn sites are readiness-gated.** `kiro-cli` auto-launches an
   interactive browser login for any subcommand run unauthenticated
   (`--no-interactive` does not suppress it; there is no opt-out env var). Every
-  dashboard endpoint that shells out to `kiro-cli` on a timer therefore calls
-  `reject_if_kiro_unverified()` BEFORE resolving or spawning the binary:
-  `/api/models` (polled every 8s while the model list is degraded) and
-  `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
-  shared `kiro_prerequisite_required` 503 — the same degraded response their
-  timeout branches already produce — so the client contract is unchanged and
-  only the subprocess is skipped. Without this gate a signed-out gateway opened
-  a browser window every 8 seconds indefinitely. These are the **only** blocking
-  readiness gates: ordinary sends are ungated, because a failing ACP attempt
-  reports its own `AcpAuthRequired` (see the governance of latched readiness in
-  `modules/learn-cron-dashboard.md`), whereas a timer-driven spawn has no turn to
-  carry that error. These sites authorize on a **freshly verified** probe
-  (`verified_ready`), never the bare latch — a stale `ready=True` would
-  green-light exactly the signed-out spawn the gate exists to prevent. The
-  freshness bound differs by site: `/api/models` keeps the tight 30s ceiling
-  (`_VERIFY_MAX_AGE_SECS`) because it is polled only while degraded and has no
-  server-side cooldown on its spawn, so a wide window would re-open the
-  browser-login storm; `/api/sessions/usage` reads on a 5-minute
-  `_POLL_GATE_MAX_AGE_SECS` because its spawn is already throttled to one fetch
-  per `_USAGE_REFRESH_SECS` (600s), so the wide window cannot storm it and only
-  spares the credit pill the inline probe. The widened worst case is one
-  stale-`ready=True` usage spawn up to five minutes after an external logout,
-  still caught sooner by the identity-change re-probe and by Refresh.
+  dashboard endpoint that shells out to `kiro-cli` on a timer therefore consults
+  the readiness probe BEFORE resolving or spawning the binary: `/api/models`
+  (polled every 8s while the model list is degraded) and `/api/sessions/usage`
+  (polled every 30s by the credit pill). Without this gate a signed-out gateway
+  opened a browser window every 8 seconds indefinitely. These are the **only**
+  blocking readiness gates: ordinary sends are ungated, because a failing ACP
+  attempt reports its own `AcpAuthRequired` (see the governance of latched
+  readiness in `modules/learn-cron-dashboard.md`), whereas a timer-driven spawn
+  has no turn to carry that error.
+  - **The two sites answer a not-ready probe differently, and the difference is
+    the point.** What the gate guarantees is narrow — *no `kiro-cli` process is
+    started* — and only one of the two sites has to fail the request to keep it.
+    `/api/models` calls `reject_if_kiro_unverified()` and returns the shared
+    `kiro_prerequisite_required` 503: kiro-cli is its only source, so the 503 is
+    the same degraded response its timeout branches already produce and the
+    client contract is unchanged. `/api/sessions/usage` calls
+    `kiro_spawn_allowed()` and keeps serving, passing the verdict down as
+    `_fetch_usage_bg(allow_kiro_spawn=...)`, which withholds both subprocesses
+    (the `whoami` and the `/usage` scrape) while still reading the sources that
+    need none — the cache, and Crew's own vault credential
+    (`handlers/usage_crew_credential.py`). Refusing there was a defect, not a
+    stricter posture: the readiness latch is never verified-ready on an install
+    that runs another harness and never signs kiro-cli in, so the endpoint 503'd
+    on *every* poll and the dashboard rendered that refusal as "could not read
+    your balance" — a failed read reported for a balance it had not asked anyone
+    for. A 503 is honest only when kiro-cli is the only possible source.
+  - These sites authorize on a **freshly verified** probe (`verified_ready`),
+    never the bare latch — a stale `ready=True` would green-light exactly the
+    signed-out spawn the gate exists to prevent. The freshness bound differs by
+    site: `/api/models` keeps the tight 30s ceiling (`_VERIFY_MAX_AGE_SECS`)
+    because it is polled only while degraded and has no server-side cooldown on
+    its spawn, so a wide window would re-open the browser-login storm;
+    `/api/sessions/usage` reads on a 5-minute `_POLL_GATE_MAX_AGE_SECS` because
+    its spawn is already throttled to one fetch per `_USAGE_REFRESH_SECS`
+    (600s), so the wide window cannot storm it and only spares the credit pill
+    the inline probe. The widened worst case is one stale-`ready=True` usage
+    spawn up to five minutes after an external logout, still caught sooner by
+    the identity-change re-probe and by Refresh.
+  - Both verdicts share ONE warn-once ledger in `kiro_readiness`, because the
+    condition reported is gateway-global ("the CLI is not verified ready"): a
+    refusal and a degradation are two views of one outage, so they must not each
+    get their own hourly WARNING budget against a 1000-entry log ring.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
   at gateway start and on explicit user action only, so a mid-session sign-out is
   discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`

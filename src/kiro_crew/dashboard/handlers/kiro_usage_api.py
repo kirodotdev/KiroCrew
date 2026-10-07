@@ -240,6 +240,9 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 _MAX_CREDITS = 1_000_000.0
 _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
+# RFC 5321's addr-spec ceiling, and the same cap the whoami parser applies in
+# ``cloud/login_target.py`` -- one bound for one field, whichever source read it.
+_MAX_EMAIL_CHARS = 254
 
 # Cap the RTS response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
@@ -918,6 +921,18 @@ def _map_response(data: dict) -> dict | None:
         result["bonus_limit"] = first["total"]
         result["bonus_label"] = first["name"]
 
+    # The signed-in account's email, present when the request asked for it. The
+    # provenance argument is the numbers' own: it came back in THIS response for
+    # THIS credential, so it is the billed account's email by construction --
+    # there is no window in which it could belong to another profile. Still
+    # untrusted input, so it is type-checked, printability-checked and bounded
+    # like every other leaf here.
+    user_info = data.get("userInfo")
+    if isinstance(user_info, dict):
+        email = user_info.get("email")
+        if isinstance(email, str) and email and email.isprintable():
+            result["email"] = email[:_MAX_EMAIL_CHARS]
+
     return result
 
 
@@ -942,7 +957,47 @@ class UsageResult(NamedTuple):
     auth_state: str
 
 
-def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
+class VaultCredential(NamedTuple):
+    """A Kiro OIDC credential Kiro Crew itself owns, handed in by the caller.
+
+    Every other source this module reads belongs to SOMEONE ELSE -- kiro-cli's
+    auth store, the IDE's SSO cache, amazon-q's store -- and is read as a
+    bystander: unrefreshable here, and valid only as long as its owner keeps
+    driving it. On an install whose sign-in Kiro Crew owns (KAS mode, where there
+    may be no kiro-cli at all), that made the balance permanently unreadable:
+    the module's own docstring calls it out -- "the stored token passes its
+    expiry with nothing to renew it ... and this module fails closed forever".
+
+    This is the credential WITH an owner present. It is resolved by the async
+    caller from ``KasAuthProvider`` -- which refreshes it before handing it over,
+    so it cannot be the expired-store case -- and passed in, keeping this module
+    synchronous and keeping the vault/refresh machinery out of it.
+
+    ``profile_arn`` comes from the SAME atomic snapshot as the bearer
+    (``resolve_request_credential``), which is what makes it usable as the
+    ``expected_arn`` anchor: the two cannot describe different accounts.
+
+    ``account_type`` and ``start_url`` are identity metadata rather than
+    credential material, and ride along for one reason: this module is where a
+    usage dict is assembled, and the caller must not have to re-open the vault to
+    label the reading it just took. ``start_url`` names the directory the sign-in
+    went to, which the account panel renders as the issuer host. It is the signed-in account's KIND, spelled the way kiro-cli's
+    ``whoami`` spells it (``BuilderId``, ``IamIdentityCenter``,
+    ``SocialGoogle``, ...) so the dashboard reads one vocabulary whichever
+    credential answered. Not a guess: Crew performed this sign-in, so the kind
+    is a record, not an inference.
+    """
+
+    token: str
+    expiry: datetime
+    profile_arn: str | None
+    account_type: str | None = None
+    start_url: str | None = None
+
+
+def fetch_usage_limits(
+    expected_arn: str | None, *, vault: VaultCredential | None = None
+) -> UsageResult:
     """Fetch real credit usage via the direct RTS API. Synchronous (uses urllib).
 
     A candidate credential is used only when its ownership by the signed-in
@@ -967,6 +1022,14 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     SSO caches or another product's store, which is what let one Builder ID
     account's leftover token be served as a different Builder ID account's balance.
 
+    ``vault`` is an ADDITIONAL candidate, not a replacement: Kiro Crew's own
+    signed-in identity (:class:`VaultCredential`), tried first and then every
+    enumerated store exactly as before, so an install whose sign-in kiro-cli owns
+    reads precisely what it read before this parameter existed. It satisfies the
+    source-anchored proof for the same reason kiro-cli's own store does -- it is
+    the credential of the account THIS process signed in, by construction -- and
+    when it carries a profile ARN it satisfies the stronger ARN proof too.
+
     Returns the canonical usage dict on success, or None on ANY failure (no
     token, no candidate proven, unparseable body, no CREDIT breakdown). The caller
     treats None as "fall back to the text scrape". This function never raises and
@@ -985,6 +1048,22 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     """
     try:
         candidates = _candidate_tokens()
+        if vault is not None:
+            # First, ahead of every bystander store. ``from_cli_store=True`` is a
+            # trust CLAIM, and this credential has the strongest version of it:
+            # kiro-cli's store earns the flag by being the store its own process
+            # authenticates from, and Crew's vault earns it by being the store
+            # THIS process authenticates from -- plus it is encrypted, owner-only,
+            # and fenced against the agent's own file tools (TokenStore refuses a
+            # linked directory), where the enumerated stores are merely readable.
+            #
+            # Deduped against the enumerated ones by token value, so a host where
+            # Crew and kiro-cli hold the same bearer tries it once, with the
+            # trusted provenance.
+            candidates = [
+                _Candidate(vault.token, vault.expiry, from_cli_store=True),
+                *(c for c in candidates if c.token != vault.token),
+            ]
     except Exception:
         # Token acquisition must fail closed to the text scrape, never raise —
         # an escaping error would make the caller cache {"available": False}
@@ -1051,7 +1130,16 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
                     "does not match the signed-in account"
                 )
                 continue
-            payload: dict[str, object] = {"origin": "AI_EDITOR"}
+            # ``isEmailRequired`` is what makes the response carry ``userInfo``.
+            # This is where kiro-cli's own ``whoami`` gets the email it prints:
+            # ``api_client::get_usage_limits_with_email()`` is this same call
+            # with the flag set, and ``cli/user.rs`` reads ``user_info.email``
+            # off the result. Asking here means the email arrives IN THE SAME
+            # RESPONSE as the numbers, for the same credential -- so it cannot
+            # describe a different account than the balance beside it, which is
+            # exactly the failure mode a whoami-sourced email needs an ARN match
+            # to rule out.
+            payload: dict[str, object] = {"origin": "AI_EDITOR", "isEmailRequired": True}
             if arn:
                 payload["profileArn"] = arn
             try:

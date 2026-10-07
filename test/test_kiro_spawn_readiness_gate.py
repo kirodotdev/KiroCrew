@@ -111,21 +111,33 @@ async def test_api_models_does_not_spawn_while_signed_out() -> None:
 
 
 @pytest.mark.asyncio
-async def test_api_sessions_usage_does_not_schedule_fetch_while_signed_out(
+async def test_api_sessions_usage_withholds_the_spawn_without_refusing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The usage endpoint DEGRADES here, where ``/api/models`` refuses.
+
+    Both protect one thing: no ``kiro-cli`` subprocess may be started on a
+    gateway that is not verified ready, because a signed-out one opens an
+    interactive browser login and both endpoints are polled on a timer.
+
+    They differ in what that costs the caller. ``/api/models`` has no answer
+    without kiro-cli, so 503 is honest. This endpoint does have one -- Crew's
+    own credential and a cached reading need no subprocess -- and refusing
+    withheld those too, which the dashboard then rendered as "could not read
+    your balance" on an install that has no kiro-cli balance to read.
+    """
     # Force the refresh branch live so a removed gate really schedules a fetch.
     monkeypatch.setattr(sessions, "_usage_cache_ts", 0.0)
     request = _request(_make_signed_out_kiro_prerequisite())
     with patch.object(sessions, "_fetch_usage_bg", AsyncMock()) as fetch:
         resp = await sessions.api_sessions_usage(request)
 
-    # The handler schedules the fetch with ``asyncio.create_task``, so the
-    # coroutine is CALLED but never AWAITED — ``assert_not_awaited`` would pass
-    # even if the gate were moved below the scheduling line.
-    fetch.assert_not_called()
-    assert resp.status == 503
-    assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+    # Asserted on the CALL, not the await: the handler schedules the refresh
+    # with ``asyncio.create_task``, so the coroutine is called but never
+    # awaited here. The verdict has to ride that call -- a refresh scheduled
+    # WITHOUT it would spawn, which is the regression this case exists to catch.
+    fetch.assert_called_once_with(allow_kiro_spawn=False)
+    assert resp.status == 200
 
 
 @pytest.mark.asyncio

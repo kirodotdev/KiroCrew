@@ -5710,7 +5710,7 @@
       "refreshing_balance": "রিফ্রেশ হচ্ছে…",
       "remaining_credit_balance": "অবশিষ্ট ক্রেডিট: {{count}}",
       "show_email": "ইমেইল দেখান",
-      "usage_scope": "চ্যাট, এজেন্ট, MCP এবং সাবএজেন্ট জুড়ে kiro-cli /usage থেকে মাসিক Kiro ক্রেডিট ব্যবহার।",
+      "usage_scope": "চ্যাট, এজেন্ট, MCP এবং সাবএজেন্ট জুড়ে মাসিক Kiro ক্রেডিট ব্যবহার।",
       "used_credits": "ব্যবহৃত: {{used}} / {{total}}"
     },
     "agentDropdownList": {

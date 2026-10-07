@@ -195,7 +195,27 @@ async def test_builder_id_start_device_authorization_ok_and_failure():
         )
 
 
-async def test_builder_id_poll_slow_down_then_token():
+async def test_builder_id_poll_slow_down_then_token(monkeypatch):
+    """A ``slow_down`` is honoured by waiting LONGER, then the token lands.
+
+    The back-off is asserted, not served. Awaiting it for real meant five
+    wall-clock seconds inside a unit test, raced against a device authorization
+    that expires thirty seconds out -- on a loaded machine the loop's own
+    ``now < expires_at`` check lost that race and the test failed as "timed out
+    waiting for device approval", pointing at the flow rather than at itself.
+
+    Recording the delay is also the stronger assertion. The old version only
+    checked that a token came back eventually, which a loop that ignored
+    ``slow_down`` entirely would also satisfy -- exactly the regression the name
+    promises to catch.
+    """
+    slept: list[float] = []
+
+    async def _record(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", _record)
+
     client = RegisteredClient("cid", "csec")
     session = _FakeSession(
         [
@@ -203,8 +223,41 @@ async def test_builder_id_poll_slow_down_then_token():
             _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 3600}),
         ]
     )
-    tok = await builder_id.poll_token(client, _bid_auth(), region="us-east-1", session=session)
+    auth = _bid_auth()
+    tok = await builder_id.poll_token(client, auth, region="us-east-1", session=session)
+
     assert tok.access_token == "at"
+    assert slept == [auth.interval_secs + builder_id._SLOW_DOWN_EXTRA_SECS], (
+        "a slow_down must add the back-off to the flow's own interval"
+    )
+
+
+async def test_builder_id_poll_pending_waits_the_plain_interval(monkeypatch):
+    """The counterpart: ``authorization_pending`` adds nothing.
+
+    Without this, widening the back-off to every pending poll would pass -- and
+    that would multiply the wait on the ordinary path, where the issuer has not
+    asked for anything.
+    """
+    slept: list[float] = []
+
+    async def _record(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", _record)
+
+    client = RegisteredClient("cid", "csec")
+    session = _FakeSession(
+        [
+            _FakeResp(400, {"error": "authorization_pending"}),
+            _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 3600}),
+        ]
+    )
+    auth = _bid_auth()
+    tok = await builder_id.poll_token(client, auth, region="us-east-1", session=session)
+
+    assert tok.access_token == "at"
+    assert slept == [auth.interval_secs]
 
 
 async def test_builder_id_poll_generic_error_raises():

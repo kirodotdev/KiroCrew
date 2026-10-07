@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/x-amz-json-1.1", "User-Agent": USER_AGENT}
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+# Added to the flow's own interval when SSO-OIDC answers ``slow_down``. The
+# issuer is asking to be polled less often, so honouring the unchanged interval
+# would be ignoring it; the flow's expiry bounds how long the caller waits
+# either way. Named rather than inlined so the back-off a test asserts and the
+# back-off the loop performs cannot drift apart.
+_SLOW_DOWN_EXTRA_SECS = 5
 
 
 class BuilderIdAuthError(Exception):
@@ -145,6 +151,7 @@ async def poll_token_once(
     region: str,
     identity: str = "builder_id",
     provider: str = "BuilderId",
+    start_url: str = "",
     session: aiohttp.ClientSession,
 ) -> KasToken | None:
     """One non-blocking poll of the token endpoint.
@@ -173,7 +180,9 @@ async def poll_token_once(
         if resp.status == 200:
             if not isinstance(data, dict):
                 raise BuilderIdAuthError("CreateToken returned a non-object body")
-            return _token_from_create(data, client, region, identity, provider)
+            return _token_from_create(
+                data, client, region, identity, provider, start_url
+            )
         err = data.get("error", "") if isinstance(data, dict) else ""
     if err in ("authorization_pending", "slow_down"):
         return None
@@ -189,6 +198,7 @@ async def poll_token(
     region: str,
     identity: str = "builder_id",
     provider: str = "BuilderId",
+    start_url: str = "",
     session: aiohttp.ClientSession,
 ) -> KasToken:
     """Poll the token endpoint until the user approves the device code."""
@@ -203,11 +213,14 @@ async def poll_token(
         async with session.post(url, json=payload, headers=_HEADERS) as resp:
             data = await resp.json()
             if resp.status == 200:
-                return _token_from_create(data, client, region, identity, provider)
+                return _token_from_create(
+                    data, client, region, identity, provider, start_url
+                )
             # SSO-OIDC signals pending/slow-down via an error code with non-200.
             err = (data or {}).get("error", "")
         if err in ("authorization_pending", "slow_down"):
-            await asyncio.sleep(auth.interval_secs + (5 if err == "slow_down" else 0))
+            extra = _SLOW_DOWN_EXTRA_SECS if err == "slow_down" else 0
+            await asyncio.sleep(auth.interval_secs + extra)
             continue
         if err == "expired_token":
             raise BuilderIdAuthError("device code expired before approval")
@@ -217,7 +230,12 @@ async def poll_token(
 
 
 def _token_from_create(
-    data: dict, client: RegisteredClient, region: str, identity: str, provider: str
+    data: dict,
+    client: RegisteredClient,
+    region: str,
+    identity: str,
+    provider: str,
+    start_url: str = "",
 ) -> KasToken:
     access_token = data.get("accessToken")
     if not access_token:
@@ -233,6 +251,7 @@ def _token_from_create(
         identity=identity,
         refresh_token=data.get("refreshToken"),
         region=region,
+        start_url=start_url or None,
         client_id=client.client_id,
         client_secret=client.client_secret,
     )

@@ -5710,7 +5710,7 @@
       "refreshing_balance": "Wird aktualisiert…",
       "remaining_credit_balance": "Verbleibendes Credit-Guthaben: {{count}}",
       "show_email": "E-Mail-Adresse anzeigen",
-      "usage_scope": "Monatliche Kiro-Credit-Nutzung laut kiro-cli /usage in Chats, Agenten, MCP und Subagenten.",
+      "usage_scope": "Monatliche Kiro-Credit-Nutzung in Chats, Agenten, MCP und Subagenten.",
       "used_credits": "Verwendet: {{used}} / {{total}}"
     },
     "agentDropdownList": {

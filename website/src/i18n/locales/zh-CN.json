@@ -5620,7 +5620,7 @@
       "refreshing_balance": "正在刷新…",
       "remaining_credit_balance": "剩余额度：{{count}}",
       "show_email": "显示邮箱",
-      "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
+      "usage_scope": "每月 Kiro 额度用量，涵盖聊天、代理、MCP 和子代理。",
       "used_credits": "已使用：{{used}} / {{total}}"
     },
     "agentDropdownList": {

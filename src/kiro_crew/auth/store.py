@@ -65,6 +65,9 @@ class KasToken:
     ``BuilderId`` / ``Google`` / ``Github`` / ``Enterprise`` / ``ExternalIdp`` /
     ``Internal``. ``profile_arn`` is mandatory for enterprise/IdC identities and feeds
     the ``X-Kiro-Profile-Arn`` header; social/Builder ID may omit it.
+    ``start_url`` is display/identity metadata rather than part of the KAS
+    contract: it names WHICH directory the sign-in went to, which the account
+    panel shows and no later call can re-derive.
     """
 
     access_token: str
@@ -74,6 +77,13 @@ class KasToken:
     refresh_token: str | None = None
     profile_arn: str | None = None
     region: str | None = None
+    # The IdC/Builder ID portal URL this credential was obtained against. Stored
+    # because it NAMES the directory -- the account panel renders its host as
+    # "Signed in with IAM Identity Center · <host>" -- and because nothing can
+    # recover it later: no API returns it (SsoIdentityDetails carries an SSO
+    # instance ARN, not the portal), and the login call is the only place it is
+    # known. None for social and external-IdP identities, which have no portal.
+    start_url: str | None = None
     auth_method: str | None = None  # e.g. 'external_idp'; drives KAS TokenType header
     # IdC refresh needs the dynamically-registered client credentials.
     client_id: str | None = None

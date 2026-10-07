@@ -5895,7 +5895,7 @@
       "refreshing_balance": "새로 고치는 중…",
       "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
       "show_email": "이메일 표시",
-      "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
+      "usage_scope": "채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
       "used_credits": "사용: {{used}} / {{total}}"
     },
     "artifactChatPanel": {

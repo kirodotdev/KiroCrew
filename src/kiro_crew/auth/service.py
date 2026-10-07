@@ -133,6 +133,9 @@ class _PendingOidcLogin:
     client: builder_id.RegisteredClient
     auth: builder_id.DeviceAuthorization
     region: str
+    # Kept because the credential records it and nothing can recover it after
+    # this login: see ``KasToken.start_url``.
+    start_url: str
     identity: str
     provider: str
     resolve_profile: bool
@@ -380,6 +383,7 @@ class KasLoginService:
                 client=client,
                 auth=auth,
                 region=region,
+                start_url=start_url,
                 identity=identity,
                 provider=provider,
                 resolve_profile=resolve_profile,
@@ -562,6 +566,7 @@ class KasLoginService:
                 region=pending.region,
                 identity=pending.identity,
                 provider=pending.provider,
+                start_url=pending.start_url,
                 session=session,
             )
         except builder_id.BuilderIdAuthError as err:

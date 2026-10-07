@@ -1787,7 +1787,7 @@
       "refreshing_balance": "Refreshing…",
       "remaining_credit_balance": "Remaining credit balance: {{count}}",
       "show_email": "Show email",
-      "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
+      "usage_scope": "Monthly Kiro credit usage across chat, agents, MCP, and subagents.",
       "used_credits": "Used: {{used}} / {{total}}"
     },
     "agentImportFlow": {
