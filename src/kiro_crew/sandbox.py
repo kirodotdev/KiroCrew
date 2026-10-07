@@ -1772,6 +1772,32 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the spool's own ``restrict_to_owner=True`` writes already require of it; its
     # readers open the leaf inside, so an empty root reads exactly as an absent one.
     "inbound-spool",
+    # The secret vault: the vault key and every stored secret. ``SecretVault`` creates
+    # this directory on the owner's FIRST stored secret, so on a home with none yet the
+    # ``isdir``-guarded ``sensitive_dirs`` loop skips the name, and the key and ciphertext
+    # written later appear unmasked inside every sandbox already running. The store makes
+    # its key and ciphertext inside an existing directory exactly as inside a new one.
+    ".vault",
+    # The Kiro sign-in store (access and refresh tokens, in its own vault underneath).
+    # ``TokenStore`` makes it on the first Crew sign-in, which is the same lazy shape as
+    # ``.vault`` with the same result: a sandbox spawned before that sign-in would see the
+    # tokens appear unmasked. ``make_owner_only_dir`` accepts the existing 0700 directory.
+    "kas",
+    # The rest of the mask list's direct-child directories whose store creates them on
+    # first write rather than at gateway start. Each store treats an empty root exactly
+    # as an absent one: it mkdirs with ``exist_ok`` before writing, and every reader
+    # keys on the files inside, never on the directory itself.
+    # ``test_sandbox_precreate_secret_dirs`` pins that every directory leaf on a mask
+    # list is either here or made at boot.
+    "ledger",
+    "work-ledger",
+    "cron-running",
+    "workflow_library",
+    "routing",
+    "webhooks",
+    "mcp-apps",
+    "whatsapp",
+    "backup",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each

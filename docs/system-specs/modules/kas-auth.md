@@ -251,7 +251,11 @@ Defense in depth: the whole `kas` directory (vault included) is a keystone leaf 
 `security._CREW_SECRET_LEAVES`, so the agent can neither read nor write its own
 credential store — the denylist blocks the tools, and encryption at rest means a
 ciphertext-only leak (backup, sync, accidental read) discloses nothing without the
-key file. Do not weaken either layer. The threat model is honest about its limits:
+key file. The directory is also an OS-level sandbox mask, and because the store
+creates it on the first sign-in, `kas` is in
+`sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES`: it exists (empty, 0700) before every
+Linux namespace spawn, so a sandbox started before that sign-in still has it masked.
+Do not weaken either layer. The threat model is honest about its limits:
 a same-UID attacker who can read the key file can decrypt — the vault defends
 against agent reads and ciphertext-only leaks, not same-UID malware (same position
 as sops/age key files and Ansible vault-password files).

@@ -648,7 +648,11 @@ Security properties:
   deleted, so a prompt-injected agent has no oracle to exfiltrate it through.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
-  so the agent cannot read the ciphertext off disk either.
+  so the agent cannot read the ciphertext off disk either. On Linux a mount
+  needs the directory to exist, and the vault creates it on the first stored
+  secret, so `.vault` is in `sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES`: it is
+  created empty at 0700 before every namespace spawn, and the mask applies to a
+  sandbox that started before the first secret.
 - **`.env` migration.** `kirocrew secrets import [--apply]` moves the
   vault-aware Jira credential keys (`JIRA_API_TOKEN`, per-host
   `JIRA_TOKEN_<HEX>`) out of the data-home `.env` and rewrites each line to a
