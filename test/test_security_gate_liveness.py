@@ -230,7 +230,22 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Then raised from 28,741 (base) to 28,800 for the git-publish non-plain
+#: subcommand fix. ``_is_git_push_via_normalizer`` dequotes via
+#: ``normalize_shell_command`` and, for every ``git`` token, seeks the
+#: subcommand past global flags (``_GIT_ARG_FLAGS``): a literal ``push`` denies
+#: ANYWHERE (quote-evaded ``"git" "push"``, after a newline / keyword / unlisted
+#: runner / wrapper with options), and the one PR addition over the base is a
+#: fail-closed deny of a subcommand slot holding a genuine shell expansion
+#: (``_GIT_PUBLISH_SUBCOMMAND_EXPANSION_RE`` -- a parameter / substitution /
+#: brace expansion) whose NEXT non-flag word is a literal ``push``
+#: (``git $@ push``), unless ``git`` is a print-only program's argument
+#: (``_GIT_PUBLISH_PRINT_ONLY_ARG_RE``: ``echo ... git $OPTS push`` only
+#: prints). There is no command-position gate (a false expansion match is a
+#: recoverable over-refusal, and gating on position both leaked and
+#: over-refused), so the walk is a single linear forward pass. No new lexer.
+_PACKAGE_LINE_BUDGET = 28800
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

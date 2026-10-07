@@ -2918,8 +2918,21 @@ def _split_shell_words(segment: str) -> list[str]:
     return words
 
 
-# The product name as a WHOLE program name (bare or the tail of a path), which is
-# what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
+# Git global flags that consume a separate argument token (they appear between
+# ``git`` and the subcommand). Read by ``argv_floor._is_git_push_via_normalizer``'s
+# subcommand seek. These are the git global options that take a SEPARATE value
+# word; a value given with ``=`` (``--git-dir=/x``) is self-contained and is
+# matched by the ``=`` check in the seek, not by membership here, so an option's
+# value word is never mistaken for the subcommand.
+_GIT_ARG_FLAGS = frozenset(
+    {
+        "-c",
+        "-C",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+    }
+)
 
 
 def _is_self_program(token: str) -> bool:
@@ -3756,6 +3769,29 @@ def _shell_tokens(cmd: str) -> list[str]:
         tokens = [t.strip("\"'\\") for t in cmd.split()]
     # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
     return [_EMPTY_QUOTE_RE.sub("", token) for token in tokens]
+
+
+#: A genuine shell expansion in git's subcommand slot -- a construct the SHELL
+#: rewrites into a DIFFERENT word before git runs: a parameter (``$@``, ``$SUB``,
+#: ``${CMD}``), a command substitution (``$(echo push)``, backticks) or an
+#: alternating brace expansion (``{a,b}``, ``{1..3}``). This is the git-publish
+#: Goal's "a word the shell can rewrite". NOT every non-literal: an
+#: ``xargs``/``find`` ``{}`` placeholder, a comma/range-free ``{abc}`` and an
+#: ``@(...)`` extglob are not rewritten into a verb, so (like the base) they
+#: stay allowed.
+_GIT_PUBLISH_SUBCOMMAND_EXPANSION_RE = re.compile(r"\$|`|\{[^{}]*(?:,|\.\.)[^{}]*\}")
+
+#: A print-only program (``echo`` / ``printf``) running ``git`` as a plain
+#: ARGUMENT in the SAME simple command -- no command separator (``;`` ``&``
+#: ``|`` newline) or group delimiter between the print verb and ``git`` in the
+#: RAW text. ``echo usage: git $OPTS push origin feat`` only PRINTS the line, so
+#: the git-publish expansion branch must not refuse it; a boundary between them
+#: (``echo hi<newline>git $@ push``) means ``git`` is its own command and is NOT
+#: matched here. The literal-``push``-anywhere branch is unaffected: a printed
+#: literal ``git push`` stays caught, exactly as the base's raw-text pass does.
+_GIT_PUBLISH_PRINT_ONLY_ARG_RE = re.compile(
+    r"(?:^|[;&|\n(){}])\s*(?:echo|printf)\b[^;&|\n(){}]*?\bgit\b", re.IGNORECASE
+)
 
 
 def normalize_shell_command(cmd: str) -> list[str]:

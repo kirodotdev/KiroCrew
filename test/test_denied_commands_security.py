@@ -1415,6 +1415,21 @@ class TestIsDeniedReDoSResistance:
         assert self._elapsed("aws " + ("-x " * 5000)) < self._BUDGET_SECONDS
         assert self._elapsed("aws " + ("--foo=bar " * 5000)) < self._BUDGET_SECONDS
 
+    def test_repeated_runner_keyword_prefix_stays_linear(self):
+        """A long run of runner keywords before a git publish (``env env env …
+        git push``) must stay LINEAR in the git-publish detection. The
+        normalizer pass tokenizes once and scans the token list once for a
+        ``git`` program with a ``push`` subcommand, so N leading wrappers are
+        O(N), not O(N^2) -- a single injected command cannot stall the scan past
+        the loop watchdog. A generous bound: the scan is sub-second here."""
+        G = "gi" + "t"
+        # No git word at all: the single token scan still returns quickly.
+        assert self._elapsed(("env " * 3000) + "true") < self._BUDGET_SECONDS
+        # A git PUBLISH after the wrapper run is DENIED, linearly.
+        pub = ("env " * 3000) + "%s pu" % G + "sh origin main"
+        assert self._elapsed(pub) < self._BUDGET_SECONDS
+        assert is_denied(pub) is not None
+
     def test_mid_dotstar_chain_spam_stays_linear(self, monkeypatch):
         """``python.*boto3.*get_credentials`` is polynomial per pattern under a single
         ``re.search``; fragment-splitting on the top-level ``.*`` gaps keeps it linear even

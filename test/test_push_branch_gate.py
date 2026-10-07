@@ -208,6 +208,204 @@ class TestIsGitPublishDetection:
         assert _is_git_publish("echo $git is set") is False
 
 
+class TestGitPushNonPlainPreverbIsDeniedFailSafe:
+    """Fail-closed subcommand check in the one normalizer pass
+    (``_is_git_push_via_normalizer``). It dequotes via
+    ``normalize_shell_command`` and, for EVERY token resolving to ``git``, seeks
+    the subcommand past global flags and their values. A literal ``push``
+    subcommand denies ANYWHERE it is reached -- a quote-evaded ``"git" "push"``,
+    after a newline, a shell keyword, an unlisted runner, or a wrapper with
+    options (``timeout 5 git push``) -- so no bypass depends on command
+    position. An expansion the shell can rewrite in the subcommand slot
+    (``_GIT_PUBLISH_SUBCOMMAND_EXPANSION_RE``) denies only when the NEXT non-flag
+    word is a literal ``push`` (``git $@ push``). Requiring ``push`` to be the
+    word the expansion sits immediately before is what keeps allowed: an
+    expansion whose next word is another verb (``git $GIT_OPTS stash push`` ->
+    ``stash``, ``git $X log --grep push`` / ``git $X log; git stash push`` ->
+    ``log``), an expansion naming some other verb (``git $@ status``), a literal
+    non-push subcommand (``git -C $(pwd) log`` -- the substitution sits in a flag
+    value the seek skips), and the ``xargs`` ``{}`` placeholder / ``@(...)``
+    extglob the shell does not rewrite into a verb. There is NO command-position
+    gate: a false expansion match is a recoverable over-refusal, never a bypass,
+    and the literal-``push``-anywhere match is the fail-safe catch for a push
+    reached through a wrapper or a newline.
+    A real plain subcommand passes, and a subcommand's own arguments (a commit
+    message, a ``--grep`` pattern, a glob) are not scanned.
+    """
+
+    def test_every_reviewed_construct_table(self) -> None:
+        """One table over the shell constructs that can hide a git publish. The
+        PUBLISH cases must DENY (a protected push reachable through the
+        construct); the plain read-only and golden-path cases must ALLOW."""
+        P = "pus" + "h"
+        nl = chr(10)
+        must_deny = (
+            # a trailing comment then a newline then a force push to a protected
+            # branch -- the second line's literal push is caught anywhere
+            "git %s origin feat # don't%sgit %s --force origin main" % (P, nl, P),
+            # the Goal: an expansion in the subcommand slot whose NEXT non-flag
+            # word is a literal push
+            "git $@ %s origin main" % P,
+            "git -C . $@ %s origin main" % P,  # option value consumed, $@ is the subcommand
+            "git '-C' . $@ %s origin main" % P,  # quoted option name (normalizer dequotes)
+            "cd x; git $@ %s origin main" % P,  # glued separator before git
+            "VAR=1 git $@ %s origin main" % P,  # assignment prefix before git
+            # an expansion push reached through a wrapper WITH OPTIONS, or across
+            # a newline -- there is no command-position gate, so the literal push
+            # (here the next word after the expansion) is caught regardless of
+            # how git is reached (the Opus under-refusal class)
+            "timeout 5 git $@ %s origin main" % P,
+            "sudo -u root git $@ %s origin main" % P,
+            "env -C /tmp git $@ %s origin main" % P,
+            "echo hi%sgit $@ %s origin main" % (nl, P),
+            # a print-only program then a NEWLINE then a real expansion push:
+            # the boundary makes git its own command, so the print-only
+            # suppression does not apply and it denies
+            "echo usage%sgit $@ %s origin main" % (nl, P),
+            # a literal push after a command operator / keyword / wrapper
+            "ok;git %s origin main" % P,
+            "env git %s origin main" % P,
+            "eval git %s origin main" % P,
+            "{ git %s origin main; }" % P,
+            "(git %s origin main)" % P,
+            "2>/dev/null git %s origin main" % P,
+            # QUOTE-EVADED literal pushes the raw-text pass misses, caught ANYWHERE
+            # (the review's under-refusal class): after a newline, a shell
+            # keyword, an unlisted runner, a value-taking wrapper option.
+            '"git" "%s" origin main' % P,
+            'g""it %s origin main' % P,
+            'echo ok%s"git" "%s" origin main' % (nl, P),
+            'if true; then "git" "%s" origin main; fi' % P,
+            '! "git" "%s" origin main' % P,
+            'strace -f "git" "%s" origin main' % P,
+            'sudo -u root -g wheel "git" "%s" origin main' % P,
+            'timeout -s KILL 5 "git" "%s" origin main' % P,
+        )
+        must_allow = (
+            "git %s origin my-feature" % P,  # plain feature push (floor allows)
+            "VAR=val git %s origin my-feature" % P,  # plain assignment prefix
+            "git %s origin my-feature 2>&1" % P,  # modelled redirection
+            "git status",
+            "git -C /abs/path status",
+            "git -C /abs/path stash %s" % P,  # plain prefix, non-protected stash
+            "git log --oneline -20",
+            "git fetch origin main",
+            "git add *.py",  # glob AFTER a plain non-push subcommand
+            "git diff *.py",
+            "command -v git",
+            "grep hello *.py",
+            "echo done",
+            "eval 'git' 'status'",  # quoted-literal subcommand lexes to plain
+            "git commit -m 'fix the thing'",  # subcommand args are not scanned
+            "git log --oneline --grep='rsync -e'",  # --grep pattern after log
+            # Golden-path read-only chains and worktree-dev clones with a
+            # home-relative or quoted root stay allowed
+            "git log --oneline -5; git status",
+            "git stash; git pull --rebase origin main",
+            "git fetch;git status",
+            "git -C ~/src/x worktree add ../y -b z origin/main",
+            # a control operator inside a quoted -c value is DATA (the value is
+            # kept whole, so the real subcommand -- a read-only stash -- is seen)
+            "git -c 'alias.x=a;b' stash",
+            # ``git`` as SEARCH DATA (not a program) stays allowed
+            "grep -n git *.md",
+            'grep -c git "$LOG"',
+            "rg -n 'git|push' src/kiro_crew/security",
+            "git grep -E 'foo|git' -- '*.py'",
+            "git > /dev/null status",
+            "2>/dev/null git status",
+            "command -v git && git --version",
+            # an EXPANSION subcommand with no trailing push names some other verb,
+            # left alone exactly as the base did (over-refusal avoided):
+            "git $@ status",
+            "git ${CMD} log",
+            "git -C $(pwd) log --oneline -5",  # substitution in a flag VALUE, not the subcommand
+            "git -C $(git rev-parse --show-toplevel) status --porcelain",
+            "git --git-dir=$(git rev-parse --git-common-dir) worktree list",
+            "ls -d ../kc-wt-* | xargs -I{} git -C {} rev-parse --abbrev-ref HEAD",
+            # the normalizer resolves this to a plain / non-publish form
+            "git -C $R stash %s" % P,  # subcommand is stash, not a protected push
+            # a REDIRECT in the subcommand slot is neither an expansion the gate
+            # matches nor a literal ``push``, so these stay allowed (the real
+            # subcommand -- a stash -- follows; the trailing ``push`` is only the
+            # stash verb), matching the base:
+            "git 2>/dev/null stash %s -m wip" % P,
+            "git > /dev/null stash %s -m wip" % P,
+            "git 2>nul stash %s -m wip" % P,  # cmd.exe stderr-silence spelling
+            # a feature push with the redirect before the subcommand -- the
+            # redirect token is the slot, not a literal ``push`` adjacent to git,
+            # so it is not newly refused (the floor still judges a real push
+            # target elsewhere); matches the base:
+            "git 2>/dev/null %s -u origin feat/example" % P,
+            "git 2>&1 %s -u origin feat/example" % P,
+            "ls -d ../kc-wt-* | xargs -I{} git -C {} stash %s -m wip" % P,
+            # an EXPANSION in the subcommand slot whose NEXT non-flag word is NOT
+            # push names some other verb -- the expansion is a global-option
+            # placeholder, the real subcommand follows, and a later ``push`` is
+            # that subcommand's own arg or a separate invocation (Security Scope
+            # / Opus trailing-push rows); allowed, matching the base:
+            "git $GIT_OPTS stash %s -m wip" % P,
+            "git ${GIT_FLAGS} log --oneline --grep %s -20" % P,
+            "git $X log --grep %s" % P,
+            "git $X log; git stash %s -m wip" % P,
+            "git $X log;git stash %s -m wip" % P,
+            # a later invocation's push does not flag an earlier expansion
+            # subcommand
+            "git $X status && git stash %s -m wip" % P,
+            # an ``@(...)`` extglob and a bare ``{}`` placeholder in the
+            # subcommand slot are NOT words the shell rewrites into a verb, so
+            # the expansion-marker gate leaves them alone -- matching the base
+            # (which allows both), even with a push present:
+            "git @(missing_8459) %s origin main" % P,
+            "bash -O extglob -O nullglob -c 'git @(x) %s origin main'" % P,
+            "git {} stash %s wip" % P,  # xargs-reconstructed placeholder slot
+            # an expansion-subcommand push MENTIONED inside a print-only command
+            # (echo/printf) only prints -- the expansion branch is suppressed
+            # when git is that program's argument in the same simple command:
+            "echo usage: git $OPTS %s origin feat/example" % P,
+            "printf 'git $OPTS %s origin main'" % P,
+        )
+        for cmd in must_deny:
+            assert is_denied(cmd) is not None, cmd
+        for cmd in must_allow:
+            assert is_denied(cmd) is None, cmd
+
+    def test_long_runner_expansion_run_stays_linear(self) -> None:
+        """The normalizer pass visits each token a BOUNDED number of times, so a
+        long run of ``env git $@ push`` repeats stays LINEAR, not quadratic (the
+        shape that stalled the synchronous gate against the event-loop
+        watchdog). This asserts a deterministic OPERATION COUNT, not wall-clock
+        time: ``_cut_at_operator`` is called a fixed small number of times per
+        token on this walk, so its total call count must grow linearly with the
+        token count. A quadratic walk (re-scanning the suffix per ``git``) makes
+        the count grow with the square, which the linear ceiling below catches
+        regardless of host speed or scheduler contention."""
+        import kiro_crew.security.argv_floor as _af
+
+        P = "pus" + "h"
+        real_cut = _af._cut_at_operator
+
+        def _measure(repeats: int) -> int:
+            calls = {"n": 0}
+
+            def counting_cut(tok):
+                calls["n"] += 1
+                return real_cut(tok)
+
+            _af._cut_at_operator = counting_cut
+            try:
+                _af._is_git_push_via_normalizer(("env git $@ %s " % P) * repeats)
+            finally:
+                _af._cut_at_operator = real_cut
+            return calls["n"]
+
+        small = _measure(200)
+        large = _measure(400)
+        # Linear: doubling the input at most ~doubles the work (allow slack for
+        # fixed per-call overhead). Quadratic would ~quadruple it, far over 3x.
+        assert large <= small * 3, (small, large)
+
+
 @pytest.fixture
 def captured_sel_events(monkeypatch):
     """Capture SEL events without real I/O (isolate the ambient forensic log)."""
