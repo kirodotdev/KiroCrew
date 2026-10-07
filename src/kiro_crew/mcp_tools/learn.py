@@ -683,6 +683,11 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
                 + mcp_core.strict_identity_diagnosis()
             )
         return f"Error: {err_val}"
+    # The route answers ``ok: false`` when no row matched. Reporting that as a
+    # removal would tell a remove-then-re-add consolidation its old lesson is
+    # gone while it is still injected. A reply without the key reads as removed.
+    if d.get("ok") is False:
+        return f"No lessons were removed: nothing matches: {query}"
     return f"Removed lessons matching: {query}"
 
 

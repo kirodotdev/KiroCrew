@@ -637,3 +637,110 @@ async def test_delete_route_threads_exact_and_refuses_a_non_boolean() -> None:
             assert bad.status == 400
             assert (await bad.json())["code"] == "exact_not_bool"
             app["state"].lessons.remove.assert_not_called()
+
+
+# A V1 vector store that holds only a withheld row still answers ``get_lessons``,
+# and injection then serves the JSONL file. A delete the vector tier does not
+# match has to reach that file, or the injected lesson is never removable.
+
+
+async def _delete_with(vector_store, state, body: dict) -> dict:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    app = web.Application()
+    app["state"] = state
+    app.router.add_route("*", "/api/lessons", cron.api_lessons_delete)
+    with (
+        patch.object(cron, "_recognize_session", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_blocks_reads_session", return_value=False),
+        patch.object(cron, "_sel"),
+        patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=("", None))),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.delete(
+                "/api/lessons", json=body, headers={"X-Session-Key": "dashboard:ui"}
+            )
+            assert resp.status == 200
+            return await resp.json()
+
+
+def _withheld_only_store(tmp_path) -> VectorMemoryStore:
+    store = _store(tmp_path)
+    store.set_semantic(
+        "lesson.legacyvolatile",
+        {"rule": "The current model identity is gpt-5.6-sol.", "category": "preference"},
+        1.0,
+        "user_explicit",
+    )
+    assert store.get_lessons(), "the vector tier must be non-empty for this case"
+    assert not store.has_any_lesson(), "and hold nothing injection would render"
+    return store
+
+
+async def test_delete_reaches_the_jsonl_tier_when_the_vector_tier_matches_nothing(
+    tmp_path,
+) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.learn import Lesson
+
+    jsonl = LessonStore(base_dir=tmp_path)
+    jsonl.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
+    state = SimpleNamespace(lessons=jsonl, push_refresh=MagicMock())
+    store = _withheld_only_store(tmp_path)
+    try:
+        assert (await _delete_with(store, state, {"rule": "JSONL-SENTINEL"}))["ok"] is True
+        assert jsonl.load_all() == []
+        # The withheld vector row was not the target and stays listable.
+        assert len(store.get_lessons()) == 1
+        state.push_refresh.assert_called_with("lessons")
+        # Nothing left anywhere: the answer is an honest false.
+        assert (await _delete_with(store, state, {"rule": "JSONL-SENTINEL"}))["ok"] is False
+    finally:
+        store.close()
+
+
+async def test_a_vector_match_does_not_also_delete_from_the_jsonl_tier(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.learn import Lesson
+
+    jsonl = LessonStore(base_dir=tmp_path)
+    jsonl.save(Lesson(ts="t", rule="model identity note", category="tool"))
+    state = SimpleNamespace(lessons=jsonl, push_refresh=MagicMock())
+    store = _withheld_only_store(tmp_path)
+    try:
+        assert (await _delete_with(store, state, {"rule": "model identity"}))["ok"] is True
+        assert store.get_lessons() == []
+        assert [le.rule for le in jsonl.load_all()] == ["model identity note"]
+    finally:
+        store.close()
+
+
+async def test_a_v2_member_store_never_falls_through_to_a_jsonl_file() -> None:
+    from types import SimpleNamespace
+
+    vs = MagicMock(algorithm_version="v2")
+    vs.get_lessons.return_value = []
+    vs.delete_lesson.return_value = False
+    state = SimpleNamespace(
+        lessons=SimpleNamespace(remove=MagicMock(return_value=True)), push_refresh=MagicMock()
+    )
+    assert (await _delete_with(vs, state, {"rule": RULE}))["ok"] is False
+    state.lessons.remove.assert_not_called()
+
+
+def test_mcp_learn_remove_says_so_when_nothing_was_removed() -> None:
+    from kiro_crew.mcp_tools import learn
+
+    with patch.object(learn.mcp_core, "_delete", return_value={"ok": False}):
+        out = learn.learn_remove("learn_remove", {"query": RULE})
+    assert out.startswith("No lessons were removed")
+    assert "Removed lessons matching" not in out
+    with patch.object(learn.mcp_core, "_delete", return_value={"ok": True}):
+        assert learn.learn_remove("learn_remove", {"query": RULE}) == (
+            f"Removed lessons matching: {RULE}"
+        )

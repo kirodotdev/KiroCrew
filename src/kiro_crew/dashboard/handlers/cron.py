@@ -3211,7 +3211,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "exact must be a boolean", "code": "exact_not_bool"}, status=400
         )
-    # Delete from vector store if active, else JSONL
+    # Delete from the vector store if active; fall through to JSONL (V1) below.
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
     # every other crew's turns -- and, in the other direction, the crew's own
@@ -3234,9 +3234,14 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # `vs and` rather than `vs_lessons` alone: the rows do not narrow the store,
     # and the store is a real union now that it is resolved per caller instead of
     # arriving untyped from the global getter.
+    ok = False
     if vs and (vs_lessons or vs.algorithm_version == "v2"):
         ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope, exact=exact)
-    else:
+    # V1 only: when the vector store matched nothing, try the JSONL tier, as
+    # ``kirocrew learn remove`` does. Injection falls back to that file when every
+    # vector row is withheld, so a lesson active in every turn must stay
+    # removable. A V2 member's database is its only lesson store, so it stops here.
+    if not ok and not (vs is not None and vs.algorithm_version == "v2"):
         store = _lesson_jsonl_store(state, _lesson_silo, scope, workspace)
         # Off the loop. remove() now takes the store's shared lock, which a worker
         # thread can be holding across file I/O for a concurrent save_or_enrich --
