@@ -18,10 +18,17 @@ export function saveUnreadOnAttention(on: boolean): boolean {
   return safeSetItem(UNREAD_ON_ATTENTION_KEY, on ? '1' : '0')
 }
 
+/** `meta.notice` on the row the watchdog appends when it recycles an idle
+ *  session (`wire_session_recycle_callback` in `dashboard/state.py`). */
+const SESSION_RECYCLED_NOTICE = 'session_recycled'
+
 /** Whether a `chat_message` row badges its session. With the opt-in on, only
  *  a `permission` row does: the turn is parked on the user's approval. The
- *  finished turn (`chat_done`) and a question card badge on their own paths. */
-export function chatMessageMarksUnread(role: string | undefined): boolean {
+ *  finished turn (`chat_done`) and a question card badge on their own paths.
+ *  A recycle notice never does: it lands in a session that is not running
+ *  and has nothing new to read, so the badge would point at nothing. */
+export function chatMessageMarksUnread(role: string | undefined, notice?: unknown): boolean {
+  if (notice === SESSION_RECYCLED_NOTICE) return false
   return !loadUnreadOnAttention() || role === 'permission'
 }
 

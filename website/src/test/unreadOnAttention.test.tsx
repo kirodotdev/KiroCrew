@@ -76,6 +76,15 @@ describe('chatMessageMarksUnread', () => {
     expect(chatMessageMarksUnread(undefined)).toBe(false)
     expect(chatMessageMarksUnread('permission')).toBe(true)
   })
+
+  it.each([false, true])('never badges a watchdog recycle notice (opt-in %s)', (optIn) => {
+    if (optIn) localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')
+    expect(chatMessageMarksUnread('assistant', 'session_recycled')).toBe(false)
+  })
+
+  it('still badges the other assistant notices, such as a stuck turn', () => {
+    expect(chatMessageMarksUnread('assistant', 'stuck_turn')).toBe(true)
+  })
 })
 
 describe('unread badge over the dashboard socket', () => {
@@ -116,6 +125,16 @@ describe('unread badge over the dashboard socket', () => {
     const ws = mount()
     send(ws, row('tool_call'))
     expect(unread()).toContain(BACKGROUND)
+  })
+
+  it('off: a watchdog recycle notice leaves a background session unbadged', () => {
+    const ws = mount()
+    send(ws, { type: 'chat_message', data: {
+      slot: BACKGROUND, role: 'assistant', ts: '2026-09-28T00:00:00Z',
+      content: '♻️ This session was recycled by the watchdog (memory limit (2425MB)).',
+      meta: { kind: 'compaction', notice: 'session_recycled', mid: 'm-recycle' },
+    } })
+    expect(unread()).not.toContain(BACKGROUND)
   })
 
   it('off: a question card and an approval add no badge of their own', () => {

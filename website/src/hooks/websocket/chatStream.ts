@@ -70,7 +70,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       if (data.slot && unreadWatermarkTs(data.role, data.ts) === undefined && data.ts) noteUnsavedRowTs(data.slot, data.ts)
       // The "only when done or waiting" opt-in leaves routine rows unbadged.
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
-        if (chatMessageMarksUnread(data.role)) {
+        if (chatMessageMarksUnread(data.role, data.meta?.notice)) {
           dispatch(markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
         }
       })
