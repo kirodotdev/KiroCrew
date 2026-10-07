@@ -68,11 +68,15 @@ over an ordinary session — the context you built up with it is where you left 
 
 Member threads are deliberately kept out of the Sessions list; the Crew Members
 page is their only home. The right-hand panel is the same one the chat page
-docks, so Files, Artifacts, Terminal and Browser all work against the thread,
-and it opens on three crewmate tabs: **Notes** (what it learned — its own
-standing notes, read-only here), **Work log** (what it did) and **Dashboard**
-(the page it publishes itself). Setup — template, wake sources, memory, cloud —
-lives on the crewmate's detail page, not in the panel.
+docks, and it keeps two standing tabs: **Dashboard** (the page the crewmate
+publishes itself) and **Files**. Terminal, Browser, Side Chat and the panel's
+other **+** views work against the thread as they do on the chat page;
+Artifacts is not offered here. Who the crewmate is lives in its **Profile**
+card, opened from its name in the middle of the thread header: its description,
+memory, workspace and **Notes** (what it learned — its own standing notes,
+read-only here), plus its schedules and the sessions it is driving. Setup stays
+out of the panel: the card's pencil opens the crewmate's editor, and its
+Schedules tab adds a schedule.
 
 A few situations make Kiro Crew refuse to open a thread rather than guess:
 

@@ -1,43 +1,49 @@
-# Nightly: the crewmate's right-hand panel opens on three tabs -- Notes, Work
-# log, Dashboard -- and the old "Crew summary" tab is gone (CrewMates launch
-# RFC, section 06). A DOM test pins the tab ids; this scenario checks what a
-# first-time user actually sees: the three labels in that order, Notes first,
-# each tab body reachable by clicking its label, and no settings copy in the
-# panel.
+# Nightly: the crewmate's right-hand panel keeps two standing tabs --
+# Dashboard and Files -- and Notes is reached from the crewmate's Profile card,
+# not from the panel (#16309; spec: docs/system-specs/modules/crew-mode.md,
+# "Crewmate conversation layout: switcher, Profile, Dashboard, Files"). A DOM
+# test pins the tab ids (MembersPage.test.tsx "the side panel has Dashboard and
+# Files as its two standing tabs"); this scenario checks what a first-time user
+# actually sees: Dashboard first and selected, Files beside it, none of the
+# removed Notes / Work log / Schedules / Crew summary tabs, no settings copy in
+# the panel, and Notes still one click away in Profile.
 #
-# The Crew Members page sits behind a feature-preview switch (per-device
+# The Crewmates page sits behind a feature-preview switch (per-device
 # localStorage), so the tester turns it on first, exactly as members-dm-hello
 # does, and the member card is hedged the same way (it may render as the id
-# "nova-sky"). On a wide window the panel is docked beside the conversation;
-# on a narrow one it opens from the "Details" button in the conversation
-# header, so the step names both.
+# "nova-sky"). On a wide window the panel is docked beside the conversation and
+# open; when it is hidden (or on a narrow window, where it is an overlay) the
+# panel button at the right end of the conversation header opens it -- its
+# tooltip reads "Dashboard & files". The Profile card opens from the crewmate's
+# name pill in the middle of the header.
 name: crewmate-panel-tabs
 tier: nightly
 feature: members
 user_story: >-
-  As a person managing a crewmate, I want its panel to open on what it learned,
-  what it did and how things stand -- Notes, Work log, Dashboard -- so that I
-  read its work instead of its settings.
+  As a person managing a crewmate, I want its panel to show what it publishes
+  and its files, with its notes one click away in its profile, so that I read
+  its work instead of its settings.
 docs_url: docs/system-specs/modules/crew-mode.md
-summary: Open a crewmate's conversation and check its panel shows Notes / Work log / Dashboard and no Crew summary
+summary: Open a crewmate's conversation and check its panel shows Dashboard and Files, no Notes / Work log / Crew summary tab, and Notes opens from Profile
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
-  - Open the Crew Members page. After the preview is on, a "Crew Members" item appears in the left rail, directly under Sessions; click it.
+  - Turn on the preview whose title starts with "Crewmates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
+  - Open the Crewmates page. After the preview is on, a "Crewmates" item appears in the left rail, directly under Sessions; click it.
   - Click the member named Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its conversation.
-  - Look at the right-hand panel beside the conversation. If no panel is showing, click the "Details" button in the conversation header to open it.
+  - Look at the right-hand panel beside the conversation. If no panel is showing, click the panel button at the right end of the conversation header (its tooltip reads "Dashboard & files") to open it.
   - Read the tab labels at the top of the panel, left to right, and note which one is selected.
-  - Click the "Work log" tab and wait about two seconds for it to fill in.
-  - Click the "Dashboard" tab and wait about two seconds.
-  - Click the "Notes" tab again.
+  - Click the "Files" tab and wait about two seconds.
+  - Click the "Dashboard" tab again and wait about two seconds.
+  - Click the crewmate's name in the middle of the conversation header (the rounded pill with its face) to open its Profile card.
+  - In the Profile card, click the "Notes" row and wait about two seconds.
 expectations:
-  - The panel's first three tabs read exactly "Notes", "Work log" and "Dashboard", in that order, and "Notes" was the selected tab when the panel first appeared.
-  - No tab in the panel is labelled "Crew summary", and the panel shows no "Wake sources", "Built from" or "Memory store" text on any of the three tabs.
-  - The Work log tab shows the counters "Runs today" and "Runs, past 7 days".
-  - The Notes tab shows either the member's notes as formatted text or the sentence that it hasn't written any notes yet -- never an error.
+  - The panel's first tab reads exactly "Dashboard", it was the selected tab when the panel first appeared, and a "Files" tab is also in the panel's tab strip.
+  - No tab in the panel is labelled "Notes", "Work log", "Schedules" or "Crew summary", and the Dashboard tab shows no "Wake sources", "Built from" or "Memory store" text.
+  - The Dashboard tab shows either the crewmate's published page or a sentence saying it has not published a dashboard yet -- never an error.
+  - After clicking "Notes" in the Profile card, it shows either the member's notes as formatted text or the sentence that it hasn't written any notes yet -- never an error.
 max_steps: 18
 max_seconds: 480
