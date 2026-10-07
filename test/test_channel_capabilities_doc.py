@@ -131,10 +131,10 @@ class TestTheProseNamesTheTwoExceptions:
     membership is asserted rather than the wording.
     """
 
-    def test_only_wecom_and_feishu_return_no_message_id(self) -> None:
+    def test_only_wecom_feishu_and_imessage_return_no_message_id(self) -> None:
         no_id = {name for name, caps in CHANNELS.items() if not caps.returns_message_id}
-        assert no_id == {"WeCom", "Feishu"}, (
-            f"{DOC.name} names WeCom and Feishu as the two id-less channels; the "
+        assert no_id == {"WeCom", "Feishu", "iMessage"}, (
+            f"{DOC.name} names WeCom, Feishu and iMessage as the id-less channels; the "
             f"code now says {sorted(no_id)}. Update the prose under the matrix."
         )
 
@@ -144,37 +144,6 @@ class TestTheProseNamesTheTwoExceptions:
             f"{DOC.name} names Webex as the only channel skipping the mention "
             f"defang; the code now says {sorted(no_grammar)}."
         )
-
-
-class TestTheIMessageCaveatTracksTheDeclaration:
-    """The one caveat inside the ✅ column, pinned to the condition that creates it.
-
-    iMessage declares ``returns_message_id=True`` while ``IMessageClient.send``
-    returns the bridge's best-effort ``guid``, so a delivered message can answer with
-    ``""`` and ``delivery_confirmed`` records it as undelivered. The matrix cell
-    reports the declaration (that is what the rest of the code acts on), so the page
-    carries a sentence naming the gap between the two.
-
-    This pin is CONDITIONAL on purpose: while the declaration says ``True`` the
-    caveat must be there, and the moment the declaration is corrected the caveat
-    becomes wrong and this test says so. Either way the doc cannot drift silently.
-    """
-
-    def test_the_caveat_is_present_while_the_declaration_is_strict(self) -> None:
-        text = DOC.read_text(encoding="utf-8")
-        declares_strict = IMESSAGE_CAPABILITIES.returns_message_id
-        has_caveat = "its bridge does not keep it" in text
-        if declares_strict:
-            assert has_caveat, (
-                f"iMessage declares returns_message_id=True while its bridge reports "
-                f"the id as best-effort, so {DOC.name} must keep the caveat naming "
-                "that gap in the row's prose."
-            )
-        else:
-            assert not has_caveat, (
-                f"iMessage no longer declares the strict reading, so {DOC.name}'s "
-                "caveat about its bridge is stale — remove it."
-            )
 
 
 class TestTheZeroWidgetSection:

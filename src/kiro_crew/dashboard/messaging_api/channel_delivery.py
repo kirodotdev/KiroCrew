@@ -444,12 +444,13 @@ async def _send_to_channel_target(
             # than raising, so reading only exceptions would answer 200 "ok" for a
             # message that never arrived — worse than an error, because the caller
             # (including the LLM, which cannot see the room) records it as delivered
-            # and moves on. But two transports carry no id at all (WeCom's proactive
-            # command, Feishu's reply) and raise on failure instead, so there the
+            # and moves on. But some transports carry no reliable id (WeCom's
+            # proactive command, Feishu's reply, iMessage's best-effort GUID) and
+            # raise on failure instead, so there the
             # empty string is the SUCCESS value. ``delivery_confirmed`` owns which
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
-            # delivered message on those two as lost.
+            # delivered message on those as lost.
             sent = await transport.send_message(conversation_id, part, thread_id=thread_id)
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")

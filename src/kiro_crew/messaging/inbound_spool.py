@@ -929,9 +929,9 @@ async def _notify_one(entry: SpooledInbound, transport: Any) -> str:
     message_id = await send(
         entry.conversation_id, _quote(entry, transport), entry.thread_id or None
     )
-    # The shared predicate, not a local re-spelling: it is what knows that WeCom and
-    # Feishu return "" on SUCCESS (``returns_message_id=False``), and a local copy
-    # that forgot that would re-notice those two forever.
+    # The shared predicate, not a local re-spelling: it is what knows that WeCom,
+    # Feishu and iMessage can return "" on SUCCESS (``returns_message_id=False``),
+    # and a local copy that forgot that would re-notice those forever.
     capabilities = getattr(transport, "capabilities", None) or TransportCapabilities()
     if not delivery_confirmed(capabilities, str(message_id or "")):
         raise RuntimeError("notice send returned no message id")
