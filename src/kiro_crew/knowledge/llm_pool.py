@@ -13,10 +13,11 @@ import logging
 import os
 import shutil
 import time
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, repo_checkout_guard
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     POLICY_ID_BY_BACKEND,
@@ -771,6 +772,12 @@ class CCWorker(Worker):
         # rather than take ``wrap_argv``'s own default. ``None`` -> resolve
         # lazily in ``_spawn`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
+        # For the branch switch's busy check (see send_message): a fresh id per
+        # spawn, so a respawned CLI never answers its predecessor's prompt, and
+        # the folder the CLI inherits (it is spawned with no cwd of its own).
+        self._instance = ""
+        self._prompt_seq = 0
+        self._spawn_cwd = ""
 
     async def start(self) -> None:
         self._claude_bin = shutil.which("claude")
@@ -877,6 +884,8 @@ class CCWorker(Worker):
             # pipe, so it is the only reader this limit sizes.
             limit=STDOUT_LINE_LIMIT,
         )
+        self._instance = uuid.uuid4().hex
+        self._spawn_cwd = os.getcwd()
         self._event_queue = asyncio.Queue()
         self._reader_task = asyncio.create_task(self._stdout_reader())
 
@@ -913,6 +922,19 @@ class CCWorker(Worker):
 
         stdin = self._proc.stdin
         msg = json.dumps({"type": "user", "message": {"role": "user", "content": prompt}})
+        # The branch switch's busy check counts this prompt from before its write
+        # until its result event is read (repo_checkout_guard), the way the ACP
+        # transports count theirs. This worker speaks no ACP and confirms no
+        # process-tree exit, so a reply that never completes keeps the folder
+        # the CLI inherited counted until the gateway restarts.
+        folder = str(getattr(self, "_spawn_cwd", "") or "")
+        await repo_checkout_guard.before_prompt(folder)
+        if self._proc is None or self._proc.stdin is not stdin:
+            raise RuntimeError("CCWorker process died during message")
+        self._prompt_seq = getattr(self, "_prompt_seq", 0) + 1
+        prompt_id = self._prompt_seq
+        instance = str(getattr(self, "_instance", "") or "")
+        repo_checkout_guard.prompt_sent(instance, prompt_id, folder)
 
         async def _deliver_and_collect() -> str:
             stdin.write((msg + "\n").encode())
@@ -936,7 +958,9 @@ class CCWorker(Worker):
             settled = True  # the error result is the result event
             raise
         finally:
-            if not settled:
+            if settled:
+                repo_checkout_guard.prompt_answered(instance, prompt_id)
+            else:
                 await self.shutdown()
 
     async def _collect_response(self) -> str:

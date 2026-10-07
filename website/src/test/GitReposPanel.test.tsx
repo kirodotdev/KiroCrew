@@ -38,11 +38,11 @@ const REPO_STATUS_CHAIN = { timeout: REPO_STATUS_CHAIN_TIMEOUT_MS }
 const agentRows = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ path: `/home/me/src/repo-${i}`, source: 'agent' as const }))
 
-function mount() {
+function mount(busy?: boolean) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <GitReposPanel slotKey="chat-1" />
+      <GitReposPanel slotKey="chat-1" busy={busy} />
     </QueryClientProvider>,
   )
   return { ...view, queryClient }
@@ -63,6 +63,22 @@ beforeEach(async () => {
 })
 
 describe('GitReposPanel', () => {
+  it('puts the branch switcher on the project section only, copy-only while the chat runs', async () => {
+    H.api.projectGitRepos.mockResolvedValue({
+      repos: [
+        { path: PROJECT, source: 'project' },
+        { path: OTHER, source: 'agent' },
+      ],
+    })
+    mount(true)
+    const sections = await screen.findAllByTestId('git-repo-section')
+    // The switch route accepts the chat's project, not a repository a tool
+    // call merely touched, so only the project heading offers a switch.
+    const trigger = await within(sections[0]).findByTestId('branch-switcher-trigger', {}, REPO_STATUS_CHAIN)
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    await within(sections[1]).findByText('main', {}, REPO_STATUS_CHAIN)
+    expect(within(sections[1]).queryByTestId('branch-switcher-trigger')).toBeNull()
+  })
   it('lists every repository by path, the project first and tagged', async () => {
     H.api.projectGitRepos.mockResolvedValue({
       repos: [

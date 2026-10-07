@@ -99,6 +99,7 @@ class AcpRuntime:
     _snapshot_descendants = _rt_tree._snapshot_descendants
     _signal_tree = _rt_tree._signal_tree
     kill = _rt_tree.kill
+    _recheck_teardown_survivors = _rt_tree._recheck_teardown_survivors
     _kill_inner = _rt_tree._kill_inner
     # Launching the child process and its handshake: ``kiro_crew.acp.runtime_spawn_launch``.
     _discard_sandbox_cleanup = _rt_launch._discard_sandbox_cleanup
@@ -174,6 +175,8 @@ class AcpRuntime:
     _refuse_if_view_superseded = _rt_mode._refuse_if_view_superseded
     _activate_mode_bracketed = _rt_mode._activate_mode_bracketed
     # JSON-RPC over the child's stdin: ``kiro_crew.acp.runtime_wire``.
+    _admit_prompt = _rt_wire._admit_prompt
+    _record_prompt = _rt_wire._record_prompt
     send_request = _rt_wire.send_request
     send_notification = _rt_wire.send_notification
     _refuse_write_if_dead = _rt_wire._refuse_write_if_dead
@@ -469,6 +472,9 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # The process instance whose teardown left survivors, so a later re-check
+        # that confirms them gone can end its prompts.
+        self._teardown_instance = ""
         # sessionId -> the ``model`` kiro-cli's last ``_kiro.dev/agent/switched``
         # named for it. ``session/set_mode`` answers ``{}``; this notification,
         # sent before that answer, is the only report of the model the activated
@@ -532,6 +538,10 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The last teardown's own verdict: whether it proved the root dead, and
+        # the descendants it left alive for the orphan sweep (see ``kill``).
+        self._teardown_root_dead = False
+        self._teardown_survivors: dict[int, ChildRecord] = {}
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own

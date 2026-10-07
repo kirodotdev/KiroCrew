@@ -44,7 +44,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, repo_checkout_guard
 from kiro_crew.acp import runtime_process_tree, seed_provenance
 from kiro_crew.acp._dispatch import BackgroundLaunchRecord
 from kiro_crew.acp.client_spawn_env import KIRO_CLI_BIN
@@ -572,6 +572,9 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
 
 def _reset_state(self: AcpClient) -> None:
     """Reset all session state (call after process is dead)."""
+    # Whose prompts a confirmed death below ends (repo_checkout_guard); read
+    # before the reset clears it.
+    dying_instance = str(getattr(self, "_process_instance", "") or "")
     cleanup = getattr(self._process, "_windows_cleanup_state", None)
     if platform_compat.IS_WINDOWS and isinstance(
         cleanup, platform_compat._PendingWindowsTreeCleanup
@@ -816,6 +819,8 @@ def _reset_state(self: AcpClient) -> None:
             )
     self._child_pids = {}
     self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+    if self._process_tree_confirmed_dead:
+        repo_checkout_guard.prompt_process_gone(dying_instance)
 
 
 async def _classify_failed_start(self: AcpClient, classify: Callable[[], Awaitable[_T]]) -> _T:

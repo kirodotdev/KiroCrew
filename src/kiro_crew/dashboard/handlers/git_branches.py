@@ -4,11 +4,13 @@ Two endpoints back the panel's branch switcher:
 
 * ``GET /api/project/git/branches?path=<dir>`` lists the repository's local
   branches (most recently committed first) and the remote-tracking branches that
-  have no local counterpart, plus which one is checked out.
+  have no local counterpart, plus which one is checked out. Rows carry the
+  branch name, commit date/author/subject and local tracking counts.
 * ``POST /api/project/git/switch`` with ``{path, branch, create?, track?}``
   checks out an existing local branch, creates a new branch at ``HEAD``
   (``create: true``), or creates a local branch tracking a remote one
-  (``track: "<remote>/<name>"``).
+  (``track: "<remote>/<name>"``). Success returns ``{ok, branch}``; an
+  existing branch already checked out returns the same body without a switch.
 
 Trust model
 -----------
@@ -28,6 +30,9 @@ machinery rather than restating it:
   refused before the switch (:func:`~kiro_crew.dashboard.handlers.worktree._checkout_filter`).
   The listing still answers there, carrying ``switchBlocked: "filter"`` so the
   panel can say why switching is off instead of failing on click.
+  Every switch passes ``--no-recurse-submodules`` so submodule worktrees and
+  their repository-scoped content filters are not reached, regardless of the
+  superproject's ``submodule.recurse`` setting.
 * The switch rewrites files in the working tree, so it takes the same OWNER gate
   as ``/api/file-write``; listing takes the dashboard-caller gate the worktree
   route uses.
@@ -45,16 +50,20 @@ to the new branch, as they do on the command line.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew import repo_checkout_guard
+from kiro_crew.dashboard import repo_checkout_guard as checkout_readers
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
-from kiro_crew.dashboard.handlers.files import _is_not_a_repo_verdict, _run_git_bounded
 from kiro_crew.dashboard.handlers._shared import read_bounded_json, require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.files import _is_not_a_repo_verdict, _run_git_bounded
 from kiro_crew.dashboard.handlers.worktree import (
     SandboxUnavailable,
     _allowed_repo_roots,
@@ -69,6 +78,9 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.validation import is_valid_followup_branch
+
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import _ChatSlot
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +111,9 @@ _SEP = "\x1f"
 _FORMAT = _SEP.join(
     (
         "%(refname)",
-        "%(objectname:short)",
         "%(committerdate:iso-strict)",
         "%(authorname)",
         "%(contents:subject)",
-        "%(upstream:short)",
         "%(upstream:track,nobracket)",
         "%(HEAD)",
     )
@@ -213,7 +223,7 @@ def _toplevel(project: str) -> str | None:
     Returns ``""`` for any other failed probe, which the caller reports as an
     outage rather than an absence.
     """
-    probe = _run_git(["rev-parse", "--show-toplevel"], project, env_overrides=_C_LOCALE)
+    probe = _run_git(["rev-parse", "--show-toplevel"], project, c_locale=True)
     if probe.returncode != 0:
         return None if _is_not_a_repo_verdict(probe.stderr or "") else ""
     top = probe.stdout.strip()
@@ -255,9 +265,9 @@ def _list_refs(root: str, namespace: str) -> tuple[list[dict], bool] | None:
     lines = stdout.splitlines()
     for line in lines:
         parts = line.split(_SEP)
-        if len(parts) != 8:
+        if len(parts) != 6:
             continue
-        refname, sha, date, author, subject, upstream, track, head = parts
+        refname, date, author, subject, track, head = parts
         if not refname.startswith(prefix):
             continue
         name = refname[len(prefix) :]
@@ -267,22 +277,17 @@ def _list_refs(root: str, namespace: str) -> tuple[list[dict], bool] | None:
             continue
         row: dict = {
             "name": name,
-            "sha": sha,
             "date": date,
             "author": author,
             "subject": subject,
         }
         if namespace == "refs/heads":
             row["current"] = head == "*"
-            if upstream:
-                row["upstream"] = upstream
-                ahead, behind = _parse_track(track)
-                if ahead:
-                    row["ahead"] = ahead
-                if behind:
-                    row["behind"] = behind
-                if "gone" in track:
-                    row["upstreamGone"] = True
+            ahead, behind = _parse_track(track)
+            if ahead:
+                row["ahead"] = ahead
+            if behind:
+                row["behind"] = behind
         rows.append(row)
     # git stops at ``limit`` lines and a skipped ``<remote>/HEAD`` symref can use
     # one of them, so a capped answer may hide a row even at <= 200 rows.
@@ -290,9 +295,33 @@ def _list_refs(root: str, namespace: str) -> tuple[list[dict], bool] | None:
     return rows[:MAX_BRANCH_ROWS], truncated
 
 
+def _all_local_names(root: str) -> set[str] | None:
+    """Every local branch's short name, uncapped; None on failure.
+
+    Only read when the local listing was capped: a remote row's local twin can
+    be older than the newest ``MAX_BRANCH_ROWS`` and so missing from it.
+    """
+    rc, stdout, overflow = _run_git_bounded(
+        [
+            "git",
+            *_git_no_repo_code(),
+            "for-each-ref",
+            "--format=%(refname:lstrip=2)",
+            "refs/heads",
+        ],
+        cwd=root,
+        env={**os.environ, **_C_LOCALE},
+        timeout=10,
+        cap=MAX_LIST_OUTPUT,
+    )
+    if rc != 0 or overflow:
+        return None
+    return {line for line in stdout.splitlines() if line}
+
+
 def _branches_sync(root: str) -> tuple[dict, int]:
     """Blocking half of the listing route. Returns ``(json_body, http_status)``."""
-    current_proc = _run_git(["branch", "--show-current"], root, env_overrides=_C_LOCALE)
+    current_proc = _run_git(["branch", "--show-current"], root, c_locale=True)
     if current_proc.returncode != 0:
         return (
             {
@@ -317,7 +346,10 @@ def _branches_sync(root: str) -> tuple[dict, int]:
     local_names = {r["name"] for r in local_rows}
     # A remote branch that already has a local branch of the same short name is
     # reached through that local row; listing both offers two rows that switch
-    # to the same place.
+    # to the same place, and the remote one would always fail (the local name
+    # exists). A capped local list can miss that twin, so read every name.
+    if local_truncated:
+        local_names |= _all_local_names(root) or set()
     remote_rows = [r for r in remote_rows if r["name"].split("/", 1)[-1] not in local_names]
     body: dict = {
         "repo": True,
@@ -326,7 +358,7 @@ def _branches_sync(root: str) -> tuple[dict, int]:
         "remote": remote_rows,
     }
     if not current:
-        head = _run_git(["rev-parse", "--short", "HEAD"], root, env_overrides=_C_LOCALE)
+        head = _run_git(["rev-parse", "--short", "HEAD"], root, c_locale=True)
         if head.returncode == 0 and head.stdout.strip():
             body["detached"] = True
             body["head"] = head.stdout.strip()
@@ -341,7 +373,7 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
-def _redact_rows(rows: list[dict]) -> None:
+def _redact_rows(rows: list[dict], *, remote: bool = False) -> None:
     """Redact every display field, then bound it; redacting first means a cut
     never leaves part of a secret readable."""
     for row in rows:
@@ -350,20 +382,24 @@ def _redact_rows(rows: list[dict]) -> None:
         # A redacted or clipped name cannot be echoed back to /switch, so the
         # row is shown but not offered as a target.
         row["switchable"] = row["name"] == original
+        if remote:
+            local_name = original.split("/", 1)[-1]
+            row["switchable"] = (
+                row["switchable"]
+                and is_valid_followup_branch(local_name)
+                and len(local_name) <= MAX_BRANCH_NAME
+            )
         row["author"] = _clip(redact(row["author"]), MAX_ROW_TEXT)
         row["subject"] = _clip(redact(row["subject"]), MAX_ROW_TEXT)
-        if "upstream" in row:
-            row["upstream"] = _clip(redact(row["upstream"]), MAX_BRANCH_NAME)
 
 
 async def api_project_git_branches(request: web.Request) -> web.Response:
     """GET ``/api/project/git/branches?path=<dir>``.
 
     Response: ``{repo, current, detached?, head?, local: [...], remote: [...],
-    truncated?, switchBlocked?}``. Each local row carries ``name, sha, date,
-    author, subject, current, switchable`` and, when it tracks one,
-    ``upstream, ahead?, behind?, upstreamGone?``; remote rows carry the same
-    commit fields with a ``<remote>/<branch>`` name.
+    truncated?, switchBlocked?}``. Each local row carries ``name, date, author,
+    subject, current, switchable`` and optional tracking counts ``ahead?, behind?``;
+    remote rows carry the same commit fields with a ``<remote>/<branch>`` name.
     """
     denied = deny_non_dashboard_caller(request, "project_git_branches")
     if denied is not None:
@@ -395,7 +431,7 @@ async def api_project_git_branches(request: web.Request) -> web.Response:
     if status != 200:
         return _error(body["error"], body["code"], status)
     _redact_rows(body["local"])
-    _redact_rows(body["remote"])
+    _redact_rows(body["remote"], remote=True)
     if body.get("current"):
         body["current"] = redact(body["current"])
     if body.get("head"):
@@ -417,19 +453,20 @@ def _is_plain_ref_name(name: str) -> bool:
 
 # (stderr fragment, code, http status, user-facing message). Matched in order
 # against git's English diagnostics; anything else falls through to the generic
-# failure with git's own first line as ``detail``.
+# failure with git's own first line as ``detail``. The untracked entry comes
+# first: git's untracked refusal also contains the uncommitted entry's fragment.
 _SWITCH_FAILURES: tuple[tuple[str, str, int, str], ...] = (
-    (
-        "would be overwritten by checkout",
-        "git_switch_dirty",
-        409,
-        "Your uncommitted changes would be overwritten by this switch. Commit or stash them first.",
-    ),
     (
         "untracked working tree files would be overwritten",
         "git_switch_dirty",
         409,
         "Untracked files would be overwritten by this switch. Move or commit them first.",
+    ),
+    (
+        "would be overwritten by checkout",
+        "git_switch_dirty",
+        409,
+        "Your uncommitted changes would be overwritten by this switch. Commit or stash them first.",
     ),
     (
         "already used by worktree",
@@ -465,12 +502,145 @@ _SWITCH_FAILURES: tuple[tuple[str, str, int, str], ...] = (
 )
 
 
+def _slot_folder_snapshot(state: object) -> list[tuple[_ChatSlot, list[str], bool]]:
+    """Each chat slot with the folders its work can touch and whether they are known.
+
+    Taken on the event loop (see ``dashboard.repo_checkout_guard.slot_folders``); only the
+    path matching against it runs in a worker thread.
+    """
+    slots = getattr(state, "_slots", None) or {}
+    return [
+        (slot, *checkout_readers.slot_folders(state, slot))
+        for slot in list(getattr(slots, "values", list)())
+    ]
+
+
+def _match_slots(snapshot: list[tuple[_ChatSlot, list[str], bool]], root: str) -> list[_ChatSlot]:
+    return [
+        slot
+        for slot, folders, _placed in snapshot
+        if any(_shares_tree(folder.strip(), root) for folder in folders if folder.strip())
+    ]
+
+
+def _slots_in_repo(state: object, root: str) -> list[_ChatSlot]:
+    """Chat slots whose work shares a working tree with ``root``.
+
+    A slot scoped to the repository root, to a folder inside it, or to a folder
+    that contains it can all read and write files a checkout of ``root`` rewrites.
+    A running slot is matched on every folder its turn works in as well as its
+    current ``project`` (see ``dashboard.repo_checkout_guard.slot_folders``): a project
+    picked mid-turn replaces ``project`` at once, but the turn's session keeps
+    working where it started until the turn ends.
+    """
+    return _match_slots(_slot_folder_snapshot(state), root)
+
+
+def _shares_tree(project: str, root: str) -> bool:
+    """Whether ``project`` is ``root``, lies inside it, or contains it."""
+    resolved = os.path.realpath(project)
+    try:
+        common = os.path.commonpath([resolved, root])
+    except ValueError:  # different drives on Windows
+        return False
+    return common in (resolved, root)
+
+
+async def _repo_has_running_work(state: object, root: str) -> bool:
+    """Whether any work in ``root`` is in flight.
+
+    That is a turn or pending sub-agents on a session working in ``root``, a
+    running sub-agent whose own folder, or an ancestor run's, lies in ``root``,
+    or a workflow step whose session runs there.
+    A checkout rewrites files under every such session, not only the one whose
+    picker asked, so the client-side guard alone cannot cover a second tab, a
+    cron turn on another slot, or a sub-agent still running for a finished turn.
+    Fails closed: a sub-agent probe that errors counts as running work, and so
+    does a running turn whose session has not reported its folder yet.
+    """
+    from kiro_crew.dashboard.chat_folders import _subagent_work_pending
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    snapshot = _slot_folder_snapshot(state)
+    if any(not placed for _slot, _folders, placed in snapshot):
+        return True
+    # Workflow steps open their own sessions, outside slots and the sub-agent
+    # manager; read on the loop for the same reason as the slot snapshot.
+    work_folders, work_placed = repo_checkout_guard.tracked_work_folders()
+    if not work_placed:
+        return True
+    if work_folders:
+        if await asyncio.to_thread(repo_checkout_guard.folders_overlap, work_folders, root):
+            return True
+    slots = await asyncio.to_thread(_match_slots, snapshot, root)
+    subagents = getattr(state, "subagents", None)
+    for slot in slots:
+        if getattr(slot, "running", False):
+            return True
+        if subagents is None:
+            continue
+        try:
+            if await _subagent_work_pending(subagents, effective_session_key(slot)):
+                return True
+        except Exception:  # noqa: BLE001 - any probe failure is treated as busy
+            return True
+    if subagents is None:
+        return False
+    # A run started from a chat outside the repository can still work inside it
+    # through its own ``cwd`` (or an ancestor run's), which the per-slot probe
+    # above cannot see. Queued runs are not counted: they wait at their start.
+    # A finished run counts until its teardown is over (live_subagent_runs).
+    try:
+        by_key = checkout_readers.runs_by_key(state)
+        live, known = checkout_readers.live_subagent_runs(subagents)
+        if not known:
+            return True
+        folders = [
+            folder
+            for run in live
+            for folder in checkout_readers.subagent_folders(state, run, by_key)
+        ]
+    except Exception:  # noqa: BLE001 - an unreadable registry or lineage is treated as busy
+        return True
+    if not folders:
+        return False
+    return await asyncio.to_thread(repo_checkout_guard.folders_overlap, folders, root)
+
+
 def _first_line(text: str) -> str:
     for line in (text or "").splitlines():
         line = line.strip()
         if line:
-            return line[:300]
+            return redact(line)[:300]
     return ""
+
+
+#: How many conflicting paths a dirty-tree refusal names; the rest are counted.
+MAX_DIRTY_FILES = 5
+
+
+def _overwritten_files(stderr: str) -> tuple[list[str], int]:
+    """The paths git lists under "... would be overwritten by checkout:".
+
+    git prints each one on its own tab-indented line after that header, so
+    the refusal can say which files block the switch. Returns at most
+    ``MAX_DIRTY_FILES`` redacted, clipped paths and how many more there were.
+    """
+    files: list[str] = []
+    listing = False
+    for line in (stderr or "").splitlines():
+        if "would be overwritten by checkout" in line.lower():
+            listing = True
+            continue
+        if listing:
+            if not line.startswith("\t"):
+                listing = False
+                continue
+            path = line.strip()
+            if path:
+                files.append(path)
+    shown = [_clip(redact(p), MAX_ROW_TEXT) for p in files[:MAX_DIRTY_FILES]]
+    return shown, max(0, len(files) - MAX_DIRTY_FILES)
 
 
 def _switch_sync(root: str, branch: str, create: bool, track: str) -> tuple[dict, int]:
@@ -486,39 +656,65 @@ def _switch_sync(root: str, branch: str, create: bool, track: str) -> tuple[dict
             },
             409,
         )
-    fmt = _run_git(["check-ref-format", f"refs/heads/{branch}"], root, env_overrides=_C_LOCALE)
+    fmt = _run_git(["check-ref-format", f"refs/heads/{branch}"], root, c_locale=True)
     if fmt.returncode != 0:
         return ({"error": "Invalid branch name", "code": "invalid_branch"}, 400)
-
-    previous_proc = _run_git(["branch", "--show-current"], root, env_overrides=_C_LOCALE)
-    previous = (previous_proc.stdout or "").strip() if previous_proc.returncode == 0 else ""
 
     if track:
         if not _resolve_commit(root, f"refs/remotes/{track}"):
             return ({"error": "Remote branch not found", "code": "git_branch_not_found"}, 404)
-        args = ["switch", "--no-overwrite-ignore", "-c", branch, "--track", f"refs/remotes/{track}"]
+        args = [
+            "switch",
+            "--no-recurse-submodules",
+            "--no-overwrite-ignore",
+            "-c",
+            branch,
+            "--track",
+            f"refs/remotes/{track}",
+        ]
     elif create:
         if _resolve_commit(root, f"refs/heads/{branch}"):
             return (
                 {"error": "A branch with that name already exists.", "code": "git_branch_exists"},
                 409,
             )
-        args = ["switch", "--no-overwrite-ignore", "--no-track", "-c", branch]
+        args = [
+            "switch",
+            "--no-recurse-submodules",
+            "--no-overwrite-ignore",
+            "--no-track",
+            "-c",
+            branch,
+        ]
     else:
         if not _resolve_commit(root, f"refs/heads/{branch}"):
             return ({"error": "Branch not found", "code": "git_branch_not_found"}, 404)
-        if branch == previous:
-            return ({"ok": True, "branch": branch, "previous": previous}, 200)
+        current = _run_git(["symbolic-ref", "--quiet", "HEAD"], root, c_locale=True)
+        if current.returncode == 0 and (current.stdout or "").strip() == f"refs/heads/{branch}":
+            return ({"ok": True, "branch": branch}, 200)
         # git's default lets a switch silently replace an ignored local file
         # that the target branch tracks; refuse that like any other overwrite.
-        args = ["switch", "--no-overwrite-ignore", "--no-guess", "--", branch]
+        args = [
+            "switch",
+            "--no-recurse-submodules",
+            "--no-overwrite-ignore",
+            "--no-guess",
+            "--",
+            branch,
+        ]
 
-    proc = _run_git(args, root, env_overrides=_C_LOCALE)
+    proc = _run_git(args, root, c_locale=True)
     if proc.returncode != 0:
         stderr = (proc.stderr or "").lower()
         for fragment, code, status, message in _SWITCH_FAILURES:
             if fragment in stderr:
-                return ({"error": message, "code": code}, status)
+                failure: dict = {"error": message, "code": code}
+                if code == "git_switch_dirty":
+                    files, more = _overwritten_files(proc.stderr or "")
+                    if files:
+                        failure["files"] = files
+                        failure["files_more"] = more
+                return (failure, status)
         return (
             {
                 "error": "git couldn't switch branches.",
@@ -527,7 +723,39 @@ def _switch_sync(root: str, branch: str, create: bool, track: str) -> tuple[dict
             },
             400,
         )
-    return ({"ok": True, "branch": branch, "previous": previous or None}, 200)
+    return ({"ok": True, "branch": branch}, 200)
+
+
+def _audit_switch(caller: str, resources: str, outcome: str, error: str) -> None:
+    sel().log_api_access(
+        caller=caller,
+        operation="project_git_switch",
+        outcome=outcome,
+        resources=resources,
+        error=error,
+    )
+
+
+def _audit_switch_outcome(
+    caller: str, resources: str, worker: asyncio.Future[tuple[dict, int]]
+) -> None:
+    """Record what a finished checkout worker did, whether or not its request still waits."""
+    if worker.cancelled():
+        outcome, error = "error", "switch worker cancelled"
+    elif (exc := worker.exception()) is None:
+        payload, status = worker.result()
+        outcome = "allowed" if status == 200 else "error"
+        error = "" if status == 200 else str(payload.get("code", ""))
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        outcome, error = "error", "git timeout"
+    elif isinstance(exc, SandboxUnavailable):
+        outcome, error = "denied", "sandbox backend unavailable"
+    else:
+        outcome, error = "error", "git switch failed"
+    try:
+        _audit_switch(caller, resources, outcome, error)
+    except Exception:  # a done callback has no caller to raise to
+        logger.exception("project_git_switch: could not record the switch outcome")
 
 
 async def api_project_git_switch(request: web.Request) -> web.Response:
@@ -535,7 +763,7 @@ async def api_project_git_switch(request: web.Request) -> web.Response:
 
     ``create: true`` makes a new branch at ``HEAD``; ``track: "<remote>/<name>"``
     makes ``branch`` as a local branch tracking that remote branch; neither
-    switches to an existing local branch. Returns ``{ok, branch, previous}``.
+    switches to an existing local branch. Returns ``{ok, branch}``.
     """
     caller = str(request.get("user") or "dashboard")
     owner_denied = await require_owner_dashboard_request(request, "project_git_switch")
@@ -578,40 +806,91 @@ async def api_project_git_switch(request: web.Request) -> web.Response:
         return _error(refusal.body["error"], refusal.body["code"], refusal.status)
 
     resources = f"root={root} branch={branch}" + (f" track={track}" if track else "")
+    worker: asyncio.Future[tuple[dict, int]] | None = None
     try:
         async with _repo_lock(root):
-            payload, status = await asyncio.to_thread(_switch_sync, root, branch, create, track)
+            # Reserved before the busy check awaits anything, so a turn that
+            # starts from here on waits at its entry for the checkout instead of
+            # slipping in after the check (see repo_checkout_guard).
+            if not repo_checkout_guard.reserve(root):
+                # A previous switch's worker outlived its request and still runs.
+                sel().log_api_access(
+                    caller=caller,
+                    operation="project_git_switch",
+                    outcome="denied",
+                    resources=resources,
+                    error="a switch in this repository is still running",
+                )
+                return _error(
+                    "A branch switch in this repository is still running. "
+                    "Wait for it to finish, then switch.",
+                    "git_switch_session_busy",
+                    409,
+                )
+            try:
+                if await _repo_has_running_work(request.app.get("state"), root):
+                    sel().log_api_access(
+                        caller=caller,
+                        operation="project_git_switch",
+                        outcome="denied",
+                        resources=resources,
+                        error="a session in this repository is running",
+                    )
+                    return _error(
+                        "A session working in this repository is running. "
+                        "Wait for it to finish, then switch.",
+                        "git_switch_session_busy",
+                        409,
+                    )
+                worker = asyncio.ensure_future(
+                    asyncio.to_thread(_switch_sync, root, branch, create, track)
+                )
+                repo_checkout_guard.release_when_done(root, worker)
+                # Audited from the worker's own completion, so a switch that
+                # finishes after its request was cancelled is still recorded.
+                # Registered before the shield, so it runs before this handler
+                # resumes.
+                worker.add_done_callback(
+                    functools.partial(_audit_switch_outcome, caller, resources)
+                )
+                try:
+                    payload, status = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # The request went away, but git is still rewriting files:
+                    # hold the lock until it exits, then let the cancel through.
+                    await asyncio.wait([worker])
+                    raise
+            finally:
+                if worker is None:
+                    repo_checkout_guard.release(root)
     except subprocess.TimeoutExpired:
-        sel().log_api_access(
-            caller=caller,
-            operation="project_git_switch",
-            outcome="error",
-            resources=resources,
-            error="git timeout",
-        )
+        if worker is None:
+            _audit_switch(caller, resources, "error", "git timeout")
         return _error("git timed out", "git_timeout", 504)
     except SandboxUnavailable as exc:
         logger.warning("project_git_switch: sandbox unavailable: %s", exc)
-        sel().log_api_access(
-            caller=caller,
-            operation="project_git_switch",
-            outcome="denied",
-            resources=resources,
-            error="sandbox backend unavailable",
-        )
+        if worker is None:
+            _audit_switch(caller, resources, "denied", "sandbox backend unavailable")
         return _error(_SANDBOX_REFUSAL, "git_sandbox_unavailable", 503)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("project_git_switch failed: %s", exc)
         return _error("git couldn't switch branches.", "git_switch_failed", 500)
 
-    sel().log_api_access(
-        caller=caller,
-        operation="project_git_switch",
-        outcome="allowed" if status == 200 else "error",
-        resources=resources,
-        error="" if status == 200 else str(payload.get("code", "")),
-    )
     if status != 200:
+        # Each coded body stays a dict literal so the error-code ratchet can see
+        # its ``code``. ``files`` (dirty refusal) and ``detail`` (generic
+        # failure) come from different branches of _switch_sync, never both.
+        if payload.get("files"):
+            return web.json_response(
+                {
+                    "error": payload["error"],
+                    "code": payload["code"],
+                    # Already redacted and clipped by _overwritten_files.
+                    "files": payload["files"],
+                    "files_more": payload.get("files_more", 0),
+                },
+                status=status,
+            )
         if payload.get("detail"):
             return web.json_response(
                 {
@@ -623,6 +902,4 @@ async def api_project_git_switch(request: web.Request) -> web.Response:
             )
         return _error(payload["error"], payload["code"], status)
     payload["branch"] = redact(payload["branch"])
-    if payload.get("previous"):
-        payload["previous"] = redact(payload["previous"])
     return web.json_response(payload)

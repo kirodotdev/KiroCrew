@@ -8,7 +8,8 @@ import { copyToClipboard } from '../utils/clipboard'
  * (which falls back to a hidden textarea + execCommand on non-secure origins
  * where navigator.clipboard is absent) and briefly swaps the trailing copy glyph
  * for a check. If the copy genuinely fails, the failure is swallowed and the
- * label stays put rather than falsely announcing success.
+ * label stays put rather than falsely announcing success; a caller that must
+ * tell the user (the branch picker footer) passes ``onCopyResult``.
  *
  * Shared by the pull-request panel header and the branch picker's footer.
  * Extracted to its own module so the composer does not have to import the
@@ -27,10 +28,13 @@ export default function CopyBranchButton({
   branch,
   label = 'branch name',
   className = '',
+  onCopyResult,
 }: {
   branch: string
   label?: string
   className?: string
+  /** Called after every copy attempt with whether it reached the clipboard. */
+  onCopyResult?: (didCopy: boolean) => void
 }) {
   const [copied, setCopied] = useState(false)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -42,6 +46,7 @@ export default function CopyBranchButton({
   )
   const handleCopy = async () => {
     const didCopy = await copyToClipboard(branch)
+    onCopyResult?.(didCopy)
     if (!didCopy) return
     setCopied(true)
     if (resetTimer.current) clearTimeout(resetTimer.current)

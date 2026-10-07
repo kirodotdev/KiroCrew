@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { i18next, initI18n } from '../i18n/all'
@@ -13,14 +13,14 @@ const H = vi.hoisted(() => ({
 
 vi.mock('../api/client', () => ({ api: H.api }))
 
-import BranchSwitcher, { isValidNewBranchName } from '../components/BranchSwitcher'
+import BranchSwitcher, { isValidNewBranchName, notePlacement } from '../components/BranchSwitcher'
+import { LocalOverlayRoot } from '../components/overlayRoot'
 
 const PROJECT = '/workspace/project'
 
 function row(name: string, extra: Partial<GitBranchRow> = {}): GitBranchRow {
   return {
     name,
-    sha: 'abc1234',
     date: '2026-10-01T00:00:00Z',
     author: 'Ada',
     subject: `work on ${name}`,
@@ -36,12 +36,12 @@ const LIST: GitBranchList = {
   remote: [row('origin/review-fix')],
 }
 
-function mount() {
+function mount(props: { switchBlocked?: boolean; detached?: boolean; branch?: string } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   const invalidate = vi.spyOn(qc, 'invalidateQueries')
   render(
     <QueryClientProvider client={qc}>
-      <BranchSwitcher projectDir={PROJECT} branch="main" />
+      <BranchSwitcher projectDir={PROJECT} branch={props.branch ?? 'main'} switchBlocked={props.switchBlocked} detached={props.detached} />
     </QueryClientProvider>,
   )
   return { invalidate }
@@ -60,7 +60,7 @@ beforeEach(async () => {
   await initI18n()
   await i18next.changeLanguage('en')
   H.api.projectGitBranches.mockReset().mockResolvedValue(LIST)
-  H.api.projectGitSwitch.mockReset().mockResolvedValue({ ok: true, branch: 'feature/login', previous: 'main' })
+  H.api.projectGitSwitch.mockReset().mockResolvedValue({ ok: true, branch: 'feature/login' })
 })
 
 describe('BranchSwitcher', () => {
@@ -85,7 +85,42 @@ describe('BranchSwitcher', () => {
     await openPicker()
     expect(H.api.projectGitBranches).toHaveBeenCalledWith(PROJECT)
     expect(screen.getByText('Local')).toBeInTheDocument()
-    expect(screen.getByText('Remote')).toBeInTheDocument()
+    // The count shows the section has rows even when they sit below the scroll edge.
+    expect(screen.getByTestId('branch-remote-heading')).toHaveTextContent('Remote (1)')
+  })
+
+  it('says on a remote row, outcome first, that a click switches and keeps edits', async () => {
+    mount()
+    await openPicker()
+    const opt = screen.getByText('review-fix').closest('[role="option"]')!
+    // The bare `origin/` prefix is dropped: the Remote heading already says where it is from.
+    expect(opt.querySelector('[data-testid="branch-row-name"]')).toHaveTextContent(/^review-fix$/)
+    const action = opt.querySelector('[data-testid="branch-remote-action"]')
+    expect(action).toHaveTextContent('Switch to review-fix (makes a local copy; uncommitted changes are kept)')
+    expect(opt).toHaveAttribute('title', "Switch to review-fix (makes a local copy; uncommitted changes are kept)\nYour uncommitted changes are kept.")
+    // Local rows are a plain switch and carry no such line.
+    const local = screen.getByText('feature/login').closest('[role="option"]')!
+    expect(local.querySelector('[data-testid="branch-remote-action"]')).toBeNull()
+  })
+
+  it('gives an unswitchable remote row no action line', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, remote: [row('origin/feat+1', { switchable: false })] })
+    mount()
+    await openPicker()
+    const opt = screen.getByText('feat+1').closest('[role="option"]')!
+    expect(opt.querySelector('[data-testid="branch-remote-action"]')).toBeNull()
+  })
+
+  it('keeps the remote prefix when two remotes carry the same branch', async () => {
+    H.api.projectGitBranches.mockResolvedValue({
+      ...LIST,
+      remote: [row('origin/review-fix'), row('upstream/review-fix'), row('origin/solo')],
+    })
+    mount()
+    await openPicker()
+    const names = screen.getAllByTestId('branch-row-name').map(n => n.textContent)
+    expect(names).toEqual(expect.arrayContaining(['origin/review-fix', 'upstream/review-fix', 'solo']))
+    expect(names).not.toContain('review-fix')
   })
 
   it('switches to a local branch and refreshes every working-tree view', async () => {
@@ -103,18 +138,71 @@ describe('BranchSwitcher', () => {
   it('checks out a remote branch as a tracking branch with its short name', async () => {
     mount()
     await openPicker()
-    fireEvent.mouseDown(screen.getByText('origin/review-fix'))
+    fireEvent.mouseDown(screen.getByText('review-fix'))
     await waitFor(() => expect(H.api.projectGitSwitch).toHaveBeenCalled())
     expect(H.api.projectGitSwitch).toHaveBeenCalledWith({ path: PROJECT, branch: 'review-fix', track: 'origin/review-fix' })
   })
 
-  it('offers to create a typed name that does not exist, and Enter picks the only match', async () => {
+  it('offers to create a typed name that does not exist, but only a deliberate key creates it', async () => {
     mount()
     await openPicker()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
-    expect(screen.getByTestId('branch-create')).toHaveTextContent('Create branch “feat/new-thing”')
+    // The row says what the new branch starts from: the checked-out branch.
+    expect(screen.getByTestId('branch-create')).toHaveTextContent('New branch “feat/new-thing” from main')
+    // Highlighted (it is the only row), it names the key that creates it (jsdom is not a Mac).
+    expect(screen.getByTestId('branch-create-shortcut')).toHaveTextContent('Press Ctrl+Enter or click to create it')
+    // A plain Enter (or Tab) after a search must not turn a typo into a branch.
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Tab' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(H.api.projectGitSwitch).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', ctrlKey: true })
     await waitFor(() => expect(H.api.projectGitSwitch).toHaveBeenCalledWith({ path: PROJECT, branch: 'feat/new-thing', create: true }))
+  })
+
+  it('creates on ⌘+Enter too', async () => {
+    mount()
+    await openPicker()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(H.api.projectGitSwitch).toHaveBeenCalledWith({ path: PROJECT, branch: 'feat/new-thing', create: true }))
+  })
+
+  it('creates on a click of the create row', async () => {
+    mount()
+    await openPicker()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
+    fireEvent.mouseDown(screen.getByTestId('branch-create'))
+    await waitFor(() => expect(H.api.projectGitSwitch).toHaveBeenCalledWith({ path: PROJECT, branch: 'feat/new-thing', create: true }))
+  })
+
+  it('starts the highlight on a matching branch, not the create row', async () => {
+    mount()
+    await openPicker()
+    // "feat" matches feature/login and is also a valid new name.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat' } })
+    expect(screen.getByTestId('branch-create')).toBeInTheDocument()
+    const selected = screen.getAllByRole('option').find(el => el.getAttribute('aria-selected') === 'true')
+    expect(selected).not.toBe(screen.getByTestId('branch-create'))
+  })
+
+  it('shows the create key hint only while the create row is highlighted', async () => {
+    mount()
+    await openPicker()
+    // "feat" matches feature/login, so the highlight starts there.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat' } })
+    expect(screen.getByTestId('branch-create')).toHaveTextContent('New branch “feat” from main')
+    expect(screen.queryByTestId('branch-create-shortcut')).toBeNull()
+    fireEvent.mouseEnter(screen.getByTestId('branch-create'))
+    expect(screen.getByTestId('branch-create-shortcut')).toHaveTextContent('Press Ctrl+Enter or click to create it')
+  })
+
+  it('names the commit a new branch starts from when none is checked out', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, current: null, detached: true, head: 'abc1234' })
+    mount()
+    await openPicker()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
+    expect(screen.getByTestId('branch-create')).toHaveTextContent('New branch “feat/new-thing” from abc1234')
   })
 
   it('does not offer creation for an invalid name', async () => {
@@ -138,10 +226,116 @@ describe('BranchSwitcher', () => {
     mount()
     await openPicker()
     fireEvent.mouseDown(screen.getByText('feature/login'))
-    expect(await screen.findByTestId('branch-switcher-error')).toHaveTextContent(
-      'Your uncommitted changes would be overwritten. Commit or stash them, then switch.',
-    )
+    const notice = await screen.findByTestId('branch-switcher-error')
+    // Names the branch the switch targeted, so the reader can tell it failed.
+    expect(notice).toHaveTextContent("Couldn't switch to feature/login")
+    expect(notice).toHaveTextContent("Not switched: this branch would overwrite some of your uncommitted changes. Commit them, or ask the agent in this chat to commit or stash them, then switch again. (In a terminal: git commit or git stash.)")
     expect(screen.getByTestId('branch-switcher')).toBeInTheDocument()
+    // The "never overwritten" line would contradict the refusal beside it.
+    expect(screen.queryByTestId('branch-switcher-safety')).toBeNull()
+  })
+
+  it('names the files that block a dirty-tree switch', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_dirty', { files: ['README.md', 'src/app.py'], files_more: 2 }))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('feature/login'))
+    const notice = await screen.findByTestId('branch-switcher-error')
+    expect(notice).toHaveTextContent('then switch again. (In a terminal: git commit or git stash.) Files in the way: README.md, src/app.py +2.')
+  })
+
+  it('leaves the dirty-tree refusal unchanged when git names no files', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_dirty', { files: [] }))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('feature/login'))
+    const notice = await screen.findByTestId('branch-switcher-error')
+    expect(notice).not.toHaveTextContent('Files in the way')
+  })
+
+  it('states the safety promise above the list, on the search field and on each row it applies to', async () => {
+    mount()
+    await openPicker()
+    const safety = screen.getByTestId('branch-switcher-safety')
+    expect(safety).toHaveTextContent("Switching updates the files in this project folder to that branch's version. Your uncommitted changes are kept. If a switch would overwrite any of them, nothing changes.")
+    // The search field owns keyboard focus while arrows move the highlight, so it carries the description.
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-describedby', safety.id)
+    const row = screen.getByText('feature/login').closest('[role="option"]')!
+    expect(row).toHaveAttribute('title', "feature/login\nYour uncommitted changes are kept.")
+    // The current branch is not a switch, so it does not repeat the promise.
+    const current = screen.getAllByTestId('branch-row-name').find(n => n.textContent === 'main')!.closest('[role="option"]')!
+    expect(current).toHaveAttribute('title', 'main')
+  })
+
+  it('brings the safety line back once the refusal is cleared by typing', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_dirty'))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('feature/login'))
+    await screen.findByTestId('branch-switcher-error')
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'f' } })
+    expect(screen.getByTestId('branch-switcher-safety')).toBeInTheDocument()
+  })
+
+  it('confirms a landed switch beside the trigger and announces it politely', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      mount()
+      const status = screen.getByTestId('branch-switcher-status')
+      expect(status).toHaveAttribute('role', 'status')
+      expect(status).toHaveTextContent('')
+      await openPicker()
+      fireEvent.mouseDown(screen.getByText('feature/login'))
+      await waitFor(() => expect(screen.queryByTestId('branch-switcher')).toBeNull())
+      const note = await screen.findByTestId('branch-switcher-note')
+      expect(note).toHaveAttribute('data-note', 'switched')
+      expect(note).toHaveTextContent('Switched to feature/login')
+      expect(status).toHaveTextContent('Switched to feature/login')
+      await vi.advanceTimersByTimeAsync(4100)
+      expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+      expect(status).toHaveTextContent('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('confirms nothing when the switch is refused', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_dirty'))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('feature/login'))
+    await screen.findByTestId('branch-switcher-error')
+    expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+    expect(screen.getByTestId('branch-switcher-status')).toHaveTextContent('')
+  })
+
+  it('says another running session blocked the switch when the server refuses it', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_session_busy'))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('feature/login'))
+    const notice = await screen.findByTestId('branch-switcher-error')
+    expect(notice).toHaveTextContent("Couldn't switch to feature/login")
+    expect(notice).toHaveTextContent('Not switched: another session working in this repository is still running. Wait for it to finish, then switch.')
+  })
+
+  it('names the local branch a remote row would create when the switch fails', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_switch_dirty'))
+    mount()
+    await openPicker()
+    fireEvent.mouseDown(screen.getByText('review-fix'))
+    expect(await screen.findByTestId('branch-switcher-error')).toHaveTextContent("Couldn't switch to review-fix")
+  })
+
+  it('names the branch a failed create was for', async () => {
+    H.api.projectGitSwitch.mockRejectedValue(apiError('git_branch_exists'))
+    mount()
+    await openPicker()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', ctrlKey: true })
+    const notice = await screen.findByTestId('branch-switcher-error')
+    expect(notice).toHaveTextContent("Couldn't create branch feat/new-thing")
+    expect(notice).toHaveTextContent('A branch with that name already exists.')
   })
 
   it('falls back to git’s own line for an uncoded failure', async () => {
@@ -150,7 +344,7 @@ describe('BranchSwitcher', () => {
     await openPicker()
     fireEvent.mouseDown(screen.getByText('feature/login'))
     const notice = await screen.findByTestId('branch-switcher-error')
-    expect(notice).toHaveTextContent("Couldn't switch branches")
+    expect(notice).toHaveTextContent("Couldn't switch to feature/login")
     expect(notice).toHaveTextContent('fatal: something odd')
   })
 
@@ -158,9 +352,136 @@ describe('BranchSwitcher', () => {
     H.api.projectGitBranches.mockResolvedValue({ ...LIST, switchBlocked: 'filter' })
     mount()
     await openPicker()
-    expect(screen.getByTestId('branch-switcher-blocked')).toHaveTextContent(/declares a content filter/)
+    // Leads with the outcome and its reason, then the next step.
+    expect(screen.getByTestId('branch-switcher-blocked')).toHaveTextContent(
+      "Switching and creating branches are off for this repository. Its Git settings ask Git to run another program whenever it switches branches, and this panel won't run it. Switch in a terminal instead.")
     fireEvent.mouseDown(screen.getByText('feature/login'))
     expect(H.api.projectGitSwitch).not.toHaveBeenCalled()
+  })
+
+  it('offers no create row while a filter driver blocks switching', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, switchBlocked: 'filter' })
+    mount()
+    await openPicker()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'feat/new-thing' } })
+    expect(screen.queryByTestId('branch-create')).toBeNull()
+  })
+
+  it('mutes every row while a filter driver blocks switching', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, switchBlocked: 'filter' })
+    mount()
+    await openPicker()
+    fireEvent.mouseEnter(screen.getByText('feature/login').closest('[role="option"]')!)
+    for (const opt of screen.getAllByRole('option')) {
+      expect(opt).toHaveAttribute('aria-disabled', 'true')
+      expect(opt).toHaveAttribute('data-muted', 'true')
+      expect(opt.className).toContain('opacity-50')
+      // No pointer or keyboard highlight on a row that cannot be chosen.
+      expect(opt.className).not.toContain('bg-bg-hover')
+    }
+  })
+
+  it('keeps rows at full strength when switching is allowed', async () => {
+    mount()
+    await openPicker()
+    const row = screen.getByText('feature/login').closest('[role="option"]')!
+    fireEvent.mouseEnter(row)
+    expect(row).not.toHaveAttribute('data-muted')
+    expect(row.className).toContain('bg-bg-hover')
+  })
+
+  it('says above the list what a switch does, then that uncommitted changes stay and are never lost', async () => {
+    mount()
+    await openPicker()
+    const hint = screen.getByTestId('branch-switcher-safety')
+    expect(hint.textContent).toMatch(/^Switching updates the files in this project folder to that branch's version\. Your uncommitted changes are kept\./)
+    // Sits above the list, so it is read before any row.
+    expect(hint.compareDocumentPosition(screen.getByRole('listbox')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('leaves the safety line out when a filter driver blocks switching', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, switchBlocked: 'filter' })
+    mount()
+    await openPicker()
+    expect(screen.queryByTestId('branch-switcher-safety')).toBeNull()
+  })
+
+  it('says in words what the ahead/behind arrows count', async () => {
+    H.api.projectGitBranches.mockResolvedValue({
+      ...LIST,
+      local: [row('main', { current: true }), row('feature/login', { ahead: 2, behind: 1 }), row('solo', { ahead: 1 })],
+    })
+    mount()
+    await openPicker()
+    const [both, one] = screen.getAllByTestId('branch-ahead-behind')
+    expect(both).toHaveAttribute('title', '2 commits ahead of its remote branch, 1 commit behind its remote branch')
+    expect(one).toHaveAttribute('title', '1 commit ahead of its remote branch')
+    // The arrows are hidden from assistive tech; the words are read instead.
+    expect(both.querySelector('[aria-hidden="true"]')).toHaveTextContent('↑2 ↓1')
+    expect(both.querySelector('.sr-only')).toHaveTextContent('2 commits ahead of its remote branch, 1 commit behind its remote branch')
+  })
+
+  it('leaves out the Remote heading when no remote branch is listed', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, remote: [] })
+    mount()
+    await openPicker()
+    expect(screen.getByText('Local')).toBeInTheDocument()
+    expect(screen.queryByTestId('branch-remote-heading')).toBeNull()
+  })
+
+  it('says once in the footer what the arrow pills count', async () => {
+    mount()
+    await openPicker()
+    expect(screen.getByTestId('branch-ahead-behind-legend')).toHaveTextContent('↑ ahead · ↓ behind its remote branch')
+  })
+
+  it('leaves the arrow legend out when no row has a pill', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, local: [row('main', { current: true }), row('feature/login')] })
+    mount()
+    await openPicker()
+    expect(screen.queryByTestId('branch-ahead-behind-legend')).toBeNull()
+  })
+
+  it('disables the search field while a filter driver blocks switching', async () => {
+    H.api.projectGitBranches.mockResolvedValue({ ...LIST, switchBlocked: 'filter' })
+    mount()
+    await openPicker()
+    await screen.findByTestId('branch-switcher-blocked')
+    expect(screen.getByRole('combobox')).toBeDisabled()
+    // ...and looks it: a disabled field drawn like an active one reads as broken.
+    expect(screen.getByRole('combobox').className).toMatch(/disabled:opacity-50/)
+  })
+
+  it('keeps the search field usable when switching is allowed', async () => {
+    mount()
+    await openPicker()
+    expect(screen.getByRole('combobox')).toBeEnabled()
+  })
+
+  it('fades the list edge while rows sit below it, and drops the fade at the end', async () => {
+    // jsdom lays nothing out, so give the list a scroll geometry by hand.
+    const geometry = { scrollHeight: 400, clientHeight: 200, scrollTop: 0 }
+    const spies = (['scrollHeight', 'clientHeight', 'scrollTop'] as const).map(prop =>
+      vi.spyOn(HTMLElement.prototype, prop, 'get').mockImplementation(function (this: HTMLElement) {
+        return this.id === 'branch-switcher-list' ? geometry[prop] : 0
+      }))
+    try {
+      mount()
+      await openPicker()
+      await waitFor(() => expect(screen.getByTestId('branch-switcher-more-below')).toBeInTheDocument())
+      expect(screen.getByTestId('branch-switcher-more-below')).toHaveAttribute('aria-hidden', 'true')
+      geometry.scrollTop = 200
+      fireEvent.scroll(document.getElementById('branch-switcher-list')!)
+      expect(screen.queryByTestId('branch-switcher-more-below')).toBeNull()
+    } finally {
+      spies.forEach(s => s.mockRestore())
+    }
+  })
+
+  it('draws no fade when every row fits', async () => {
+    mount()
+    await openPicker()
+    expect(screen.queryByTestId('branch-switcher-more-below')).toBeNull()
   })
 
   it('closes on Escape', async () => {
@@ -168,6 +489,174 @@ describe('BranchSwitcher', () => {
     await openPicker()
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('branch-switcher')).toBeNull())
+  })
+})
+
+describe('BranchSwitcher while switching is blocked', () => {
+  let originalClipboard: PropertyDescriptor | undefined
+  const stubClipboard = () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    return writeText
+  }
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else delete (navigator as { clipboard?: unknown }).clipboard
+    originalClipboard = undefined
+  })
+
+  it('copies the branch name instead of opening the picker', async () => {
+    const writeText = stubClipboard()
+    mount({ switchBlocked: true })
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    expect(trigger).toHaveAccessibleName('Copy branch name main')
+    expect(trigger).toHaveAccessibleDescription('Copy branch name. To switch branch, first stop the response with ■ next to Send.')
+    // The reason is drawn visibly, not left to a delayed native tooltip.
+    expect(trigger).not.toHaveAttribute('title')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
+    fireEvent.click(trigger)
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('main'))
+    await waitFor(() => expect(trigger).toHaveAccessibleName('Copied branch name main'))
+    // Touch has no hover, so the copy itself shows how to switch.
+    expect(screen.getByTestId('branch-switcher-note')).toHaveTextContent('Copied. To switch branch, first stop the response with ■ next to Send.')
+    expect(screen.queryByTestId('branch-switcher')).toBeNull()
+    expect(H.api.projectGitBranches).not.toHaveBeenCalled()
+  })
+
+  it('calls a detached HEAD a commit', async () => {
+    const writeText = stubClipboard()
+    mount({ switchBlocked: true, detached: true, branch: 'a1b2c3d' })
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    expect(trigger).toHaveAccessibleName('Copy commit a1b2c3d')
+    expect(trigger).toHaveAccessibleDescription('Copy commit. To switch branch, first stop the response with ■ next to Send.')
+    fireEvent.click(trigger)
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('a1b2c3d'))
+  })
+
+  it('shows the reason visibly on hover and on keyboard focus', () => {
+    mount({ switchBlocked: true })
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+    fireEvent.mouseEnter(trigger)
+    expect(screen.getByTestId('branch-switcher-note')).toHaveTextContent('Copy branch name. To switch branch, first stop the response with ■ next to Send.')
+    expect(screen.getByTestId('branch-switcher-note')).toHaveAttribute('data-note', 'busy')
+    fireEvent.mouseLeave(trigger)
+    expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+    fireEvent.focus(trigger)
+    expect(screen.getByTestId('branch-switcher-note')).toBeInTheDocument()
+    fireEvent.blur(trigger)
+    expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+  })
+
+  it('shows no busy note while switching is allowed', () => {
+    mount()
+    fireEvent.mouseEnter(screen.getByTestId('branch-switcher-trigger'))
+    expect(screen.queryByTestId('branch-switcher-note')).toBeNull()
+  })
+
+  it('looks busy on the trigger itself while switching is blocked', () => {
+    mount({ switchBlocked: true })
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    // Visible without hovering: muted text and a copy cursor.
+    expect(trigger).toHaveClass('text-muted', 'cursor-copy')
+    expect(trigger).toHaveAttribute('data-busy', 'true')
+    // Static: it lasts the whole response, in peripheral vision.
+    expect(trigger.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('keeps the trigger at full strength while switching is allowed', () => {
+    mount()
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    expect(trigger).toHaveClass('text-text', 'cursor-pointer')
+    expect(trigger).not.toHaveClass('text-muted')
+    expect(trigger).not.toHaveAttribute('data-busy')
+  })
+
+  it('withholds the confirmation and shows an error notice when the copy fails', async () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    const execCommand = vi.fn().mockReturnValue(false)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    try {
+      mount({ switchBlocked: true })
+      const trigger = screen.getByTestId('branch-switcher-trigger')
+      fireEvent.click(trigger)
+      await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+      expect(trigger).toHaveAccessibleName('Copy branch name main')
+      const notice = await screen.findByTestId('branch-switcher-copy-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent("Couldn't copy “main” to the clipboard.")
+      // No agent hand-off: it would move the chat away from the composer draft.
+      expect(notice.querySelector('a, button')).toBeNull()
+      expect(screen.getByTestId('branch-switcher-note')).toHaveAttribute('data-note', 'copy_failed')
+      // A next step: retrying the copy, which clears the notice once it lands.
+      writeText.mockResolvedValue(undefined)
+      fireEvent.click(screen.getByTestId('branch-switcher-copy-retry'))
+      await waitFor(() => expect(screen.queryByTestId('branch-switcher-copy-error')).toBeNull())
+      expect(writeText).toHaveBeenLastCalledWith('main')
+    } finally {
+      if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand)
+      else delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
+  it('clears the copy failure on its own', async () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) }, configurable: true })
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    Object.defineProperty(document, 'execCommand', { value: vi.fn().mockReturnValue(false), configurable: true })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      mount({ switchBlocked: true })
+      fireEvent.click(screen.getByTestId('branch-switcher-trigger'))
+      await screen.findByTestId('branch-switcher-copy-error')
+      await vi.advanceTimersByTimeAsync(8100)
+      expect(screen.queryByTestId('branch-switcher-copy-error')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+      if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand)
+      else delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
+  it('says inside the picker when the footer copy is refused, and clears it once a copy lands', async () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    const execCommand = vi.fn().mockReturnValue(false)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    try {
+      mount()
+      await openPicker()
+      const footerCopy = screen.getByRole('button', { name: /Copy branch name/ })
+      fireEvent.click(footerCopy)
+      const notice = await screen.findByTestId('branch-switcher-footer-copy-failed')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent("Couldn't copy “main” to the clipboard.")
+      expect(notice.querySelector('a, button')).toBeNull()
+      writeText.mockResolvedValue(undefined)
+      fireEvent.click(screen.getByTestId('branch-switcher-footer-copy-retry'))
+      await waitFor(() => expect(screen.queryByTestId('branch-switcher-footer-copy-failed')).toBeNull())
+      expect(writeText).toHaveBeenLastCalledWith('main')
+    } finally {
+      if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand)
+      else delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
+  it('opens the picker again once switching is allowed', async () => {
+    mount()
+    const trigger = screen.getByTestId('branch-switcher-trigger')
+    expect(trigger).toHaveAttribute('data-mode', 'switch')
+    expect(trigger).toHaveAccessibleName('Switch branch (current: main)')
+    await openPicker()
+    expect(screen.getByTestId('branch-switcher')).toBeInTheDocument()
   })
 })
 
@@ -188,5 +677,51 @@ describe('BranchSwitcher keyboard start', () => {
     expect(selected).toHaveTextContent('feature/login')
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
     await waitFor(() => expect(H.api.projectGitSwitch).toHaveBeenCalledWith({ path: PROJECT, branch: 'feature/login' }))
+  })
+})
+
+describe('notePlacement', () => {
+  const chip = { top: 700, bottom: 720, left: 100, right: 180 }
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+  })
+
+  it('keeps a chip note on the chip row, clear of the composer above it', () => {
+    // Bottom-aligned with the chip and to its right, never above it.
+    expect(notePlacement('chip', chip, 280)).toEqual({ bottom: 80, left: 186 })
+  })
+
+  it('moves a chip note to the left of the chip when the right side has no room', () => {
+    const right = { top: 700, bottom: 720, left: 900, right: 1000 }
+    expect(notePlacement('chip', right, 280)).toEqual({ bottom: 80, right: 306 })
+  })
+
+  it('falls back above the chip only when neither side fits', () => {
+    Object.defineProperty(window, 'innerWidth', { value: 400, configurable: true })
+    expect(notePlacement('chip', { top: 700, bottom: 720, left: 60, right: 340 }, 280)).toEqual({ bottom: 104, left: 60 })
+  })
+
+  it('drops a header note below the trigger', () => {
+    expect(notePlacement('header', { top: 40, bottom: 60, left: 100, right: 180 }, 280)).toEqual({ top: 64, left: 100 })
+  })
+})
+
+describe('BranchSwitcher across a Crew switch', () => {
+  it('opens in the local overlay root and closes when the local Crew is hidden', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+    const tree = (hidden: boolean) => (
+      <QueryClientProvider client={qc}>
+        <LocalOverlayRoot hidden={hidden}>
+          <BranchSwitcher projectDir={PROJECT} branch="main" />
+        </LocalOverlayRoot>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(tree(false))
+    await openPicker()
+    const picker = screen.getByTestId('branch-switcher')
+    expect(picker.closest('[data-local-overlay-root]')).not.toBeNull()
+    rerender(tree(true))
+    await waitFor(() => expect(screen.queryByTestId('branch-switcher')).toBeNull())
   })
 })
