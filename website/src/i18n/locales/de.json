@@ -15740,6 +15740,8 @@
         "category_taskrunner_description": "Task Runner: abgeschlossene Läufe",
         "category_turn": "Gesprächsübergaben",
         "category_turn_description": "Wenn ein Gespräch endet oder für deine Eingabe pausiert",
+        "category_dictation": "Unterbrochenes Diktat",
+        "category_dictation_description": "Spielt einen Ton ab, wenn das Diktat endet, bevor du es beendest",
         "channel_default": "Kanalstandard",
         "channel_not_active_app_disabled_setting_retained": "Kanal nicht aktiv (App deaktiviert) — Einstellung bleibt erhalten",
         "default_priority": "Standardpriorität: {{priority}}",

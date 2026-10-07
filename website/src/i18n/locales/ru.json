@@ -16218,6 +16218,8 @@
         "category_taskrunner_description": "Завершения Task Runner",
         "category_turn": "Передача хода в разговоре",
         "category_turn_description": "Когда разговор завершается или приостанавливается в ожидании твоего ответа",
+        "category_dictation": "Прерванная диктовка",
+        "category_dictation_description": "Воспроизводит звук, когда диктовка останавливается раньше, чем ты её завершишь",
         "channel_default": "По умолчанию для канала",
         "channel_not_active_app_disabled_setting_retained": "Канал не активен (приложение отключено) — настройка сохранена",
         "default_priority": "Приоритет по умолчанию: {{priority}}",

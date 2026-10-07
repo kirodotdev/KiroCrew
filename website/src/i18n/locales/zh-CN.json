@@ -15501,6 +15501,8 @@
         "category_taskrunner_description": "Task Runner完成",
         "category_turn": "对话交接",
         "category_turn_description": "对话结束或暂停等待你输入时",
+        "category_dictation": "口述中断",
+        "category_dictation_description": "口述在你结束之前停止时播放提示音",
         "channel_default": "渠道默认",
         "channel_not_active_app_disabled_setting_retained": "渠道未启用（应用已禁用） — 设置已保留",
         "default_priority": "默认优先级：{{priority}}",

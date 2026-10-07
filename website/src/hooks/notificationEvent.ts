@@ -41,6 +41,14 @@ export const TURN_DONE_KIND = 'turn' as const
 export const APPROVAL_KIND = 'approval' as const
 
 /**
+ * Sound kind for a dictation that stopped before the user ended it: the stream
+ * failed, hit its length cap, or lost its connection. Synthesized by
+ * `useStreamingStt` for someone dictating without watching the screen. Like
+ * `TURN_DONE_KIND`, it is sound-only.
+ */
+export const DICTATION_STOPPED_KIND = 'dictation' as const
+
+/**
  * A turn sound means the conversation has stopped or needs an answer, not
  * merely that one model turn returned. Continuation comes from the terminal
  * frame, with live activity selectors as the fallback for older frames.

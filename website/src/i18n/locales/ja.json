@@ -15501,6 +15501,8 @@
         "category_taskrunner_description": "Task Runnerの完了",
         "category_turn": "会話の引き継ぎ",
         "category_turn_description": "会話が終了するか、入力待ちで一時停止したとき",
+        "category_dictation": "口述の中断",
+        "category_dictation_description": "自分で終える前に口述が止まったときに音を鳴らします",
         "channel_default": "チャネルのデフォルト",
         "channel_not_active_app_disabled_setting_retained": "チャネルが非アクティブ(アプリが無効) — 設定は保持されます",
         "default_priority": "デフォルトの優先度：{{priority}}",

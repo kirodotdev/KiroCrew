@@ -15979,6 +15979,8 @@
         "category_taskrunner_description": "Completamenti di Task Runner",
         "category_turn": "Passaggi di consegne della conversazione",
         "category_turn_description": "Quando una conversazione termina o si ferma in attesa della tua risposta",
+        "category_dictation": "Dettatura interrotta",
+        "category_dictation_description": "Riproduce un suono quando la dettatura si ferma prima che tu la termini",
         "channel_default": "Predefinito del canale",
         "channel_not_active_app_disabled_setting_retained": "Canale non attivo (app disattivata) — impostazione conservata",
         "default_priority": "Priorità predefinita: {{priority}}",

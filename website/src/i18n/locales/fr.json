@@ -15979,6 +15979,8 @@
         "category_taskrunner_description": "Fins de l’Task Runner",
         "category_turn": "Relais de conversation",
         "category_turn_description": "Lorsqu’une conversation se termine ou s’interrompt en attendant ta réponse",
+        "category_dictation": "Dictée interrompue",
+        "category_dictation_description": "Joue un son lorsque la dictée s’arrête avant que tu la termines",
         "channel_default": "Valeur par défaut du canal",
         "channel_not_active_app_disabled_setting_retained": "Canal inactif (app désactivée) — réglage conservé",
         "default_priority": "Priorité par défaut : {{priority}}",

@@ -15740,6 +15740,8 @@
         "category_taskrunner_description": "Task Runner শেষ হলে",
         "category_turn": "কথোপকথনের হ্যান্ডঅফ",
         "category_turn_description": "যখন কথোপকথন শেষ হয় বা তোমার ইনপুটের জন্য থামে",
+        "category_dictation": "বাধাপ্রাপ্ত ডিকটেশন",
+        "category_dictation_description": "তুমি শেষ করার আগেই ডিকটেশন থেমে গেলে একটি শব্দ বাজায়",
         "channel_default": "চ্যানেলের ডিফল্ট",
         "channel_not_active_app_disabled_setting_retained": "চ্যানেল সক্রিয় নয় (অ্যাপ নিষ্ক্রিয়) — সেটিং রাখা হয়েছে",
         "default_priority": "ডিফল্ট অগ্রাধিকার: {{priority}}",

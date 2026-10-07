@@ -2129,6 +2129,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Heartbeat task results"
   },
   {
+    "id": "notifications.sound-category-dictation",
+    "params": {
+      "sub": "percategory"
+    },
+    "labelKey": "pages.settings.notificationsPanel.category_dictation",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Interrupted dictation",
+    "description": "Plays a sound when dictation stops before you end it"
+  },
+  {
     "id": "notifications.mark-sessions-unread-only-when-they-need-you",
     "label": "Mark sessions unread only when they need you",
     "labelKey": "pages.settings.notificationsPanel.unread_only_when_done_or_waiting",

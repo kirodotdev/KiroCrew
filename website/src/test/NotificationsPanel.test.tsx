@@ -83,8 +83,7 @@ describe('NotificationsPanel', () => {
       perCategory: { all: 'chime', cron: 'ding' },
     }))
     render(<NotificationsPanel />, 'percategory')
-    // The cron row should show "Ding" (the override), not "Use default"
-    expect(screen.getAllByText(/Ding/).length).toBeGreaterThan(0)
+    expect(screen.getByRole('combobox', { name: 'Cron' }).textContent).toBe('Ding')
   })
 
   it('renders the Agent messages row and loads its seeded override', () => {
@@ -97,8 +96,7 @@ describe('NotificationsPanel', () => {
     }))
     render(<NotificationsPanel />, 'percategory')
     expect(screen.getAllByText('Proactive agent messages').length).toBeGreaterThan(0)
-    // The agent row shows "Ding" (the override), not "Use default"
-    expect(screen.getAllByText(/Ding/).length).toBeGreaterThan(0)
+    expect(screen.getByRole('combobox', { name: 'Proactive agent messages' }).textContent).toBe('Ding')
   })
 
   it('describes the turn sound as a conversation handoff, not an every-turn chime', () => {
@@ -197,17 +195,27 @@ describe('NotificationsPanel', () => {
 
   it('approval-row preview matches runtime (presetForKind): plays pulse with no override', () => {
     // Category rows render in CATEGORY_ROWS order:
-    // all, turn, agent, cron, approval, hook, heartbeat, subagent, taskrunner, skills
+    // all, turn, dictation, agent, cron, approval, hook, heartbeat, subagent, taskrunner, skills
     // The per-row Test button plays `effective`, which now goes through
     // presetForKind — so approval with no override must play its built-in
     // 'pulse', exactly what runtime plays, not the 'all' fallback.
     render(<NotificationsPanel />, 'percategory')
     const rowTestBtns = screen.getAllByRole('button', { name: 'Test' })
-    const approvalIdx = 4
+    const approvalIdx = 5
     fireEvent.click(rowTestBtns[approvalIdx])
     const settings = loadSoundSettings()
     expect(presetForKind('approval', settings)).toBe('pulse')
     expect(playPreset).toHaveBeenCalledWith('pulse', settings.volume)
+  })
+
+  it('interrupted-dictation row follows the all-categories sound like the other rows', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0.35, perCategory: { all: 'blip' } }))
+    render(<NotificationsPanel />, 'percategory')
+    expect(screen.getByRole('combobox', { name: 'Interrupted dictation' }).textContent).toBe('Use default')
+    const rowTestBtns = screen.getAllByRole('button', { name: 'Test' })
+    const dictationIdx = 2
+    fireEvent.click(rowTestBtns[dictationIdx])
+    expect(playPreset).toHaveBeenCalledWith('blip', 0.35)
   })
 
   it('does not adopt a change into local state when persistence fails (quota)', () => {

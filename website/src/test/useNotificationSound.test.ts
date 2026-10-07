@@ -206,6 +206,13 @@ describe('presetForKind', () => {
     expect(presetForKind('approval', { ...base, perCategory: { all: 'chime' } })).toBe('pulse')
     expect(presetForKind('approval', { ...base, perCategory: {} })).toBe('pulse') // fallback chime
   })
+
+  it('resolves the dictation category like the other categories: override, then the all-categories sound', () => {
+    expect(presetForKind('dictation', base)).toBe('chime')
+    expect(presetForKind('dictation', { ...base, perCategory: { ...base.perCategory, dictation: 'pop' } })).toBe('pop')
+    expect(presetForKind('dictation', { ...base, perCategory: { ...base.perCategory, dictation: 'none' } })).toBe('none')
+    expect(presetForKind('dictation', { ...base, perCategory: { all: 'none' } })).toBe('none')
+  })
 })
 
 // -- playPreset ---------------------------------------------------------------

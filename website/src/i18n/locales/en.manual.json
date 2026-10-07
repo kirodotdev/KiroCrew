@@ -7194,6 +7194,8 @@
         "category_taskrunner_description": "Task Runner completions",
         "category_turn": "Conversation handoffs",
         "category_turn_description": "When a conversation finishes or pauses for your input",
+        "category_dictation": "Interrupted dictation",
+        "category_dictation_description": "Plays a sound when dictation stops before you end it",
         "channel_default": "Channel default",
         "notifications_for": "Notifications for {{name}}",
         "preset_blip": "Blip",

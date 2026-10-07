@@ -184,9 +184,16 @@ ignores `silent` degrades to the prior double-sound behavior and no worse.
 
 ### Sound events
 
-Two sound kinds are synthesized by the websocket layer. `TURN_DONE_KIND`
+Two sound kinds are synthesized by the websocket layer, and a third by the
+dictation hook. `TURN_DONE_KIND`
 (`'turn'`, on `chat_done`) is sound-only: it never appears in the feed (no Redux
-entry, no toast, no badge). `APPROVAL_KIND` (`'approval'`) is synthesized at
+entry, no toast, no badge). `DICTATION_STOPPED_KIND` (`'dictation'`) is
+synthesized by `useStreamingStt` when a live dictation stops before the user ends
+it: an `error` frame or a socket close while still capturing, or the readiness
+buffer filling up. It is sound-only for the same reason as `'turn'`: the hook
+already shows the error, and the sound is for someone dictating without watching
+the screen. A stop the user makes, a cancel and an unmount stay silent.
+`APPROVAL_KIND` (`'approval'`) is synthesized at
 three sites:
 
 - an `approval` frame (a coordinator-registry approval: a Slack, cron, or

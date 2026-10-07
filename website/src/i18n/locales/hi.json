@@ -15740,6 +15740,8 @@
         "category_taskrunner_description": "Task Runner पूरे होने पर",
         "category_turn": "बातचीत का हैंडऑफ़",
         "category_turn_description": "जब बातचीत पूरी हो या तुम्हारे इनपुट के लिए रुके",
+        "category_dictation": "बाधित डिक्टेशन",
+        "category_dictation_description": "जब डिक्टेशन तुम्हारे खत्म करने से पहले रुक जाए, तब आवाज़ बजाता है",
         "channel_default": "चैनल डिफ़ॉल्ट",
         "channel_not_active_app_disabled_setting_retained": "चैनल सक्रिय नहीं (ऐप बंद) — सेटिंग बनी रहेगी",
         "default_priority": "डिफ़ॉल्ट प्राथमिकता: {{priority}}",

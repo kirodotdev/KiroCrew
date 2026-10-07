@@ -67,11 +67,12 @@ const overrideLabels = (): string[] => [
  *  description are catalog keys below, resolved per render for the same reason
  *  `PRESET_LABEL_KEY` holds keys. */
 const CATEGORY_ROWS: SoundCategory[] = [
-  'all', 'turn', 'agent', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner', 'skills',
+  'all', 'turn', 'dictation', 'agent', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner', 'skills',
 ]
 const CATEGORY_LABEL_KEY: Record<SoundCategory, string> = {
   all: 'pages.settings.notificationsPanel.category_all',
   turn: 'pages.settings.notificationsPanel.category_turn',
+  dictation: 'pages.settings.notificationsPanel.category_dictation',
   agent: 'pages.settings.notificationsPanel.category_agent',
   cron: 'pages.settings.notificationsPanel.category_cron',
   approval: 'pages.settings.notificationsPanel.category_approval',
@@ -84,6 +85,7 @@ const CATEGORY_LABEL_KEY: Record<SoundCategory, string> = {
 const CATEGORY_DESCRIPTION_KEY: Record<SoundCategory, string> = {
   all: 'pages.settings.notificationsPanel.category_all_description',
   turn: 'pages.settings.notificationsPanel.category_turn_description',
+  dictation: 'pages.settings.notificationsPanel.category_dictation_description',
   agent: 'pages.settings.notificationsPanel.category_agent_description',
   cron: 'pages.settings.notificationsPanel.category_cron_description',
   approval: 'pages.settings.notificationsPanel.category_approval_description',

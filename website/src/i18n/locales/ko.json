@@ -15513,6 +15513,8 @@
         "category_taskrunner_description": "Task Runner 완료",
         "category_turn": "대화 인계",
         "category_turn_description": "대화가 끝나거나 입력을 기다리며 일시 중지될 때",
+        "category_dictation": "구술 중단",
+        "category_dictation_description": "직접 끝내기 전에 구술이 멈추면 소리를 재생합니다",
         "channel_default": "채널 기본값",
         "channel_not_active_app_disabled_setting_retained": "채널이 활성 상태가 아닙니다(앱 비활성화) — 설정은 유지됩니다",
         "default_priority": "기본 우선순위: {{priority}}",

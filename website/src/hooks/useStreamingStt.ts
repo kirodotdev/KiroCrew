@@ -7,6 +7,7 @@ import { joinTranscript } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
 import { MAX_TIMER_DELAY_MS } from '../utils/timerDelay'
 import { withBase } from '@/lib/basePath'
+import { dispatchMcNotification, DICTATION_STOPPED_KIND } from './notificationEvent'
 
 /**
  * Streaming STT over `/api/ws/stt`.
@@ -358,6 +359,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
           // failed session has no finals to deliver -- from clearing the one
           // explanation the user got.
           reportedError = true
+          if (!captureStoppedRef.current) dispatchMcNotification(DICTATION_STOPPED_KIND)
           onErrorRef.current?.(
             streamErrorMessage(String(msg.code || ''), String(msg.message || '')) ||
             i18nT('hooks.useStreamingStt.stt_error'),
@@ -436,8 +438,9 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       // Finals commit earlier utterances; a last partial belongs to the next
       // unfinished utterance and must survive an interrupted connection too.
       const combined = joinTranscript([...finalsRef.current, lastPartial])
-      if (!captureStoppedRef.current && !reportedError) {
-        onErrorRef.current?.(i18nT('hooks.useStreamingStt.stt_connection_lost'))
+      if (!captureStoppedRef.current) {
+        dispatchMcNotification(DICTATION_STOPPED_KIND)
+        if (!reportedError) onErrorRef.current?.(i18nT('hooks.useStreamingStt.stt_connection_lost'))
       }
       if (combined) onFinalRef.current(combined)
       else onPartialRef.current('')  // clear any dangling partial when nothing transcribed
@@ -521,7 +524,10 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       }
       buffer.push(chunk)
       bufferedBytes += chunk.byteLength
-      if (bufferedBytes >= MAX_BUFFERED_BYTES && !captureStoppedRef.current) stop()
+      if (bufferedBytes >= MAX_BUFFERED_BYTES && !captureStoppedRef.current) {
+        dispatchMcNotification(DICTATION_STOPPED_KIND)
+        stop()
+      }
     }
     source.connect(node)
     // The processor writes no output samples (silence). Connecting that silent

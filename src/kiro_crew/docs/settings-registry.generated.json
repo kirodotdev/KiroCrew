@@ -1258,6 +1258,13 @@
       "description": "Heartbeat task results"
     },
     {
+      "id": "notifications.sound-category-dictation",
+      "label": "Interrupted dictation",
+      "tab": "notifications",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-dictation",
+      "description": "Plays a sound when dictation stops before you end it"
+    },
+    {
       "id": "notifications.mark-sessions-unread-only-when-they-need-you",
       "label": "Mark sessions unread only when they need you",
       "tab": "notifications",
