@@ -2381,7 +2381,12 @@
         "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>",
         "repositories_in_your_organization": "组织中的仓库",
         "no_repositories_in_your_organization_paste_a_url": "组织中没有仓库。请在下方粘贴 URL 以连接一个。",
-        "azure_also_needs_the_devops_extension": "Azure DevOps 还需要其专用的 CLI 扩展，使用下面的命令安装一次即可。"
+        "azure_also_needs_the_devops_extension": "Azure DevOps 还需要其专用的 CLI 扩展，使用下面的命令安装一次即可。",
+        "gitlab_instance": "GitLab 实例",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "未能加载仪表板设置，因此无法列出 GitLab 实例。",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "已清除选择：这些项目位于之前的 GitLab 实例上。",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "已清除选择：这些仓库属于之前的提供方。",
+        "try_again": "重试"
       },
       "connectRepoModal": {
         "close": "关闭",

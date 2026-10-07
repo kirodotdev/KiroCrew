@@ -2431,7 +2431,12 @@
         "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>",
         "repositories_in_your_organization": "तुम्हारे संगठन की रिपॉज़िटरी",
         "no_repositories_in_your_organization_paste_a_url": "तुम्हारे संगठन में कोई रिपॉज़िटरी नहीं है। कनेक्ट करने के लिए नीचे URL पेस्ट करो।",
-        "azure_also_needs_the_devops_extension": "Azure DevOps को अपना CLI एक्सटेंशन भी चाहिए, जिसे नीचे दिए गए कमांड से एक बार इंस्टॉल करो।"
+        "azure_also_needs_the_devops_extension": "Azure DevOps को अपना CLI एक्सटेंशन भी चाहिए, जिसे नीचे दिए गए कमांड से एक बार इंस्टॉल करो।",
+        "gitlab_instance": "GitLab इंस्टेंस",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "तुम्हारी डैशबोर्ड सेटिंग लोड नहीं हुईं, इसलिए GitLab इंस्टेंस सूचीबद्ध नहीं किए जा सकते।",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "चयन साफ़ किया गया: वे प्रोजेक्ट पिछले GitLab इंस्टेंस पर हैं।",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "चयन साफ़ किया गया: वे रिपॉज़िटरी पिछले प्रदाता से संबंधित हैं।",
+        "try_again": "फिर से कोशिश करो"
       },
       "connectRepoModal": {
         "close": "बंद करें",

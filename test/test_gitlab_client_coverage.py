@@ -737,6 +737,14 @@ def test_get_current_login_returns_none_on_a_cli_failure(route):
     assert gl.get_current_login(host="gitlab.com") is None
 
 
+def test_get_current_login_surfaces_a_host_setup_failure(monkeypatch):
+    # A stale KIROCREW_ISSUE_RADAR_GLAB path must reach the route as a setup
+    # error (setup_required), not collapse into "no login" -> empty picker.
+    monkeypatch.setenv("KIROCREW_ISSUE_RADAR_GLAB", "/nonexistent/glab")
+    with pytest.raises(gl.ProviderSetupError):
+        gl.get_current_login(host="gitlab.com")
+
+
 def test_list_contributed_repos_filters_by_activity_and_shape(route):
     route([("projects?membership=true", [
         {"path_with_namespace": "g/p", "last_activity_at": "2099-01-01T00:00:00Z",
@@ -746,7 +754,8 @@ def test_list_contributed_repos_filters_by_activity_and_shape(route):
     ])])
     rows, truncated = gl.list_contributed_repos("alice", host="gitlab.com", within_days=30)
     assert rows == [
-        {"owner": "g", "repo": "p", "pushed_at": "2099-01-01T00:00:00Z",
+        {"owner": "g", "repo": "p", "full_name": "g/p",
+         "last_contributed_at": "2099-01-01T00:00:00Z", "pushed_at": "2099-01-01T00:00:00Z",
          "private": False, "description": "d"}
     ]
     assert truncated is False

@@ -1183,6 +1183,31 @@ class TestProviderDispatch(unittest.TestCase):
         self.assertEqual(key.web_url(), "https://gitlab.acme.internal/g/sub/p")
 
 
+class TestContributedReposRowContract(unittest.TestCase):
+    """The connect picker reads every provider's rows through ONE contract:
+    keyed and labelled by ``full_name``, dated by ``last_contributed_at``.
+    GitLab rows once carried neither, so the picker rendered nameless rows whose
+    tick toggled the shared key ``undefined``."""
+
+    def test_rows_carry_full_name_and_last_contributed_at(self):
+        rows = [
+            {"path_with_namespace": "grp/sub/proj", "last_activity_at": "2999-01-02T03:04:05Z",
+             "visibility": "private"},
+            {"path_with_namespace": "grp/other", "last_activity_at": "2999-01-01T00:00:00Z",
+             "visibility": "public"},
+        ]
+        with mock.patch.object(gitlab_client, "_glab_api", return_value=rows):
+            out, truncated = gitlab_client.list_contributed_repos("me", host="gitlab.com")
+        self.assertFalse(truncated)
+        self.assertEqual([r["full_name"] for r in out], ["grp/sub/proj", "grp/other"])
+        self.assertEqual(out[0]["owner"], "grp/sub")
+        self.assertEqual(out[0]["repo"], "proj")
+        self.assertEqual(out[0]["last_contributed_at"], "2999-01-02T03:04:05Z")
+        # Every row key the GitHub client promises, so the route needs no branching.
+        gh_keys = {"owner", "repo", "full_name", "last_contributed_at"}
+        self.assertTrue(gh_keys <= set(out[1]))
+
+
 class TestClientParity(unittest.TestCase):
     """EVERY client module must expose the same surface.
 

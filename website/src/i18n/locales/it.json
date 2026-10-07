@@ -2481,7 +2481,12 @@
         "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>",
         "repositories_in_your_organization": "Repository della tua organizzazione",
         "no_repositories_in_your_organization_paste_a_url": "Nessun repository nella tua organizzazione. Incolla un URL qui sotto per collegarne uno.",
-        "azure_also_needs_the_devops_extension": "Azure DevOps richiede anche la propria estensione della CLI, da installare una volta con il comando qui sotto."
+        "azure_also_needs_the_devops_extension": "Azure DevOps richiede anche la propria estensione della CLI, da installare una volta con il comando qui sotto.",
+        "gitlab_instance": "Istanza GitLab",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Le impostazioni della dashboard non sono state caricate, quindi non è possibile elencare le istanze GitLab.",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "Selezione annullata: quei progetti si trovano sull'istanza GitLab precedente.",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "Selezione annullata: quei repository appartengono al provider precedente.",
+        "try_again": "Riprova"
       },
       "connectRepoModal": {
         "close": "Chiudi",

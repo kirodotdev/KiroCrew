@@ -539,9 +539,16 @@ def derive_members(issues: list[dict]) -> list[dict]:
 
 
 def get_current_login(*, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> str | None:
-    """The authenticated ``glab`` user's username, or ``None`` if unavailable."""
+    """The authenticated ``glab`` user's username, or ``None`` if unavailable.
+
+    A host-setup failure (glab missing, a stale ``KIROCREW_ISSUE_RADAR_GLAB``
+    path, no session) is re-raised: swallowing it made the connect picker say
+    "no contributions in the last month" instead of showing setup instructions.
+    """
     try:
         user = _obj(_glab_api("user", host=host, timeout=timeout))
+    except ProviderSetupError:
+        raise
     except ProviderCliError:
         return None
     return _username(user)
@@ -583,6 +590,18 @@ def list_contributed_repos(
             {
                 "owner": namespace,
                 "repo": project,
+                # The connect picker keys, labels and ticks rows by `full_name`
+                # and dates them by `last_contributed_at` -- the github_client
+                # row contract. Without them every GitLab row rendered nameless
+                # and ticking one ticked "undefined", so a GitLab user could only
+                # connect projects one pasted URL at a time.
+                # `last_contributed_at` is the project's last_activity_at (any
+                # member), not this user's own last push: GitLab exposes no
+                # per-user contribution timestamp on the membership listing, and
+                # the picker only needs a sort/recency key. Azure has its own
+                # header for the same honesty gap; GitLab can follow if needed.
+                "full_name": full,
+                "last_contributed_at": activity or None,
                 "pushed_at": row.get("last_activity_at"),
                 "private": str(row.get("visibility") or "private").lower() != "public",
                 "description": row.get("description"),

@@ -2467,7 +2467,12 @@
         "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>",
         "repositories_in_your_organization": "組織のリポジトリ",
         "no_repositories_in_your_organization_paste_a_url": "組織にリポジトリがありません。下に URL を貼り付けて接続してください。",
-        "azure_also_needs_the_devops_extension": "Azure DevOps には専用の CLI 拡張機能も必要です。下のコマンドで一度インストールしてください。"
+        "azure_also_needs_the_devops_extension": "Azure DevOps には専用の CLI 拡張機能も必要です。下のコマンドで一度インストールしてください。",
+        "gitlab_instance": "GitLab インスタンス",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "ダッシュボードの設定を読み込めなかったため、GitLab インスタンスを一覧表示できません。",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "選択を解除しました: これらのプロジェクトは以前の GitLab インスタンスにあります。",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "選択を解除しました: これらのリポジトリは以前のプロバイダーに属しています。",
+        "try_again": "再試行"
       },
       "connectRepoModal": {
         "close": "クローズ",

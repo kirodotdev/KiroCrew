@@ -2467,7 +2467,12 @@
         "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>",
         "repositories_in_your_organization": "조직의 저장소",
         "no_repositories_in_your_organization_paste_a_url": "조직에 저장소가 없습니다. 아래에 URL을 붙여넣어 연결하세요.",
-        "azure_also_needs_the_devops_extension": "Azure DevOps에는 전용 CLI 확장도 필요합니다. 아래 명령으로 한 번 설치하세요."
+        "azure_also_needs_the_devops_extension": "Azure DevOps에는 전용 CLI 확장도 필요합니다. 아래 명령으로 한 번 설치하세요.",
+        "gitlab_instance": "GitLab 인스턴스",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "대시보드 설정을 불러오지 못해 GitLab 인스턴스를 나열할 수 없습니다.",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "선택이 해제되었습니다: 해당 프로젝트는 이전 GitLab 인스턴스에 있습니다.",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "선택이 해제되었습니다: 해당 리포지토리는 이전 공급자에 속합니다.",
+        "try_again": "다시 시도"
       },
       "connectRepoModal": {
         "close": "닫기",

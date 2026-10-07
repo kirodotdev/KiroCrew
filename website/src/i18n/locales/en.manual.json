@@ -712,7 +712,12 @@
         "select": "Select {{name}}",
         "repositories_in_your_organization": "Repositories in your organization",
         "no_repositories_in_your_organization_paste_a_url": "No repositories in your organization. Paste a URL below to connect one.",
-        "azure_also_needs_the_devops_extension": "Azure DevOps also needs its own CLI extension, installed once with the command below."
+        "azure_also_needs_the_devops_extension": "Azure DevOps also needs its own CLI extension, installed once with the command below.",
+        "gitlab_instance": "GitLab instance",
+        "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Your dashboard settings didn't load, so GitLab instances can't be listed.",
+        "selection_cleared_those_projects_are_on_the_previous_instance": "Selection cleared: those projects are on the previous GitLab instance.",
+        "selection_cleared_those_repos_belong_to_the_previous_provider": "Selection cleared: those repos belong to the previous provider.",
+        "try_again": "Try again"
       },
       "connectRepoModal": {
         "connecting": "Connecting {{done}} of {{total}}…"
