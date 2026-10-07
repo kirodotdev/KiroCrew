@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -392,6 +393,14 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
                 {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
             )
         spec_path = validated
+
+    # Checked before the inline spec is written, so a refusal leaves nothing behind.
+    # Disabled in Library means no new runs: the run would have no page to
+    # watch or stop it from.
+    if await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+        return web.json_response(
+            {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
+        )
 
     # Handle inline spec content
     created_spec: Path | None = None

@@ -2603,6 +2603,24 @@ def is_app_enabled(name: str) -> bool:
     return bool(meta and meta.enabled)
 
 
+# The builtin that owns the Task Runner page. Its routes are host-owned, so the
+# start paths read this app's switch themselves (see ``app_disabled``).
+TASK_RUNNER_APP = "projects"
+TASK_RUNNER_DISABLED_MESSAGE = "Task Runner is disabled. Enable it in Library to start tasks."
+
+
+def app_disabled(name: str) -> bool:
+    """True only when the app is installed and switched off.
+
+    Not ``not is_app_enabled(name)``: that is also True when no record exists,
+    and a host-owned surface (Task Runner on a headless host or in tests) runs
+    without one. Only an explicit ``enabled: false`` reads as disabled here.
+    Read-only, like :func:`is_app_enabled`.
+    """
+    meta = _read_installed(name)
+    return meta is not None and not meta.enabled
+
+
 def set_app_source(name: str, source: str) -> bool:
     """Update the ``source`` field of an installed app's metadata.
 

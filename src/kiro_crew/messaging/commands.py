@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
 )
+from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
@@ -1022,6 +1023,9 @@ async def task_arg_reply(
         runner.cancel()
         return "🛑 Task cancelled."
 
+    # Same switch as POST /api/taskrunner: disabled in Library means no new runs.
+    if await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+        return f"❌ {TASK_RUNNER_DISABLED_MESSAGE}"
     if runner.running:
         return "⚠️ Task runner is already running. Use `task run cancel` first."
     # The spec is READ and its contents reach the model, so an arbitrary path is

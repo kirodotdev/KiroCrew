@@ -857,6 +857,21 @@ class TestCron:
 
 class TestTaskRunner:
     @pytest.mark.asyncio
+    async def test_a_disabled_task_runner_app_refuses_the_start(self, tmp_path: Any) -> None:
+        spec = tmp_path / "plan.yaml"
+        spec.write_text("steps: []", encoding="utf-8")
+        runner = MagicMock(running=False)
+        runner.start_background = AsyncMock()
+        with patch(
+            "kiro_crew.apps.manager._read_installed",
+            return_value=SimpleNamespace(enabled=False),
+        ) as read:
+            out = await task_command_reply(f"task run {spec}", runner) or ""
+        assert "Task Runner is disabled" in out
+        read.assert_called_once_with("projects")
+        runner.start_background.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_project_run_is_accepted_as_an_alias(self, tmp_path: Any) -> None:
         spec = tmp_path / "plan.yaml"
         spec.write_text("steps: []", encoding="utf-8")
