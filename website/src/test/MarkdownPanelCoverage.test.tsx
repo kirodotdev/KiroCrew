@@ -340,7 +340,7 @@ interface MountOpts {
   onClose?: () => void
   onContentChange?: (c: string) => void
   onDiffModeChange?: (d: boolean) => void
-  onSubmitComments?: (m: string) => void
+  onSubmitComments?: (m: string) => void | boolean | Promise<void | boolean>
   /** Omit the key entirely to let the auto-diff heuristic decide. */
   initialDiffMode?: boolean
 }
@@ -1261,6 +1261,180 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     openPanelMenu()
     fireEvent.click(await screen.findByText(/Remove from Knowledge Library/))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
+  })
+})
+
+describe('MarkdownPanel — Submit All keeps comments until the send is delivered', () => {
+  const FILE = '/tmp/notes.md'
+  const BODY = 'alpha beta gamma\n'
+
+  function seedDraft() {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+    }))
+  }
+
+  function storedComments(): unknown {
+    return JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')[FILE]
+  }
+
+  it('keeps the batch when the send resolves false', async () => {
+    seedDraft()
+    const onSubmitComments = vi.fn(async () => false)
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(onSubmitComments).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    expect(storedComments()).toHaveLength(1)
+  })
+
+  it('keeps the batch when the send rejects', async () => {
+    seedDraft()
+    const onSubmitComments = vi.fn(async () => { throw new Error('refused') })
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    expect(storedComments()).toHaveLength(1)
+  })
+
+  it('does not clear while the send is still pending, then clears on delivery', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    // A second click while the first send is pending does not send twice.
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(onSubmitComments).toHaveBeenCalledTimes(1)
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    expect(storedComments()).toBeUndefined()
+  })
+
+  it('keeps a comment edited while the send was pending', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    const row = (await screen.findByText('needs a citation')).closest('[data-comment-id]') as HTMLElement
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    fireEvent.click(within(row).getByLabelText('Edit'))
+    const input = within(row).getByDisplayValue('needs a citation')
+    fireEvent.change(input, { target: { value: 'needs two citations' } })
+    fireEvent.click(within(row).getByLabelText('Save'))
+    await screen.findByText('needs two citations')
+    await act(async () => { deliver(true) })
+    expect(screen.getByText('needs two citations')).toBeInTheDocument()
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c1', text: 'needs two citations' })])
+  })
+
+  it('drops delivered comments that arrive after the panel moved to another file', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { rerender, props } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    rerender(<MarkdownPanel embedded {...props} filePath="/tmp/b.md" />)
+    await act(async () => { deliver(true) })
+    rerender(<MarkdownPanel embedded {...props} filePath={FILE} />)
+    await waitFor(() => expect(storedComments()).toBeUndefined())
+    expect(screen.queryByText('needs a citation')).not.toBeInTheDocument()
+  })
+
+  it('keeps another panel\'s saved draft when a delivery lands', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    // Another open panel saves a comment on a different file meanwhile.
+    const stored = JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')
+    stored['/tmp/other.md'] = [{ id: 'o1', anchor: 'x', text: 'other file note' }]
+    localStorage.setItem('mc-comment-drafts', JSON.stringify(stored))
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    const after = JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')
+    expect(after['/tmp/other.md']).toEqual([expect.objectContaining({ id: 'o1', text: 'other file note' })])
+    expect(after[FILE]).toBeUndefined()
+  })
+
+  it('clears saved drafts for a delivery that lands after the panel closed', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { unmount } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    unmount()
+    await act(async () => { deliver(true) })
+    expect(storedComments()).toBeUndefined()
+  })
+
+  it('keeps a comment whose edit is still open when the send is delivered', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    const row = (await screen.findByText('needs a citation')).closest('[data-comment-id]') as HTMLElement
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    fireEvent.click(within(row).getByLabelText('Edit'))
+    fireEvent.change(within(row).getByDisplayValue('needs a citation'), { target: { value: 'still typing' } })
+    await act(async () => { deliver(true) })
+    expect(screen.getByDisplayValue('still typing')).toBeInTheDocument()
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c1' })])
+  })
+
+  it('keeps a newer draft saved by a reopened panel when the old send is delivered', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { unmount } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    unmount()
+    // The file is reopened and a new comment is saved while the send is pending.
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [
+        { id: 'c1', anchor: 'beta', text: 'needs a citation' },
+        { id: 'c2', anchor: 'gamma', text: 'added after reopening' },
+      ],
+    }))
+    await act(async () => { deliver(true) })
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c2', text: 'added after reopening' })])
+  })
+
+  it('keeps drafts held only in memory when storage lost them', async () => {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+      '/tmp/b.md': [{ id: 'b1', anchor: 'alpha', text: 'only in memory' }],
+    }))
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { rerender, props } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    // A write that never landed: storage no longer holds file B's draft.
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+    }))
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    rerender(<MarkdownPanel embedded {...props} filePath="/tmp/b.md" />)
+    expect(await screen.findByText('only in memory')).toBeInTheDocument()
+  })
+
+  it('clears the batch for a host that returns no verdict', async () => {
+    seedDraft()
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments: vi.fn() })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
   })
 })
 

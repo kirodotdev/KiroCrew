@@ -20,8 +20,9 @@ export interface InlineComment {
 }
 
 /** Single comment row with inline edit support. */
-function CommentRow({ comment, onEdit, onRemove }: {
+function CommentRow({ comment, onEdit, onRemove, onEditingChange }: {
   comment: InlineComment; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void
+  onEditingChange?: (id: string, editing: boolean) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(comment.text)
@@ -42,6 +43,13 @@ function CommentRow({ comment, onEdit, onRemove }: {
   const preventBlur = useCallback((e: React.MouseEvent) => e.preventDefault(), [])
 
   useEffect(() => { if (editing) { committedRef.current = false; inputRef.current?.focus() } }, [editing])
+  // Let the owner know a row holds typed text that is not saved yet, so a
+  // late send delivery does not remove the row out from under the edit.
+  useEffect(() => {
+    if (!editing || !onEditingChange) return
+    onEditingChange(comment.id, true)
+    return () => onEditingChange(comment.id, false)
+  }, [editing, comment.id, onEditingChange])
 
   return (
     <div data-comment-id={comment.id} className="flex items-start gap-2 text-[13px] bg-bg-elevated rounded-md px-2.5 py-1.5">
@@ -83,8 +91,10 @@ function CommentRow({ comment, onEdit, onRemove }: {
  *  single (comment) input box rather than two competing inputs. Its value is
  *  passed to `onSubmitAll` alongside the comments only when it was opened, and
  *  it collapses again after submit. */
-function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true }: {
+function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true, onEditingChange }: {
   comments: InlineComment[]; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void; onSubmitAll: (extraPrompt?: string) => void; enableExtraPrompt?: boolean
+  /** Told when a row opens or closes an inline edit (typed, not yet saved). */
+  onEditingChange?: (id: string, editing: boolean) => void
   /** Gateway connection flag — mirrors ChatInput's Send gating so a batch
    *  submit can't fire (and clear pending comments) while the send path would
    *  silently refuse it. Defaults true for non-chat embeddings. */
@@ -115,7 +125,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
         <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
       </div>
       <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-        {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} />)}
+        {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} />)}
       </div>
       {enableExtraPrompt && showExtraPrompt && (
         <textarea

@@ -31,7 +31,7 @@ import { fileReadUrl, downloadFileToDisk, downloadFileName } from '../utils/file
 import { downloadBlob } from '../utils/download'
 import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileReadQuery'
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
-import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
+import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { anchorFromRange } from '../utils/selectionAnchor'
@@ -315,7 +315,10 @@ interface Props {
   onSave: (filePath: string, content: string) => Promise<void>
   onClose: () => void
   liveWatch?: boolean
-  onSubmitComments?: (message: string) => void
+  /** Hands the comment batch to chat. Returning (or resolving) `false`, or
+   *  throwing, means the send was refused and the batch stays pending; any
+   *  other result counts as delivered and clears it. */
+  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
   /** Gateway connection flag. Gates the batch comment submit (mirrors
    *  ChatInput's Send gating) so pending comments can't be composed and
    *  cleared while the chat send path would silently refuse the message.
@@ -1135,13 +1138,14 @@ function DiffViewBlock({ diffMode, fileName, originalContent, content, lineNums,
 
 /** Shared comment overlay — the pending-comment list. (The input itself lives
  *  in `SelectionToolbar`'s composer, which opens on selection.) */
-const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true }: {
+const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true, onEditingChange }: {
   onSubmitComments?: (message: string) => void; comments: InlineComment[]; editComment: (id: string, text: string) => void; removeComment: (id: string) => void; submitAllComments: (extraPrompt?: string) => void; connected?: boolean
+  onEditingChange?: (id: string, editing: boolean) => void
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (!onSubmitComments) return null
   return (
-    <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} />
+    <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} onEditingChange={onEditingChange} />
   )
 })
 
@@ -2176,16 +2180,47 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [])
 
   /**
-   * Compose + hand off the pending comment batch, then clear it. Bails while
-   * the gateway is offline: the downstream send path silently refuses
-   * messages in that state, so clearing here would destroy the user's
-   * comments with no error. The Submit All button is disabled offline too —
-   * this is the behavioral backstop.
+   * Compose + hand off the pending comment batch, and clear it only once the
+   * send reports delivery. A refused send (`false`, a rejection or a throw)
+   * keeps the batch so Submit All can offer it again. Only comments still
+   * exactly as sent are removed, so one added or edited while the send was
+   * pending survives. Bails while the gateway is offline; the Submit All
+   * button is disabled offline too — this is the behavioral backstop.
    */
+  const submitInFlightRef = useRef(false)
+  // Rows with an inline edit open: their typed text lives only in the row
+  // until it is saved, so delivery must not remove them.
+  const editingIdsRef = useRef(new Set<string>())
+  const trackRowEditing = useCallback((id: string, editing: boolean) => {
+    if (editing) editingIdsRef.current.add(id)
+    else editingIdsRef.current.delete(id)
+  }, [])
   const submitAllComments = useCallback((extraPrompt?: string) => {
-    if (!connected || !onSubmitComments || comments.length === 0) return
-    onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt))
-    setComments([])
+    if (!connected || !onSubmitComments || comments.length === 0 || submitInFlightRef.current) return
+    const sentFile = filePath
+    const sent = new Map(comments.map(c => [c.id, c]))
+    const unchanged = (c: InlineComment) => {
+      const s = sent.get(c.id)
+      return !!s && s.text === c.text && s.anchor === c.anchor && !editingIdsRef.current.has(c.id)
+    }
+    let verdict: void | boolean | Promise<void | boolean>
+    try {
+      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt))
+    } catch {
+      verdict = false
+    }
+    submitInFlightRef.current = true
+    Promise.resolve(verdict)
+      .then(delivered => {
+        if (delivered === false) return
+        // Saved here rather than left to the persistence effect: the panel
+        // may have unmounted or moved to another file while the send was
+        // pending, and then no effect saves the sent file.
+        dropDeliveredComments(draftsRef.current, sentFile, unchanged)
+        if (prevFilePathRef.current === sentFile) setComments(prev => prev.filter(c => !unchanged(c)))
+      })
+      .catch(() => { /* undelivered — keep the batch pending */ })
+      .finally(() => { submitInFlightRef.current = false })
   }, [connected, onSubmitComments, comments, filePath, displayContent])
 
   const dismissHint = useCallback(() => {
@@ -2202,8 +2237,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // place avoids duplicate writes from StrictMode double-invoked updaters and
   // eliminates persistComments from callback dep arrays.
   useEffect(() => {
-    setCommentsForFile(draftsRef.current, filePath, comments)
-    saveCommentDrafts(draftsRef.current)
+    persistFileComments(draftsRef.current, filePath, comments)
   }, [comments, filePath])
 
   // ── Inline comment anchor highlights (CSS Custom Highlight API) ─────────
@@ -2791,7 +2825,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           carry an open composer — and the anchor it resolved against the OLD
           file — over to the new one. Remount drops it and fires onClose. */}
       {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
-      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} />}
+      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />}
     </DetailPanel>
     {fullscreen && createPortal(
       // The onKeyDown here implements a focus trap for the modal dialog; a
@@ -2857,7 +2891,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
         {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
-        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} />
+        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
       </div>,

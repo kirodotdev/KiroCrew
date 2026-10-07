@@ -38,3 +38,30 @@ export const loadCommentDrafts = store.load
 export const saveCommentDrafts = store.save
 /** Set (or delete if empty) the comments for a file path. */
 export const setCommentsForFile = store.set
+/** Save one file's comments without touching any other file in storage.
+ *  Several panels hold their own copy of the store, so a whole-copy save
+ *  would overwrite what another panel saved since this one loaded. This
+ *  re-reads storage, sets only `filePath`, and saves that; `local` (the
+ *  caller's copy) gets the same entry so it never goes stale for that file
+ *  and keeps every entry a failed write left only in memory. */
+export function persistFileComments(local: Record<string, InlineComment[]>, filePath: string, comments: InlineComment[]): void {
+  store.set(local, filePath, comments)
+  const fresh = store.load()
+  store.set(fresh, filePath, comments)
+  store.save(fresh)
+}
+
+/** Remove delivered comments for `filePath` from both storage and the
+ *  caller's copy, each filtered on its own. Storage may hold a newer version
+ *  of the file (another panel instance reopened it and saved edits), so it is
+ *  filtered as stored rather than overwritten from `local`; `local` keeps any
+ *  entry a failed write left only in memory. When storage has no entry for the
+ *  file, the filtered local entry is saved. */
+export function dropDeliveredComments(local: Record<string, InlineComment[]>, filePath: string, delivered: (c: InlineComment) => boolean): void {
+  const mine = (local[filePath] ?? []).filter(c => !delivered(c))
+  store.set(local, filePath, mine)
+  const fresh = store.load()
+  const stored = fresh[filePath]
+  store.set(fresh, filePath, stored ? stored.filter(c => !delivered(c)) : mine)
+  store.save(fresh)
+}
