@@ -6,65 +6,30 @@ triggers: pptx, powerpoint, presentation, slides, deck, slide deck, keynote
 
 # PPTX Maker
 
-Builds real `.pptx` files through the PPTX Maker app, which wraps the public
-`spec-driven-presentation-maker` engine. The engine's tools are exposed as the
-`@sdpm/*` MCP tool family, and they are only available inside this app's own
-agents — so slide generation happens by switching to one of those agents, not by
-calling the tools from a general chat session.
+Builds real `.pptx` files through the PPTX Maker app and the public
+`spec-driven-presentation-maker` engine. The engine tools are available only to
+the app's single `pptx-maker` agent. If a user asks for slides in an ordinary
+chat, direct them to the **PPTX Maker** page, where the chat runs beside the live
+deck preview.
 
-## Which agent to use
+## Roles come from the engine
 
-| Agent | Use it for |
-|---|---|
-| `pptx-maker-spec` | An important deck. Works through a brief, an outline and an art direction with the user, then delegates composition. |
-| `pptx-maker-vibe` | A fast draft from a URL, pasted text, or a one-line brief. Few questions. |
-| `pptx-maker-composer` | Slide composition itself — invoked as a sub-agent by the two above, not directly. |
-| `pptx-maker-style` | Creating a reusable style guide through conversation. |
+Spec, Vibe, and Style are modes of the one `pptx-maker` agent. The engine owns
+every role's procedure and hands it out through its entry tools, so this skill
+only names which one to call first:
 
-If the user asks for a presentation in an ordinary chat session, point them at
-the **PPTX Maker** page in the dashboard: the studio there runs these agents
-beside a live preview of each deliverable, which is the experience the app is
-built around. Generating a deck outside it works but shows the user nothing until
-the file lands.
+- New or continued deck: `@sdpm/start_presentation`
+- Reusable style: `@sdpm/start_style`
+- Assigned slide composition (a self sub-agent): `@sdpm/start_composing`
+- Translating a deck: `@sdpm/start_translation`
 
-## How a deck gets built
-
-1. The agent calls `@sdpm/init_presentation` to create the deck directory.
-2. It writes `specs/brief.md`, then `specs/outline.md`, then the art direction.
-   The studio shows each file as it appears, so write them as you finish them
-   rather than all at the end.
-3. Slides are composed one at a time into `slides/<slug>.json` and rendered to
-   `compose/<slug>_<epoch>.json`.
-4. `@sdpm/generate_pptx` writes `output.pptx` in the deck directory.
-
-The outline's `- [slug]` lines are what determine slide order, so keep that
-format.
-
-## Styles and templates
-
-- A **style** is an HTML document describing the visual direction. Apply one by
-  name; a pinned style is the default when the user does not name one.
-- A **template** is a `.pptx` whose slide layouts supply structure, theme
-  colours and fonts.
-
-Users manage both from the app's library panel, which can import their own HTML
-style or existing `.pptx`. The panel inserts a `[Style: name]` token into chat
-when they pick one — treat that as an instruction to use it.
+Call the entry tool before anything else and follow the workflow it returns. Do
+not restate or reorder that workflow. Use `@kirocrew-core/ask_question` when a
+decision needs a question card.
 
 ## Requirements
 
-The app provisions the engine on first use and needs **nothing installed by
-hand**: `uv` ships with KiroCrew as a Python dependency, and the engine is
-downloaded over HTTPS at a sha256-pinned version (no `git` required).
-`soffice` (LibreOffice) and `pdftoppm` (poppler) are optional and only improve
-preview fidelity — `.pptx` generation works without them.
-
-The app declares `macos` and `linux` only — it does not install on Windows. The
-deck root is a setting in the app, so ask before assuming where `output.pptx`
-lands.
-
-The agents can also import an existing `.pptx` back to editable JSON
-(`@sdpm/pptx_to_json`), pull in an attachment (`@sdpm/import_attachment`),
-analyse a template (`@sdpm/analyze_template`) and search the asset sources
-(`@sdpm/search_assets`) — so restyling or extending a deck the user already has
-is in scope, not just building a new one.
+Installing or updating the sha256-pinned engine is an explicit action on the
+PPTX Maker page, and the mode buttons stay disabled until the engine and its
+agent are ready. Existing decks, styles, templates and pins carry over an engine
+update; a chat opened on the app's earlier agents cannot be resumed.

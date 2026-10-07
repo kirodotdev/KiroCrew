@@ -65,22 +65,22 @@ ENGINE_REPO = "https://github.com/aws-samples/sample-spec-driven-presentation-ma
 #: string cannot influence which bytes arrive. It is honest because it is only
 #: ever reported for a tree whose digest matched
 #: :data:`ENGINE_TARBALL_SHA256` — see :func:`installed_tag`.
-ENGINE_TAG = "v0.3.8"
+ENGINE_TAG = "v0.10.4"
 
 #: The exact commit the fetch requests. GitHub serves
 #: ``/archive/<full-commit-sha>.tar.gz`` for any commit, and a commit id is
 #: content-addressed — unlike a tag, upstream cannot move it.
-ENGINE_COMMIT = "b7c7fcf0972b33a480f1b717a3de5bc288d53742"
+ENGINE_COMMIT = "1ce83dd4555ebfb06db26fac5c7c2b9722d63bd9"
 
 #: sha256 of that archive, **and the trust anchor for the whole engine**.
 #:
 #: Produced by downloading the artifact this module names and hashing it as
 #: published::
 #:
-#:     URL=https://github.com/aws-samples/sample-spec-driven-presentation-maker/archive/b7c7fcf0972b33a480f1b717a3de5bc288d53742.tar.gz
+#:     URL=https://github.com/aws-samples/sample-spec-driven-presentation-maker/archive/1ce83dd4555ebfb06db26fac5c7c2b9722d63bd9.tar.gz
 #:     curl -sL -o engine.tar.gz "$URL" && shasum -a 256 engine.tar.gz
 #:
-#: The download was repeated four times and the digest reproduced byte-for-byte
+#: The download was repeated three times and the digest reproduced byte-for-byte
 #: each time, which is what makes pinning a GitHub ``/archive/`` tarball viable:
 #: for a fixed commit sha the generated archive is stable (the only variable
 #: input, the pax ``comment`` header, is the commit sha itself).
@@ -89,7 +89,7 @@ ENGINE_COMMIT = "b7c7fcf0972b33a480f1b717a3de5bc288d53742"
 #: :data:`ENGINE_TAG` together. Bumping the commit alone fails verification on
 #: every host, which is the intended failure mode — the digest, not the tag and
 #: not the commit, is what decides whether code runs.
-ENGINE_TARBALL_SHA256 = "ffe8e10b973cada1f6e99629ac780bde25461b432ad07943b4f15ca11c07dfe0"
+ENGINE_TARBALL_SHA256 = "b476ba7a52ed214ee71156a3f53b84703836847676c89345ce95507bf6d30155"
 
 _ARCHIVE_URL_TEMPLATE = "{repo}/archive/{commit}.tar.gz"
 
@@ -374,8 +374,8 @@ def _single_root(tree: Path) -> Path | None:
 
     A GitHub ``/archive/`` tarball wraps everything in
     ``<repo>-<commit>/``, and the engine is that directory's contents — so the
-    wrapper is unwrapped rather than kept, which is what makes
-    ``engine_root()/mcp-local`` resolve the same way a clone did.
+    wrapper is unwrapped rather than kept, which makes the repository's
+    ``servers/local`` and ``sdpm`` roots resolve directly under ``engine_root()``.
     """
     try:
         entries = [p for p in tree.iterdir()]
@@ -503,8 +503,15 @@ def install_engine(
         if extracted is None:
             log.append("the engine archive does not contain a single source tree")
             return False
-        if not (extracted / "mcp-local").is_dir():
-            log.append("the engine archive has no mcp-local directory")
+        from kiro_crew.apps.builtins.pptx_maker.backend import paths as engine_paths
+
+        required = (
+            engine_paths.engine_mcp_dir_for(extracted) / "server_acp.py",
+            engine_paths.engine_sdpm_package_dir_for(extracted) / "__init__.py",
+            engine_paths.engine_shared_dir_for(extracted),
+        )
+        if not all(path.is_file() for path in required[:2]) or not required[2].is_dir():
+            log.append("the engine archive does not have the required v0.10 repository layout")
             return False
         # Marker into the STAGING tree, then swap. Reversing these leaves a window
         # where the old engine is already retired and a failing marker write makes

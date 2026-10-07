@@ -40,9 +40,13 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
+from kiro_crew.security import redact
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
+
+#: Bounds the installed tag `/engine` reports; a real tag is like `v0.10.4`.
+_MAX_TAG_CHARS = 64
 
 # Timeouts (seconds). The engine calls here are metadata reads over a handful of
 # small files, so these are generous; deck GENERATION does not run through this
@@ -82,14 +86,8 @@ _SOFFICE_WINDOWS_DIRS: tuple[str, ...] = (
     r"C:\Program Files (x86)\LibreOffice\program",
 )
 
-# Icon asset packs the engine can download with its own bundled scripts. Run
-# once per engine version into the engine's user config dir, so the packs
-# survive an app update (which replaces the vendored checkout).
-ICON_SOURCES: tuple[tuple[str, str], ...] = (
-    ("aws", "download_aws_icons.py"),
-    ("material", "download_material_icons.py"),
-)
-ICON_MARKER_FILENAME = ".pptx-maker-provisioned.json"
+# Icon asset packs supported by the engine's public download API.
+ICON_SOURCES: tuple[str, ...] = ("aws", "material")
 ICON_DOWNLOAD_TIMEOUT = 600
 
 # Cap on captured subprocess log text handed to the UI.
@@ -100,22 +98,13 @@ LOG_TAIL_CHARS = 4000
 _USER_DIR_SNIPPET = "from sdpm.config import get_user_config_dir; print(get_user_config_dir())"
 
 _LISTS_SNIPPET = (
-    "import json, sys\n"
-    "from pathlib import Path\n"
+    "import json\n"
     "from sdpm.api import (get_styles_dirs, list_styles_filtered,\n"
     "                      get_templates_dirs, list_templates_with_metadata)\n"
     "from sdpm.config import get_state\n"
-    "bundled_styles, bundled_templates = Path(sys.argv[1]), Path(sys.argv[2])\n"
-    # Append the vendored skill tree as the authoritative builtin dir (last wins
-    # for the 'builtin' label) so bundled styles/templates resolve regardless of
-    # whether the engine was installed editable.
-    "def merge(dirs, bundled):\n"
-    "    out = [Path(d) for d in dirs if Path(d) != bundled]\n"
-    "    if bundled.is_dir(): out.append(bundled)\n"
-    "    return out\n"
     "state = get_state()\n"
-    "style_dirs = merge(get_styles_dirs(), bundled_styles)\n"
-    "template_dirs = merge(get_templates_dirs(), bundled_templates)\n"
+    "style_dirs = get_styles_dirs()\n"
+    "template_dirs = get_templates_dirs()\n"
     "styles = list_styles_filtered(style_dirs, state.get('pinned_styles', []), include_all=True)\n"
     "templates = list_templates_with_metadata(template_dirs,\n"
     "                                        state.get('template_metadata', {}))\n"
@@ -135,14 +124,18 @@ _ANALYZE_SNIPPET = (
     "print(json.dumps(meta, ensure_ascii=False))\n"
 )
 
-_SCAN_TEMPLATES_SNIPPET = (
-    "import sys, json\n"
+_INSTALL_ASSETS_SNIPPET = (
+    "import json, sys\n"
     "from pathlib import Path\n"
+    "from sdpm.knowledge.assets.download import install_assets\n"
+    "print(json.dumps(install_assets([sys.argv[1]], Path(sys.argv[2]))))\n"
+)
+
+_SCAN_TEMPLATES_SNIPPET = (
+    "import json\n"
     "from sdpm.api import get_templates_dirs, analyze_and_store_template\n"
     "from sdpm.config import get_state, update_state\n"
-    "bundled = Path(sys.argv[1])\n"
-    "dirs = [Path(d) for d in get_templates_dirs() if Path(d) != bundled]\n"
-    "if bundled.is_dir(): dirs.append(bundled)\n"
+    "dirs = get_templates_dirs()\n"
     "state = get_state()\n"
     "known = state.get('template_metadata', {})\n"
     "added = []\n"
@@ -272,9 +265,24 @@ def engine_status() -> dict:
     provision replaces it with a verified one.
     """
     root = paths.engine_root()
+    marker = engine_source.read_source_marker(root)
     source = engine_source.is_installed(root)
     venv = paths.engine_python().is_file()
-    return {"ready": source and venv, "clone": source, "venv": venv}
+    recorded_tag = marker.get("tag")
+    # The marker sits in a tree the agent can write, so the tag is display text
+    # from an untrusted file: redacted and bounded like every other such string.
+    installed_tag = (
+        redact(recorded_tag)[:_MAX_TAG_CHARS]
+        if isinstance(recorded_tag, str) and recorded_tag
+        else None
+    )
+    return {
+        "ready": source and venv,
+        "clone": source,
+        "venv": venv,
+        "installedTag": installed_tag,
+        "updateRequired": bool(marker) and not source,
+    }
 
 
 def run_engine_snippet(
@@ -443,13 +451,7 @@ def load_lists() -> dict:
 
     BLOCKING — call through ``off_loop``.
     """
-    result = run_engine_snippet(
-        _LISTS_SNIPPET,
-        [
-            str(paths.engine_skill_dir() / "references" / "examples" / "styles"),
-            str(paths.engine_skill_dir() / "templates"),
-        ],
-    )
+    result = run_engine_snippet(_LISTS_SNIPPET)
     data = result.json() if result is not None else None
     if isinstance(data, dict):
         return {
@@ -457,7 +459,78 @@ def load_lists() -> dict:
             "templates": list(data.get("templates") or []),
             "stylesDirs": [str(d) for d in (data.get("stylesDirs") or [])],
         }
-    return {"styles": [], "templates": [], "stylesDirs": []}
+    return _user_library_without_engine()
+
+
+def _user_library_without_engine() -> dict:
+    """The user's own styles and templates, read from the engine's config dir.
+
+    The fallback for when the engine cannot answer — before the first install,
+    or between a Kiro Crew update and the user's click on "Update" (the pinned
+    engine moved on, the installed one is from an older layout). Those files and
+    their pins survive the engine update, so the Library keeps showing them
+    instead of going blank. Bundled styles/templates ship with the engine and
+    are absent until it is installed.
+
+    Same shape as the engine's answer: name/source/pinned for styles, and the
+    metadata fields ``list_templates_with_metadata`` reports for templates.
+    """
+    user_dir = paths.engine_config_path().parent
+    try:
+        state = json.loads((user_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    pins = state.get("pinned_styles")
+    # Only string entries name a style; anything else in a hand-edited or
+    # corrupt state.json is ignored rather than crashing the Library read.
+    pinned = {p for p in pins if isinstance(p, str)} if isinstance(pins, list) else set()
+    metadata = state.get("template_metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    styles_dir = user_dir / "styles"
+    styles = [
+        {"name": f.stem, "description": "", "source": "user", "pinned": f.stem in pinned}
+        for f in _regular_files(styles_dir, "*.html")
+    ]
+    templates = []
+    for f in _regular_files(user_dir / "templates", "*.pptx"):
+        meta = metadata.get(f.stem)
+        meta = meta if isinstance(meta, dict) else {}
+        # state.json is user-editable; only well-typed values reach the Library,
+        # which renders them directly (an object as a text child crashes it).
+        description = meta.get("description")
+        theme_colors = meta.get("theme_colors")
+        fonts = meta.get("fonts")
+        layout_count = meta.get("layout_count")
+        templates.append(
+            {
+                "name": f.stem,
+                "source": "user",
+                "description": description if isinstance(description, str) else "",
+                "theme_colors": theme_colors if isinstance(theme_colors, dict) else {},
+                "fonts": fonts if isinstance(fonts, dict) else {},
+                "layout_count": (
+                    layout_count
+                    if isinstance(layout_count, int) and not isinstance(layout_count, bool)
+                    else 0
+                ),
+            }
+        )
+    return {
+        "styles": styles,
+        "templates": templates,
+        "stylesDirs": [str(styles_dir)] if styles else [],
+    }
+
+
+def _regular_files(directory: Path, pattern: str) -> list[Path]:
+    """Sorted non-symlink files matching *pattern*; ``[]`` when unreadable."""
+    try:
+        return sorted(f for f in directory.glob(pattern) if f.is_file() and not f.is_symlink())
+    except OSError:
+        return []
 
 
 def analyze_template(path: Path, description: str) -> dict:
@@ -485,34 +558,22 @@ def scan_new_templates() -> list[str]:
     """
     result = run_engine_snippet(
         _SCAN_TEMPLATES_SNIPPET,
-        [str(paths.engine_skill_dir() / "templates")],
         timeout=ENGINE_ANALYZE_TIMEOUT,
     )
     data = result.json() if result is not None else None
     return [str(name) for name in data] if isinstance(data, list) else []
 
 
-def icon_script_path(script: str) -> Path:
-    """Path to one of the engine's bundled icon-download scripts."""
-    return paths.engine_skill_dir() / "scripts" / script
-
-
-def icon_vendor_output(source: str) -> Path:
-    """Where an icon script writes its output inside the engine checkout."""
-    return paths.engine_skill_dir() / "assets" / source
-
-
-def run_icon_script(source: str, script: str) -> EngineResult:
-    """Run one bundled icon-download script in the engine venv.
+def install_asset_source(source: str, destination: Path) -> EngineResult:
+    """Install one icon catalog through SDPM's public download API.
 
     BLOCKING — call through ``off_loop``.
     """
-    python = paths.engine_python()
-    script_path = icon_script_path(script)
-    if not python.is_file() or not script_path.is_file():
-        return EngineResult(returncode=1, stderr=f"[{source}] script or venv missing")
-    return _spawn(
-        [str(python), str(script_path)],
-        cwd=str(script_path.parent),
+    if source not in ICON_SOURCES:
+        return EngineResult(returncode=1, stderr=f"unsupported asset source: {source}")
+    result = run_engine_snippet(
+        _INSTALL_ASSETS_SNIPPET,
+        [source, str(destination)],
         timeout=ICON_DOWNLOAD_TIMEOUT,
     )
+    return result or EngineResult(returncode=1, stderr="engine venv missing")

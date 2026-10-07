@@ -55,6 +55,12 @@ export interface EngineStatus {
   clone: boolean
   venv: boolean
   pinnedTag: string
+  /** Tag recorded by the installed engine marker, or null before first install. */
+  installedTag: string | null
+  /** True when an older verified engine must be replaced by the current pin. */
+  updateRequired: boolean
+  /** True once the app agent is registered; a ready engine alone cannot run a chat. */
+  agentReady: boolean
   provision: { state: 'idle' | 'running' | 'done' | 'error'; log: string; elapsed: number }
 }
 
@@ -106,6 +112,17 @@ export interface ComposePayload {
   bgSvg?: string
   bgFill?: string
   components: ComposeComponent[]
+  /** Layout-pass frames (engine v0.9+): named rectangles, in the 1920px-wide
+   *  canvas, that the content pass fills. Agent-authored like the rest. */
+  regions?: ComposeRegion[]
+}
+
+export interface ComposeRegion {
+  name: string
+  x: number
+  y: number
+  w: number
+  h: number
 }
 
 export interface ComposeComponent {

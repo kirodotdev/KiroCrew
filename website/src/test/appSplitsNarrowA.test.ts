@@ -64,18 +64,24 @@ describe('meetings MeetingView at narrow widths', () => {
 })
 
 describe('pptx-maker splits at narrow widths', () => {
-  const cases: [string, string, string][] = [
-    ['decks', 'pptx-maker/PptxMakerPage.tsx', 'sm:w-60'],
-    ['library', 'pptx-maker/LibraryPanel.tsx', 'sm:w-56'],
+  // [name, file, breakpoint prefix, list width]. The decks split shares its
+  // row with the docked studio chat, so it stacks on the width of its own card
+  // (`@container/decks`), not the viewport: at a wide viewport with the chat
+  // dragged wide the card is as narrow as a phone.
+  const cases: [string, string, string, string][] = [
+    ['decks', 'pptx-maker/PptxMakerPage.tsx', '@[40rem]/decks:', 'w-60'],
+    ['library', 'pptx-maker/LibraryPanel.tsx', 'sm:', 'w-56'],
   ]
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 
   it('stacks both splits and releases both list widths', async () => {
-    for (const [name, path, gated] of cases) {
+    for (const [name, path, bp, width] of cases) {
       const s = await read(path)
+      const b = esc(bp)
       expect(s, `${name}: expected the split to stack while narrow`)
-        .toMatch(/className="flex flex-col sm:flex-row gap-4 flex-1 min-h-0"/)
+        .toContain(`className="flex flex-col ${bp}flex-row gap-4 flex-1 min-h-0"`)
       expect(s, `${name}: the list must take the full width while narrow`)
-        .toMatch(new RegExp(`w-full ${gated.replace(':', ':')}`))
+        .toMatch(new RegExp(`w-full ${b}${width}`))
       // Bounded when stacked: the list is `shrink-0`, so its natural height would
       // otherwise push the content pane out of the column.
       // A viewport unit, not a percentage: these splits sit inside a Card inside a
@@ -83,19 +89,18 @@ describe('pptx-maker splits at narrow widths', () => {
       // max-height never resolves -- measured on the Releases panel, where a 10%
       // cap left a 289px list untouched while 10vh brought it to 84px.
       expect(s, `${name}: the list needs a height bound when stacked`)
-        .toContain('max-h-[40vh] sm:max-h-none')
+        .toContain(`max-h-[40vh] ${bp}max-h-none`)
       expect(s, `${name}: the bound must use a definite unit`).not.toContain('max-h-[38%]')
       // Divider on the axis the columns now sit on.
       expect(s, `${name}: the divider must turn with the layout`)
-        .toMatch(/border-b sm:border-b-0 sm:border-r border-border/)
+        .toContain(`border-b ${bp}border-b-0 ${bp}border-r border-border`)
     }
   })
 
   it('leaves no ungated fixed list width behind', async () => {
-    for (const [name, path, gated] of cases) {
+    for (const [name, path, , width] of cases) {
       const s = await read(path)
-      const bare = gated.replace('sm:', '')
-      expect(s, `${name}: no ungated ${bare}`).not.toMatch(new RegExp(`className="${bare}\\b`))
+      expect(s, `${name}: no ungated ${width}`).not.toMatch(new RegExp(`className="${width}\\b`))
     }
   })
 })

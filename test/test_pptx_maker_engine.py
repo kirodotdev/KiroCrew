@@ -138,7 +138,13 @@ class TestEngineStatus:
             mock.patch.object(engine.paths, "engine_root", return_value=tmp_path / "absent"),
             mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "no-python"),
         ):
-            assert engine.engine_status() == {"ready": False, "clone": False, "venv": False}
+            assert engine.engine_status() == {
+                "ready": False,
+                "clone": False,
+                "venv": False,
+                "installedTag": None,
+                "updateRequired": False,
+            }
 
     def test_a_source_tree_without_a_venv_is_not_ready(self, tmp_path: Path):
         """The exact half-installed state a provisioning run passes through: the
@@ -151,7 +157,13 @@ class TestEngineStatus:
             mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "no-python"),
         ):
             status = engine.engine_status()
-        assert status == {"ready": False, "clone": True, "venv": False}
+        assert status == {
+            "ready": False,
+            "clone": True,
+            "venv": False,
+            "installedTag": engine_source.ENGINE_TAG,
+            "updateRequired": False,
+        }
 
     def test_ready_only_when_both_the_source_tree_and_the_venv_exist(self, tmp_path: Path):
         root = tmp_path / "engine"
@@ -178,7 +190,44 @@ class TestEngineStatus:
             mock.patch.object(engine.paths, "engine_python", return_value=python),
         ):
             status = engine.engine_status()
-        assert status == {"ready": False, "clone": False, "venv": True}
+        assert status == {
+            "ready": False,
+            "clone": False,
+            "venv": True,
+            "installedTag": None,
+            "updateRequired": False,
+        }
+
+    def test_a_tampered_marker_tag_is_redacted_and_bounded(self, tmp_path: Path):
+        root = tmp_path / "engine"
+        root.mkdir()
+        tag = "AKIA" + "1" * 16 + "x" * 500
+        (root / engine_source.SOURCE_MARKER_FILENAME).write_text(
+            json.dumps({"tag": tag}), encoding="utf-8"
+        )
+        with (
+            mock.patch.object(engine.paths, "engine_root", return_value=root),
+            mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "absent"),
+        ):
+            reported = engine.engine_status()["installedTag"]
+        assert "AKIA" not in reported
+        assert len(reported) <= 64
+
+    def test_an_old_marker_reports_update_required(self, tmp_path: Path):
+        root = tmp_path / "engine"
+        root.mkdir()
+        (root / engine_source.SOURCE_MARKER_FILENAME).write_text(
+            json.dumps({"tag": "v0.3.8", "commit": "a" * 40, "sha256": "b" * 64}),
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(engine.paths, "engine_root", return_value=root),
+            mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "absent"),
+        ):
+            status = engine.engine_status()
+        assert status["installedTag"] == "v0.3.8"
+        assert status["updateRequired"] is True
+        assert status["ready"] is False
 
 
 class TestRunEngineSnippet:
@@ -315,25 +364,60 @@ class TestLoadLists:
         ):
             assert engine.load_lists() == {"styles": [], "templates": [], "stylesDirs": []}
 
-    def test_passes_the_bundled_dirs_so_builtin_assets_resolve(self):
-        """The bundled styles/templates only resolve if these argv entries are
-        handed over — without them the builtin library silently lists empty."""
-        with (
-            mock.patch.object(
-                engine, "run_engine_snippet", return_value=engine.EngineResult(0, "{}")
-            ) as snippet,
-            mock.patch.object(engine.paths, "engine_skill_dir", return_value=Path("/skill")),
-        ):
+    def test_resource_dirs_come_from_the_engine_api_without_host_paths(self):
+        """The editable SDPM package owns its bundled style/template paths."""
+        with mock.patch.object(
+            engine, "run_engine_snippet", return_value=engine.EngineResult(0, "{}")
+        ) as snippet:
             engine.load_lists()
-        argv = snippet.call_args.args[1]
-        # Compared as Paths: `load_lists` builds these with pathlib, so the
-        # separator is the host's and a literal "/" assertion fails on Windows
-        # for an argv that is entirely correct.
-        skill = Path("/skill")
-        assert [Path(a) for a in argv] == [
-            skill / "references" / "examples" / "styles",
-            skill / "templates",
-        ]
+        assert snippet.call_args.args == (engine._LISTS_SNIPPET,)
+
+
+class TestUserLibraryWithoutEngine:
+    def test_non_string_pins_are_ignored_instead_of_crashing(self, tmp_path):
+        """A hand-edited or corrupt state.json must not turn the Library read
+        into a TypeError (unhashable dict in a set)."""
+        (tmp_path / "styles").mkdir()
+        (tmp_path / "styles" / "brand.html").write_text("<html></html>", encoding="utf-8")
+        (tmp_path / "state.json").write_text(
+            json.dumps({"pinned_styles": [{}, ["x"], 3, "brand"]}), encoding="utf-8"
+        )
+        with (
+            mock.patch.object(engine, "run_engine_snippet", return_value=None),
+            mock.patch.object(paths, "engine_config_path", return_value=tmp_path / "config.json"),
+        ):
+            lists = engine.load_lists()
+        assert [(s["name"], s["pinned"]) for s in lists["styles"]] == [("brand", True)]
+
+    def test_mistyped_template_metadata_falls_back_to_safe_defaults(self, tmp_path):
+        """The Library renders these values directly; an object description
+        would crash its view."""
+        (tmp_path / "templates").mkdir()
+        (tmp_path / "templates" / "corp.pptx").write_bytes(b"PK")
+        (tmp_path / "state.json").write_text(
+            json.dumps(
+                {
+                    "template_metadata": {
+                        "corp": {
+                            "description": {"x": 1},
+                            "theme_colors": [1],
+                            "fonts": "Arial",
+                            "layout_count": True,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(engine, "run_engine_snippet", return_value=None),
+            mock.patch.object(paths, "engine_config_path", return_value=tmp_path / "config.json"),
+        ):
+            (template,) = engine.load_lists()["templates"]
+        assert template["description"] == ""
+        assert template["theme_colors"] == {}
+        assert template["fonts"] == {}
+        assert template["layout_count"] == 0
 
 
 class TestAnalyzeTemplate:
@@ -394,41 +478,31 @@ class TestScanNewTemplates:
             assert engine.scan_new_templates() == ["1", "2"]
 
 
-class TestIconScripts:
-    def test_refuses_to_run_without_the_venv_or_the_script(self, tmp_path: Path):
-        """Naming which of the two is missing is the difference between an
-        actionable message and a bare non-zero exit."""
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "absent"),
-            mock.patch.object(engine, "_spawn") as spawn,
-        ):
-            result = engine.run_icon_script("aws", "download_aws_icons.py")
+class TestAssetInstallApi:
+    def test_calls_the_sdpm_download_api_with_source_and_destination(self, tmp_path: Path):
+        result = engine.EngineResult(returncode=0, stdout='{"sources": []}')
+        with mock.patch.object(engine, "run_engine_snippet", return_value=result) as snippet:
+            assert engine.install_asset_source("aws", tmp_path) is result
+        assert snippet.call_args.args == (
+            engine._INSTALL_ASSETS_SNIPPET,
+            ["aws", str(tmp_path)],
+        )
+        assert snippet.call_args.kwargs["timeout"] == engine.ICON_DOWNLOAD_TIMEOUT
+
+    def test_refuses_an_unknown_source_without_spawning(self, tmp_path: Path):
+        with mock.patch.object(engine, "run_engine_snippet") as snippet:
+            result = engine.install_asset_source("unknown", tmp_path)
         assert result.returncode == 1
-        assert "missing" in result.stderr
-        assert not spawn.called
+        assert not snippet.called
 
-    def test_runs_the_script_in_its_own_directory(self, tmp_path: Path):
-        """The engine's icon scripts resolve their output relative to their own
-        location, so the cwd is load-bearing."""
-        python = tmp_path / "python"
-        python.write_text("#!/bin/sh", encoding="utf-8")
-        script = tmp_path / "scripts" / "download_aws_icons.py"
-        script.parent.mkdir(parents=True)
-        script.write_text("print()", encoding="utf-8")
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=python),
-            mock.patch.object(engine, "icon_script_path", return_value=script),
-            mock.patch.object(engine, "_spawn", return_value=engine.EngineResult(0, "")) as spawn,
-        ):
-            engine.run_icon_script("aws", "download_aws_icons.py")
-        assert spawn.call_args.args[0] == [str(python), str(script)]
-        assert spawn.call_args.kwargs["cwd"] == str(script.parent)
+    def test_not_ready_is_a_failed_result(self, tmp_path: Path):
+        with mock.patch.object(engine, "run_engine_snippet", return_value=None):
+            result = engine.install_asset_source("material", tmp_path)
+        assert result.returncode == 1
+        assert "venv" in result.stderr
 
-    def test_every_declared_icon_source_names_a_script(self):
-        """A source with no script would report a permanent provisioning error
-        the user could do nothing about."""
-        for source, script in engine.ICON_SOURCES:
-            assert source and script.endswith(".py")
+    def test_declared_sources_match_the_engine_api(self):
+        assert engine.ICON_SOURCES == ("aws", "material")
 
 
 class TestMissingOptionalDeps:
@@ -565,3 +639,51 @@ class TestTheEngineStdoutIsDecodedAsUtf8:
         """
         with pytest.raises(UnicodeEncodeError):
             "提案 \U0001f600".encode("cp950")
+
+
+class TestLibraryWithoutEngine:
+    """The user's own library stays visible while the engine cannot answer."""
+
+    def _user_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        user = tmp_path / "sdpm"
+        (user / "styles").mkdir(parents=True)
+        (user / "templates").mkdir()
+        return user
+
+    def test_user_styles_templates_and_pins_are_listed(self, tmp_path, monkeypatch):
+        user = self._user_dir(tmp_path, monkeypatch)
+        (user / "styles" / "mine.html").write_text("<html></html>", encoding="utf-8")
+        (user / "styles" / "other.html").write_text("<html></html>", encoding="utf-8")
+        (user / "templates" / "corp.pptx").write_bytes(b"PK\x03\x04")
+        (user / "state.json").write_text(
+            json.dumps(
+                {
+                    "pinned_styles": ["mine", "removed-builtin"],
+                    "template_metadata": {"corp": {"layout_count": 4, "description": "d"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(engine, "run_engine_snippet", lambda *a, **k: None)
+        lists = engine.load_lists()
+        assert [(s["name"], s["pinned"]) for s in lists["styles"]] == [
+            ("mine", True),
+            ("other", False),
+        ]
+        assert lists["templates"][0]["name"] == "corp"
+        assert lists["templates"][0]["layout_count"] == 4
+        assert lists["stylesDirs"] == [str(user / "styles")]
+
+    def test_a_symlinked_style_is_not_listed(self, tmp_path, monkeypatch):
+        user = self._user_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "secret.html"
+        outside.write_text("x", encoding="utf-8")
+        (user / "styles" / "link.html").symlink_to(outside)
+        monkeypatch.setattr(engine, "run_engine_snippet", lambda *a, **k: None)
+        assert engine.load_lists()["styles"] == []
+
+    def test_no_config_dir_is_an_empty_library(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "absent"))
+        monkeypatch.setattr(engine, "run_engine_snippet", lambda *a, **k: None)
+        assert engine.load_lists() == {"styles": [], "templates": [], "stylesDirs": []}

@@ -45,26 +45,42 @@ def _tar_bytes(entries: list[tarfile.TarInfo], payloads: dict[str, bytes]) -> by
 
 
 def _benign_engine_tar() -> bytes:
-    """A tarball shaped like the real one: one wrapper dir containing mcp-local."""
+    """A tarball shaped like v0.10: full repo with local server, sdpm, shared."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        wrapper = tarfile.TarInfo("repo-abc123")
-        wrapper.type = tarfile.DIRTYPE
-        wrapper.mode = 0o755
-        tar.addfile(wrapper)
-        mcp = tarfile.TarInfo("repo-abc123/mcp-local")
-        mcp.type = tarfile.DIRTYPE
-        mcp.mode = 0o755
-        tar.addfile(mcp)
-        payload = b"[project]\nname = 'sdpm-mcp-local'\n"
-        f = tarfile.TarInfo("repo-abc123/mcp-local/pyproject.toml")
-        f.size = len(payload)
-        f.mode = 0o644
-        tar.addfile(f, io.BytesIO(payload))
+        for name in (
+            "repo-abc123",
+            "repo-abc123/servers",
+            "repo-abc123/servers/local",
+            "repo-abc123/sdpm",
+            "repo-abc123/sdpm/sdpm",
+            "repo-abc123/shared",
+        ):
+            directory = tarfile.TarInfo(name)
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o755
+            tar.addfile(directory)
+        for name, payload in (
+            ("repo-abc123/servers/local/server_acp.py", b"def main(): pass\n"),
+            ("repo-abc123/servers/local/pyproject.toml", b"[project]\nname='sdpm-local'\n"),
+            ("repo-abc123/sdpm/sdpm/__init__.py", b"__version__='0.10.1'\n"),
+            ("repo-abc123/shared/__init__.py", b""),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            member.mode = 0o644
+            tar.addfile(member, io.BytesIO(payload))
     return buf.getvalue()
 
 
 class TestThePin:
+    def test_the_v0101_pin_matches_the_verified_archive(self):
+        assert engine_source.ENGINE_TAG == "v0.10.4"
+        assert engine_source.ENGINE_COMMIT == ("1ce83dd4555ebfb06db26fac5c7c2b9722d63bd9")
+        assert engine_source.ENGINE_TARBALL_SHA256 == (
+            "b476ba7a52ed214ee71156a3f53b84703836847676c89345ce95507bf6d30155"
+        )
+
     def test_the_commit_is_a_full_sha(self):
         """A short sha is ambiguous and an abbreviation can become non-unique."""
         assert len(engine_source.ENGINE_COMMIT) == 40
@@ -383,7 +399,7 @@ class TestSafeExtraction:
         dest = tmp_path / "unpack"
         dest.mkdir()
         engine_source._extract_tar(archive, dest)
-        assert (dest / "repo-abc123" / "mcp-local" / "pyproject.toml").is_file()
+        assert (dest / "repo-abc123" / "servers/local" / "pyproject.toml").is_file()
 
     def test_the_python_310_leg_applies_the_same_filter(self, tmp_path: Path):
         """`filter=` does not exist on Python 3.10, which this project supports —
@@ -512,7 +528,7 @@ class TestInstallEngine:
         log: list[str] = []
         with self._patch_fetch(_benign_engine_tar()):
             assert engine_source.install_engine(root, log) is True
-        assert (root / "mcp-local" / "pyproject.toml").is_file()
+        assert (root / "servers/local" / "pyproject.toml").is_file()
         assert engine_source.is_installed(root) is True
         assert any(engine_source.ENGINE_TAG in line for line in log)
 
@@ -563,8 +579,8 @@ class TestInstallEngine:
         degradation a refused download already gives.
         """
         root = tmp_path / "vendor" / "sdpm"
-        (root / "mcp-local").mkdir(parents=True)
-        (root / "mcp-local" / "keep.txt").write_text("previous engine", encoding="utf-8")
+        (root / "servers/local").mkdir(parents=True)
+        (root / "servers/local" / "keep.txt").write_text("previous engine", encoding="utf-8")
         seen: list[Path] = []
 
         def failing_build(staged: Path) -> bool:
@@ -578,7 +594,9 @@ class TestInstallEngine:
         # Validation was handed the STAGING tree, not the live root.
         assert seen and seen[0] != root
         # And the previous engine is untouched.
-        assert (root / "mcp-local" / "keep.txt").read_text(encoding="utf-8") == "previous engine"
+        assert (root / "servers/local" / "keep.txt").read_text(
+            encoding="utf-8"
+        ) == "previous engine"
         assert any("keeping the existing one" in line for line in log)
 
     def test_a_successful_build_swaps_the_new_tree_in(self, tmp_path: Path):
@@ -586,23 +604,23 @@ class TestInstallEngine:
         root = tmp_path / "vendor" / "sdpm"
         with self._patch_fetch(_benign_engine_tar()):
             assert engine_source.install_engine(root, [], validate=lambda _p: True) is True
-        assert (root / "mcp-local" / "pyproject.toml").is_file()
+        assert (root / "servers/local" / "pyproject.toml").is_file()
         assert engine_source.is_installed(root) is True
 
     def test_the_wrapper_directory_is_unwrapped(self, tmp_path: Path):
         """A GitHub /archive/ tarball wraps everything in `<repo>-<sha>/`; the
-        engine is that directory's CONTENTS, or `engine_root/mcp-local` breaks."""
+        engine is that directory's CONTENTS, or `engine_root/servers/local` breaks."""
         root = tmp_path / "vendor" / "sdpm"
         with self._patch_fetch(_benign_engine_tar()):
             engine_source.install_engine(root, [])
         assert not list(root.glob("repo-abc123"))
-        assert (root / "mcp-local").is_dir()
+        assert (root / "servers/local").is_dir()
 
     def test_an_already_pinned_tree_is_left_alone_with_no_network_call(self, tmp_path: Path):
         """Idempotence — re-provisioning must not re-download 3MB."""
         root = tmp_path / "vendor" / "sdpm"
         root.mkdir(parents=True)
-        (root / "mcp-local").mkdir()
+        (root / "servers/local").mkdir(parents=True)
         engine_source.write_source_marker(root)
         log: list[str] = []
         with mock.patch.object(engine_source, "download_archive") as download:
@@ -614,24 +632,26 @@ class TestInstallEngine:
         """Degrade to "still on the old version", never to "broken": a user with
         a working older engine must not lose it to a refused or failed fetch."""
         root = tmp_path / "vendor" / "sdpm"
-        (root / "mcp-local").mkdir(parents=True)
-        (root / "mcp-local" / "keep.txt").write_text("previous engine", encoding="utf-8")
+        (root / "servers/local").mkdir(parents=True)
+        (root / "servers/local" / "keep.txt").write_text("previous engine", encoding="utf-8")
         log: list[str] = []
         with self._patch_fetch(None, error="REFUSING the engine archive: sha256 got aaa…"):
             assert engine_source.install_engine(root, log) is False
-        assert (root / "mcp-local" / "keep.txt").read_text(encoding="utf-8") == "previous engine"
+        assert (root / "servers/local" / "keep.txt").read_text(
+            encoding="utf-8"
+        ) == "previous engine"
         assert any("REFUSING" in line for line in log)
 
     def test_a_rejected_archive_keeps_the_previous_tree(self, tmp_path: Path):
         """Same guarantee for a hostile (rather than merely wrong) archive."""
         root = tmp_path / "vendor" / "sdpm"
-        (root / "mcp-local").mkdir(parents=True)
-        (root / "mcp-local" / "keep.txt").write_text("previous engine", encoding="utf-8")
+        (root / "servers/local").mkdir(parents=True)
+        (root / "servers/local" / "keep.txt").write_text("previous engine", encoding="utf-8")
         evil = tarfile.TarInfo("../../escaped.txt")
         log: list[str] = []
         with self._patch_fetch(_tar_bytes([evil], {"../../escaped.txt": b"pwned"})):
             assert engine_source.install_engine(root, log) is False
-        assert (root / "mcp-local" / "keep.txt").is_file()
+        assert (root / "servers/local" / "keep.txt").is_file()
         assert any("rejected" in line for line in log)
         assert not (tmp_path / "escaped.txt").exists()
 
@@ -646,7 +666,7 @@ class TestInstallEngine:
         log: list[str] = []
         with self._patch_fetch(wrong.getvalue()):
             assert engine_source.install_engine(root, log) is False
-        assert any("mcp-local" in line for line in log)
+        assert any("v0.10 repository layout" in line for line in log)
         assert engine_source.is_installed(root) is False
 
     def test_a_multi_root_archive_is_refused(self, tmp_path: Path):
@@ -668,7 +688,7 @@ class TestInstallEngine:
         """Stale files from an older engine must not survive into the new tree —
         the engine resolves its own bundled data relative to the checkout."""
         root = tmp_path / "vendor" / "sdpm"
-        (root / "mcp-local").mkdir(parents=True)
+        (root / "servers/local").mkdir(parents=True)
         (root / "stale-from-v0.3.7.txt").write_text("old", encoding="utf-8")
         (root / engine_source.SOURCE_MARKER_FILENAME).write_text(
             json.dumps({"tag": "v0.3.7", "commit": "e" * 40, "sha256": "f" * 64}),

@@ -1409,6 +1409,29 @@
     "pptxMaker": {
       "libraryPanel": {
         "font_specimen": "Aa"
+      },
+      "pptxMakerPage": {
+        "engine_update_required": "The presentation engine needs to be updated ({{installedTag}} → {{pinnedTag}}).",
+        "update_engine": "Update engine",
+        "studio_chat": "Deck chat",
+        "open_full_chat": "Open in full chat",
+        "close_studio_chat": "Close the chat",
+        "resize_studio_chat": "Resize the chat",
+        "start_requires_engine": "Install the presentation engine above to start a deck.",
+        "start_requires_finish_setup": "Finish setup above to start a deck.",
+        "resume_studio_chat": "Reopen the chat “{{title}}”",
+        "studio_chat_running": "Working",
+        "start_requires_engine_update": "Update the presentation engine above to start a deck.",
+        "finish_setup": "Finish setup",
+        "engine_status_failed": "Couldn't check the presentation engine.",
+        "mode_context_failed": "The chat opened without the selected mode. Tell the agent which mode you want in the chat.",
+        "engine_agent_not_ready": "Deck chat isn't ready yet. Finish setup to start a deck."
+      },
+      "outlineView": {
+        "visual": "Visual",
+        "evidence": "Evidence",
+        "storyboard": "Storyboard",
+        "markdown": "Markdown"
       }
     },
     "projectScaffolder": {

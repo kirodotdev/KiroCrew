@@ -18,7 +18,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +27,13 @@ import pytest
 
 from kiro_crew import env as env_mod
 from kiro_crew.apps.builtins.pptx_maker.backend import provision
+
+
+def _make_local_server(root: Path) -> Path:
+    server = root / "servers" / "local" / "server_acp.py"
+    server.parent.mkdir(parents=True, exist_ok=True)
+    server.write_text("def main(): pass\n", encoding="utf-8")
+    return server
 
 
 def _json_strings(node: object) -> list[str]:
@@ -208,9 +214,9 @@ class TestEditableInstallSurvivesTheSwap:
 
         argv = calls[0]
         assert "--editable" in argv
-        assert argv[argv.index("--editable") + 1] == str(tmp_path / "skill")
+        assert argv[argv.index("--editable") + 1] == str(tmp_path / "sdpm")
         # And the interpreter it installs INTO is the tree's own venv.
-        assert str(tmp_path / "mcp-local" / ".venv") in argv[argv.index("--python") + 1]
+        assert str(tmp_path / "servers/local" / ".venv") in argv[argv.index("--python") + 1]
 
 
 class TestResolveUv:
@@ -353,46 +359,6 @@ class TestRunSandboxing:
         # neither. No sandbox mode restricts network, so uv still reaches the index.
         assert chokepoint.call_args.kwargs.get("mode") == "strict"
 
-    def test_registration_is_skipped_when_the_app_was_disabled(self, tmp_path: Path):
-        """Provisioning runs for minutes; the operator can disable meanwhile.
-
-        Registration recreates the agent symlinks and the skill entry that disabling
-        had just removed, leaving a DISABLED app with live resources. The enable is
-        therefore re-checked immediately before registering.
-        """
-        registered: list[str] = []
-        log: list[str] = []
-        with (
-            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=False),
-            mock.patch(
-                "kiro_crew.apps.bridges.register_app",
-                side_effect=lambda name: registered.append(name),
-            ),
-        ):
-            provision._register_resources(log)
-        assert registered == [], "a disabled app must not have its resources re-registered"
-        assert any("disabled during provisioning" in line for line in log)
-
-    def test_registration_runs_while_the_app_is_enabled(self, tmp_path: Path):
-        """The other direction — the guard must not block the normal path."""
-        registered: list[str] = []
-
-        class _Result:
-            agents = ["a"]
-            skills = ["s"]
-            errors: list[str] = []
-
-        def _register(name: str) -> "_Result":
-            registered.append(name)
-            return _Result()
-
-        with (
-            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=True),
-            mock.patch("kiro_crew.apps.bridges.register_app", side_effect=_register),
-        ):
-            provision._register_resources([])
-        assert registered == [provision.paths.APP_NAME]
-
     def test_a_timeout_is_reported_not_raised(self, tmp_path: Path):
         """Provisioning must report, not explode: a hung `uv` becomes a failed
         step with a message the UI can show."""
@@ -453,10 +419,10 @@ class TestEnsureVenv:
         with mock.patch.object(provision, "_run") as run:
             assert provision._ensure_venv(tmp_path, log, "/opt/uv") is False
         assert not run.called
-        assert any("mcp-local" in line for line in log)
+        assert any("servers/local" in line for line in log)
 
     def test_a_failed_dependency_resolve_stops_before_the_skill_install(self, tmp_path: Path):
-        (tmp_path / "mcp-local").mkdir()
+        _make_local_server(tmp_path)
         log: list[str] = []
         with mock.patch.object(provision, "_run", return_value=(1, "resolution failed")) as run:
             assert provision._ensure_venv(tmp_path, log, "/opt/uv") is False
@@ -466,18 +432,26 @@ class TestEnsureVenv:
     def test_both_uv_calls_use_the_resolved_absolute_path(self, tmp_path: Path):
         """Never the bare name `uv`: the gateway's PATH may not carry the venv's
         scripts dir (installed service), and a frozen bundle has none at all."""
-        (tmp_path / "mcp-local").mkdir()
+        _make_local_server(tmp_path)
         resolved = "/opt/kirocrew/uv"
         with mock.patch.object(provision, "_run", return_value=(0, "")) as run:
             assert provision._ensure_venv(tmp_path, [], resolved) is True
         assert run.call_count == 2
+        sync_argv = run.call_args_list[0].args[0]
+        assert sync_argv == [
+            resolved,
+            "sync",
+            "--frozen",
+            "--directory",
+            str(provision.paths.engine_mcp_dir_for(tmp_path)),
+        ]
         for call in run.call_args_list:
             assert call.args[0][0] == resolved
 
     def test_the_skill_package_is_installed_editable(self, tmp_path: Path):
         """A non-editable install drops the engine's sibling data dirs (bundled
         templates and styles), so they would silently go missing."""
-        (tmp_path / "mcp-local").mkdir()
+        _make_local_server(tmp_path)
         log: list[str] = []
         with mock.patch.object(provision, "_run", return_value=(0, "")) as run:
             assert provision._ensure_venv(tmp_path, log, "/opt/uv") is True
@@ -486,11 +460,11 @@ class TestEnsureVenv:
         assert "--editable" in install_argv
 
     def test_a_failed_skill_install_fails_provisioning(self, tmp_path: Path):
-        (tmp_path / "mcp-local").mkdir()
+        _make_local_server(tmp_path)
         log: list[str] = []
         with mock.patch.object(provision, "_run", side_effect=[(0, ""), (1, "wheel build failed")]):
             assert provision._ensure_venv(tmp_path, log, "/opt/uv") is False
-        assert any("skill package install failed" in line for line in log)
+        assert any("SDPM package install failed" in line for line in log)
 
 
 class TestRenderAgents:
@@ -575,7 +549,6 @@ class TestRenderAgents:
             mock.patch.object(
                 provision, "_render_agents", side_effect=lambda *a, **k: calls.append("render") or 1
             ),
-            mock.patch.object(provision, "_stage_static", side_effect=lambda *a, **k: None),
             mock.patch.object(provision, "resolve_uv", return_value="/opt/uv"),
             mock.patch.object(provision, "_ensure_engine", return_value=True),
             mock.patch.object(provision, "_venv_ready", return_value=True),
@@ -627,21 +600,15 @@ class TestRenderAgents:
             env = json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"]["sdpm"]["env"]
             assert "" not in env["PATH"].split(os.pathsep)
 
-    def test_the_prompts_placeholder_points_into_the_install_dir(self, tmp_path: Path):
+    def test_the_deck_root_placeholder_round_trips(self, tmp_path: Path):
         install_dir = tmp_path / "install"
-        provision._render_agents(install_dir, log=[])
-        rendered = sorted((install_dir / "agents").glob("*.json"))
-        # Asserted against the PARSED values, not the raw file text: the
-        # substituted path is JSON-escaped on the way in, so on Windows the
-        # bytes on disk spell `C:\\Users\\…` and a raw substring check would
-        # miss a perfectly correct render.
-        strings = [
-            s
-            for path in rendered
-            for s in _json_strings(json.loads(path.read_text(encoding="utf-8")))
-        ]
-        wanted = str(install_dir / "prompts")
-        assert any(wanted in s for s in strings)
+        deck_root = tmp_path / 'decks with "quotes"'
+        with mock.patch.object(provision.paths, "deck_root", return_value=deck_root):
+            provision._render_agents(install_dir, log=[])
+        rendered = json.loads(
+            (install_dir / "agents" / "pptx-maker.json").read_text(encoding="utf-8")
+        )
+        assert rendered["mcpServers"]["sdpm"]["env"]["SDPM_DECK_ROOT"] == str(deck_root)
 
     def test_a_windows_style_path_still_renders_parseable_json(self, tmp_path: Path):
         """A backslash path must be JSON-escaped into the template.
@@ -659,7 +626,7 @@ class TestRenderAgents:
         with (
             mock.patch.object(provision.paths, "engine_root", return_value=Path(win_root)),
             mock.patch.object(
-                provision.paths, "engine_mcp_dir", return_value=Path(win_root + r"\mcp-local")
+                provision.paths, "engine_mcp_dir", return_value=Path(win_root + r"\servers/local")
             ),
         ):
             written = provision._render_agents(install_dir, log)
@@ -697,178 +664,6 @@ class TestRenderAgents:
     def test_a_missing_agents_dir_writes_nothing(self, tmp_path: Path):
         with mock.patch.object(provision, "_PACKAGE_ROOT", tmp_path / "absent"):
             assert provision._render_agents(tmp_path / "install", log=[]) == 0
-
-
-_MODE_ENFORCED = pytest.mark.skipif(
-    os.name != "nt" and os.geteuid() == 0,
-    reason="root ignores POSIX mode bits, so a read-only fixture cannot refuse removal",
-)
-
-
-def _harden(root: Path) -> None:
-    """Make *root* look like this package on a read-only install.
-
-    Deepest entry first, so every `is_dir()` still runs under a searchable
-    parent. On Windows `os.chmod` only sets the read-only attribute, which is
-    enough: it is what `rmdir`/`unlink` consult there.
-    """
-    for entry in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        os.chmod(entry, 0o555 if entry.is_dir() else 0o444)
-    os.chmod(root, 0o555)
-
-
-def _soften(root: Path) -> None:
-    """Undo :func:`_harden`, root downwards so the walk can descend.
-
-    Directories go back to owner-only `S_IRWXU` rather than `0o755`: all this
-    has to restore is THIS process's ability to list, write and descend so
-    pytest can clean `tmp_path` up, and group/other bits buy none of that.
-    Spelled symbolically because it is the exact permission being asked for --
-    and because the numeric spelling of owner-rwx trips
-    `insecure-file-permissions`, which reads any `7` triad as widely permissive
-    even when it is owner-only. On Windows `os.chmod` honours only the
-    read-only flag, which the owner write bit clears either way.
-    """
-    os.chmod(root, stat.S_IRWXU)
-    for entry in root.rglob("*"):
-        os.chmod(entry, stat.S_IRWXU if entry.is_dir() else 0o644)
-
-
-@pytest.fixture
-def restore_modes(tmp_path: Path):
-    """Hand the read-only fixtures back writable.
-
-    Without this they defeat pytest's own `tmp_path` cleanup, which is the same
-    refusal these tests are about.
-    """
-    yield
-    _soften(tmp_path)
-
-
-class TestStageStatic:
-    def test_prompts_are_copied_so_a_read_only_wheel_install_works(self, tmp_path: Path):
-        """Copied, not symlinked: the package dir is read-only on a wheel
-        install and the rendered agents point at the install-dir copy."""
-        install_dir = tmp_path / "install"
-        provision._stage_static(install_dir, log=[])
-        staged = install_dir / "prompts"
-        assert staged.is_dir()
-        assert any(staged.glob("*.md"))
-        assert not staged.is_symlink()
-
-    def test_restaging_replaces_the_previous_copy(self, tmp_path: Path):
-        """Provisioning is idempotent, so a stale prompt from an older app
-        version must not survive into the new install dir."""
-        install_dir = tmp_path / "install"
-        stale = install_dir / "prompts" / "stale.md"
-        stale.parent.mkdir(parents=True)
-        stale.write_text("from an older version", encoding="utf-8")
-        provision._stage_static(install_dir, log=[])
-        assert not stale.exists()
-
-    @_MODE_ENFORCED
-    def test_restaging_replaces_a_copy_made_from_a_read_only_source(
-        self, tmp_path: Path, restore_modes: None
-    ):
-        """The staged copy inherits the package dir's modes, so on a read-only
-        install (a Nix store path, a read-only mount) it is read-only too — and
-        the NEXT provision must still be able to replace it.
-
-        The stale copy in the test above is one this test wrote itself, so it is
-        writable and a plain `rmtree` clears it; that is why the idempotence
-        contract held there and still broke here. `provision` reports ok even
-        when staging fails, so an upgrade kept the previous version's prompts
-        and said it had succeeded.
-        """
-        pkg = tmp_path / "pkg"
-        prompts = pkg / "prompts"
-        prompts.mkdir(parents=True)
-        (prompts / "deck.md").write_text("v1", encoding="utf-8")
-        install_dir = tmp_path / "install"
-        log: list[str] = []
-        with mock.patch.object(provision, "_PACKAGE_ROOT", pkg):
-            _harden(prompts)
-            provision._stage_static(install_dir, log)
-            assert (install_dir / "prompts" / "deck.md").read_text(encoding="utf-8") == "v1"
-            # The app is upgraded: the packaged prompt changes underneath.
-            _soften(prompts)
-            (prompts / "deck.md").write_text("v2", encoding="utf-8")
-            _harden(prompts)
-            provision._stage_static(install_dir, log)
-        # The staged prompt FIRST: a failed restage is what the app actually
-        # serves, and the log line below is only how it is reported.
-        assert (install_dir / "prompts" / "deck.md").read_text(encoding="utf-8") == "v2"
-        assert log == []
-
-    @_MODE_ENFORCED
-    def test_restaging_repairs_a_read_only_copy_from_an_older_version(
-        self, tmp_path: Path, restore_modes: None
-    ):
-        source = tmp_path / "source"
-        source.mkdir()
-        (source / "deck.md").write_text("current", encoding="utf-8")
-        staged = tmp_path / "install" / "prompts"
-        (staged / "nested").mkdir(parents=True)
-        (staged / "nested" / "stale.md").write_text("stale", encoding="utf-8")
-        _harden(staged)
-
-        provision._copy_tree(source, staged)
-
-        assert not (staged / "nested").exists()
-        assert (staged / "deck.md").read_text(encoding="utf-8") == "current"
-
-    @_MODE_ENFORCED
-    def test_the_read_only_fixture_really_refuses_a_plain_rmtree(
-        self, tmp_path: Path, restore_modes: None
-    ):
-        """Guard the guard: a fixture that could be removed anyway would let the
-        restaging test above pass without the repair."""
-        tree = tmp_path / "tree"
-        (tree / "sub").mkdir(parents=True)
-        (tree / "sub" / "a.md").write_text("x", encoding="utf-8")
-        _harden(tree)
-        with pytest.raises(OSError):
-            shutil.rmtree(tree)
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="asserts real POSIX mode bits")
-    def test_the_staged_copy_is_left_owner_writable(self, tmp_path: Path, restore_modes: None):
-        """Normalizing the fresh copy is what keeps every LATER provision cheap:
-        the repair walk has nothing left to fix. Checked by mode rather than by
-        behaviour so it holds even where the process ignores mode bits."""
-        pkg = tmp_path / "pkg"
-        prompts = pkg / "prompts"
-        prompts.mkdir(parents=True)
-        (prompts / "deck.md").write_text("v1", encoding="utf-8")
-        _harden(prompts)
-        install_dir = tmp_path / "install"
-        with mock.patch.object(provision, "_PACKAGE_ROOT", pkg):
-            provision._stage_static(install_dir, log=[])
-        staged = install_dir / "prompts"
-        assert stat.S_IMODE(staged.stat().st_mode) & stat.S_IRWXU == stat.S_IRWXU
-
-    def test_a_removal_that_cannot_be_repaired_is_reported(self, tmp_path: Path):
-        """A tree that survives the forced removal must not be copied over
-        silently — the raise is what `_stage_static` turns into a log line."""
-        install_dir = tmp_path / "install"
-        (install_dir / "prompts").mkdir(parents=True)
-        log: list[str] = []
-        with mock.patch.object(provision, "rmtree_force", return_value=False):
-            provision._stage_static(install_dir, log)
-        assert any("could not be staged" in line for line in log)
-
-    def test_the_skill_is_deliberately_not_staged(self, tmp_path: Path):
-        """The skill ships via `builtin_skills/` (copied on every gateway start)
-        so it reaches every install without provisioning; staging a second copy
-        here would register the same skill twice."""
-        install_dir = tmp_path / "install"
-        provision._stage_static(install_dir, log=[])
-        assert not (install_dir / "skills").exists()
-
-    def test_a_copy_failure_is_reported_not_raised(self, tmp_path: Path):
-        log: list[str] = []
-        with mock.patch.object(provision, "_copy_tree", side_effect=OSError("read-only fs")):
-            provision._stage_static(tmp_path / "install", log)
-        assert any("could not be staged" in line for line in log)
 
 
 class TestSeedDeckRoot:
@@ -930,10 +725,9 @@ class TestProvision:
         with (
             mock.patch.object(provision.paths, "engine_root", return_value=tmp_path / "engine"),
             mock.patch.object(provision, "app_dir", return_value=tmp_path / "install"),
-            mock.patch.object(provision, "_stage_static"),
             mock.patch.object(provision, "_render_agents", return_value=2),
             mock.patch.object(provision, "_seed_deck_root"),
-            mock.patch.object(provision, "_current_tag", return_value="v0.3.8"),
+            mock.patch.object(provision, "_current_tag", return_value="v0.10.1"),
         ):
             yield
 
@@ -1006,7 +800,7 @@ class TestProvision:
             register.return_value = mock.Mock(agents=["a", "b"], skills=["s"], errors=[])
             outcome = provision.provision()
         assert outcome.ok is True
-        assert outcome.engine_tag == "v0.3.8"
+        assert outcome.engine_tag == "v0.10.1"
         assert "analyzed 1 template(s)" in outcome.log
         # Provisioning writes the agent CONFIGS but deliberately does not REGISTER
         # them; see the next test for why.
@@ -1015,8 +809,8 @@ class TestProvision:
     def test_provisioning_does_not_register_resources_itself(self):
         """Registration belongs to the enable path and the boot reconcile, not here.
 
-        `bridges._placeholder_values` computes this app's `{UV_BIN}`/`{ENGINE_ROOT}`/
-        `{ENGINE_MCP_DIR}`/`{APP_PROMPTS}` in the gateway from the data home and the
+        `bridges._placeholder_values` computes this app's `{UV_BIN}`,
+        `{ENGINE_MCP_DIR}`, `{DECK_ROOT}` and `{TOOLS_PATH}` in the gateway, so the
         installed package, so `register_app` lands the agents and skill without any
         help from the provisioner — this call was redundant.
 
@@ -1061,34 +855,6 @@ class TestProvision:
             outcome = provision.provision()
         assert outcome.ok is True
         assert "template analysis skipped" in outcome.log
-
-    def test_registration_warnings_are_surfaced(self):
-        """Exercised against `_register_resources` directly, because `provision()` no
-        longer calls it — the helper remains the seam for a caller that does register,
-        and its reporting still has to reach the log the UI shows."""
-        log: list[str] = []
-        with (
-            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=True),
-            mock.patch("kiro_crew.apps.bridges.register_app") as register,
-        ):
-            register.return_value = mock.Mock(
-                agents=[], skills=[], errors=["skill link already exists"]
-            )
-            provision._register_resources(log)
-        assert "registration warning: skill link already exists" in log
-
-    def test_a_registration_failure_is_reported_not_raised(self):
-        """Same seam, the failure direction: a detached background job's only channel
-        to the user is this log, so a registrar exception must be reported."""
-        log: list[str] = []
-        with (
-            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=True),
-            mock.patch(
-                "kiro_crew.apps.bridges.register_app", side_effect=RuntimeError("manifest gone")
-            ),
-        ):
-            provision._register_resources(log)
-        assert "resource registration failed: manifest gone" in log
 
 
 class TestProvisionOutcome:

@@ -24,6 +24,7 @@ import {
   countBoardSlides,
   filterDecks,
   fuzzyMatch,
+  libraryChatToken,
   nameFromFilename,
   prepareBoardHtml,
   tabAvailable,
@@ -136,6 +137,15 @@ describe('nameFromFilename', () => {
 
   it('bounds the length', () => {
     expect(nameFromFilename(`${'a'.repeat(200)}.html`).length).toBeLessThanOrEqual(64)
+  })
+})
+
+describe('library chat tokens', () => {
+  it('uses SDPM mention syntax and quotes names containing whitespace', () => {
+    expect(libraryChatToken('styles', 'brand')).toBe('@style:brand')
+    expect(libraryChatToken('styles', 'Brand Guide')).toBe('@style:"Brand Guide"')
+    expect(libraryChatToken('templates', 'corp')).toBe('@template:corp')
+    expect(libraryChatToken('templates', 'Company Theme')).toBe('@template:"Company Theme"')
   })
 })
 
@@ -360,7 +370,18 @@ vi.mock('../apps/pptx-maker/api', async () => {
 })
 
 vi.mock('../api/client', () => ({
-  api: { createChatSlot: vi.fn(async () => ({ key: 'pptx-1' })), revealPath: vi.fn(async () => ({})) },
+  api: {
+    createChatSlot: vi.fn(async () => ({ key: 'pptx-1' })),
+    chatSlotContext: vi.fn(async () => ({})),
+    revealPath: vi.fn(async () => ({})),
+    chatSlots: vi.fn(async () => [{ key: 'pptx-1', title: 'AWS intro deck', running: true, messages: 3 }]),
+  },
+}))
+
+const copyToClipboardMock = vi.fn(async (_text: string) => true)
+vi.mock('../utils/clipboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/clipboard')>()),
+  copyToClipboard: (text: string) => copyToClipboardMock(text),
 }))
 
 // Keep the real router (MemoryRouter, the route hooks the page relies on) but
@@ -377,6 +398,16 @@ vi.mock('react-router-dom', async () => {
 // that a slide slot renders, not how the SVG is assembled. The sanitiser helper
 // this module also exports is covered by SlidePreviewSanitize.test.tsx, which does
 // not mock it (importing the real module HERE re-enters the hoisted api mock).
+// The studio docks the real native chat pane, which needs the whole Redux chat
+// store. The page tests care which slot it is handed, not how it renders.
+vi.mock('../components/ChatPane', () => ({
+  default: ({ slotKey, onOpenFull }: { slotKey: string; onOpenFull?: () => void }) => (
+    <div data-testid="studio-chat-pane" data-slot={slotKey}>
+      <button type="button" onClick={onOpenFull}>pane-open-full</button>
+    </div>
+  ),
+}))
+
 vi.mock('../apps/pptx-maker/SlidePreview', () => ({
   default: ({ label }: { label: string }) => <div data-testid="slide-preview">{label}</div>,
 }))
@@ -385,15 +416,21 @@ const READY_ENGINE = {
   ready: true,
   clone: true,
   venv: true,
-  pinnedTag: 'v0.3.8',
+  pinnedTag: 'v0.10.1',
+  installedTag: 'v0.10.1',
+  updateRequired: false,
+  agentReady: true,
   provision: { state: 'done' as const, log: '', elapsed: 0 },
 }
+
+let lastClient: QueryClient | null = null
 
 async function renderPage() {
   const { default: PptxMakerPage } = await import('../apps/pptx-maker/PptxMakerPage')
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   })
+  lastClient = client
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
@@ -404,8 +441,13 @@ async function renderPage() {
 }
 
 describe('PptxMakerPage', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
+    // The studio chat is remembered across visits; each test starts with none.
+    localStorage.clear()
+    const { api } = await import('../api/client')
+    vi.mocked(api.chatSlots).mockResolvedValue([{ key: 'pptx-1', title: 'AWS intro deck', running: true, messages: 3 } as never])
+    copyToClipboardMock.mockResolvedValue(true)
     mockApi.engine.mockResolvedValue(READY_ENGINE)
     mockApi.deps.mockResolvedValue({
       labels: {},
@@ -458,7 +500,9 @@ describe('PptxMakerPage', () => {
       ready: false,
       clone: false,
       venv: false,
-      pinnedTag: 'v0.3.8',
+      pinnedTag: 'v0.10.1',
+      installedTag: null,
+      updateRequired: false,
       provision: { state: 'idle', log: '', elapsed: 0 },
     })
     await renderPage()
@@ -466,12 +510,105 @@ describe('PptxMakerPage', () => {
     expect(screen.getByText('Install engine')).toBeTruthy()
   })
 
+  it('reports a failed update as an error notice, not a muted banner line', async () => {
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: true,
+      pinnedTag: 'v0.10.4',
+      installedTag: 'v0.3.8',
+      updateRequired: true,
+      provision: { state: 'error', log: 'archive digest mismatch', elapsed: 0 },
+    })
+    await renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The presentation engine could not be updated.')
+    expect(alert.textContent).toContain('archive digest mismatch')
+    await userEvent.click(screen.getByText('Update engine'))
+    await waitFor(() => expect(mockApi.provisionEngine).toHaveBeenCalled())
+  })
+
+  it('points the start hint at Finish setup when only the agent is missing', async () => {
+    mockApi.engine.mockResolvedValue({ ...READY_ENGINE, agentReady: false })
+    await renderPage()
+    expect(await screen.findByText('Finish setup above to start a deck.')).toBeTruthy()
+  })
+
+  it('reports a failed agent registration as an error notice with Finish setup', async () => {
+    mockApi.engine.mockResolvedValue({
+      ...READY_ENGINE,
+      agentReady: false,
+      provision: { state: 'error', log: 'agent registration failed', elapsed: 0 },
+    })
+    await renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain("Deck chat couldn't be set up.")
+    expect(alert.textContent).toContain('agent registration failed')
+    expect(screen.getByText('Finish setup')).toBeTruthy()
+  })
+
+  it('reports a provision request that never reached the job', async () => {
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: false,
+      pinnedTag: 'v0.10.4',
+      installedTag: null,
+      updateRequired: false,
+      provision: { state: 'idle', log: '', elapsed: 0 },
+    })
+    mockApi.provisionEngine.mockRejectedValueOnce(new Error('gateway unreachable'))
+    await renderPage()
+    await userEvent.click(await screen.findByText('Install engine'))
+    const notice = await screen.findByTestId('engine-request-error')
+    expect(notice.textContent).toContain("Couldn't start the presentation engine setup.")
+    expect(notice.textContent).toContain('gateway unreachable')
+  })
+
+  it('reports a failed install as an error notice with a retry', async () => {
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: false,
+      pinnedTag: 'v0.10.1',
+      installedTag: null,
+      updateRequired: false,
+      provision: { state: 'error', log: 'resolving engine dependencies…\nuv sync failed (exit 1)', elapsed: 0 },
+    })
+    await renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The presentation engine could not be installed.')
+    expect(alert.textContent).toContain('uv sync failed (exit 1)')
+    await userEvent.click(screen.getByText('Try the install again'))
+    await waitFor(() => expect(mockApi.provisionEngine).toHaveBeenCalled())
+  })
+
+  it('offers an explicit update when an older engine is installed', async () => {
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: false,
+      pinnedTag: 'v0.10.1',
+      installedTag: 'v0.3.8',
+      updateRequired: true,
+      provision: { state: 'idle', log: '', elapsed: 0 },
+    })
+    await renderPage()
+    expect(await screen.findByText(/v0\.3\.8.*v0\.10\.1/)).toBeTruthy()
+    expect(screen.getByText('Update engine')).toBeTruthy()
+    // The start hint names the control the banner offers, not an install.
+    expect(screen.getByText('Update the presentation engine above to start a deck.')).toBeTruthy()
+    expect(screen.queryByText('Install the presentation engine above to start a deck.')).toBeNull()
+  })
+
   it('starts the engine install when the banner action is used', async () => {
     mockApi.engine.mockResolvedValue({
       ready: false,
       clone: false,
       venv: false,
-      pinnedTag: 'v0.3.8',
+      pinnedTag: 'v0.10.1',
+      installedTag: null,
+      updateRequired: false,
       provision: { state: 'idle', log: '', elapsed: 0 },
     })
     mockApi.provisionEngine.mockResolvedValue({ state: 'running' })
@@ -485,7 +622,9 @@ describe('PptxMakerPage', () => {
       ready: false,
       clone: true,
       venv: false,
-      pinnedTag: 'v0.3.8',
+      pinnedTag: 'v0.10.1',
+      installedTag: null,
+      updateRequired: false,
       provision: { state: 'running', log: 'resolving engine dependencies…', elapsed: 42 },
     })
     await renderPage()
@@ -566,21 +705,267 @@ describe('PptxMakerPage', () => {
     expect(screen.getByText('Style creator')).toBeTruthy()
   })
 
-  it('creates a chat session on the app agent when a mode is chosen', async () => {
+  it.each([
+    ['Spec mode', 'Interaction mode: dialogue'],
+    ['Vibe mode', 'Interaction mode: fast'],
+    ['Style creator', 'The user wants to create a reusable style. Call start_style() first.'],
+  ])('opens the studio chat with %s context without leaving the page', async (label, context) => {
     const { api } = await import('../api/client')
     await renderPage()
-    await userEvent.click(await screen.findByText('Spec mode'))
-    await waitFor(() =>
-      // The DECLARED agent name: dispatch resolves the value against each
-      // registered config's `name` field (`_scan_materialized_agents`), not the
-      // `pptx-maker--pptx-maker-spec.json` filename stem the registrar writes.
-      // The stem (and the slash namespace form) match nothing in that set, and
-      // resolution falls back to the default agent instead of failing, so
-      // pinning a wrong spelling here would let a silently agent-less chat pass.
-      expect(api.createChatSlot).toHaveBeenCalledWith(
-        undefined, 'pptx-maker-spec', undefined, undefined, 'persistent',
-      ),
+    await userEvent.click(await screen.findByText(label))
+    const pane = await screen.findByTestId('studio-chat-pane')
+    expect(pane.getAttribute('data-slot')).toBe('pptx-1')
+    expect(navigateSpy).not.toHaveBeenCalled()
+    expect(api.createChatSlot).toHaveBeenCalledWith(
+      undefined, 'pptx-maker', undefined, undefined, 'persistent',
     )
+    expect(api.chatSlotContext).toHaveBeenCalledWith(
+      'pptx-1', context, { source: 'pptx-maker', ephemeral: true },
+    )
+  })
+
+  it('reports a lost mode context beside the studio chat instead of swallowing it', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.chatSlotContext).mockRejectedValueOnce(new Error('context unavailable'))
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    expect(await screen.findByTestId('studio-chat-pane')).toBeTruthy()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The chat opened without the selected mode. Tell the agent which mode you want in the chat.')
+    expect(alert.textContent).toContain('context unavailable')
+  })
+
+  it('explains the disabled start buttons when the engine status cannot be read', async () => {
+    mockApi.engine.mockRejectedValue(new Error('engine status unavailable'))
+    await renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain("Couldn't check the presentation engine.")
+    expect(alert.textContent).toContain('engine status unavailable')
+    const vibe = screen.getByText('Vibe mode').closest('button') as HTMLButtonElement
+    expect(vibe.disabled).toBe(true)
+  })
+
+  it('reports a status refetch failure while an earlier answer is still cached', async () => {
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: false,
+      pinnedTag: 'v0.10.4',
+      installedTag: null,
+      updateRequired: false,
+      provision: { state: 'idle', log: '', elapsed: 0 },
+    })
+    await renderPage()
+    expect(await screen.findByText(/is not installed yet/i)).toBeTruthy()
+    mockApi.engine.mockRejectedValue(new Error('engine status unavailable'))
+    await lastClient!.refetchQueries({ queryKey: ['pptx-maker', 'engine'] })
+    const notice = await screen.findByTestId('engine-status-error')
+    expect(notice.textContent).toContain('engine status unavailable')
+    // The cached banner is still there beside it.
+    expect(screen.getByText(/is not installed yet/i)).toBeTruthy()
+  })
+
+  it('reports an unreadable engine status in the studio layout too, without a hand-off', async () => {
+    localStorage.setItem('kc:pptx-maker:studio-chat', JSON.stringify({ slot: 'pptx-1', open: true }))
+    mockApi.engine.mockRejectedValue(new Error('engine status unavailable'))
+    await renderPage()
+    expect(screen.getByTestId('studio-chat-pane')).toBeTruthy()
+    const notice = await screen.findByTestId('engine-status-error')
+    expect(notice.textContent).toContain("Couldn't check the presentation engine.")
+    // The ChatPane beside it may hold a draft, so the notice does not navigate away.
+    expect(notice.textContent).not.toContain('Ask the agent')
+  })
+
+  it('keeps the deck preview beside the studio chat', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    // The decks card (list + viewer) stays mounted next to the chat.
+    expect(screen.getByLabelText('Search decks…')).toBeTruthy()
+    // The start card and stat row are hidden while the studio is open.
+    expect(screen.queryByText('Vibe mode')).toBeNull()
+  })
+
+  it('hands the studio chat to the full chat surface on request', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    await userEvent.click(screen.getByRole('button', { name: 'Open in full chat' }))
+    expect(navigateSpy).toHaveBeenCalledWith('/chat?sid=pptx-1')
+  })
+
+  it('comes back with the studio chat the user left open, from the first render', async () => {
+    const first = await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    // Leaving for another app or the main chat unmounts the page and drops ?chat=.
+    first.unmount()
+    const { api } = await import('../api/client')
+    vi.mocked(api.createChatSlot).mockClear()
+    await renderPage()
+    // Synchronously present: no decks-layout frame before the studio appears.
+    const pane = screen.getByTestId('studio-chat-pane')
+    expect(pane.getAttribute('data-slot')).toBe('pptx-1')
+    expect(screen.queryByText('Start a deck')).toBeNull()
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('forgets a remembered studio chat whose session is gone', async () => {
+    const first = await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    first.unmount()
+    const { api } = await import('../api/client')
+    vi.mocked(api.chatSlots).mockResolvedValue([])
+    await renderPage()
+    await waitFor(() => expect(screen.queryByTestId('studio-chat-pane')).toBeNull())
+    expect(localStorage.getItem('kc:pptx-maker:studio-chat')).toBeNull()
+  })
+
+  it('shows the way back at once even when the session list predates the chat', async () => {
+    const { api } = await import('../api/client')
+    // The list the page fetched first knows nothing of the chat about to start.
+    vi.mocked(api.chatSlots).mockResolvedValueOnce([])
+    localStorage.setItem('kc:pptx-maker:studio-chat', JSON.stringify({ slot: 'older', open: false }))
+    await renderPage()
+    await waitFor(() => expect(api.chatSlots).toHaveBeenCalled())
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    await userEvent.click(screen.getByRole('button', { name: 'Close the chat' }))
+    // Not hidden behind the stale list while it refetches.
+    expect(screen.getByRole('button', { name: /^Reopen the chat/ })).toBeTruthy()
+  })
+
+  it('names the closed-chat entry as a chat in visible text', async () => {
+    localStorage.setItem('kc:pptx-maker:studio-chat', JSON.stringify({ slot: 'pptx-1', open: false, title: 'tei' }))
+    await renderPage()
+    const entry = screen.getByRole('button', { name: 'Reopen the chat “tei”' })
+    expect(entry.textContent).toContain('Reopen chat')
+    expect(entry.textContent).toContain('tei')
+  })
+
+  it('reports a failed lookup of the remembered chat instead of hiding it', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.chatSlots).mockRejectedValue(new Error('gateway unavailable'))
+    localStorage.setItem('kc:pptx-maker:studio-chat', JSON.stringify({ slot: 'pptx-1', open: false }))
+    await renderPage()
+    const notice = await screen.findByTestId('studio-chat-lookup-error')
+    expect(notice.textContent).toContain("Couldn't check the deck chat you closed.")
+    // The entry still offers the chat back from memory.
+    expect(screen.getByRole('button', { name: /^Reopen the chat/ })).toBeTruthy()
+  })
+
+  it('offers a closed studio chat back, by name, from the decks card', async () => {
+    const first = await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    await userEvent.click(screen.getByRole('button', { name: 'Close the chat' }))
+    await waitFor(() => expect(screen.queryByTestId('studio-chat-pane')).toBeNull())
+    first.unmount()
+    const { api } = await import('../api/client')
+    vi.mocked(api.createChatSlot).mockClear()
+    // Hold the session list back: the entry must not wait for it.
+    vi.mocked(api.chatSlots).mockClear()
+    let releaseSlots: (slots: never[]) => void = () => {}
+    vi.mocked(api.chatSlots).mockImplementationOnce(() => new Promise((resolve) => { releaseSlots = resolve }))
+    await renderPage()
+    expect(screen.queryByTestId('studio-chat-pane')).toBeNull()
+    const resume = screen.getByRole('button', { name: 'Reopen the chat “AWS intro deck”' })
+    expect(resume.textContent).not.toContain('Working')
+    await waitFor(() => expect(api.chatSlots).toHaveBeenCalled())
+    releaseSlots([{ key: 'pptx-1', title: 'AWS intro deck', running: true, messages: 3 } as never])
+    // Re-queried: the entry moves into the deck list once the decks load.
+    const named = { name: 'Reopen the chat “AWS intro deck”' }
+    await waitFor(() => expect(screen.getByRole('button', named).textContent).toContain('Working'))
+    await userEvent.click(screen.getByRole('button', named))
+    const pane = await screen.findByTestId('studio-chat-pane')
+    expect(pane.getAttribute('data-slot')).toBe('pptx-1')
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('copies the deck path, the deck_id a new chat can name', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'More deck actions' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Copy deck path/ }))
+    expect(copyToClipboardMock).toHaveBeenCalledWith('/home/u/decks/20260101-demo')
+    expect(await screen.findByText('Copied')).toBeTruthy()
+  })
+
+  it('shows the deck path when the clipboard refuses the copy', async () => {
+    copyToClipboardMock.mockResolvedValue(false)
+    await renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'More deck actions' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Copy deck path/ }))
+    const notice = await screen.findByTestId('deck-viewer-copy-error')
+    expect(notice.textContent).toContain("Couldn't copy the deck path")
+    expect(notice.textContent).toContain('/home/u/decks/20260101-demo')
+  })
+
+  it('closes the studio chat back to the deck page', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    await userEvent.click(screen.getByRole('button', { name: 'Close the chat' }))
+    await waitFor(() => expect(screen.queryByTestId('studio-chat-pane')).toBeNull())
+    expect(await screen.findByText('Vibe mode')).toBeTruthy()
+  })
+
+  it('follows the deck the studio chat creates, once', async () => {
+    const older = deck({ deckId: '20260101-older', name: 'Older deck' })
+    const other = deck({ deckId: '20260102-other', name: 'Other deck' })
+    mockApi.decks.mockResolvedValue({ decks: [other, older] })
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    await screen.findByTestId('studio-chat-pane')
+    await userEvent.click(await screen.findByText('Older deck'))
+    await waitFor(() => expect(mockApi.deck).toHaveBeenLastCalledWith('20260101-older'))
+
+    // The chat creates its deck: the preview jumps to it without a click.
+    const created = deck({ deckId: '20260930-created', name: 'Created deck' })
+    mockApi.decks.mockResolvedValue({ decks: [created, other, older] })
+    await lastClient!.invalidateQueries({ queryKey: ['pptx-maker', 'decks'] })
+    await waitFor(() => expect(mockApi.deck).toHaveBeenLastCalledWith('20260930-created'))
+
+    // After that the user's own choice wins over later polls.
+    await userEvent.click(screen.getByText('Older deck'))
+    await waitFor(() => expect(mockApi.deck).toHaveBeenLastCalledWith('20260101-older'))
+    await lastClient!.invalidateQueries({ queryKey: ['pptx-maker', 'decks'] })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(mockApi.deck).toHaveBeenLastCalledWith('20260101-older')
+  })
+
+  it('does not start a chat while the agent is still unregistered', async () => {
+    const { api } = await import('../api/client')
+    mockApi.engine.mockResolvedValue({ ...READY_ENGINE, agentReady: false })
+    await renderPage()
+    expect(
+      await screen.findByText("Deck chat isn't ready yet. Finish setup to start a deck."),
+    ).toBeTruthy()
+    expect(screen.getByText('Finish setup')).toBeTruthy()
+    const vibe = screen.getByText('Vibe mode').closest('button') as HTMLButtonElement
+    expect(vibe.disabled).toBe(true)
+    await userEvent.click(vibe)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('does not start a chat until the engine is installed', async () => {
+    const { api } = await import('../api/client')
+    mockApi.engine.mockResolvedValue({
+      ...READY_ENGINE,
+      ready: false,
+      clone: false,
+      venv: false,
+      installedTag: null,
+      provision: { state: 'idle', log: '', elapsed: 0 },
+    })
+    await renderPage()
+    expect(
+      await screen.findByText('Install the presentation engine above to start a deck.'),
+    ).toBeTruthy()
+    const vibe = screen.getByText('Vibe mode').closest('button') as HTMLButtonElement
+    expect(vibe.disabled).toBe(true)
+    await userEvent.click(vibe)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
   })
 
   it('surfaces a visible error and does not navigate when the deck-start create fails', async () => {

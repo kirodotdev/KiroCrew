@@ -18,9 +18,9 @@ platform only writes ``app.json``/``installed.json`` into
 ``setup.onInstall`` script therefore has nothing to run (the lifecycle runner
 execs with that directory as its cwd), and manifest-declared ``agents``/``skills``
 paths resolve to files that do not exist. This module closes that gap for this
-app by staging its own resources into the install dir and then calling the
-platform's OWN registrar (``bridges.register_app``) rather than re-implementing
-agent symlinking or skill linking here.
+app by rendering its path-dependent agent config into the install dir. The
+route-level completion task owns platform registration after it returns to the
+event loop and acquires the app lifecycle lock.
 
 Provisioning is user-triggered (``POST /engine/provision``) and idempotent, so
 re-running it after an app update re-points the agents at the current engine.
@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +42,6 @@ from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, pa
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.env import resolve_uv as _shared_resolve_uv
-from kiro_crew.platform_compat import ensure_owner_rwx_dirs, rmtree_force
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -68,9 +66,8 @@ _UV_BASENAME = "uv"
 # Placeholders substituted into the shipped agent configs. The engine's absolute
 # location is only known at provision time (it lives under the data home), so the
 # configs ship as templates and are rendered here.
-PLACEHOLDER_ENGINE_ROOT = "{ENGINE_ROOT}"
 PLACEHOLDER_ENGINE_MCP_DIR = "{ENGINE_MCP_DIR}"
-PLACEHOLDER_APP_PROMPTS = "{APP_PROMPTS}"
+PLACEHOLDER_DECK_ROOT = "{DECK_ROOT}"
 #: ``uv`` is resolved for the SAME reason the engine paths are: it is a declared
 #: Python dependency, so it is always installed, but not necessarily on ``PATH``.
 #: A wheel install puts it in the venv's scripts dir and the gateway may run with a
@@ -80,7 +77,7 @@ PLACEHOLDER_APP_PROMPTS = "{APP_PROMPTS}"
 #: for this module's own subprocesses — the agent configs now get the same value.
 PLACEHOLDER_UV_BIN = "{UV_BIN}"
 #: ``PATH`` for the engine's MCP server, which is the process that actually shells
-#: out to ``pdftoppm``/``soffice`` by name (``skill/sdpm/api.py``). kiro-cli spawns
+#: out to ``pdftoppm``/``soffice`` by name (``sdpm.api``). kiro-cli spawns
 #: that server from the rendered agent config, so this is the ONLY place the app can
 #: put its managed tool dir where those lookups will see it — an overlay applied to
 #: a gateway subprocess reaches a different child entirely.
@@ -88,7 +85,6 @@ PLACEHOLDER_TOOLS_PATH = "{TOOLS_PATH}"
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _AGENTS_SUBDIR = "agents"
-_PROMPTS_SUBDIR = "prompts"
 
 # Max captured log characters handed back to the UI.
 LOG_TAIL_CHARS = 4000
@@ -258,7 +254,7 @@ def _ensure_engine(engine_root: Path, log: list[str], uv_bin: str) -> bool:
     # the staging directory, which the swap then renames and deletes. So every `sdpm`
     # import failed with ModuleNotFoundError while provisioning reported success —
     # reproduced against real `uv`, where the `.pth` held
-    # `/private/tmp/.../staged/skill/src` after the tree had moved to `.../engine`.
+    # `/private/tmp/.../staged/sdpm` after the tree had moved to `.../engine`.
     #
     # It is a `finalize` hook rather than a call after `install_engine` returns because
     # the swap deletes the retired tree as soon as the new one is in place — relinking
@@ -275,10 +271,6 @@ def _ensure_engine(engine_root: Path, log: list[str], uv_bin: str) -> bool:
         validate=lambda staged: _ensure_venv(staged, log, uv_bin),
         finalize=lambda final: _relink_editable_skill(final, log, uv_bin),
     )
-
-
-class _Disabled(Exception):
-    """The app was disabled mid-provision, so registration is skipped."""
 
 
 def _venv_ready(engine_root: Path) -> bool:
@@ -301,13 +293,13 @@ def _ensure_venv(engine_root: Path, log: list[str], uv_bin: str) -> bool:
     the venv's scripts dir (it does not under an installed launchd/systemd
     service, and there is no scripts dir at all in the frozen DMG bundle).
     """
-    mcp_dir = engine_root / "mcp-local"
-    if not mcp_dir.is_dir():
-        log.append("the engine checkout has no mcp-local directory")
+    mcp_dir = paths.engine_mcp_dir_for(engine_root)
+    if not (mcp_dir / "server_acp.py").is_file():
+        log.append("the engine checkout has no servers/local/server_acp.py")
         return False
     log.append("resolving engine dependencies…")
     code, out = _run(
-        [uv_bin, "sync", "--project", str(mcp_dir)],
+        [uv_bin, "sync", "--frozen", "--directory", str(mcp_dir)],
         cwd=str(engine_root),
         timeout=UV_SYNC_TIMEOUT,
     )
@@ -318,7 +310,7 @@ def _ensure_venv(engine_root: Path, log: list[str], uv_bin: str) -> bool:
 
 
 def _relink_editable_skill(engine_root: Path, log: list[str], uv_bin: str) -> bool:
-    """Install the engine's ``skill`` package EDITABLE against *engine_root*.
+    """Install the engine's ``sdpm`` distribution EDITABLE against *engine_root*.
 
     A normal install copies only the Python package into site-packages and drops its
     sibling data dirs (bundled templates and example styles), which the engine resolves
@@ -336,7 +328,7 @@ def _relink_editable_skill(engine_root: Path, log: list[str], uv_bin: str) -> bo
     is a local path install with no network.
     """
     python = paths.venv_python(engine_root)
-    log.append("installing the engine skill package…")
+    log.append("installing the SDPM package editable…")
     code, out = _run(
         [
             uv_bin,
@@ -345,13 +337,13 @@ def _relink_editable_skill(engine_root: Path, log: list[str], uv_bin: str) -> bo
             "--python",
             str(python),
             "--editable",
-            str(engine_root / "skill"),
+            str(paths.engine_sdpm_dir_for(engine_root)),
         ],
         cwd=str(engine_root),
         timeout=UV_INSTALL_TIMEOUT,
     )
     if code != 0:
-        log.append(f"skill package install failed: {out}")
+        log.append(f"SDPM package install failed: {out}")
         return False
     return True
 
@@ -391,7 +383,6 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
         return 0
     target_dir = install_dir / _AGENTS_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    engine_root = paths.engine_root()
     # Falls back to the bare name only when uv is genuinely absent, which
     # `provision` already reports as a hard failure — so this keeps the config
     # parseable for that error path rather than silently writing "None".
@@ -402,13 +393,9 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
             rendered = (
                 template.read_text(encoding="utf-8")
                 .replace(PLACEHOLDER_ENGINE_MCP_DIR, _json_escape(str(paths.engine_mcp_dir())))
-                .replace(PLACEHOLDER_ENGINE_ROOT, _json_escape(str(engine_root)))
                 .replace(PLACEHOLDER_UV_BIN, _json_escape(uv_bin))
                 .replace(PLACEHOLDER_TOOLS_PATH, _json_escape(mcp_tools_path()))
-                .replace(
-                    PLACEHOLDER_APP_PROMPTS,
-                    _json_escape(str(install_dir / _PROMPTS_SUBDIR)),
-                )
+                .replace(PLACEHOLDER_DECK_ROOT, _json_escape(str(paths.deck_root())))
             )
             # Parse before writing: a malformed agent config is silently ignored
             # by kiro-cli, which would surface as "the mode is missing" with no
@@ -419,42 +406,6 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
         except (OSError, ValueError) as exc:
             log.append(f"agent {template.name} could not be written: {exc}")
     return written
-
-
-def _copy_tree(source: Path, target: Path) -> None:
-    """Replace the staged copy, repairing modes inherited from packaged sources."""
-    if target.exists():
-        # POSIX unlink needs writable parent directories; forced removal also
-        # clears the entry read-only attributes Windows checks.
-        ensure_owner_rwx_dirs(target)
-        if not rmtree_force(target):
-            raise OSError(f"could not remove the staged copy at {target}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, symlinks=False)
-    ensure_owner_rwx_dirs(target)
-
-
-def _stage_static(install_dir: Path, log: list[str]) -> None:
-    """Copy the app's prompt files into the install dir.
-
-    Copied rather than symlinked because the package directory is read-only on a
-    wheel install, and the rendered agent configs point at the install-dir copy.
-
-    The SKILL is deliberately NOT staged here: it lives in
-    ``src/kiro_crew/builtin_skills/pptx-maker/``, which the gateway copies into
-    the user's skills dir on every start, so it reaches every ``pip``/DMG install
-    without depending on this app being provisioned (the skill-bundling rule in
-    ``AGENTS.md``). Staging a second copy under the install dir and declaring it
-    in the manifest would register the same skill twice.
-    """
-    for subdir in (_PROMPTS_SUBDIR,):
-        source = _PACKAGE_ROOT / subdir
-        if not source.is_dir():
-            continue
-        try:
-            _copy_tree(source, install_dir / subdir)
-        except OSError as exc:
-            log.append(f"{subdir} could not be staged: {exc}")
 
 
 def _seed_deck_root(log: list[str]) -> None:
@@ -486,52 +437,8 @@ def _seed_deck_root(log: list[str]) -> None:
         log.append(f"deck output directory could not be set: {exc}")
 
 
-def _register_resources(log: list[str]) -> None:
-    """Register this app's agents and skill through the platform registrar.
-
-    Extracted from :func:`provision` so the mid-provision disable check has a
-    seam a test can drive — the enable is what decides whether these resources
-    should exist at all, so it is worth pinning directly.
-    """
-    # Hand off to the platform's own registrar so the agents land in
-    # ~/.kiro/agents and the skill in the skills tree through exactly the same
-    # path an installed app uses — no bespoke symlinking in this app.
-    try:
-        # circular import: bridges imports the app manager, which imports the
-        # builtins package that owns this module.
-        from kiro_crew.apps.bridges import register_app
-        from kiro_crew.apps.manager import is_app_enabled
-
-        # Re-check the enable IMMEDIATELY before registering. Provisioning is a
-        # detached background job that runs for minutes, so the operator can disable
-        # the app while it works — and registration recreates the agent symlinks and
-        # the skill entry that disabling had just removed, leaving a disabled app
-        # with live resources.
-        #
-        # A re-check rather than holding `app_lifecycle_lock`: that is an
-        # asyncio.Lock and this function is synchronous on a worker thread, so it
-        # cannot be taken here. This narrows the window to the gap between the check
-        # and the registration instead of closing it — the honest description of what
-        # this buys. It cannot LEAK, because disable is what removes the resources
-        # and a disable that lands after this point removes them again; the case it
-        # fixes is the common one, where the disable already completed.
-        if not is_app_enabled(paths.APP_NAME):
-            log.append("app was disabled during provisioning — resources not registered")
-            raise _Disabled
-
-        result = register_app(paths.APP_NAME)
-        log.append(f"registered {len(result.agents)} agent(s) and {len(result.skills)} skill(s)")
-        for err in result.errors:
-            log.append(f"registration warning: {err}")
-    except _Disabled:
-        logger.info("pptx-maker: skipped registration — the app was disabled")
-    except Exception as exc:  # noqa: BLE001 - provisioning must report, not raise
-        logger.warning("pptx-maker: resource registration failed: %s", exc)
-        log.append(f"resource registration failed: {exc}")
-
-
 def provision() -> ProvisionOutcome:
-    """Provision the engine and register this app's agents and skill.
+    """Provision the engine and render this app's path-dependent agent config.
 
     Idempotent. Safe to re-run: the engine tree is re-fetched only if it does not
     already match the pin, the venv is re-resolved, and the agent configs are
@@ -593,30 +500,14 @@ def provision() -> ProvisionOutcome:
     except Exception as exc:  # noqa: BLE001 - provisioning must report, not raise
         log.append(f"pdftoppm setup skipped: {exc}")
 
-    _stage_static(install_dir, log)
     written = _render_agents(install_dir, log)
     log.append(f"{written} agent config(s) written")
 
-    # Registration is deliberately NOT done here.
-    #
-    # The enable path and the boot reconcile both call `bridges.register_app`, and
-    # `bridges._placeholder_values` computes this app's `{UV_BIN}` / `{ENGINE_ROOT}` /
-    # `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from the data home and the
-    # installed package — the same values this provisioner resolves. So the agents and
-    # skill land without provisioning registering anything, and this call was redundant.
-    #
-    # It was also a race we could only narrow, never close. Provisioning is a detached
-    # job that runs for minutes, so an operator can disable the app while it works;
-    # `_register_resources` re-checks the enable immediately before registering, but the
-    # check cannot be atomic (the lifecycle lock is an `asyncio.Lock` and this runs
-    # synchronously on a worker thread). A disable that deregisters and *then* sets
-    # `enabled=false` is observed as still-enabled, and registration recreates the agent
-    # and MCP configs the disable had just removed — leaving a DISABLED app with live,
-    # callable resources. Not registering here removes the window entirely, which is
-    # strictly better than shrinking it.
-    #
-    # `_register_resources` itself is kept: it is the seam the mid-provision disable
-    # check is pinned by, and a caller that must register mid-provision would use it.
+    # Registration is deliberately NOT done on this worker thread. The route-level
+    # completion task returns to the event loop, takes the app lifecycle lock, and
+    # re-checks enablement before calling the platform registrar. That makes disable
+    # and post-provision registration mutually exclusive instead of narrowing a race
+    # with a lock-free worker-side check.
 
     _seed_deck_root(log)
 

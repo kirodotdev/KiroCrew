@@ -243,6 +243,17 @@ export const CHUNK_BUDGETS = {
   // so ordinary first-party growth does not re-trip this on the next PR.
   App: 2094 * KB, // measured 2,041,857 B on main @ 2d4278a18 with route-only pages lazy (~5% headroom)
 
+  // The native chat pane, split OUT of `App` rather than added: once the
+  // PPTX Maker studio embeds `ChatPane` beside its deck viewer (a second lazily
+  // routed importer next to the chat shell), the bundler hoists the module into
+  // its own shared chunk. Measured with `vite build --mode analyze` on main @
+  // 3f960a1c6 vs the same tree plus #15394, each with its own `npm ci`: `App`
+  // 2,015,935 B -> 1,508,959 B (-506,976 B) and a new `ChatPane` chunk of
+  // 515,068 B (503.0 KB, as CI measured), so the two together grow by 8,092 B
+  // and nothing is downloaded twice; the chat route loads both chunks.
+  // ~5% headroom over the chunk.
+  ChatPane: 528 * KB, // measured 515,068 B on main @ 3f960a1c6 + #15394 (moved out of App)
+
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
   'vendor-markdown': 712 * KB, // measured 678 KB
