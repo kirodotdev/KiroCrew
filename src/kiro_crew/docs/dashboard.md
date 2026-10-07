@@ -32,6 +32,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Resume**: click a history item to restore the full conversation.
 - **Notifications**: click a notification to view it in the main pane.
 - **Auto-titles**: sessions get auto-generated titles after a few turns.
+- **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only the **Auto-title** button replaces it.
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
