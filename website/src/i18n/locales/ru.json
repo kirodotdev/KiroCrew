@@ -12250,7 +12250,21 @@
       "close_blocked_many": "Нельзя закрыть: {{count}} сессий ещё работают",
       "close_blocked_short_many": "Нельзя закрыть: {{count}} работают",
       "close_blocked_other": "Нельзя закрыть: {{count}} сессии ещё работают",
-      "close_blocked_short_other": "Нельзя закрыть: {{count}} работают"
+      "close_blocked_short_other": "Нельзя закрыть: {{count}} работают",
+      "folder_closed_show_one": "Показать {{count}} закрытую сессию",
+      "folder_closed_show_few": "Показать {{count}} закрытые сессии",
+      "folder_closed_show_many": "Показать {{count}} закрытых сессий",
+      "folder_closed_show_other": "Показать {{count}} закрытой сессии",
+      "folder_closed_hide_one": "Скрыть {{count}} закрытую сессию",
+      "folder_closed_hide_few": "Скрыть {{count}} закрытые сессии",
+      "folder_closed_hide_many": "Скрыть {{count}} закрытых сессий",
+      "folder_closed_hide_other": "Скрыть {{count}} закрытой сессии",
+      "folder_closed_hint": "Сессии, которые ты закрыл в папке {{name}}. Нажми на сессию, чтобы снова её открыть.",
+      "folder_closed_load_failed": "Не удалось загрузить закрытые сессии.",
+      "folder_closed_loading": "Загрузка закрытых сессий…",
+      "folder_closed_more": "Все — в разделе «Более старые сессии»",
+      "folder_closed_none": "В этой папке нет закрытых сессий",
+      "folder_closed_reopen": "Снова открыть {{title}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

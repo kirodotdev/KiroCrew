@@ -12049,7 +12049,19 @@
       "close_blocked_many": "Impossible de fermer : {{count}} sessions sont encore en cours",
       "close_blocked_short_many": "Impossible de fermer : {{count}} en cours",
       "close_blocked_other": "Impossible de fermer : {{count}} sessions sont encore en cours",
-      "close_blocked_short_other": "Impossible de fermer : {{count}} en cours"
+      "close_blocked_short_other": "Impossible de fermer : {{count}} en cours",
+      "folder_closed_show_one": "Afficher {{count}} session fermée",
+      "folder_closed_show_many": "Afficher {{count}} sessions fermées",
+      "folder_closed_show_other": "Afficher {{count}} sessions fermées",
+      "folder_closed_hide_one": "Masquer {{count}} session fermée",
+      "folder_closed_hide_many": "Masquer {{count}} sessions fermées",
+      "folder_closed_hide_other": "Masquer {{count}} sessions fermées",
+      "folder_closed_hint": "Sessions que tu as fermées dans {{name}}. Clique sur l’une d’elles pour la rouvrir.",
+      "folder_closed_load_failed": "Impossible de charger les sessions fermées.",
+      "folder_closed_loading": "Chargement des sessions fermées…",
+      "folder_closed_more": "Tout voir dans Sessions plus anciennes",
+      "folder_closed_none": "Aucune session fermée dans ce dossier",
+      "folder_closed_reopen": "Rouvrir {{title}}"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

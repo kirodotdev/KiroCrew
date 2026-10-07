@@ -73,7 +73,9 @@ export function createSessionsEndpoints({ get, post, del, j }: ClientTransport) 
     // have no title and so render their own storage key as one. NOT `taskrunner_`: that
     // namespace also holds real conversations, so the server keeps it listed.
     // Both off by default: every other caller wants the full inventory.
-    sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '')).then(j),
+    // `folderId` keeps only sessions filed directly in that folder — for the
+    // sidebar's per-folder "Show archived" row.
+    sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false, folderId?: string) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '') + (folderId ? '&folder_id=' + encodeURIComponent(folderId) : '')).then(j),
     sessionsSearch: (q: string, limit = 50) => fetch('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
   }
 

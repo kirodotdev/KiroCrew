@@ -6832,7 +6832,17 @@
       "include_top_level_folders": "Include top-level folders",
       "no_empty_folders": "No empty folders to delete.",
       "some_folders_kept": "Some folders were kept: they are no longer empty.",
-      "deleting_folders": "Deleting…"
+      "deleting_folders": "Deleting…",
+      "folder_closed_show_one": "Show {{count}} closed session",
+      "folder_closed_show_other": "Show {{count}} closed sessions",
+      "folder_closed_hide_one": "Hide {{count}} closed session",
+      "folder_closed_hide_other": "Hide {{count}} closed sessions",
+      "folder_closed_hint": "Sessions you closed in {{name}}. Click one to reopen it.",
+      "folder_closed_load_failed": "Couldn't load closed sessions.",
+      "folder_closed_loading": "Loading closed sessions…",
+      "folder_closed_more": "Show all in Older Sessions",
+      "folder_closed_none": "No closed sessions in this folder",
+      "folder_closed_reopen": "Reopen {{title}}"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

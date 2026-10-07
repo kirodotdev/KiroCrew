@@ -11647,7 +11647,15 @@
       "close_all_other": "모두 닫기({{count}})",
       "close_session_tree_hint_other": "이 세션과 그 아래 {{count}}개. 실행 취소하거나 이전 세션에서 다시 열 수 있습니다.",
       "close_blocked_other": "닫을 수 없음: {{count}}개 세션이 아직 실행 중입니다",
-      "close_blocked_short_other": "닫을 수 없음: {{count}}개 실행 중"
+      "close_blocked_short_other": "닫을 수 없음: {{count}}개 실행 중",
+      "folder_closed_show_other": "닫은 세션 {{count}}개 보기",
+      "folder_closed_hide_other": "닫은 세션 {{count}}개 숨기기",
+      "folder_closed_hint": "{{name}}에서 닫은 세션입니다. 클릭하면 다시 열립니다.",
+      "folder_closed_load_failed": "닫은 세션을 불러오지 못했습니다.",
+      "folder_closed_loading": "닫은 세션을 불러오는 중…",
+      "folder_closed_more": "이전 세션에서 모두 보기",
+      "folder_closed_none": "이 폴더에 닫은 세션이 없습니다",
+      "folder_closed_reopen": "{{title}} 다시 열기"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

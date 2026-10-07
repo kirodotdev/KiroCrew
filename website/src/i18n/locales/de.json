@@ -11848,7 +11848,17 @@
       "close_blocked_one": "Schließen nicht möglich: {{count}} Sitzung läuft noch",
       "close_blocked_short_one": "Schließen nicht möglich: {{count}} läuft",
       "close_blocked_other": "Schließen nicht möglich: {{count}} Sitzungen laufen noch",
-      "close_blocked_short_other": "Schließen nicht möglich: {{count}} laufen"
+      "close_blocked_short_other": "Schließen nicht möglich: {{count}} laufen",
+      "folder_closed_show_one": "{{count}} geschlossene Sitzung anzeigen",
+      "folder_closed_show_other": "{{count}} geschlossene Sitzungen anzeigen",
+      "folder_closed_hide_one": "{{count}} geschlossene Sitzung ausblenden",
+      "folder_closed_hide_other": "{{count}} geschlossene Sitzungen ausblenden",
+      "folder_closed_hint": "Sitzungen, die du in {{name}} geschlossen hast. Klick auf eine, um sie wieder zu öffnen.",
+      "folder_closed_load_failed": "Geschlossene Sitzungen konnten nicht geladen werden.",
+      "folder_closed_loading": "Geschlossene Sitzungen werden geladen…",
+      "folder_closed_more": "Alle unter „Ältere Sitzungen“ anzeigen",
+      "folder_closed_none": "Keine geschlossenen Sitzungen in diesem Ordner",
+      "folder_closed_reopen": "{{title}} wieder öffnen"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

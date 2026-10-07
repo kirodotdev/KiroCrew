@@ -423,3 +423,112 @@ async def test_user_only_drops_a_never_used_session(tmp_path) -> None:
 
     full = await _call(_real_request(log, {}))
     assert "dashboard_chat-3-1790874654" in _keys(full), "the full inventory must still list it"
+
+
+# ── folder_id: the sidebar's per-folder "Show archived" row ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_folder_id_keeps_only_sessions_filed_in_that_folder() -> None:
+    sessions = [
+        {"key": "dashboard_chat-1", "folder_id": "f-a"},
+        {"key": "dashboard_chat-2", "folder_id": "f-b"},
+        {"key": "dashboard_chat-3"},
+        {"key": "dashboard_chat-4", "folder_id": "f-a"},
+    ]
+    request = _make_request(sessions, query={"folder_id": "f-a"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1", "dashboard_chat-4"]
+    # Counted after the filter, so paging describes the folder's own list.
+    assert body["total"] == 2
+    assert body["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_folder_id_composes_with_exclude_open() -> None:
+    """The archived row lists the folder's CLOSED sessions, not its open tabs."""
+    sessions = [
+        {"key": "dashboard_chat-1", "folder_id": "f-a"},
+        {"key": "dashboard_chat-2", "folder_id": "f-a"},
+        {"key": "dashboard_chat-3", "folder_id": "f-b"},
+    ]
+    request = _make_request(
+        sessions,
+        slots={"chat-1": _FakeSlot("chat-1")},
+        query={"folder_id": "f-a", "exclude_open": "1"},
+    )
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-2"]
+
+
+@pytest.mark.asyncio
+async def test_blank_folder_id_is_no_filter() -> None:
+    sessions = [{"key": "dashboard_chat-1", "folder_id": "f-a"}, {"key": "dashboard_chat-2"}]
+    request = _make_request(sessions, query={"folder_id": "  "})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1", "dashboard_chat-2"]
+
+
+# ── folder_closed_counts: the number that offers and labels that row ───────
+
+
+def _archived_fixture() -> tuple[web.Request, list[dict]]:
+    sessions = [
+        # f-a: one open tab, one closed titled, one closed blank, one machine.
+        {"key": "dashboard_chat-1", "title": "open one", "folder_id": "f-a"},
+        {"key": "dashboard_chat-2", "title": "closed one", "folder_id": "f-a"},
+        {"key": "dashboard_chat-3", "title": "dashboard_chat-3", "folder_id": "f-a"},
+        {"key": "subagent_x1", "title": "subagent_x1", "folder_id": "f-a"},
+        # f-b: only an open tab.
+        {"key": "dashboard_chat-4", "title": "open two", "folder_id": "f-b"},
+        {"key": "dashboard_chat-5", "title": "unfiled"},
+    ]
+    request = _make_request(
+        sessions,
+        slots={"chat-1": _FakeSlot("chat-1"), "chat-4": _FakeSlot("chat-4")},
+    )
+    state = request.app["state"]
+    state.conversation_log.has_messages.side_effect = lambda key: False
+    return request, sessions
+
+
+def test_folder_closed_counts_counts_only_what_the_row_would_list() -> None:
+    from kiro_crew.dashboard.handlers.sessions import folder_closed_counts
+
+    request, sessions = _archived_fixture()
+
+    assert folder_closed_counts(request.app["state"], sessions) == {"f-a": 1}
+
+
+@pytest.mark.asyncio
+async def test_folder_closed_count_equals_the_listed_rows() -> None:
+    """The gate and the list share predicates, so they cannot disagree."""
+    from kiro_crew.dashboard.handlers.sessions import folder_closed_counts
+
+    request, sessions = _archived_fixture()
+    counts = folder_closed_counts(request.app["state"], sessions)
+    for fid in ("f-a", "f-b"):
+        request.query = {"folder_id": fid, "exclude_open": "1", "user_only": "1"}
+        body = await _call(request)
+        assert body["total"] == counts.get(fid, 0), fid
+
+
+def test_folders_list_walks_the_session_store_once() -> None:
+    """``history_count`` and ``closed_count`` share one ``list_sessions()`` pass."""
+    from kiro_crew.dashboard import chat_folders
+
+    request, _ = _archived_fixture()
+    state = request.app["state"]
+    state._folders = [{"id": "f-a", "name": "A"}, {"id": "f-b", "name": "B"}]
+
+    rows = {f["id"]: f for f in chat_folders._folders_with_history_counts(state)}
+
+    assert state.conversation_log.list_sessions.call_count == 1
+    assert (rows["f-a"]["history_count"], rows["f-a"]["closed_count"]) == (4, 1)
+    assert (rows["f-b"]["history_count"], rows["f-b"]["closed_count"]) == (1, 0)

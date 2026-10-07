@@ -11647,7 +11647,15 @@
       "close_all_other": "すべて閉じる（{{count}}）",
       "close_session_tree_hint_other": "このセッションとその下の {{count}} 件。元に戻すか、以前のセッションから再び開けます。",
       "close_blocked_other": "閉じられません：{{count}} 件のセッションがまだ実行中です",
-      "close_blocked_short_other": "閉じられません：{{count}} 件実行中"
+      "close_blocked_short_other": "閉じられません：{{count}} 件実行中",
+      "folder_closed_show_other": "終了したセッション {{count}} 件を表示",
+      "folder_closed_hide_other": "終了したセッション {{count}} 件を非表示",
+      "folder_closed_hint": "{{name}} で終了したセッションです。クリックすると再び開きます。",
+      "folder_closed_load_failed": "終了したセッションを読み込めませんでした。",
+      "folder_closed_loading": "終了したセッションを読み込み中…",
+      "folder_closed_more": "「以前のセッション」ですべて表示",
+      "folder_closed_none": "このフォルダーに終了したセッションはありません",
+      "folder_closed_reopen": "{{title}} を再び開く"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

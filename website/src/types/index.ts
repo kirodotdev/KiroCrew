@@ -1396,6 +1396,9 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Closed, user-facing sessions filed directly here: what the sidebar's
+   *  per-folder closed-sessions row lists. Computed by GET /api/chat/folders. */
+  closed_count?: number
   /** Epoch seconds the folder was created, written by every folder creator since
    *  the sidebar's `created` sort existed. Absent on a row from before that; such
    *  a row sorts as older than every stamped one. Read only through

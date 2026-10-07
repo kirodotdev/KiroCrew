@@ -192,22 +192,23 @@ function renderSidebar(opts: { slots?: TestSlot[]; folders?: ChatFolder[] } = {}
   })
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], [])
-  const view = render(
+  const tree = (rows: TestSlot[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={slots as never} activeSlot={null} unreadSlots={[]}
+              slots={rows as never} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false}
               defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
             />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
-  return { ...view, store, qc }
+  const view = render(tree(slots))
+  return { ...view, store, qc, rerenderSlots: (rows: TestSlot[]) => view.rerender(tree(rows)) }
 }
 
 /**
@@ -398,6 +399,55 @@ describe('ChatSidebar — list-view folder header', () => {
     renderSidebar({ slots: [FILED], folders: [{ ...ALPHA, history_count: 2 }] })
     openFolderMenu('f1')
     expect(screen.queryByTestId('folder-hide-f1')).toBeNull()
+  })
+
+  // Closed sessions filed in a folder are reachable from that folder. The row
+  // is offered by `closed_count` (closed, user-facing sessions only), never
+  // by `history_count`, which also counts open and blank tabs.
+  it('offers the closed-sessions row by closed_count alone', async () => {
+    mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
+    const { unmount } = renderSidebar({ slots: [FILED], folders: [{ ...ALPHA, history_count: 3, closed_count: 0 }] })
+    await screen.findByText('filed chat')
+    expect(screen.queryByTestId('folder-closed-toggle-f1')).toBeNull()
+    unmount()
+
+    renderSidebar({ slots: [FILED], folders: [{ ...ALPHA, history_count: 1, closed_count: 2 }] })
+    // Synchronously, as openFolderMenu does: the mount-time effects re-mount the
+    // tree's rows once more, so a node found later can already be detached.
+    const toggle = screen.getByTestId('folder-closed-toggle-f1')
+    expect(toggle.textContent).toBe('Show 2 closed sessions')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(mocks.sessions).toHaveBeenCalledWith(50, 0, false, true, true, 'f1'))
+    // Open survives the sidebar's re-renders: the tree re-creates folder body
+    // nodes every render, so state held inside the row would snap back shut.
+    await screen.findByText('No closed sessions in this folder')
+    expect(screen.getByTestId('folder-closed-toggle-f1').getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('keeps the empty folder\'s new-chat affordance beside the closed-sessions row', async () => {
+    renderSidebar({ slots: [LOOSE], folders: [{ ...ALPHA, history_count: 2, closed_count: 2 }] })
+    expect(await screen.findByTestId('folder-closed-toggle-f1')).toBeTruthy()
+    expect(screen.getByTestId('folder-empty-new-chat-f1')).toBeTruthy()
+  })
+
+  it('keeps the closed-sessions row reachable when empty folder bodies are hidden', async () => {
+    cfg.value = { ...cfg.value, hideEmptyFolderBody: true }
+    try {
+      renderSidebar({ slots: [LOOSE], folders: [{ ...ALPHA, history_count: 2, closed_count: 2 }, BETA] })
+      expect(await screen.findByTestId('folder-closed-toggle-f1')).toBeTruthy()
+      // The setting still drops the body of a folder with nothing at all in it.
+      expect(screen.queryByTestId('folder-empty-new-chat-f2')).toBeNull()
+    } finally {
+      delete (cfg.value as Record<string, unknown>).hideEmptyFolderBody
+    }
+  })
+
+  it('refetches the folder counts when a filed tab closes', async () => {
+    const { qc, rerenderSlots } = renderSidebar({ slots: [FILED, LOOSE], folders: [ALPHA] })
+    await screen.findByText('filed chat')
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    rerenderSlots([LOOSE])
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ['chat-folders'] }))
   })
 
   it('deletes the folder only once the confirm is accepted', async () => {

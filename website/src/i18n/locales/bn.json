@@ -11848,7 +11848,17 @@
       "close_blocked_one": "বন্ধ করা যাবে না: {{count}}টি সেশন এখনও চলছে",
       "close_blocked_short_one": "বন্ধ করা যাবে না: {{count}}টি চলছে",
       "close_blocked_other": "বন্ধ করা যাবে না: {{count}}টি সেশন এখনও চলছে",
-      "close_blocked_short_other": "বন্ধ করা যাবে না: {{count}}টি চলছে"
+      "close_blocked_short_other": "বন্ধ করা যাবে না: {{count}}টি চলছে",
+      "folder_closed_show_one": "বন্ধ করা {{count}}টি সেশন দেখাও",
+      "folder_closed_show_other": "বন্ধ করা {{count}}টি সেশন দেখাও",
+      "folder_closed_hide_one": "বন্ধ করা {{count}}টি সেশন লুকাও",
+      "folder_closed_hide_other": "বন্ধ করা {{count}}টি সেশন লুকাও",
+      "folder_closed_hint": "{{name}}-এ তুমি যে সেশনগুলো বন্ধ করেছ। আবার খুলতে একটিতে ক্লিক করো।",
+      "folder_closed_load_failed": "বন্ধ করা সেশন লোড করা যায়নি।",
+      "folder_closed_loading": "বন্ধ করা সেশন লোড হচ্ছে…",
+      "folder_closed_more": "পুরোনো সেশনে সব দেখাও",
+      "folder_closed_none": "এই ফোল্ডারে কোনো বন্ধ করা সেশন নেই",
+      "folder_closed_reopen": "{{title}} আবার খোলো"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

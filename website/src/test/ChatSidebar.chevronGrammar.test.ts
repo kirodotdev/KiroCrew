@@ -63,14 +63,15 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
     expect(decl).not.toMatch(/style=\{\{/)
   })
 
-  it('all seven disclosure sites render DisclosureChevron', () => {
+  it('all eight disclosure sites render DisclosureChevron', () => {
     const uses = [flat, ...owners.map(([, text]) => text)].flatMap(text => [...text.matchAll(/<DisclosureChevron\b/g)])
     // Older Sessions header, history group headers, hidden-folders reveal,
     // folders filter row, per-container stale-session expander, and the
     // conductor lane's expander on a card that opened other sessions, and the
-    // per-crew group header. Adding an eighth disclosure is fine — bump this count in the same commit so the
+    // per-crew group header, and each folder's closed-sessions row. Adding a
+    // ninth disclosure is fine — bump this count in the same commit so the
     // addition is a decision, not drift.
-    expect(uses).toHaveLength(7)
+    expect(uses).toHaveLength(8)
   })
 
   it('no second rotation grammar appears beside the component', () => {

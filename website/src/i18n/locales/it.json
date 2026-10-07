@@ -12049,7 +12049,19 @@
       "close_blocked_many": "Impossibile chiudere: {{count}} sessioni sono ancora in esecuzione",
       "close_blocked_short_many": "Impossibile chiudere: {{count}} in esecuzione",
       "close_blocked_other": "Impossibile chiudere: {{count}} sessioni sono ancora in esecuzione",
-      "close_blocked_short_other": "Impossibile chiudere: {{count}} in esecuzione"
+      "close_blocked_short_other": "Impossibile chiudere: {{count}} in esecuzione",
+      "folder_closed_show_one": "Mostra {{count}} sessione chiusa",
+      "folder_closed_show_many": "Mostra {{count}} sessioni chiuse",
+      "folder_closed_show_other": "Mostra {{count}} sessioni chiuse",
+      "folder_closed_hide_one": "Nascondi {{count}} sessione chiusa",
+      "folder_closed_hide_many": "Nascondi {{count}} sessioni chiuse",
+      "folder_closed_hide_other": "Nascondi {{count}} sessioni chiuse",
+      "folder_closed_hint": "Sessioni che hai chiuso in {{name}}. Fai clic su una per riaprirla.",
+      "folder_closed_load_failed": "Impossibile caricare le sessioni chiuse.",
+      "folder_closed_loading": "Caricamento delle sessioni chiuse…",
+      "folder_closed_more": "Vedi tutte in Sessioni più vecchie",
+      "folder_closed_none": "Nessuna sessione chiusa in questa cartella",
+      "folder_closed_reopen": "Riapri {{title}}"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

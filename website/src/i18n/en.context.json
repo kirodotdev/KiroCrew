@@ -655,6 +655,16 @@
     "pages.chatSidebar.close_blocked_one": "Tooltip, accessible name and row-menu item of the X on a session-tree card when the close would be refused: exactly one session in the tree is still running. Singular form.",
     "pages.chatSidebar.close_blocked_other": "Tooltip, accessible name and row-menu item of the X on a session-tree card when the close would be refused: several sessions in the tree are still running. Plural form; {{count}} includes this card when it runs.",
     "pages.chatSidebar.close_blocked_short_one": "Short visible label beside the X on a session-tree card whose close would be refused, singular: one session still running. Keep it very short, it sits on a compact button.",
-    "pages.chatSidebar.close_blocked_short_other": "Short visible label beside the X on a session-tree card whose close would be refused, plural: {{count}} sessions still running. Keep it very short, it sits on a compact button."
+    "pages.chatSidebar.close_blocked_short_other": "Short visible label beside the X on a session-tree card whose close would be refused, plural: {{count}} sessions still running. Keep it very short, it sits on a compact button.",
+    "pages.chatSidebar.folder_closed_show_one": "Label of the collapsed row at the foot of a sidebar folder that lists the folder's CLOSED sessions in place. 'Closed' = a session closed as a tab (it also appears in the Older sessions pane), never deleted. Keep it distinct from the dormant-session expander (stale_collapse_*), which hides OPEN sessions. Width-constrained. Singular.",
+    "pages.chatSidebar.folder_closed_show_other": "Label of the collapsed row at the foot of a sidebar folder that lists the folder's CLOSED sessions in place. 'Closed' = a session closed as a tab (it also appears in the Older sessions pane), never deleted. Keep it distinct from the dormant-session expander (stale_collapse_*), which hides OPEN sessions. Width-constrained. Plural.",
+    "pages.chatSidebar.folder_closed_hide_one": "Label of the same row once open. Singular.",
+    "pages.chatSidebar.folder_closed_hide_other": "Label of the same row once open. Plural.",
+    "pages.chatSidebar.folder_closed_hint": "Tooltip on the folder's closed-sessions row. {{name}} is the folder's name.",
+    "pages.chatSidebar.folder_closed_load_failed": "Inline error under the folder's closed-sessions row when the list could not be fetched.",
+    "pages.chatSidebar.folder_closed_loading": "Inline placeholder under the folder's closed-sessions row while its list loads.",
+    "pages.chatSidebar.folder_closed_more": "Button under the folder's closed-sessions list when it holds more than one page; opens the Older sessions pane at the bottom of the sidebar, which lists every closed session. Name the pane exactly as its own header does (pages.chatSidebar.older_sessions_2).",
+    "pages.chatSidebar.folder_closed_none": "Shown under the opened closed-sessions row when the folder turns out to hold none.",
+    "pages.chatSidebar.folder_closed_reopen": "Tooltip on one closed session in a folder's closed-sessions list; clicking reopens it as a tab. {{title}} is the session's title."
   }
 }

@@ -11647,7 +11647,15 @@
       "close_all_other": "全部关闭（{{count}}）",
       "close_session_tree_hint_other": "此会话及其下的 {{count}} 个。可以撤销，或在较早的会话中重新打开。",
       "close_blocked_other": "无法关闭：{{count}} 个会话仍在运行",
-      "close_blocked_short_other": "无法关闭：{{count}} 个在运行"
+      "close_blocked_short_other": "无法关闭：{{count}} 个在运行",
+      "folder_closed_show_other": "显示 {{count}} 个已关闭的会话",
+      "folder_closed_hide_other": "隐藏 {{count}} 个已关闭的会话",
+      "folder_closed_hint": "你在 {{name}} 中关闭的会话。点击即可重新打开。",
+      "folder_closed_load_failed": "无法加载已关闭的会话。",
+      "folder_closed_loading": "正在加载已关闭的会话…",
+      "folder_closed_more": "在“较早的会话”中查看全部",
+      "folder_closed_none": "此文件夹中没有已关闭的会话",
+      "folder_closed_reopen": "重新打开 {{title}}"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

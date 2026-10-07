@@ -338,18 +338,21 @@ def _spawn_chat_folder_icon_task(
     task.add_done_callback(_cleanup)
 
 
-def _folder_history_counts(state: DashboardState) -> dict[str, int]:
+def _folder_history_counts(
+    state: DashboardState, sessions: list[dict] | None = None
+) -> dict[str, int]:
     """Count on-disk (history) sessions filed in each folder, keyed by folder_id.
 
     Authoritative per-folder archived-session count computed from the full
     session list, NOT the paginated client history window. The sidebar uses it
     to decide whether an empty folder can be hidden (it has an archived session
     that can revive it) or must be deleted instead (nothing could revive it).
+    Pass ``sessions`` to reuse a ``list_sessions()`` result the caller holds.
     """
     counts: dict[str, int] = {}
     if not state.conversation_log:
         return counts
-    for session in state.conversation_log.list_sessions():
+    for session in state.conversation_log.list_sessions() if sessions is None else sessions:
         fid = session.get("folder_id")
         if fid:
             counts[fid] = counts.get(fid, 0) + 1
@@ -357,9 +360,19 @@ def _folder_history_counts(state: DashboardState) -> dict[str, int]:
 
 
 def _folders_with_history_counts(state: DashboardState) -> list[dict]:
-    """Folders enriched with a computed, non-persisted `history_count` field."""
-    counts = _folder_history_counts(state)
-    return [{**f, "history_count": counts.get(f["id"], 0)} for f in state._folders]
+    """Folders enriched with computed, non-persisted `history_count` and
+    `closed_count` fields (see ``folder_closed_counts`` for the latter)."""
+    # Imported here: the handlers package imports this module.
+    from kiro_crew.dashboard.handlers.sessions import folder_closed_counts
+
+    # One listing serves both counts: each is a full walk of the session store.
+    sessions = state.conversation_log.list_sessions() if state.conversation_log else []
+    counts = _folder_history_counts(state, sessions)
+    closed = folder_closed_counts(state, sessions)
+    return [
+        {**f, "history_count": counts.get(f["id"], 0), "closed_count": closed.get(f["id"], 0)}
+        for f in state._folders
+    ]
 
 
 def note_folder_filed(state: DashboardState, folder_id: str) -> None:

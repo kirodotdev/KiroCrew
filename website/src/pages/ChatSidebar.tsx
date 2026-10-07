@@ -113,6 +113,7 @@ import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useFolderRename } from './chat-sidebar/rename'
 import { useSidebarLane, useLaneCycle, renderedLane } from './chat-sidebar/lanes'
 import { useHistoryPane } from './chat-sidebar/history'
+import { FolderClosedSection } from './chat-sidebar/FolderClosedSection'
 import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorder } from './chat-sidebar/pinnedOrder'
 import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './chat-sidebar/stale'
 import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
@@ -2784,6 +2785,27 @@ function ChatSidebar({
   } = useFolderVisibility({ folders, localSlots, filterHiddenFolders })
 
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
+  // Which folders' closed-sessions rows are open. Held here, not in the row:
+  // the tree re-creates folder body nodes every render, which would reset it.
+  const [closedOpen, setClosedOpen] = useState<ReadonlySet<string>>(() => new Set())
+  // Refetch the folder counts when a filed tab opens or closes. A folder's
+  // `closed_count` moves exactly then, and no folder-store write follows to
+  // trigger the generation refetch, so without this the closed-sessions row
+  // would keep the count it had at page load.
+  // Read off the slots themselves, not `slotFolders`: that map also moves when
+  // the folder list itself loads, and refetching then would answer a load with
+  // a second load.
+  const filedTabsSignature = useMemo(
+    () => localSlots.filter(s => s.folder_id).map(s => `${s.key}=${s.folder_id}`).sort().join('|'),
+    [localSlots],
+  )
+  const filedTabsSeen = useRef<string | null>(null)
+  useEffect(() => {
+    if (filedTabsSeen.current !== null && filedTabsSeen.current !== filedTabsSignature) {
+      void queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+    }
+    filedTabsSeen.current = filedTabsSignature
+  }, [filedTabsSignature, queryClient])
 
   const {
     searchRanked, folderNameMatchIds,
@@ -4037,6 +4059,26 @@ function ChatSidebar({
     }
     const staleSection = renderStaleSection(folder.id, staleChildSlots, depth + 1, folder.name)
     if (staleSection) childNodes.push(staleSection)
+    // Closed sessions filed here, behind a collapsed row at the foot of the body.
+    // Built apart from `childNodes` on purpose: every emptiness test
+    // below (the narrowed-empty drop, the opt-in empty-body hide, the header's
+    // count) is about what is OPEN in the folder, and must keep reading that.
+    // Not while the list is narrowed: a search or filter answers "which open
+    // rows match", which this unfiltered list does not.
+    const closedCount = folder.closed_count ?? 0
+    const closedNode = !listNarrowed && closedCount > 0 ? (
+      <FolderClosedSection key={`closed-${folder.id}`} folderId={folder.id} folderName={folder.name}
+        count={closedCount} open={closedOpen.has(folder.id)}
+        onToggle={() => setClosedOpen(prev => {
+          const next = new Set(prev)
+          if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id)
+          return next
+        })}
+        connected={connected}
+        onResume={({ key, title }) => { dispatch(resumeFromHistory({ key, title })) }}
+        onOpenOlderSessions={openHistoryPane}
+        renderChevron={open => <DisclosureChevron open={open} size={11} />} />
+    ) : null
     // Hide folders with no matching children while the list is narrowed —
     // unless this folder owns the active create-failure notice: a create fired
     // from the folder-picker menu can target a folder the narrow is hiding,
@@ -4060,11 +4102,14 @@ function ChatSidebar({
     // most of the sidebar's height on rows holding nothing. Dropping the body
     // rather than collapsing it is why there is no per-folder expansion state:
     // nothing is hidden, so nothing needs re-reaching.
-    const emptyBody = hideEmptyFolderBody && childNodes.length === 0
-    const wrapped = childNodes.length > 0 ? (
+    // A folder holding only closed sessions keeps a body for their row, or the
+    // row would be unreachable in exactly the case it exists for.
+    const emptyBody = hideEmptyFolderBody && childNodes.length === 0 && !closedNode
+    const wrapped = childNodes.length > 0 || (hideEmptyFolderBody && closedNode) ? (
       <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
         <FolderRail name={folder.name} id={folder.id} onToggle={() => toggleCollapse(folder.id)} />
         {childNodes}
+        {closedNode}
       </div>
     ) : emptyBody || listNarrowed ? null : (
       // Default: the empty-folder affordance stays exactly as it was. A newly
@@ -4085,6 +4130,7 @@ function ChatSidebar({
           className="w-full flex items-center gap-2.5 pl-2.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
+        {closedNode}
       </div>
     )
     // Outer container wraps header + body so the entire folder block is a

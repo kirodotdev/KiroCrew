@@ -11848,7 +11848,17 @@
       "close_blocked_one": "बंद नहीं कर सकते: {{count}} सत्र अभी भी चल रहा है",
       "close_blocked_short_one": "बंद नहीं कर सकते: {{count}} चल रहा है",
       "close_blocked_other": "बंद नहीं कर सकते: {{count}} सत्र अभी भी चल रहे हैं",
-      "close_blocked_short_other": "बंद नहीं कर सकते: {{count}} चल रहे हैं"
+      "close_blocked_short_other": "बंद नहीं कर सकते: {{count}} चल रहे हैं",
+      "folder_closed_show_one": "{{count}} बंद सत्र दिखाओ",
+      "folder_closed_show_other": "{{count}} बंद सत्र दिखाओ",
+      "folder_closed_hide_one": "{{count}} बंद सत्र छिपाओ",
+      "folder_closed_hide_other": "{{count}} बंद सत्र छिपाओ",
+      "folder_closed_hint": "{{name}} में तुमने जो सत्र बंद किए। फिर से खोलने के लिए किसी एक पर क्लिक करो।",
+      "folder_closed_load_failed": "बंद सत्र लोड नहीं हो सके।",
+      "folder_closed_loading": "बंद सत्र लोड हो रहे हैं…",
+      "folder_closed_more": "पुराने सत्र में सब देखो",
+      "folder_closed_none": "इस फ़ोल्डर में कोई बंद सत्र नहीं है",
+      "folder_closed_reopen": "{{title}} फिर से खोलो"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

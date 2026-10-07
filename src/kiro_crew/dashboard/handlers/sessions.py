@@ -1477,6 +1477,69 @@ _MACHINE_NAMESPACES: tuple[str, ...] = (
 )
 
 
+def _drop_open_sessions(state: DashboardState, sessions: list[dict]) -> list[dict]:
+    """``sessions`` minus every one a live slot holds open (``exclude_open=1``).
+
+    Folded through ``_canonical_key`` as well: ``list_sessions`` deduplicates by
+    canonical name but reports the RAW stem of whichever file won on mtime, so a
+    resume round-trip's ``dashboard_dashboard_<name>`` file reaches here under a
+    name no slot ever produces. Without the fold that session is listed as a
+    second, separate conversation.
+    """
+    log = state.conversation_log
+    if log is None:
+        return sessions
+    open_keys = _open_slot_transcript_keys(state)
+    canon = log._canonical_key
+    return [
+        s
+        for s in sessions
+        if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
+    ]
+
+
+def _session_row_has_content(log: Any, row: dict) -> bool:
+    """Whether a ``list_sessions`` row is a conversation someone used (``user_only=1``).
+
+    ``list_sessions`` titles a session from its metadata or its first user
+    message, and falls back to the key itself. A titled row is kept without a
+    read, even when it has no messages: a title is a user signal. Only a row
+    whose title IS its key pays for a file read.
+    """
+    key = row.get("key", "")
+    if row.get("title", key) != key:
+        return True
+    try:
+        return log.has_messages(key)
+    except OSError:
+        # Unreadable is not empty: never hide what could not be read.
+        return True
+
+
+def folder_closed_counts(state: DashboardState, sessions: list[dict]) -> dict[str, int]:
+    """Per-folder count of the rows ``GET /api/sessions?folder_id=<id>&exclude_open=1&user_only=1``
+    would list, keyed by folder id.
+
+    The sidebar's per-folder Show-closed row is offered, and labelled, by this
+    number, so it is computed with the SAME predicates as the list the row opens
+    (``_drop_open_sessions`` and ``_session_row_has_content``). A folder's
+    ``history_count`` cannot stand in for it: that counts open tabs, blank tabs
+    and machine transcripts too. ``sessions`` is a ``list_sessions()`` result,
+    so the caller's one walk of the session store serves both counts.
+    """
+    log = state.conversation_log
+    if not log:
+        return {}
+    filed = [s for s in sessions if s.get("folder_id")]
+    counts: dict[str, int] = {}
+    for row in _drop_open_sessions(state, filed):
+        if _is_machine_only_session(row.get("key", "")) or not _session_row_has_content(log, row):
+            continue
+        fid = row["folder_id"]
+        counts[fid] = counts.get(fid, 0) + 1
+    return counts
+
+
 def _is_machine_only_session(key: str) -> bool:
     """True when *key* sits in a namespace no user ever addressed directly.
 
@@ -1661,6 +1724,11 @@ async def api_sessions(request: web.Request) -> web.Response:
         its metadata line. That is a tab opened and closed without a message
         (for example the blank tab the chat page opens when no tab is left).
         It has nothing to resume, and it too would show its storage key.
+      - ``folder_id``: when set, keep only sessions filed in that folder (the
+        ``folder_id`` on the session's metadata line). Exact match, no subtree
+        walk: the sidebar's per-folder "Show archived" row lists the sessions
+        filed directly in the folder it sits under, as the tree does for live
+        rows. Applied before pagination for the same reason as the two above.
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
@@ -1678,6 +1746,7 @@ async def api_sessions(request: web.Request) -> web.Response:
     want_preview = (request.query.get("preview") or "").lower() in ("1", "true", "yes")
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
+    folder_id = (request.query.get("folder_id") or "").strip()
     # list_sessions() globs, stats, and reads the first line of EVERY session file
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
@@ -1692,35 +1761,17 @@ async def api_sessions(request: web.Request) -> web.Response:
             _app_owned_sessions, state.conversation_log, request_app, all_sessions
         )
         _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
+    if folder_id:
+        # Cheap metadata filter first, so ``user_only``'s per-row file reads
+        # below only run over this folder's sessions.
+        all_sessions = [s for s in all_sessions if s.get("folder_id") == folder_id]
     if exclude_open:
-        open_keys = _open_slot_transcript_keys(state)
-        # Fold through ``_canonical_key`` as well: ``list_sessions`` deduplicates
-        # by canonical name but reports the RAW stem of whichever file won on
-        # mtime, so a resume round-trip's ``dashboard_dashboard_<name>`` file
-        # reaches here under a name no slot ever produces. Without the fold that
-        # session is listed as a second, separate conversation.
-        canon = state.conversation_log._canonical_key
-        all_sessions = [
-            s
-            for s in all_sessions
-            if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
-        ]
+        all_sessions = _drop_open_sessions(state, all_sessions)
     if user_only:
         log = state.conversation_log
 
         def _has_content(row: dict) -> bool:
-            # ``list_sessions`` titles a session from its metadata or its first
-            # user message, and falls back to the key itself. A titled row is kept
-            # without a read, even when it has no messages: a title is a user
-            # signal. Only a row whose title IS its key pays for a file read.
-            key = row.get("key", "")
-            if row.get("title", key) != key:
-                return True
-            try:
-                return log.has_messages(key)
-            except OSError:
-                # Unreadable is not empty: never hide what could not be read.
-                return True
+            return _session_row_has_content(log, row)
 
         def _user_rows(sessions: list[dict]) -> list[dict]:
             if request_app:

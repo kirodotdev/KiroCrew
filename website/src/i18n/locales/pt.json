@@ -12049,7 +12049,19 @@
       "close_blocked_many": "Não é possível fechar: {{count}} sessões ainda estão em execução",
       "close_blocked_short_many": "Não é possível fechar: {{count}} em execução",
       "close_blocked_other": "Não é possível fechar: {{count}} sessões ainda estão em execução",
-      "close_blocked_short_other": "Não é possível fechar: {{count}} em execução"
+      "close_blocked_short_other": "Não é possível fechar: {{count}} em execução",
+      "folder_closed_show_one": "Mostrar {{count}} sessão fechada",
+      "folder_closed_show_many": "Mostrar {{count}} sessões fechadas",
+      "folder_closed_show_other": "Mostrar {{count}} sessões fechadas",
+      "folder_closed_hide_one": "Ocultar {{count}} sessão fechada",
+      "folder_closed_hide_many": "Ocultar {{count}} sessões fechadas",
+      "folder_closed_hide_other": "Ocultar {{count}} sessões fechadas",
+      "folder_closed_hint": "Sessões que você fechou em {{name}}. Clique em uma para reabri-la.",
+      "folder_closed_load_failed": "Não foi possível carregar as sessões fechadas.",
+      "folder_closed_loading": "Carregando sessões fechadas…",
+      "folder_closed_more": "Ver todas em Sessões antigas",
+      "folder_closed_none": "Nenhuma sessão fechada nesta pasta",
+      "folder_closed_reopen": "Reabrir {{title}}"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

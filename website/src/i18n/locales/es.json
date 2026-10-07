@@ -12049,7 +12049,19 @@
       "close_blocked_many": "No se puede cerrar: {{count}} sesiones siguen en ejecución",
       "close_blocked_short_many": "No se puede cerrar: {{count}} en ejecución",
       "close_blocked_other": "No se puede cerrar: {{count}} sesiones siguen en ejecución",
-      "close_blocked_short_other": "No se puede cerrar: {{count}} en ejecución"
+      "close_blocked_short_other": "No se puede cerrar: {{count}} en ejecución",
+      "folder_closed_show_one": "Mostrar {{count}} sesión cerrada",
+      "folder_closed_show_many": "Mostrar {{count}} sesiones cerradas",
+      "folder_closed_show_other": "Mostrar {{count}} sesiones cerradas",
+      "folder_closed_hide_one": "Ocultar {{count}} sesión cerrada",
+      "folder_closed_hide_many": "Ocultar {{count}} sesiones cerradas",
+      "folder_closed_hide_other": "Ocultar {{count}} sesiones cerradas",
+      "folder_closed_hint": "Sesiones que cerraste en {{name}}. Haz clic en una para volver a abrirla.",
+      "folder_closed_load_failed": "No se pudieron cargar las sesiones cerradas.",
+      "folder_closed_loading": "Cargando sesiones cerradas…",
+      "folder_closed_more": "Ver todas en Sesiones anteriores",
+      "folder_closed_none": "No hay sesiones cerradas en esta carpeta",
+      "folder_closed_reopen": "Volver a abrir {{title}}"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
