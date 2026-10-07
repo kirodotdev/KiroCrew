@@ -71,6 +71,7 @@ const COMMAND_DESC_KEY: Record<string, string> = {
   '/q': 'components.slashCommandMenu.desc_quit',
   '/quit': 'components.slashCommandMenu.desc_quit',
   '/reply': 'components.slashCommandMenu.desc_reply',
+  '/rewind': 'components.slashCommandMenu.desc_rewind',
   '/side': 'components.slashCommandMenu.desc_side',
   '/tangent': 'components.slashCommandMenu.desc_tangent',
   '/todos': 'components.slashCommandMenu.desc_todos',
@@ -132,7 +133,7 @@ interface Props {
  * the menu still offers them. Two different kinds live here, and the difference
  * matters when adding a row:
  *
- * - CLIENT-INTERCEPTED (`/btw`, `/kb`, `/onboarding`): the composer recognises
+ * - CLIENT-INTERCEPTED (`/btw`, `/kb`, `/onboarding`, `/rewind`): the composer recognises
  *   the text and acts on it locally; the message is never sent. Those also need
  *   a branch in `interceptSlashCommand` (`/btw` rides `/side`'s — it is a pure
  *   alias, matched by the same SIDE_RE).
@@ -143,7 +144,7 @@ interface Props {
  *   expansion — and out of the kiro-cli passthrough set, which would forward it
  *   to a harness that has no such command.
  */
-const FRONTEND_COMMAND_NAMES = ['/btw', '/kb', '/onboarding', '/plain'] as const
+const FRONTEND_COMMAND_NAMES = ['/btw', '/kb', '/onboarding', '/plain', '/rewind'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
@@ -277,7 +278,10 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
           onMouseDown={e => { e.preventDefault(); onSelect(cmd.name + ' ') }}
         >
           <span className="text-[13px] font-mono font-semibold text-accent shrink-0">{cmd.name}</span>
-          <span className="text-[12px] truncate">{commandDescription(cmd)}</span>
+          {/* The highlighted row shows its whole description; the others stay one
+              line. A description that carries a safety clause (/rewind's
+              "original kept") is otherwise cut off exactly where it matters. */}
+          <span className={`text-[12px] ${i === selected ? 'break-words' : 'truncate'}`}>{commandDescription(cmd)}</span>
         </button>
       ))}
     </div>,

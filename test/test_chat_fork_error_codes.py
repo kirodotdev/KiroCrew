@@ -72,10 +72,12 @@ def test_the_ratchet_can_actually_fail() -> None:
     outside the allowlist. The two app-isolation refusals answer through
     `slot_ownership.deny_app_slot_access`, the shared per-slot decision, which
     returns ``slot_not_found`` by construction, so the scan finds those two
-    sites in that module rather than here.
+    sites in that module rather than here. Five sites belong to ``turns_back``
+    (the ``/rewind [N]`` command): its type, combination and direction checks,
+    and the two counts ``_index_before_turn`` refuses.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 25, f"scanner reached {len(coded)} coded sites, expected 25"
+    assert len(coded) == 30, f"scanner reached {len(coded)} coded sites, expected 30"
     assert all(f.code_value for f in coded)
 
 

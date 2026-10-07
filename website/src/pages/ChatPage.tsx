@@ -46,7 +46,7 @@ import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTu
 import { storeSentPastes } from '../chat-core/composer/composerPastes'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
-import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
+import { interceptSlashCommand, isInterceptedSlashCommand, type SlashInterceptResult } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -399,6 +399,7 @@ const REFUSED_PRESS_TITLE_KEYS = {
   // the notice — "couldn't open" over an open panel contradicts what the user sees.
   side_open: 'pages.chatPage.could_not_open_side_chat',
   side_turn: 'pages.chatPage.could_not_send_to_side_chat',
+  rewind: 'pages.chatPage.could_not_rewind',
 } as const
 type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
 
@@ -2014,18 +2015,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // can span a slot switch, and the stage is not per slot, so restaging
         // then would hand this slot's quote to the next send from another chat;
         // off screen the block goes into this slot's parked text instead.
-        if (!optionText && !slashResult.failed) { setInput(''); setPasteBlocks([]) }
+        // The await above can span a slot switch. Clear the composer only while it
+        // still belongs to the slot the command was typed in; otherwise it is
+        // showing another chat's draft, and clearing it would erase that draft.
+        // Off screen, drop the command from its own slot's parked text instead,
+        // and only if that text is still exactly the command.
+        const stillLive = composerMountedRef.current && uiSlot === activeSlotRef.current && composerSlotRef.current === uiSlot
+        // ...and only while it still holds the command: text typed during the
+        // await is a new draft, never the command's to clear.
+        const stillCommand = stillLive && inputRef.current.trim() === raw
+        if (!optionText && !slashResult.failed) {
+          if (stillCommand) { setInput(''); setPasteBlocks([]) }
+          else if (uiSlot && (drafts.current[uiSlot] ?? '').trim() === raw) { delete drafts.current[uiSlot]; saveDrafts() }
+        }
         // After the clear above, so a block that falls back into the live text
         // (stage taken by a newer quote) is not wiped by it.
         restageOrPark()
+        // /rewind forked. The slot switch flushes `inputRef` (not the state the
+        // clear above set, which has not rendered yet) into the parent's draft,
+        // so empty both before switching or the parent reopens holding "/rewind".
+        // Followed only while the composer is still this chat's: a switch made
+        // during the fork request is the person's own, and is left alone.
+        // Text typed while the fork ran is kept: the switch parks it as this
+        // chat's draft, exactly as any other switch would.
+        if (slashResult.switchTo && stillLive) {
+          if (stillCommand) {
+            inputRef.current = ''
+            if (uiSlot) { delete drafts.current[uiSlot]; saveDrafts() }
+          }
+          await dispatch(switchSlot({ key: slashResult.switchTo, keepTargetOnMissing: true }))
+        }
         // Keeping the composer intact is the recovery; this is the report.
         // Same surface as a refused footer press, so the reason sits above the
         // draft it left in place instead of only in the console.
         if (slashResult.failed) {
-          setRefusedPress({
-            action: slashResult.stage === 'turn' ? 'side_turn' : 'side_open',
-            message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
-          })
+          setRefusedPress(slashResult.stage === 'rewind'
+            ? { action: 'rewind', message: slashResult.error || i18nT('pages.chatPage.rewind_command_not_run') }
+            : {
+                action: slashResult.stage === 'turn' ? 'side_turn' : 'side_open',
+                message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
+              })
         }
         return false
       }
@@ -3913,6 +3942,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot, setPinExpanded, setPinned])
 
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
+  // A /rewind sent mid-turn settles here (the steer path cleared the composer
+  // before it resolved). Follow the fork only while the person is still on the
+  // chat they rewound; show a refusal's reason on that same chat only.
+  const handleBusySlashSettled = useCallback((res: SlashInterceptResult, originSlot: string | null) => {
+    if (!res.intercepted || activeSlotRef.current !== originSlot) return
+    if (res.switchTo) { void dispatch(switchSlot({ key: res.switchTo, keepTargetOnMissing: true })); return }
+    if (res.failed && res.stage === 'rewind') {
+      setRefusedPress({ action: 'rewind', message: res.error || i18nT('pages.chatPage.rewind_command_not_run') })
+    }
+  }, [dispatch])
+
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
@@ -3935,6 +3975,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pendingQuestion,
     softStopAtMapRef,
     dispatch,
+    onSlashSettled: handleBusySlashSettled,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), so it steers where
