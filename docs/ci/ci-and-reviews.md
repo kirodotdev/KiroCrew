@@ -2893,23 +2893,33 @@ on a re-run.
 
 A PR that touches the sandbox, the command floor, the tool gate, secret
 scrubbing or redaction (`SENSITIVE_GLOBS` in
-`.github/scripts/sensitive_change_review.py`) stays red until a person with
-write access approves the current head and fills the `## Sensitive change
-review` template in the approval: what rule changed, before and after, the
-worst case, the sandbox evidence checked, no regression (tools still work,
-backward compatible, existing tests) and how to undo. Each answer needs at
-least three words. Bots, the PR author and approvals of an older commit do not
-count, and there is no waiver label. CI never runs the sandbox here; it only
-checks the approval and its text. The checker always runs from the default
-branch, so a PR cannot weaken it.
+`.github/scripts/sensitive_change_review.py`) stays red until someone fills
+the `## Sensitive change review` template for the current head: what rule
+changed, before and after, the worst case, the sandbox evidence checked, no
+regression (tools still work, backward compatible, existing tests) and how to
+undo. Each answer needs at least three words. Either record counts:
+
+- **The PR author's comment.** The author has write access, posts the filled
+  template as a PR comment, and names the current head SHA in it (the sticky
+  comment pre-fills a `Head commit:` line). `sensitive-change-review-comment.yml`
+  fires on `issue_comment`, so it runs from the default branch, and re-runs the
+  newest Sensitive Change Review run for that head. The re-run reads the comment
+  and turns the check green with no push and no approver.
+- **A reviewer's approval.** A person with write access, not the author,
+  approves the current head with the template in the review body.
+
+Bots, another user's comment, and a comment or approval for an older commit do
+not count, and there is no waiver label. A new push resets the check. Merging
+still needs a second person's approval: the `main` ruleset enforces that, not
+this gate. CI never runs the sandbox here; it only checks the text. The checker
+always runs from the default branch, so a PR cannot weaken it.
 
 A fork PR that touches a sensitive path is refused, whatever its approvals: a
 maintainer takes it over on a branch of this repository, credits the author
 with `Co-authored-by:` and `Supersedes #<n>`, and drives that PR green. On a
 same-repository PR the gate keeps one sticky comment (by `github-actions[bot]`,
 marked `<!-- sensitive-change-review -->`) listing the sensitive files and the
-template to paste into the approval. That comment is why the job holds
-`pull-requests: write`.
+template to paste. That comment is why the job holds `pull-requests: write`.
 
 **Advisory for now.** `PR Readiness` does not read it yet. Enrolling it waits on
 the workflow itself running from default-branch context

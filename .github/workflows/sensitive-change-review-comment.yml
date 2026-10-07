@@ -1,0 +1,90 @@
+name: Sensitive Change Review (author comment)
+
+# The PR author can clear Sensitive Change Review by posting the filled
+# `## Sensitive change review` template as a PR comment that names the current
+# head SHA. A comment is not a pull_request event, so on its own it would not
+# re-run that check. This workflow re-runs the newest Sensitive Change Review
+# run for the PR head; the re-run reads the comment and posts its verdict on
+# the head, under the same check name.
+#
+# issue_comment workflows always execute from the default branch, so a PR
+# cannot edit this file to change what happens here. It runs no PR code and
+# decides nothing: the default-branch checker inside the re-run is the judge.
+# Comments posted by GITHUB_TOKEN (the gate's own sticky comment) start no
+# workflow, so the sticky comment cannot loop this.
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+# actions: write is only for re-running the check's own workflow run.
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  rerun:
+    name: Re-run Sensitive Change Review
+    # Only the PR author's comment can count, so nobody else's comment spends
+    # a run. The checker re-checks the author, the head SHA and the template.
+    if: >-
+      github.event.issue.pull_request != null
+      && github.event.comment.user.login == github.event.issue.user.login
+      && contains(github.event.comment.body, '## Sensitive change review')
+    # Hosted, not the fleet: any commenter can fire issue_comment, and a
+    # non-allowlisted actor's fleet dispatch would queue forever.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level, so only a run that passed the `if` joins the group: anyone
+    # else's comment is skipped before it can cancel the author's re-run.
+    # Not cancel-in-progress: a run waiting on the check must finish.
+    concurrency:
+      group: sensitive-change-review-comment-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Re-run the check for the current head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh api "repos/$REPO/pulls/$PR")"
+          head="$(jq -r '.head.sha' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")"
+          if [ "$head_repo" != "$REPO" ]; then
+            echo "Fork PR: Sensitive Change Review refuses forks, so a comment cannot clear it."
+            exit 0
+          fi
+
+          # The newest run of the check for this PR at this head, from either
+          # trigger the check listens to.
+          runs="$(gh api --method GET \
+            "repos/$REPO/actions/workflows/sensitive-change-review.yml/runs" \
+            -f head_sha="$head" -f per_page=50)"
+          read -r run_id status < <(jq -r --argjson pr "$PR" --arg head "$head" '
+            [.workflow_runs[]
+             | select(.head_sha == $head
+                      and (.event == "pull_request" or .event == "pull_request_review")
+                      and (.pull_requests | any(.number == $pr)))]
+            | max_by(.id) // empty
+            | "\(.id) \(.status)"' <<<"$runs") || true
+          if [[ ! "${run_id:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::No Sensitive Change Review run found for PR #$PR at $head; push or re-run it from the Actions tab."
+            exit 1
+          fi
+
+          # A run in progress cannot be re-run. Wait for it; it may already
+          # read this comment and pass, and the re-run then repeats that.
+          for _ in $(seq 1 30); do
+            [ "$status" = "completed" ] && break
+            sleep 5
+            status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
+          done
+          if [ "$status" != "completed" ]; then
+            echo "::error::Sensitive Change Review run $run_id did not finish in time; re-run it from the Actions tab."
+            exit 1
+          fi
+          gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null
+          echo "Re-ran Sensitive Change Review run $run_id for $head."

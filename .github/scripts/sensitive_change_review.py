@@ -2,10 +2,17 @@
 """Sensitive Change Review gate.
 
 A PR that touches a sensitive path (the sandbox, the command floor, secret
-scrubbing, redaction) needs a human approval ON THE CURRENT HEAD whose review
-body carries a filled-in reasoning template. A bare "Approve" click does not
-count. The gate checks format only: it cannot judge whether the reasoning is
-right, it only makes sure the reviewer wrote it down.
+scrubbing, redaction) needs a filled-in reasoning template for THE CURRENT
+HEAD. Either of two records counts:
+
+- the PR author's own PR comment that carries the template and names the
+  current head SHA (the author did the checks, so the author writes them down);
+- a human approval on the current head whose review body carries the template.
+
+A bare "Approve" click does not count. The gate checks format only: it cannot
+judge whether the reasoning is right, it only makes sure someone wrote it down.
+Merging still needs a second person's approval; GitHub's branch rules enforce
+that, not this gate.
 
 A PR from a fork that touches a sensitive path is refused outright: a
 maintainer takes it over on a branch of this repository, runs the real sandbox,
@@ -53,7 +60,7 @@ SENSITIVE_GLOBS: tuple[str, ...] = (
     "src/kiro_crew/security_posture.py",
     "src/kiro_crew/computer_use/gate.py",
     "src/kiro_crew/dashboard/handlers/*redaction*.py",
-    ".github/workflows/sensitive-change-review.yml",
+    ".github/workflows/sensitive-change-review*.yml",
     ".github/scripts/sensitive_change_review.py",
 )
 
@@ -94,6 +101,8 @@ _BULLET_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
 # Markdown emphasis a reviewer may wrap a label or value in (`**Label:**`).
 _EMPHASIS = "*_"
 _HEADING_RE = re.compile(r"^\s*#{1,6}\s")
+# A commit SHA as a whole word: git's 7-char short form up to the full 40.
+_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 
 class Verdict:
@@ -105,11 +114,13 @@ class Verdict:
         sensitive: list[str] | None = None,
         messages: list[str] | None = None,
         fork: bool = False,
+        head: str = "",
     ):
         self.ok = ok
         self.sensitive = sensitive or []
         self.messages = messages or []
         self.fork = fork
+        self.head = head
 
 
 def is_fork(pr: dict) -> bool:
@@ -263,17 +274,56 @@ def _approval_problems(
     return why
 
 
+def names_head(body: str, head: str) -> bool:
+    """True when the body names `head` by a 7+ character SHA prefix."""
+    return bool(head) and any(head.startswith(t) for t in _SHA_RE.findall((body or "").lower()))
+
+
+def _author_comment_problems(
+    comment: dict, author: str, head: str, permission_of: Callable[[str], str]
+) -> list[str]:
+    """Why one PR-author comment does not count ([] when it does).
+
+    The caller passes only the author's comments that carry the heading.
+    """
+    why: list[str] = []
+    body = comment.get("body") or ""
+    if not names_head(body, head):
+        why.append(f"does not name the current head {head[:12]}; post it again for this head")
+    why.extend(template_problems(body))
+    if not why and permission_of(author) not in WRITE_PERMISSIONS:
+        why.append("the author has no write access")
+    return why
+
+
+def _author_comments(comments: list[dict], author: str) -> list[dict]:
+    """The PR author's own human comments that carry the heading, newest first."""
+    picked = []
+    for comment in comments:
+        user = comment.get("user") or {}
+        login = user.get("login") or ""
+        if not author or login != author:
+            continue
+        if user.get("type") == "Bot" or login.endswith("[bot]"):
+            continue
+        if HEADING.lower() in (comment.get("body") or "").lower():
+            picked.append(comment)
+    return list(reversed(picked))
+
+
 def evaluate(
     pr: dict,
     files: list[str],
     reviews: list[dict],
     permission_of: Callable[[str], str],
     head: str | None = None,
+    comments: list[dict] | None = None,
 ) -> Verdict:
     """Decide the gate for `head` (defaults to the PR's head).
 
     `permission_of(login)` returns the repo permission. Any standing approval
     on `head` with a complete template passes, not just the reviewer's latest.
+    So does any PR-author comment with a complete template that names `head`.
     """
     hits = sensitive_files(files)
     if not hits:
@@ -297,6 +347,21 @@ def evaluate(
     head = head or (pr.get("head") or {}).get("sha") or ""
     author = (pr.get("user") or {}).get("login") or ""
     messages: list[str] = []
+
+    owned = _author_comments(comments or [], author)
+    for comment in owned:
+        if not _author_comment_problems(comment, author, head, permission_of):
+            return Verdict(
+                ok=True,
+                sensitive=hits,
+                head=head,
+                messages=[f"@{author} posted a complete reasoning template for {head[:12]}."],
+            )
+    if owned:
+        latest = _author_comment_problems(owned[0], author, head, permission_of)
+        note = f" ({len(owned)} comments checked, none complete)" if len(owned) > 1 else ""
+        messages.append(f"@{author} comment{note}: " + "; ".join(latest))
+
     for login, approvals in sorted(_standing_approvals(reviews).items()):
         latest_why: list[str] = []
         for review in reversed(approvals):
@@ -305,6 +370,7 @@ def evaluate(
                 return Verdict(
                     ok=True,
                     sensitive=hits,
+                    head=head,
                     messages=[f"@{login} approved {head[:12]} with a complete reasoning template."],
                 )
             latest_why = latest_why or why
@@ -312,8 +378,8 @@ def evaluate(
         messages.append(f"@{login}{note}: " + "; ".join(latest_why))
 
     if not messages:
-        messages.append(f"No approval on {head[:12]} yet.")
-    return Verdict(ok=False, sensitive=hits, messages=messages)
+        messages.append(f"No reasoning template for {head[:12]} yet.")
+    return Verdict(ok=False, sensitive=hits, messages=messages, head=head)
 
 
 class PermissionReadError(RuntimeError):
@@ -340,22 +406,24 @@ def _summary(verdict: Verdict) -> str:
         lines.append("")
     lines += [f"- {m}" for m in verdict.messages]
     if not verdict.ok and not verdict.fork:
+        head_line = f"- Head commit: {verdict.head}" if verdict.head else "- Head commit:"
         lines += [
             "",
-            "How to clear this check (a plain PR comment does NOT count):",
+            "How to clear this check:",
             "",
-            "1. Someone other than the PR author, with write access, opens",
-            '   "Files changed" -> "Review changes".',
-            '2. They pick "Approve" (not "Comment").',
-            "3. They paste the template below into the review box, fill every",
-            '   field (`N/A` needs a reason), then click "Submit review".',
-            "4. A new push resets this check: approve the new head again.",
+            "1. The PR author posts the template below as a PR comment, with",
+            "   every field filled (`N/A` needs a reason). Keep the",
+            "   `Head commit` line: it must name the current head SHA.",
+            "2. The check turns green within a minute, with no push.",
+            "3. A new push resets this check: post it again for the new head.",
             "",
-            "The author may draft the filled template as a comment for the",
-            "reviewer to copy, but only the reviewer's approval clears the check.",
+            "Only the author's comment counts this way. A reviewer can instead",
+            'paste the filled template into an "Approve" review on this head.',
+            "Merging still needs a reviewer's approval.",
             "",
             "```",
             HEADING,
+            head_line,
             "- What rule changed:",
             "- Before -> after (what was allowed/blocked, now):",
             "- Worst case if wrong (breaks commands / leaks secret / locks user out):",
@@ -396,10 +464,11 @@ def find_sticky(comments: list[dict]) -> dict | None:
     return None
 
 
-def upsert_sticky(repo: str, pr_number: str, body: str, create: bool = True) -> None:
+def upsert_sticky(
+    repo: str, pr_number: str, body: str, comments: list[dict], create: bool = True
+) -> None:
     """Create (when `create`) or update the sticky comment. Never changes the verdict."""
     try:
-        comments = _gh_json(f"repos/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True)
         existing = find_sticky(comments)
         if existing is None:
             if not create:
@@ -424,6 +493,9 @@ def main() -> int:
         pr = _gh_json(base)
         rows = _gh_json(f"{base}/files?per_page=100", paginate=True)
         reviews = _gh_json(f"{base}/reviews?per_page=100", paginate=True)
+        # The author's template comment can clear the gate, so an unread
+        # comment list fails closed like the other reads.
+        comments = _gh_json(f"repos/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True)
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as exc:
         # A read failure is not a passing PR: fail closed and say why.
         print(
@@ -463,7 +535,9 @@ def main() -> int:
         return permission
 
     try:
-        verdict = evaluate(pr, changed_paths(rows), reviews, permission_of, head=event_head)
+        verdict = evaluate(
+            pr, changed_paths(rows), reviews, permission_of, head=event_head, comments=comments
+        )
     except PermissionReadError as exc:
         print(f"::error::Could not read a reviewer's permission ({exc}); re-run this job.")
         return 2
@@ -473,13 +547,15 @@ def main() -> int:
     # With no sensitive file left, an existing comment is refreshed (so it stops
     # asking for an approval) but no new one is created.
     if not is_fork(pr):
-        upsert_sticky(repo, pr_number, comment_body(verdict), create=bool(verdict.sensitive))
+        upsert_sticky(
+            repo, pr_number, comment_body(verdict), comments, create=bool(verdict.sensitive)
+        )
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as fh:
             fh.write(text)
     if not verdict.ok:
-        print("::error::Sensitive path changed without a reasoned human approval on this head.")
+        print("::error::Sensitive path changed without a reasoning template for this head.")
         return 1
     return 0
 

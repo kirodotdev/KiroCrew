@@ -1,12 +1,14 @@
 name: Sensitive Change Review
 
 # A PR that touches a sensitive path (sandbox, command floor, secret scrubbing,
-# redaction) needs a human approval on the CURRENT head whose review body
-# carries a filled-in reasoning template. A bare "Approve" click stays red.
+# redaction) needs a filled-in reasoning template for the CURRENT head: either
+# the PR author's own comment naming the head SHA, or a human approval on the
+# head carrying it. A bare "Approve" click stays red. The author's comment
+# re-runs this check through sensitive-change-review-comment.yml.
 #
-# Format only, on purpose: no model and no sandbox run. The reviewer runs the
-# real sandbox and writes what they checked; this gate makes sure they wrote it
-# down for this exact commit. It cannot tell a true reason from a false one.
+# Format only, on purpose: no model and no sandbox run. Whoever ran the real
+# sandbox writes what they checked; this gate makes sure it is written down for
+# this exact commit. It cannot tell a true reason from a false one.
 #
 # The checker script is read from the DEFAULT branch, so a PR cannot change the
 # rule by editing the script. This workflow FILE still runs from the PR head

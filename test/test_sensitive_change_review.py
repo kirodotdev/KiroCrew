@@ -18,6 +18,7 @@ from skill_script_helpers import load_skill_script
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "sensitive_change_review.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review.yml"
+COMMENT_WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review-comment.yml"
 HEAD = "a" * 40
 OLD = "b" * 40
 
@@ -96,6 +97,7 @@ def test_no_sensitive_path_passes_without_review(mod):
         "src/kiro_crew/dashboard/handlers/credential_redaction.py",
         ".github/scripts/sensitive_change_review.py",
         ".github/workflows/sensitive-change-review.yml",
+        ".github/workflows/sensitive-change-review-comment.yml",
     ],
 )
 def test_sensitive_globs_match(mod, path):
@@ -144,7 +146,7 @@ def test_complete_approval_on_head_passes(mod):
 def test_no_review_fails(mod):
     v = _eval(mod, _pr(), SENSITIVE, [])
     assert not v.ok
-    assert "No approval" in v.messages[0]
+    assert "No reasoning template" in v.messages[0]
 
 
 def test_bare_approval_fails(mod):
@@ -259,14 +261,136 @@ def test_failure_summary_carries_the_template(mod):
         assert label in text
 
 
-def test_failure_summary_says_how_to_approve(mod):
-    # Operators pasted the template as a PR comment, or approved their own PR.
-    # The summary must name the real action: a non-author Approve review.
+def test_failure_summary_says_how_to_clear(mod):
+    # The summary names both real actions: the author's comment, or a
+    # reviewer's Approve review. It pre-fills the head SHA to copy.
     text = mod._summary(_eval(mod, _pr(), SENSITIVE, []))
-    assert "comment does NOT count" in text
-    assert "other than the PR author" in text
+    assert "PR author posts the template" in text
     assert '"Approve"' in text
     assert "new push resets" in text
+    assert f"- Head commit: {HEAD}" in text
+
+
+# -- PR author's template comment ------------------------------------------------
+
+
+def _comment(body=None, login="alice", typ="User"):
+    if body is None:
+        body = GOOD_BODY.replace(
+            "## Sensitive change review\n", f"## Sensitive change review\n- Head commit: {HEAD}\n"
+        )
+    return {"body": body, "user": {"login": login, "type": typ}}
+
+
+def _eval_c(mod, comments, reviews=(), perm=None):
+    return mod.evaluate(
+        _pr(), SENSITIVE, list(reviews), perm or _writers("alice", "bob"), comments=comments
+    )
+
+
+def test_author_comment_with_head_passes(mod):
+    v = _eval_c(mod, [_comment()])
+    assert v.ok, v.messages
+    assert "@alice posted" in v.messages[0]
+
+
+def test_author_comment_short_sha_passes(mod):
+    body = GOOD_BODY + f"\nCovers {HEAD[:7]}.\n"
+    assert _eval_c(mod, [_comment(body=body)]).ok
+
+
+def test_author_comment_without_head_fails(mod):
+    v = _eval_c(mod, [_comment(body=GOOD_BODY)])
+    assert not v.ok
+    assert "does not name the current head" in " ".join(v.messages)
+
+
+def test_author_comment_for_old_head_fails(mod):
+    body = GOOD_BODY + f"\n- Head commit: {OLD}\n"
+    assert not _eval_c(mod, [_comment(body=body)]).ok
+
+
+def test_author_comment_incomplete_template_fails(mod):
+    body = f"## Sensitive change review\n- Head commit: {HEAD}\n- What rule changed: x\n"
+    v = _eval_c(mod, [_comment(body=body)])
+    assert not v.ok
+    assert "missing field" in " ".join(v.messages)
+
+
+def test_other_users_comment_does_not_count(mod):
+    assert not _eval_c(mod, [_comment(login="bob")]).ok
+
+
+def test_bot_comment_does_not_count(mod):
+    pr = _pr(author="github-actions[bot]")
+    c = _comment(login="github-actions[bot]", typ="Bot")
+    v = mod.evaluate(pr, SENSITIVE, [], lambda _l: "write", comments=[c])
+    assert not v.ok
+
+
+def test_author_without_write_fails(mod):
+    v = _eval_c(mod, [_comment()], perm=_writers("bob"))
+    assert not v.ok
+    assert "no write access" in " ".join(v.messages)
+
+
+def test_newer_author_comment_wins_over_stale_one(mod):
+    stale = _comment(body=GOOD_BODY + f"\n- Head commit: {OLD}\n")
+    assert _eval_c(mod, [stale, _comment()]).ok
+
+
+def test_fork_author_comment_still_refused(mod):
+    v = mod.evaluate(
+        _pr(head_repo={"full_name": "x/r"}), SENSITIVE, [], _writers("alice"), comments=[_comment()]
+    )
+    assert not v.ok and v.fork
+
+
+def test_reviewer_path_still_passes_without_comment(mod):
+    assert _eval_c(mod, [], reviews=[_review()]).ok
+
+
+def test_main_passes_on_author_comment(mod, monkeypatch):
+    pr = dict(_pr(), changed_files=1)
+
+    def fake(path, paginate=False):
+        if path.endswith("/files?per_page=100"):
+            return [{"filename": "src/kiro_crew/sandbox.py"}]
+        if path.endswith("/reviews?per_page=100"):
+            return []
+        if path.endswith("/comments?per_page=100"):
+            return [_comment()]
+        if path.endswith("/permission"):
+            return {"permission": "write"}
+        return pr
+
+    monkeypatch.setattr(mod, "_gh_json", fake)
+    monkeypatch.setattr(mod, "_gh_write", lambda *a: None)
+    monkeypatch.setenv("REPO", "o/r")
+    monkeypatch.setenv("PR", "1")
+    monkeypatch.setenv("EVENT_HEAD_SHA", HEAD)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert mod.main() == 0
+
+
+def test_main_comment_read_error_fails_closed(mod, monkeypatch, capsys):
+    pr = dict(_pr(), changed_files=1)
+
+    def fake(path, paginate=False):
+        if path.endswith("/files?per_page=100"):
+            return [{"filename": "src/kiro_crew/sandbox.py"}]
+        if path.endswith("/reviews?per_page=100"):
+            return []
+        if path.endswith("/comments?per_page=100"):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+        return pr
+
+    monkeypatch.setattr(mod, "_gh_json", fake)
+    monkeypatch.setenv("REPO", "o/r")
+    monkeypatch.setenv("PR", "1")
+    monkeypatch.setenv("EVENT_HEAD_SHA", HEAD)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert mod.main() == 2
 
 
 def test_event_head_must_match_api_head(mod):
@@ -446,6 +570,49 @@ class TestWorkflow:
 
     def test_no_waiver_label(self, wf):
         assert "labels" not in WORKFLOW.read_text(encoding="utf-8")
+
+
+class TestCommentWorkflow:
+    @pytest.fixture(scope="class")
+    def wf(self):
+        return yaml.safe_load(COMMENT_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_only_issue_comment_triggers(self, wf):
+        # issue_comment runs from the default branch, so a PR cannot edit it.
+        on = wf.get("on") or wf[True]
+        assert set(on) == {"issue_comment"}
+
+    def test_token_can_only_rerun(self, wf):
+        assert wf["permissions"] == {
+            "actions": "write",
+            "contents": "read",
+            "pull-requests": "read",
+        }
+
+    def test_only_the_pr_authors_template_comment_runs(self, wf):
+        (job,) = wf["jobs"].values()
+        cond = job["if"]
+        assert "github.event.issue.pull_request != null" in cond
+        assert "github.event.comment.user.login == github.event.issue.user.login" in cond
+        assert "## Sensitive change review" in cond
+
+    def test_hosted_runner_and_no_checkout(self, wf):
+        (job,) = wf["jobs"].values()
+        assert job["runs-on"] == "ubuntu-latest"
+        assert all("uses" not in step for step in job["steps"])
+
+    def test_reruns_the_check_workflow(self, wf):
+        (job,) = wf["jobs"].values()
+        run = job["steps"][-1]["run"]
+        assert "actions/workflows/sensitive-change-review.yml/runs" in run
+        assert "/rerun" in run
+
+    def test_other_comments_cannot_cancel_the_authors_rerun(self, wf):
+        # A workflow-level group runs before the job `if`, so a skipped run
+        # from someone else's comment would cancel the author's re-run.
+        assert "concurrency" not in wf
+        (job,) = wf["jobs"].values()
+        assert job["concurrency"]["cancel-in-progress"] is False
 
 
 # -- Fork PRs -----------------------------------------------------------------
