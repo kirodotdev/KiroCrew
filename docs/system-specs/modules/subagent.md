@@ -3345,7 +3345,9 @@ No result is not no work. A run the restart caught before its first token has no
 under `~/.kiro/sessions/cli/{sid}.json` (+ `.jsonl`) — is a file reconciliation
 deliberately keeps (retain-by-default), and `spawn_continue` re-seeds the session
 map from the run's `state.json` to resume it after a restart. The `lost to gateway
-restart` notice therefore carries the run's progress (`turns`, `last_tool`) and the
+restart` notice, and the `cut off mid-turn by gateway restart` notice of a run that
+streamed a fragment first (which is what a long run usually has done), therefore
+carry the run's progress (`turns`, `last_tool`) and the
 resume handle (`spawn_continue(conversation="<owner>", task=...)`, where the owner is
 the `conversation_key`'s subagent id when the run was itself minted by `spawn_continue`,
 else the run's own id — one session-map key per sid) — `orphan_resume_hint` — but ONLY when the conversation is resumable by the one rule

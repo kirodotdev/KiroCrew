@@ -194,7 +194,8 @@ usage because a run the restart caught has no settled terminal billing record:
   and a line saying the text stops wherever the restart landed. `result.txt` is
   appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
   holding an opening sentence; this variant exists so the parent is not sent to
-  read a fragment as though it were the answer.
+  read a fragment as though it were the answer. It carries the same resume line
+  as the next variant, on the same condition.
 - `❌ lost to gateway restart` plus `No result was captured before the restart.`
   When the run's conversation is still resumable
   (`session_map.session_files_resumable` on the orphan's `session_id` /
