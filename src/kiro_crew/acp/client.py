@@ -4641,12 +4641,12 @@ class AcpClient:
             return None
 
     def _guard_unresolved_mcp_refs(self, wire_servers: Any) -> None:
-        """Warn when the spec's ``@server`` refs name nothing this session gets.
+        """Warn when the spec's ``@server`` refs name nothing in Crew's projection.
 
         The one place the answer can be known: *wire_servers* is the FINAL array
         -- spec projection plus the broker stubs -- so this is the last point
-        before ``session/new`` at which "the spec asked for it" and "the session
-        receives it" can be compared at all.
+        before ``session/new`` at which "the spec asked for it" and "Crew's
+        projection carries it" can be compared at all.
 
         Called for every backend, not just the ones with a mirror. The defect it
         detects has landed on three harnesses already

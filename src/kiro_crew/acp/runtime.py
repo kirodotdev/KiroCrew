@@ -7408,7 +7408,7 @@ class AcpRuntime:
         agent: str | None,
         wire_servers: Any,
     ) -> None:
-        """Warn when the spec's ``@server`` refs name nothing this session gets.
+        """Warn when the spec's ``@server`` refs name nothing in Crew's projection.
 
         The runtime-path twin of ``AcpClient._guard_unresolved_mcp_refs``, and it
         exists because a host served here rather than by the client would otherwise

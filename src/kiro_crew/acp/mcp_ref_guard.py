@@ -1,7 +1,7 @@
 """The ACP layer's reporting half of the unresolved-``@server``-ref detector.
 
-The question itself -- which of a spec's ``@server`` refs name nothing a session
-receives -- is provider-neutral plain data and lives in
+The question itself -- which of a spec's ``@server`` refs name nothing in Crew's
+projection for the session -- is provider-neutral plain data and lives in
 :mod:`kiro_crew.agent_sdk.mcp_refs`, which is what lets ``kirocrew doctor`` ask it
 without importing this layer. What lives HERE is the part that is genuinely ACP's:
 turning that answer into one structured log line at the point where a session's
