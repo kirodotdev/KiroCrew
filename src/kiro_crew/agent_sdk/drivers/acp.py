@@ -254,6 +254,7 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     be resolved is omitted rather than reported wrongly. Function-local imports
     for the same boot-path reason as every other function here.
     """
+    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
     from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
@@ -271,7 +272,9 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
                 params = mirror.session_params(agent, permission_surface_owned=True)
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
-            unresolved = unresolved_server_refs(spec, wire, backend=backend)
+            # Same filter as the runtime detector, so doctor's per-backend rows
+            # and a session's report agree on a gate-withheld server.
+            unresolved = drop_gate_withheld(unresolved_server_refs(spec, wire, backend=backend))
         except Exception:
             continue
         rows.append((backend, unresolved, has_mirror(backend)))

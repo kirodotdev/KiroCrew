@@ -80,6 +80,53 @@ def _log_safe(text: str) -> str:
     return "".join(out) or "?"
 
 
+def drop_gate_withheld(refs: list[str]) -> list[str]:
+    """*refs* without the ones whose managed server a closed ``spec_gate`` withholds.
+
+    A managed server with a closed gate (``kirocrew-computer`` on Linux, or with
+    Computer Use off) is omitted from every emitted spec ON PURPOSE, while its
+    ``@server`` ref stays in ``tools`` so the grant comes back when the gate
+    opens. Its absence from the wire is therefore the healthy state, not a
+    finding, and reporting it put "declared by the agent spec but not
+    configured" into every session's model-facing summary.
+    ``kirocrew doctor`` already skips the same case through
+    ``_spec_gate_closed()``.
+
+    Only a gate that ANSWERS closed drops its ref. A gate that raises keeps the
+    ref reported, the same fail direction as ``_spec_gate_closed()``: emission
+    withholds such a server to stay safe, but a diagnostic that also went quiet
+    would hide the broken gate, and "closed" is exactly what silences the
+    finding. Each side fails toward its own safe state. An unreadable registry
+    drops nothing, for the same reason.
+    """
+    if not refs:
+        return refs
+    withheld = _cleanly_closed_gates()
+    if not withheld:
+        return refs
+    return [ref for ref in refs if ref.lstrip("@") not in withheld]
+
+
+def _cleanly_closed_gates() -> frozenset[str]:
+    """Managed servers whose ``spec_gate`` answers closed without raising."""
+    try:
+        from kiro_crew.agent import _MANAGED_MCP_SERVERS
+
+        entries = list(_MANAGED_MCP_SERVERS.items())
+    except Exception:
+        logger.debug("managed MCP registry unreadable; dropping no refs", exc_info=True)
+        return frozenset()
+    closed = set()
+    for name, entry in entries:
+        try:
+            gate = entry.get("spec_gate")
+            if gate is not None and not gate():
+                closed.add(name)
+        except Exception:
+            logger.debug("spec gate for %s unreadable; its ref stays reported", name, exc_info=True)
+    return frozenset(closed)
+
+
 def warn_unresolved_server_refs(
     spec: Any,
     wire_servers: Any,
@@ -113,7 +160,7 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = unresolved_server_refs(spec, wire_servers, backend=backend)
+    raw = drop_gate_withheld(unresolved_server_refs(spec, wire_servers, backend=backend))
     if not raw:
         return []
     unresolved = [safe for safe in (sanitize_sink_text(ref, NAME_CAP) for ref in raw) if safe]
