@@ -60,7 +60,6 @@ src/components/AppIcon.tsx 51.1   # 24/47
 src/components/CommentThreadPopover.tsx 59.0   # 46/78
 src/components/InlineCommentOverlay.tsx 31.9   # 23/72
 src/components/Strands.tsx 52.2   # 71/136
-src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
 src/hooks/useCronActions.ts 31.0   # 9/29
 src/hooks/usePopoutSync.ts 0.0   # 0/51
 src/lib/disintegrate.ts 0.0   # 0/54
