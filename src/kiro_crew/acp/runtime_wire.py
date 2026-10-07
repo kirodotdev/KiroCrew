@@ -11,9 +11,9 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
 ``_routed_requests``, ``_stdin_lock``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
-``_native_skill_projection``,
-``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
+Instance fields read: ``_acp_backend``, ``_admit_prompt``, ``_agent``, ``_dead``,
+``_launch_agent``, ``_native_skill_projection``, ``_one_at_a_time_sent``, ``_process``,
+``_record_prompt``, ``_session_cwds``, ``_session_queues``, ``_stderr_lines``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew import repo_checkout_guard
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.runtime_start import _cold_start_counts
 from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead
@@ -128,6 +129,8 @@ async def send_request(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
+
     projection = getattr(self, "_native_skill_projection", None)
     if method == METHOD_SET_MODE and self._launch_agent and params.get("modeId") == self._agent:
         # Re-selecting this runtime's own agent mid-session names its launch
@@ -155,6 +158,7 @@ async def send_request(
         # other session. On a stall _write_request_bounded marks the runtime
         # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
         # below so the routing registration is dropped like any other death.
+        self._record_prompt(method, req_id, folder)
         await self._write_request_bounded(data, req_id, method)
     except AcpRuntimeDead:
         self._routed_requests.pop(req_id, None)
@@ -211,6 +215,41 @@ async def send_notification(self: AcpRuntime, method: str, params: dict[str, Any
             _loggable_request_id(method),
             outcome,
         )
+
+
+async def _admit_prompt(self: AcpRuntime, method: str, params: dict[str, Any]) -> str | None:
+    """Wait out a branch switch before a request that starts agent work.
+
+    ``None`` for any other request. For a prompt (``PROMPT_METHODS``), the
+    folder its session was opened in, or ``""`` when that is unknown (busy in
+    every repository), returned once no checkout covers it; with none in
+    flight, without suspending. Every request writer of this runtime calls it
+    before it reserves an id and :meth:`_record_prompt` just before the frame
+    write, with no await between (repo_checkout_guard); a frame that then never
+    reaches the pipe drops its record again (:meth:`_write_request_bounded`).
+    """
+    if not repo_checkout_guard.is_tracked(method):
+        return None
+    folder = getattr(self, "_session_cwds", {}).get(str(params.get("sessionId") or ""), "")
+    await repo_checkout_guard.before_prompt(folder)
+    if not self._process or not self._process.stdin:
+        raise AcpRuntimeDead("process not running")
+    if self._dead:
+        raise AcpRuntimeDead("runtime is dead")
+    return folder
+
+
+def _record_prompt(self: AcpRuntime, method: str, req_id: int, folder: str | None) -> None:
+    """Count a prompt :meth:`_admit_prompt` admitted until the backend answers it."""
+    if folder is not None:
+        repo_checkout_guard.prompt_sent(
+            _instance_of(self), req_id, folder, method=method
+        )
+
+
+def _instance_of(runtime: AcpRuntime) -> str:
+    """The process instance a prompt record of this runtime is keyed on."""
+    return str(getattr(runtime, "_process_instance", "") or "")
 
 
 def _refuse_write_if_dead(self: AcpRuntime) -> None:
@@ -338,15 +377,33 @@ async def _write_request_bounded(
     only through ``_loggable_request_id``.
     """
     assert self._process is not None and self._process.stdin is not None
-    result = await write_request_frame_bounded(
-        self._process.stdin,
-        self._stdin_write_lock(),
-        data,
-        bound_secs=_RESPONSE_WRITE_BOUND_SECS,
-        before_write=self._refuse_write_if_dead,
-    )
+    # A prompt is counted before its write (repo_checkout_guard); one whose
+    # frame never reached the pipe is dropped again, since nothing will answer
+    # it. ``written`` turns true under the lock, just before the synchronous
+    # ``stdin.write``, so from there on the frame counts as delivered.
+    written = False
+
+    def _before_write() -> None:
+        nonlocal written
+        self._refuse_write_if_dead()
+        written = True
+
+    try:
+        result = await write_request_frame_bounded(
+            self._process.stdin,
+            self._stdin_write_lock(),
+            data,
+            bound_secs=_RESPONSE_WRITE_BOUND_SECS,
+            before_write=_before_write,
+        )
+    except BaseException:
+        if not written:
+            repo_checkout_guard.prompt_unsent(_instance_of(self), request_id)
+        raise
     if result is RequestWriteResult.OK:
         return
+    if result is RequestWriteResult.LOCK_STALL:
+        repo_checkout_guard.prompt_unsent(_instance_of(self), request_id)
     safe_id = _loggable_request_id(request_id)
     window = response_write_window_secs(self._process.stdin, _RESPONSE_WRITE_BOUND_SECS)
     logger.warning(
@@ -425,6 +482,7 @@ async def send_request_for_answer(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
     req_id = self._next_id
     self._next_id += 1
     projection = getattr(self, "_native_skill_projection", None)
@@ -443,6 +501,7 @@ async def send_request_for_answer(
         # stall marks the runtime dead and raises AcpRuntimeStdinStalled (an
         # AcpRuntimeDead), caught below so the pending future is retrieved or
         # cancelled rather than left unretrieved.
+        self._record_prompt(method, req_id, folder)
         await self._write_request_bounded(data, req_id, method)
     except AcpRuntimeDead:
         # Reached two ways, both of which have already resolved the future
@@ -591,6 +650,7 @@ async def _send_and_await(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
     req_id = self._next_id
     self._next_id += 1
     ahead = self._one_at_a_time_ahead(method, req_id)
@@ -611,6 +671,7 @@ async def _send_and_await(
         # drain under the shared write lock and must not park it against
         # a flow-control-paused kiro-cli. A stall raises AcpRuntimeStdinStalled
         # (an AcpRuntimeDead), caught below to retrieve/cancel the future.
+        self._record_prompt(method, req_id, folder)
         await self._write_request_bounded(data, req_id, method)
     except AcpRuntimeDead:
         # Reached through _refuse_write_if_dead (a sibling stall marked the
