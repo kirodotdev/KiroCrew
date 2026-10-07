@@ -70,7 +70,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Callable, Mapping
+from typing import Callable
 
 from aiohttp import web
 
@@ -198,13 +198,12 @@ def _run_git(
     cwd: str,
     *,
     stdout_decoder: Callable[[bytes | str | None], str] = utf8_stdout,
-    env_overrides: Mapping[str, str] | None = None,
+    c_locale: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run git with an argv list (never a shell) inside ``cwd``, OS-sandboxed.
 
-    ``env_overrides`` is laid over the scrubbed environment, for a caller that
-    must classify git's diagnostics and so needs them in one locale
-    (``LC_ALL=C``).
+    ``c_locale`` runs git with ``LC_ALL=C`` and ``LANGUAGE=C``, for a caller
+    that classifies git's diagnostics and so needs them in English.
 
     Routed through the ``sandboxed_spawn_argv`` chokepoint, matching
     ``git_coord.py``'s treatment of agent-influenced git: the repository is
@@ -248,8 +247,8 @@ def _run_git(
         )
     except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
         raise SandboxUnavailable(str(exc)) from exc
-    if env_overrides:
-        env.update(env_overrides)
+    if c_locale:
+        env.update(LC_ALL="C", LANGUAGE="C")
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         # Bytes mode, decoded by utf8_stdout: text mode's universal-newline
