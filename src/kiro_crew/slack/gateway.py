@@ -129,6 +129,7 @@ from kiro_crew.cron import (  # noqa: F401
     build_cron_session_context,
     effective_wake_budget,
 )
+from kiro_crew.cron_deliverable import extract_cron_deliverable
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
@@ -4904,6 +4905,9 @@ class GatewayOrchestrator:
                         # the finally must NOT restore the re-injection flag --
                         # only for a succeeded stop reason.
                         _seq_landed = stop_reason_landed(_seq_stop["reason"])
+                        # Before the placeholder and every annotation, so only
+                        # the model's own narration is cut.
+                        result_text = extract_cron_deliverable(result_text)
                         if not result_text:
                             result_text = _gate.empty_reply_placeholder()
                         result_text = _annotate_model_fallback(result_text, client)
@@ -5182,6 +5186,12 @@ class GatewayOrchestrator:
                 # finally must NOT restore the re-injection flag -- only for a
                 # succeeded stop reason.
                 _turn_landed = stop_reason_landed(_turn_stop["reason"])
+
+                # A job whose answer marks a <deliverable> block delivers only
+                # that block. Cut before the placeholder and the
+                # annotations below, so the refusal and fallback notes the
+                # framework appends always survive it.
+                result_text = extract_cron_deliverable(result_text)
 
                 # Recorded, not inferred from the text: the dedup hash below
                 # swaps the placeholder for its count-free twin only when the

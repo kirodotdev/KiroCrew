@@ -148,6 +148,16 @@ The dashboard and Slack `cron list` command show the next scheduled run time for
 
 Jobs with `silent: true` suppress auto-delivery to Slack and dashboard. The agent decides when to notify using the `send_message` MCP tool. Useful for monitoring jobs that should only alert when something changes.
 
+## Delivering Only the Final Block
+
+An agent cron delivers its whole answer, so narration such as "I'll run the checks... now checking..." lands above the digest. To deliver only the digest, ask in the job's message for the result to be wrapped in a `<deliverable>` block:
+
+```
+Check the PR queue and write a short digest. Wrap the digest in <deliverable></deliverable>.
+```
+
+When the answer contains one or more complete `<deliverable>...</deliverable>` blocks, only their contents are delivered, joined by a blank line, and everything outside them is dropped. Put an `[OPTIONS: ...]` line inside the block if the job offers buttons. When there is no complete block, or every block is empty, the whole answer is delivered as before, so a run where the model forgets the marker is never delivered empty. The cut applies to the stored result, the chat tab, the bell and every channel alike. Notes Kiro Crew adds itself (a model fallback, a blocked tool call, an empty reply) are added after the cut and always delivered.
+
 ## Stateless Cron (Ephemeral Sessions)
 
 By default, each agent cron reuses the same session across runs — context accumulates and the agent can reference previous results. For polling or scanner-style jobs where context accumulation causes OOM or LLM slowdown, set `persistent_session: false`:

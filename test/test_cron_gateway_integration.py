@@ -1012,7 +1012,9 @@ def _make_gw_for_llm():
     return gw
 
 
-async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1):
+async def _run_llm_callback(
+    gw, job, *, get_or_create_side_effect=None, fires=1, stream_text="Agent response here"
+):
     """Run the cron callback for an LLM-based job through _init_cron.
 
     get_or_create_side_effect: if provided, set as the side_effect on
@@ -1030,7 +1032,7 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1)
         gw.sessions.get_or_create = AsyncMock(return_value=(provider_mock, True, False))
 
     _embed_mock = AsyncMock(return_value=("full prompt", None))
-    _stream_mock = AsyncMock(return_value="Agent response here")
+    _stream_mock = AsyncMock(return_value=stream_text)
 
     with (
         patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
@@ -1337,6 +1339,57 @@ class TestModelFallback:
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+
+class TestDeliverableBlock:
+    """An agent cron whose answer marks a <deliverable> block delivers only it."""
+
+    _NARRATED = (
+        "I'll run the checks... now checking the queue.\n\n"
+        "<deliverable>\n*Daily digest*\n- 3 PRs merged\n</deliverable>\n\nDone."
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_marked_answer_delivers_and_stores_only_the_block(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+
+        result, _ = await _run_llm_callback(gw, job, stream_text=self._NARRATED)
+
+        assert result == "*Daily digest*\n- 3 PRs merged"
+        assert job.last_result == "*Daily digest*\n- 3 PRs merged"
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_answer_is_delivered_whole(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+
+        result, _ = await _run_llm_callback(gw, job, stream_text="I'll check.\n\nAll green.")
+
+        assert result == "I'll check.\n\nAll green."
+
+    @pytest.mark.asyncio
+    async def test_the_framework_annotation_survives_the_cut(self):
+        """A downgrade note is the framework's, not narration: it is never cut."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-fancy-model")
+        provider_mock = MagicMock()
+        calls = [0]
+
+        async def _side_effect(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError("model 'claude-fancy-model' is not available")
+            return (provider_mock, True, False)
+
+        result, _ = await _run_llm_callback(
+            gw, job, get_or_create_side_effect=_side_effect, stream_text=self._NARRATED
+        )
+
+        assert result.startswith("⚠️")
+        assert "claude-fancy-model" in result
+        assert result.endswith("*Daily digest*\n- 3 PRs merged")
+        assert "I'll run the checks" not in result
 
 
 class TestThrottleFallbackCronWiring:
