@@ -798,10 +798,12 @@ off the installer builds no publisher and registers no listener.
 A fold marked `eager` -- every fold, today -- is folded when its entry lands, not when a
 reader asks. The two families get there differently. A SLOT fold interprets one entry
 type, and its reader has to walk every line of every unit the slot ran under to find it,
-so a cold cell is O(the slot's whole history) for a value that is a function of entries
-this process just wrote. A SESSION fold reads one unit's own file and resumes from its
-savepoint, so its cold read is cheaper -- but the panel that draws it re-read it on every
-turn edge and every tab reopen, which a push removes.
+so a cell with no savepoint behind it is O(the slot's whole history) for a value that is a
+function of entries this process just wrote. A SESSION fold reads one unit's own file, so
+its cold read is cheaper -- but the panel that draws it re-read it on every turn edge and
+every tab reopen, which a push removes. Both families resume from a savepoint on disk
+(section 7), so what a restart or an eviction costs either of them is the tail rather than
+the history.
 
 **One worker, one wake, both families.** The wake names the unit. A slot fold is
 advanced for the slot that unit's entry belongs to (`read_slot_projection`); the unit's
@@ -963,13 +965,14 @@ deployment that needs it warm is a higher ceiling.
 recorded with its charge (`slot_fold_over_ceiling`), in a record bounded at
 `OVERSIZE_SLOT_CELL_LIMIT` cells, least recently refused first (an evicted entry costs
 one more fold, refused and recorded again). A later wake for that (slot, fold) is
-skipped: folding a cell it cannot keep is a cold fold of every unit the slot ran under,
-thrown away, once per wake. The read path still folds it when asked, which is the lazy behaviour. A pass
-that can store the cell -- a raised ceiling, a state that shrank -- clears the record.
-At the declared caps and the default ceiling, `radar` is the one fold that lands here;
-the other three fit with room to spare. A `work` board holding its full parked set also
-lands here, because each parked entry is charged a whole entry. Session cells are not skipped: a session fold
-resumes from its savepoint, so a pass costs the tail rather than the history.
+skipped: folding a cell it cannot keep is a fold of every entry above that slot's
+savepoint, thrown away, once per wake. The read path still folds it when asked, which is
+the lazy behaviour. A pass that can store the cell -- a raised ceiling, a state that
+shrank -- clears the record. At the declared caps and the default ceiling, `radar` is the
+one fold that lands here; the other three fit with room to spare. A `work` board holding
+its full parked set also lands here, because each parked entry is charged a whole entry.
+Session cells are not skipped: a session fold's savepoint is per unit and its tail is one
+file's, so a pass there costs less than a slot's does across the units it joins.
 
 Below the worst case, eviction order does mean "whoever has the biggest board loses".
 That is the POINT -- one 2 GiB cell should lose to four hundred small ones -- because
@@ -1747,6 +1750,143 @@ version it wants moved, so under-retiring fails CI rather than shipping. With th
 place the shared number's only remaining effect was its cost: a counting fix in one
 fold retired all six, and the units that paid the six refolds were the long-lived
 ones savepoints exist for.
+
+### 7.1 The SLOT fold's savepoint
+
+A slot fold has the same problem the session folds had and a worse version of it: the
+warm cell above is per process and bounded by resident bytes, so a gateway restart and a
+ceiling eviction both used to re-fold every unit the slot ran under from its first
+record. Measured on a 644 MB single-segment log of 310,000 `ledger/recorded` entries, one
+host, a fresh process per read and the file warm in the page cache: 70.2 s with no
+savepoint and all 310,000 entries parsed, 21.2 s resuming from one with nothing parsed
+below it. The read that pays this is `session_ledger.read_state`, which is how an agent
+recovers what it was working on, so without a savepoint a restart makes the first ledger
+read of each slot the slowest one -- and `#16663` is that read hitting its timeout.
+
+The one cold fold that WRITES the savepoint costs 74.5 s on the same log, about four
+seconds over the fold that writes nothing: the write re-reads the prefix digest it is
+about to certify. That is paid once and buys every later restart the 70 s.
+
+Same store, same kernel envelope, same `prefix_admit`, in a leaf of its own:
+
+```
+<newest unit's store dir>/slot-projections/<fold>.json
+{"v", "key", "state_version", "watermark",
+ "identity": {"slot", "units", "marks", "unit", "origin", "first_seq"},
+ "witness": {"seq", "prefix_sha", "prefix_records"},
+ "state"}
+```
+
+**Beside the session folds' `projections/`, never inside it.** The kernel store derives a
+file name from the fold name alone, and `tools` is read both as a session fold and as a
+slot fold, so one directory would have the two overwrite each other -- each then refused
+by the other's identity block for the life of the unit, which is correct and leaves
+neither fold a savepoint it ever gets to use.
+
+**At the NEWEST unit**, which is the only unit a continuation lets grow and the one whose
+bytes the witness is a digest of. The file therefore inherits the `crew-log` fence and is
+removed with the unit, and a slot that gains a unit -- a session reset -- finds no
+savepoint at its new newest unit and folds cold once, which is what the warm cell already
+does for a changed unit list.
+
+**The identity block carries the whole unit vector**, because the state was folded over
+all of it: the slot key, the units in fold order, and every EARLIER unit's whole mark
+(`origin`, height, `size`, `mtime_ns`) as `_folded_marks` recorded it. That is the same
+comparison `_continuable` makes before carrying a warm cell forward, so the savepoint is
+admitted on exactly the shapes the warm cell is. An added or removed unit, an earlier unit
+that grew, an earlier unit rewritten in place, and a unit recreated under the same id each
+refuse the file; the newest unit is held to its `origin` and its witness instead.
+
+**Two positions, and the tie between them is checked on both sides.** The kernel orders a
+slot stream by an ORDINAL -- a unit's base plus an entry's seq -- while the checkpoint
+`_slot_checkpoint` answers with reports the newest unit's OWN seq. So `watermark` is the
+ordinal the cell resumes at, the witness's `seq` is the unit seq the tail stream resumes
+from, and the two differ by the newest unit's ordinal base. That base is reproducible
+across processes only BECAUSE every earlier mark is in the identity block: a vector that
+compares equal yields the same base. Nothing is written or resumed whose `watermark` is
+not `base + witness.seq`, since an ordinal off by a unit's height would resume the cell
+past entries the tail then folds again, or short of ones it never folds.
+
+**A warm continuation writes too**, which is where this departs from the session half. A
+session pass standing on a cached bundle writes nothing, because a bundle records no
+digest and nothing a later pass can read is evidence about the bytes below its seq. A
+slot cell CARRIES its digest (`_SlotMemo.prefix`) and `_continuable` re-checks it through
+`_prefix_holds` before carrying the cell forward, so custody of the already-folded prefix
+survives from the pass that folded it to this one. Without this a gateway that stays up
+would leave the savepoint wherever the process first folded, and the restart it exists for
+would replay the whole gap.
+
+**Nothing writes without re-reading the bytes its state came from.** `_persist_slot_fold`
+confirms the digest at the moment of the write, which is the "after" half of the rule the
+rest of this section states, and it refuses a pass whose `reached` is not the height it
+sampled before folding -- a file that grew underneath it leaves the digest covering fewer
+bytes than the state was folded from. Both cost the savepoint and never the read, which is
+already served.
+
+**A resumed read renders the state before trusting it.** The admission conditions read a
+state's top level, so a payload malformed BELOW it survives a tail that touches nothing
+and raises in the render its caller performs afterwards -- and the ledger's reader answers
+that by logging and serving the EMPTY record, so such a file would empty a live slot's
+ledger on every read for the life of the unit. `_resume_slot_fold` renders once inside its
+own guard, discards the file on any failure, and folds cold.
+
+The cadence is `MIN_ADVANCE_ENTRIES`, the one this section already names, so a short slot
+leaves no file: folding it from the start is already cheap. `test_crew_log_slot_fold_savepoint.py`
+pins one case per refused shape above, each asserting the resumed value equals the
+from-empty value AND that the read really walked the log -- without the second assertion
+two cold folds agree trivially.
+
+**EVERY pass reads its own digest before folding, the resumed one included.** A cell's
+`prefix` has to cover the bytes that cell's own pass consumed. The savepoint's stored
+witness looks like a free substitute on the resumed path, since `prefix_admit` has just
+verified it against the live file -- but it ends at the seq the savepoint was WRITTEN at,
+and a resumed pass folds the tail above that. Carrying it breaks both halves of this
+section at once, silently. The next continuation asks `_prefix_holds` about the saved
+boundary only, so the tail repair named above -- the one this digest exists for --
+compares equal while the file is taller, growth is admitted, and the cell keeps state
+folded from bytes the file has replaced. And `_persist_slot_fold` writes a witness whose
+`seq` sits above its own `prefix_records`, which `prefix_admit` refuses on the next read,
+so every OTHER restart cold-folds behind a savepoint that looks healthy on disk. So
+`_resume_slot_fold` reads `_unit_prefix(units[-1])` before its pass and `_vouched` after
+it, and `save_slot` refuses a witness whose `records` is below `seq - first_seq + 1` --
+`prefix_admit`'s own inequality, asked at the write so a payload that could only ever be
+refused is never written. `SlotSavepoint` hands back no digest at all for the same
+reason: a field whose only use was that substitution is a field that invites it again.
+
+**And the savepoint is RE-ADMITTED after the pass.** `load_slot` admits it against the
+file as it is then, and the window to the pass's own digest capture is not empty: the
+store's supersede repair replaces orphan chunk records at seqs the savepoint already
+consumed. The tail starts above those seqs so the fold never reads the replacement, and
+the digest captured after the repair matches the repaired file, so `_vouched` accepts it
+-- every check on the resuming side passes while the state came from bytes the repair
+removed. `checkpoint.slot_resume_still_verifies` asks `load_slot` again once the fold is
+done, which is the same admission rather than a second digest routine that would have to
+agree with it, and a mismatch costs a cold fold. It is
+`resumed_prefix_still_verifies` for the slot half, separate only because the identity it
+re-compares is the unit vector rather than one log's.
+
+**THE ORDER OF A STATE'S KEYS IS PART OF THE STATE.** `DirectoryCheckpointStore.save`
+serializes with `sort_keys=True`, which is right for an envelope a person greps and
+wrong for these folds: `ledger`'s artifact map and `radar`'s `last_update` are ordered by
+INSERTION and age out `next(iter(...))`. A state handed to the kernel as an object comes
+back alphabetical, so on a map whose keys are not already in alphabetical order the
+resumed read evicts whichever key sorts first instead of the oldest one -- which can be
+the artifact recorded LAST, and the record served then disagrees with a cold fold for the
+life of the unit. So `save_slot` encodes the state itself without `sort_keys` and
+`load_slot` decodes it, under `_SLOT_STATE_JSON`. The kernel keeps sorting the envelope
+around it and nothing changes for its other clients, whose folds would each need their
+own audit before that sort could be called safe to drop. A payload from before this
+framing decodes to a state with none of the fold's keys, which `Checkpoint.from_dict`
+refuses, so it is retired to one cold fold rather than misread. The escaping costs about
+1 KB on a 207 KB `ledger` savepoint, against the 2 MiB cap.
+
+The remaining linear cost of a resumed read is not the fold. It is the prefix digests
+(about 4.9 s each of the 21.2 s above -- one read before the pass, one confirming it held
+across it, one re-admitting the savepoint after it) and `iter_from`'s scan to reach the
+resume seq (6.7 s), all of which walk the file without decoding it and none of which
+this savepoint can remove. The fold
+itself -- the 60 s the cold read spends -- is gone, and it is where the cost was: a
+`ledger` state holding its full event tail is copied once per entry that moves the fold.
 
 ## 8. The pull-request holders -- the second fold across logs
 
