@@ -82,16 +82,14 @@ export const BROWSE_FILES_TIMEOUT_MS = 10_000
  *  name came back redacted, so echoing it to the switch route could not work. */
 export interface GitBranchRow {
   name: string
-  sha: string
   date: string
   author: string
   subject: string
   switchable: boolean
   current?: boolean
-  upstream?: string
+  /** Commits ahead of / behind the branch's upstream; absent when untracked or equal. */
   ahead?: number
   behind?: number
-  upstreamGone?: boolean
 }
 
 export interface GitBranchList {
@@ -160,7 +158,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGitBranches: (path: string) => fetch('/api/project/git/branches?path=' + encodeURIComponent(path)).then(j) as Promise<GitBranchList>,
     /** Check out `branch`; `create` makes it at HEAD, `track` makes it tracking `<remote>/<name>`. Owner-only. */
     projectGitSwitch: (body: { path: string; branch: string; create?: boolean; track?: string }) =>
-      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string; previous: string | null }>,
+      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string }>,
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
