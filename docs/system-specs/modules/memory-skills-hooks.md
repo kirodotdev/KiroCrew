@@ -4728,6 +4728,19 @@ index, `$skillname`, and `skill_search`. Set to a positive integer to re-enable.
 pointer block is attributed as `skill_hint` in the per-turn context breakdown, so
 it is never folded into whatever precedes it.
 
+**`/name` as a `$name` alias (#6026).** kiro-cli users invoke a skill as
+`/my-skill`. On the kiro path a message whose first word is `/name` and names no
+command is resolved as if it began `$name` (`slash_skill_alias` in
+`dashboard/chat_utils.py`, applied by `_expand_dollar_skills`). Commands always
+win: a name in `_SLASH_COMMANDS`, in `SLASH_COMMAND_DESCRIPTIONS`, or in
+`QUICK_PROMPTS` is never aliased, so a skill sharing a command's name stays
+reachable only through `$`. Only the resolution text is rewritten; the agent sees
+the message as typed plus the appended `[Skill: name]` block, and an unmatched
+`/name` is the plain text it always was, with no `not_found` audit (most leading
+slashes are paths, not skill attempts). Resolution is the same allowlist and the
+same project-trust scoping `$` uses. Under the `claude_code` provider every
+leading `/` is the harness's own command, so the alias does not apply there.
+
 **Why a per-skill opt-out rather than per-session dedup.** Injecting the body on
 first match and a pointer thereafter would capture the measured resend waste
 without any per-skill declaration, and it was considered. It was not chosen here

@@ -579,6 +579,36 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     return first_word.lower() not in QUICK_PROMPTS
 
 
+_SLASH_SKILL_TOKEN_RE = re.compile(r"/([a-z0-9][a-z0-9/_-]*)")
+
+
+def slash_skill_alias(message: str) -> str | None:
+    """The ``$skill`` spelling of a leading ``/name`` that names no command.
+
+    kiro-cli users invoke a skill as ``/my-skill``; in Kiro Crew the token for a
+    skill is ``$my-skill``. This lets the CLI habit work without a second skill
+    vocabulary: a message whose FIRST word is ``/name`` is resolved as if it began
+    ``$name``. Commands always win -- any name the dashboard treats as a command
+    (:data:`_SLASH_COMMANDS`, a described harness command such as ``/review``) or
+    as a quick prompt is never aliased, so a skill that shares a command's name
+    stays reachable only through ``$``. Returns the rewritten text to RESOLVE
+    against, or None; the caller still decides whether any skill matched, and an
+    unmatched alias leaves the message as the plain text it is today.
+    """
+    stripped = message.lstrip()
+    first_word = stripped.split(None, 1)[0] if stripped else ""
+    if not _SLASH_SKILL_TOKEN_RE.fullmatch(first_word):
+        return None
+    lowered = first_word.lower()
+    if (
+        first_word in _SLASH_COMMANDS
+        or lowered in SLASH_COMMAND_DESCRIPTIONS
+        or lowered in QUICK_PROMPTS
+    ):
+        return None
+    return "$" + stripped[1:]
+
+
 def _tool_identity_fields(event: "LLMEvent") -> dict[str, str]:
     """``tool_name`` / ``mcp_server`` for a tool_call frame, present only when known.
 

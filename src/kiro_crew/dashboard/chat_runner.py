@@ -336,6 +336,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
     run_to_completion,
     slack_mirror_is_paused,
+    slash_skill_alias,
     slot_history_key,
     tighten_live_slot_memory_mode,
     tighten_replacement_to_restricted_original,
@@ -4653,14 +4654,18 @@ def _expand_dollar_skills(
     Returns ``(expanded_message, count)`` where *count* is the number of skills
     appended (0 if none resolved).
     """
-    if "$" not in message:
+    # A leading `/name` that names no command resolves as `$name`, so the
+    # kiro-cli `/my-skill` habit loads the skill. Only the resolution text is
+    # rewritten: the user's message reaches the agent as typed.
+    resolve_text = slash_skill_alias(message) or message
+    if "$" not in resolve_text:
         return message, 0
     skills = _get_skills(state)
     try:
         only = session_skill_globs(
             session_key, slot.agent or "kirocrew", project_dir=slot.project or None
         )
-        resolved = skills.resolve_dollar_skills(message, slot.project or None, only=only)
+        resolved = skills.resolve_dollar_skills(resolve_text, slot.project or None, only=only)
     except Exception:
         logger.exception("dollar-skill resolution failed")
         # Audit the failed resolution attempt — the security-controls guideline
@@ -10576,7 +10581,12 @@ async def _run_chat(
         # the context (expand-what-the-user-typed, principle of least surprise).
         # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
         # path. Token is left literal; resolved bodies are appended.
-        if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
+        if (
+            ("$" in message or slash_skill_alias(message) is not None)
+            and not is_slash
+            and not prompt_expanded
+            and _prompt_depth < 1
+        ):
             # Offloaded: expansion walks the skills tree(s) and reads skill
             # bodies, which is filesystem work that must not run on the event
             # loop — a large tree would stall the gateway heartbeat and every
