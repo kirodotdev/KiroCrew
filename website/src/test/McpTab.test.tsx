@@ -847,6 +847,10 @@ describe('McpTab disabled-in-config rows', () => {
       const title = badge?.getAttribute('title') ?? ''
       expect(title).toBe(`${label}: off (disabled in the shared MCP config; change it there)`)
       expect(badge?.getAttribute('aria-label')).toBe(title)
+      // #13076: the switch state and glyph agree with the "off" name even
+      // though the row's presence still reads on for this scope.
+      expect(badge).toHaveAttribute('aria-checked', 'false')
+      expect(badge?.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'false')
       expect(title).not.toMatch(/pending uninstall/)
       names.push(title)
     }
@@ -1035,5 +1039,23 @@ describe('McpTab scope badges are on/off switches (#13076)', () => {
     const kiro = switchFor('alpha', 'kiroGlobal')
     expect(kiro).toHaveAttribute('aria-checked', 'false')
     expect(kiro.getAttribute('title')).toBe('Kiro: off (click to turn on, then Apply)')
+  })
+
+  it('a disabled-in-config row staged for uninstall still reads off', async () => {
+    mockApi.mcpServers.mockResolvedValue([{
+      ...server('figma'), status: 'disabled', enabled: false, kirocrewManaged: false,
+      disabledIn: 'shared', disabledInFile: '~/.kiro/settings/mcp.json', tools: [],
+      presence: { kirocrew: true, kiroGlobal: true },
+    }])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    fireEvent.click(within(row('figma')).getByRole('button', { name: 'Uninstall' }))
+    await waitFor(() => expect(screen.getByText(/1 pending change/)).toBeInTheDocument())
+    for (const scope of ['kirocrew', 'kiroGlobal']) {
+      const sw = switchFor('figma', scope)
+      expect(sw).toBeDisabled()
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      expect(sw.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'false')
+    }
   })
 })

@@ -229,12 +229,16 @@ function ScopeBadge({
   // badge is the per-server enable/disable for Kiro Crew sessions. A bare
   // coloured word did not read as a control, so it carries switch semantics
   // and a toggle glyph that shows the state without relying on colour.
-  const Glyph = active ? ToggleRight : ToggleLeft
+  // An inert switch (shared-config disable or a staged uninstall) is off
+  // whatever its presence says: the server will not load either way, so the
+  // switch state, glyph and accessible name must all read off together.
+  const checked = active && !disabled
+  const Glyph = checked ? ToggleRight : ToggleLeft
   return (
     <button
       type="button"
       role="switch"
-      aria-checked={active}
+      aria-checked={checked}
       disabled={disabled}
       onClick={onClick}
       title={title}
@@ -242,7 +246,7 @@ function ScopeBadge({
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors ${bg} ${pendingRing}`}
       data-scope={scope}
     >
-      <Glyph className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-glyph" data-on={active ? 'true' : 'false'} />
+      <Glyph className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-glyph" data-on={checked ? 'true' : 'false'} />
       {label}
     </button>
   )
