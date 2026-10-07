@@ -35,7 +35,7 @@ describe('detectBrowserLanguage', () => {
     // exact regional tag isn't one we ship.
     withLanguages(['zh'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
     withLanguages(['zh-Hans'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
-    withLanguages(['zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-HK'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 
   it('honours preference order', () => {
@@ -118,8 +118,8 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
    * mirror case, where a user who ranked English first gets Chinese.
    */
   it('prefers a later EXACT match over an earlier loose one', () => {
-    // zh-TW only matches zh-CN loosely; `en` is exact and explicitly ranked.
-    withLanguages(['zh-TW', 'en'], () => expect(detectBrowserLanguage()).toBe('en'))
+    // zh-MO only matches zh-CN loosely; `en` is exact and explicitly ranked.
+    withLanguages(['zh-MO', 'en'], () => expect(detectBrowserLanguage()).toBe('en'))
     withLanguages(['zh-Hant', 'en-US'], () => expect(detectBrowserLanguage()).toBe('en'))
     withLanguages(['zh-HK', 'en'], () => expect(detectBrowserLanguage()).toBe('en'))
   })
@@ -135,7 +135,7 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
   })
 
   it('uses the loose match when nothing matches exactly', () => {
-    withLanguages(['zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['zh-HK'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
     withLanguages(['tlh-US', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 
@@ -145,14 +145,41 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
     // they must win outright over an earlier tag's loose script fallback.
     withLanguages(['fr-FR', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('fr'))
     withLanguages(['pt-BR'], () => expect(detectBrowserLanguage()).toBe('pt'))
-    withLanguages(['es-MX', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('es'))
-    withLanguages(['ja-JP', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('ja'))
-    withLanguages(['ko-KR', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('ko'))
+    withLanguages(['es-MX', 'zh-HK'], () => expect(detectBrowserLanguage()).toBe('es'))
+    withLanguages(['ja-JP', 'zh-HK'], () => expect(detectBrowserLanguage()).toBe('ja'))
+    withLanguages(['ko-KR', 'zh-HK'], () => expect(detectBrowserLanguage()).toBe('ko'))
   })
 
   it('takes the highest-ranked loose match when several match loosely', () => {
     // The leading tag must be a language we do NOT ship, or it wins outright and
     // this stops testing loose-match ranking at all.
-    withLanguages(['tlh-US', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['tlh-US', 'zh-HK', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+  })
+})
+
+describe('zh-TW is its own catalog, not a fallback to zh-CN', () => {
+  it('detects a zh-TW browser as zh-TW, case-insensitively', () => {
+    withLanguages(['zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-TW'))
+    withLanguages(['zh-tw'], () => expect(detectBrowserLanguage()).toBe('zh-TW'))
+    withLanguages(['zh-TW', 'en'], () => expect(detectBrowserLanguage()).toBe('zh-TW'))
+  })
+
+  it('keeps preference order between the two Chinese catalogs', () => {
+    withLanguages(['zh-TW', 'zh-CN'], () => expect(detectBrowserLanguage()).toBe('zh-TW'))
+    withLanguages(['zh-CN', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+  })
+
+  it('leaves every other Chinese tag on its existing zh-CN fallback', () => {
+    // Only the exact Taiwan tag changed. zh-Hant / zh-HK / zh-MO policy is a separate
+    // decision, so their loose fallback must stay where it was.
+    for (const tag of ['zh', 'zh-Hans', 'zh-Hant', 'zh-HK', 'zh-MO']) {
+      withLanguages([tag], () => expect(detectBrowserLanguage(), tag).toBe('zh-CN'))
+    }
+  })
+
+  it('restores a persisted zh-TW choice over the browser', () => {
+    withLanguages(['zh-CN'], () => expect(resolveLanguage('zh-TW')).toBe('zh-TW'))
+    localStorage.setItem(LANG_STORAGE_KEY, 'zh-TW')
+    expect(readStoredLanguage()).toBe('zh-TW')
   })
 })

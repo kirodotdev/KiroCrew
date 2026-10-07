@@ -85,6 +85,7 @@ export const OPERAND_QUOTE_PAIRS = {
   ja: ['\u300C', '\u300D'],
   ko: ['\u2018', '\u2019'],
   'zh-CN': ['\u201C', '\u201D'],
+  'zh-TW': ['\u300C', '\u300D'],
 }
 
 const count = (haystack, needle) => haystack.split(needle).length - 1

@@ -29,6 +29,7 @@ type CatalogModule = { default: Record<string, unknown> }
  */
 const AUTHORED_LOADERS: Record<string, () => Promise<CatalogModule>> = {
   'zh-CN': () => import('./locales/zh-CN.json'),
+  'zh-TW': () => import('./locales/zh-TW.json'),
   hi: () => import('./locales/hi.json'),
   es: () => import('./locales/es.json'),
   fr: () => import('./locales/fr.json'),

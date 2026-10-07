@@ -1,11 +1,13 @@
 {
-  "_comment": "Do-not-translate list. These proper nouns must appear verbatim in every language. Matching is word-boundary, not substring. Enforced by glossary.test.ts. A phrase belongs here only if no identifier form of it (dev_fleet, DEVFLEET) and no legitimate compound spelling (German 'Kiro Crew-Dashboard') appears in the catalogs: the check is a near-miss detector, so it would read those as respellings of the product name.",
+  "_comment": "Do-not-translate list. These proper nouns, and the few CLI command literals the UI shows inside a code span (gh auth login), must appear verbatim in every language. Matching is word-boundary, not substring. Enforced by glossary.test.ts. A phrase belongs here only if no identifier form of it (dev_fleet, DEVFLEET) and no legitimate compound spelling (German 'Kiro Crew-Dashboard') appears in the catalogs: the check is a near-miss detector, so it would read those as respellings of the product name.",
   "dnt": [
+    "/prompts get name",
     "Agent Worlds",
     "Amazon Polly",
     "Atlassian",
     "AWS",
     "AWS SSM Session Manager",
+    "aws configure set",
     "Asana",
     "Azure DevOps",
     "Builder ID",
@@ -19,6 +21,7 @@
     "Docker",
     "DWG",
     "Git",
+    "gh auth login",
     "GitHub",
     "GitLab",
     "IAM Identity Center",

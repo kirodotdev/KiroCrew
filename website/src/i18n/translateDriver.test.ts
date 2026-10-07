@@ -62,12 +62,12 @@ describe('locale list derivation', () => {
     expect(parseLanguages(LANGUAGES_SRC).map((l: { code: string }) => l.code)).not.toContain('en-XA')
   })
 
-  it('leaves 11 translation targets once English is removed', () => {
+  it('leaves 12 translation targets once English is removed', () => {
     // A literal, NOT SUPPORTED_LANGUAGES.length - 1: the test above already
     // asserts the parse equals that export, so deriving the count from it here
     // would compare the parse against itself and pass for any fan-out size.
     const parsed = parseLanguages(LANGUAGES_SRC)
-    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(11)
+    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(12)
   })
 
   it('throws rather than guessing when the export cannot be found', () => {

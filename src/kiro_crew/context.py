@@ -915,7 +915,7 @@ _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 #: value only via ``isRestorableLanguage()`` → ``SUPPORTED_CODES.includes()``
 #: (no lowering, no primary-subtag fallback — those apply only to *browser*
 #: detection tags, which never reach this field). A stored ``zh-cn`` or
-#: ``zh-TW`` therefore degrades to auto-detect in the SPA, and the backend must
+#: ``zh-HK`` therefore degrades to auto-detect in the SPA, and the backend must
 #: reach the same verdict or the two disagree about the active language —
 #: which is exactly the bug this set exists to prevent.
 #:
@@ -926,7 +926,7 @@ _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 #: generated, not a language a model can write. Treating it as non-catalog
 #: keeps injection behaviour identical across build modes.
 _UI_LANGUAGE_CATALOGS = frozenset(
-    {"en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
+    {"en", "zh-CN", "zh-TW", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
 )
 
 

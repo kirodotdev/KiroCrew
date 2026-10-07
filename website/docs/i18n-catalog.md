@@ -61,7 +61,9 @@ Catalogs live in `src/i18n/locales/`:
 | `en-XA.json` | generated pseudolocale, dev-only. Not a language. |
 
 Shipped languages, ordered by global speaker count (which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`.
+order): `en`, `zh-CN`, `zh-TW`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`.
+`zh-TW` sits directly after `zh-CN` so a Chinese tag with no catalog of its own
+(`zh`, `zh-Hant`, `zh-HK`) keeps falling back to `zh-CN`, the first `zh-*` entry.
 
 **Right-to-left languages (Arabic, Urdu) are intentionally not shipped.** The
 layout is built from physical-direction utilities (`pl-*`, `left-*`, `text-left`)
@@ -117,7 +119,7 @@ Catalog values never hardcode the displayed product name. They interpolate
 `interpolation.defaultVariables` with the stock value `Kiro Crew`, so the stock
 build renders exactly what a literal would. The indirection exists for
 downstream editions: overriding one variable rebrands every catalog string,
-instead of forking 13 locale files through every upstream sync (see
+instead of forking 14 locale files through every upstream sync (see
 [extension-seams](extension-seams.md)).
 
 > The pre-existing catalog values were converted in batches (the full-catalog
@@ -237,7 +239,7 @@ allowlist you can forget to extend:
   restate it here.
 
 A new confirm key with `{{name}}` and no kind word fails CI until it is quoted
-in all 12 catalogs and added to the pin. The glyph pin then requires **every**
+in all 13 catalogs and added to the pin. The glyph pin then requires **every**
 non-exempt placeholder in a pinned key to be wrapped, not merely one of them.
 After changing English, regenerate `en-XA.json` with `npm run i18n:pseudo`.
 

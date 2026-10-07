@@ -2,7 +2,7 @@
  * Every catalog import lives here — a pure data module with no side effects and
  * no i18next dependency.
  *
- * Importing it pulls 14 modules and ~12 MB into the graph, which is why it is
+ * Importing it pulls 15 modules and ~13 MB into the graph, which is why it is
  * separate from `./index`: only `./all` (the eager entry the catalog tests and
  * the crew-companion / Mochi app windows use) and the tests that audit the full
  * catalog set pay that cost. The browser entry, `./lazy`, imports each catalog
@@ -13,6 +13,7 @@
  */
 
 import zhCN from './locales/zh-CN.json'
+import zhTW from './locales/zh-TW.json'
 import hi from './locales/hi.json'
 import es from './locales/es.json'
 import fr from './locales/fr.json'
@@ -49,6 +50,7 @@ import { EN_TRANSLATION } from './enCatalog'
 const AUTHORED_CATALOGS: Record<string, { translation: Record<string, unknown> }> = {
   en: { translation: EN_TRANSLATION },
   'zh-CN': { translation: zhCN },
+  'zh-TW': { translation: zhTW },
   hi: { translation: hi },
   es: { translation: es },
   fr: { translation: fr },
