@@ -26,6 +26,9 @@ from kiro_crew.messaging.approval import (
 from kiro_crew.messaging.commands import (
     compact_refusal_plain_text,
     compact_unsupported_backend,
+    context_recycle_warning,
+    recycle_backend,
+    recycle_warning_should_send,
 )
 from kiro_crew.messaging.conversation import (
     ConversationState,
@@ -654,6 +657,14 @@ class WhatsAppDispatcher:
         pct = self.sessions.check_context_usage(session_key, provider)
         may_speak = not unprompted and not delivery_is_muted(self.sessions, session_key, "whatsapp")
         soft, hard = self._thresholds()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(
+                self.sessions, self._conv, scope, session_key, pct, may_speak=may_speak
+            ):
+                await self._say(scope, context_recycle_warning())
+            return
         if pct >= soft:
             # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts

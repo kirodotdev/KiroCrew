@@ -55,6 +55,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
 )
 from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
+from kiro_crew.config.sections import CONTEXT_WARN_MARGIN_PCT
 from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
@@ -568,6 +569,84 @@ def compact_unsupported_reply(backend: str) -> str:
         f"ℹ️ Manual `/compact` isn't available on the `{backend}` backend, and "
         "Kiro Crew can't compact it for you either. Start a new chat with `/new` before "
         "the context fills up."
+    )
+
+
+def recycle_backend(provider: Any) -> str | None:
+    """Backend id when Crew will RECYCLE *provider*'s session at the threshold.
+
+    The one population the soft-threshold nudge must not stay silent for: a
+    backend in ``ACP_BACKENDS_CONTEXT_RECYCLE`` cannot take ``/compact``, so the
+    ordinary nudge is wrong for it -- but its session IS about to be restarted,
+    so silence is wrong too. A harness-managed backend answers ``None`` here and
+    keeps its suppression: its context shrinks on its own and nothing is lost.
+    """
+    backend = compact_unsupported_backend(provider)
+    if backend is None or compact_refusal_arm(backend) != COMPACT_ARM_RECYCLED:
+        return None
+    return backend
+
+
+def recycle_warning_due(sessions: Any, session_key: str, pct: float) -> bool:
+    """Is *pct* in the band where a recycle is near but has not fired yet?
+
+    The band is ``[threshold - CONTEXT_WARN_MARGIN_PCT, threshold)``, where the
+    threshold is the session's live ``session.autocompact_pct`` -- the reading the
+    recycle fires at. NOT the channel's ``soft_threshold_pct``: that defaults to
+    80 while the recycle defaults to 70, so a warning keyed to it would arrive
+    after the restart it warns about. At or past the threshold the recycle is
+    already under way and the post-restart notice speaks instead; promising
+    "soon" then would be false.
+    """
+    try:
+        threshold = float(sessions.effective_autocompact_pct(session_key))
+    except Exception:  # noqa: BLE001 -- a context notice must never fail a turn
+        logger.debug("recycle warning: threshold unreadable for %s", session_key, exc_info=True)
+        return False
+    return threshold - CONTEXT_WARN_MARGIN_PCT <= pct < threshold
+
+
+def recycle_warning_should_send(
+    sessions: Any, conv: Any, conv_key: Any, session_key: str, pct: float, *, may_speak: bool = True
+) -> bool:
+    """Decide the recycle warning for one turn, latch included; send iff ``True``.
+
+    The one copy of the band-and-latch rule every surface follows: inside the band
+    the warning goes out once per conversation (*conv*'s awaiting flag), and outside
+    it the flag is cleared so the next fill after a restart warns again. A surface
+    that may not speak this turn (*may_speak* false) keeps its one warning unspent.
+    """
+    if not recycle_warning_due(sessions, session_key, pct):
+        conv.clear_awaiting(conv_key)
+        return False
+    if not may_speak or conv.is_awaiting(conv_key):
+        return False
+    conv.set_awaiting(conv_key)
+    return True
+
+
+def context_recycle_warning(new_command: str = "/new") -> str:
+    """The advance warning for a recycle backend, in English.
+
+    The same facts the recycle arm of :func:`compact_unsupported_reply` states --
+    no compaction, a fresh session when the context fills, the agent forgets --
+    said BEFORE it happens, with the one action that helps. *new_command* is the
+    surface's own spelling (``!new`` on Discord, a code span where the surface
+    renders one).
+    """
+    return (
+        "⚠️ This conversation's context is getting long. This backend can't compact "
+        "it, so Kiro Crew will start a fresh session when the context fills up: the "
+        "chat keeps working, but the agent stops remembering the earlier turns. "
+        f"Send {new_command} to start fresh on your own terms first."
+    )
+
+
+def context_recycle_warning_zh() -> str:
+    """:func:`context_recycle_warning` for the three Chinese surfaces, said once."""
+    return (
+        "⚠️ 对话上下文已较长。当前后端无法压缩上下文，上下文快满时 Kiro Crew 会替你开一个新会话："
+        "对话可以继续，但助手不再记得之前的内容。你也可以先发 /new 自己开新会话。"
     )
 
 

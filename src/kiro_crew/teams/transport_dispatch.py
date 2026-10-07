@@ -45,8 +45,11 @@ from kiro_crew.messaging.commands import (
     YOLO_PHRASING_MARKDOWN,
     compact_unsupported_backend,
     compact_unsupported_reply,
+    context_recycle_warning,
     format_ttl,
     parse_dashboard_ttl,
+    recycle_backend,
+    recycle_warning_should_send,
     run_yolo_command,
     stop_running_turn,
 )
@@ -1681,6 +1684,12 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         soft, hard = self._thresholds()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(self.sessions, self._conv, email, session_key, pct):
+                await self._reply(inbound, context_recycle_warning("`/new`"))
+            return
         if pct >= soft:
             # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts

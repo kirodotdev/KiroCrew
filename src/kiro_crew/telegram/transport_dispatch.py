@@ -67,10 +67,13 @@ from kiro_crew.messaging.commands import (  # noqa: F401
     YOLO_PHRASING_PLAIN,
     compact_unsupported_backend,
     compact_unsupported_reply,
+    context_recycle_warning,
     cron_command_reply,
     format_ttl,
     lists_host_state,
     parse_dashboard_ttl,
+    recycle_backend,
+    recycle_warning_should_send,
     run_yolo_command,
     spawn_task_reply,
     stop_running_turn,
@@ -2387,6 +2390,15 @@ class TelegramDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self._soft_threshold()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(self.sessions, self._conv, route, session_key, pct):
+                assert self.client is not None
+                await self._reply(
+                    chat_id, context_recycle_warning(), thread=self._route_thread(route)
+                )
+            return
         if pct >= soft_pct and compact_unsupported_backend(provider):
             # Capability gate: the nudge advises /compact, which this
             # backend refuses — it compacts on its own as context fills, so

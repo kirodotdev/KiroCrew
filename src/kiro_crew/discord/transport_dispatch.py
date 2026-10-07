@@ -67,6 +67,9 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     compact_unsupported_reply,
+    context_recycle_warning,
+    recycle_backend,
+    recycle_warning_should_send,
     stop_running_turn,
 )
 from kiro_crew.messaging.conversation import reserve_new_generation
@@ -2474,6 +2477,13 @@ class DiscordDispatcher:
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self._soft_threshold()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(self.sessions, self._conv, scope_id, session_key, pct):
+                assert self.client is not None
+                await self.client.send_message(channel_id, context_recycle_warning("`!new`"))
+            return
         if pct >= soft_pct and compact_unsupported_backend(provider):
             # Capability gate: the nudge advises !compact, which this
             # backend refuses — it compacts on its own as context fills, so
