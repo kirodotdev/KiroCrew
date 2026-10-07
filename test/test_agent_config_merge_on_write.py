@@ -1071,24 +1071,12 @@ async def test_an_apps_root_child_that_vanished_after_the_listing_still_skips(tm
 
 
 @requires_symlinks
-def test_both_app_root_walks_agree_a_dangling_link_is_not_absence(tmp_path):
-    """ONE tree, BOTH readers: neither walk may call a dangling app root absent.
+def test_a_dangling_app_root_link_is_not_absence(tmp_path):
+    """A dangling link at an app root is unreadable, never an absent app.
 
-    Two modules decide independently whether an entry in the apps root stands for
-    an installed app, and they feed different decisions -- ``apps.manager``'s read
-    gates whether an ``mcpServers`` GRANT may be pruned, this walk gates whether an
-    app's BRIDGES may be deleted. Nothing else makes them agree, so this row is
-    what fails when they stop agreeing.
-
-    They cannot share one function: this side must RAISE (its contract is
-    fail-loud, and a name it cannot read is not a name it may report as unowned),
-    while the manager side returns a listing plus a completeness bool. What they
-    must share is the RULE, so this pins the rule on a single on-disk tree --
-    a dangling link at ``apps/demo`` -- and asserts each reader's own spelling of
-    "not absence". A later edit to either module's screens fails here instead of
-    silently moving one answer.
+    This walk gates whether an app's BRIDGES may be deleted, so an entry it
+    cannot read must refuse rather than report the app's names as unowned.
     """
-    from kiro_crew.apps.manager import list_apps_with_skips
     from kiro_crew.dashboard.handlers.agents import (
         AppOwnershipUnreadable,
         _app_declared_server_names,
@@ -1097,14 +1085,6 @@ def test_both_app_root_walks_agree_a_dangling_link_is_not_absence(tmp_path):
     apps_root = tmp_path / "apps"
     apps_root.mkdir()
     (apps_root / "demo").symlink_to(apps_root / "no-such-app-root")
-
-    with patch("kiro_crew.apps.manager.apps_dir", return_value=apps_root):
-        listing = list_apps_with_skips()
-    assert listing.apps == [], "a dangling root carries no readable record"
-    assert listing.complete is False, (
-        "the manager counts a link-ish entry as an app the listing DROPPED, so an "
-        "app missing from `apps` there carries no information"
-    )
 
     with (
         patch("kiro_crew.dashboard.handlers.agents.apps_dir", return_value=apps_root),
@@ -1122,9 +1102,7 @@ async def test_an_app_root_link_to_a_file_fails_the_put(tmp_path):
     The sibling the dangling-link screen cannot reach. Here ``lstat`` succeeds AND
     ``stat`` succeeds -- the target is a real file -- so nothing raises and the only
     thing that is False is ``S_ISDIR``. A screen that skips every non-directory
-    therefore reports the name as free, while ``apps.manager`` reads the same entry
-    through ``entry.is_symlink() or is_link_or_junction(entry)`` and counts it as an
-    app the listing DROPPED. That split is the same cannot-read-becomes-not-owned
+    therefore reports the name as free. That is the cannot-read-becomes-not-owned
     defect one shape over, so the link-ish half must refuse.
     """
     await _assert_refused_and_intact(tmp_path, app_root_shape="link_to_file")
@@ -1134,11 +1112,10 @@ async def test_an_app_root_link_to_a_file_fails_the_put(tmp_path):
 async def test_a_plain_file_where_an_app_root_belongs_still_skips(tmp_path):
     """The overshoot guard: refusing link-ish non-directories must spare plain ones.
 
-    ``_entry_stands_for_a_dropped_app`` deliberately does NOT count a plain file,
-    because a file BESIDE the app directories is an ordinary member of a healthy
-    apps root. So the new screen must split on link-ness, not on "is not a
-    directory" -- refusing every non-directory would turn any stray file in the
-    apps root into a 500 and disagree with the manager in the other direction.
+    A file BESIDE the app directories is an ordinary member of a healthy apps
+    root. So the screen must split on link-ness, not on "is not a directory" --
+    refusing every non-directory would turn any stray file in the apps root into
+    a 500.
 
     ``mcpServers`` is submitted EMPTY on purpose: a submitted entry always wins, so
     resubmitting ``demo:notes`` would decide the verdict without ever consulting the
@@ -1159,16 +1136,13 @@ async def test_a_plain_file_where_an_app_root_belongs_still_skips(tmp_path):
 
 
 @requires_symlinks
-def test_both_app_root_walks_agree_a_link_to_a_file_is_not_absence(tmp_path):
-    """ONE tree, BOTH readers, for the shape where nothing raises.
+def test_an_app_root_link_to_a_file_is_not_absence(tmp_path):
+    """A link to a file at an app root is not absence, even though nothing raises.
 
-    The agreement row above pins a tree where ``stat`` RAISES, so it cannot fail if
-    a reader starts deciding link-ness by whether the resolution threw. This tree
-    resolves cleanly and differs from a real app root only in ``S_ISDIR``, which is
-    what makes it the discriminating case: each reader has to reach "not absence"
-    from the entry's own link-ness rather than from a raised error.
+    The tree resolves cleanly and differs from a real app root only in
+    ``S_ISDIR``, so the walk must reach "not absence" from the entry's own
+    link-ness rather than from a raised error.
     """
-    from kiro_crew.apps.manager import list_apps_with_skips
     from kiro_crew.dashboard.handlers.agents import (
         AppOwnershipUnreadable,
         _app_declared_server_names,
@@ -1179,13 +1153,6 @@ def test_both_app_root_walks_agree_a_link_to_a_file_is_not_absence(tmp_path):
     target = apps_root / "not-a-directory.txt"
     target.write_text("not an app root", encoding="utf-8")
     (apps_root / "demo").symlink_to(target)
-
-    with patch("kiro_crew.apps.manager.apps_dir", return_value=apps_root):
-        listing = list_apps_with_skips()
-    assert listing.apps == [], "a link to a file carries no readable record"
-    assert (
-        listing.complete is False
-    ), "the manager counts a link-ish non-directory as an app the listing DROPPED"
 
     with (
         patch("kiro_crew.dashboard.handlers.agents.apps_dir", return_value=apps_root),

@@ -335,6 +335,32 @@ def mcp_server_alias(name: str) -> str:
     return slug or "mcp-server"
 
 
+def mcp_ref_owned_by(ref: object, servers: Any, *, per_tool: bool = True) -> bool:
+    """True when ``ref`` is ``@server`` (or, with ``per_tool``, ``@server/tool``)
+    for one of ``servers``.
+
+    The ``/`` boundary keeps a prefix-sharing name (``@serverx``) out of the match.
+    """
+    if not isinstance(ref, str):
+        return False
+    for server in servers:
+        bare = f"@{server}"
+        if ref == bare or (per_tool and ref.startswith(f"{bare}/")):
+            return True
+    return False
+
+
+def without_mcp_refs(refs: Any, servers: Any, *, per_tool: bool = True) -> list:
+    """Return ``refs`` minus every entry :func:`mcp_ref_owned_by` ``servers``.
+
+    Builds a new list, so a duplicated entry goes with its first copy.
+    """
+    servers = tuple(servers)
+    if not isinstance(refs, list):
+        return []
+    return [t for t in refs if not mcp_ref_owned_by(t, servers, per_tool=per_tool)]
+
+
 #: Marker that replaces an ``oauth.clientSecret`` on every dashboard READ of an
 #: agent spec. Same string the MCP header redaction uses, so a client that already
 #: knows to treat that value as "present but hidden" needs no second rule.

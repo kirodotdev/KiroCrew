@@ -63,6 +63,7 @@ from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError, LockFileError
 from kiro_crew.history import ConversationLog
+from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -539,8 +540,8 @@ def _apply_agent_mcp_policy(
             "disabled": True,
             "disabledTools": list(disabled) if isinstance(disabled, list) else [],
         }
-        tools = [t for t in tools if t != f"@{name}"]
-        allowed = [t for t in allowed if t != f"@{name}"]
+        tools = without_mcp_refs(tools, (name,), per_tool=False)
+        allowed = without_mcp_refs(allowed, (name,))
 
     agent_data["mcpServers"] = servers
     agent_data["tools"] = tools

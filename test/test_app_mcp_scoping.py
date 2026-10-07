@@ -1144,7 +1144,7 @@ class TestEveryWriterRevokesAStaleGrant:
         from kiro_crew import cli_doctor
 
         src = inspect.getsource(cli_doctor)
-        assert "allowed.remove(ref)" in src, "doctor must revoke, not merely decline to add"
+        assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src, "doctor must revoke, not merely decline to add"
 
     def test_no_writer_only_declines(self) -> None:
         """Each module that mints a grant must also be able to take one back."""
@@ -1524,7 +1524,7 @@ class TestDoctorAuditsItsRevocation:
 
         src = inspect.getsource(cli_doctor)
         assert 'operation="mcp_auto_approve_withheld"' in src
-        assert "allowed.remove(ref)" in src
+        assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src
 
 
 class TestQueuedSpawnKeepsAppIdentity:

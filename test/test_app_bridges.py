@@ -3976,6 +3976,26 @@ class TestNeutralizeEntryShape:
         assert entry["disabledTools"] == ["t1", "t2"]
         assert "@some-server" not in out["tools"]
 
+    def test_neutralize_drops_per_tool_grants(self, monkeypatch):
+        from kiro_crew.apps import bridges
+
+        monkeypatch.setattr(bridges, "_global_mcp_specs", lambda: {"some-server": {"command": "srv"}})
+        agent = {
+            "name": "a",
+            "tools": ["@some-server"],
+            "allowedTools": [
+                "@some-server",
+                "@some-server/t1",
+                "@some-server/t1",
+                "@some-server-2/t1",
+            ],
+            "mcpServers": {},
+        }
+        out = bridges._apply_agent_mcp_policy(
+            agent, "a", {"agents": {"a": {"neutralize": {"some-server": ["t1"]}}}}
+        )
+        assert out["allowedTools"] == ["@some-server-2/t1"]
+
     def test_server_without_a_global_spec_is_skipped_not_emitted_bare(self, monkeypatch):
         from kiro_crew.apps import bridges
 

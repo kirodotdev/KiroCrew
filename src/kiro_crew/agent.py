@@ -234,7 +234,6 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _SOURCE_OWNED_MCP_KEYS,
         MCP_PATH_HINT,
         _app_owned_mcp_keys,
-        _AppOwnership,
         _collect_app_mcp_servers,
         _extra_mcp_scope_globals,
         _merge_source_owned,
@@ -1892,7 +1891,6 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "kiro_crew.agent_materialization.mcp_sources": (
         "_extra_mcp_scope_globals",
         "_collect_app_mcp_servers",
-        "_AppOwnership",
         "_app_owned_mcp_keys",
         "_SOURCE_OWNED_MCP_KEYS",
         "_merge_source_owned",
@@ -3616,7 +3614,7 @@ def rebuild_agent_config(
     # a POSITIVE enablement answer for any key either read claims: an app that
     # vanished answers nothing, and defaulting that to "exempt" would leave its
     # auto-approve grant on the name for whatever is bound there next.
-    _app_owned_at_start, _ownership_full_at_start = mcp_sources._app_owned_mcp_keys()
+    _app_owned_at_start = mcp_sources._app_owned_mcp_keys()
 
     if not clean and path.exists():
         # Existing config — preserve user customizations, only refresh

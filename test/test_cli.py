@@ -4960,6 +4960,36 @@ class TestDoctorMcpTools:
             for ref in ("@kirocrew-cron", "@kirocrew-core")
         ] + ["agent config (auto-fix skipped: shared home)"]
 
+    def test_ceiling_revoke_drops_per_tool_grants_too(self, tmp_path, capsys):
+        """Withholding auto-approve drops the bare ref and every ``@server/tool``
+        grant of that server, duplicates included, and nothing else."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=["@kirocrew-core"],
+            allowed=[
+                "@kirocrew-core",
+                "@kirocrew-core/send_message",
+                "@kirocrew-core/send_message",
+                "@kirocrew-corex/run",
+                "fs_read",
+            ],
+            servers={"kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]}},
+        )
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=None),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.sel", MagicMock()),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        written = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert written["allowedTools"] == ["@kirocrew-corex/run", "fs_read"]
+        assert "@kirocrew-core" in written["tools"]
+
     def test_auto_fix_never_blanket_allows_computer_use(self, tmp_path, capsys):
         """**Doctor must never add ``@kirocrew-computer`` to ``allowedTools``.**
 

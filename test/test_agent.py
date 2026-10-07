@@ -3060,7 +3060,7 @@ class TestToolBloatFixes:
         monkeypatch.setattr(
             agent_mod,
             "_app_owned_mcp_keys",
-            lambda: ({"deadapp:srv": False, "liveapp:srv": True}, True),
+            lambda: {"deadapp:srv": False, "liveapp:srv": True},
         )
 
         config = json.loads(
@@ -3683,17 +3683,14 @@ class TestToolBloatFixes:
         # A targeted removal, not a sweep.
         assert "fs_read" in config["tools"]
 
-    def test_a_claim_unread_at_the_start_is_not_rescued_by_a_whole_final_read(
+    def test_a_server_no_read_claims_keeps_its_mount_but_not_its_grant(
         self, tmp_path: Path, monkeypatch
     ):
-        """Both reads must have seen every claim, not just the last one.
+        """An app server neither ownership read claims loses its auto-approval.
 
-        This is the composition that makes the start snapshot's own completeness
-        matter: the claim goes unread at the start, the app is uninstalled before
-        the end, and the final read is then perfectly whole precisely because there
-        is nothing left to read. The base was never recorded by either read, so the
-        name looks unowned while its owner simply was never visible, and exempting
-        it leaves an auto-approval behind.
+        The carried-over config still declares it and its command does not
+        resolve, so nothing vouches for the grant. The mount stays: dropping a
+        `tools` ref is not recoverable for a name nothing re-adds.
         """
         from kiro_crew import agent as agent_mod
 
@@ -3707,11 +3704,8 @@ class TestToolBloatFixes:
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
-        # Start: claims nothing and says so. End: claims nothing and is whole,
-        # because the app is gone. A reader that trusts only the final read is
-        # satisfied here and must not be.
-        reads = iter([({}, False), ({}, True)])
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, ({}, True)))
+        reads = iter([{}, {}])
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, {}))
 
         config = json.loads(
             _run_install(
@@ -3722,95 +3716,9 @@ class TestToolBloatFixes:
         )
 
         assert "@ghosted:srv" not in config["allowedTools"]
-        # The MOUNT stays: a claim unread at the start is doubt, and the grant above
-        # is the side where that doubt could leave an auto-approval behind.
+        # The MOUNT stays; only the grant goes.
         assert "@ghosted:srv" in config["tools"]
         assert "fs_read" in config["tools"]
-
-    def test_a_dangling_app_root_link_still_counts_as_an_app_on_disk(self, tmp_path, monkeypatch):
-        """`list_apps` skips a root entry that is not a readable directory, so this must not.
-
-        An app root replaced by a dangling junction or symlink is not a dir, is not
-        listed, and its record is unreachable, so every resolving predicate agrees
-        the app is absent. It is not: something occupies that name, and the claim it
-        stood for went unread.
-
-        The plain `notes.txt` is the other half on the same input. It inspects
-        cleanly as a file and is NOT counted, because an ordinary non-app file in
-        this directory is indistinguishable from an overwritten app root, and
-        counting every one would leave ownership permanently incomplete.
-        """
-        from kiro_crew import agent as agent_mod
-        from kiro_crew.apps import manager as apps_manager
-
-        fake_apps = tmp_path / "fake_apps"
-        fake_apps.mkdir()
-        (fake_apps / "vanished").symlink_to(tmp_path / "no-such-app-dir")
-        (fake_apps / "notes.txt").write_text("not an app")
-
-        monkeypatch.setattr(apps_manager, "apps_dir", lambda: fake_apps)
-        monkeypatch.setattr(apps_manager, "list_apps", lambda: [])
-        monkeypatch.setattr(apps_manager, "app_enabled_state", lambda name: False)
-        monkeypatch.setattr(apps_manager, "get_app_manifest", lambda name: None)
-
-        owned, fully_read = agent_mod._app_owned_mcp_keys()
-
-        assert owned == {}
-        assert fully_read is False
-
-    def test_a_plain_file_in_the_app_root_is_not_an_unread_claim(self, tmp_path, monkeypatch):
-        """An ordinary file beside the app directories must not narrow every rebuild.
-
-        Paired with the test above: there the entry could not be inspected as what
-        it claimed to be, here it inspects cleanly and is simply not an app. If this
-        counted, a single stray file would hold ownership permanently incomplete and
-        narrow the exemption for every unclaimed name.
-        """
-        from kiro_crew import agent as agent_mod
-        from kiro_crew.apps import manager as apps_manager
-
-        fake_apps = tmp_path / "fake_apps"
-        fake_apps.mkdir()
-        (fake_apps / "notes.txt").write_text("not an app")
-
-        monkeypatch.setattr(apps_manager, "apps_dir", lambda: fake_apps)
-        monkeypatch.setattr(apps_manager, "list_apps", lambda: [])
-        monkeypatch.setattr(apps_manager, "app_enabled_state", lambda name: False)
-        monkeypatch.setattr(apps_manager, "get_app_manifest", lambda name: None)
-
-        owned, fully_read = agent_mod._app_owned_mcp_keys()
-
-        assert owned == {}
-        assert fully_read is True
-
-    def test_a_dangling_record_link_still_counts_as_an_app_on_disk(self, tmp_path, monkeypatch):
-        """A record path that cannot be resolved is not the same as no record.
-
-        `Path.exists` follows a symlink, so a dangling `installed.json` link reads
-        absent -- while `list_apps` still drops that app, because reading it fails.
-        Taken together the two answers claim there is no such app while the app is
-        sitting on disk, and its carried-forward server then looks unowned. The
-        presence test therefore does not resolve the path.
-        """
-        from kiro_crew import agent as agent_mod
-        from kiro_crew.apps import manager as apps_manager
-
-        fake_apps = tmp_path / "fake_apps"
-        (fake_apps / "linked").mkdir(parents=True)
-        # Points at nothing, so `exists()` is False while something IS there.
-        (fake_apps / "linked" / apps_manager.INSTALLED_META_FILENAME).symlink_to(
-            tmp_path / "no-such-target.json"
-        )
-
-        monkeypatch.setattr(apps_manager, "apps_dir", lambda: fake_apps)
-        monkeypatch.setattr(apps_manager, "list_apps", lambda: [])
-        monkeypatch.setattr(apps_manager, "app_enabled_state", lambda name: False)
-        monkeypatch.setattr(apps_manager, "get_app_manifest", lambda name: None)
-
-        owned, fully_read = agent_mod._app_owned_mcp_keys()
-
-        assert owned == {}
-        assert fully_read is False
 
     def test_an_unreadable_enablement_claims_nothing_rather_than_disabled(self, monkeypatch):
         """None from `app_enabled_state` is "could not read", never "switched off".
@@ -3833,11 +3741,8 @@ class TestToolBloatFixes:
         monkeypatch.setattr(apps_manager, "get_app_manifest", lambda name: _Manifest())
         monkeypatch.setattr(apps_manager, "apps_dir", lambda: Path("/nonexistent-apps-root"))
 
-        owned, fully_read = agent_mod._app_owned_mcp_keys()
-
-        # No claim is recorded, and the read reports it was not whole.
-        assert owned == {}
-        assert fully_read is False
+        # No claim is recorded.
+        assert agent_mod._app_owned_mcp_keys() == {}
 
     def test_a_closed_gate_does_not_vouch_for_a_disabled_app_claim(
         self, tmp_path: Path, monkeypatch
@@ -3922,8 +3827,8 @@ class TestToolBloatFixes:
         monkeypatch.setattr(agent_mod, "_gated_off_servers", lambda: frozenset({"gated-claimed"}))
         # Claimed (and enabled) at the start read, gone by the final one: the
         # uninstall lands between them. Both reads saw every claim.
-        reads = iter([({"gated-claimed": True}, True), ({}, True)])
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, ({}, True)))
+        reads = iter([{"gated-claimed": True}, {}])
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, {}))
 
         config = json.loads(_run_install(tmp_path, cfg_dir).read_text(encoding="utf-8"))
 
@@ -4066,8 +3971,8 @@ class TestToolBloatFixes:
         # Owned and enabled on the first read, gone by the second: the uninstall
         # lands between them. Both reads saw every claim, so the absence at the end
         # is a confirmed removal rather than an unread claim.
-        reads = iter([({"doomed:srv": True}, True), ({}, True)])
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, ({}, True)))
+        reads = iter([{"doomed:srv": True}, {}])
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, {}))
 
         config = json.loads(
             _run_install(
@@ -4120,10 +4025,9 @@ class TestToolBloatFixes:
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
-        # Owned and enabled at the start; the second read claims nothing AND
-        # reports it could not read every claim.
-        reads = iter([({"live:srv": True}, True), ({}, False)])
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, ({}, False)))
+        # Owned and enabled at the start; the second read claims nothing.
+        reads = iter([{"live:srv": True}, {}])
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: next(reads, {}))
 
         config = json.loads(
             _run_install(
@@ -4157,7 +4061,7 @@ class TestToolBloatFixes:
             },
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: ({}, True))
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {})
         events: list[dict] = []
 
         class _Sel:
@@ -4213,7 +4117,7 @@ class TestToolBloatFixes:
             },
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: ({}, True))
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {})
         events: list[dict] = []
 
         class _Sel:
@@ -4271,7 +4175,7 @@ class TestToolBloatFixes:
             },
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: ({}, True))
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {})
         events: list[dict] = []
 
         class _Sel:
@@ -4317,7 +4221,7 @@ class TestToolBloatFixes:
             },
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
-        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: ({}, True))
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {})
         events: list[dict] = []
 
         class _Sel:

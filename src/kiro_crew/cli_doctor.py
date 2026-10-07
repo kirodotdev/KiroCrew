@@ -156,6 +156,7 @@ from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
+from kiro_crew.mcp_utils import mcp_ref_owned_by, without_mcp_refs
 from kiro_crew.members import is_dispatchable_member_name  # noqa: F401
 from kiro_crew.model_registry import acp_id_correction
 from kiro_crew.platform import (
@@ -855,7 +856,9 @@ def _doctor_mcp_tools(
         # `allowedTools` auto-approves, which is the one path that never reaches
         # the PreToolUse gate — so what the ceiling says about this server decides
         # both whether doctor may mint a grant and whether an existing one stands.
-        if not may_skip_gate_now(ref) and ref in allowed and declined:
+        # A grant is the bare ref or any per-tool ``@server/tool`` spelling of it.
+        granted = any(mcp_ref_owned_by(t, (name,)) for t in allowed)
+        if not may_skip_gate_now(ref) and granted and declined:
             config_changed = True
             issues.append(
                 f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
@@ -873,8 +876,8 @@ def _doctor_mcp_tools(
             # This is the one case where doctor removes something from
             # `allowedTools`: the note below about never removing a user's
             # decision holds for user preference, and a ceiling is not one.
-            if ref in allowed:
-                allowed.remove(ref)
+            if granted:
+                allowed[:] = without_mcp_refs(allowed, (name,))
                 config_changed = True
                 # Revoking a grant is a permission DECISION; every other writer of
                 # this list emits this SEL event when it withholds, and doctor

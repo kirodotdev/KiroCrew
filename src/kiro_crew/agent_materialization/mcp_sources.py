@@ -37,7 +37,7 @@ from kiro_crew.mcp_provenance import (
     source_view,
     without_marker,
 )
-from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
+from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias, without_mcp_refs
 from kiro_crew.platform import safe_context_call
 
 
@@ -145,20 +145,8 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     return servers
 
 
-class _AppOwnership(NamedTuple):
-    """What the app manifests claim, and whether this read saw every claim."""
-
-    #: Base alias -> whether every app claiming it is switched on.
-    owned: dict[str, bool]
-    #: False when ANY app's claim went unread -- an unreadable manifest, an
-    #: unreadable enablement, a record ``list_apps`` skipped. An alias missing from
-    #: ``owned`` then carries no information, so it cannot be read either as "no app
-    #: owns this name" or as positive removal.
-    fully_read: bool
-
-
-def _app_owned_mcp_keys() -> _AppOwnership:
-    """Every ALIAS an INSTALLED app declares mapped to its enablement, and whether that is complete.
+def _app_owned_mcp_keys() -> dict[str, bool]:
+    """Every ALIAS an INSTALLED app declares mapped to its enablement.
 
     Read from the manifests that mint the keys, because a colon prefix is not
     ownership. ``mcp_server_alias`` returns a slash-free name unchanged, so a
@@ -188,16 +176,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     for the SPEC, because this needs only the names and a disabled app has no live
     registration to read.
 
-    ``fully_read`` is False whenever ANY claim went unread: an unreadable manifest,
-    an unreadable enablement, or a record ``list_apps`` skipped. None of those is the
-    answer "no app owns this name". A previous rebuild wrote that app's server into
-    the rendered config and :func:`_load_existing_config` carries the entry forward,
-    so the name still holds a grant after its owner stops being readable.
-    ``get_app_manifest`` returns None for an absent file, a parse failure and a
-    permission error alike, and ``list_apps`` drops an app whose installed record
-    does not read without raising, so these are the ORDINARY shapes of the failure
-    rather than exotic ones.
-
     Enablement is read through :func:`app_enabled_state`, not
     :func:`is_app_enabled`. That function exists to keep "unreadable" apart from
     "switched off", and this caller needs them apart for the reason its docstring
@@ -207,7 +185,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     Never raises.
     """
     owned: dict[str, bool] = {}
-    fully_read = True
     try:
         # Imported lazily for the reason _collect_app_mcp_servers documents:
         # kiro_crew.apps imports back into agent/security, so a module-level
@@ -215,24 +192,14 @@ def _app_owned_mcp_keys() -> _AppOwnership:
         from kiro_crew.apps.manager import (
             app_enabled_state,
             get_app_manifest,
-            list_apps_with_skips,
+            list_apps,
         )
     except Exception:  # noqa: BLE001 — apps subsystem unavailable
-        return _AppOwnership(owned, False)
+        return owned
     try:
-        # ``list_apps`` drops an app whose installed record does not read, and drops
-        # it SILENTLY rather than raising, so the returned list on its own cannot
-        # separate "no such app" from "that app's claim went missing".
-        # ``list_apps_with_skips`` answers the second case, and it lives in
-        # ``apps.manager`` because the rules it applies -- the installed-record
-        # filename, which root entries the listing skips, how presence is judged
-        # without resolving a path -- all belong to that module. Reconstructing them
-        # here would go stale silently the first time the listing changed.
-        apps, _claims_complete = list_apps_with_skips()
+        apps = list_apps()
     except Exception:  # noqa: BLE001 — an unreadable registry claims nothing KNOWABLE
-        return _AppOwnership(owned, False)
-    if not _claims_complete:
-        fully_read = False
+        return owned
     for app in apps:
         name = app.get("name") if isinstance(app, dict) else None
         if not name:
@@ -249,7 +216,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
             # None is "could not read", NOT "disabled": the two are exactly what
             # app_enabled_state was written to keep apart. Its claim is unread, so
             # it names no owner here rather than naming a switched-off one.
-            fully_read = False
             continue
         enabled = _state
         try:
@@ -257,7 +223,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
         except Exception:  # noqa: BLE001 — same answer as the None return below
             manifest = None
         if manifest is None:
-            fully_read = False
             continue
         for server_name in manifest.mcpServers or {}:
             _alias = mcp_server_alias(f"{name}:{server_name}")
@@ -268,7 +233,7 @@ def _app_owned_mcp_keys() -> _AppOwnership:
             # the family is treated as switched on only while every app claiming
             # the base is -- the direction that denies rather than grants.
             owned[_alias] = enabled and owned.get(_alias, True)
-    return _AppOwnership(owned, fully_read)
+    return owned
 
 
 # Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
@@ -885,7 +850,6 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
         # mount with no recovery lever. This is the same deny-may-be-loose,
         # never-destroy-a-mount asymmetry used by the final reconcile. The ``/``
         # boundary still protects a prefix-sharing server such as ``@aliasx``.
-        _owned = f"{ref}/"
 
         def _strip_owned_refs(key: str, *, strip_per_tool: bool) -> bool:
             """Drop the bare ref and, when requested, every owned per-tool ref.
@@ -896,11 +860,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             lst = config.get(key)
             if not isinstance(lst, list):
                 return False
-            kept = [
-                t
-                for t in lst
-                if t != ref and not (strip_per_tool and isinstance(t, str) and t.startswith(_owned))
-            ]
+            kept = without_mcp_refs(lst, (alias,), per_tool=strip_per_tool)
             if len(kept) == len(lst):
                 return False
             lst[:] = kept
