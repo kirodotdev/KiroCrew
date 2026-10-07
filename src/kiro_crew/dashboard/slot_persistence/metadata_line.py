@@ -394,12 +394,15 @@ def merge_empty_window(
         mode = stricter_memory_mode(
             line_memory_mode(meta), retained_memory_mode(slot, live_session)
         )
+        merged_closed_at: float | None = None
+        if closed:
+            merged_closed_at = closed_at if closed_at is not None else time.time()
         folds = cp._metadata_codec.SaveFolds(
             memory_mode=mode,
             closed=closed,
             # Without the close a closed empty newborn's line stays open-shaped
             # and the next restart resurrects a tab the user dismissed.
-            closed_at=(closed_at if closed_at is not None else time.time()) if closed else None,
+            closed_at=merged_closed_at,
             # The value is the snapshot taken WITH the window, never a fresh
             # read: a re-read here would be a second, unpaired observation of
             # the queue.
