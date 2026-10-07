@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccountModal'
@@ -90,6 +90,69 @@ describe('KiroAccountModal', () => {
     expect(manage).toHaveAttribute('target', '_blank')
     expect(manage).toHaveAttribute('rel', 'noopener noreferrer')
   })
+
+  it('tells a signed-in user how to switch account with the gateway-served commands', async () => {
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+    )
+    // A bundled copy: the served commands are an absolute path, never the bare name.
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        login_command: "'/Apps/Kiro Crew/kiro-cli' login",
+        sso_login_command: "'/Apps/Kiro Crew/kiro-cli' login --use-device-flow --license pro",
+        logout_command: "'/Apps/Kiro Crew/kiro-cli' logout",
+      })
+    })
+
+    const steps = await screen.findByRole('region', { name: 'Switch Kiro account' })
+    // The title is visible text, not only an accessible name.
+    expect(within(steps).getByRole('heading', { name: 'Switch Kiro account' })).toBeVisible()
+    const codes = within(steps).getAllByText(/kiro-cli/, { selector: 'code' })
+    expect(codes.map(c => c.textContent)).toEqual([
+      "'/Apps/Kiro Crew/kiro-cli' logout",
+      "'/Apps/Kiro Crew/kiro-cli' login",
+      "'/Apps/Kiro Crew/kiro-cli' login --use-device-flow --license pro",
+    ])
+    // Both sign-in tiers carry the setup gate's labels: a personal-to-SSO
+    // switch needs the second one.
+    expect(within(steps).getByText(/^Personal account/)).toBeInTheDocument()
+    expect(within(steps).getByText(/^Organization SSO/)).toBeInTheDocument()
+    expect(within(steps).getByText(/Your chats stay/)).toBeInTheDocument()
+  })
+
+  it('leaves the switch steps out when the gateway serves no logout command', async () => {
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+    )
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        login_command: 'kiro-cli login',
+        sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+      })
+    })
+
+    expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+  })
+
+  it.each<KiroAccountUsage>(['api-key', 'signin-required', 'none', null])(
+    'omits the switch-account steps when there is no signed-in reading (%s)',
+    async usage => {
+      const { queryClient } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={usage} />,
+      )
+      act(() => {
+        queryClient.setQueryData(['kiro-prerequisite'], {
+          login_command: 'kiro-cli login',
+          sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+          logout_command: 'kiro-cli logout',
+        })
+      })
+
+      expect(await screen.findByRole('link', { name: /Manage account/ })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+    },
+  )
 
   it('caps the bar and remaining credits when usage exceeds the plan', async () => {
     renderWithProviders(

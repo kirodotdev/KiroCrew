@@ -3656,7 +3656,11 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    payload carries `bundled_cli: true` and the gate shows a one-line hint under
    the personal sign-in command naming the path as the app's built-in kiro-cli,
    so an absolute path is explained rather than surprising; and the bundled
-   copy's **Update** is refused (`BUNDLED_CLI_UPDATE_REFUSAL`);
+   copy's **Update** is refused (`BUNDLED_CLI_UPDATE_REFUSAL`). The payload
+   also carries `logout_command` (`KIRO_CLI_LOGOUT_COMMAND`, `kiro-cli logout`),
+   composed by `logout_command_for` with the same prefix as the sign-in
+   commands; the gate does not show it, the Kiro Account modal pairs it with
+   `login_command` and `sso_login_command` as the steps to switch accounts;
 5. records first-run completion when the selected backend is usable. An owner
    PATCH selecting an independent backend, or a later explicit agent **Check
    again** after installation, records the gateway's existing setup-complete

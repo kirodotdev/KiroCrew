@@ -5895,6 +5895,9 @@
       "refreshing_balance": "更新中…",
       "remaining_credit_balance": "残りのクレジット残高: {{count}}",
       "show_email": "メールアドレスを表示",
+      "switch_account_effect": "チャットはそのまま残ります。各チャットの次のメッセージから新しいアカウントが使われます。",
+      "switch_account_label": "Kiro アカウントを切り替える",
+      "switch_account_steps": "ターミナルで Kiro CLI からサインアウトし、別のアカウントでサインインしてください。",
       "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
       "used_credits": "使用済み: {{used}} / {{total}}"
     },

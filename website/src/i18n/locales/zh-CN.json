@@ -5620,6 +5620,9 @@
       "refreshing_balance": "正在刷新…",
       "remaining_credit_balance": "剩余额度：{{count}}",
       "show_email": "显示邮箱",
+      "switch_account_effect": "你的聊天会保留。每个聊天中的下一条消息将使用新账号。",
+      "switch_account_label": "切换 Kiro 账号",
+      "switch_account_steps": "在终端中先退出 Kiro CLI，再用另一个账号登录。",
       "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
       "used_credits": "已使用：{{used}} / {{total}}"
     },

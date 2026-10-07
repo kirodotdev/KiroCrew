@@ -21,6 +21,14 @@ export interface KiroPrerequisiteStatus {
   login_command: string
   sso_login_command: string
   /**
+   * The command the user runs to sign OUT, resolved the same way as
+   * `login_command` (an absolute path on a bundled copy). The Kiro Account
+   * modal pairs the two as the account-switch steps. Optional because an older
+   * gateway does not serve it; the modal then shows no steps at all rather
+   * than a bare command that may not resolve.
+   */
+  logout_command?: string
+  /**
    * True when the resolved CLI is the copy built into the desktop app. The gate
    * then explains why `login_command` is an absolute path into the app's own
    * resources rather than the bare name the user's shell would resolve.

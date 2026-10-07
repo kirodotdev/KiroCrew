@@ -5890,6 +5890,9 @@
       "refreshing_balance": "Обновляем…",
       "remaining_credit_balance": "Остаток кредитов: {{count}}",
       "show_email": "Показать адрес электронной почты",
+      "switch_account_effect": "Твои чаты сохраняются. Следующее сообщение в каждом чате использует новую учётную запись.",
+      "switch_account_label": "Сменить учётную запись Kiro",
+      "switch_account_steps": "В терминале выйди из Kiro CLI, а затем войди под другой учётной записью.",
       "usage_scope": "Ежемесячное использование кредитов Kiro по данным kiro-cli /usage в чатах, агентах, MCP и субагентах.",
       "used_credits": "Использовано: {{used}} / {{total}}"
     },

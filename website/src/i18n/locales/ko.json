@@ -5895,6 +5895,9 @@
       "refreshing_balance": "새로 고치는 중…",
       "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
       "show_email": "이메일 표시",
+      "switch_account_effect": "채팅은 그대로 유지됩니다. 각 채팅의 다음 메시지부터 새 계정이 사용됩니다.",
+      "switch_account_label": "Kiro 계정 전환",
+      "switch_account_steps": "터미널에서 Kiro CLI에서 로그아웃한 다음 다른 계정으로 로그인하세요.",
       "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
       "used_credits": "사용: {{used}} / {{total}}"
     },

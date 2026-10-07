@@ -5,9 +5,11 @@ import { AlertCircle, Coins, ExternalLink, Eye, EyeOff, Gift, Loader2, RefreshCw
 import { api } from '../api/client'
 import type { KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
 import { parseKiroUsagePayload } from '../api/kiroUsage'
+import { useCachedKiroPrerequisite } from '../hooks/useGatewayPlatform'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { CopyCommand } from './agentHarness/CopyCommand'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
 import Modal from './Modal'
@@ -599,6 +601,54 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   )
 }
 
+/**
+ * How to move Kiro Crew to another Kiro account: sign out, then sign in, in a
+ * terminal. Shown only beside a reading, which is the kiro-cli sign-in these
+ * commands act on; Kiro Crew never signs in or out on the user's behalf (see
+ * kiro_prerequisite.py), and the identity sweep in chat_runner.py retires the
+ * children started under the previous account at the next turn.
+ *
+ * Both commands come from the gateway's prerequisite status, rendered verbatim
+ * in `code` and never from the catalog: on the desktop app's bundled kiro-cli
+ * they are an absolute path, because the bare name is not on the user's PATH.
+ * With no served `logout_command` (an older gateway, or the gate has not
+ * fetched) the steps are left out rather than guessed.
+ */
+function SwitchAccountSteps() {
+  const status = useCachedKiroPrerequisite()
+  const logout = status?.logout_command
+  const login = status?.login_command
+  const ssoLogin = status?.sso_login_command
+  if (!logout || !login || !ssoLogin) return null
+  // Sign-in is two choices, exactly as on the setup gate (`SignInCommands`):
+  // a personal plan and an organization's SSO plan sign in differently, and a
+  // switch between the two is the case #4184 is about. The labels are the
+  // gate's own keys so the two surfaces name the tiers the same way.
+  return (
+    <section
+      className="flex flex-col gap-2 text-[12px] leading-relaxed text-muted"
+      aria-labelledby="kiro-switch-account-title"
+    >
+      <h3 id="kiro-switch-account-title" className="text-[13px] font-medium text-text">
+        {i18nT('components.kiroAccountModal.switch_account_label')}
+      </h3>
+      <p>{i18nT('components.kiroAccountModal.switch_account_steps')}</p>
+      <CopyCommand>
+        <code>{logout}</code>
+      </CopyCommand>
+      <p className="font-medium text-text">{i18nT('components.kiroPrerequisiteGate.sign_in_personal_label')}</p>
+      <CopyCommand>
+        <code>{login}</code>
+      </CopyCommand>
+      <p className="font-medium text-text">{i18nT('components.kiroPrerequisiteGate.sign_in_sso_label')}</p>
+      <CopyCommand>
+        <code>{ssoLogin}</code>
+      </CopyCommand>
+      <p>{i18nT('components.kiroAccountModal.switch_account_effect')}</p>
+    </section>
+  )
+}
+
 export default function KiroAccountModal({ open, onClose, usage }: KiroAccountModalProps) {
   return (
     <Modal
@@ -618,6 +668,7 @@ export default function KiroAccountModal({ open, onClose, usage }: KiroAccountMo
         >
           {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
         </a>
+        {isUsageReading(usage) && <SwitchAccountSteps />}
       </div>
     </Modal>
   )

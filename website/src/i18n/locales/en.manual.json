@@ -1787,6 +1787,9 @@
       "refreshing_balance": "Refreshing…",
       "remaining_credit_balance": "Remaining credit balance: {{count}}",
       "show_email": "Show email",
+      "switch_account_effect": "Your chats stay. Your next message in each chat uses the new account.",
+      "switch_account_label": "Switch Kiro account",
+      "switch_account_steps": "In a terminal, sign out of Kiro CLI, then sign in with your other account.",
       "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
       "used_credits": "Used: {{used}} / {{total}}"
     },

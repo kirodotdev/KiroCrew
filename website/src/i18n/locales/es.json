@@ -5800,6 +5800,9 @@
       "refreshing_balance": "Actualizando…",
       "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
       "show_email": "Mostrar correo electrónico",
+      "switch_account_effect": "Tus chats se conservan. Tu siguiente mensaje en cada chat usa la nueva cuenta.",
+      "switch_account_label": "Cambiar de cuenta de Kiro",
+      "switch_account_steps": "En una terminal, cierra la sesión de Kiro CLI y después inicia sesión con tu otra cuenta.",
       "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
       "used_credits": "Usados: {{used}} / {{total}}"
     },

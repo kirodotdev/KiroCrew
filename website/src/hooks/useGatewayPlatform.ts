@@ -76,6 +76,15 @@ const ORPHAN_TREE_CACHE = new QueryClient()
  * See `classifyPlatform` for why anything unrecognised is generic wording.
  */
 export function useGatewayPlatform(): GatewayPlatform {
+  return classifyPlatform(useCachedKiroPrerequisite()?.platform)
+}
+
+/**
+ * The prerequisite gate's latest status, read with the same no-fetch options as
+ * `useGatewayPlatform` (see there for why the `queryFn` must stay real).
+ * `undefined` until the gate has fetched, and always in a provider-less tree.
+ */
+export function useCachedKiroPrerequisite(): KiroPrerequisiteStatus | undefined {
   const provided = useContext(QueryClientContext)
   const { data } = useQuery<KiroPrerequisiteStatus>(
     {
@@ -85,5 +94,5 @@ export function useGatewayPlatform(): GatewayPlatform {
     },
     provided ?? ORPHAN_TREE_CACHE,
   )
-  return classifyPlatform(data?.platform)
+  return data
 }

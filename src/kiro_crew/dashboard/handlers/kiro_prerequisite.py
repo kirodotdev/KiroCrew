@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
+    KIRO_CLI_LOGOUT_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
     KIRO_CLI_UPDATE_COMMAND,
     OFFICIAL_INSTALL_DOCS_URL,
@@ -173,6 +174,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "login_command": KIRO_CLI_LOGIN_COMMAND,
             "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
+            "logout_command": KIRO_CLI_LOGOUT_COMMAND,
             # Redacted and present for shape stability: non-owners never learn
             # which executable the gateway host resolved.
             "bundled_cli": False,

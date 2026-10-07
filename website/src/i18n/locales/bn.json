@@ -5710,6 +5710,9 @@
       "refreshing_balance": "রিফ্রেশ হচ্ছে…",
       "remaining_credit_balance": "অবশিষ্ট ক্রেডিট: {{count}}",
       "show_email": "ইমেইল দেখান",
+      "switch_account_effect": "তোমার চ্যাটগুলো থেকে যায়। প্রতিটি চ্যাটে তোমার পরবর্তী বার্তা নতুন অ্যাকাউন্ট ব্যবহার করে।",
+      "switch_account_label": "Kiro অ্যাকাউন্ট বদলান",
+      "switch_account_steps": "টার্মিনালে Kiro CLI থেকে সাইন আউট করো, তারপর তোমার অন্য অ্যাকাউন্ট দিয়ে সাইন ইন করো।",
       "usage_scope": "চ্যাট, এজেন্ট, MCP এবং সাবএজেন্ট জুড়ে kiro-cli /usage থেকে মাসিক Kiro ক্রেডিট ব্যবহার।",
       "used_credits": "ব্যবহৃত: {{used}} / {{total}}"
     },
