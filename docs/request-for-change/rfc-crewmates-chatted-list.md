@@ -19,12 +19,16 @@ superseded-by: []
   [rfc-crewmates-launch.md](rfc-crewmates-launch.md) (screen 02, "landing").
   Claims about today's code were checked at `acc08092d7` (main).
 - Author: iamwhatever
-- Implementation: [#17808](https://github.com/kirodotdev/KiroCrew/pull/17808).
+- Implementation: [#17808](https://github.com/kirodotdev/KiroCrew/pull/17808),
+  built on [#17835](https://github.com/kirodotdev/KiroCrew/pull/17835), which
+  makes the header switcher run the roster column's own hide rule
+  (`rosterPopulation` / `rosterShows`). The rule below therefore lives in that
+  one shared rule, and the chip and the column cannot disagree.
 
 ## 1. Summary
 
 The Crewmates page lists a crewmate only after the user has sent it a message,
-either in its Crewmates DM or in a normal chat. The list is ordered by the
+either in its Crewmates DM or in a normal chat, or has created it. The list is ordered by the
 user's last message, newest first. With no `?member=`, the page opens the
 crewmate the user last chatted with. That record is kept on the server, so it
 survives a gateway restart and a new browser.
@@ -54,15 +58,18 @@ one last talked to.
 
 | Rule | Before | After |
 |---|---|---|
-| Listed unasked | DM holds a message, dashboard-created, starred, or the default crew | the user sent it a message (`last_chat_ts > 0`), or starred it |
-| Switcher list | every roster row | the listed rows plus the open one; its search reaches every row |
+| Listed unasked | DM holds a message, dashboard-created, starred, or the default crew | the user sent it a message or created it (`last_chat_ts > 0`), or starred it |
+| Switcher list | every roster row | the column's own rule (#17835): the listed rows plus the open one; its search reaches every row |
 | Recent order | `last_active_ts` | `last_chat_ts` |
 | Landing with no `?member=` | browser memory, then greatest `last_active_ts` | greatest `last_chat_ts`, then browser memory, then greatest `last_active_ts` |
 
 "The user sent it a message" means a `POST /api/chat` from the dashboard user:
 no app token, no cron attestation, no peer relay. A chat with no crew picked
-counts for the default crew. The record lives in `crew_recency.json` under the
-data home. A one-time seed fills it from typed rows already in DM threads.
+counts for the default crew. Creating a crewmate counts as well: the user's
+`POST /api/agents` (owner-only, so never an app token; not an attested cron)
+stamps the new crew, so it is listed at once and sorts first. A crew that the
+agent sync, an app or any background writer adds is not stamped. The record
+lives in `crew_recency.json` under the data home. A one-time seed fills it from typed rows already in DM threads.
 
 ## 4. Non-goals
 
@@ -79,6 +86,9 @@ keeps the old rule, so a mixed-version deploy does not blank the list.
 
 - **Hide rows in CSS, or cap the switcher's length.** Rejected: the list would
   still carry crews the user never used, just fewer of them.
+- **Keep "created on the dashboard" as its own listing rule.** Rejected: a
+  flag that never changes cannot order the list. Stamping the creation time on
+  the same record lists the new crewmate first, then lets it age like any other.
 - **Derive "chatted" from DM transcripts or the crew log.** Rejected: both also
   record background turns and peer deliveries, so the signal would stay noisy.
 - **Keep browser memory first.** Rejected: it does not survive a new browser,
