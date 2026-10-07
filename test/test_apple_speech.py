@@ -1781,6 +1781,67 @@ class TestNoBlockingCallOnEventLoop:
         assert "_swiftc()" in inspect.getsource(apple_speech._build_helper)
 
 
+_PREFERRED_SAY_VOICE = "Samantha"
+_NO_EN_US_VOICE = "no en_US `say` voice installed to synthesize an English fixture"
+
+
+def _en_us_say_voice(listing: str) -> str | None:
+    """Pick an installed en_US voice from ``say -v '?'`` output.
+
+    Each line reads ``<name>  <locale>  # <sample>``. A name can hold spaces and
+    parentheses, so the locale is the last field before the ``#``. Samantha wins
+    when present; otherwise the first en_US voice listed is used.
+    """
+    voices = []
+    for line in listing.splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) >= 2 and fields[-1] == "en_US":
+            voices.append(" ".join(fields[:-1]))
+    if _PREFERRED_SAY_VOICE in voices:
+        return _PREFERRED_SAY_VOICE
+    return voices[0] if voices else None
+
+
+async def _installed_en_us_say_voice() -> str | None:
+    """Return an en_US voice installed on this host, or None."""
+    import asyncio
+
+    proc = await asyncio.create_subprocess_exec("say", "-v", "?", stdout=asyncio.subprocess.PIPE)
+    out, _ = await proc.communicate()
+    return _en_us_say_voice(out.decode("utf-8", "replace"))
+
+
+class TestEnUsSayVoice:
+    """The e2e fixtures synthesize English, so the voice must speak en_US.
+
+    The host's default voice can be non-English or mis-speak the phrase, while
+    the recognizer is pinned to en-US.
+    """
+
+    LISTING = (
+        "Albert              en_US    # Hello! My name is Albert.\n"
+        "Anna                de_DE    # Hallo! Ich heiße Anna.\n"
+        "Eddy (English (US)) en_US    # Hello! My name is Eddy.\n"
+        "Samantha            en_US    # Hello! My name is Samantha.\n"
+    )
+
+    def test_prefers_samantha(self):
+        assert _en_us_say_voice(self.LISTING) == "Samantha"
+
+    def test_falls_back_to_first_en_us_voice(self):
+        listing = self.LISTING.replace("Samantha ", "Zoe      ")
+        assert _en_us_say_voice(listing) == "Albert"
+
+    def test_keeps_a_name_with_spaces(self):
+        listing = "Anna   de_DE  # Hallo\nEddy (English (US)) en_US # Hi\n"
+        assert _en_us_say_voice(listing) == "Eddy (English (US))"
+
+    def test_none_when_no_en_us_voice(self):
+        listing = "Anna   de_DE  # Hallo\nDaniel en_GB # Hello\n"
+        assert _en_us_say_voice(listing) is None
+        assert _en_us_say_voice("") is None
+
+
 @pytest.mark.skipif(
     not _IS_MACOS or sys.platform != "darwin",
     reason="Apple on-device speech is macOS-only",
@@ -1803,14 +1864,18 @@ class TestEndToEndMacOS:
             pytest.skip("no Swift toolchain on this host")
         if not shutil.which("say"):
             pytest.skip("no `say` to synthesize a fixture")
+        voice = await _installed_en_us_say_voice()
+        if voice is None:
+            pytest.skip(_NO_EN_US_VOICE)
 
         audio = tmp_path / "sample.aiff"
+        # ``-v`` pins an en_US voice to match the en-US recognizer below.
         # ``-o`` makes ``say`` write the AIFF instead of playing it through the
         # sound output, so the fixture is silent on the developer's machine. The
         # child runs from tmp_path so any file it creates lands there, not in
         # the checkout it would otherwise inherit as CWD.
         proc = await asyncio.create_subprocess_exec(
-            "say", "-o", str(audio), "the build is green", cwd=tmp_path
+            "say", "-v", voice, "-o", str(audio), "the build is green", cwd=tmp_path
         )
         await proc.wait()
         assert audio.is_file()
@@ -1840,12 +1905,17 @@ class TestEndToEndMacOS:
         for tool in ("say", "afconvert"):
             if not shutil.which(tool):
                 pytest.skip(f"no `{tool}` to build a 16 kHz fixture")
+        voice = await _installed_en_us_say_voice()
+        if voice is None:
+            pytest.skip(_NO_EN_US_VOICE)
 
         aiff = tmp_path / "s.aiff"
         # ``-o`` writes the AIFF instead of playing it; cwd=tmp_path keeps any
         # stray output out of the checkout (see test_round_trip).
         proc = await asyncio.create_subprocess_exec(
             "say",
+            "-v",
+            voice,
             "-o",
             str(aiff),
             "the continuous integration build is green and the tests all pass",
