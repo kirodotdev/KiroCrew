@@ -2005,6 +2005,15 @@ gateway environment. The listener address comes from the gateway, not an editabl
 agent spec. Declared secrets and arbitrary environment values remain withheld,
 and non-managed servers receive no gateway port.
 
+An `env` value that is exactly `${NAME}` survives projection on every projected server
+when the edition lists `NAME` through
+`McpToolingProvider.kas_relayed_env_references()`; the public default lists none.
+KAS resolves the reference from its own environment at spawn, so the wire carries
+the name and never the value, and a launcher's per-process variable reaches an
+MCP child that KAS starts with a minimal environment of its own. Any other
+reference is withheld, because the KAS environment also holds credentials such as
+the CLI's `KIRO_API_KEY`.
+
 The provider factory selects `agent.member_acp_backend` for member-DM session
 keys and the configured default backend otherwise. Ordinary backend governance,
 selectability, member-capability checks and host sandbox rules remain independent

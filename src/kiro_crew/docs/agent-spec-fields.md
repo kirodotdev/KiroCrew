@@ -452,9 +452,15 @@ recorded as security events: `mcp_auto_approve_withheld` for a grant taken away,
 
 On the KAS wire, `env` and `headers` are withheld from every entry — `env`
 routinely holds tokens, and a remote entry's `headers` can hold a static
-`Authorization`. One exception: `KIROCREW_HOME` survives for Crew's own managed
-servers, because it pins the data home. That recorded pin is also **write
-provenance**: the shared-home write guard reads it back from every managed
+`Authorization`. Two `env` exceptions. A value that is exactly `${NAME}`
+survives on any server when the edition lists `NAME` through
+`McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
+KAS resolves it at spawn, so only the name crosses the wire. Any other reference
+is withheld, because KAS's own environment holds credentials such as
+`KIRO_API_KEY`. And `KIROCREW_HOME` survives for Crew's own managed servers,
+because it pins the data home — but only as a literal containing no `${`, since
+KAS would expand a reference under that name too. That recorded pin is also
+**write provenance**: the shared-home write guard reads it back from every managed
 entry to decide whether the shared `~/.kiro/agents` specs belong to this
 instance — specs pinned by a different home (or by nobody, or with disagreeing
 pins) refuse the rewrite.

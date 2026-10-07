@@ -66,6 +66,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,17 @@ _CREDENTIAL_BEARING_FIELDS = ("env", "headers")
 #: user-editable agent file, so a hand-added secret is reachable under a managed
 #: name and would otherwise be the one credential path left onto the wire.
 _MANAGED_ENV_KEYS_KEPT = frozenset({"KIROCREW_HOME"})
+
+#: An ``env`` value that is exactly one variable reference, ``${NAME}``. KAS
+#: starts a stdio server with a fixed minimal environment (``HOME``, ``PATH``,
+#: ``SHELL`` and a few more) plus the entry's own ``env``, and expands
+#: ``${NAME}`` there from its own environment, so a reference is the only way a
+#: launcher's per-process value reaches an MCP child, and the wire carries the
+#: name, never the value. Only names the edition lists through
+#: ``McpToolingProvider.kas_relayed_env_references`` are relayed: the KAS
+#: environment holds credentials of its own, the CLI's ``KIRO_API_KEY`` among
+#: them. The public default lists none.
+_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 #: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
 #: unknown field can fail a strict schema, and it means nothing to the backend.
@@ -497,11 +509,12 @@ def _project_mcp_servers(
     * **``env`` and ``headers``** — projection puts these on the wire, and a
       declared server's env routinely holds tokens. Every server is filtered; the
       classes differ only in what survives. A server Crew did not author loses
-      both fields outright. One of Crew's OWN managed servers keeps exactly
-      ``KIROCREW_HOME`` out of its env and nothing else, because that key is the
-      only reason managed env is projected at all: without it the shims read a
+      ``headers`` and every env value except a reference to a name the edition
+      relays (:data:`_ENV_REFERENCE`), which carries no value. One of Crew's
+      OWN managed servers additionally keeps ``KIROCREW_HOME``, because that key is the only
+      reason managed env is projected at all: without it the shims read a
       different data home than the gateway. A managed entry still lives in a
-      user-editable agent file, so a hand-added key under a managed name is
+      user-editable agent file, so a hand-added literal under a managed name is
       withheld like any other.
 
     * **a muted server** — an entry carrying ``disabled: true`` is not declared at
@@ -553,6 +566,7 @@ def _project_mcp_servers(
 
     out: dict[str, dict[str, Any]] = {}
     registry_mode = _registry_governed()
+    relayed = _relayed_env_references()
     warned_about_the_marker = False
     for name, entry in servers.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
@@ -648,7 +662,7 @@ def _project_mcp_servers(
                 name,
                 "/".join(discarded),
             )
-        withheld = _withhold_credential_fields(projected, managed=managed)
+        withheld = _withhold_credential_fields(projected, managed=managed, relayed=relayed)
         if managed:
             # Native MCP children do not inherit the gateway's environment.
             # Take the live listener from the gateway, never from an editable
@@ -680,6 +694,7 @@ def _withhold_credential_fields(
     projected: dict[str, Any],
     *,
     managed: bool,
+    relayed: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Strip credential-bearing fields from one projected server entry in place.
 
@@ -687,10 +702,16 @@ def _withhold_credential_fields(
     never a value, and never the withheld env keys, since a key name in a
     third-party server's env is itself operator-supplied.
 
-    *managed* keeps ``_MANAGED_ENV_KEYS_KEPT`` alive in ``env``; everything else
-    goes either way, ``headers`` included. A managed server has no legitimate
-    ``headers`` (all four are local stdio processes), so retaining it would only
-    forward whatever a hand edit put there.
+    A value that is exactly ``${NAME}`` with *NAME* in *relayed* survives on
+    every server (:data:`_ENV_REFERENCE`); *managed* also keeps ``_MANAGED_ENV_KEYS_KEPT``, but only as a
+    literal: KAS expands ``${...}`` wherever it appears in a value, so a kept
+    key holding ``${KIRO_API_KEY}`` would carry the credential under a managed
+    name.
+    Everything else goes either way, ``headers`` included. A managed server has
+    no legitimate ``headers`` (all four are local stdio processes), so retaining
+    it would only forward whatever a hand edit put there. ``env`` is reported
+    withheld when any key was dropped, so a server that kept its references but
+    lost a literal is still named in the caller's log.
     """
     withheld: list[str] = []
     if projected.get("headers"):
@@ -701,13 +722,22 @@ def _withhold_credential_fields(
     if not env:
         projected.pop("env", None)
         return withheld
-    if not managed or not isinstance(env, dict):
-        # Non-managed, or a malformed env that cannot be filtered key-by-key.
+    if not isinstance(env, dict):
+        # A malformed env cannot be filtered key-by-key.
         projected.pop("env", None)
         withheld.append("env")
         return withheld
 
-    kept = {k: v for k, v in env.items() if k in _MANAGED_ENV_KEYS_KEPT}
+    kept = {
+        k: v
+        for k, v in env.items()
+        if isinstance(k, str)
+        and (
+            (isinstance(v, str) and "${" not in v)
+            if managed and k in _MANAGED_ENV_KEYS_KEPT
+            else _is_relayed_reference(v, relayed)
+        )
+    }
     if len(kept) != len(env):
         withheld.append("env")
     if kept:
@@ -715,6 +745,34 @@ def _withhold_credential_fields(
     else:
         projected.pop("env", None)
     return withheld
+
+
+def _is_relayed_reference(value: Any, relayed: frozenset[str]) -> bool:
+    """Whether *value* is exactly ``${NAME}`` for a *NAME* in *relayed*."""
+    if not relayed or not isinstance(value, str):
+        return False
+    match = _ENV_REFERENCE.fullmatch(value)
+    return match is not None and match.group(1) in relayed
+
+
+def _relayed_env_references() -> frozenset[str]:
+    """The variable names the edition lets a KAS MCP entry reference.
+
+    Read through ``getattr`` so an edition provider that predates the method
+    keeps working and relays nothing. Non-string members are dropped.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    def _read() -> frozenset[str]:
+        reader = getattr(current_context().mcp_tooling, "kas_relayed_env_references", None)
+        names = reader() if callable(reader) else ()
+        return frozenset(n for n in names if isinstance(n, str))
+
+    return safe_context_call(
+        _read,
+        fallback_factory=frozenset,
+        log_message="kas_relayed_env_references lookup failed; relaying no env references",
+    )
 
 
 def to_client_custom_agent(

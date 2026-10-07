@@ -22,6 +22,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    FrozenSet,
     List,
     Optional,
     Protocol,
@@ -583,6 +584,18 @@ class McpToolingProvider(Protocol):
         The public Default returns ``[]`` so the core writes the **Kiro scope
         only**; a companion returns e.g. the Claude Code scope
         (``~/.claude.json``) to keep that provider's config in sync.
+        """
+        ...
+
+    def kas_relayed_env_references(self) -> FrozenSet[str]:
+        """Variable names an MCP ``env`` value may reference on the KAS backend.
+
+        WIRED: ``acp.kas_agents`` keeps an entry's ``env`` value that is exactly
+        ``${NAME}`` for a returned *NAME*, on any server, and withholds every
+        other reference. KAS resolves it from its own environment when it
+        spawns the server, so only the name crosses the wire. Return only names
+        whose values carry no secret, such as a launcher's loopback address.
+        The public Default returns an empty set.
         """
         ...
 

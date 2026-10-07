@@ -715,6 +715,19 @@ class TestAgainstTheRealBundledSpec:
         assert set(refs) <= declared, f"refs naming nothing: {sorted(set(refs) - declared)}"
 
 
+@pytest.fixture
+def relayed_names(monkeypatch):
+    """An edition that relays ``LAUNCHER_BROKER_URL`` through the seam."""
+    from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
+    monkeypatch.setattr(
+        DefaultMcpToolingProvider,
+        "kas_relayed_env_references",
+        lambda self: frozenset({"LAUNCHER_BROKER_URL", 7}),
+        raising=False,
+    )
+
+
 class TestMcpServersProjection:
     """``mcpServers`` reaches KAS, minus three things.
 
@@ -843,6 +856,134 @@ class TestMcpServersProjection:
             "p",
         )
         assert out["mcpServers"]["kirocrew-core"] == {"command": "x"}
+
+    def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
+        """KAS starts an MCP child with a minimal environment of its own, so a
+        launcher's per-process value reaches the child only through a reference
+        to a name the edition relays. The literal beside it, and a reference
+        wrapped in literal text, do not."""
+        out = to_client_custom_agent(
+            "a",
+            _spec(
+                mcpServers={
+                    "vendor-proxy": {
+                        "command": "vendor",
+                        "env": {
+                            "BROKER_URL": "${LAUNCHER_BROKER_URL}",
+                            "LAUNCH_NONCE": "n0nce",
+                            "AUTH": "Bearer ${SECRET}",
+                        },
+                    }
+                }
+            ),
+            "p",
+        )
+        assert out["mcpServers"]["vendor-proxy"]["env"] == {"BROKER_URL": "${LAUNCHER_BROKER_URL}"}
+
+    def test_the_public_default_relays_no_reference(self):
+        """With no edition listing a name, a bare reference is withheld like a
+        literal: the public build relays nothing from the KAS environment."""
+        out = to_client_custom_agent(
+            "a",
+            _spec(
+                mcpServers={
+                    "vendor-proxy": {"command": "x", "env": {"U": "${LAUNCHER_BROKER_URL}"}}
+                }
+            ),
+            "p",
+        )
+        assert out["mcpServers"]["vendor-proxy"] == {"command": "x"}
+
+    def test_a_third_party_env_of_only_literals_leaves_no_env(self):
+        out = to_client_custom_agent(
+            "a",
+            _spec(mcpServers={"third-party": {"command": "x", "env": {"API_KEY": "sk-live"}}}),
+            "p",
+        )
+        assert out["mcpServers"]["third-party"] == {"command": "x"}
+
+    def test_a_managed_server_keeps_a_reference_beside_its_home(self, relayed_names):
+        out = to_client_custom_agent(
+            "a",
+            _spec(
+                mcpServers={
+                    "kirocrew-core": {
+                        "command": "x",
+                        "env": {
+                            "KIROCREW_HOME": "/h",
+                            "REF": "${LAUNCHER_BROKER_URL}",
+                            "LIT": "v",
+                        },
+                    }
+                }
+            ),
+            "p",
+        )
+        assert out["mcpServers"]["kirocrew-core"]["env"] == {
+            "KIROCREW_HOME": "/h",
+            "REF": "${LAUNCHER_BROKER_URL}",
+        }
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "$LAUNCHER_BROKER_URL",
+            "${LAUNCHER_BROKER_URL",
+            "${LAUNCHER_BROKER_URL}${LAUNCHER_BROKER_URL}",
+            " ${LAUNCHER_BROKER_URL}",
+            "${KIRO_API_KEY}",
+            "${KIROCREW_SESSION_KEY}",
+            "${GITHUB_TOKEN}",
+            7,
+            None,
+        ],
+    )
+    def test_only_an_exact_relayed_reference_counts(self, value, relayed_names):
+        out = to_client_custom_agent(
+            "a",
+            _spec(mcpServers={"third-party": {"command": "x", "env": {"K": value}}}),
+            "p",
+        )
+        assert "env" not in out["mcpServers"]["third-party"]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "${KIRO_API_KEY}",
+            "/h/${KIRO_API_KEY}",
+            "${LAUNCHER_BROKER_URL}",
+            ["${KIRO_API_KEY}"],
+            {"p": "/h"},
+            7,
+        ],
+    )
+    def test_a_managed_kept_key_cannot_carry_a_reference(self, value, relayed_names):
+        """``KIROCREW_HOME`` survives on a managed server only as a literal; KAS
+        expands a reference anywhere in the value, so one here would hand the
+        CLI credential to whatever command the hand-edited entry names."""
+        out = to_client_custom_agent(
+            "a",
+            _spec(mcpServers={"kirocrew-core": {"command": "x", "env": {"KIROCREW_HOME": value}}}),
+            "p",
+        )
+        assert "KIROCREW_HOME" not in out["mcpServers"]["kirocrew-core"].get("env", {})
+
+    def test_a_server_that_lost_a_literal_is_still_logged(self, caplog, relayed_names):
+        with caplog.at_level("INFO"):
+            to_client_custom_agent(
+                "a",
+                _spec(
+                    mcpServers={
+                        "third-party": {
+                            "command": "x",
+                            "env": {"REF": "${LAUNCHER_BROKER_URL}", "LIT": "sk-live"},
+                        }
+                    }
+                ),
+                "p",
+            )
+        relayed = [r.getMessage() for r in caplog.records if "not relaying" in r.getMessage()]
+        assert relayed and "env" in relayed[0] and "sk-live" not in relayed[0]
 
     def test_a_withheld_managed_key_is_not_named_in_the_log(self, caplog):
         with caplog.at_level("INFO"):

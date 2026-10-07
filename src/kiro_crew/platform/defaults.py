@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional
 
 if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
@@ -342,6 +342,9 @@ class DefaultMcpToolingProvider:
 
     def extra_mcp_scopes(self) -> List["McpScope"]:
         return []
+
+    def kas_relayed_env_references(self) -> FrozenSet[str]:
+        return frozenset()
 
 
 class DefaultAgentCatalogProvider:
