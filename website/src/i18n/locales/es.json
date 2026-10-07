@@ -13512,7 +13512,16 @@
         "default_crewmate_failed": "No se pudo cambiar el compañero predeterminado",
         "default_crewmate_hint": "Con qué compañero empieza una sesión nueva: el mismo ajuste que escribe la ★ del cuadro de chat (Agente predeterminado para sesiones nuevas). Los chats ya abiertos conservan el que tenían al empezar.",
         "default_crewmate_refused_because": "No se pudo establecer {{name}} como compañero predeterminado: {{reason}}. Recarga la página y elige de nuevo.",
-        "default_crewmate_unknown_reason": "{{name}} ya no aparece en la lista de compañeros"
+        "default_crewmate_unknown_reason": "{{name}} ya no aparece en la lista de compañeros",
+        "resource_thresholds": "Límites de RAM",
+        "resource_thresholds_description": "Cuánta RAM libre debe conservar este equipo antes de que {{productName}} inicie más subagentes, y cuándo avisa de que queda poca. Los cambios se aplican sin reiniciar.",
+        "spawn_min_memory": "Memoria libre necesaria para iniciar un subagente",
+        "spawn_min_memory_hint": "Solo controla los subagentes nuevos. Un subagente nuevo espera en la cola hasta que quede al menos esta RAM libre después de iniciarse. Si es demasiado alto, los subagentes nunca arrancan; si es demasiado bajo, ejecutar muchos a la vez puede agotar la memoria del equipo.",
+        "memory_pressure_threshold": "Avisar cuando la memoria libre baje de",
+        "memory_pressure_threshold_hint": "Solo avisa; no bloquea nada. Cuando la RAM libre llega a este nivel, se avisa al agente de que la memoria es escasa y prefiere tareas ligeras.",
+        "memory_critical_threshold": "Crítico cuando la memoria libre baje de",
+        "memory_critical_threshold_hint": "Pausa las tareas programadas. Cuando la RAM libre llega a este nivel, se avisa al agente de que la memoria es críticamente baja y las tareas programadas esperan. Manténgalo igual o por debajo del nivel de aviso.",
+        "resource_thresholds_zero_off": "0 desactiva un límite. Cada campo se guarda al salir de él."
       },
       "mcpTab": {
         "actions": "Acciones",

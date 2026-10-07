@@ -13512,7 +13512,16 @@
         "default_crewmate_failed": "Impossibile cambiare il compagno predefinito",
         "default_crewmate_hint": "Con quale compagno parte una nuova sessione: la stessa impostazione che scrive la ★ della casella di chat (Agente predefinito per le nuove sessioni). Le chat già aperte mantengono quello con cui sono iniziate.",
         "default_crewmate_refused_because": "Impossibile impostare {{name}} come compagno predefinito: {{reason}}. Ricarica la pagina e scegli di nuovo.",
-        "default_crewmate_unknown_reason": "{{name}} non è più nell’elenco dei compagni"
+        "default_crewmate_unknown_reason": "{{name}} non è più nell’elenco dei compagni",
+        "resource_thresholds": "Limiti di RAM",
+        "resource_thresholds_description": "Quanta RAM libera deve restare su questo computer prima che {{productName}} avvii altri subagenti, e quando avvisa che la RAM scarseggia. Le modifiche si applicano senza riavvio.",
+        "spawn_min_memory": "Memoria libera necessaria per avviare un subagente",
+        "spawn_min_memory_hint": "Riguarda solo i nuovi subagenti. Un nuovo subagente attende in coda finché, dopo l’avvio, resta libera almeno questa quantità di RAM. Troppo alta, i subagenti non partono mai; troppo bassa, eseguirne molti insieme può esaurire la memoria del computer.",
+        "memory_pressure_threshold": "Avvisa quando la memoria libera scende sotto",
+        "memory_pressure_threshold_hint": "È solo un avviso; nulla viene bloccato. Quando la RAM libera scende a questo livello, l’agente viene avvisato che la memoria scarseggia e preferisce lavori più leggeri.",
+        "memory_critical_threshold": "Critico quando la memoria libera scende sotto",
+        "memory_critical_threshold_hint": "Mette in pausa le attività pianificate. Quando la RAM libera scende a questo livello, l’agente viene avvisato che la memoria è criticamente bassa e le attività pianificate attendono. Tienilo pari o inferiore al livello di avviso.",
+        "resource_thresholds_zero_off": "0 disattiva un limite. Ogni campo si salva quando lo lasci."
       },
       "mcpTab": {
         "actions": "Azioni",

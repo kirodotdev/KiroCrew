@@ -905,21 +905,38 @@ def record_acks(dotted_keys: list[str]) -> list[str]:
     recorded: list[str] = []
 
     def _under_config_lock(config_doc: dict) -> None:
-        still_drifted = {e.dotted_key for e in superseded_default_drift(config_doc, acked={})}
-        values: dict[str, object] = {}
-        for dotted in dotted_keys:
-            if dotted not in still_drifted:
-                continue
-            stored = _stored_value(config_doc, dotted)
-            if stored is not _ABSENT:
-                values[dotted] = stored
-        if values:
-            _update_acked(lambda existing: {**existing, **values})
-            recorded.extend(values)
+        recorded.extend(ack_written_values(config_doc, dotted_keys))
         return None  # read-only: mutate returning None writes no config
 
     update_config_locked(config_path(), mutate=_under_config_lock, stamp_meta=False)
     return recorded
+
+
+def ack_written_values(base_data: dict, dotted_keys: list[str]) -> list[str]:
+    """Acknowledge each of *dotted_keys* that *base_data* now holds at its old default.
+
+    For a deliberate single-key write such as a dashboard PATCH. A stored value equal
+    to an ``auto_adopt`` entry's ``old_default`` with no adoption-ledger row is
+    un-materialized by the next load, so without this a value the user just saved
+    would silently revert to the new default. An acknowledged value is not drift,
+    which keeps it both out of adoption and out of the report.
+
+    Call it from INSIDE the ``update_config_locked`` mutate that writes *base_data*:
+    the ack then lands in the same config-lock hold as the value (config-then-ack, the
+    order :func:`record_acks` uses), so no load can adopt the key in between. A key
+    that is not drifted is left alone. Returns the keys acknowledged.
+    """
+    still_drifted = {e.dotted_key for e in superseded_default_drift(base_data, acked={})}
+    values: dict[str, object] = {}
+    for dotted in dotted_keys:
+        if dotted not in still_drifted:
+            continue
+        stored = _stored_value(base_data, dotted)
+        if stored is not _ABSENT:
+            values[dotted] = stored
+    if values:
+        _update_acked(lambda existing: {**existing, **values})
+    return list(values)
 
 
 def drop_acks(dotted_keys: list[str]) -> None:

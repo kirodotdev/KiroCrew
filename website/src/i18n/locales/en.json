@@ -7783,7 +7783,16 @@
         "change_directory": "Change directory",
         "delete_workspace_warning": "Its memory, lessons, history and knowledge base stop being used. The folder stays on disk.",
         "type_workspace_name_to_confirm": "Type “{{name}}” to confirm",
-        "change_directory_hint": "The workspace will read its memory, lessons, history and knowledge base from the new folder. Nothing is moved."
+        "change_directory_hint": "The workspace will read its memory, lessons, history and knowledge base from the new folder. Nothing is moved.",
+        "resource_thresholds": "RAM Limits",
+        "resource_thresholds_description": "How much free RAM this computer must keep before {{productName}} starts more subagents, and when it warns that RAM is running low. Changes apply without a restart.",
+        "spawn_min_memory": "Free memory needed to start a subagent",
+        "spawn_min_memory_hint": "Gates new subagents only. A new subagent waits in the queue until at least this much RAM would still be free after it starts. Too high and subagents never start; too low and running many at once can run the computer out of memory.",
+        "memory_pressure_threshold": "Warn when free memory drops below",
+        "memory_pressure_threshold_hint": "Warns only; nothing is blocked. When free RAM falls to this level, the agent is told memory is tight and prefers lighter work.",
+        "memory_critical_threshold": "Critical when free memory drops below",
+        "memory_critical_threshold_hint": "Pauses scheduled jobs. When free RAM falls to this level, the agent is told memory is critically low and scheduled jobs wait. Keep it at or below the warning level.",
+        "resource_thresholds_zero_off": "0 turns a limit off. Each field saves when you leave it."
       },
       "mcpTab": {
         "actions": "Actions",

@@ -3814,6 +3814,12 @@ POOL_TTL_SECS_MIN = 0
 POOL_TTL_SECS_MAX = 7200
 SOFT_STOP_BUDGET_MIN = 0.5
 SOFT_STOP_BUDGET_MAX = 60.0
+# ``agent.spawn_min_memory_gb`` / ``resource_pressure_gb`` / ``resource_critical_gb``:
+# GB of host memory. 0 is each field's "off" value, so the floor is 0 and a
+# negative (which every consumer already read as "off") loads as 0. The ceiling
+# only stops an absurd value; no host this runs on has a TiB of RAM to reserve.
+RESOURCE_MEMORY_GB_MIN = 0.0
+RESOURCE_MEMORY_GB_MAX = 1024.0
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
 # Load-only bounds. Unlike the parity block above these are NOT consumed by

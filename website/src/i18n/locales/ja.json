@@ -13122,7 +13122,16 @@
         "default_crewmate_failed": "デフォルトのクルーメイトを変更できませんでした",
         "default_crewmate_hint": "新しいセッションがどのクルーメイトとして始まるか — チャット入力欄の ★（新しいセッションの既定エージェント）が書き込むのと同じ設定です。すでに開いているチャットは開始時のクルーメイトのままです。",
         "default_crewmate_refused_because": "{{name}} を既定のクルーメイトにできませんでした — {{reason}}。ページを再読み込みして、もう一度選んでください。",
-        "default_crewmate_unknown_reason": "{{name}} はクルーメイト一覧にありません"
+        "default_crewmate_unknown_reason": "{{name}} はクルーメイト一覧にありません",
+        "resource_thresholds": "RAM の上限",
+        "resource_thresholds_description": "{{productName}} がサブエージェントをさらに起動する前に残しておく空き RAM と、RAM が少ないと警告するタイミングです。変更は再起動なしで反映されます。",
+        "spawn_min_memory": "サブエージェント起動に必要な空きメモリ",
+        "spawn_min_memory_hint": "新しいサブエージェントの起動だけを制御します。新しいサブエージェントは、起動後もこの量以上の RAM が空いている状態になるまでキューで待機します。高すぎるとサブエージェントは起動せず、低すぎると多数を同時に動かしてメモリが尽きることがあります。",
+        "memory_pressure_threshold": "空きメモリがこの値を下回ったら警告",
+        "memory_pressure_threshold_hint": "警告のみで、何も止めません。空き RAM がこの値まで減ると、メモリが逼迫しているとエージェントに伝え、軽い作業を優先させます。",
+        "memory_critical_threshold": "空きメモリがこの値を下回ったら危険",
+        "memory_critical_threshold_hint": "スケジュールされたジョブを一時停止します。空き RAM がこの値まで減ると、メモリが著しく不足しているとエージェントに伝え、スケジュールされたジョブは待機します。警告の値以下にしてください。",
+        "resource_thresholds_zero_off": "0 にすると上限がオフになります。各項目はフォーカスを外すと保存されます。"
       },
       "mcpTab": {
         "actions": "アクション",

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Bot, FolderOpen, Brain, Settings, Lock, Flame, Plus } from 'lucide-react'
+import { Check, Bot, FolderOpen, Brain, Settings, Lock, Flame, Gauge, Plus } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Badge, Btn, EmptyState, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -45,7 +45,7 @@ interface KiroCrewCfg {
   default_workspace: string
   memory_stores: Record<string, MemoryStoreCfg>
   default_memory_store: string
-  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; tool_search?: boolean; max_channels: number; max_channel_agents: number }
+  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; spawn_min_memory_gb?: number; resource_pressure_gb?: number; resource_critical_gb?: number; tool_search?: boolean; max_channels: number; max_channel_agents: number }
   session: { timeout_secs: number; pool_size: number; pool_agent: string; pool_ttl_secs: number }
   memory: { embedding_provider: string }
   auto_update: boolean
@@ -145,6 +145,13 @@ function WorkspaceRow({ name, dir, isDefault, usedBy, onChanged }: { name: strin
   )
 }
 
+/** The RAM Limits rows, mapped to their label keys so a refusal names its field. */
+const MEMORY_LIMIT_LABEL_KEYS: Record<string, string> = {
+  'agent.spawn_min_memory_gb': 'pages.overview.kiroCrewCfgTab.spawn_min_memory',
+  'agent.resource_pressure_gb': 'pages.overview.kiroCrewCfgTab.memory_pressure_threshold',
+  'agent.resource_critical_gb': 'pages.overview.kiroCrewCfgTab.memory_critical_threshold',
+}
+const MEMORY_LIMIT_PATHS = new Set(Object.keys(MEMORY_LIMIT_LABEL_KEYS))
 const rowCls = "flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm"
 const inputCls = "h-7 min-w-[120px] bg-bg-elevated border border-border rounded-md px-2 py-0.5 text-[13px] font-mono text-text focus-visible:border-accent focus:outline-hidden"
 const readonlyCls = "flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm bg-bg-elevated/30 rounded px-1 -mx-1"
@@ -157,14 +164,23 @@ function useDirtyTrack<T>(value: T) {
   return { ok, markDirty }
 }
 
-function CfgRow({ label, hint, ok, children }: { label: string; hint?: string; ok: boolean; children: React.ReactNode }) {
-  return (
-    <div className={rowCls}>
+function CfgRow({ label, hint, help, ok, children }: { label: string; hint?: string; help?: string; ok: boolean; children: React.ReactNode }) {
+  const row = (
+    <div className={help ? rowCls.replace(' border-b border-border', '') : rowCls}>
       <span className="text-muted inline-flex items-center gap-1">{label} {hint && <InfoTip text={hint} />}</span>
       <div className="flex items-center gap-1.5">
         {children}
         {ok && <span className="text-ok text-[11px]"><Check className="lucide-inline" /></span>}
       </div>
+    </div>
+  )
+  if (!help) return row
+  // Visible helper text instead of a tooltip, for rows whose effect a reader has
+  // to know before they dare change the value.
+  return (
+    <div className="border-b border-border pb-1.5">
+      {row}
+      <p className="text-muted text-[12px] leading-snug">{help}</p>
     </div>
   )
 }
@@ -193,22 +209,24 @@ function CfgSelect({ label, path, value, options, hint, labels, onSave }: { labe
   )
 }
 
-function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { label: string; path: string; value: number; suffix?: string; min?: number; max?: number; hint?: string; onSave: (p: string, v: number) => void }) {
+function CfgNumber({ label, path, value, suffix, min, max, step, hint, help, onSave }: { label: string; path: string; value: number; suffix?: string; min?: number; max?: number; step?: number; hint?: string; help?: string; onSave: (p: string, v: number) => void }) {
   const ime = useImeGuard()
   const [local, setLocal] = useState(String(value))
   const { ok, markDirty } = useDirtyTrack(value)
   const [err, setErr] = useState('')
   useEffect(() => { setLocal(String(value)); setErr('') }, [value])
   const commit = () => {
-    const n = parseInt(local)
-    if (isNaN(n)) { setErr('invalid'); return }
+    // A fractional `step` marks a decimal field (GB thresholds); every other row
+    // is an integer and keeps parseInt, so typing "1.5" there still saves 1.
+    const n = step !== undefined && !Number.isInteger(step) ? parseFloat(local) : parseInt(local)
+    if (!Number.isFinite(n)) { setErr('invalid'); return }
     if (min !== undefined && n < min) { setErr(`min ${min}`); return }
     if (max !== undefined && n > max) { setErr(`max ${max}`); return }
     if (n !== value) { markDirty(); setErr(''); onSave(path, n) }
   }
   return (
-    <CfgRow label={label} hint={hint} ok={ok && !err}>
-      <input type="number" aria-label={label} min={min} max={max} placeholder={min !== undefined && max !== undefined ? `${min}–${max}` : undefined}
+    <CfgRow label={label} hint={hint} help={help} ok={ok && !err}>
+      <input type="number" aria-label={label} min={min} max={max} step={step} placeholder={min !== undefined && max !== undefined ? `${min}–${max}` : undefined}
         className={`${inputCls} text-right ${err ? 'border-danger' : ''}`}
         value={local}
         onChange={e => { setLocal(e.target.value); setErr('') }}
@@ -243,7 +261,13 @@ export default function KiroCrewCfgTab() {
   })
   const err = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
   const [saveErr, setSaveErr] = useState('')
-  const [rev, setRev] = useState(0)
+  // Which row's save failed, so the RAM Limits card owns its own refusals and
+  // the two older cards keep showing everyone else's.
+  const [saveErrPath, setSaveErrPath] = useState('')
+  // Remount counters PER PATH: a refused save re-keys only its own row back to
+  // the stored value, so a draft being typed in a neighbouring row survives.
+  const [revs, setRevs] = useState<Record<string, number>>({})
+  const rowKey = (path: string) => `${path}-${revs[path] ?? 0}`
   const [creatingWs, setCreatingWs] = useState(false)
   // Bumped on every open: a create still in flight from an earlier opening
   // (Cancel does not abort it) must not close the dialog reopened since.
@@ -259,11 +283,12 @@ export default function KiroCrewCfgTab() {
   const patchMut = useMutation({
     mutationFn: ({ path, value }: { path: string; value: unknown }) => api.patchConfig(path, value),
     onSuccess: (updated) => { queryClient.setQueryData(['kirocrewConfig'], updated) },
-    onError: (e: Error) => {
+    onError: (e: Error, { path }) => {
       setSaveErr(e.message)
+      setSaveErrPath(path)
       setTimeout(() => setSaveErr(''), 4000)
       queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-      setRev(r => r + 1)
+      setRevs(r => ({ ...r, [path]: (r[path] ?? 0) + 1 }))
     },
   })
 
@@ -277,7 +302,7 @@ export default function KiroCrewCfgTab() {
    *  rather than a raw config PATCH, and its own notice: the row commits on
    *  change, so there is no draft the hand-off could lose. */
   const [defaultErr, setDefaultErr] = useState('')
-  // Its own remount counter, not the page-wide `rev`: bumping `rev` here would
+  // Its own remount counter, not the per-row `revs`: bumping every row's here would
   // remount every control on the page when the default-crewmate request
   // settles, and a CfgNumber keeps its typed-but-uncommitted draft in local
   // state — so a value being typed into Pool size or Session timeout while the
@@ -485,15 +510,36 @@ export default function KiroCrewCfgTab() {
       {/* Subagent Settings */}
       <SubagentSettings cfg={cfg} onSaved={() => queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })} />
 
+      {/* Memory limits: the free-memory floor that gates subagent starts and the
+          two levels at which the agent is told memory is low. Each row saves on
+          its own and applies without a restart. */}
+      <Card>
+        <CardTitle><Gauge className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.resource_thresholds')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.resource_thresholds_description')} /></CardTitle>
+        {/* No hand-off: it navigates to the chat and unmounts this page, and
+            Subagent Settings above keeps its drafts in local state until its own
+            Save -- a hand-off here would throw them away. */}
+        {saveErr && MEMORY_LIMIT_PATHS.has(saveErrPath) && (
+          <ErrorNotice message={`${i18nT(MEMORY_LIMIT_LABEL_KEYS[saveErrPath])}: ${saveErr}`} variant="inline" />
+        )}
+        <p className="text-muted text-[12px] mb-2">{i18nT('pages.overview.kiroCrewCfgTab.resource_thresholds_zero_off')}</p>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
+          <CfgNumber key={rowKey('agent.spawn_min_memory_gb')} label={i18nT('pages.overview.kiroCrewCfgTab.spawn_min_memory')} path="agent.spawn_min_memory_gb" value={cfg.agent.spawn_min_memory_gb ?? 2} suffix="GB" min={0} max={1024} step={0.5} help={i18nT('pages.overview.kiroCrewCfgTab.spawn_min_memory_hint')} onSave={save} />
+          <CfgNumber key={rowKey('agent.resource_pressure_gb')} label={i18nT('pages.overview.kiroCrewCfgTab.memory_pressure_threshold')} path="agent.resource_pressure_gb" value={cfg.agent.resource_pressure_gb ?? 4} suffix="GB" min={0} max={1024} step={0.5} help={i18nT('pages.overview.kiroCrewCfgTab.memory_pressure_threshold_hint')} onSave={save} />
+          <CfgNumber key={rowKey('agent.resource_critical_gb')} label={i18nT('pages.overview.kiroCrewCfgTab.memory_critical_threshold')} path="agent.resource_critical_gb" value={cfg.agent.resource_critical_gb ?? 2} suffix="GB" min={0} max={1024} step={0.5} help={i18nT('pages.overview.kiroCrewCfgTab.memory_critical_threshold_hint')} onSave={save} />
+        </div>
+      </Card>
+
       {/* Warm Pool */}
       {provider.capabilities.warmPool && (
       <Card>
         <CardTitle><Flame className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.warm_pool')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.warm_pool_description')} /></CardTitle>
-        {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
+        {/* No hand-off: it navigates to the chat and unmounts this page, and
+            Subagent Settings keeps its drafts in local state until its own Save. */}
+        {saveErr && !MEMORY_LIMIT_PATHS.has(saveErrPath) && <ErrorNotice message={saveErr} variant="inline" />}
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-          <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
-          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
-          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
+          <CfgNumber key={rowKey('session.pool_size')} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
+          <CfgSelect key={rowKey('session.pool_agent')} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
+          <CfgNumber key={rowKey('session.pool_ttl_secs')} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
         </div>
       </Card>
       )}
@@ -501,15 +547,17 @@ export default function KiroCrewCfgTab() {
       {/* Quick Info */}
       <Card>
         <CardTitle><Settings className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.config_summary')}</CardTitle>
-        {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
+        {/* No hand-off: it navigates to the chat and unmounts this page, and
+            Subagent Settings keeps its drafts in local state until its own Save. */}
+        {saveErr && !MEMORY_LIMIT_PATHS.has(saveErrPath) && <ErrorNotice message={saveErr} variant="inline" />}
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
-          <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
-          <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
-          <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'strict', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.applies_to_sessions_started_after_the_change')} onSave={save} />
+          <CfgSelect key={rowKey('agent.approval_mode')} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
+          <CfgNumber key={rowKey('session.timeout_secs')} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
+          <CfgSelect key={rowKey('agent.sandbox')} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'strict', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.applies_to_sessions_started_after_the_change')} onSave={save} />
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.embedding_provider')}</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
-          <CfgToggle key={`autoupdate-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />
-          <CfgToggle key={`toolsearch-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.mcp_tool_search')} path="agent.tool_search" value={cfg.agent.tool_search ?? true} hint={i18nT('pages.overview.kiroCrewCfgTab.enable_dynamic_mcp_tool_discovery_via_kiro_cli_t')} onSave={save} />
+          <CfgToggle key={rowKey('auto_update')} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />
+          <CfgToggle key={rowKey('agent.tool_search')} label={i18nT('pages.overview.kiroCrewCfgTab.mcp_tool_search')} path="agent.tool_search" value={cfg.agent.tool_search ?? true} hint={i18nT('pages.overview.kiroCrewCfgTab.enable_dynamic_mcp_tool_discovery_via_kiro_cli_t')} onSave={save} />
           <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channels')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channels}</span></div>
           <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channel_agents')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channel_agents}</span></div>
         </div>
@@ -527,11 +575,15 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   const [msg, setMsg] = useState<ReactNode>('')
   const [msgOk, setMsgOk] = useState(false)
 
-  useEffect(() => {
-    setMaxTurns(cfg.agent.subagent_max_turns ?? 100)
-    setMaxSubs(cfg.agent.max_subagents ?? 3)
-    setAutoMax(cfg.agent.subagent_auto_max ?? 16)
-  }, [cfg])
+  // One effect per field, keyed on that field's stored value: a save from any
+  // other row on this page replaces `cfg`, and resyncing on `cfg` itself would
+  // throw away a draft typed here but not yet saved.
+  const storedTurns = cfg.agent.subagent_max_turns ?? 100
+  const storedSubs = cfg.agent.max_subagents ?? 3
+  const storedAutoMax = cfg.agent.subagent_auto_max ?? 16
+  useEffect(() => { setMaxTurns(storedTurns) }, [storedTurns])
+  useEffect(() => { setMaxSubs(storedSubs) }, [storedSubs])
+  useEffect(() => { setAutoMax(storedAutoMax) }, [storedAutoMax])
 
   const dirty = maxTurns !== (cfg.agent.subagent_max_turns ?? 100) || maxSubs !== (cfg.agent.max_subagents ?? 3) || autoMax !== (cfg.agent.subagent_auto_max ?? 16)
 

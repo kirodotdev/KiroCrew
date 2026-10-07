@@ -2569,6 +2569,9 @@ class AgentConfig:
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
+    spawn_min_memory_gb: float = 2.0   # per-start free-memory floor; <= 0 = off. Load-time clamped to [0, 1024] (RESOURCE_MEMORY_GB_MIN/MAX); editable via PATCH (_EDITABLE_CONFIG) and the Settings "RAM Limits" card, hot-applied
+    resource_pressure_gb: float = 4.0  # [RESOURCES] "tight" threshold; 0 = off. Same [0, 1024] clamp, PATCH entry and card
+    resource_critical_gb: float = 2.0  # [RESOURCES] "critical" threshold (also defers scheduled cron); 0 = off. Same [0, 1024] clamp, PATCH entry and card
     max_subagents: int = 0         # 0 = auto: the subagent_auto_max ceiling (3 when host memory cannot be read); memory bounds starts beneath it (spawn_min_memory_gb). With spawn_min_memory_gb <= 0 the floor is off and auto is sized from memory (compute_memory_sized_parallel_cap). Fixed pins load in [3, 64]
     subagent_auto_max: int = 32    # the count ceiling when max_subagents=0 (provider concurrency / fd / PID stand-in; not sized from memory while the spawn floor is on, and capping the memory-sized figure when spawn_min_memory_gb <= 0 disables it); also caps the TaskRunner's memory-sized auto value. Load-time clamped to [3, 64]
     subagent_max_turns: int = 1000  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]

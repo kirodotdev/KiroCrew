@@ -13317,7 +13317,16 @@
         "default_crewmate_failed": "Der Standard-Crew-Kamerad konnte nicht geändert werden",
         "default_crewmate_hint": "Als welcher Crew-Kamerad eine neue Sitzung startet – dieselbe Einstellung, die der ★ im Chat-Eingabefeld (Standard-Agent für neue Sitzungen) schreibt. Bereits geöffnete Chats behalten den, mit dem sie begonnen haben.",
         "default_crewmate_refused_because": "{{name}} konnte nicht als Standard-Crew-Kamerad gesetzt werden – {{reason}}. Lade die Seite neu und wähl noch einmal.",
-        "default_crewmate_unknown_reason": "{{name}} steht nicht mehr in der Crewmate-Liste"
+        "default_crewmate_unknown_reason": "{{name}} steht nicht mehr in der Crewmate-Liste",
+        "resource_thresholds": "RAM-Grenzen",
+        "resource_thresholds_description": "Wie viel freier Arbeitsspeicher übrig bleiben muss, bevor {{productName}} weitere Subagenten startet, und wann gewarnt wird, dass er knapp wird. Änderungen gelten ohne Neustart.",
+        "spawn_min_memory": "Freier Speicher zum Starten eines Subagenten",
+        "spawn_min_memory_hint": "Betrifft nur neue Subagenten. Ein neuer Subagent wartet in der Warteschlange, bis nach seinem Start noch mindestens so viel RAM frei bleibt. Zu hoch, und Subagenten starten nie; zu niedrig, und viele gleichzeitig können den Speicher des Rechners erschöpfen.",
+        "memory_pressure_threshold": "Warnen, wenn freier Speicher unter",
+        "memory_pressure_threshold_hint": "Nur eine Warnung; nichts wird blockiert. Fällt der freie RAM auf diesen Wert, erfährt der Agent, dass Speicher knapp ist, und wählt leichtere Arbeit.",
+        "memory_critical_threshold": "Kritisch, wenn freier Speicher unter",
+        "memory_critical_threshold_hint": "Pausiert geplante Aufgaben. Fällt der freie RAM auf diesen Wert, erfährt der Agent, dass Speicher kritisch knapp ist, und geplante Aufgaben warten. Wähle ihn höchstens so hoch wie die Warnschwelle.",
+        "resource_thresholds_zero_off": "0 schaltet eine Grenze ab. Jedes Feld wird gespeichert, sobald du es verlässt."
       },
       "mcpTab": {
         "actions": "Aktionen",

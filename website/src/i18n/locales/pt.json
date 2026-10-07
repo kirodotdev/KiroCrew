@@ -13512,7 +13512,16 @@
         "default_crewmate_failed": "Não foi possível alterar o colega padrão",
         "default_crewmate_hint": "Com qual colega uma nova sessão começa: a mesma configuração que a ★ da caixa de chat (Agente padrão para novas sessões) grava. Os chats já abertos mantêm o colega com que começaram.",
         "default_crewmate_refused_because": "Não foi possível definir {{name}} como colega padrão: {{reason}}. Recarregue a página e escolha de novo.",
-        "default_crewmate_unknown_reason": "{{name}} já não está na lista de companheiros"
+        "default_crewmate_unknown_reason": "{{name}} já não está na lista de companheiros",
+        "resource_thresholds": "Limites de RAM",
+        "resource_thresholds_description": "Quanta RAM livre este computador deve manter antes de o {{productName}} iniciar mais subagentes, e quando ele avisa que a RAM está acabando. As alterações valem sem reiniciar.",
+        "spawn_min_memory": "Memória livre necessária para iniciar um subagente",
+        "spawn_min_memory_hint": "Controla só os novos subagentes. Um novo subagente espera na fila até que pelo menos esta quantidade de RAM continue livre depois de iniciar. Alto demais, os subagentes nunca iniciam; baixo demais, rodar muitos ao mesmo tempo pode esgotar a memória do computador.",
+        "memory_pressure_threshold": "Avisar quando a memória livre ficar abaixo de",
+        "memory_pressure_threshold_hint": "Apenas avisa; nada é bloqueado. Quando a RAM livre cai a este nível, o agente é avisado de que a memória está apertada e prefere tarefas mais leves.",
+        "memory_critical_threshold": "Crítico quando a memória livre ficar abaixo de",
+        "memory_critical_threshold_hint": "Pausa as tarefas agendadas. Quando a RAM livre cai a este nível, o agente é avisado de que a memória está criticamente baixa e as tarefas agendadas esperam. Mantenha igual ou abaixo do nível de aviso.",
+        "resource_thresholds_zero_off": "0 desativa um limite. Cada campo é salvo quando você sai dele."
       },
       "mcpTab": {
         "actions": "Ações",

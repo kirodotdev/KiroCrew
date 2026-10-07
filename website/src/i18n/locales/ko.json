@@ -13122,7 +13122,16 @@
         "default_crewmate_failed": "기본 크루메이트를 변경할 수 없습니다",
         "default_crewmate_hint": "새 세션이 어떤 크루메이트로 시작할지 정합니다 — 채팅 입력창의 ★(새 세션의 기본 에이전트)가 쓰는 것과 같은 설정입니다. 이미 열린 채팅은 시작할 때의 크루메이트를 유지합니다.",
         "default_crewmate_refused_because": "{{name}}을(를) 기본 크루메이트로 설정할 수 없습니다 — {{reason}}. 페이지를 새로 고친 뒤 다시 선택하세요.",
-        "default_crewmate_unknown_reason": "크루메이트 목록에 {{name}}이(가) 더 이상 없습니다"
+        "default_crewmate_unknown_reason": "크루메이트 목록에 {{name}}이(가) 더 이상 없습니다",
+        "resource_thresholds": "RAM 한도",
+        "resource_thresholds_description": "{{productName}}이(가) 하위 에이전트를 더 시작하기 전에 이 컴퓨터에 남겨 둘 여유 RAM과, RAM이 부족하다고 알릴 시점입니다. 변경 사항은 재시작 없이 적용됩니다.",
+        "spawn_min_memory": "하위 에이전트 시작에 필요한 여유 메모리",
+        "spawn_min_memory_hint": "새 하위 에이전트 시작만 제어합니다. 새 하위 에이전트는 시작한 뒤에도 최소 이만큼의 RAM이 남을 때까지 대기열에서 기다립니다. 너무 높으면 하위 에이전트가 시작되지 않고, 너무 낮으면 여러 개를 동시에 실행하다 컴퓨터 메모리가 바닥날 수 있습니다.",
+        "memory_pressure_threshold": "여유 메모리가 이 값보다 낮으면 경고",
+        "memory_pressure_threshold_hint": "경고만 하며 아무것도 막지 않습니다. 여유 RAM이 이 수준까지 떨어지면 에이전트에게 메모리가 부족하다고 알려 가벼운 작업을 우선하게 합니다.",
+        "memory_critical_threshold": "여유 메모리가 이 값보다 낮으면 위험",
+        "memory_critical_threshold_hint": "예약된 작업을 일시 중지합니다. 여유 RAM이 이 수준까지 떨어지면 에이전트에게 메모리가 심각하게 부족하다고 알리고 예약된 작업은 대기합니다. 경고 값 이하로 두세요.",
+        "resource_thresholds_zero_off": "0으로 설정하면 해당 한도가 꺼집니다. 각 필드는 벗어나면 저장됩니다."
       },
       "mcpTab": {
         "actions": "동작",

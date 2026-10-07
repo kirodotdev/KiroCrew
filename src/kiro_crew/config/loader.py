@@ -3049,6 +3049,8 @@ def _session_start_concurrency(raw: object) -> int | str:
 # cache configuration, and leave resolution and admission checks unchanged.
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
+    # GB-of-memory knobs share one range with their PATCH entries.
+    memory_gb = (_sections.RESOURCE_MEMORY_GB_MIN, _sections.RESOURCE_MEMORY_GB_MAX)
     return AgentConfig(
         approval_mode=section.get("approval_mode"),
         streaming=section.get("streaming"),
@@ -3164,9 +3166,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
-        spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
-        resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
-        resource_critical_gb=section.read("resource_critical_gb", _safe_float),
+        spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float, *memory_gb),
+        resource_pressure_gb=section.read("resource_pressure_gb", _safe_float, *memory_gb),
+        resource_critical_gb=section.read("resource_critical_gb", _safe_float, *memory_gb),
         admission_gate=section.read("admission_gate", _safe_bool),
         # Durable task queue keys, adjacent to admission_gate because a
         # gated spawn is what the queue defers instead of refusing.
