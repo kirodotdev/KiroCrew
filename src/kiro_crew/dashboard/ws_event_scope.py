@@ -97,7 +97,7 @@ from typing import TYPE_CHECKING, Any
 # which the current import order satisfies (state.py imports us lazily inside
 # broadcast_ws, and ws.py imports us before apps.manager). Kept top-level per
 # the top-level-imports guideline.
-from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, staged_app_grants
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -1198,7 +1198,9 @@ def _read_declared_events(app: str) -> tuple[bool, frozenset[str]]:
         manifest = get_app_manifest(app)
         if manifest is None:
             return (True, frozenset())
-        return (True, build_allowed_event_set(list(manifest.permissions.events)))
+        # An update's added entries stay out until the owner approves them.
+        approved = staged_app_grants(app, "events", list(manifest.permissions.events))
+        return (True, build_allowed_event_set(approved))
     except Exception:
         logger.debug("ws_event_scope: could not reload declarations for %r", app)
         return (True, frozenset())

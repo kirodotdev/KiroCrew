@@ -1579,9 +1579,22 @@ is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
 restores the old manifest and enabled state together. A replacement manifest
 that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
-This re-gate covers
-`sessionApproval` only; `permissions.api` and `permissions.events` are likewise
-read live and still widen on update without a consent moment (issue #11212).
+`permissions.api` and `permissions.events` are read live as well, and an update
+that adds any entry to either is staged rather than disabled: `update_app` and
+`register_external_app` record the entries the owner last approved in
+`installed.json` `consentedGrants` (SEL operation `grants_widened`, outcome
+`staged`) and return `notice: "grants_reconsent"`; the app stays enabled, and
+every enforcement point -- `token_auth._app_api_allowlist`,
+`ws_event_scope._read_declared_events`, and the hook context's event bus via
+`approved_manifest_permissions` -- grants only declared entries that are also in
+that set (`staged_app_grants`). A later update keeps the original baseline, and
+one back inside it clears the record. The detail page lists the held-back entries
+and its "Approve new permissions" button posts `/enable` with `grantsConsent:
+true` (owner-gated), which clears the record; the caches pick it up within their
+refresh interval. Failure direction is closed: an unreadable old manifest gives an
+empty baseline, a malformed `consentedGrants` record approves nothing, and an app
+directory with no readable record (corrupt, or mid-update between the tree swap
+and the new record) grants no `permissions.api` entry.
 
 **Prefix grants are narrowed to owned resources on the cross-session routes.**
 `permissions.api` is a prefix match, so the routes below are judged per resource

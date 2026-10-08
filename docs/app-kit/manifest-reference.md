@@ -874,8 +874,9 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > whatever `permissions.api` prefix it holds. Mode changes must name a live allowed slot and are
 > limited to Normal, Reads and Trust; YOLO is a process-global override and stays
 > dashboard-only. An update that newly adds the flag disables the app until the user
-> enables it again from the detail page, which shows why (this re-gate is specific
-> to `sessionApproval`; see issue #11212 for the other live-enforced fields).
+> enables it again from the detail page, which shows why. An update that adds an
+> entry to `permissions.api` or `permissions.events` keeps the app enabled but
+> withholds the new entries until the user approves them on the detail page.
 > Official catalog entries mirror this flag so users see it before
 > install even when the store skips fetching the app manifest. Install-time path
 > traversal is blocked separately by

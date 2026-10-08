@@ -9930,7 +9930,9 @@
       "retry": "Reintentar",
       "enable_and_allow_chat_control": "Activar y permitir el control del chat",
       "session_approval_confirm_title": "¿Permitir que “{{name}}” controle tus chats?",
-      "session_approval_reconsent_notice": "{{name}} está desactivada porque ahora solicita controlar tus chats. Revisa el permiso en esta página antes de activarla."
+      "session_approval_reconsent_notice": "{{name}} está desactivada porque ahora solicita controlar tus chats. Revisa el permiso en esta página antes de activarla.",
+      "approve_new_permissions": "Aprobar los nuevos permisos",
+      "grants_reconsent_notice": "{{name}} solicita nuevos permisos en esta versión: {{entries}}. Siguen desactivados, y la app mantiene sus permisos anteriores, hasta que los apruebes."
     },
     "appPage": {
       "loading_app": "Cargando la app…",

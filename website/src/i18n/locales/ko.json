@@ -9672,7 +9672,9 @@
       "retry": "다시 시도",
       "enable_and_allow_chat_control": "활성화하고 채팅 제어 허용",
       "session_approval_confirm_title": "‘{{name}}’에 채팅 제어를 허용할까요?",
-      "session_approval_reconsent_notice": "{{name}} 앱이 새로 채팅 제어 권한을 요청하여 비활성화되었습니다. 활성화하기 전에 이 페이지에서 권한을 검토하세요."
+      "session_approval_reconsent_notice": "{{name}} 앱이 새로 채팅 제어 권한을 요청하여 비활성화되었습니다. 활성화하기 전에 이 페이지에서 권한을 검토하세요.",
+      "approve_new_permissions": "새 권한 승인",
+      "grants_reconsent_notice": "{{name}} 앱이 이 버전에서 새 권한을 요청합니다: {{entries}}. 승인하기 전까지 이 권한은 꺼져 있으며 앱은 이전 권한으로 동작합니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

@@ -79,6 +79,8 @@ export type InstalledApp = {
   displayName: string
   enabled: boolean
   sessionApprovalConsentPending?: boolean
+  /** Approved api/events entries, present only while an update's new ones await approval. */
+  consentedGrants?: { api?: string[]; events?: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"

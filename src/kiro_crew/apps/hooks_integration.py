@@ -32,7 +32,7 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.job_routes import register_job_routes
 from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
-from kiro_crew.apps.manager import app_dir, list_apps
+from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
@@ -328,7 +328,7 @@ def _build_app_context_from_info(
     """Build an AppContext from app info dict — shared helper for consistent context."""
     name = app_info.get("name", "")
     manifest = app_info.get("manifest", {})
-    permissions = manifest.get("permissions", {})
+    permissions = approved_manifest_permissions(app_info)
     data_path = app_dir(name) / "data"
     data_path.mkdir(parents=True, exist_ok=True)
     # Only an app that declares a ``routes`` hook is handed the gateway's

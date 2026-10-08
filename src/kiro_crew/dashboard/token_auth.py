@@ -1488,11 +1488,14 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
         # circular import: apps.manager imports generate_app_secret/
         # write_app_secret from this module (token_auth), so a top-level
         # `import` here would form a cycle. Kept function-local deliberately.
-        from kiro_crew.apps.manager import get_app_manifest
+        from kiro_crew.apps.manager import get_app_manifest, staged_app_grants
 
         manifest = get_app_manifest(app_name)
         if manifest is not None:
-            allow = tuple(p for p in manifest.permissions.api if p)
+            # An update's added entries stay out until the owner approves them.
+            allow = tuple(
+                staged_app_grants(app_name, "api", [p for p in manifest.permissions.api if p])
+            )
     except Exception:
         logger.warning(
             "app scope: could not load permissions for %r; denying by default",

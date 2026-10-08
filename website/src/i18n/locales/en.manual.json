@@ -4072,7 +4072,9 @@
       "retry": "Retry",
       "enable_and_allow_chat_control": "Enable and allow chat control",
       "session_approval_confirm_title": "Allow “{{name}}” to control your chats?",
-      "session_approval_reconsent_notice": "{{name}} is disabled because it newly asks to control your chats. Review the permission on this page before enabling it."
+      "session_approval_reconsent_notice": "{{name}} is disabled because it newly asks to control your chats. Review the permission on this page before enabling it.",
+      "approve_new_permissions": "Approve new permissions",
+      "grants_reconsent_notice": "{{name}} requests new permissions in this version: {{entries}}. They stay off, and the app keeps its earlier permissions, until you approve them."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",

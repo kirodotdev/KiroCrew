@@ -9930,7 +9930,9 @@
       "retry": "Réessayer",
       "enable_and_allow_chat_control": "Activer et autoriser le contrôle des chats",
       "session_approval_confirm_title": "Autoriser « {{name}} » à contrôler tes chats ?",
-      "session_approval_reconsent_notice": "{{name}} est désactivée, car elle demande maintenant à contrôler tes chats. Vérifie l’autorisation sur cette page avant de l’activer."
+      "session_approval_reconsent_notice": "{{name}} est désactivée, car elle demande maintenant à contrôler tes chats. Vérifie l’autorisation sur cette page avant de l’activer.",
+      "approve_new_permissions": "Approuver les nouvelles autorisations",
+      "grants_reconsent_notice": "{{name}} demande de nouvelles autorisations dans cette version : {{entries}}. Elles restent désactivées, et l’app garde ses autorisations précédentes, jusqu’à ce que tu les approuves."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

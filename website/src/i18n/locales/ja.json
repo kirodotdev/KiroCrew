@@ -9672,7 +9672,9 @@
       "retry": "再試行",
       "enable_and_allow_chat_control": "有効にしてチャット操作を許可",
       "session_approval_confirm_title": "「{{name}}」にチャットの操作を許可しますか？",
-      "session_approval_reconsent_notice": "{{name}} は新たにチャットの制御を要求するため、無効になっています。有効にする前に、このページで権限を確認してください。"
+      "session_approval_reconsent_notice": "{{name}} は新たにチャットの制御を要求するため、無効になっています。有効にする前に、このページで権限を確認してください。",
+      "approve_new_permissions": "新しい権限を承認",
+      "grants_reconsent_notice": "{{name}} はこのバージョンで新しい権限を要求しています: {{entries}}。承認するまでこれらは無効のままで、アプリは以前の権限で動作します。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

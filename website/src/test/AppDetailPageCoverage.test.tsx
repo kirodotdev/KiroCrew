@@ -652,6 +652,32 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(enableApp).not.toHaveBeenCalled()
   })
 
+  it('lists permissions an update staged and approves them on click', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+      },
+      consentedGrants: { api: ['/api/sessions'], events: ['slots:own'] },
+    }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText(/requests new permissions in this version: \/api\/memory, log\./)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, true))
+  })
+
+  it('shows no staged-permission notice when nothing is staged', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: ['/api/memory'] } },
+    }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
+  })
+
   it('syncs a gateway-managed app that has no update waiting', async () => {
     getApp.mockResolvedValue(installedApp())
     renderDetail()

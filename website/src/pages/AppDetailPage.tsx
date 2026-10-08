@@ -92,6 +92,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   installedVersion?: string
   enabled?: boolean
   sessionApprovalConsentPending?: boolean
+  consentedGrants?: { api?: string[]; events?: string[] }
   managed?: string
   source?: string
   installedAt?: string
@@ -645,6 +646,14 @@ export default function AppDetailPage() {
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
+  // An update that added api/events entries is staged: the app keeps the set the
+  // owner approved (`consentedGrants`) until they approve the new entries here.
+  const stagedGrants = app?.consentedGrants
+    ? [
+        ...(app.manifest?.permissions?.api || []).filter(p => !(app.consentedGrants?.api || []).includes(p)),
+        ...(app.manifest?.permissions?.events || []).filter(e => !(app.consentedGrants?.events || []).includes(e)),
+      ]
+    : []
   const enableLabel = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.enable_and_allow_chat_control')
     : i18nT('pages.appDetailPage.enable')
@@ -813,6 +822,7 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            consentedGrants: installed.consentedGrants,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -937,6 +947,7 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            consentedGrants: installed.consentedGrants,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -1419,6 +1430,35 @@ export default function AppDetailPage() {
           >
             <ShieldAlert size={14} className="mt-[3px] shrink-0 text-warn" />
             <span className="text-text text-sm">{reconsentMsg}</span>
+          </div>
+        )}
+
+        {app.installed && stagedGrants.length > 0 && (
+          <div
+            role="status"
+            className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-warn/30 bg-warn-subtle p-3 animate-rise"
+          >
+            <ShieldAlert size={14} className="mt-[3px] shrink-0 text-warn" />
+            <span className="text-text text-sm flex-1 min-w-0">
+              {i18nT('pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app), entries: stagedGrants.join(', ') })}
+            </span>
+            <Btn
+              onClick={async () => {
+                setActionLoading('approve_grants')
+                try {
+                  await api.enableApp(app.name, false, true)
+                  await load()
+                  window.dispatchEvent(new Event('mc:apps-changed'))
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e))
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={actionLoading === 'approve_grants'}
+            >
+              {i18nT('pages.appDetailPage.approve_new_permissions')}
+            </Btn>
           </div>
         )}
 
