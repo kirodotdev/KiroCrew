@@ -259,6 +259,27 @@ def test_a_window_holding_a_masked_leaf_is_refused_where_rules_cannot_be_reorder
     assert [r.message for r in macos.refusals] == [sandbox_plan.WINDOW_REFUSAL]
 
 
+def test_a_readonly_window_holding_a_masked_leaf_is_admitted_on_seatbelt() -> None:
+    # An app bundle is a read-ONLY window holding a masked ``.app_secret``: Seatbelt
+    # admits it (carved out of the READ deny only) because the leaf keeps its own deny,
+    # which deny-wins. A read-WRITE window holding a leaf stays refused (above).
+    apps = f"{CREW}/apps"
+    bundle = f"{apps}/an-app"
+    secret = f"{bundle}/.app_secret"
+    request = {
+        "extra_hidden_dirs": (apps, secret),
+        "extra_private_dirs": (bundle,),
+        "extra_readonly_private_dirs": (bundle,),
+    }
+    macos = _plan("standard", BACKEND_SEATBELT, **request)
+    assert bundle in macos.windows, "the read-only bundle window must be admitted"
+    assert bundle in macos.readonly_windows
+    assert macos.refusals == ()
+    # Linux admits the window too (it re-masks the nested leaf after binding).
+    linux = _plan("standard", BACKEND_NAMESPACE, **request)
+    assert bundle in linux.windows and linux.refusals == ()
+
+
 def test_a_window_equal_to_its_mask_is_refused_everywhere() -> None:
     apps = f"{CREW}/apps"
     for backend in (BACKEND_NAMESPACE, BACKEND_SEATBELT):

@@ -138,6 +138,7 @@ class Launch:
         self.sensitive_dir_ids = plan["sensitive_dir_ids"]
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
+        self.private_readonly_windows = frozenset(plan.get("private_readonly_windows", []))
         self.readonly_dirs = plan["readonly_dirs"]
         self.writable_dirs = plan["writable_dirs"]
         self.sensitive_files = plan["sensitive_files"]
@@ -1349,6 +1350,29 @@ def mask_sensitive(launch):
                 "opening private window %s" % p,
             )
             launch.bound_windows.add(p.rstrip("/"))
+        # Seal the read-only windows AFTER every window is bound. A read-write window
+        # may sit INSIDE a read-only one (an app bundle sealed read-only, its ``data/``
+        # kept writable): the inner bind above is its OWN mount and keeps its own
+        # (writable) flags, so remounting the outer window read-only now does not reach
+        # it. MS_RDONLY is ignored on the initial MS_BIND, hence this remount, with the
+        # kernel-locked bits re-asserted as the ceiling seal does. The remount names the
+        # path, so the name must answer as read-only afterwards: a seal that landed on
+        # some other mount leaves the window writable, which is a refusal.
+        for p in _windows:
+            if p not in launch.private_readonly_windows:
+                continue
+            _mount_or_die(
+                launch,
+                p.encode(),
+                p.encode(),
+                _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(p.encode()),
+                "sealing read-only window %s" % p,
+            )
+            if not os.statvfs(p).f_flag & os.ST_RDONLY:
+                sys.exit(
+                    "sandbox: BLOCKED -- the read-only seal on window %s did not take, "
+                    "so the window would stay writable" % p
+                )
         # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the masked
         # ``apps/meetings/data/edits`` -- and the bind above just replaced the empty
         # stand-in that covered it with the real tree. Re-apply those nested masks NOW,

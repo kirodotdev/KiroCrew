@@ -238,7 +238,7 @@ class TestCronPreviewCallToolPath:
         events: list[str] = []
 
         class _FakeClient:
-            def __init__(self, server, session_key=""):
+            def __init__(self, server, session_key="", own_app=""):
                 events.append(f"start {server} session_key={session_key!r}")
 
             def call_tool(self, tool, args):

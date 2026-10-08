@@ -454,9 +454,10 @@ _CHECKED_RAW_MOUNTS = {
 #: The call sites of ``_mount_or_die``: propagation, the read-only bind and its sealing
 #: remount, credential dirs, the private window's two -- staging its real contents out
 #: before the parent is masked, then binding them onto the placeholder inside the
-#: stand-in -- the nested re-mask that re-hides a masked leaf sitting INSIDE such a
+#: stand-in -- the sealing remount that makes a private window read-only after it is
+#: bound, the nested re-mask that re-hides a masked leaf sitting INSIDE such a
 #: window, sensitive files and the read-only seal on an unreadable mask, and ~/.ssh.
-_GUARDED_SITES = 10
+_GUARDED_SITES = 11
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

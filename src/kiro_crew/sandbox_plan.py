@@ -93,6 +93,7 @@ class SandboxRequest:
     extra_visible_dirs: tuple[str, ...] = ()
     extra_private_dirs: tuple[str, ...] = ()
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = ()
+    extra_readonly_private_dirs: tuple[str, ...] = ()
     extra_writable_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = ()
@@ -294,6 +295,7 @@ class ConfinementPlan:
     files: tuple[str, ...]
     expose: tuple[tuple[str, str], ...]
     windows: tuple[str, ...]
+    readonly_windows: tuple[str, ...]
     writable: tuple[str, ...]
     hide_ssh: bool
     ssh_dir: str
@@ -801,6 +803,14 @@ def _namespace_plan(
     windows, window_refusals = private_windows(
         private, kept, remasks_contained_targets=True, cwd=host.cwd
     )
+    # Windows the caller asked to seal READ-ONLY after binding (an app cron's own
+    # bundle: its code must import, but nothing may rewrite what the app's backend
+    # later runs, and a command-named bundle must not have its code overwritten with
+    # that app's credential in reach). Only an admitted window can be sealed; a
+    # read-only entry that is not a window is inert. A read-WRITE window nested inside
+    # (the owned bundle's ``data/``) is NOT in this set, so it stays writable.
+    readonly_requested = {fold(absolute(p, host.cwd)) for p in request.extra_readonly_private_dirs}
+    readonly_windows = tuple(w for w in windows if w in readonly_requested)
     runtime_parents = list(host.voice_runtime_parents)
     # ``kept + unhidden`` reconstitutes the full mask set before the visibility lift:
     # dropping ``unhidden`` would let a tree a caller re-exposed read-only grow a
@@ -825,14 +835,20 @@ def _namespace_plan(
     # A target nested under a directory the launcher masks EARLIER is legitimately
     # absent by the time it is pinned, because its parent's empty mask covers it; only a
     # name that moved is a race. Subtracted by string, never by asking the filesystem.
+    # EXCEPTION: a target inside a private WINDOW is re-exposed, not covered by an empty
+    # bind, so its re-mask is non-vacuous and MUST stay required -- a cron child's own
+    # bundle ``.app_secret`` is masked by name inside the bundle window, and dropping it
+    # here would let a secret moved aside between planning and the bind surface through
+    # the window.
     masked_ancestors = [d.rstrip("/") + "/" for d in dict.fromkeys(kept)]
-    required = sorted(
-        {
-            target
-            for target in dict.fromkeys(required_in)
-            if not any(target.startswith(parent) for parent in masked_ancestors)
-        }
-    )
+    window_prefixes = [w.rstrip("/") + "/" for w in dict.fromkeys(windows)]
+
+    def _required_kept(target: str) -> bool:
+        inside_window = any(target.startswith(prefix) for prefix in window_prefixes)
+        under_empty_mask = any(target.startswith(parent) for parent in masked_ancestors)
+        return inside_window or not under_empty_mask
+
+    required = sorted({target for target in dict.fromkeys(required_in) if _required_kept(target)})
     occupants = {
         name: tuple(ident)
         for name, ident in sorted((fold(n), i) for n, i in request.mask_occupants)
@@ -860,6 +876,7 @@ def _namespace_plan(
         files=tuple(fold(os.path.join(home, f)) for f in files),
         expose=tuple(expose),
         windows=tuple(windows),
+        readonly_windows=readonly_windows,
         writable=tuple(writable),
         hide_ssh=hide_ssh,
         ssh_dir=os.path.join(home, ".ssh"),
@@ -957,12 +974,34 @@ def _seatbelt_plan(
     # Windows inside a CALLER's own mask, computed against the caller's targets as well,
     # so a window there survives the blanket denies of that tree. Equality is refused by
     # the window gate itself, so every entry is a PROPER descendant.
+    #
+    # A read-WRITE window holding a masked leaf is refused (Seatbelt cannot re-apply a
+    # mask nested inside a writable window by rule order). A read-ONLY window
+    # (``extra_readonly_private_dirs``) that holds a masked leaf IS admitted: it is
+    # carved out of the READ deny only, so the leaf's own deny -- emitted by the
+    # caller-mask loop below -- still fires inside it, Seatbelt being deny-wins. That is
+    # how a cron child's own app bundle reads (its code and sibling modules import)
+    # while its ``.app_secret`` does not. A path named as read-only is handled by that
+    # computation ALONE, so it is removed from the read-write set below rather than
+    # refused there as a leaf-holding writable window.
+    readonly_requested = {absolute(p, host.cwd) for p in request.extra_readonly_private_dirs}
+    writable_private = tuple(
+        p for p in request.extra_private_dirs if absolute(p, host.cwd) not in readonly_requested
+    )
     caller_windows, caller_window_refusals = private_windows(
-        request.extra_private_dirs,
+        writable_private,
         caller_targets,
         remasks_contained_targets=False,
         cwd=host.cwd,
     )
+    readonly_caller_windows, _readonly_caller_refusals = private_windows(
+        request.extra_readonly_private_dirs,
+        caller_targets,
+        remasks_contained_targets=True,
+        cwd=host.cwd,
+    )
+    readonly_window_set = set(readonly_caller_windows)
+    caller_windows = list(dict.fromkeys([*caller_windows, *readonly_caller_windows]))
     for target in caller_targets:
         windows = [w for w in caller_windows if w.startswith(target.rstrip("/") + "/")]
         carved = tuple(sorted(f for f in extra_expose_abs if f.startswith(target + sep)))
@@ -1009,6 +1048,7 @@ def _seatbelt_plan(
         files=tuple(home_files),
         expose=tuple((path, os.path.basename(path)) for path in sorted(expose_abs)),
         windows=tuple(dict.fromkeys([*windows_for, *caller_windows])),
+        readonly_windows=tuple(dict.fromkeys(readonly_window_set)),
         writable=tuple(writable),
         hide_ssh=hide_ssh,
         ssh_dir=ssh_dir,
@@ -1049,6 +1089,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "sensitive_dir_ids": {path: list(pair) for path, pair in ids.hidden_dir_ids.items()},
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
+        "private_readonly_windows": list(plan.readonly_windows),
         "readonly_dirs": list(plan.readonly),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),

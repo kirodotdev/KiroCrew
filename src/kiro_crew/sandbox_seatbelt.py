@@ -114,20 +114,29 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         if mask.origin != "caller":
             continue
         if mask.windows:
-            # Deny the tree except the window, in every direction: the window is the
-            # process's own state, so it stays read-WRITE, while every sibling -- and
-            # anything installed into the tree after the profile was built -- stays
-            # denied. An exposed file keeps its READ carve-out only.
-            window_exceptions = " ".join(
+            # Deny the tree except the window. A read-WRITE window is the process's own
+            # state, so it is carved out in every direction (read, write, link), while
+            # every sibling -- and anything installed into the tree after the profile was
+            # built -- stays denied. A read-ONLY window (``plan.readonly_windows``) is
+            # carved out of the READ deny ONLY: its code must import, but it may hold a
+            # masked leaf (a cron child's own ``.app_secret``) whose own deny -- emitted
+            # elsewhere, deny-wins -- must keep holding, and nothing may write into it.
+            # An exposed file keeps its READ carve-out only.
+            readonly = set(plan.readonly_windows)
+            write_windows = [w for w in mask.windows if w not in readonly]
+            read_exceptions = " ".join(
                 f"(require-not (subpath {json.dumps(w)}))" for w in mask.windows
-            )
-            read_exceptions = window_exceptions + "".join(
-                f" (require-not (literal {json.dumps(f)}))" for f in mask.exposed
+            ) + "".join(f" (require-not (literal {json.dumps(f)}))" for f in mask.exposed)
+            write_exceptions = " ".join(
+                f"(require-not (subpath {json.dumps(w)}))" for w in write_windows
             )
             subpath = f"(subpath {json.dumps(mask.path)})"
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
             for operation in ("file-write*", "file-link"):
-                rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+                if write_exceptions:
+                    rules.append(f"(deny {operation} (require-all {subpath} {write_exceptions}))")
+                else:
+                    rules.append(f"(deny {operation} {subpath})")
             for ancestor in mask.window_ancestors:
                 rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
             continue

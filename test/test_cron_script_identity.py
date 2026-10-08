@@ -416,7 +416,7 @@ class TestBridgePinsIdentityOnTheServerSpawn:
         fake_client.call_tool.return_value = "ok"
         with patch("kiro_crew.cron_script.McpToolClient", return_value=fake_client) as ctor:
             ctx.call_tool("kirocrew-cron", "cron_list", {})
-        ctor.assert_called_once_with("kirocrew-cron", session_key=EXPECTED_KEY)
+        ctor.assert_called_once_with("kirocrew-cron", session_key=EXPECTED_KEY, own_app="")
         if "_isolate_sel_default_dir" not in request.fixturenames:
             assert SecurityEventLog._instance is singleton_before
 

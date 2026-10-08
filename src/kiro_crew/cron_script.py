@@ -27,8 +27,10 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1109,7 +1111,16 @@ class ScriptContext:
     _kept_servers: KeptMcpServers = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        self._kept_servers = KeptMcpServers(session_key=f"cron:{self.job.id}")
+        # The app this cron belongs to (``""`` for a non-app cron). A call to a
+        # DIFFERENT app's MCP server is refused in the child, where that app's bundle
+        # is masked -- see McpToolClient / _unreachable_app_server.
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
+        _created_by = getattr(self.job, "created_by", "")
+        # Only a real string names an app; anything else (a test's Mock job, a missing
+        # field) is "no app". app_owner_name slices the value, so a non-str would raise.
+        own_app = app_owner_name(_created_by) if isinstance(_created_by, str) else ""
+        self._kept_servers = KeptMcpServers(session_key=f"cron:{self.job.id}", own_app=own_app)
         # The parent injects the port it minted the credential for. Preferring it
         # keeps credential and dial target from one resolution; KIROCREW_PORT is the
         # fallback for a directly-constructed context and is 5476 on a --port auto
@@ -1415,16 +1426,172 @@ class McpToolError(RuntimeError):
     """A tool call the MCP server answered with an error; the server is still usable."""
 
 
+class McpServerUnreachableError(RuntimeError):
+    """A tool call named a server whose app bundle is not visible from this cron child.
+
+    Raised BEFORE the server starts, so it never runs on the empty apps tree a cron
+    child sees. See :func:`_unreachable_app_server`.
+    """
+
+
+def _unreachable_app_server(
+    server_name: str, own_app: str, server_argv: tuple[str, ...] | None = None
+) -> str:
+    """The DIFFERENT app whose MCP server this call runs, or ``""`` when the call is fine.
+
+    Inside a cron child every app's bundle except the cron's OWN window is masked to an
+    empty tree, so starting another app's server here would hand it a bundle that reads
+    empty -- its data, interpreter and own files are gone -- and its reads come back as
+    no data with no error while its writes land in the throwaway mask and are lost. So
+    the call is refused BEFORE the server starts.
+
+    Ownership is decided from the RESOLVED LAUNCH SPEC (``argv``), not the server name's
+    punctuation. A registered app server is keyed ``<app>:<server>`` (see
+    ``apps.bridges._own_mcp_servers``), which the name prefix catches -- but an operator
+    can also hand-write an ALIAS whose key carries no ``<app>:`` prefix while its command
+    launches another app's packaged server (``kirocrew app mcp <app>``). Keying only on
+    the name let that alias through. So the authoritative signal is which app the argv
+    actually runs: :func:`_app_from_launch_spec` reads the ``app mcp <app>`` /
+    ``mcp-<app>`` launch token out of the resolved argv, independent of launch shape
+    (interpreter-first, ``-m`` module, or an absolute path to the gateway module).
+
+    ``server_argv`` is the resolved launch argv (from :func:`_resolve_mcp_server`), or
+    ``None`` when the server did not resolve. Decision, in order:
+
+    * The argv runs an app-MCP launch for app ``X`` (``_app_from_launch_spec``): refuse
+      when ``X`` differs from ``own_app`` -- this is the alias case the name check missed.
+      A launch token present but unresolvable to a concrete app (empty / ``mcp-`` with no
+      name) is treated as a DIFFERENT app and refused: an alias whose owning app cannot be
+      established fails CLOSED.
+    * Otherwise fall back to the ``<app>:`` name prefix (covers a cross-app server that
+      resolved to an http/url spec with no launch argv, and keeps the host ``kirocrew-cron``
+      and other prefix-less, non-app-launching servers allowed).
+
+    Returns the called app's name when it is DIFFERENT from ``own_app``; otherwise ``""``
+    (a call to the cron's own app, or to a prefix-less server that launches no app,
+    proceeds). A non-app cron (``own_app == ""``) refuses ANY app-owned server, since it
+    holds no app window at all.
+    """
+    spec_app = _app_from_launch_spec(server_argv)
+    if spec_app is not None:
+        # The argv runs an app-MCP launch. An empty name (``mcp-`` with nothing after,
+        # or ``app mcp`` with no following token) cannot be matched to own_app, so it is
+        # a different/unprovable app -> fail closed.
+        return "" if spec_app and spec_app == own_app else (spec_app or "<unknown>")
+    name = server_name or ""
+    if ":" not in name:
+        return ""
+    called_app = name.split(":", 1)[0]
+    if not called_app or called_app == own_app:
+        return ""
+    return called_app
+
+
+def _app_from_launch_spec(server_argv: tuple[str, ...] | None) -> str | None:
+    """The APP a resolved MCP launch argv runs, ``""`` if an app-launch names no app, else None.
+
+    Reads the owning app out of a resolved launch spec, independent of launch shape --
+    this is the authoritative ownership signal (an operator-written alias can hide a
+    cross-app launch behind a prefix-less name, so the name alone is not enough).
+
+    Keys ONLY on the ``... app mcp <app>`` subcommand -- the one spelling that launches an
+    APP BUNDLE's packaged MCP server (``kirocrew app mcp mochi`` or, after host-CLI
+    pinning, ``<python> -P -m kiro_crew app mcp mochi``; dispatched by ``_run_app_mcp_server``
+    against ``kiro_crew.apps.builtins.<app>.mcp_server``). ``<app>`` is the single positional
+    after ``mcp`` (``cli.py`` ``app_mcp.add_argument("name")``), so the token right after the
+    ``app`` ``mcp`` pair is the owning app.
+
+    It deliberately does NOT match the ``mcp-<name>`` single-subcommand shorthand. That
+    shorthand launches a HOST-MANAGED builtin server (``kirocrew-cron`` -> ``mcp-cron``,
+    ``kirocrew-core`` -> ``mcp-core``; see ``agent._MANAGED_MCP_SERVERS``), which is host
+    code, NOT an app bundle under the apps mask -- it must proceed from a cron child, like
+    the host ``kirocrew-cron`` always has. ``mcp-`` is also a common substring in
+    third-party server commands (``npx -y mcp-remote``, ``uvx mcp-server-time``,
+    ``node mcp-server.js``), none of which is an app-bundle launch. Matching ``mcp-`` here
+    wrongly refused all of those; keying on ``app mcp <app>`` alone refuses exactly the
+    packaged-app launch and nothing else.
+
+    Returns:
+      * ``"<app>"`` -- the argv runs that app bundle's MCP server.
+      * ``""`` -- the argv is an ``app mcp`` launch that names no app (``app mcp`` with no
+        following token, or a flag where the app name belongs); the caller fails this
+        closed.
+      * ``None`` -- the argv runs no ``app mcp`` launch (a host builtin, a third-party
+        server, or anything else); not our call -- fall back to the name-prefix check.
+    """
+    argv = list(server_argv or ())
+    # ``app mcp <app>``: find the adjacent ``app`` ``mcp`` token pair anywhere in argv
+    # (argv[0] is an interpreter or the host CLI; the subcommand follows). The token
+    # after the pair is the owning app -- unless it is absent or a flag, which names no
+    # app and so cannot be matched to own_app (the caller fails that closed).
+    for i in range(len(argv) - 1):
+        if argv[i] == "app" and argv[i + 1] == "mcp":
+            if i + 2 >= len(argv):
+                return ""
+            nxt = argv[i + 2]
+            return "" if (not nxt or nxt.startswith("-")) else nxt
+    return None
+
+
 class McpToolClient:
     """Minimal MCP JSON-RPC client. Spawns server subprocess, calls tool, closes."""
 
-    def __init__(self, server_name: str, session_key: str = ""):
+    def __init__(self, server_name: str, session_key: str = "", own_app: str = ""):
         self._server_name = server_name
         self._session_key = session_key
+
+        # A cron CHILD sees only its OWN app's bundle; every other app's tree is masked to
+        # an empty directory. If this call runs a DIFFERENT app's MCP server, starting it
+        # would hand the server an empty tree -- reads return no data with no error, writes
+        # land in the throwaway mask and are lost. Refuse with a named error instead. The
+        # other app's window is deliberately NOT opened: that would widen what the cron
+        # child can read. The gateway-side path that lets a cross-app call keep working is
+        # tracked as a follow-up.
+        #
+        # Ownership is decided from the RESOLVED LAUNCH SPEC, not the server name's
+        # punctuation (see ``_unreachable_app_server`` / ``_app_from_launch_spec``). Two
+        # passes, so a hostile cross-app spec is not resolved when the NAME already proves
+        # it cross-app:
+        #   1. a ``<app>:``-prefixed server naming a different app is refused on the name
+        #      alone, before ``_resolve_mcp_server`` runs (no resolve for the obvious case);
+        #   2. a prefix-less name (an operator-written ALIAS) is resolved and its argv is
+        #      inspected: an alias whose command runs ``kirocrew app mcp <other>`` is the
+        #      cross-app launch the name check could not see, and an alias whose owning app
+        #      cannot be established fails CLOSED.
+        #
+        # Gated on ``session_key``: only a real sandboxed cron child presents one
+        # (``cron:<job id>``), and the apps mask exists only there. The in-process
+        # ``kirocrew cron preview`` client builds this with NO session key, runs
+        # unsandboxed and sees the REAL apps tree, so its cross-app calls must proceed --
+        # refusing them would abort a dry-run the user launched from their own terminal
+        # with nothing masked. Both halves fail safe: a cron child always carries the key,
+        # and the preview never does.
+
+        def _refuse(blocked_app: str) -> McpServerUnreachableError:
+            return McpServerUnreachableError(
+                f"app {blocked_app!r}'s tools can't be called from this cron child: "
+                f"its bundle is not visible here. Run that app's tools from the "
+                f"gateway (an agent cron or the app's own backend), not from inside a "
+                f"sandboxed cron child."
+            )
+
+        if session_key:
+            # Pass 1 -- name prefix only. A ``<app>:`` server naming a different app is
+            # refused BEFORE resolving its spec (keeps a hostile cross-app spec unresolved).
+            _blocked_app = _unreachable_app_server(server_name, own_app)
+            if _blocked_app:
+                raise _refuse(_blocked_app)
         resolved = _resolve_mcp_server(server_name)
         if not resolved:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
         argv, spec_env = resolved
+        if session_key:
+            # Pass 2 -- resolved launch spec. The alias case: a prefix-less name whose
+            # argv runs another app's ``app mcp <app>`` launch (or an app-launch whose
+            # owning app cannot be established) is refused here, after resolution.
+            _blocked_app = _unreachable_app_server(server_name, own_app, server_argv=argv)
+            if _blocked_app:
+                raise _refuse(_blocked_app)
         sandboxed_argv, self._sandbox_cleanup = wrap_argv(list(argv), mode="standard")
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         # SECURITY: the confinement wrappers prepended above (`systemd-run` on
@@ -1644,8 +1811,9 @@ class KeptMcpServers:
     stops every kept server and keeps none afterwards.
     """
 
-    def __init__(self, session_key: str = ""):
+    def __init__(self, session_key: str = "", own_app: str = ""):
         self._session_key = session_key
+        self._own_app = own_app
         self._kept_clients: dict[str, McpToolClient] = {}
         self._kept_clients_lock = threading.Lock()
         self._closed = False
@@ -1655,7 +1823,7 @@ class KeptMcpServers:
         kept = False
         try:
             if client is None:
-                client = McpToolClient(server, session_key=self._session_key)
+                client = McpToolClient(server, session_key=self._session_key, own_app=self._own_app)
             try:
                 result = client.call_tool(tool, args)
             except McpToolError:
@@ -1991,6 +2159,663 @@ def resolve_script_path(
     raise PermissionError(f"Script must be under one of {roots_shown}, got: {file_path}")
 
 
+#: Files the gateway writes INSIDE an app's bundle that are credentials, not code.
+#: ``.app_secret`` is the app's bearer credential: ``dashboard.token_auth`` compares it
+#: and issues that app's scoped token. Masked inside every bundle window a cron child
+#: is given, the cron's own app included.
+_APP_BUNDLE_SECRET_LEAVES: tuple[str, ...] = (".app_secret",)
+
+
+@dataclass(frozen=True)
+class CronAppsMask:
+    """What a cron child is told about the apps tree.
+
+    ``hidden`` masks the whole tree, so every app's secret is covered, including an
+    app installed while the child runs. ``windows`` re-expose the bundle this cron
+    runs from; ``readonly`` is the subset sealed read-only (the bundle's code, so an
+    app cron imports it but cannot rewrite what its backend later runs), while an owned
+    bundle's ``data/`` is a read-write window nested inside for durable state.
+    ``window_ids`` pins each window to the directory planned here, so a
+    bundle swapped before the child stages it refuses rather than opening the
+    replacement. The windowed secret is a ``required`` mask: present at planning, so
+    the launcher refuses rather than skips one gone by mask time.
+
+    ``refusal`` is set, and no window opens, when the cron's OWN bundle holds a second
+    hard link to any app's ``.app_secret`` inode: that link would ride into the window
+    and expose a credential, so the owning app's spawn is refused outright with a
+    message naming the app and the linked path. A link inside some OTHER app's bundle
+    costs that app nothing here -- its bundle simply gets no window -- so one app's
+    stray link refuses at most that one app, never every app.
+    """
+
+    hidden: tuple[str, ...] = ()
+    windows: tuple[str, ...] = ()
+    readonly: tuple[str, ...] = ()
+    window_ids: tuple[tuple[str, int, int], ...] = ()
+    required: tuple[str, ...] = ()
+    refusal: str = ""
+
+
+def _app_name_under(path: str, real_apps_root: str) -> str:
+    """The app whose bundle holds *path*, or ``""``.
+
+    Judged on the RESOLVED path, so a link pointing into a bundle names that bundle and
+    a link pointing out of one names nothing. A name that starts with ``.`` (the
+    installer's staging siblings) or is not a plain directory is not a bundle.
+    """
+    try:
+        real = os.path.realpath(path)
+        rel = os.path.relpath(real, real_apps_root)
+    except (OSError, ValueError):
+        return ""
+    if rel == os.curdir or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return ""
+    name = rel.split(os.sep, 1)[0]
+    return name if _is_bundle_name(name, real_apps_root) else ""
+
+
+def _is_bundle_token(name: str) -> bool:
+    """A syntactically valid app-bundle name, without requiring the directory to exist.
+
+    The name-level checks that gate every bundle name: non-empty, not a dotfile, no path
+    separators or parent refs. Used where a live directory may legitimately be absent --
+    an app whose bundle is mid-``update_app`` (its directory momentarily replaced) is
+    still that app, so a decision keyed on its name must not depend on the directory.
+    """
+    return not (not name or name.startswith(".") or "/" in name or "\\" in name or ".." in name)
+
+
+def _is_bundle_name(name: str, real_apps_root: str) -> bool:
+    if not _is_bundle_token(name):
+        return False
+    candidate = os.path.join(real_apps_root, name)
+    return os.path.isdir(candidate) and not os.path.islink(candidate)
+
+
+def _command_bundle_refs(command: str, real_apps_root: str) -> list[str]:
+    """Apps whose bundle a command's argv names by absolute, ``~`` or ``$VAR`` path."""
+    try:
+        tokens = shlex.split(command, comments=False, posix=True)
+    except ValueError:
+        return []
+    names: list[str] = []
+    for token in tokens:
+        for candidate in (token, token.split("=", 1)[-1]):
+            expanded = os.path.expanduser(os.path.expandvars(candidate))
+            if not os.path.isabs(expanded):
+                continue
+            name = _app_name_under(expanded, real_apps_root)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _path_within(child: str, parent: str) -> bool:
+    """True when realpath(*child*) is *parent* or lies beneath it."""
+    try:
+        child_real = os.path.realpath(child)
+        parent_real = os.path.realpath(parent)
+    except OSError:
+        # Cannot resolve one of them: treat as "possibly within" so the caller
+        # takes the fail-safe branch rather than assuming it is outside the tree.
+        return True
+    if child_real == parent_real:
+        return True
+    return child_real.startswith(parent_real + os.sep)
+
+
+def _safe_cron_cwd(real_apps_root: str) -> str | None:
+    """A working directory for a cron child that cannot resolve into the apps tree.
+
+    A cron child inherits the gateway process's working directory unless one is
+    pinned. The apps-tree mask hides every app's ``.app_secret`` by ABSOLUTE path,
+    but a child whose inherited cwd is itself inside the apps tree can read a sibling
+    app's secret through a RELATIVE path (``cat other-app/.app_secret``), which never
+    goes through the absolute mask. So the child must never run with a cwd under the
+    apps tree.
+
+    When the gateway's cwd is already outside the apps tree, pin it explicitly (an
+    explicit cwd rather than an inherited one). When it is inside the tree, pin a
+    neutral directory outside it instead -- the system temp root, which always exists
+    and holds no app -- so a relative read reaches nothing. Returns ``None`` only when
+    no safe directory can be established, and the caller then REFUSES the spawn (a
+    child with an apps-tree cwd and no safe replacement must not launch).
+    """
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        # The gateway's own cwd is unreadable (e.g. it was removed). We cannot pin the
+        # inherited one, so fall through to a neutral directory below.
+        cwd = ""
+    if cwd and not _path_within(cwd, real_apps_root):
+        return cwd
+    # The inherited cwd is inside the apps tree (or unknowable): pin a neutral dir.
+    neutral = tempfile.gettempdir()
+    try:
+        if os.path.isdir(neutral) and not _path_within(neutral, real_apps_root):
+            return neutral
+    except OSError:
+        pass
+    return None
+
+
+def _all_app_secret_ids(real_apps_root: str) -> tuple[set[tuple[int, int]], bool]:
+    """``((st_dev, st_ino) set, complete)`` for every app's ``.app_secret`` (and staging copy).
+
+    The set a per-bundle scan is checked against: a bundle holding a hard link to ANY of
+    these inodes would expose that credential through a window, so the owning app's cron
+    is refused. Reads the single-linked common case too, because the scan compares
+    inodes, not link counts.
+
+    ``complete`` is ``False`` when the set could not be fully built -- the apps root
+    could not be scanned, or a candidate secret could not be ``lstat``-ed for a reason
+    other than genuine absence (an unreadable app directory, EACCES). An incomplete set
+    would make the hard-link scan FAIL OPEN: an inode missing from the set is never
+    matched, so a link to it passes the scan and the window opens over a live credential.
+    The caller treats an incomplete set as unsafe and withholds the window.
+    """
+    ids: set[tuple[int, int]] = set()
+    complete = True
+    candidates: list[str] = []
+    try:
+        with os.scandir(real_apps_root) as entries:
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    complete = False
+                    continue
+                if is_dir:
+                    candidates.extend(
+                        os.path.join(entry.path, leaf) for leaf in _APP_BUNDLE_SECRET_LEAVES
+                    )
+                    continue
+                try:
+                    is_symlink = entry.is_symlink()
+                except OSError:
+                    complete = False
+                    continue
+                if is_symlink:
+                    # An app installed as a SYMLINK to a directory is not a windowable
+                    # bundle (``_settled_bundle_identity`` rejects a non-plain-dir, so it
+                    # never gets a window), but its ``.app_secret`` bytes are still real
+                    # and reachable, so a hard-link alias to them elsewhere must be
+                    # caught. Resolve the link to a directory and enumerate its secret
+                    # leaves.
+                    try:
+                        resolved_dir = entry.is_dir(follow_symlinks=True)
+                    except OSError:
+                        complete = False
+                        continue
+                    if resolved_dir:
+                        candidates.extend(
+                            os.path.join(entry.path, leaf) for leaf in _APP_BUNDLE_SECRET_LEAVES
+                        )
+                        continue
+                    # A top-level symlink that does NOT resolve to a directory. One shape
+                    # is legitimate: ``update_app`` moves ``.app_secret`` aside with
+                    # ``shutil.move`` (apps/manager.py), so when the live secret was itself
+                    # a symlink the staging ``.<name>-secret-tmp`` entry is a symlink to a
+                    # regular file -- its referent is a live credential inode that a hard
+                    # link elsewhere could alias, so it MUST become a candidate (the lstat
+                    # loop follows the referent). Any OTHER non-dir symlink is an unknown
+                    # shape we cannot classify as safe, so fail CLOSED (mark incomplete)
+                    # rather than silently dropping a possible credential.
+                    if entry.name.startswith(".") and entry.name.endswith("-secret-tmp"):
+                        candidates.append(entry.path)
+                    else:
+                        complete = False
+                    continue
+                if entry.name.startswith(".") and entry.name.endswith("-secret-tmp"):
+                    candidates.append(entry.path)
+    except OSError:
+        # The whole set is unknown: fail closed.
+        return ids, False
+    for path in candidates:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            # A bundle's live ``.app_secret`` can be absent for two reasons, and they
+            # are not the same for safety. GENUINE absence (the app ships no secret)
+            # is not a gap in the set. But an in-flight ``update_app`` moves the live
+            # secret to a ``.<name>-secret-tmp`` sibling (apps/manager.py) BEFORE it is
+            # moved back, so a ``.app_secret`` that vanished between the ``scandir``
+            # snapshot and this ``lstat`` may be an update staging the inode elsewhere
+            # -- and a hard link to that still-live inode in another app's tree would
+            # ride into a window. Treating that as genuine absence drops the inode
+            # while the set still reports complete -> the per-bundle scan fails OPEN.
+            # So for a ``.app_secret`` candidate, recover the inode from the staging
+            # sibling if an update is mid-flight; if the staging path cannot be pinned,
+            # mark the set incomplete rather than silently dropping the credential.
+            head, leaf = os.path.split(path)
+            if leaf == _APP_BUNDLE_SECRET_LEAVES[0]:
+                bundle_name = os.path.basename(head)
+                staging = os.path.join(real_apps_root, f".{bundle_name}-secret-tmp")
+                try:
+                    staging_info = os.lstat(staging)
+                except FileNotFoundError:
+                    # The staging sibling is gone too. That is NOT yet proof of genuine
+                    # absence: ``update_app`` moves the secret live -> staging -> live, so
+                    # BOTH the live ``.app_secret`` lstat above and this staging lstat can
+                    # miss if the secret moved BACK to its live name in the window between
+                    # the two reads. The inode is then live under ``.app_secret`` again and
+                    # a hard link to it in another app's tree would still ride into a
+                    # window. Recheck the live name once and recover its inode if it is now
+                    # a regular file -- that closes the restore-between-lookups race. If
+                    # the live name is STILL absent, no secret exists under either name at
+                    # this instant: that is genuine absence (a bundle that ships no secret
+                    # -- a builtin owner installs none), which is not a gap in the set, so
+                    # leave it masked and keep the set complete rather than refusing every
+                    # secret-less app.
+                    live_id = _plain_file_identity(path)
+                    if live_id is not None:
+                        ids.add(live_id)
+                    continue
+                except OSError:
+                    # The staging inode exists but its identity is unreadable: the set
+                    # is incomplete and the scan would fail open against it.
+                    complete = False
+                    continue
+                if stat.S_ISREG(staging_info.st_mode):
+                    ids.add((staging_info.st_dev, staging_info.st_ino))
+                elif stat.S_ISLNK(staging_info.st_mode):
+                    try:
+                        staging_target = os.stat(staging)
+                    except OSError:
+                        complete = False
+                        continue
+                    if stat.S_ISREG(staging_target.st_mode):
+                        ids.add((staging_target.st_dev, staging_target.st_ino))
+                    else:
+                        complete = False
+                else:
+                    complete = False
+                continue
+            # A top-level ``.<name>-secret-tmp`` staging candidate that vanished is an
+            # update that moved its secret BACK to the live name. It is NOT safe to treat
+            # that as genuine absence: ``update_app`` RETIRES the bundle directory while it
+            # swaps the tree (``os.replace(dest, retired)`` in apps/manager.py), so the
+            # bundle dir can be missing from the ``scandir`` snapshot entirely -- meaning
+            # the bundle's live ``.app_secret`` was NEVER added as a candidate. If the
+            # staging file then moves back to the live name before this ``lstat``, dropping
+            # it here skips the inode while the set still reports complete -> the per-bundle
+            # scan fails OPEN against a hard link to that credential. So recover the inode
+            # from the corresponding live ``.app_secret`` (following a symlink referent, the
+            # same as the live-candidate path below); if that inspection fails for a reason
+            # other than genuine absence, mark the set incomplete rather than silently
+            # skipping it.
+            staging_leaf = os.path.basename(path)
+            if staging_leaf.startswith(".") and staging_leaf.endswith("-secret-tmp"):
+                bundle_name = staging_leaf[1 : -len("-secret-tmp")]
+                live = os.path.join(real_apps_root, bundle_name, _APP_BUNDLE_SECRET_LEAVES[0])
+                try:
+                    live_info = os.lstat(live)
+                except FileNotFoundError:
+                    # Neither the staging copy nor the live name resolves now: no secret
+                    # exists for this bundle at this instant (genuine absence), not a
+                    # dropped inode.
+                    continue
+                except OSError:
+                    complete = False
+                    continue
+                if stat.S_ISREG(live_info.st_mode):
+                    ids.add((live_info.st_dev, live_info.st_ino))
+                elif stat.S_ISLNK(live_info.st_mode):
+                    try:
+                        live_target = os.stat(live)  # follows the symlink to the referent
+                    except OSError:
+                        complete = False
+                        continue
+                    if stat.S_ISREG(live_target.st_mode):
+                        ids.add((live_target.st_dev, live_target.st_ino))
+                    else:
+                        complete = False
+                else:
+                    complete = False
+            continue
+        except OSError:
+            # EACCES or similar: the inode exists but we could not read its identity, so
+            # the set is incomplete and the scan would fail open against it.
+            complete = False
+            continue
+        if stat.S_ISREG(info.st_mode):
+            ids.add((info.st_dev, info.st_ino))
+        elif stat.S_ISLNK(info.st_mode):
+            # The secret is a symlink. ``validate_app_secret`` reads the credential
+            # through it, so the bytes live at the symlink's REFERENT. A hard link to
+            # that referent elsewhere is still an alias of the credential, so the
+            # referent's inode -- not the symlink's -- is what the scan must match.
+            try:
+                target = os.stat(path)  # follows the symlink
+            except OSError:
+                # Dangling or unreadable referent: we cannot pin the inode to protect,
+                # so the set is incomplete and the caller must fail closed.
+                complete = False
+                continue
+            if stat.S_ISREG(target.st_mode):
+                ids.add((target.st_dev, target.st_ino))
+            else:
+                # The referent is not a regular file (a dir, a device, a symlink loop):
+                # not a credential inode we can alias-match, so record the set as
+                # incomplete rather than silently ignoring it.
+                complete = False
+    return ids, complete
+
+
+def _bundle_links_a_secret(
+    bundle: str, secret_ids: set[tuple[int, int]], own_secret: tuple[int, int] | None
+) -> str:
+    """The first path inside *bundle* that is a hard link to another app's secret, or ``""``.
+
+    Walks the bundle tree once. A regular file whose inode is in *secret_ids* and is not
+    the bundle's OWN single ``.app_secret`` (``own_secret``) is a reachable alias to a
+    credential -- the per-window scan the re-land plan asks for, run per bundle so one
+    app's stray link refuses only that app. ``own_secret`` is excluded because the
+    bundle's own secret is masked by name inside the window regardless; a SECOND link to
+    it elsewhere in the same bundle, however, is still reported (it is not at the masked
+    name). Symlinks are not followed: a symlink out of the tree names bytes the window
+    does not expose, and ``realpath`` on every entry would cost a walk of linked trees.
+
+    FAIL-CLOSED on an unreadable subtree. ``os.walk`` silently skips a directory it
+    cannot enter (a mode-000 ``data/private/``), so an unguarded walk would miss a link
+    planted there and open the window anyway -- and the owned bundle's ``data/`` is a
+    writable window the child can ``chmod`` back open. An ``onerror`` that records the
+    failure makes any traversal error a scan the caller must treat as unsafe, reported
+    the same as a found alias so the caller withholds the window rather than opening one
+    it could not fully scan.
+    """
+    own_secret_path = os.path.join(bundle, _APP_BUNDLE_SECRET_LEAVES[0])
+    scan_failed: list[str] = []
+
+    def _onerror(exc: OSError) -> None:
+        scan_failed.append(getattr(exc, "filename", None) or bundle)
+
+    for dirpath, dirnames, filenames in os.walk(bundle, followlinks=False, onerror=_onerror):
+        if scan_failed:
+            return scan_failed[0]
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                info = os.lstat(full)
+            except OSError:
+                # A file we cannot even lstat is an unreadable entry inside the tree we
+                # are about to window: treat it as unsafe rather than skip it.
+                return full
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            ident = (info.st_dev, info.st_ino)
+            if ident not in secret_ids:
+                continue
+            # The bundle's own secret at its own name is masked by name; skip exactly
+            # that path, but report a SECOND link to it anywhere else in the bundle.
+            if own_secret is not None and ident == own_secret and full == own_secret_path:
+                continue
+            return full
+    if scan_failed:
+        return scan_failed[0]
+    return ""
+
+
+def cron_apps_mask(
+    *,
+    script_file: str = "",
+    command: str = "",
+    owner_app: str = "",
+) -> CronAppsMask:
+    """The apps-tree mask for one cron child, with a window for the bundle it runs from.
+
+    Every cron child gets ``<config_dir>/apps`` masked, in every spelling the crew home
+    has (a symlinked ``$HOME`` reaches one directory by two names, and a mask on one
+    name is no mask on the other). The tree is created when absent, because a mask over
+    a missing directory is no mask at all and the first app installed afterwards would
+    land visible; if it cannot be created the spawn is REFUSED (fail-closed) rather than
+    launched with an unenforceable mask. ``.app_secret`` is a bearer credential --
+    ``dashboard.token_auth`` exchanges it for that app's scoped token -- so no cron
+    child can read any app's, the cron's own app included; an app cron reaches the
+    gateway through ``ScriptContext`` (``ctx.notify``, ``ctx.call_tool``) instead.
+
+    The bundle the cron runs from comes back as a READ-ONLY window so its code and
+    sibling modules import but nothing can rewrite what the app's backend later runs,
+    with its ``.app_secret`` masked inside the window by name AND listed as a required
+    mask (moved aside before the child masks it, the spawn is refused rather than the
+    mask skipped). An owned bundle's ``data/`` is a read-write window nested inside, so
+    durable state stays writable. The owning bundle is the app whose bundle holds the
+    resolved ``script_file``, or ``owner_app`` (the job's host-stamped ``created_by``
+    owner). A ``command``'s argv may name another bundle by path; that bundle's code
+    comes back read-only with ``data/`` and the secret masked. Every other app's tree
+    stays masked.
+
+    PER-WINDOW scan. Before opening a bundle's window, the bundle tree is scanned for a
+    hard link to any app's ``.app_secret`` inode. If the cron's OWN bundle holds one,
+    the whole spawn is refused (``refusal`` set, no window) -- that link would ride into
+    the window. If some other (``command``-named) bundle holds one, only that bundle's
+    window is withheld; the cron still runs. One app's stray link therefore refuses at
+    most that one app, never every app. A link at a path OUTSIDE the apps tree stays a
+    known gap (tracked separately). Blocking (``stat``/``mkdir``/``walk``), so it runs in
+    the cron worker thread, never on the event loop.
+    """
+    from kiro_crew.apps.manager import apps_dir
+    from kiro_crew.sandbox import crew_home_visible_spellings
+
+    root = apps_dir()
+    root_spellings = crew_home_visible_spellings(str(root))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A mask over a missing directory is no mask: the first app installed after the
+        # child starts would land visible. The rest of this planner fails closed, so a
+        # root that cannot be created refuses the spawn rather than launching with an
+        # unenforceable mask. The apps spellings are still returned as hidden so nothing
+        # about the tree is disclosed in the refusal result.
+        logger.warning("could not create %s to mask it for a cron child", root, exc_info=True)
+        return CronAppsMask(
+            hidden=tuple(dict.fromkeys(root_spellings)),
+            refusal=(
+                f"cron refused: {root} could not be created, so the apps tree cannot be "
+                f"masked for this cron child. Fix the directory's permissions and retry."
+            ),
+        )
+    real_root = os.path.realpath(root)
+
+    owned: list[str] = []
+    if script_file:
+        name = _app_name_under(script_file, real_root)
+        if name:
+            owned.append(name)
+    if owner_app and owner_app not in owned and _is_bundle_token(owner_app):
+        # Admit an explicit owner by NAME (``_is_bundle_token``), not by a live-directory
+        # check (``_is_bundle_name``). ``_is_bundle_name`` returns False when the owner's
+        # live bundle dir is a SYMLINK or is momentarily ABSENT mid-``update_app`` -- and
+        # dropping the owner there launches the cron OWNERLESS, so its ``data/`` write
+        # lands in the empty apps mask and is lost silently. Admitting it instead lets the
+        # ``_settled_bundle_identity``-None branch below refuse it (fail-safe, loud) when
+        # no window can open -- a symlinked bundle, an absent dir, or no settled secret --
+        # which is the right outcome for every one of those unsettled owner states.
+        owned.append(owner_app)
+    referenced = [
+        name
+        for name in (_command_bundle_refs(command, real_root) if command else [])
+        if name not in owned
+    ]
+
+    hidden: list[str] = list(root_spellings)
+    windows: list[str] = []
+    readonly: list[str] = []
+    window_ids: list[tuple[str, int, int]] = []
+    required: list[str] = []
+    secret_ids, secrets_complete = _all_app_secret_ids(real_root)
+
+    for name in (*owned, *referenced):
+        bundle_real = os.path.join(real_root, name)
+        bundle_id = _settled_bundle_identity(real_root, name)
+        if bundle_id is None:
+            # Mid-update, no settled secret, or not a plain dir.
+            # The owning bundle's window cannot be opened: it is mid-update, has no
+            # settled ``.app_secret`` (a builtin owner installs none), or is not a plain
+            # directory. For the cron's OWN bundle this REFUSES rather than launching
+            # windowless: an owned cron persists its state through its ``data/`` window,
+            # and running with no window lands those writes in the writable EMPTY apps
+            # mask where they are silently discarded -- the job reports success while its
+            # state never persists. Refusing fails LOUDLY (the operator sees it) on the
+            # fail-safe side of a data-loss tradeoff; the mid-update case is retry-worded
+            # because the data dir is only staged aside. A NON-owned referenced bundle is
+            # read-only and moves no durable state, so it stays masked and the cron runs.
+            if name in owned:
+                if _bundle_update_in_progress(real_root, name):
+                    return CronAppsMask(
+                        hidden=tuple(dict.fromkeys(hidden)),
+                        refusal=(
+                            f"cron for app {name!r} refused: its bundle is mid-update "
+                            f"(its data directory is staged aside), so opening a window "
+                            f"now would discard the job's writes. Retry once the app "
+                            f"finishes updating."
+                        ),
+                    )
+                return CronAppsMask(
+                    hidden=tuple(dict.fromkeys(hidden)),
+                    refusal=(
+                        f"cron for app {name!r} refused: a bundle window cannot be opened "
+                        f"for it (no settled app directory), so the job's writes would "
+                        f"land in a throwaway mask and be lost rather than persisting to "
+                        f"its data directory."
+                    ),
+                )
+            # A non-owned referenced bundle is read-only and moves no durable state:
+            # leave it masked and keep running.
+            continue
+        if not secrets_complete:
+            # The app-secret inode set could not be fully built (an unreadable app
+            # directory), so the hard-link scan would fail OPEN against the missing
+            # inodes. Fail closed: refuse the cron's own bundle, withhold a referenced
+            # one. No window opens over a set we could not finish building.
+            if name in owned:
+                return CronAppsMask(
+                    hidden=tuple(dict.fromkeys(hidden)),
+                    refusal=(
+                        f"cron for app {name!r} refused: an installed app's directory "
+                        f"could not be read to build the credential-alias scan, so a "
+                        f"bundle window cannot be opened safely. Retry once the apps "
+                        f"tree is readable."
+                    ),
+                )
+            continue
+        own_secret = _plain_file_identity(os.path.join(bundle_real, _APP_BUNDLE_SECRET_LEAVES[0]))
+        linked = _bundle_links_a_secret(bundle_real, secret_ids, own_secret)
+        if linked:
+            if name in owned:
+                # The cron's own bundle would carry a credential into its window. Refuse
+                # the whole spawn, naming the app and the path so the owner can remove
+                # the link; every other app's cron is unaffected.
+                return CronAppsMask(
+                    hidden=tuple(dict.fromkeys(hidden)),
+                    refusal=(
+                        f"cron for app {name!r} refused: its bundle holds a second hard "
+                        f"link to an app secret at {linked!r}; opening the bundle would "
+                        f"expose that credential. Remove the extra link and retry."
+                    ),
+                )
+            # A command-named bundle links a secret: withhold just its window.
+            continue
+        is_owned = name in owned
+        data_id = _plain_dir_identity(os.path.join(bundle_real, "data")) if is_owned else None
+        for spelling in root_spellings:
+            bundle = os.path.join(spelling, name)
+            windows.append(bundle)
+            window_ids.append((bundle, *bundle_id))
+            # The bundle comes back READ-ONLY: its code and sibling modules must import,
+            # but nothing may rewrite what the app's backend later runs, and the window
+            # holds the masked ``.app_secret`` -- a read-only window is the shape both
+            # backends admit for a window that contains a hidden leaf. On Linux the
+            # launcher re-masks the secret after binding; on Seatbelt the secret's own
+            # deny holds inside the read-only window by deny-wins.
+            readonly.append(bundle)
+            secret = os.path.join(bundle, _APP_BUNDLE_SECRET_LEAVES[0])
+            hidden.append(secret)
+            required.append(secret)
+            if is_owned and data_id is not None:
+                # An owned bundle keeps ``data/`` WRITABLE: a read-write window nested
+                # inside the read-only bundle, where the app cron keeps durable state.
+                data = os.path.join(bundle, "data")
+                windows.append(data)
+                window_ids.append((data, *data_id))
+            elif not is_owned:
+                # A command-named bundle earns only its code read: its ``data/`` is
+                # masked inside the window, so a command naming another app cannot
+                # read or write that app's state.
+                hidden.append(os.path.join(bundle, "data"))
+    return CronAppsMask(
+        hidden=tuple(dict.fromkeys(hidden)),
+        windows=tuple(dict.fromkeys(windows)),
+        readonly=tuple(dict.fromkeys(readonly)),
+        window_ids=tuple(dict.fromkeys(window_ids)),
+        required=tuple(dict.fromkeys(required)),
+    )
+
+
+def _plain_file_identity(path: str) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of *path* when it is a plain regular file (never a link)."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino) if stat.S_ISREG(info.st_mode) else None
+
+
+def _plain_dir_identity(path: str) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of *path* when it is a real directory (never a link)."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino) if stat.S_ISDIR(info.st_mode) else None
+
+
+def _settled_bundle_identity(real_apps_root: str, name: str) -> tuple[int, int] | None:
+    """The bundle's identity when it may be windowed; ``None`` keeps it masked.
+
+    A bundle is windowed only in a settled state: a real directory, no install or
+    update staging beside it (the installer moves ``data/`` and the secret out to
+    ``.<name>-data-tmp`` / ``.<name>-secret-tmp`` while it swaps the tree), and a secret
+    present as a plain regular file (not a symlink; a symlinked secret points at bytes
+    the window does not pin). A bundle without a secret stays masked, since a secret
+    written into it later would be readable through the window.
+
+    A second hard LINK to the secret is NOT judged here: the link count does not gate
+    settledness. The per-window inode scan (:func:`_bundle_links_a_secret`) decides a
+    linked secret precisely -- a link inside the cron's own bundle refuses only that
+    app, a link inside another bundle withholds only that window -- so a stray link to
+    one app's secret never withholds every window.
+    """
+    for staging in (f".{name}-data-tmp", f".{name}-secret-tmp"):
+        if os.path.lexists(os.path.join(real_apps_root, staging)):
+            return None
+    bundle = os.path.join(real_apps_root, name)
+    for leaf in _APP_BUNDLE_SECRET_LEAVES:
+        try:
+            info = os.lstat(os.path.join(bundle, leaf))
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+    return _plain_dir_identity(bundle)
+
+
+def _bundle_update_in_progress(real_apps_root: str, name: str) -> bool:
+    """True when an install/update is staging *name* -- its ``data/`` is moved aside.
+
+    The installer moves the live ``data/`` and secret out to ``.<name>-data-tmp`` /
+    ``.<name>-secret-tmp`` while it swaps the tree. A cron that OWNS this bundle and
+    launches during that window would write into a ``data/`` that is not the durable
+    one, so the write is lost -- the one unsettled case that must refuse rather than
+    run. The other unsettled states (no secret yet, a symlinked secret, not a plain
+    dir) move no durable state, so they stay masked and keep running.
+    """
+    for staging in (f".{name}-data-tmp", f".{name}-secret-tmp"):
+        if os.path.lexists(os.path.join(real_apps_root, staging)):
+            return True
+    return False
+
+
 def _resolve_internal_secret(port: int) -> str:
     """Internal secret for ScriptContext HTTP calls (e.g. notify -> /api/send-message).
 
@@ -2248,6 +3073,7 @@ def run_script_sandboxed(
     secret_env_pin: str = "",
     delivery: str = "",
     internal_secret_provider: Callable[[], str] | None = None,
+    owner_app: str = "",
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
@@ -2359,6 +3185,11 @@ def run_script_sandboxed(
             "sys.path[:] = [p for p in sys.path if p not in ('', sys.path[0])]\n"
             "import base64, json, os, types\n"
         )
+    # The child resolves its OWN app from job.created_by (app_owner_name), which it needs
+    # so a cron can call its own app's MCP tools (a different app's are refused). owner_app
+    # here is the BARE app name; store it in the child's job as the canonical ``app:<name>``
+    # created_by the rest of the system uses, and leave it empty for a non-app cron.
+    _child_created_by = f"app:{owner_app}" if owner_app else ""
     launcher = prelude + (
         # A granted run receives {body_b64, secrets} over STDIN, before any
         # other work: the verified bytes are executed directly (no pathname to
@@ -2403,7 +3234,8 @@ def run_script_sandboxed(
         "if fn is None:\n"
         f"    print(json.dumps({{'status': 'error', 'error': 'Function not found'}}))\n"
         "    sys.exit(0)\n"
-        f"job = types.SimpleNamespace(id={job_id!r}, message={job_message!r})\n"
+        f"job = types.SimpleNamespace(id={job_id!r}, message={job_message!r}, "
+        f"created_by={_child_created_by!r})\n"
         "ctx = ScriptContext(job=job)\n"
         "try:\n"
         "    fn(ctx)\n"
@@ -2490,17 +3322,50 @@ def run_script_sandboxed(
         # STRICT sandbox profile (credential stores and every crew-internal
         # dir hidden), keeping the child's reachable surface as small as the
         # sandbox can make it. Ungranted scripts keep their normal view.
+        #
+        # Both branches mask the apps tree, so no app's ``.app_secret`` is readable.
+        # An ungranted script keeps the bundle it runs from as a read-only window (its
+        # code and sibling modules must import) with its own ``data/`` a read-write
+        # window nested inside and its own ``.app_secret`` masked inside. A granted
+        # script gets no window: its reader is
+        # pinned to ``crons/``, so it is never a bundle script, and a window would
+        # reopen the mutable-sibling route the grant isolation closes.
         if stdin_payload is not None:
+            apps_mask = cron_apps_mask()
+            apps_mask = CronAppsMask(hidden=apps_mask.hidden, refusal=apps_mask.refusal)
             hidden = tuple(
                 dict.fromkeys(
                     (
                         str(config_dir() / "crons"),
                         str(Path(file_path_str).resolve().parent),
+                        *apps_mask.hidden,
                     )
                 )
             )
         else:
-            hidden = ()
+            apps_mask = cron_apps_mask(script_file=file_path_str, owner_app=owner_app)
+            hidden = apps_mask.hidden
+        if apps_mask.refusal:
+            # The cron's own bundle holds a hard link to an app secret; opening its
+            # window would expose that credential. Refuse this one app's spawn (every
+            # other app's cron is unaffected) rather than run it unmasked.
+            return {"status": "error", "error": f"❌ {apps_mask.refusal}"}
+        # The script child must not inherit a working directory inside the apps tree:
+        # the mask hides each ``.app_secret`` by ABSOLUTE path, so a relative read from
+        # a cwd under an app would bypass it (same exposure the command path has). Pin a
+        # cwd that cannot resolve into the tree; refuse if none can be established.
+        from kiro_crew.apps.manager import apps_dir as _apps_dir
+
+        safe_cwd = _safe_cron_cwd(os.path.realpath(str(_apps_dir())))
+        if safe_cwd is None:
+            return {
+                "status": "error",
+                "error": (
+                    "❌ cron refused: no working directory outside the apps tree could "
+                    "be established for the script child, so a relative read could reach "
+                    "another app's secret. Retry from a directory outside the apps tree."
+                ),
+            }
         # Same tier as ``run_command_sandboxed`` below: a script body is
         # agent-written, so it is the HIGHER-capability cron surface, and it
         # ran the WIDER profile — ``standard`` leaves ~/.aws/credentials, the
@@ -2519,7 +3384,13 @@ def run_script_sandboxed(
         # secret instead of exposing a store.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
         sandboxed_argv, sandbox_cleanup = wrap_argv(
-            argv, mode=sandbox_mode, extra_hidden_dirs=hidden
+            argv,
+            mode=sandbox_mode,
+            extra_hidden_dirs=hidden,
+            extra_private_dirs=apps_mask.windows,
+            extra_private_dir_ids=apps_mask.window_ids,
+            extra_readonly_private_dirs=apps_mask.readonly,
+            extra_required_mask_targets=apps_mask.required,
         )
         if stdin_payload is not None and sandboxed_argv == argv:
             # On a host with no OS sandbox backend, the unsandboxed-exec
@@ -2616,6 +3487,7 @@ def run_script_sandboxed(
                 stderr=subprocess.PIPE,
                 env=clean_env,
                 start_new_session=True,
+                cwd=safe_cwd,  # never an apps-tree cwd; see _safe_cron_cwd
                 abort_retry=lambda: _spawn_cancelled(job_id),
                 # Locale decoding, declared deliberate. A cron runs an ARBITRARY
                 # command, so its output is in the host's encoding, not
@@ -2965,6 +3837,7 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    owner_app: str = "",
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
@@ -3041,7 +3914,42 @@ def run_command_sandboxed(
         if shell is None:
             return {"status": "error", "output": _no_command_shell_message(), "exit_code": -1}
         argv = _command_argv(shell, command)
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        # Same apps-tree mask as the script path: every app's ``.app_secret`` is hidden
+        # from the command child, the owner's bundle (or a bundle the command names by
+        # path) comes back as a read-only window with its own secret masked inside, and
+        # every other app's tree stays masked. A bundle whose tree links another app's
+        # secret refuses only that app's command cron (see :func:`cron_apps_mask`).
+        apps_mask = cron_apps_mask(command=command, owner_app=owner_app)
+        if apps_mask.refusal:
+            return {"status": "error", "output": f"❌ {apps_mask.refusal}", "exit_code": -1}
+        # The child must not inherit a working directory inside the apps tree: the mask
+        # hides each ``.app_secret`` by ABSOLUTE path, so a child whose cwd is under an
+        # app could read a sibling app's secret through a RELATIVE path that never hits
+        # the mask. Pin a cwd that cannot resolve into the tree; refuse if none can be
+        # established (fail-closed rather than launch with an apps-tree cwd).
+        from kiro_crew.apps.manager import apps_dir as _apps_dir
+
+        safe_cwd = _safe_cron_cwd(os.path.realpath(str(_apps_dir())))
+        if safe_cwd is None:
+            return {
+                "status": "error",
+                "output": (
+                    "❌ cron refused: no working directory outside the apps tree could "
+                    "be established for the command child, so a relative read could "
+                    "reach another app's secret. Retry from a directory outside the "
+                    "apps tree."
+                ),
+                "exit_code": -1,
+            }
+        sandboxed_argv, sandbox_cleanup = wrap_argv(
+            argv,
+            mode="cc",
+            extra_hidden_dirs=apps_mask.hidden,
+            extra_private_dirs=apps_mask.windows,
+            extra_private_dir_ids=apps_mask.window_ids,
+            extra_readonly_private_dirs=apps_mask.readonly,
+            extra_required_mask_targets=apps_mask.required,
+        )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
         if _spawn_cancelled(job_id):
@@ -3066,6 +3974,7 @@ def run_command_sandboxed(
                 stderr=subprocess.PIPE,
                 env=clean_env,
                 start_new_session=True,
+                cwd=safe_cwd,  # never an apps-tree cwd; see _safe_cron_cwd
                 abort_retry=lambda: _spawn_cancelled(job_id),
                 # Locale decoding, declared deliberate. A cron runs an ARBITRARY
                 # command, so its output is in the host's encoding, not
