@@ -1,11 +1,11 @@
 ---
 title: Agent-started turns — show a turn the agent starts between user turns as its own reply
-status: draft
+status: accepted
 author: iamwhatever
 created: 2026-10-08
 last-audited: 2026-10-08
 audited-at: 1ad2d6d05f
-doc-pr:
+doc-pr: 18051
 implementation-prs: []
 tracking-issues: [17566]
 supersedes: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Agent-started turns — show a turn the agent starts between user turns as its own reply
 
-- Status: draft — nothing implemented on main. Acceptance is requested from a maintainer; the open product calls are in [Decisions needed](#decisions-needed).
+- Status: accepted. The product owner chose option A on all four [decisions](#decisions-needed) on 2026-10-08: an agent-started turn is its own assistant message with a notification, claude only, a user message queues behind it, and every other backend keeps today's behaviour. Phases 0 to 2 are unlocked; Phase 3 stays blocked. Nothing is implemented on main yet.
 - Author: iamwhatever
 - Design credit: the reader hand-off, the prompt-less turn through `_run_chat` and the end-of-turn signal are rinbn's [design note on #17566](https://github.com/kirodotdev/KiroCrew/issues/17566). This document writes that note up and adds what review of [#17884](https://github.com/kirodotdev/KiroCrew/pull/17884) found a new path must keep.
 - Related: `docs/system-specs/modules/acp-client.md` (stdout, the replay buffer, cancellation), `docs/system-specs/modules/app-notifications.md` (unread badge, turn sound)
@@ -193,6 +193,8 @@ No stored-data migration. A row without `meta.origin` is a user-prompted turn, a
 
 ## Decisions needed
 
+All four are decided (product owner, 2026-10-08). Each table is kept as the record of what was weighed.
+
 ### 1. How an agent-started turn is shown
 
 | Option | What the user sees |
@@ -201,6 +203,8 @@ No stored-data migration. A row without `meta.origin` is a user-prompted turn, a
 | B. Hidden (drop and count) | Nothing; Claude remembers a reply the user never saw |
 
 Recommendation: **A**. B is what #17884 shipped and review rejected; it leaves the transcript and the model disagreeing.
+
+**Decided: A.** An agent-started turn shows as its own assistant message, and the normal end-of-turn notification fires.
 
 ### 2. Scope
 
@@ -211,6 +215,8 @@ Recommendation: **A**. B is what #17884 shipped and review rejected; it leaves t
 
 Recommendation: **A**, built so a backend joins by naming its end signal (Phase 3).
 
+**Decided: A.** The claude backend only, because its adapter is the one that marks the end of such a turn.
+
 ### 3. A user message during the agent-started turn
 
 | Option | Effect |
@@ -219,6 +225,8 @@ Recommendation: **A**, built so a backend joins by naming its end signal (Phase 
 | B. Interrupt it | Sends `session/cancel`, then the user's prompt; the background reply may be cut |
 
 Recommendation: **A**. It is how the dashboard treats every running turn, and the user can still press Stop. Claude Code's own behaviour is unchecked; Phase 0 records it, and this decision is revisited if Claude itself interrupts.
+
+**Decided: A.** A user message sent while the agent-started turn streams queues behind it; nothing interrupts it.
 
 ### 4. kiro, KAS, codex and the other `AcpClient` backends
 
@@ -229,6 +237,8 @@ Recommendation: **A**. It is how the dashboard treats every running turn, and th
 
 Recommendation: **A**. No other adapter is known to start turns today, and none marks the end of one.
 
+**Decided: A.** Other backends keep today's behaviour; Phase 3 stays blocked.
+
 ## Acceptance
 
-This RFC is accepted when a maintainer records a choice on each of the four decisions above and flips `status` to `accepted`. Phase 0 can start before that; Phases 1 and 2 follow acceptance.
+Accepted 2026-10-08: the product owner chose A on each of the four decisions above, recorded by iamwhatever. Phases 0 to 2 follow for the claude backend; Phase 3 waits for another adapter to mark the end of a turn it starts.
