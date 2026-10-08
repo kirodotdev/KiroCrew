@@ -142,8 +142,8 @@ async def _send(state, *, app_name: str = "", cron: str = "") -> MagicMock:
             "kiro_crew.dashboard.chat_handlers.cron_slot_creator", new=AsyncMock(return_value=cron)
         ),
         patch(
-            "kiro_crew.dashboard.chat_handlers.cron_creator_refusal",
-            new=AsyncMock(return_value=None),
+            "kiro_crew.dashboard.chat_handlers.cron_creator_admission",
+            new=AsyncMock(return_value=(None, False, {})),
         ),
         patch.object(crew_recency, "record_user_chat", recorder),
     ):
