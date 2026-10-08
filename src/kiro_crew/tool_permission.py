@@ -546,6 +546,22 @@ class HookGate:
         return Hit("hook_auto_approve", evidence, vouch=True)
 
 
+class DenyOnlyGate:
+    """*inner*'s refusals, without its auto-approve.
+
+    For a run under an interactive approval floor: the hook gate keeps every deny
+    it would give, but its grant (``auto_approve_tools`` and the like) does not
+    stand in for the person, so an allowed request goes on to a responder.
+    """
+
+    def __init__(self, inner: Gate) -> None:
+        self._inner = inner
+
+    def judge(self, ask: Ask) -> Refusal | None:
+        verdict = self._inner.judge(ask)
+        return verdict if isinstance(verdict, Refusal) else None
+
+
 class SpecHooks:
     """The agent spec's PreToolUse hooks as a floor, on a turn they gate.
 
@@ -747,6 +763,7 @@ _SUBAGENT_REFUSALS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "child": ("child_interactive_rejected", ""),
         "factory": ("", "factory_rejected"),
         "callback": ("", ""),
+        "hub": ("", "hub_rejected"),
         "headless": ("", "no_policy_deny_default"),
         "turn_limit": ("turn_limit", ""),
         "child_escalation_limit": ("child_escalation_limit", ""),
@@ -762,6 +779,8 @@ _SUBAGENT_APPROVALS: Mapping[str, str] = MappingProxyType(
         "child": "child_interactive_approved",
         "factory": "",
         "callback": "",
+        # A floored run's person, answering through the remote hub that placed it.
+        "hub": "",
     }
 )
 

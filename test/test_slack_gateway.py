@@ -309,6 +309,9 @@ def _mock_dashboard_state():
     """Return a mock DashboardState."""
     ds = MagicMock()
     ds._slots = {}
+    # DashboardState creates the remote-subagent service lazily and starts at None;
+    # a bare MagicMock attribute would make _shutdown gather a non-awaitable close().
+    ds.remote_subagents = None
     ds._yolo = False
     ds.notify = MagicMock()
     ds.push_slots_update = MagicMock()

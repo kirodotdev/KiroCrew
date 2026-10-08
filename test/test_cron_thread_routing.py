@@ -257,6 +257,44 @@ class TestSubagentDoneCronRouting:
         gateway.sessions.reset.assert_awaited_once_with("cron:j1")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("remote_done", (False, True))
+    async def test_a_live_remote_sibling_holds_the_reset(self, remote_done: bool) -> None:
+        """``running`` lists local runs only, so a remote child still running
+        for the same cron parent must keep its session alive: its result
+        would otherwise land in a reset session. A finished one does not."""
+        gateway = _make_gateway()
+        subagent_done = _capture_subagent_done(gateway)
+        gateway.subagent_mgr.external_agents = [
+            SubagentInfo(
+                id="remote1",
+                task="t",
+                parent_session_key="cron:j1",
+                executor="remote",
+                instance_id="crew-a",
+                remote_id="peer01",
+                done=remote_done,
+            )
+        ]
+        info = SubagentInfo(id="sub2", task="check status", parent_session_key="cron:j1")
+        info.result = "all good"
+        info.done = True
+        with (
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="done",
+            ),
+        ):
+            await subagent_done(info)
+
+        if remote_done:
+            gateway.sessions.reset.assert_awaited_once_with("cron:j1")
+        else:
+            gateway.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:
         gateway = _make_gateway()
         gateway.sessions.get_or_create = AsyncMock(side_effect=Exception("session_down"))

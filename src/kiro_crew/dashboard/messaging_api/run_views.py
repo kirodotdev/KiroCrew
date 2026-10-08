@@ -111,6 +111,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
     if not info:
@@ -195,6 +198,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     data["started"] = info.started
+    if getattr(info, "executor", "local") == "remote":
+        data["executor"] = "remote"
+        data["instance_id"] = info.instance_id
+        data["remote_id"] = info.remote_id
     if info.done:
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
@@ -214,6 +221,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        data["stopped"] = bool(getattr(info, "user_stopped", False))
+        data["stop_reason"] = str(getattr(info, "stop_reason", "") or "")
+        data["stop_class"] = str(getattr(info, "stop_class", "") or "")
+        data["partial"] = bool(getattr(info, "partial", False))
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -231,6 +242,15 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+        if getattr(info, "approval_floor", "") == "interactive":
+            # A floored run's tool requests wait for the remote hub's person;
+            # the hub reads them here and answers on .../approvals/{id}.
+            from kiro_crew.subagent_manager.hub_approvals import pending_for
+
+            data["approvals"] = [
+                {key: value if key == "id" else _redact(value) for key, value in item.items()}
+                for item in pending_for(info.id)
+            ]
     return web.json_response(data)
 
 
@@ -274,6 +294,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     # Called for its REFUSAL: it rejects an internal caller whose execution
     # identity cannot be verified. The store it resolves is deliberately not kept
     # as the ownership gate -- a verified internal caller on the default store
@@ -314,6 +337,10 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        if getattr(info, "executor", "local") == "remote":
+            entry["executor"] = "remote"
+            entry["instance_id"] = info.instance_id
+            entry["remote_id"] = info.remote_id
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

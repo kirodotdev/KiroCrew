@@ -51,7 +51,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -115,11 +115,15 @@ class PublishedSpec:
     ``digest`` identifies the derived CONTENT (sha256 of its canonical JSON), so
     a caller holding a live session can tell whether the spec that session was
     spawned under is still the one on disk — kiro-cli reads the file at spawn,
-    so a changed base needs a cold start to take effect.
+    so a changed base needs a cold start to take effect. ``base_spec`` is the
+    exact spec the derivation read (project scope first), so a caller that must
+    still enforce the base's own hooks reads them from that source and never
+    re-resolves the name to a different file.
     """
 
     name: str
     digest: str
+    base_spec: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
 
 def readonly_agent_name(base_name: str, source_id: str | None = None) -> str:
@@ -482,7 +486,7 @@ def publish_readonly_spec(base_name: str, project_dir: str | None = None) -> Pub
             _refresh_materialized_snapshot()
     except OSError as exc:
         raise ReadOnlySpecError("spec_write_failed", f"could not write {target}: {exc}") from exc
-    return PublishedSpec(name=derived_name, digest=digest)
+    return PublishedSpec(name=derived_name, digest=digest, base_spec=base_spec)
 
 
 def _read_current(target: Path) -> dict[str, Any] | None:

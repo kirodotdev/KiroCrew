@@ -1801,6 +1801,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             reason=reason,
             reason_detail=detail,
             resuming=resuming,
+            cwd=str(params.get("cwd") or ""),
         )
 
     def taskq_batch_pending(self, batch_id: str) -> bool:

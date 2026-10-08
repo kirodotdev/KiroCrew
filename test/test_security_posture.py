@@ -990,6 +990,10 @@ class TestRedactionSinkRegistry:
             # exfil scanner THEN the credential scanner over every string in a
             # projection view or event `data`, so a sink using it is fully covered.
             "_redact_projection_value",
+            # redact_peer_text (dashboard/remote_relay.py) is the peer-boundary
+            # alias of _redact_relayed: redact_exfiltration_urls THEN
+            # redact_credentials, so a sink using it is fully covered.
+            "redact_peer_text(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

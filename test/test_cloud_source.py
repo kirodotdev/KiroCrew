@@ -139,14 +139,14 @@ class TestBuildTarball:
 
     def test_custom_home_not_excluded_when_outside_repo(self, monkeypatch, tmp_path):
         # An absolute ~/.kirocrew OUTSIDE the repo root isn't in the tarball
-        # anyway; _custom_home_rel_parts must return None so we don't accidentally
+        # anyway; custom_home_rel_parts must return None so we don't accidentally
         # drop a same-named dir that legitimately lives in the repo. Use a
         # sibling dir that is genuinely not under the packaged root.
         repo = tmp_path / "repo"
         repo.mkdir()
         outside = tmp_path / "home" / ".kirocrew"
         monkeypatch.setenv("KIROCREW_HOME", str(outside))
-        assert source._custom_home_rel_parts(repo) is None
+        assert source.custom_home_rel_parts(repo) is None
 
     def test_env_exclusion_is_exact_not_prefix_greedy(self, tmp_path):
         # .env and .env.local are excluded; .environment (innocent name) ships.

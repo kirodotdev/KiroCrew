@@ -390,6 +390,7 @@ cannot drift.
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
 | `instances.recover_backoff_max_secs` | `30.0` | Cap on the per-attempt backoff. Non-positive falls back to the default; above `RECOVER_BACKOFF_MAX_CEILING_SECS` (300) is clamped, bounding the worst-case wall-clock recovery window. |
 | `instances.probe_failure_threshold` | `3` | Consecutive health-probe failures before a non-forwarding tunnel is torn down. Below 1 falls back to the default. |
+| `instances.remote_subagents` | `false` | Let `spawn_run` place a subagent on a connected crew (`executor="remote"`). The child runs under that crew's own tool-approval policy, so turn it on only for crews at least as strict as this gateway. A child whose parent is not on auto here carries an approval floor, so the crew does not auto-approve its tools either. A policy refuses remote placement only by naming `capabilities.remote_spawn` with `enabled: false`; a policy that leaves the row out leaves it ungoverned, so it is permitted once this key is on. |
 
 ```bash
 kirocrew config set instances.warm_set_cap 3

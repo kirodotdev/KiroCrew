@@ -524,6 +524,45 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     return TurnSpecHooks(hooks, work_dir, False, True)
 
 
+async def floored_spec_hooks(
+    base_agent: str, cwd: str | None, base_spec: dict[str, Any] | None
+) -> TurnSpecHooks:
+    """The PreToolUse hooks a floored run is gated on: its BASE template's.
+
+    A floored run launches as the derived ``<agent>--readonly`` spec, which drops
+    ``hooks`` so the backend runs no command it was not asked about. A denying
+    PreToolUse hook in the template must still refuse, before the remote hub's
+    person is asked, so Crew fires the base spec's PreToolUse hooks itself on
+    every permission request (``gated``). Only PreToolUse: the floor withholds
+    the template's other lifecycle commands.
+
+    *base_spec* is the spec the derivation read (``PublishedSpec.base_spec``),
+    and the hooks come from it alone. Resolving *base_agent* again could land on
+    another file: ``crew_fired_spec_hooks`` trusts a project spec only under the
+    project-agent trust verdict and otherwise reads the user-level spec of the
+    same name, while the derivation reads the project spec first. A missing or
+    unconvertible source refuses every request, since a deny hook that was never
+    loaded gave no verdict.
+    """
+    work_dir = cwd or None
+    if not isinstance(base_spec, dict):
+        logger.warning(
+            "floored base %r has no derivation source; tool calls are blocked", base_agent
+        )
+        return TurnSpecHooks([], work_dir, True, True)
+    try:
+        hooks, _unconfirmable = await asyncio.to_thread(_convert, base_agent, base_spec)
+    except Exception:  # noqa: BLE001 - the caller fails permission requests closed
+        logger.warning(
+            "agent spec hooks for floored base %r could not be read; tool calls are blocked",
+            base_agent,
+            exc_info=True,
+        )
+        return TurnSpecHooks([], work_dir, True, True)
+    pre_tool = [hook for hook in hooks if hook.event == HOOK_EVENT_PRE_TOOL_USE]
+    return TurnSpecHooks(pre_tool, work_dir, False, True)
+
+
 async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     """Whether *provider*'s live session auto-approves a capability a PreToolUse hook
     now covers.

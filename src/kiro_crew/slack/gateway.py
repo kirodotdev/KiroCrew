@@ -1554,6 +1554,13 @@ class GatewayOrchestrator:
             _child_grant_eligible = (not _child_lf) or (
                 getattr(event, "child_unconditional_grant_eligible", False) is True
             )
+            # A run under a remote hub's interactive approval floor: every
+            # non-human shortcut below is gated on ``_child_grant_eligible``, so
+            # clearing it leaves only the person's answer. Strict equality, as
+            # for the probes above.
+            _floored = getattr(event, "approval_floor", "") == "interactive"
+            if _floored:
+                _child_grant_eligible = False
             # Background callers pass the authoritative parent session key. Prefer it
             # over a request-ID resolver because tool permission IDs are opaque UUIDs,
             # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
@@ -1599,10 +1606,10 @@ class GatewayOrchestrator:
                     # deny anyway. Fail closed fast instead (an approve is
                     # still never allowed on agent-authored context).
                     logger.warning(
-                        "Fast-denying low-fidelity child request under "
-                        "auto-approve source %s (unattended; title is "
-                        "agent-authored)",
+                        "Fast-denying %s request under auto-approve source %s (unattended; %s)",
+                        "approval-floored" if _floored else "low-fidelity child",
                         source,
+                        "a remote hub requires a person" if _floored else "title is agent-authored",
                     )
                     return False
                 logger.info("Auto-approving tool %s from source %s", event.title, source)
@@ -10487,10 +10494,16 @@ class GatewayOrchestrator:
                 # stagger gate) have no SubagentInfo in `running` yet — a
                 # sibling completing while the rest of the wave is still
                 # queued must not reset the parent out from under them.
+                # `running` is local-only, so a live remote child is checked
+                # separately: its result must not land in a reset session.
                 still_running = self.subagent_mgr and (
                     any(
                         a.parent_session_key == parent_key and a.id != info.id
                         for a in self.subagent_mgr.running
+                    )
+                    or any(
+                        a.parent_session_key == parent_key and a.id != info.id and not a.done
+                        for a in getattr(self.subagent_mgr, "external_agents", ())
                     )
                     or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
                 )
@@ -11248,6 +11261,8 @@ class GatewayOrchestrator:
             adaptive_controller.register(None)
             self._unwire_overload_health()
             cleanup_tasks.append(self._adaptive_controller.stop())
+        if self.dashboard_state and self.dashboard_state.remote_subagents is not None:
+            cleanup_tasks.append(self.dashboard_state.remote_subagents.close())
         if self.subagent_mgr:
             cleanup_tasks.append(self.subagent_mgr.cancel_all())
         if self.sessions:

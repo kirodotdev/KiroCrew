@@ -453,6 +453,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
+    "kiro_crew.dashboard": "remote_workspaces",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.ask_question": (
@@ -509,7 +510,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 77
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1401,7 +1402,8 @@ _DASHBOARD_BOOT = tuple("""
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _register_mcp_routes _deferred_remote_workspace_upload _deferred _deferred
+    setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1463,7 +1465,8 @@ _API_BOOT = tuple("""
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _register_mcp_routes _deferred_remote_workspace_upload _deferred _deferred
+    setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1683,8 +1686,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 243
-_MCP_TABLE_DIGEST = "64719190fbe9fb9e6aa8fb47a352017e81cffeb39734d741c8a1c60163b9a6d3"
+_MCP_TABLE_ROWS = 245
+_MCP_TABLE_DIGEST = "1fda05e436ef7ef1f6a4e4020ab4eed0b4c0d747a554ef8e96889f9697cf424c"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

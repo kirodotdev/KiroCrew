@@ -216,6 +216,14 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # anchors.  Both handler call sites run this helper via ``asyncio.to_thread``,
     # so those inline anchor resolutions never block the event loop.
     "kiro_crew/dashboard/handlers/taskrunner.py": 1,
+    # ``_snapshot_project``: the parent project's own root, and then once per
+    # tracked file the ``ls-files`` listing offers, each handed the lexical
+    # ``project / rel`` path. No ``realpath`` is needed on the per-file
+    # candidate: the open that follows (``_open_tracked_file``) refuses a link at
+    # every component, so a path whose lexical form is not its canonical form is
+    # never read. This runs on a worker thread dedicated to the snapshot, never
+    # the event loop.
+    "kiro_crew/dashboard/remote_subagents.py": 2,
     # ``security.is_sensitive_canonical_path``: the shared entry point for a
     # reader that canonicalised its path itself. It picks the gate by thread --
     # this pre-resolved gate off the event loop, the bounded gate on it -- so

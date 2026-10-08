@@ -2469,7 +2469,13 @@ materialised by narrowing the `acp_backends` registry at gateway start),
 `approval_modes` (currently the `yolo` dashboard mode), `yolo_duration`
 (the `permanent` and `until_shutdown` no-expiry choices), `sandbox.min_level`
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
-gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
+gate — `capabilities.spawn`, `capabilities.remote_spawn` (placing a sub-agent on
+a remote crew, whose child runs under the peer's approval policy; the opt-in is
+the operator's `instances.remote_subagents`, default off, and the row follows the
+absent-key contract like every other capability: a policy refuses remote
+placement by naming it with `enabled: false`, and `kirocrew policy validate`
+reports it as ungoverned when left out), `capabilities.messaging`,
+`capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
 `capabilities.browse` (the native `browser` MCP tool's dispatch chokepoint —
 default on; a deny makes the tool refuse outright, and it does NOT fall back to

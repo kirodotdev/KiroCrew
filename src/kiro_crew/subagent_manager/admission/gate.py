@@ -244,6 +244,7 @@ class _GateMixin(ManagerComponent):
         _recovering_row: bool = False,
         _stop_before_memory_read: bool = False,
         _memory_reading: "tuple[float, str] | None" = None,
+        approval_floor: str = "",
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
@@ -632,6 +633,10 @@ class _GateMixin(ManagerComponent):
         # store, so a refused spawn leaves no row; from here on the row exists
         # and every later exit either starts it, defers it, or marks it failed.
         # A drained spawn (_from_queue) already has its row. ---
+        if approval_floor:
+            # A floor and an auto grant contradict; the floor wins, so neither
+            # the spawn gate nor the run's tools can be auto-approved by it.
+            approval_mode = None
         queue_params: dict = {
             "task": task,
             "parent_session_key": parent_session_key,
@@ -643,6 +648,9 @@ class _GateMixin(ManagerComponent):
             "bare": bare,
             "cwd": resolved_cwd,
             "approval_mode": approval_mode,
+            # Durable, unlike approval_mode: dropping a GRANT on restart fails
+            # closed, dropping a FLOOR would fail open.
+            "approval_floor": approval_floor,
             "silent": silent,
             "batch_id": batch_id,
             "batch_total": batch_total,
@@ -1511,6 +1519,7 @@ class _GateMixin(ManagerComponent):
             agent=agent,
             app=app,
             approval_mode=approval_mode or "",
+            approval_floor=approval_floor,
             silent=silent,
             max_turns=max_turns,
             cwd=resolved_cwd,
