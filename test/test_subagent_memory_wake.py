@@ -89,6 +89,9 @@ class _Host:
         self.delivered: list[Any] = []
         self.cfgs: dict[str, KiroCrewConfig] = {}
         self.sel = MagicMock()
+        # The most recent delay the sampler asked the loop for (set by _host's
+        # call_later wrapper). None until the sampler arms for the first time.
+        self.sampler_requested_delay: float | None = None
 
     async def on_event(self, etype: str, info: Any, extra: dict[str, Any]) -> None:
         if etype == "subagent_done":
@@ -250,6 +253,22 @@ async def _host(
     monkeypatch.setattr(mgr, "_run_inner", run_inner)
     monkeypatch.setattr(mgr, "_record_cost", lambda _info: None)
     monkeypatch.setattr(mgr, "_write_tombstone", lambda *_a, **_k: None)
+
+    # Record the delay the sampler asks the loop for, so a test can assert the
+    # scheduling request itself (exactly 3600.0) rather than subtracting two live
+    # clock reads -- that subtraction drifts by a float ULP and is not a bound
+    # the test should police. We wrap the loop's call_later and capture only the
+    # admission coordinator's own _sampler_fired arm; every other timer is passed
+    # straight through untouched.
+    _real_call_later = loop.call_later
+    sampler_fired = mgr._admission._sampler_fired
+
+    def _recording_call_later(delay, callback, *args, **kwargs):
+        if callback == sampler_fired:
+            h.sampler_requested_delay = delay
+        return _real_call_later(delay, callback, *args, **kwargs)
+
+    monkeypatch.setattr(loop, "call_later", _recording_call_later)
     try:
         yield h
     finally:
@@ -468,9 +487,11 @@ class TestOneEventStartsAWaitingSpawn:
             assert not h.running(a2)
             assert h.sampler_active() is True
             # It is armed one interval out, and only for as long as a start waits.
-            handle = h.mgr._memory_sampler_handle
-            left = handle.when() - asyncio.get_running_loop().time()
-            assert 3500 < left <= 3600, left
+            # Assert the scheduling request itself (exactly one interval) rather
+            # than handle.when() - loop.time(): both are floats, so the live
+            # subtraction drifts by a ULP (e.g. 3600.000000000001) without the
+            # arm ever exceeding one interval. The requested delay is exact.
+            assert h.sampler_requested_delay == 3600.0
             # Another program frees memory: no child of ours ends, nothing
             # settles, only the sampler can see it.
             h.free["gb"] = 8.0
