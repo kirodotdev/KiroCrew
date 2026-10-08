@@ -8824,7 +8824,6 @@
       "loading": "読み込み中…",
       "not_a_repository": "Git リポジトリではありません",
       "not_a_repository_help": "このプロジェクトフォルダーは Git リポジトリではありません。リポジトリがサブフォルダーにある場合は、メッセージボックスの下にあるフォルダー名をクリックしてください。",
-      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
       "refresh": "更新",
       "title": "Git",
       "uncommitted": "{{count}} 件の未コミット",
@@ -8844,7 +8843,13 @@
       "filter_refused_title_unreadable_changes": "Kiro は現在、変更を表示できません",
       "filter_refused_title_unreadable_history": "Kiro は現在、履歴を表示できません",
       "ask_agent_changes": "変更についてエージェントに質問",
-      "ask_agent_history": "履歴についてエージェントに質問"
+      "ask_agent_history": "履歴についてエージェントに質問",
+      "repos_empty": "このチャットの Git リポジトリはまだ見つかっていません。",
+      "source_project": "プロジェクト",
+      "repos_failed": "このチャットのリポジトリを一覧表示できませんでした。",
+      "repos_loading": "このチャットのリポジトリを読み込んでいます…",
+      "repos_omitted_other": "古いリポジトリ {{formattedCount}} 件は表示されていません。",
+      "source_project_help": "このチャットのプロジェクトフォルダー"
     },
     "workspaceTree": {
       "status_failed": "リポジトリの状態を読み取れませんでした。",

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { i18next, initI18n } from '../i18n/all'
@@ -810,5 +810,82 @@ describe('GitPanel log route outage', () => {
       i18next.t('components.gitPanel.log_failed'),
     )
     expect(notice).toHaveTextContent('LOG-DETAIL')
+  })
+})
+
+describe('GitPanel list-section status polling', () => {
+  /** One status poll interval plus slack, so a timer that fires would have fired. */
+  const POLL_WINDOW_MS = 5000 * 2 + 500
+
+  function mountSection(defaultOpen: boolean) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <GitPanel projectDir={PROJECT} onClose={vi.fn()} section={{ label: PROJECT, defaultOpen }} />
+      </QueryClientProvider>,
+    )
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('fetches a collapsed section once and does not poll it on the interval', async () => {
+    const { unmount } = mountSection(false)
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1))
+    // The header still shows what the one fetch returned.
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+
+    // Up to MAX_SLOT_GIT_REPOS sections each run several git subprocesses per
+    // poll; a collapsed one must not add to that.
+    expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it('starts polling when the user opens the section and stops when they close it', async () => {
+    const { unmount } = mountSection(false)
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByTestId('git-repo-toggle'))
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'true')
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    await waitFor(() => expect(H.api.projectGitStatus.mock.calls.length).toBeGreaterThan(1))
+
+    fireEvent.click(screen.getByTestId('git-repo-toggle'))
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+    // Let any poll already in flight settle before counting.
+    await waitFor(() => expect(screen.getByText('main')).toBeInTheDocument())
+    const afterClose = H.api.projectGitStatus.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    expect(H.api.projectGitStatus).toHaveBeenCalledTimes(afterClose)
+    unmount()
+  })
+
+  it('keeps polling a section that opened itself, and the single-repository view', async () => {
+    H.api.projectGitStatus.mockResolvedValue({
+      repo: true,
+      repoRoot: PROJECT,
+      branch: 'main',
+      files: [{ path: 'a.txt', status: 'M', staged: false }],
+    })
+    const dirty = mountSection(false)
+    await waitFor(() => expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'true'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    await waitFor(() => expect(H.api.projectGitStatus.mock.calls.length).toBeGreaterThan(1))
+    dirty.unmount()
+
+    H.api.projectGitStatus.mockClear()
+    const single = mount()
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1))
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    await waitFor(() => expect(H.api.projectGitStatus.mock.calls.length).toBeGreaterThan(1))
+    single.unmount()
   })
 })

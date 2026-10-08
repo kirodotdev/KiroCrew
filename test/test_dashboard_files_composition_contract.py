@@ -390,10 +390,10 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 32
+    assert len({id(h) for h in served}) == 33
     assert [h.__name__ for h in served if getattr(files, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 34
+    assert len(reexports) == 35
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 

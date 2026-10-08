@@ -8947,7 +8947,6 @@
       "loading": "लोड हो रहा है...",
       "not_a_repository": "Git रिपॉज़िटरी नहीं है",
       "not_a_repository_help": "यह प्रोजेक्ट फ़ोल्डर Git रिपॉज़िटरी नहीं है। यदि रिपॉज़िटरी किसी सबफ़ोल्डर में है, तो संदेश बॉक्स के नीचे दिए गए फ़ोल्डर नाम पर क्लिक करें।",
-      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
       "refresh": "रिफ़्रेश करें",
       "title": "Git",
       "uncommitted": "{{count}} अनकमिटेड",
@@ -8967,7 +8966,14 @@
       "filter_refused_title_unreadable_changes": "Kiro अभी बदलाव नहीं दिखा सकता",
       "filter_refused_title_unreadable_history": "Kiro अभी इतिहास नहीं दिखा सकता",
       "ask_agent_changes": "बदलाव के बारे में एजेंट से पूछें",
-      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें"
+      "ask_agent_history": "इतिहास के बारे में एजेंट से पूछें",
+      "repos_empty": "इस चैट के लिए अभी कोई Git रिपॉज़िटरी नहीं मिली।",
+      "source_project": "प्रोजेक्ट",
+      "repos_failed": "इस चैट की रिपॉज़िटरी की सूची नहीं मिल सकी।",
+      "repos_loading": "इस चैट की रिपॉज़िटरी लोड हो रही हैं...",
+      "repos_omitted_one": "{{formattedCount}} पुरानी रिपॉज़िटरी नहीं दिखाई गई है।",
+      "repos_omitted_other": "{{formattedCount}} पुरानी रिपॉज़िटरी नहीं दिखाई गई हैं।",
+      "source_project_help": "इस चैट का प्रोजेक्ट फ़ोल्डर"
     },
     "workspaceTree": {
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",

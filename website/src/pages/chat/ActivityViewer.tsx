@@ -36,7 +36,7 @@ const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.C
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { queuedWaitText } from './subagentQueuedReason'
-import GitPanel from '../../components/GitPanel'
+import GitReposPanel from '../../components/GitReposPanel'
 import { fmtDateFields } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
@@ -891,10 +891,9 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, projectDir }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
-  projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
@@ -1099,16 +1098,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         </div>
       )}
 
-      {/* Git (project working tree + history) view */}
+      {/* Git: every repository this chat works in, the project's first */}
       {effectiveTab === ('git' as string) && (
         <div className="flex-1 min-h-0 overflow-hidden">
-          {projectDir ? (
-            <GitPanel projectDir={projectDir} onFileOpen={onFileOpen} onClose={onToggle} />
-          ) : (
-            <div className="text-muted text-[13px] pt-8 px-6 text-center">
-              {i18nT('components.gitPanel.no_project')}
-            </div>
-          )}
+          <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} onClose={onToggle} />
         </div>
       )}
 

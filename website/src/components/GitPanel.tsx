@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
+import { ChevronRight, GitBranch, RefreshCw, RefreshCwOff } from 'lucide-react'
 import { api } from '../api/client'
 import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
@@ -55,28 +55,99 @@ function FilePath({ path }: { path: string }) {
   )
 }
 
+/** A repository folder as a heading: its name in full, the parent path muted
+ *  and cut from the LEFT, since the end of a path is what tells two checkouts
+ *  of one repository apart. */
+export function RepoPath({ path }: { path: string }) {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const parent = cut >= 0 ? trimmed.slice(0, cut + 1) : ''
+  const name = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  return (
+    <span className="flex min-w-0 font-mono text-[11px]">
+      {parent && (
+        // rtl + bdi: the ellipsis lands on the left while the path still reads LTR.
+        <span dir="rtl" className="truncate text-muted min-w-0">
+          <bdi>{parent}</bdi>
+        </span>
+      )}
+      <span className="text-text font-semibold shrink-0">{name || path}</span>
+    </span>
+  )
+}
+
+/** One repository rendered as a section of the Git tab's list. */
+export interface GitPanelSection {
+  /** The folder the heading names (the same path the routes are asked about). */
+  label: string
+  /** Optional tag after the path, e.g. "Project". */
+  badge?: string
+  /** Tooltip explaining the tag; a one-word tag does not explain itself. */
+  badgeTitle?: string
+  /** Open before the user toggles it. A section with uncommitted changes
+   *  opens on its own either way. */
+  defaultOpen?: boolean
+}
+
+type GitStatus = Awaited<ReturnType<typeof api.projectGitStatus>>
+
+/** Whether a section's body is shown. The single-repository view (no
+ *  `section`) is always open. Until the user toggles a section
+ *  (`openOverride` null) the state is derived: open by default, or because its
+ *  status failed (the ErrorNotice lives in the body), or because it has
+ *  uncommitted changes. Shared by the render and the status query's poll
+ *  predicate, so the two can never disagree about which sections are open. */
+function deriveSectionOpen(
+  section: GitPanelSection | undefined,
+  openOverride: boolean | null,
+  status: GitStatus | undefined,
+  statusError: unknown,
+): boolean {
+  if (!section) return true
+  if (openOverride !== null) return openOverride
+  return !!section.defaultOpen || !!statusError || (status?.files?.length ?? 0) > 0
+}
+
 interface GitPanelProps {
   projectDir: string
   onFileOpen?: (path: string) => void
   onClose: () => void
+  /** List mode (`GitReposPanel`): no panel chrome, and a path heading that
+   *  collapses the section. Omitted, this is the single-repository view. */
+  section?: GitPanelSection
 }
 
-export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
+export default function GitPanel({ projectDir, onFileOpen, onClose, section }: GitPanelProps) {
   const prevBranch = useRef<string | undefined>(undefined)
+  // null = the user has not toggled this section, so its open state is derived.
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null)
 
   const { data: status, refetch: refetchStatus, isLoading: statusLoading, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
-    refetchInterval: 5000,
+    // Polled on the interval only while the body is on screen. Each poll runs
+    // several git subprocesses, and the Git tab can list up to
+    // MAX_SLOT_GIT_REPOS sections, so collapsed sections must not keep paying
+    // for it: they fetch once (the header still shows branch and count) and
+    // again on window focus or the Refresh button. React Query re-evaluates
+    // this predicate after every fetch and on every render, so a section that
+    // opens starts polling and one that collapses stops; the single-repository
+    // view has no section and polls as it always did.
+    refetchInterval: query =>
+      deriveSectionOpen(section, openOverride, query.state.data, query.state.error) ? 5000 : false,
     refetchOnWindowFocus: true,
     retry: 1,
   })
 
+  // A collapsed section does not fetch history nobody is looking at. A section
+  // whose status failed opens itself, because its ErrorNotice lives in the body.
+  const sectionOpen = deriveSectionOpen(section, openOverride, status, statusError)
+
   const { data: log, refetch: refetchLog, error: logError } = useQuery({
     queryKey: ['git-log', projectDir],
     queryFn: () => api.projectGitLog(projectDir),
-    enabled: !!projectDir,
+    enabled: !!projectDir && sectionOpen,
     staleTime: 30_000,
     retry: 1,
   })
@@ -199,14 +270,12 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   const refreshInert =
     statusFilterRefused && logFilterRefused && filterRefusedCause === 'declared'
 
-  return (
-    <DetailPanel
-      embedded
-      title={i18nT('components.gitPanel.title')}
-      onClose={onClose}
-      noPadding
-      customHeader={
-        <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+  const headerRow = (
+        <div
+          className={`flex items-center gap-2 h-[38px] px-3 shrink-0 ${
+            section ? '' : 'border-b border-border'
+          }`}
+        >
           {statusError ? (
             <span className="text-[12px] text-muted truncate">
               {i18nT('components.gitPanel.branch_unavailable')}
@@ -286,9 +355,10 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
             {refreshInert ? <RefreshCwOff size={13} strokeWidth={2.5} /> : <RefreshCw size={13} />}
           </button>
         </div>
-      }
-    >
-      <div className="overflow-y-auto flex-1 text-[12px]">
+  )
+
+  const body = (
+      <div className={section ? 'text-[12px]' : 'overflow-y-auto flex-1 text-[12px]'}>
         {(statusError || logError) && (
           <div className="flex flex-col gap-2 p-3">
             {/* The refusal is repo-level, so both routes refuse together: ONE
@@ -465,6 +535,50 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </div>
         )}
       </div>
+  )
+
+  if (section) {
+    return (
+      <section className="border-b border-border" data-testid="git-repo-section" data-path={projectDir}>
+        <button
+          type="button"
+          className="w-full flex items-center gap-1.5 px-3 pt-2 bg-transparent border-none cursor-pointer text-left hover:bg-bg-hover transition-colors"
+          aria-expanded={sectionOpen}
+          title={section.label}
+          onClick={() => setOpenOverride(!sectionOpen)}
+          data-testid="git-repo-toggle"
+        >
+          <ChevronRight
+            size={12}
+            aria-hidden="true"
+            className={`text-muted shrink-0 transition-transform ${sectionOpen ? 'rotate-90' : ''}`}
+          />
+          <RepoPath path={section.label} />
+          {section.badge && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted shrink-0"
+              title={section.badgeTitle}
+              data-testid="git-repo-badge"
+            >
+              {section.badge}
+            </span>
+          )}
+        </button>
+        {headerRow}
+        {sectionOpen && body}
+      </section>
+    )
+  }
+
+  return (
+    <DetailPanel
+      embedded
+      title={i18nT('components.gitPanel.title')}
+      onClose={onClose}
+      noPadding
+      customHeader={headerRow}
+    >
+      {body}
     </DetailPanel>
   )
 }
