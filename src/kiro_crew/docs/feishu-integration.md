@@ -146,6 +146,7 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 | --- | --- |
 | `/new` (or `/reset`) | Start a fresh session; the old context is dropped. |
 | `/compact` | Compact the current context in place. |
+| `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back. |
 
 Anything else is a prompt.
 

@@ -1467,7 +1467,8 @@ class Asker:
     ``None`` leaves it unmirrored. ``addressed=False`` is a rules-mode message
     nobody addressed to the agent: no decider, no record, and the tool-less refusal
     ends silently (the turn-ceiling and member-memory refusals still render).
-    ``model`` reaches a session only at creation.
+    ``model`` reaches a session only at creation. ``agent`` is this
+    conversation's own ``/agent`` pick; ``None`` runs the pipeline's agent.
     """
 
     session_key: str
@@ -1482,6 +1483,7 @@ class Asker:
     origin: ChannelLink | None = None
     display_name: str | None = None
     model: str | None = None
+    agent: str | None = None
 
     @property
     def can_prompt(self) -> bool:
@@ -1898,7 +1900,7 @@ class ChannelTurns:
         # session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
-        agent = self._agent()
+        agent = asker.agent or self._agent()
         if asker.resumed:
             # A resumed session must run as ITSELF: on a cold start ``get_or_create``
             # applies the agent it is handed, so the dispatcher's own agent would load

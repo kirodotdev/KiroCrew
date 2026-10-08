@@ -170,6 +170,7 @@ Send `/help` in the chat for the current list.
 |---|---|
 | `/new` (`/start`) | Start a fresh conversation, dropping anything still queued |
 | `/compact` | Compress the conversation context |
+| `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back |
 | `/stop` (`/cancel`) | Stop the reply in progress and clear the queue |
 | `/yolo on\|off\|renew` | Auto-approve tools **everywhere** until it expires — see below |
 | `/link` / `/unlink` | Resume / stop mirroring dashboard replies into this chat |

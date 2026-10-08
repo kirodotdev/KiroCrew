@@ -3437,3 +3437,85 @@ class TestGovernanceOnPresses:
             await d.handle_message(_options_press("0", "N1"))
 
         assert client.sent == []
+
+
+# ------------------------------------------------------------------
+# Tests: /agent (show and switch the conversation's agent)
+# ------------------------------------------------------------------
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @pytest.mark.asyncio
+    async def test_agent_name_switches_the_next_turn(self) -> None:
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent beta"))
+        assert "Agent set to `beta`" in client.sent[-1][1]
+        assert sessions.successes == []  # a command, not a turn
+        assert "beta" in d._session_key(_EMAIL)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_bare_agent_lists_only_pickable_agents(self) -> None:
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), client)
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent"))
+        reply = client.sent[-1][1]
+        assert "currently `default (kirocrew)`" in reply
+        assert "`beta`" in reply
+        assert "kirocrew-worker" not in reply
+
+    @pytest.mark.asyncio
+    async def test_internal_or_unknown_agent_is_refused(self) -> None:
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent kirocrew-worker"))
+            await d.handle_message(_inbound("/agent nope"))
+        assert all("No agent named" in m for _, m in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "kirocrew"
+
+    def test_agent_is_in_the_help_card(self) -> None:
+        assert parse_command("/agent beta") == "agent"
+        assert "/agent" in build_help_text()
+
+
+class TestAgentSwitchGenerations:
+    @pytest.mark.asyncio
+    async def test_new_after_a_switch_never_resumes_the_new_agents_old_conversation(self) -> None:
+        # Restart shape: nothing in memory, beta's bucket already holds gen 1-2.
+        from kiro_crew.messaging.link import build_dm_session_key
+
+        sessions = FakeSessions(FakeProvider([]))
+        for gen in (1, 2):
+            sessions.reserved_generations.add(
+                build_dm_session_key("webex", "beta", _EMAIL, gen=gen, dm_scope="per-channel-peer")
+            )
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent beta"))
+        assert d._session_key(_EMAIL).endswith(":gen2")
+        await d.handle_message(_inbound("/new"))
+        assert d._session_key(_EMAIL).endswith(":gen3")

@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.feishu.client import CHAT_GROUP
@@ -119,6 +120,9 @@ class FeishuDispatcher:
         # ``seed_fn`` recovers the highest generation already on disk so /new
         # advances past a stale one instead of resurrecting it after a restart.
         self._conv: ConversationState[tuple[str, str]] = ConversationState(seed_fn=self._seed_gen)
+        # Per-conversation agent picked with /agent, keyed by ROUTE like _conv,
+        # because the agent is part of the session key.
+        self._agent_picks: ChannelAgentPicks[tuple[str, str]] = ChannelAgentPicks()
         # Held on self: the watcher holds the owner WEAKLY.
         self._config_sub = live.watch_section(
             self, "feishu", "messaging", target="transport", name="FeishuDispatcher"
@@ -188,7 +192,8 @@ class FeishuDispatcher:
         # @-mention the bot, so `text` reads "@BotName /new" and a whole-string
         # match would never fire -- the command would be dispatched to the model
         # as a prompt instead. Falls back to `text` for a frame with no mentions.
-        cmd = (inbound.command_text or text).strip().lower()
+        raw_cmd = (inbound.command_text or text).strip()
+        cmd = raw_cmd.lower()
         if cmd in ("/new", "/reset"):
             self._conv.bump_gen(route)
             saved = await reserve_new_generation(
@@ -209,6 +214,20 @@ class FeishuDispatcher:
             self._conv.clear_awaiting(route)
             await self._handle_compact(inbound)
             return
+        if cmd.split(maxsplit=1)[:1] == ["/agent"]:
+            # The name keeps its case: agent names are case-sensitive.
+            parts = raw_cmd.split(maxsplit=1)
+            reply = await handle_channel_agent_command(
+                self._agent_picks,
+                route,
+                parts[1] if len(parts) == 2 else "",
+                conv=self._conv,
+                configured=self._resolve_agent(),
+                sessions=self.sessions,
+                session_key=lambda: self._session_key(route),
+            )
+            await self.client.send_reply(inbound.message_id, reply)
+            return
 
         # Busy check, then rotation, then a re-derived key -- the ordering and
         # the reasons it matters live in messaging.pre_turn.
@@ -226,7 +245,7 @@ class FeishuDispatcher:
             return  # folded into the running turn
 
         conversation_id = f"feishu:{route[1]}"
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(route)
 
         # Feishu has no interactive buttons -> no decider (deny-by-default for
         # INTERACTIVE; auto/trust still auto-approve via the driver ladder).
@@ -379,8 +398,10 @@ class FeishuDispatcher:
         finally:
             self.sessions.release(session_key)
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, route: tuple[str, str] | None = None) -> str:
+        """The agent *route* runs: its ``/agent`` pick, else the configured one."""
+        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        return self._agent_picks.resolve(route, configured)
 
     @staticmethod
     def _route(inbound: "LarkInbound") -> tuple[str, str]:
@@ -410,7 +431,7 @@ class FeishuDispatcher:
         return seed_generation(
             self.sessions,
             channel="feishu",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(route),
             user_id=comp,
             dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=slot,
@@ -421,7 +442,7 @@ class FeishuDispatcher:
         gen = self._conv.current_gen(route)
         return build_dm_session_key(
             "feishu",
-            self._resolve_agent(),
+            self._resolve_agent(route),
             comp,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),

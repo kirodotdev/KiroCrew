@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import _clamp_pct
@@ -436,6 +437,9 @@ class DiscordDispatcher:
         # fields at it.
         self.transport: "DiscordTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Per-conversation agent picked with !agent, keyed by scope id (a DM or
+        # a thread) like _conv, because the agent is part of the session key.
+        self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -755,6 +759,25 @@ class DiscordDispatcher:
                 parse_command_argument(text),
             )
             return monitor_result
+        if cmd == "agent":
+            if route.resumed_key is not None:
+                reply = (
+                    "ℹ️ This conversation continues a dashboard session, so its agent "
+                    "is changed from the dashboard. Send `!new` to start one here."
+                )
+            else:
+                reply = await handle_channel_agent_command(
+                    self._agent_picks,
+                    scope_id,
+                    parse_command_argument(text),
+                    conv=self._conv,
+                    configured=self._resolve_agent(),
+                    sessions=self.sessions,
+                    session_key=lambda: self._session_key(user_id, thread_id),
+                    prefix="!",
+                )
+            await self.client.send_message(channel_id, reply)
+            return monitor_result
         # A lone `!queue` / `!steer` is a directive missing its message body, and
         # an unrecognized `!token` is a mistyped command. Both would otherwise be
         # forwarded verbatim, and the model answers the literal string — which
@@ -963,6 +986,8 @@ class DiscordDispatcher:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
                     model=self._model_pref.get(scope_id) or None,
+                    # A resumed session runs its own persisted agent.
+                    agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
                 text,
                 _renderer,
@@ -2186,8 +2211,10 @@ class DiscordDispatcher:
         """
         return _clamp_pct(int(getattr(self._live_cfg().discord, "soft_threshold_pct", 80)))
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, scope_id: str | None = None) -> str:
+        """The agent *scope_id* runs: its ``!agent`` pick, else the configured one."""
+        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        return self._agent_picks.resolve(scope_id, configured)
 
     @staticmethod
     def _scope_id(user_id: str, thread_id: str = "") -> str:
@@ -2198,7 +2225,7 @@ class DiscordDispatcher:
         gen = self._conv.current_gen(scope_id)
         return build_dm_session_key(
             "discord",
-            self._resolve_agent(),
+            self._resolve_agent(scope_id),
             thread_id or user_id,
             gen=gen,
             dm_scope=("per-channel-peer" if thread_id else str(self.cfg.messaging.dm_scope)),
@@ -2219,7 +2246,7 @@ class DiscordDispatcher:
             thread_id = scope_id.removeprefix("thread:")
             bucket = build_dm_session_key(
                 "discord",
-                self._resolve_agent(),
+                self._resolve_agent(scope_id),
                 thread_id,
                 dm_scope="per-channel-peer",
                 chat_type=_CHAT_TYPE_THREAD,
@@ -2229,7 +2256,7 @@ class DiscordDispatcher:
         return seed_generation(
             self.sessions,
             channel="discord",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(scope_id),
             user_id=user_id,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )
@@ -2602,7 +2629,7 @@ class DiscordDispatcher:
     # Each handler replies EXACTLY ONCE — an interaction callback may only be
     # used for the first response, and a second would need a followup route.
 
-    async def _handle_status(self, reply: "ReplyFn") -> None:
+    async def _handle_status(self, reply: "ReplyFn", scope_id: str | None = None) -> None:
         """Report runtime stats, from the same source Slack's ``/kirocrew status`` uses.
 
         ``Stats()`` is the process-wide counter set, so the two channels cannot
@@ -2621,7 +2648,7 @@ class DiscordDispatcher:
         yolo = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
         await reply(
             f"📊 {Stats().summary()}\n"
-            f"agent `{self._resolve_agent()}` · approval `{self.approval_mode}` · "
+            f"agent `{self._resolve_agent(scope_id)}` · approval `{self.approval_mode}` · "
             f"YOLO {yolo}"
         )
 
@@ -2829,7 +2856,7 @@ class DiscordDispatcher:
         other: the text path and the slash path differ only in the sink they bind.
         """
         if cmd == "status":
-            await self._handle_status(reply)
+            await self._handle_status(reply, self._scope_id(user_id, thread_id))
 
     async def _on_command_interaction(self, itx: "DiscordInteraction") -> None:
         """Run a registered slash command.

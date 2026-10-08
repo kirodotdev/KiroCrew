@@ -8,6 +8,7 @@ published as real slash commands):
   !new         — start a fresh session (advances the generation counter)
   !compact     — trigger context compaction
   !model       — pick the model from a button list
+  !agent       — show the agent; ``!agent <name>`` switches it
   !status      — show runtime stats
   !sessions    — continue a recent dashboard or same-DM session here (owner only)
   !link        — mirror this conversation's dashboard tab back here
@@ -57,6 +58,7 @@ _SESSIONS_ALIASES = frozenset(("!sessions", "/sessions", "!session", "/session")
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
+_AGENT_ALIASES = frozenset(("!agent", "/agent"))
 
 _PREFIXES = ("!", "/")
 
@@ -70,7 +72,7 @@ def parse_command_argument(text: str) -> str:
 def parse_command(text: str) -> str | None:
     """Return the command name for *text*, or None when it is not a command.
 
-    One of 'new', 'compact', 'model', 'status', 'sessions',
+    One of 'new', 'compact', 'model', 'agent', 'status', 'sessions',
     'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
@@ -87,6 +89,8 @@ def parse_command(text: str) -> str | None:
         return "sessions"
     if cmd in _MODEL_ALIASES:
         return "model"
+    if cmd in _AGENT_ALIASES:
+        return "agent"
     if cmd in _STATUS_ALIASES:
         return "status"
     if cmd in _HELP_ALIASES:
@@ -152,6 +156,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("new", "Start a fresh conversation"),
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
+    ("agent", "Show the agent, or switch it by name"),
     ("status", "Show gateway runtime stats and the approval mode"),
     ("sessions", "Continue a recent or matching session here (owner only)"),
     ("link", "Resume mirroring dashboard replies here (on by default)"),
@@ -181,6 +186,14 @@ _APP_COMMAND_CONTEXTS = (_APP_CONTEXT_GUILD, _APP_CONTEXT_BOT_DM)
 #: be a token the ``!`` text handlers already accept: the slash and text paths
 #: share one parser.
 _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
+    "agent": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "The agent to switch to, or default",
+            "required": False,
+        },
+    ),
     "sessions": (
         {
             "type": _APP_OPTION_STRING,

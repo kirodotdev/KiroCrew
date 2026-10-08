@@ -560,3 +560,45 @@ class TestInboundGovernance:
         assert sessions.acquired == []
         assert sessions.successes == []
         assert sessions.released == []
+
+
+# ── /agent (show and switch the conversation's agent) ──
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @pytest.mark.asyncio
+    async def test_agent_name_switches_the_next_turn(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent beta"))
+        assert any("Agent set to `beta`" in content for _, content, _ in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_internal_agent_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent kirocrew-worker"))
+        assert any("No agent named" in content for _, content, _ in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "kirocrew"

@@ -83,6 +83,7 @@ and `/sessions` there lists the space's history rather than yours.
 | `/new` | Start a fresh, restart-safe conversation; its first turn adds it to `/sessions` |
 | `/compact` | Compress the conversation context |
 | `/model` | List the models this account can use, and pick one |
+| `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back |
 | `/sessions` | List this conversation's earlier sessions |
 | `/yolo on \| off \| renew` | Auto-approve every tool for a while |
 | `/link` | Resume mirroring dashboard replies here (on by default) |

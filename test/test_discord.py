@@ -6703,3 +6703,54 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         self._assert_no_key_on_screen(
             [_delivered_form(neighbour)] + [_delivered_form(f) for f in frames]
         )
+
+
+# ── !agent (show and switch the conversation's agent) ──
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @staticmethod
+    def _msg(text: str) -> InboundMessage:
+        return InboundMessage(channel_type="discord", user_id="u1", conversation_id="c1", text=text)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["!agent beta", "/agent beta"])
+    async def test_agent_name_switches_the_next_turn(self, monkeypatch, command) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg(command))
+        assert any("Agent set to `beta`" in t for t, _ in cli.sent)
+        await d.handle_message(self._msg("hi"))
+        assert sess.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_status_names_the_picked_agent(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!agent beta"))
+        await d.handle_message(self._msg("!status"))
+        assert "agent `beta`" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_internal_agent_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!agent kirocrew-worker"))
+        assert any("No agent named" in t for t, _ in cli.sent)
+        await d.handle_message(self._msg("hi"))
+        assert sess.last_agent == "kirocrew"

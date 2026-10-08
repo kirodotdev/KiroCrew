@@ -377,3 +377,176 @@ async def test_linked_thread_delivers_the_agent_command_to_the_chat_runner(text,
     assert handled is True
     run_chat.assert_awaited_once()
     assert run_chat.await_args.args[2] == delivered
+
+
+# ── The text-command channels (Webex, Discord, Teams, Feishu) ──
+
+
+def _channel_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(name="gamma", filename="gamma.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+        AgentInfo(name="tool", filename="someapp--tool.json", description="", model=""),
+    ]
+
+
+class _ChannelSessions:
+    """``live`` names the one session key that exists, like the real manager."""
+
+    def __init__(self, *, busy: bool = False, live: str = "") -> None:
+        self.busy = busy
+        self.live = live
+
+    def is_busy(self, key: str) -> bool:
+        return self.busy
+
+    def has_session(self, key: str) -> bool:
+        return bool(self.live) and key == self.live
+
+
+async def _channel_agent(picks, arg: str, sessions=None, conv=None) -> str:
+    from kiro_crew.agent_switch_command import handle_channel_agent_command
+    from kiro_crew.messaging.conversation import ConversationState
+
+    return await handle_channel_agent_command(
+        picks,
+        "route",
+        arg,
+        conv=conv or ConversationState(),
+        configured="kirocrew",
+        sessions=sessions or _ChannelSessions(),
+        session_key=lambda: f"k:{picks.resolve('route', 'kirocrew')}",
+    )
+
+
+class TestChannelAgentCommand:
+    @pytest.fixture(autouse=True)
+    def _roster(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.list_agents", _channel_roster
+        )
+
+    @pytest.mark.asyncio
+    async def test_switch_then_back_to_default(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        picks = ChannelAgentPicks()
+        assert "Agent set to `beta`" in await _channel_agent(picks, "beta")
+        assert picks.resolve("route", "kirocrew") == "beta"
+        assert picks.resolve("other", "kirocrew") == "kirocrew"
+        assert "Already using `beta`" in await _channel_agent(picks, "beta")
+        assert "default (kirocrew)" in await _channel_agent(picks, "default")
+        assert picks.resolve("route", "kirocrew") == "kirocrew"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["kirocrew-worker", "tool", "missing"])
+    async def test_only_pickable_agents_are_accepted(self, name: str) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        picks = ChannelAgentPicks()
+        assert "No agent named" in await _channel_agent(picks, name)
+        assert picks.get("route") == ""
+
+    @pytest.mark.asyncio
+    async def test_bad_name_shape_answers_with_usage(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        picks = ChannelAgentPicks()
+        assert "not an agent name" in await _channel_agent(picks, "two words")
+        assert picks.get("route") == ""
+
+    @pytest.mark.asyncio
+    async def test_naming_the_default_agent_is_not_a_switch(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
+        from kiro_crew.messaging.conversation import ConversationState
+
+        picks = ChannelAgentPicks()
+        reply = await handle_channel_agent_command(
+            picks,
+            "route",
+            "beta",
+            conv=ConversationState(),
+            configured="beta",
+            sessions=_ChannelSessions(live="k"),
+            session_key=lambda: "k",
+        )
+        assert "Already using" in reply
+        assert picks.get("route") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_running_reply_refuses_the_switch(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        picks = ChannelAgentPicks()
+        reply = await _channel_agent(picks, "beta", _ChannelSessions(busy=True))
+        assert "Still working" in reply
+        assert "`/agent beta`" in reply  # the hint repeats the full command
+        assert picks.get("route") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_live_conversation_is_told_the_switch_starts_fresh(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        # The live session is the DEFAULT agent's; the switch leaves it behind.
+        reply = await _channel_agent(
+            ChannelAgentPicks(), "beta", _ChannelSessions(live="k:kirocrew")
+        )
+        assert "leaves the current conversation" in reply
+
+    @pytest.mark.asyncio
+    async def test_a_switch_follows_the_new_agents_own_generations(self) -> None:
+        # After a restart the route's counter was seeded from the default
+        # agent's bucket (gen 0) while beta's bucket already holds gen 2. The
+        # switch must move the counter to beta's latest, so /new goes past it.
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+        from kiro_crew.messaging.conversation import ConversationState
+
+        picks = ChannelAgentPicks()
+        persisted = {"kirocrew": 0, "beta": 2}
+        conv = ConversationState(seed_fn=lambda r: persisted[picks.resolve(r, "kirocrew")])
+        assert conv.current_gen("route") == 0
+        await _channel_agent(picks, "beta", conv=conv)
+        assert conv.current_gen("route") == 2
+        assert conv.bump_gen("route") == 3  # /new is fresh, never beta's gen 1 or 2
+        await _channel_agent(picks, "default", conv=conv)
+        assert conv.current_gen("route") == 0  # back to the default agent's latest
+
+    @pytest.mark.asyncio
+    async def test_show_lists_the_pickable_agents(self) -> None:
+        from kiro_crew.agent_switch_command import ChannelAgentPicks
+
+        reply = await _channel_agent(ChannelAgentPicks(), "")
+        assert "`beta`" in reply and "`gamma`" in reply
+        assert "kirocrew-worker" not in reply and "`tool`" not in reply
+
+
+class TestTelegramAndSlackUnchanged:
+    def test_channels_offer_the_same_agents_as_the_telegram_picker(self, monkeypatch) -> None:
+        from kiro_crew.agent_switch_command import pickable_agent_names
+        from kiro_crew.telegram import transport_dispatch as td
+
+        monkeypatch.setattr(td, "list_agents", _channel_roster)
+        assert pickable_agent_names() == td.TelegramDispatcher._installed_agent_names()
+        assert pickable_agent_names() == ["beta", "gamma"]
+
+    def test_telegram_keeps_its_picker_command(self) -> None:
+        from kiro_crew.telegram.commands import parse_command
+
+        assert parse_command("/agent") == "agent"
+        assert parse_command("/agent beta") == "agent"
+
+    @pytest.mark.parametrize(
+        ("text", "agent"),
+        [("/agent beta", "beta"), ("/agent list", None), ("/agent", None), ("/agent a b", None)],
+    )
+    def test_slack_parser_reads_as_before(self, text: str, agent: str | None) -> None:
+        assert agent_switch_target(text) == agent

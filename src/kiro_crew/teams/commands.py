@@ -22,6 +22,7 @@ COMMAND_SPEC: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("new", ("/new", "/start"), "Start a fresh conversation"),
     ("compact", ("/compact",), "Compress the context when it gets long"),
     ("stop", ("/stop", "/cancel"), "Stop the current reply and clear the queue"),
+    ("agent", ("/agent",), "Show the agent, or switch with `/agent <name>`"),
     ("yolo", ("/yolo",), "Auto-approve tools everywhere until it expires (on / off / renew)"),
     (
         "sessions",

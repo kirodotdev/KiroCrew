@@ -36,6 +36,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -364,6 +365,9 @@ class TeamsDispatcher:
         # the reloaded allow-list at it.
         self.transport: "TeamsTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Per-person agent picked with /agent, keyed like _conv (the sender
+        # identity), because the agent is part of the session key.
+        self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
         # Mid-turn queue receipts. Teams can edit a bot's own activity, so unlike
         # WeCom/Weixin (whose reply is bound to the inbound request) it can carry
         # the single collapsing receipt bubble the shared module implements.
@@ -556,6 +560,9 @@ class TeamsDispatcher:
             if cmd == "yolo":
                 await self._handle_yolo(inbound, command_argument(text))
                 return
+            if cmd == "agent":
+                await self._handle_agent(inbound, email, text, route.resumed_key)
+                return
             if cmd == "link":
                 await self._handle_link(inbound)
                 return
@@ -693,7 +700,9 @@ class TeamsDispatcher:
         # Decided ONCE, upstream, and not re-resolved: re-reading the binding here would
         # let it change between the decision and its use.
         session_key = resumed_key or self._session_key(email)
-        agent = self._resolve_agent()
+        # A resumed session keeps the agent it ran before; a pick is this
+        # conversation's own.
+        agent = self._resolve_agent(None if resumed_key else email)
         session_restricted = await self._session_restricted(session_key)
 
         # Adaptive Card approvals: the decider awaits the click and denies by
@@ -1589,8 +1598,38 @@ class TeamsDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, identity: str | None = None) -> str:
+        """The agent *identity*'s conversation runs: its ``/agent`` pick, else the default."""
+        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        return self._agent_picks.resolve(identity, configured)
+
+    async def _handle_agent(
+        self, inbound: "TeamsInbound", email: str, text: str, resumed_key: str | None
+    ) -> None:
+        """Show the agent, or switch it with ``/agent <name>``.
+
+        Refused while this conversation continues a dashboard session: that
+        session's agent is the dashboard's to change.
+        """
+        if resumed_key is not None:
+            await self._reply(
+                inbound,
+                "ℹ️ This conversation continues a dashboard session, so its agent "
+                "is changed from the dashboard. Send `/new` to start one here.",
+            )
+            return
+        await self._reply(
+            inbound,
+            await handle_channel_agent_command(
+                self._agent_picks,
+                email,
+                command_argument(text),
+                conv=self._conv,
+                configured=self._resolve_agent(),
+                sessions=self.sessions,
+                session_key=lambda: self._session_key(email),
+            ),
+        )
 
     @staticmethod
     def _identity(inbound: "TeamsInbound") -> str:
@@ -1628,7 +1667,7 @@ class TeamsDispatcher:
         gen = self._conv.current_gen(email)
         return build_dm_session_key(
             "teams",
-            self._resolve_agent(),
+            self._resolve_agent(email),
             email,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -1638,7 +1677,7 @@ class TeamsDispatcher:
         return seed_generation(
             self.sessions,
             channel="teams",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(email),
             user_id=email,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )

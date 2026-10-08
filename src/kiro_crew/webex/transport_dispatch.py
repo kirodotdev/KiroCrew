@@ -53,6 +53,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
@@ -424,6 +425,9 @@ class WebexDispatcher:
         self._choices = LiveChoices()
         # Per-user model preference, applied when the NEXT session is created.
         self._model_pref: dict[str, str] = {}
+        # Per-conversation agent picked with /agent. Keyed by ROUTE (a DM or a
+        # space), because the agent is part of the session key.
+        self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
 
     # ── Turn dispatch (transport's dispatch callback) ──────────────────────
 
@@ -605,6 +609,20 @@ class WebexDispatcher:
             if cmd == "model":
                 await self._handle_model(inbound)
                 return
+            if cmd == "agent":
+                await self._reply(
+                    inbound,
+                    await handle_channel_agent_command(
+                        self._agent_picks,
+                        route,
+                        parse_command_argument(text),
+                        conv=self._conv,
+                        configured=self._resolve_agent(),
+                        sessions=self.sessions,
+                        session_key=lambda: self._session_key(route),
+                    ),
+                )
+                return
             if cmd == "sessions":
                 await self._handle_sessions(inbound)
                 return
@@ -644,7 +662,7 @@ class WebexDispatcher:
         # turn's, so reserve here and resolve (decider or busy-path intercept)
         # address the same entry within the turn.
         approval_scope = self._approval_key(route)
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(route)
         # The SAME derivation the dispatcher's own sends use, so the answer and
         # every ack about it cannot end up in different places.
 
@@ -1014,7 +1032,7 @@ class WebexDispatcher:
         """
         bucket = build_dm_session_key(
             "webex",
-            self._resolve_agent(),
+            self._resolve_agent(route),
             route,
             gen=0,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -1847,8 +1865,10 @@ class WebexDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, route: str | None = None) -> str:
+        """The agent *route* runs: its ``/agent`` pick, else the configured one."""
+        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        return self._agent_picks.resolve(route, configured)
 
     def current_session_key(self, email: str) -> str:
         """This user's CURRENT DM session key, as the turn path derives it.
@@ -1880,7 +1900,7 @@ class WebexDispatcher:
         gen = self._conv.current_gen(route)
         return build_dm_session_key(
             "webex",
-            self._resolve_agent(),
+            self._resolve_agent(route),
             route,
             gen=gen,
             dm_scope=DM_SCOPE_PER_CHANNEL_PEER,
@@ -1896,7 +1916,7 @@ class WebexDispatcher:
         gen = self._conv.current_gen(route)
         return build_dm_session_key(
             "webex",
-            self._resolve_agent(),
+            self._resolve_agent(route),
             route,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -1907,7 +1927,7 @@ class WebexDispatcher:
         return seed_generation(
             self.sessions,
             channel="webex",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(route),
             user_id=route,
             dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=_chat_type_of(route),

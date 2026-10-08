@@ -192,6 +192,7 @@ works, including before the `applications.commands` scope is installed.
 | `!new` / `!start` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
 | `!model` / `!models` | Pick the model from a button list of what your account can use |
+| `!agent [name]` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |

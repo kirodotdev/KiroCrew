@@ -1571,6 +1571,15 @@ opening the dashboard:
   a stale or ambiguous binding cannot block `/new`, `/unlink`, `/session`, `/help`,
   `/status`, `/ping`, `/cron`, `/yolo`, `/kirocrew dashboard`, `/voice`, or
   `/agent`.
+- **Channel `/agent` (Webex, Discord, Teams, Feishu)** is one handler,
+  `agent_switch_command.handle_channel_agent_command`. A pick lives in a
+  route-keyed `ChannelAgentPicks` (in memory, like Telegram's `_agent_pref`) and
+  feeds the dispatcher's `_resolve_agent(route)`, so it moves the session key. Only
+  Telegram's picker list (`_installed_agent_names`) is accepted; a switch is refused
+  while the current key is busy; the no-op test compares effective agents. On a
+  switch `ConversationState.reseed` re-reads the route's generation from the new
+  agent's bucket, so `/new` is always fresh. Discord passes the pick to the shared
+  pipeline as `Asker.agent`; a resumed dashboard session keeps its own agent.
 - `/new` and `/unlink` call `SessionBinder.release`, which atomically clears the
   inbound link and retires its durable expectation. `/new` then advances the native
   Telegram generation; `/unlink` returns to the existing native conversation. A
@@ -2175,7 +2184,7 @@ reaches the model as literal text instead of executing on drain.
 A `steer` / `queue` directive prefix forces that one message down the
 corresponding path, overriding `queue_mode` for that message only.
 **Discord's text commands are `!`-prefixed** (`!new`, `!compact`, `!model`,
-`!status`, `!link`, `!unlink`, `!stop`, `!help`, `!sessions`, `!queue`,
+`!agent`, `!status`, `!link`, `!unlink`, `!stop`, `!help`, `!sessions`, `!queue`,
 `!steer`) because Discord's client swallows a bare `/`
 message into its own slash-command UI; the `/` forms are also accepted as message
 text for muscle-memory parity with Telegram, which uses `/` only. Since the
@@ -4271,7 +4280,7 @@ default it.
 **Dispatch + rendering.** Turns ride the shared `drive_turn` / `TurnDriver`
 pipeline. `transport_dispatch.py` intercepts the command surface (`/new`,
 `/compact`, `/help`, `/stop` + `/cancel`, `/link`, `/unlink`, `/yolo`,
-`/kirocrew dashboard`, `/model`, `/sessions`, plus the `/queue` and `/steer`
+`/kirocrew dashboard`, `/model`, `/agent`, `/sessions`, plus the `/queue` and `/steer`
 per-message overrides),
 queues or steers mid-turn messages, drains the queue after the turn, runs
 `/compact` under atomic `try_acquire`, and posts soft/hard context-threshold
@@ -5204,7 +5213,7 @@ the operator's production bot and answer real people.
 `messaging/dispatch.py::drive_turn`. The command vocabulary lives in ONE table,
 `teams/commands.py::COMMAND_SPEC`, which drives both the parser and the `/help`
 card so the two cannot drift: `/new` (alias `/start`), `/compact`, `/stop` (alias `/cancel`),
-`/yolo`, `/link`, `/unlink`, `/sessions`, `/dashboard`, `/help`, plus the `/queue` and `/steer` per-message
+`/agent`, `/yolo`, `/link`, `/unlink`, `/sessions`, `/dashboard`, `/help`, plus the `/queue` and `/steer` per-message
 directives. A bare directive answers with usage rather than handing the
 literal `/queue` to the model, which would reply to it as chat text.
 `/dashboard [<N>h|<N>m]` MINTS a presigned dashboard login token for the asking

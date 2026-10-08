@@ -28,6 +28,7 @@ _STOP_ALIASES = frozenset(("/stop", "/cancel"))
 _LINK_ALIASES = frozenset(("/link",))
 _UNLINK_ALIASES = frozenset(("/unlink",))
 _MODEL_ALIASES = frozenset(("/model", "/models"))
+_AGENT_ALIASES = frozenset(("/agent",))
 _SESSIONS_ALIASES = frozenset(("/sessions", "/session"))
 _YOLO_ALIASES = frozenset(("/yolo",))
 _DASHBOARD_ALIASES = frozenset(("/kirocrew",))
@@ -59,6 +60,7 @@ _ALIAS_TO_COMMAND: dict[str, str] = {
         ("link", _LINK_ALIASES),
         ("unlink", _UNLINK_ALIASES),
         ("model", _MODEL_ALIASES),
+        ("agent", _AGENT_ALIASES),
         ("sessions", _SESSIONS_ALIASES),
         ("yolo", _YOLO_ALIASES),
         ("dashboard", _DASHBOARD_ALIASES),
@@ -206,6 +208,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("new", "Start a fresh conversation"),
     ("compact", "Compress the context when it gets long"),
     ("model", "List the models this account can use, and pick one"),
+    ("agent", "Show the agent, or switch with `/agent <name>`"),
     ("sessions", "List this conversation's earlier sessions"),
     ("yolo", "Auto-approve every tool for a while (on / off / renew)"),
     ("link", "Resume mirroring dashboard replies here (on by default)"),

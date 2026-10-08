@@ -115,6 +115,19 @@ class ConversationState(Generic[K]):
     def current_gen(self, key: K) -> int:
         return self._get(key).gen
 
+    def reseed(self, key: K) -> int:
+        """Re-read *key*'s generation from ``seed_fn`` and return it.
+
+        For a conversation whose bucket just changed (a channel ``/agent``
+        switch puts the agent in the key): the counter must follow the NEW
+        bucket's persisted generations, or a later ``/new`` could land on one
+        of that bucket's older conversations instead of a fresh one.
+        """
+        s = self._get(key)
+        s.gen = max(0, self.seed_fn(key)) if self.seed_fn is not None else 0
+        s.awaiting_compact = False
+        return s.gen
+
     def set_awaiting(self, key: K) -> None:
         self._get(key).awaiting_compact = True
 
