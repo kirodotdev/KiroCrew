@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import hashlib
 import os
 import threading
 import time
 import urllib.error
+import weakref
 
 import numpy as np
 import pytest
@@ -791,6 +793,306 @@ def test_thread_count_is_bounded_and_positive(monkeypatch):
     assert engine_mod.thread_count() == 1
     monkeypatch.setattr(engine_mod, "available_cpus", lambda: 16)
     assert engine_mod.thread_count() == 8
+
+
+# ── Encoder window ──
+
+
+class _WindowBinding(_FakeBinding):
+    """Records the encoder window each native decode ran with."""
+
+    def __init__(self, raises: Exception | None = None, **kw) -> None:
+        super().__init__(**kw)
+        self.windows: list[int] = []
+        self._raises = raises
+
+    def whisper_full(self, _ctx, params, _pcm, _n) -> int:
+        self.windows.append(params.audio_ctx)
+        if self._raises is not None:
+            raise self._raises
+        return super().whisper_full(_ctx, params, _pcm, _n)
+
+
+def _native_with_window(monkeypatch, fake: _FakeModel, binding: _FakeBinding) -> None:
+    monkeypatch.setattr(engine_mod, "_whisper_binding", lambda: binding)
+    _make_native(monkeypatch, fake)
+    fake._params = type("Params", (), {"audio_ctx": 0})()
+
+
+def _secs(n: float) -> int:
+    return int(n * engine_mod.SAMPLE_RATE_HZ)
+
+
+@pytest.mark.parametrize(
+    "secs, frames",
+    [
+        (0.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        (1.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        # The longest phrase a partial decodes still fits the floor with its margin.
+        (8.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        (9.0, 576),
+        (27.0, 1472),
+        # Within a step of the full window: sizing would save nothing.
+        (28.0, 0),
+        (30.0, 0),
+    ],
+)
+def test_a_preview_window_has_a_floor_a_margin_and_yields_to_the_full_one(secs, frames):
+    assert engine_mod.preview_audio_ctx(_secs(secs)) == frames
+
+
+@pytest.mark.parametrize("secs", [0.5, 1.0, 2.5, 8.0, 20.0, 27.9])
+def test_a_preview_window_always_holds_the_whole_clip(secs):
+    """A window shorter than the audio truncates it, which is how a decode loops."""
+    frames = engine_mod.preview_audio_ctx(_secs(secs)) or engine_mod.FULL_AUDIO_CTX
+    assert frames >= secs * 50
+
+
+@pytest.mark.asyncio
+async def test_a_sized_decode_narrows_the_window_for_that_call_only(fake_engine, monkeypatch):
+    """The params object is shared, so the final after a partial must get it back."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    binding = _WindowBinding()
+    _native_with_window(monkeypatch, fake, binding)
+    audio = np.zeros(_secs(2.0), dtype=np.float32)
+
+    await eng.decode(audio, superseding=True, sized_window=True)
+    await eng.decode(audio)
+
+    assert binding.windows == [engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 0]
+    assert fake._params.audio_ctx == 0
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_restored_when_the_native_call_raises(fake_engine, monkeypatch):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    _native_with_window(monkeypatch, fake, _WindowBinding(raises=RuntimeError("boom")))
+
+    with pytest.raises(engine_mod.DecodeFailed):
+        await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), sized_window=True)
+    assert fake._params.audio_ctx == 0
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_path_decodes_at_the_full_window(fake_engine, monkeypatch):
+    """``Model.transcribe`` keeps any parameter it is given, so none is passed."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    seen: list[dict] = []
+    original = fake.transcribe
+
+    def transcribe(pcm, abort_callback=None, **kw):
+        seen.append(kw)
+        return original(pcm, abort_callback=abort_callback, **kw)
+
+    monkeypatch.setattr(fake, "transcribe", transcribe)
+    text = await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), sized_window=True)
+    assert text == "hello world"
+    assert seen == [{}]
+
+
+@pytest.mark.asyncio
+async def test_a_binding_without_a_window_parameter_still_decodes_previews(
+    fake_engine, monkeypatch
+):
+    """Params with no ``audio_ctx`` decode at the full window instead of failing."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    monkeypatch.setattr(engine_mod, "_whisper_binding", lambda: _FakeBinding())
+    _make_native(monkeypatch, fake)
+    assert not hasattr(fake._params, "audio_ctx")
+
+    text = await eng.decode(
+        np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True
+    )
+
+    assert text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_slow_sized_decodes_in_a_row_restore_the_full_window(fake_engine, monkeypatch):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    binding = _WindowBinding()
+    _native_with_window(monkeypatch, fake, binding)
+    audio = np.zeros(_secs(1.0), dtype=np.float32)
+    await eng.decode(audio)  # binds the window state to this model
+
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    await eng.decode(audio, superseding=True, sized_window=True)
+
+    assert binding.windows[-1] == 0
+
+
+def test_one_fast_sized_decode_clears_the_strikes():
+    """The first sized decode after a final re-reserves the graph and is slow once."""
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES - 1):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 150.0)
+    eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert not eng._sized_window_off
+
+
+def test_a_busy_host_does_not_turn_sizing_off():
+    """Previews somewhat slower than a quick prewarm are load, not a looping decode.
+
+    The prewarm decodes a second of silence, so it is a fast reference, and a host
+    busy with other work slows every preview a little. A strict comparison against it
+    turned sizing off for good in a live meeting.
+    """
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 387.0)
+    for wall_ms in (300.0, 420.0, 450.0, 390.0, 440.0, 430.0, 410.0) * 3:
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, wall_ms)
+    assert not eng._sized_window_off
+    assert eng._sized_window_strikes == 0
+
+
+def test_exactly_the_slowdown_threshold_is_not_a_strike():
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(
+            engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 400.0 * engine_mod.PREVIEW_WINDOW_SLOWDOWN
+        )
+    assert not eng._sized_window_off
+
+
+def test_a_sized_decode_with_no_full_reference_counts_no_strike():
+    eng = engine_mod.WhisperEngine()
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES + 1):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert not eng._sized_window_off
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_decode_sets_no_full_window_reference(fake_engine, monkeypatch):
+    """An abort unwinds early; its short time would make every sized decode look slow."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    stop = threading.Event()
+    _native_with_window(monkeypatch, fake, _WindowBinding(status=-6, on_full=stop.set))
+
+    assert (
+        await eng.decode(
+            np.zeros(_secs(1.0), dtype=np.float32), superseding=True, abort_if=stop.is_set
+        )
+        == ""
+    )
+    assert eng._full_window_ms is None
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_model_gets_a_fresh_window_verdict(fake_engine, monkeypatch):
+    eng, _fake = fake_engine
+    built: list[_FakeModel] = []
+    binding = _WindowBinding()
+
+    def build(_key):
+        model = _FakeModel()
+        _native_with_window(monkeypatch, model, binding)
+        built.append(model)
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    audio = np.zeros(_secs(1.0), dtype=np.float32)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(audio)
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert eng._sized_window_off
+
+    await eng.close()
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(audio, superseding=True, sized_window=True)
+
+    assert len(built) == 2
+    assert binding.windows[-1] == engine_mod.PREVIEW_AUDIO_CTX_FLOOR
+
+
+def _track_built_models(monkeypatch) -> list[weakref.ReferenceType]:
+    """Build a fresh fake per load and keep only WEAK references to them.
+
+    The real binding frees its native context in ``Model.__del__``, so a model is
+    released exactly when its last strong reference goes. Holding these weakly is
+    what lets a test see that, rather than ``loaded`` merely reading False.
+    """
+    refs: list[weakref.ReferenceType] = []
+
+    def build(_key):
+        model = _FakeModel()
+        refs.append(weakref.ref(model))
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    return refs
+
+
+@pytest.mark.asyncio
+async def test_close_frees_a_model_that_ran_a_sized_decode(fake_engine, monkeypatch):
+    eng, _fake = fake_engine
+    refs = _track_built_models(monkeypatch)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+
+    await eng.close()
+    gc.collect()
+
+    assert not eng.loaded
+    assert refs[0]() is None, "the window verdict must not keep unloaded weights alive"
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_frees_a_model_that_ran_a_sized_decode(monkeypatch, tmp_path):
+    monkeypatch.setattr(engine_mod, "_engine", None)
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    stub = tmp_path / "ggml-base.bin"
+    stub.write_bytes(b"not a real model")
+
+    async def _ensure(_model):
+        return stub
+
+    monkeypatch.setattr(models, "store", lambda: type("S", (), {"ensure": staticmethod(_ensure)})())
+    refs = _track_built_models(monkeypatch)
+    eng = engine_mod.WhisperEngine(idle_evict_secs=0)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+
+    assert await eng.maybe_evict()
+    gc.collect()
+
+    assert refs[0]() is None
+
+
+@pytest.mark.asyncio
+async def test_a_model_switch_frees_the_old_weights_before_building_the_new(
+    fake_engine, monkeypatch
+):
+    """One model's worth of memory, not two, across a language or model change."""
+    eng, _fake = fake_engine
+    refs: list[weakref.ReferenceType] = []
+    alive_at_build: list[bool] = []
+
+    def build(_key):
+        gc.collect()
+        alive_at_build.append(any(ref() is not None for ref in refs))
+        model = _FakeModel()
+        refs.append(weakref.ref(model))
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+    await eng.ensure_loaded("base", "fr")
+
+    assert alive_at_build == [False, False]
 
 
 # ── Engine lifecycle ──

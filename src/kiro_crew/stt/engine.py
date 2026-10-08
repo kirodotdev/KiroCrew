@@ -47,8 +47,10 @@ import asyncio
 import functools
 import importlib.util
 import logging
+import math
 import platform
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -82,6 +84,40 @@ THREAD_CEILING = 16
 #: at 154-528 ms on the first decode after a load) before a user is waiting on
 #: it. Silence is fine: the cost is in building the graph, not in the content.
 _PREWARM_SECS = 1.0
+
+#: whisper.cpp's encoder window, in frames: 1500 frames hold 30 s of audio, so one
+#: second of audio is 50 frames. ``audio_ctx = 0`` asks for the whole window, and
+#: whisper.cpp encodes all of it however short the audio is -- the fixed floor that
+#: dominates a short decode's cost.
+FULL_AUDIO_CTX = 1500
+_ENCODER_FRAMES_PER_SEC = 50
+
+#: Bounds on the window a display-only decode (a partial, a phrase commit) is sized
+#: to. Measured with ``base`` on four voices and every phrase length from 1 s to 8 s:
+#: a window under 448 frames sent some short clips into whisper.cpp's temperature
+#: fallback (a 1 s clip at 320 frames took 2.5 s against 0.36 s at the full window),
+#: and one shorter than the audio truncates it. At the floor with a 2 s margin no
+#: clip fell back, and the 57-clip sweep spent 2.5x less CPU than the full window.
+#: The floor is in encoder frames, so it holds for every catalog model.
+PREVIEW_AUDIO_CTX_FLOOR = 512
+_PREVIEW_AUDIO_CTX_MARGIN_SECS = 2.0
+_PREVIEW_AUDIO_CTX_STEP = 64
+
+#: Consecutive sized decodes that took more than :data:`PREVIEW_WINDOW_SLOWDOWN`
+#: times the full-window reference before the engine stops sizing for the rest of
+#: the loaded model's life. Consecutive, because the first sized decode after a full
+#: one re-reserves the encoder graph and costs about what a full decode does.
+PREVIEW_WINDOW_MAX_STRIKES = 3
+
+#: How much slower than the full-window reference a sized decode must be to count
+#: as a strike. The failure the breaker exists for is whisper.cpp's temperature
+#: fallback, which re-decodes up to five times: measured with ``base``, a looping
+#: sized decode took 7-21x the full-window decode of the same clip. Ordinary
+#: variation is far smaller -- a sized preview runs at 170-260 ms, and the first one
+#: after a full decode at about 300 ms, against a 387 ms prewarm reference -- so a
+#: strict 1x threshold leaves no margin for a busy host, and once tripped it keeps
+#: every later preview at full-window cost.
+PREVIEW_WINDOW_SLOWDOWN = 2.0
 
 #: How long a timed-out decode is given to honour its abort callback before the
 #: decode lock is released anyway. whisper.cpp polls the callback inside its decode
@@ -134,6 +170,20 @@ def thread_count() -> int:
     predictability first and mean latency second.
     """
     return max(1, min(THREAD_CEILING, available_cpus() // 2))
+
+
+def preview_audio_ctx(samples: int) -> int:
+    """The encoder window, in frames, for a display-only decode of *samples*.
+
+    The audio's own length plus :data:`_PREVIEW_AUDIO_CTX_MARGIN_SECS`, rounded up
+    to :data:`_PREVIEW_AUDIO_CTX_STEP` and never under
+    :data:`PREVIEW_AUDIO_CTX_FLOOR`. ``0`` -- the full window -- once that reaches
+    :data:`FULL_AUDIO_CTX`, since a window that large saves nothing.
+    """
+    secs = samples / SAMPLE_RATE_HZ + _PREVIEW_AUDIO_CTX_MARGIN_SECS
+    steps = math.ceil(secs * _ENCODER_FRAMES_PER_SEC / _PREVIEW_AUDIO_CTX_STEP)
+    frames = max(PREVIEW_AUDIO_CTX_FLOOR, steps * _PREVIEW_AUDIO_CTX_STEP)
+    return 0 if frames >= FULL_AUDIO_CTX else frames
 
 
 # ── Availability ──
@@ -205,6 +255,7 @@ def _decode_segments(
     model: Any,
     pcm: np.ndarray,
     should_abort: Callable[[], bool],
+    audio_ctx: int = 0,
 ) -> list[Any]:
     """Run one whisper.cpp decode, raising :class:`DecodeFailed` on a native failure.
 
@@ -231,6 +282,14 @@ def _decode_segments(
     expected -- a renamed member in a later release, or an unreachable extension
     module. That path loses only the status; the failures :meth:`WhisperEngine.decode`
     raises on regardless (an exception out of the call, and a timeout) are unaffected.
+
+    ``audio_ctx`` (encoder frames, ``0`` = the full window) applies to this call only.
+    It is set on the shared params object and restored before returning, so the
+    next decode -- a final among them -- gets the window it asks for. The fallback
+    path decodes at the full window: ``Model.transcribe`` stores any parameter it
+    is passed on the params object for good. So does a binding whose params carry
+    no ``audio_ctx``: setting it there would fail every preview, and the breaker
+    only reacts to slow decodes, so it would never restore them.
     """
     ctx = getattr(model, "_ctx", None)
     params = getattr(model, "_params", None)
@@ -243,7 +302,15 @@ def _decode_segments(
     # new-segment callback from some other caller would otherwise still fire.
     binding.assign_new_segment_callback(params, None)
     binding.assign_abort_callback(params, should_abort)
-    status = binding.whisper_full(ctx, params, pcm, pcm.size)
+    if audio_ctx and hasattr(params, "audio_ctx"):
+        full_ctx = params.audio_ctx
+        params.audio_ctx = audio_ctx
+        try:
+            status = binding.whisper_full(ctx, params, pcm, pcm.size)
+        finally:
+            params.audio_ctx = full_ctx
+    else:
+        status = binding.whisper_full(ctx, params, pcm, pcm.size)
     if status != _WHISPER_OK:
         if should_abort():
             return []
@@ -418,6 +485,15 @@ class WhisperEngine:
         # A native call can outlive its abort grace. Keep its future so retries
         # cannot allocate another large model while the retired one still runs.
         self._retired_decode: asyncio.Future | None = None
+        # Whether sizing the encoder window still pays, judged per loaded model
+        # (`_window_model`), so every load, reload and retirement starts afresh
+        # without each of those paths having to remember to reset it. A WEAK
+        # reference: dropping the last strong one is what frees a context (see
+        # `_unload_locked`), so a strong one here would keep unloaded weights alive.
+        self._window_model: "weakref.ReferenceType[Any] | None" = None
+        self._full_window_ms: float | None = None
+        self._sized_window_strikes = 0
+        self._sized_window_off = False
 
     @property
     def loaded(self) -> bool:
@@ -717,6 +793,7 @@ class WhisperEngine:
         expect: LoadedKey | None = None,
         abort_if: Callable[[], bool] | None = None,
         kind: str = telemetry.KIND_FINAL,
+        sized_window: bool = False,
     ) -> str:
         """Transcribe mono float32 16 kHz audio, returning cleaned text.
 
@@ -741,6 +818,15 @@ class WhisperEngine:
         :class:`~kiro_crew.stt.telemetry.DecodeSample` so a diagnostic can tell a
         cosmetic partial's cost apart from the final the user waits on. It never
         changes what is decoded.
+
+        ``sized_window`` encodes only :func:`preview_audio_ctx` frames instead of the
+        full 30 s window. It is for DISPLAY-ONLY decodes (a partial, a phrase
+        commit): the text can differ from a full-window decode in punctuation or
+        an unsettled word, which a preview the final replaces can afford and the
+        text the user keeps cannot. The engine stops honouring it for the loaded
+        model once :data:`PREVIEW_WINDOW_MAX_STRIKES` sized decodes in a row took
+        more than :data:`PREVIEW_WINDOW_SLOWDOWN` times the full window
+        (:meth:`_note_window_cost`).
 
         Raises :class:`DecodeFailed` when the decode FAILED: the native call raised,
         the native call reported a non-zero status, or the wait expired and the work
@@ -797,6 +883,14 @@ class WhisperEngine:
                     self._key.model_path if self._key else "nothing",
                 )
                 return ""
+            if self._window_model is None or self._window_model() is not model:
+                self._window_model = weakref.ref(model)
+                self._full_window_ms = None
+                self._sized_window_strikes = 0
+                self._sized_window_off = False
+            audio_ctx = (
+                preview_audio_ctx(pcm.size) if sized_window and not self._sized_window_off else 0
+            )
             loop = asyncio.get_running_loop()
             decode_started = time.monotonic()
             # `complete` means the native call produced segments for the WHOLE of
@@ -808,7 +902,7 @@ class WhisperEngine:
             try:
                 future = loop.run_in_executor(
                     stt_executor(),
-                    functools.partial(_decode_segments, model, pcm, should_abort),
+                    functools.partial(_decode_segments, model, pcm, should_abort, audio_ctx),
                 )
                 # `asyncio.wait` rather than `wait_for`, because a timeout here must NOT
                 # abandon the future: `wait_for` cancels the wrapper and leaves the
@@ -892,6 +986,10 @@ class WhisperEngine:
                 complete = True
                 if should_abort():
                     return ""
+                # Only after the abort check: an aborted decode unwinds early, and its
+                # short time taken as the full-window reference would make every
+                # sized decode after it look slow.
+                self._note_window_cost(audio_ctx, (self._last_used - decode_started) * 1000.0)
             finally:
                 # In a `finally` rather than at each exit: this region has six
                 # ways out (two cancellations, two timeout branches, a native
@@ -901,6 +999,36 @@ class WhisperEngine:
 
         parts = [str(getattr(seg, "text", "")).strip() for seg in segments]
         return " ".join(p for p in parts if p).strip()
+
+    def _note_window_cost(self, audio_ctx: int, wall_ms: float) -> None:
+        """Record a completed decode's time, and stop sizing when it does not pay.
+
+        A full-window decode sets the reference. A sized one counts a strike when it
+        took more than :data:`PREVIEW_WINDOW_SLOWDOWN` times that reference and clears
+        the count when it did not, so only a run of
+        :data:`PREVIEW_WINDOW_MAX_STRIKES` such decodes in a row turns sizing off. A
+        sized decode before any full one has nothing to compare against.
+        """
+        if not audio_ctx:
+            self._full_window_ms = wall_ms
+            return
+        if self._full_window_ms is None or self._sized_window_off:
+            return
+        if wall_ms <= self._full_window_ms * PREVIEW_WINDOW_SLOWDOWN:
+            self._sized_window_strikes = 0
+            return
+        self._sized_window_strikes += 1
+        if self._sized_window_strikes >= PREVIEW_WINDOW_MAX_STRIKES:
+            self._sized_window_off = True
+            logger.warning(
+                "%d sized-window whisper decodes in a row took over %.0fx the full "
+                "window (last %.0f ms against %.0f ms); decoding previews at the full "
+                "window until the model is reloaded",
+                self._sized_window_strikes,
+                PREVIEW_WINDOW_SLOWDOWN,
+                wall_ms,
+                self._full_window_ms,
+            )
 
     def _retire_decode(self, future: asyncio.Future) -> None:
         """Detach a non-cooperating context without allocating a second one."""

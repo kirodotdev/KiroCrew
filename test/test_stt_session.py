@@ -67,6 +67,8 @@ class _FakeEngine:
         self.expected: list[object] = []
         #: The `kind` each decode was labelled with, in order.
         self.kinds: list[str] = []
+        #: Whether each decode asked for a sized encoder window, in order.
+        self.sized: list[bool] = []
         #: Set to a `DecodeFailed` to make every decode fail. Assigned per test rather
         #: than fixed at construction because the interesting cases are transitions:
         #: a session that keeps working after a failed partial, and one that recovers.
@@ -86,6 +88,7 @@ class _FakeEngine:
         expect=None,
         abort_if=None,
         kind: str = telemetry.KIND_FINAL,
+        sized_window: bool = False,
     ) -> str:
         self.decodes.append((len(pcm), superseding))
         self.expected.append(expect)
@@ -93,6 +96,7 @@ class _FakeEngine:
         # what the partial budget reads back and what a diagnostic attributes cost
         # to, so a decode mislabelled as cosmetic would silently be budgeted.
         self.kinds.append(kind)
+        self.sized.append(sized_window)
         if self.fail_with is not None:
             raise self.fail_with
         return self._text
@@ -288,6 +292,24 @@ async def test_partials_are_abortable_and_the_final_is_not(fake):
     await session.finish()
     assert any(superseding for _, superseding in fake.decodes), "no abortable partial ran"
     assert fake.decodes[-1][1] is False, "the final must never be aborted"
+
+
+@pytest.mark.asyncio
+async def test_only_display_decodes_ask_for_a_sized_window(fake, monkeypatch):
+    """A partial and a phrase commit are previews; the final is the text kept.
+
+    A sized encoder window can change punctuation or an unsettled word, so only a
+    decode whose text the final replaces may ask for one.
+    """
+    monkeypatch.setattr(session_mod, "MIN_COMMIT_SECS", 0.2)
+    session = await _started()
+    await _feed(session, _int16(1.0) + _silence_int16(0.2) + _int16(0.5))
+    await session.finish()
+    by_kind = list(zip(fake.kinds, fake.sized))
+    assert (telemetry.KIND_PARTIAL, True) in by_kind
+    assert (telemetry.KIND_PHRASE_COMMIT, True) in by_kind
+    assert by_kind[-1] == (telemetry.KIND_FINAL, False)
+    assert all(not sized for kind, sized in by_kind if kind == telemetry.KIND_FINAL)
 
 
 @pytest.mark.asyncio

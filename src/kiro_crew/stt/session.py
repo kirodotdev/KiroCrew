@@ -397,6 +397,7 @@ class LocalSession:
                 expect=self._key,
                 abort_if=self._partial_obsolete,
                 kind=telemetry.KIND_PARTIAL,
+                sized_window=True,
             )
         except engine_mod.DecodeFailed as exc:
             # A partial is cosmetic and the next one is moments away, so one failed
@@ -541,6 +542,7 @@ class LocalSession:
                 expect=self._key,
                 abort_if=self._partial_obsolete,
                 kind=telemetry.KIND_PHRASE_COMMIT,
+                sized_window=True,
             )
         except engine_mod.DecodeFailed as exc:
             # Display-only text, so the same trade as a partial: skip this phrase and

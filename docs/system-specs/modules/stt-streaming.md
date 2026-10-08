@@ -697,6 +697,47 @@ matter for anyone tuning this path:
   measured from the END of a decode, which bounds the queue but not the share of the
   machine cosmetic work takes.
 
+**Display-only decodes encode a sized window.** The floor is the encoder working
+through all 1500 frames (30 s) of its window whatever the audio's length.
+`WhisperEngine.decode(sized_window=True)` sets whisper.cpp's `audio_ctx` to
+`engine.preview_audio_ctx()` frames for that one call, and restores the shared params
+before the next. That is the clip plus a 2 s margin at 50 frames per second, rounded
+up to 64, and never under `PREVIEW_AUDIO_CTX_FLOOR` (512).
+- The session asks for it on its partials and phrase commits, and never on a final.
+  A sized window can change punctuation or an unsettled word, which a preview the
+  final replaces can afford and the text the user keeps cannot. One path keeps a
+  preview: when the socket closes before the final arrives, `useStreamingStt`
+  delivers the last partial as recovered text, so that text was decoded with a
+  sized window. It was an approximate preview at the full window too.
+- The floor is measured, not assumed. With `base`, a window under 448 frames sent
+  some 1 s clips into whisper.cpp's temperature fallback: 2.5 s against 0.36 s at the
+  full window. A window shorter than the clip truncates it. At the floor, across
+  four voices and every phrase length from 1 s to 8 s on a 16-thread x86-64 CPU
+  build, the sized decodes spent 2.5x less CPU and wall time than the full window.
+- Per second of speech the saving is smaller, because the partial interval starts
+  when a decode ends: a faster decode buys more previews, not only idle time. A
+  54 s talk streamed through `LocalSession` in real time on that build ran 81
+  decodes at a 242 ms median and 6.8 cores on average, against 64 decodes at
+  507 ms and 9.4 cores at the full window.
+- Because `MAX_PHRASE_SECS` is 8 s, every partial lands on the floor in practice.
+- The first sized decode after a full one costs about a full decode, because
+  whisper.cpp re-reserves the encoder graph for the new width.
+- `WhisperEngine._note_window_cost` keeps the most recent full-window decode as a
+  reference. It stops sizing for the rest of the loaded model's life after
+  `PREVIEW_WINDOW_MAX_STRIKES` (3) sized decodes IN A ROW took more than
+  `PREVIEW_WINDOW_SLOWDOWN` (2x) that reference, and logs it. The threshold is
+  the failure, not noise: a looping sized decode took 7-21x the full window,
+  while load moves a preview by tens of percent. The prewarm, a second of
+  silence, can be the first reference, so a session with no final yet still has
+  one. An aborted decode records nothing, because its early
+  unwind would understate the reference. It identifies the loaded model by a
+  WEAK reference: a context is freed when its last strong reference goes, so a
+  strong one would keep evicted or replaced weights resident.
+- The `Model.transcribe` fallback path always decodes at the full window, because
+  pywhispercpp stores any parameter passed there on the params object for good. So
+  does a binding whose params carry no `audio_ctx`: setting it there would fail
+  every preview, and the breaker only reacts to slow decodes.
+
 **The Voice panel's shape follows from that.** Two duration pickers were retired from
 Settings -> Voice as a consequence of the paragraph above, not as a matter of taste:
 `stt.partial_interval_ms` asked a user to choose a cadence the recogniser cannot
