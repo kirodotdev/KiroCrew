@@ -817,6 +817,34 @@ class TestApplyRefusals:
         assert req.app["state"]._background_tasks == set()
 
     @pytest.mark.asyncio
+    async def test_a_dirty_tree_refusal_names_its_reason_and_counts_the_changes(
+        self, monkeypatch, tmp_path
+    ):
+        """The 409 carries a stable code and a count, so the UI can guide the user.
+
+        The count is of changed entries only: no paths leave the gateway.
+        """
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        _sequence_procs(
+            monkeypatch,
+            [_FakeProc(out=b" M src/kiro_crew/cli.py\n?? notes.txt\n")],
+        )
+
+        req = _request({})
+        resp = await updates.api_update_apply(req)
+
+        assert resp.status == 409
+        payload = json.loads(resp.body.decode())
+        assert payload["code"] == "dirty_worktree"
+        assert payload["changed"] == 2
+        # Older clients read only ``error``; it keeps its wording.
+        assert payload["error"] == "Working tree has uncommitted changes — commit or stash first"
+        assert "cli.py" not in json.dumps(payload)
+        assert req.app["state"]._background_tasks == set()
+
+    @pytest.mark.asyncio
     async def test_a_revision_the_venv_cannot_run_is_refused_before_the_pull(
         self, monkeypatch, tmp_path
     ):

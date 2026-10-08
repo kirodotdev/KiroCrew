@@ -15168,7 +15168,8 @@
         "app_lane_label": "Aplicativo",
         "app_lane_title": "O app de desktop que você instalou. Sua própria versão, separada do serviço abaixo.",
         "gateway_lane_label": "Gateway",
-        "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele."
+        "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele.",
+        "update_refused_dirty_worktree": "A atualização foi interrompida para proteger suas edições locais: sua pasta do {{productName}} tem alterações não confirmadas ({{changed}}). Faça commit ou stash delas e pressione Atualizar agora de novo. Para guardar tudo com stash, execute o comando abaixo em um terminal na sua pasta do {{productName}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

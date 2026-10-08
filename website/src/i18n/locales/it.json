@@ -15168,7 +15168,8 @@
         "app_lane_label": "App",
         "app_lane_title": "L'app desktop che hai installato. La sua versione, separata dal servizio qui sotto.",
         "gateway_lane_label": "Gateway",
-        "gateway_lane_title": "Il servizio in background che esegue i tuoi agenti e serve questa dashboard. I chip di branch e commit indicano la sua build."
+        "gateway_lane_title": "Il servizio in background che esegue i tuoi agenti e serve questa dashboard. I chip di branch e commit indicano la sua build.",
+        "update_refused_dirty_worktree": "L'aggiornamento è stato interrotto per proteggere le tue modifiche locali: la tua cartella di {{productName}} ha modifiche non sottoposte a commit ({{changed}}). Esegui il commit o lo stash, poi premi di nuovo Aggiorna ora. Per mettere tutto in stash, esegui il comando qui sotto in un terminale nella tua cartella di {{productName}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

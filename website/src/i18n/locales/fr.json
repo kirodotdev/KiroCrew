@@ -15168,7 +15168,8 @@
         "app_lane_label": "Application",
         "app_lane_title": "L'application de bureau que vous avez installée. Sa propre version, distincte du service ci-dessous.",
         "gateway_lane_label": "Passerelle",
-        "gateway_lane_title": "Le service en arrière-plan qui exécute vos agents et sert ce tableau de bord. Les puces de branche et de commit indiquent sa version compilée."
+        "gateway_lane_title": "Le service en arrière-plan qui exécute vos agents et sert ce tableau de bord. Les puces de branche et de commit indiquent sa version compilée.",
+        "update_refused_dirty_worktree": "La mise à jour a été arrêtée pour protéger tes modifications locales : ton dossier {{productName}} contient des modifications non validées ({{changed}}). Valide-les ou mets-les de côté avec stash, puis appuie de nouveau sur Mettre à jour maintenant. Pour tout mettre de côté, exécute la commande ci-dessous dans un terminal ouvert dans ton dossier {{productName}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

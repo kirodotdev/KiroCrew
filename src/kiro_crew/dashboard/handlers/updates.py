@@ -1907,8 +1907,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         )
     if dirty_out and dirty_out.strip():
         logger.warning("Update skipped: working tree has uncommitted changes")
+        # ``code`` lets the UI show guided copy; ``changed`` is a count only, so
+        # no local paths leave the gateway. ``error`` keeps its wording for
+        # clients that predate the code.
+        changed = sum(1 for line in dirty_out.splitlines() if line.strip())
         return web.json_response(
-            {"error": "Working tree has uncommitted changes — commit or stash first"},
+            {
+                "error": "Working tree has uncommitted changes — commit or stash first",
+                "code": "dirty_worktree",
+                "changed": changed,
+            },
             status=409,
         )
 

@@ -15168,7 +15168,8 @@
         "app_lane_label": "Aplicación",
         "app_lane_title": "La aplicación de escritorio que instalaste. Su propia versión, independiente del servicio de abajo.",
         "gateway_lane_label": "Gateway",
-        "gateway_lane_title": "El servicio en segundo plano que ejecuta tus agentes y sirve este panel. Los chips de rama y commit son su compilación."
+        "gateway_lane_title": "El servicio en segundo plano que ejecuta tus agentes y sirve este panel. Los chips de rama y commit son su compilación.",
+        "update_refused_dirty_worktree": "La actualización se detuvo para proteger tus cambios locales: tu carpeta de {{productName}} tiene cambios sin confirmar ({{changed}}). Confírmalos o guárdalos con stash y vuelve a pulsar Actualizar ahora. Para guardarlo todo con stash, ejecuta el comando de abajo en una terminal dentro de tu carpeta de {{productName}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

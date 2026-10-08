@@ -14704,7 +14704,8 @@
         "app_lane_label": "앱",
         "app_lane_title": "설치한 데스크톱 앱입니다. 아래 서비스와는 별개인 자체 버전입니다.",
         "gateway_lane_label": "게이트웨이",
-        "gateway_lane_title": "에이전트를 실행하고 이 대시보드를 제공하는 백그라운드 서비스입니다. 브랜치와 커밋 칩은 이 서비스의 빌드입니다."
+        "gateway_lane_title": "에이전트를 실행하고 이 대시보드를 제공하는 백그라운드 서비스입니다. 브랜치와 커밋 칩은 이 서비스의 빌드입니다.",
+        "update_refused_dirty_worktree": "로컬 편집 내용을 보호하기 위해 업데이트를 중지했습니다. {{productName}} 폴더에 커밋되지 않은 변경 사항이 있습니다({{changed}}). 커밋하거나 stash한 다음 지금 업데이트를 다시 누르세요. 모두 stash하려면 {{productName}} 폴더에서 연 터미널에서 아래 명령을 실행하세요."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",
