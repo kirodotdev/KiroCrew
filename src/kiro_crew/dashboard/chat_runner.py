@@ -5683,7 +5683,8 @@ async def _eager_spawn(
             loaded_cfg: KiroCrewConfig | None = None
             resolved_ok = False
             try:
-                cfg = KiroCrewConfig.load()
+                # Migration writes apply a delta to a fresh document, preserving other settings.
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 loaded_cfg = cfg
                 bindings = await asyncio.to_thread(
                     resolve_session_agent_bindings,

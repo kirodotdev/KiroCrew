@@ -39,6 +39,12 @@ suspension: Continue's child probe, and Project's body read, workspace validatio
 and recent-project save. A refused save rolls back only its own project token
 and cannot arm a deferred reset or eager spawn for the replacement.
 
+Eager spawn loads its agent-binding configuration in a worker thread. Slot and
+session state stay on the loop; existing binding and ownership checks before
+allocation discard work superseded while configuration or resolution awaits.
+Configuration migrations retain their fresh-document delta persistence and
+writer-lock ordering, including when this speculative load is the first load.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary
