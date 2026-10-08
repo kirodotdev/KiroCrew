@@ -88,7 +88,7 @@ const headroomColor = (turns: number): string | undefined =>
 
 // ── Spend ──────────────────────────────────────────────────────
 
-type SpendGroup = 'session' | 'category' | 'model'
+type SpendGroup = 'session' | 'category' | 'folder' | 'model'
 
 /** One row of GET /api/usage/turns — the same shard rows the totals above
  *  aggregate, returned individually. Every numeric field is optional: the
@@ -340,7 +340,56 @@ function categoryLabel(name: string): string {
   return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
 }
 
-function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: string): Col<CostRow>[] {
+/** The sidebar breadcrumb separator (`FolderRepository.breadcrumb`). */
+const FOLDER_PATH_SEP = ' › '
+
+/**
+ * The folder rows that have a subfolder row of their own in *rows*.
+ *
+ * A row counts only sessions filed directly in its folder, so a parent shown
+ * above its own subfolder reads as the project total unless its label says
+ * otherwise. Only these rows carry the "direct only" cue: a folder with no
+ * subfolder row has nothing to be confused with.
+ */
+function folderParents(rows: CostRow[]): Set<string> {
+  const paths = rows.filter(r => r.folder_id).map(r => r.name)
+  const parents = new Set<string>()
+  for (const r of rows) {
+    if (r.folder_id && paths.some(p => p.startsWith(r.name + FOLDER_PATH_SEP))) {
+      parents.add(r.folder_id)
+    }
+  }
+  return parents
+}
+
+/**
+ * A folder row's label: its path, or Unfiled for the row with no folder. A
+ * row in *parents* is marked as counting its own sessions only.
+ */
+function folderLabel(row: CostRow, parents?: Set<string>): string {
+  if (!row.folder_id) return i18nT('pages.telemetryPanel.folder_unfiled')
+  return parents?.has(row.folder_id)
+    ? i18nT('pages.telemetryPanel.folder_direct_label', { path: row.name })
+    : row.name
+}
+
+/** How a share row names itself: folder rows by path, the rest by category. */
+function shareLabel(row: CostRow, parents?: Set<string>): string {
+  return row.folder_id !== undefined ? folderLabel(row, parents) : categoryLabel(row.name)
+}
+
+/** Stable identity for a share row. Two folders may share a name; ids do not. */
+function shareKey(row: CostRow): string {
+  return row.folder_id !== undefined ? `folder:${row.folder_id}` : row.name
+}
+
+function shareCols(
+  first: string,
+  total: number,
+  unit: SpendUnit,
+  firstTip?: string,
+  parents?: Set<string>,
+): Col<CostRow>[] {
   return [
     {
       key: 'name',
@@ -350,8 +399,17 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
       // grouping in force; grouping by model leaves it unset.
       tip: firstTip,
       left: true,
-      sort: r => r.name,
-      render: r => categoryLabel(r.name),
+      sort: r => shareLabel(r, parents),
+      // A folder path is long, and wrapped onto two or three lines on a phone
+      // it makes the rows uneven to scan. One truncated line, with the full
+      // label in the tip, as the bar labels do; from `sm` the column has
+      // room for the whole path.
+      render: r =>
+        r.folder_id !== undefined ? (
+          <TruncatedText full={shareLabel(r, parents)} className="block max-w-[11rem] sm:max-w-none" />
+        ) : (
+          shareLabel(r)
+        ),
     },
     {
       key: 'credits',
@@ -380,7 +438,7 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
   ]
 }
 
-const SPEND_GROUPS = ['session', 'category', 'model'] as const
+const SPEND_GROUPS = ['session', 'category', 'folder', 'model'] as const
 
 /**
  * How many rows a spend block plots before the remainder folds into one row.
@@ -424,7 +482,7 @@ function SpendBlock({
   tip?: string
   rows: SpendBar[]
   labelClass: string
-  note?: string
+  note?: React.ReactNode
   formatValue: (n: number) => string
 }) {
   return (
@@ -462,16 +520,20 @@ function SpendBlock({
  * wide. Folding the tail keeps the block scannable while every credit stays on
  * screen, so the block and the table below it account for the same total.
  */
-function groupBars(rows: CostRow[], limit: number): SpendBar[] {
+function groupBars(rows: CostRow[], limit: number, parents?: Set<string>): SpendBar[] {
   const sorted = [...rows].sort((a, b) => b.credits - a.credits)
   const bars: SpendBar[] = sorted.slice(0, limit).map(r => ({
     credits: r.credits,
     // Monospace for the same reason the table's cells use it: a model id and a
-    // session-origin enum are tokens to compare character by character. The
+    // session-origin enum are tokens to compare character by character. A
+    // folder path is a name the user typed, so it keeps the sidebar's face. The
     // tip reveals the raw value behind a translated label.
     label: (
-      <TruncatedText full={r.name} className="block font-mono text-muted">
-        {categoryLabel(r.name)}
+      <TruncatedText
+        full={r.folder_id === '' ? shareLabel(r) : r.name}
+        className={`block text-muted${r.folder_id === undefined ? ' font-mono' : ''}`}
+      >
+        {shareLabel(r, parents)}
       </TruncatedText>
     ),
   }))
@@ -481,7 +543,7 @@ function groupBars(rows: CostRow[], limit: number): SpendBar[] {
       credits: rest.reduce((sum, r) => sum + r.credits, 0),
       // The folded names themselves, so the row says WHAT it folded. The row is
       // inert, and a fold that names nothing reads as something to click.
-      title: fmtList(rest.map(r => categoryLabel(r.name))),
+      title: fmtList(rest.map(r => shareLabel(r, parents))),
       label: (
         <span className="block truncate text-muted">
           {i18nT('pages.telemetryPanel.other_group', { n: fmtNumber(rest.length) })}
@@ -525,18 +587,54 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
 
 export function SpendTab({ c }: { c: Cost }) {
   const win = useContext(PanelWindowCtx)
-  const [group, setGroup] = usePersistedChoice<SpendGroup>(
+  const [storedGroup, setGroup] = usePersistedChoice<SpendGroup>(
     'telemetry:spend-group',
     SPEND_GROUPS,
     'session',
   )
+  const unit = spendUnit(c)
+  const fmtAmount = (v: number) => fmtSpend(v, unit)
+  // Folder grouping only exists once some spend sits in a folder. With every
+  // credit Unfiled the block is one 100% bar that answers nothing, so the block
+  // and its group-by segment stay hidden, and a remembered Folder choice reads
+  // as Session until a folder has spend again. A folder row with turns but no
+  // credits (a token- or cost-only provider) is not spend either.
+  const hasFolders = (c.by_folder ?? []).some(r => r.folder_id && r.credits > 0)
+  const folderRows = c.by_folder ?? []
+  const parents = folderParents(folderRows)
+  // What Unfiled took in from sessions this view could not sort, credits and
+  // turns, or Unfiled reads as sessions nobody filed. One line for both
+  // causes: neither is something the user can act on, so the line says what
+  // happened and the Folder tip says why.
+  const unfiled = folderRows.find(r => r.folder_id === '')
+  const unsortedCredits = (unfiled?.capped_credits ?? 0) + (unfiled?.long_key_credits ?? 0)
+  const unsortedTurns = (unfiled?.capped_turns ?? 0) + (unfiled?.long_key_turns ?? 0)
+  // One line per sentence. The direct-filing rule is the one that changes how
+  // the bars read, so it keeps body colour rather than the muted caption face.
+  const folderNote = (
+    <>
+      <div className="text-[11px] text-text">{i18nT('pages.telemetryPanel.folder_direct_only')}</div>
+      {(unsortedCredits > 0 || unsortedTurns > 0) && (
+        <div className="mt-0.5">
+          {unit === 'usd'
+            ? i18nT('pages.telemetryPanel.folder_unsorted_cost', {
+                cost: fmtAmount(unsortedCredits),
+                turns: fmtNumber(unsortedTurns),
+              })
+            : i18nT('pages.telemetryPanel.folder_unsorted_spend', {
+                credits: fmtNumber(unsortedCredits),
+                turns: fmtNumber(unsortedTurns),
+              })}
+        </div>
+      )}
+    </>
+  )
+  const group: SpendGroup = storedGroup === 'folder' && !hasFolders ? 'session' : storedGroup
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
   const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
   const bands = c.context_bands
-  const unit = spendUnit(c)
-  const fmtAmount = (v: number) => fmtSpend(v, unit)
   // Shown as "8 / 252" when the payload clamps the list. With the count alone, a
   // reader who looks for a conversation outside the slice reads "no rows match"
   // as "it spent nothing"; the ratio states the truncation. The pair is equal on
@@ -644,6 +742,25 @@ export function SpendTab({ c }: { c: Cost }) {
           formatValue={fmtAmount}
         />
       </div>
+      {/* Full width, like the session list: a folder path is long and nested
+          ("Platform dev › Telemetry"), and a half-width label column would
+          truncate exactly the segment that tells two folders apart. */}
+      {hasFolders && (
+        <div className="mt-4">
+          <SpendBlock
+            title={
+              unit === 'usd'
+                ? i18nT('pages.telemetryPanel.cost_by_folder')
+                : i18nT('pages.telemetryPanel.credits_by_folder')
+            }
+            tip={i18nT('pages.telemetryPanel.folder_col_tip')}
+            rows={groupBars(folderRows, SPEND_GROUP_ROWS, parents)}
+            labelClass="w-[46%]"
+            note={folderNote}
+            formatValue={fmtAmount}
+          />
+        </div>
+      )}
       <div className="mt-4">
         <SpendBlock
           title={i18nT('pages.telemetryPanel.top_sessions')}
@@ -687,6 +804,9 @@ export function SpendTab({ c }: { c: Cost }) {
                 segments={[
                   { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
                   { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
+                  ...(hasFolders
+                    ? [{ key: 'folder' as const, label: i18nT('pages.telemetryPanel.folder_col') }]
+                    : []),
                   { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
                 ]}
               />
@@ -704,18 +824,25 @@ export function SpendTab({ c }: { c: Cost }) {
               />
             ) : (
               <DataTable<CostRow>
-                rows={group === 'model' ? c.by_model : c.by_category}
+                rows={group === 'model' ? c.by_model : group === 'folder' ? folderRows : c.by_category}
                 key="telemetry-spend-share"
                 tableId="telemetry-spend-share"
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
-                    : i18nT('pages.telemetryPanel.category_col'),
+                    : group === 'folder'
+                      ? i18nT('pages.telemetryPanel.folder_col')
+                      : i18nT('pages.telemetryPanel.category_col'),
                   c.credits,
                   unit,
-                  group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'model'
+                    ? undefined
+                    : group === 'folder'
+                      ? i18nT('pages.telemetryPanel.folder_col_tip')
+                      : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'folder' ? parents : undefined,
                 )}
-                rowKey={r => r.name}
+                rowKey={shareKey}
                 defaultSort="credits"
                 emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
               />
