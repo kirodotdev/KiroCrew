@@ -43,6 +43,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, strip_control_comments
+from kiro_crew.dashboard.turn_dispatch import tool_approval_timeout_secs
 from kiro_crew.messaging.approval import adoptable_reservation
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
@@ -372,7 +373,10 @@ class SlackApprovalDecider:
         SlackApprovalDecider._AWAITED.add(key)
         try:
             # Deny-by-default if the user never clicks within the window.
-            return await asyncio.wait_for(fut, timeout=_APPROVAL_TIMEOUT)
+            window = (
+                _APPROVAL_TIMEOUT if _APPROVAL_TIMEOUT is not None else tool_approval_timeout_secs()
+            )
+            return await asyncio.wait_for(fut, timeout=window)
         except asyncio.TimeoutError:
             # Recorded for the driver, which steers the cause into the turn
             # before it rejects, so the model hears "expired" not "denied".

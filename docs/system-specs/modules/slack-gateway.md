@@ -1167,7 +1167,8 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
    best-effort), then auto-rejects. The model is told the prompt expired
    unanswered instead of reading kiro-cli generic denial text as a human
    refusal (the dashboard does the same). Both Slack paths do this: the
-   native `_request_approval` arm (120s) below, and the transport path, where
+   native `_request_approval` arm (window from the shared
+   `dashboard.turn_dispatch.tool_approval_timeout_secs()`) below, and the transport path, where
    `SlackApprovalDecider` records `last_deny_cause = approval_timeout` on
    expiry and the channel-neutral `TurnDriver` steers it before `reject_tool`
    (see the messaging spec's approval ladder).
