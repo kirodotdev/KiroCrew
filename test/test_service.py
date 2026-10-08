@@ -160,6 +160,9 @@ def _fake_systemctl(
     does next: a dict, or a sequence of dicts answered to successive ``show``
     reads of the restarted scope (the last one sticky), so a unit that reads
     ``active`` once and then ``activating (auto-restart)`` is one entry each.
+    A state dict's optional ``Started`` is the ``ExecMainStartTimestampMonotonic``
+    the read reports; without it the line is left out, as a manager that does
+    not answer the property does.
 
     Nothing here spawns anything: the whole point of the fixture is that the
     systemd user manager is host state and must never be touched from a test.
@@ -209,6 +212,8 @@ def _fake_systemctl(
                     f"SubState={props['SubState']}\nFragmentPath={fragment}\n"
                     f"Result={props.get('Result', 'success')}\n"
                 )
+                if "Started" in props:
+                    body += f"ExecMainStartTimestampMonotonic={props['Started']}\n"
             return subprocess.CompletedProcess(tokens, 0, body, "")
         if verb == "is-active":
             state = (props or _DEAD)["ActiveState"]
@@ -2372,7 +2377,8 @@ class TestLinuxServiceScopes:
         assert _NO_BUS in report.user
         assert self._user_calls(run) == [["systemctl", "--user", "show", "-p", "Id", "-p",
                                           "LoadState", "-p", "ActiveState", "-p", "SubState",
-                                          "-p", "FragmentPath", "-p", "Result", _UNIT]], run.calls
+                                          "-p", "FragmentPath", "-p", "Result", "-p",
+                                          "ExecMainStartTimestampMonotonic", _UNIT]], run.calls
 
     def test_uninstall_removes_both_scopes_and_the_controller_names_each(
         self, tmp_path, monkeypatch, capsys
@@ -3803,6 +3809,51 @@ class TestLinuxServiceScopes:
 
         assert report.ok is True
         assert sum(svc_linux.time.sleeps) >= svc_linux._RESTART_SETTLE_SECS
+
+    def test_restart_catches_a_re_exec_the_state_reads_stepped_over(self):
+        """`RestartSec=100ms`: the unit dies and is `active` again between two
+        0.25 s reads, so every read says `active (running)`. The main process's
+        start stamp changed between them, and that is a failed restart."""
+        from kiro_crew.service import linux as svc_linux
+
+        first = dict(_RUNNING, Started="5000000")
+        again = dict(_RUNNING, Started="5300000")
+        run = _fake_systemctl(system=None, user=_RUNNING, restart_lands_in=[first, again])
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            report = svc_linux.restart()
+
+        assert report.ok is False
+        (failure,) = report.failures
+        assert failure.kind == RESTART_NOT_UP
+        assert failure.hint == "journalctl --user -u kirocrew.service -n 50 --no-pager"
+        assert "started again" in failure.reason
+        assert "active (running)" in failure.reason
+
+    def test_restart_with_a_steady_start_stamp_is_ok(self):
+        """The same stamp at every read across the window: one exec, still up."""
+        from kiro_crew.service import linux as svc_linux
+
+        steady = dict(_RUNNING, Started="5000000")
+        run = _fake_systemctl(system=None, user=_RUNNING, restart_lands_in=steady)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            report = svc_linux.restart()
+
+        assert report.ok is True
+        assert sum(svc_linux.time.sleeps) >= svc_linux._RESTART_SETTLE_SECS
+
+    def test_restart_ignores_an_unset_start_stamp(self):
+        """`0` is systemd's answer before the main process has ever been
+        exec'd; going from `0` to a real stamp is the first exec, not a
+        restart."""
+        from kiro_crew.service import linux as svc_linux
+
+        unset = dict(_RUNNING, Started="0")
+        stamped = dict(_RUNNING, Started="5000000")
+        run = _fake_systemctl(system=None, user=_RUNNING, restart_lands_in=[unset, stamped])
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            report = svc_linux.restart()
+
+        assert report.ok is True
 
     def test_restart_into_a_start_limit_hit_is_a_failure(self):
         """Three crashes in the burst window: `failed` with Result=start-limit-hit."""

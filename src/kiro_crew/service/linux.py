@@ -649,6 +649,7 @@ class _UnitState:
     unit_id: str = ""
     error: str = ""
     result: str = ""
+    started: str = ""
 
     @property
     def reachable(self) -> bool:
@@ -721,7 +722,15 @@ class _UnitState:
         return f"{self.scope} scope: {self.active} ({self.sub}){alias}"
 
 
-_SHOW_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "FragmentPath", "Result")
+_SHOW_PROPERTIES = (
+    "Id",
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "FragmentPath",
+    "Result",
+    "ExecMainStartTimestampMonotonic",
+)
 
 
 def _unit_state(*, user: bool) -> _UnitState:
@@ -770,6 +779,7 @@ def _unit_state(*, user: bool) -> _UnitState:
         fragment=props.get("FragmentPath", ""),
         unit_id=props.get("Id", ""),
         result=props.get("Result", ""),
+        started=props.get("ExecMainStartTimestampMonotonic", ""),
     )
 
 
@@ -2015,6 +2025,12 @@ def stop() -> None:
 # an exec failure and a Python import error with margin; a gateway that dies
 # later than that is the supervisor's to report, and `kirocrew service status`
 # / `kirocrew logs` are where it shows.
+#
+# A unit whose ``RestartSec`` is shorter than the read interval can die and be
+# ``active`` again between two reads, so the state alone can step over the
+# death. Each read therefore also carries ``ExecMainStartTimestampMonotonic``:
+# the manager stamps it at every exec of the main process, so a value that
+# changes inside the window is a restart the reads never saw in progress.
 _RESTART_SETTLE_SECS = 2.0
 _RESTART_POLL_SECS = 0.25
 
@@ -2043,9 +2059,15 @@ def _confirm_up(*, user: bool) -> tuple[str, str] | None:
     the deadline and reports what it finds there. A manager that stops answering
     mid-window leaves the unit's health UNKNOWN — not "exiting", not "restarted"
     — and is reported as :data:`RESTART_UNCONFIRMED`.
+
+    A main-process start stamp that changes between two reads is a death and a
+    re-exec the state reads fell between (a short ``RestartSec``), reported as
+    :data:`RESTART_NOT_UP` whatever state the later read shows. A manager that
+    answers no stamp (``0`` or absent) leaves this check off.
     """
     unit = f"{SERVICE_NAME}.service"
     deadline = time.monotonic() + _RESTART_SETTLE_SECS
+    first_start = ""
     while True:
         state = _unit_state(user=user)
         if not state.reachable:
@@ -2060,6 +2082,16 @@ def _confirm_up(*, user: bool) -> tuple[str, str] | None:
                 RESTART_NOT_UP,
                 f"{unit} is {state.active} ({state.sub}){last} after the restart — "
                 f"the gateway exits as soon as it starts",
+            )
+        started = state.started if state.started not in ("", "0") else ""
+        if started and not first_start:
+            first_start = started
+        elif started and started != first_start:
+            return (
+                RESTART_NOT_UP,
+                f"{unit} exited and was started again by the manager after the "
+                f"restart (now {state.active} ({state.sub}){last}) — the gateway "
+                f"exits as soon as it starts",
             )
         if time.monotonic() >= deadline:
             if state.up:
