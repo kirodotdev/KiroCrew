@@ -83,6 +83,7 @@ from urllib.parse import quote
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES
+from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
 from kiro_crew.dashboard.chat_folders import (
     _folder_owner_app,
     _subtree_holds_foreign_folder,
@@ -102,6 +103,7 @@ from kiro_crew.validation import (
     BROADCAST_TARGET_ALLOWANCE_SECS,
     MAX_BROADCAST_TARGETS,
     MCP_DASHBOARD_SCHEMAS,
+    SLACK_THREAD_TS_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,7 +142,9 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "folder: id, human path, project directory, default "
                 "agent, and a hidden flag; "
                 "then one line per live session (slot key + title) nested under it, "
-                "and an '(unfiled)' group for sessions at the top level. Use this to "
+                "and an '(unfiled)' group for sessions at the top level. In each group "
+                "the pinned sessions come first, in the order the sidebar draws them, "
+                "which is the order chat_session_pin_move's anchors refer to. Use this to "
                 "get folder ids/paths and session keys before calling "
                 "chat_folder_create / chat_folder_move / chat_folder_move_session / "
                 "chat_folder_delete, or when the user asks what their tree looks like. This is the "
@@ -568,6 +572,54 @@ def _tag_tools() -> tuple[Tool, ...]:
             run=_run_chat_session_pin,
             identity="attribution",
             routes=("GET /api/chat/slots", "PATCH /api/chat/slots/{slot}/pin"),
+        ),
+        Tool(
+            name="chat_session_pin_move",
+            description=(
+                "Reorder a PINNED session among the pinned sessions of its sidebar "
+                "group (the folder it is filed in, or the top level). Pass "
+                "``before`` or ``after`` (exactly one) naming another pinned session "
+                "in the same group to sit next to. ``session`` and the anchor are "
+                "each a slot key, a 'dashboard:<slot>' session key, or an exact "
+                "unique title. chat_folder_tree lists each group's pinned sessions "
+                "first, in the order the sidebar draws them, so read it first to "
+                "pick the anchor. Pinned sessions the person never reordered follow "
+                "in most-recent-activity order, the sidebar's default sort. This "
+                "call stores a position for EVERY pinned session, so ones that had "
+                "none keep that most-recent-activity order from then on, even for a "
+                "person whose sidebar sorts some other way (that sort choice lives "
+                "only in their browser). "
+                "It only reorders: it does not pin, unpin or move a session between "
+                "folders. The pinned order is the person's own sidebar preference, "
+                "so an app agent or a crew member cannot change it."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "The pinned session to move (slot key, 'dashboard:<slot>' key, or exact unique title).",
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately BEFORE this pinned session in the same "
+                            "group. Mutually exclusive with 'after'."
+                        ),
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately AFTER this pinned session in the same "
+                            "group. Mutually exclusive with 'before'."
+                        ),
+                    },
+                },
+                "required": ["session"],
+            },
+            run=_run_chat_session_pin_move,
+            identity="attribution",
+            routes=("GET /api/chat/slots", "GET /api/chat/folders", "POST /api/chat/pinned-order"),
         ),
     )
 
@@ -3211,12 +3263,12 @@ def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:
             meta_bits.append("hidden")
         meta = f"  ({' · '.join(meta_bits)})" if meta_bits else ""
         tree_lines.append(f"{'  ' * depth}{fid}  {fpath}{meta}")
-        for slot_row in by_folder.get(fid, []):
+        for slot_row in _sidebar_group_order(by_folder.get(fid, [])):
             tree_lines.append(_session_line(slot_row, "  " * depth + "  "))
     unfiled = by_folder.get("", [])
     if unfiled:
         tree_lines.append("(unfiled — top level)")
-        for slot_row in unfiled:
+        for slot_row in _sidebar_group_order(unfiled):
             tree_lines.append(_session_line(slot_row, "  "))
     if not chat_folders and not chat_slots:
         return "No sidebar folders and no live sessions."
@@ -4036,6 +4088,173 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
         state_word = "pinned" if want else "not pinned"
         return redact(f"No change: session `{slot_key}` is already {state_word}.")
     return redact(f"{verb} session `{slot_key}`.")
+
+
+def _slot_group(row: dict, known_folder_ids: set[str]) -> str:
+    """The sidebar group a session row renders in: its folder id, or ``""``.
+
+    A folder id with no folder row renders at the top level, the same fallback
+    ``chat_folder_tree`` uses.
+    """
+    fid = str(row.get("folder_id") or "")
+    return fid if fid in known_folder_ids else ""
+
+
+def _pinned_sidebar_order(rows: list[dict]) -> list[dict]:
+    """The pinned rows of one group in the order the sidebar draws them.
+
+    Rows with a stored ``pin_rank`` come first, by rank. Pinned rows without
+    one (the person never reordered, or pinned before the order was in use)
+    follow newest activity first, which is the sidebar's default sort.
+    """
+    pinned = [r for r in rows if r.get("pinned")]
+    ranked = sorted(
+        (r for r in pinned if isinstance(r.get("pin_rank"), int)), key=lambda r: r["pin_rank"]
+    )
+    unranked = sorted(
+        (r for r in pinned if not isinstance(r.get("pin_rank"), int)),
+        key=lambda r: str(r.get("last_turn_ts") or r.get("last_ts") or r.get("created") or ""),
+        reverse=True,
+    )
+    return [*ranked, *unranked]
+
+
+def _sidebar_group_order(rows: list[dict]) -> list[dict]:
+    """*rows* of one group with the pinned ones first, in sidebar order."""
+    pinned = _pinned_sidebar_order(rows)
+    return [*pinned, *(r for r in rows if not r.get("pinned"))]
+
+
+def _is_messaging_caller(caller_key: str) -> bool:
+    """True when *caller_key* is a channel agent or a messaging-channel session.
+
+    Reads the namespace roster from ``constants`` rather than
+    ``messaging.link``: importing anything from ``messaging`` runs its package
+    init, which this stdio server does not need.
+    """
+    prefixes = ("channel:",) + tuple(
+        f"{ns}{sep}" for ns in CHANNEL_SESSION_NAMESPACES for sep in (":", "_")
+    )
+    return caller_key.startswith(prefixes) or bool(SLACK_THREAD_TS_RE.fullmatch(caller_key))
+
+
+def _run_chat_session_pin_move(args: dict[str, Any], ctx: ToolContext) -> str:
+    """Reposition one pinned session next to another pinned session in its group."""
+    before_ref = str(args.get("before") or "").strip()
+    after_ref = str(args.get("after") or "").strip()
+    if bool(before_ref) == bool(after_ref):
+        return (
+            "Error: pass exactly one of `before` or `after`, naming the pinned "
+            "session to sit next to."
+        )
+    caller_key, strict_err = ctx.caller.require_strict_session_key(
+        "Error: cannot verify which session is calling, so this reorder is refused "
+        "- the pinned order is the person's, and only a caller the gateway can "
+        "vouch for may change it."
+    )
+    if not caller_key:
+        return strict_err
+    # Messaging containment at dispatch: a channel agent or a messaging-thread
+    # session acts on text other people wrote, it reads as the person below,
+    # and an auto-approved call never reaches the blocked-name permission
+    # prompt. Every messaging key form is refused: the channel agent's
+    # ``channel:``, each transport's ``<ns>:``/``<ns>_`` key, and a bare Slack
+    # thread timestamp.
+    if _is_messaging_caller(caller_key):
+        try:
+            sel().log_tool_invocation(
+                session_key=caller_key,
+                source="mcp",
+                tool_name="chat_session_pin_move",
+                tool_kind=SERVER_NAME,
+                outcome="rejected_blocked_tool",
+            )
+        except Exception:
+            # Stdio-silent: stderr would corrupt the JSON-RPC stream. The
+            # refusal below holds either way.
+            pass
+        return (
+            "Error: chat_session_pin_move is not available to channel agents or "
+            "messaging-channel sessions — the pinned order is the person's sidebar, "
+            "and those sessions act on text other people wrote."
+        )
+    rows, rows_err = _get_rows(ctx.client, "/api/chat/slots")
+    if rows_err:
+        return redact(f"Error: {rows_err}")
+    scope = _caller_app_scope(caller_key, rows)
+    if scope is None or scope:
+        return (
+            "Error: the pinned order is the person's own sidebar preference and "
+            "spans sessions no app owns, so an app-scoped or delegated caller cannot "
+            "reorder it. Ask the person to drag the session in the sidebar."
+        )
+    visible = [r for r in rows if str(r.get("memory_mode") or "persistent") == "persistent"]
+    slot_key, slot_err = _resolve_chat_slot_key(args["session"], visible)
+    if slot_err:
+        return redact(f"Error: {slot_err}")
+    anchor_key, anchor_err = _resolve_chat_slot_key(before_ref or after_ref, visible)
+    if anchor_err:
+        return redact(f"Error: anchor: {anchor_err}")
+    if anchor_key == slot_key:
+        return "Error: the anchor is the session being moved; name a different pinned session."
+    by_key = {str(r.get("key") or ""): r for r in visible}
+    moving, anchor = by_key[slot_key], by_key[anchor_key]
+    if not moving.get("pinned"):
+        return redact(
+            f"Error: `{slot_key}` is not pinned. Only pinned sessions have an order; "
+            "pin it in the sidebar first."
+        )
+    if not anchor.get("pinned"):
+        return redact(f"Error: the anchor `{anchor_key}` is not pinned; name a pinned session.")
+    chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+    if folders_err:
+        return redact(f"Error: {folders_err}")
+    known_ids = set(_chat_folder_paths(chat_folders))
+    group = _slot_group(moving, known_ids)
+    if _slot_group(anchor, known_ids) != group:
+        return redact(
+            f"Error: `{anchor_key}` is pinned in a different sidebar group than "
+            f"`{slot_key}`. Pinned sessions are ordered within their folder (or the "
+            "top level); name an anchor in the same group."
+        )
+    # Send the WHOLE pinned order, the way a sidebar drag does, so every pinned
+    # session ends up ranked. Sending only this group would leave the other
+    # groups unranked, and a session pinned there later would be appended
+    # ranked and jump ahead of its unranked neighbours. The order is built from
+    # every row, incognito and temporary ones included, so their places in the
+    # person's sidebar stay where they were; their keys go only to the gateway
+    # and never into this tool's reply.
+    order = [str(r.get("key") or "") for r in _pinned_sidebar_order(rows)]
+    order.remove(slot_key)
+    at = order.index(anchor_key) + (0 if before_ref else 1)
+    order.insert(at, slot_key)
+    # Each key's ``created`` pins the reorder to the slot generation this read
+    # saw, as ``expected_created`` does for chat_session_pin: a key closed and
+    # recreated in between is refused instead of ranked.
+    named = set(order)
+    expected_created = {
+        str(r.get("key") or ""): str(r.get("created") or "")
+        for r in rows
+        if str(r.get("key") or "") in named and r.get("created")
+    }
+    try:
+        ctx.client.post(
+            "/api/chat/pinned-order",
+            {"keys": order, "expected_created": expected_created},
+            session_key=caller_key,
+        )
+    except DashboardError as refused:
+        return redact(f"Error: could not reorder pinned sessions: {refused.error}")
+    where = f"before `{anchor_key}`" if before_ref else f"after `{anchor_key}`"
+    group_label = _chat_folder_paths(chat_folders).get(group, group) if group else "the top level"
+    in_group = [
+        key for key in order if key in by_key and _slot_group(by_key[key], known_ids) == group
+    ]
+    position = in_group.index(slot_key) + 1
+    return redact(
+        f"Moved pinned session `{slot_key}` {where} in {group_label}; it is now "
+        f"pinned #{position} of {len(in_group)} there."
+    )
 
 
 def _run_chat_tag_column_list(args: dict[str, Any], ctx: ToolContext) -> str:

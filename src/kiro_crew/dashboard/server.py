@@ -1351,6 +1351,18 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 
 
+def _kick_pinned_order_load(state: DashboardState) -> None:
+    """Read the pinned-session order after the bind, as a tracked background task.
+
+    Off the boot path (``no-new-work-on-gateway-boot-path``): the file is
+    read after the listener accepts requests, and every writer reads it first
+    if it has not landed (``chat_folders.ensure_pinned_order_loaded``).
+    """
+    task = asyncio.create_task(chat.load_pinned_order_after_listen(state))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_browser_install_cleanup(app: web.Application, state: DashboardState) -> None:
     """Stop any browser install owned by this gateway during shutdown."""
 
@@ -2026,6 +2038,7 @@ async def start_dashboard(
     # awaits it -- while the gate armed before the bind holds every mutating
     # request until it settles.
     _kick_crewmate_prune(state)
+    _kick_pinned_order_load(state)
     # (No _export_bound_port republish here: the reservation above already
     # exported this same socket's name before the spawn pass — the one
     # authoritative write on this path. The headless entrypoint, which binds
@@ -2607,6 +2620,7 @@ async def start_api_server(
     # Same listener guard as start_dashboard: a headless gateway loses its
     # listener to a failed accept() exactly the same way.
     _arm_listener_guard(state, runner, site)
+    _kick_pinned_order_load(state)
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
     _export_bound_port(runner, port)

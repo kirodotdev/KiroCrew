@@ -284,7 +284,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
     #: the resolved ``config_dir()`` when it is a third place, as the relocated
     #: ``KIROCREW_HOME`` the conftest pins always is), so one new root-level
-    #: leaf is three entries in every tier. Six landed after the first
+    #: leaf is three entries in every tier. Seven landed after the first
     #: measurement, all at the data-home root, whose parent no stand-in can
     #: hold, so leaf-only is the only hold available to them:
     #:
@@ -308,6 +308,8 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   member-store admission. A forged file would admit a session to a peer
     #:   member's private memory, so it sits at the root, masked, rather than
     #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
+    #: * ``pinned-order`` -- the person's pinned-session order, person-only by
+    #:   route, masked so an agent cannot rewrite it on disk.
     #:
     #: One more root-level leaf landed since, three more entries per tier:
     #:
@@ -321,7 +323,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
+    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -292,3 +292,5 @@ def test_session_pin_is_contained():
 
     assert "chat_session_pin" in CHANNEL_AGENT_BLOCKED_TOOLS
     assert _blocked_tool_named("kirocrew-dashboard___chat_session_pin") is True
+    assert "chat_session_pin_move" in CHANNEL_AGENT_BLOCKED_TOOLS
+    assert _blocked_tool_named("kirocrew-dashboard___chat_session_pin_move") is True

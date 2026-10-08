@@ -6,7 +6,8 @@
  * still activates) against a rendered ChatSidebar.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, renderHook, act, fireEvent, waitFor } from '@testing-library/react'
+import type React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -58,10 +59,19 @@ const fixtures: { chatTags: unknown[]; tagColumns: unknown[]; chatFolders: unkno
   chatTags: [], tagColumns: [], chatFolders: [],
 }
 
+// The pinned-order write and the slots re-read are stable spies so a case can
+// assert what was sent and what the gateway answered.
+const setPinnedOrder = vi.hoisted(() => vi.fn())
+const chatSlots = vi.hoisted(() => vi.fn())
+const setSlotPin = vi.hoisted(() => vi.fn())
+
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, prop: string) => {
+      if (prop === 'setPinnedOrder') return setPinnedOrder
+      if (prop === 'chatSlots') return chatSlots
+      if (prop === 'setSlotPin') return setSlotPin
       if (prop in fixtures) return vi.fn().mockResolvedValue(fixtures[prop as keyof typeof fixtures])
       return vi.fn().mockResolvedValue([])
     },
@@ -78,6 +88,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { useSessionActions } from '../hooks/useSessionActions'
+import { setPinRanks, sseSlotPatch, sseSlots } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 
@@ -109,7 +121,12 @@ function renderSidebar(slots: ChatSlot[]) {
     </QueryClientProvider>
   )
   const utils = render(view(slots))
-  return { ...utils, store, rerenderSlots: (nextSlots: ChatSlot[]) => utils.rerender(view(nextSlots)) }
+  return {
+    ...utils, store, qc,
+    rerenderSlots: (nextSlots: ChatSlot[]) => utils.rerender(view(nextSlots)),
+    // A collapse-and-reopen: a fresh sidebar mount on the same store.
+    remount: (nextSlots: ChatSlot[]) => { utils.unmount(); return render(view(nextSlots)) },
+  }
 }
 
 const THREE = [
@@ -119,6 +136,16 @@ const THREE = [
 ]
 
 /** The focusable row element for a slot key, in list scope. */
+// Drains pending promise callbacks and the React updates they schedule, with
+// no wall-clock wait. A test that asserts something did NOT happen calls this
+// first: every mock here settles through microtasks, so anything that was
+// going to fire has fired by the time it returns.
+async function settle(): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve()
+  })
+}
+
 function row(key: string): HTMLElement {
   const el = document.querySelector<HTMLElement>(`[data-session-row="${key}"][data-session-scope="list"]`)
   if (!el) throw new Error(`no list-scope row for ${key}`)
@@ -128,6 +155,9 @@ function row(key: string): HTMLElement {
 beforeEach(() => {
   localStorage.clear()
   chatConfig.tagColumnsEnabled = false
+  setPinnedOrder.mockReset().mockImplementation(async (keys: string[]) => ({ ok: true, order: keys }))
+  chatSlots.mockReset().mockResolvedValue([])
+  setSlotPin.mockReset().mockImplementation(async (_key: string, pinned: boolean) => ({ ok: true, pinned }))
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -286,69 +316,408 @@ describe('chat sidebar — session list arrow navigation', () => {
     expect(document.activeElement).toBe(row('k1'))
   })
 
-  it('persists the initial complete pinned order after authoritative slots load', async () => {
+  it('stores the natural pinned order once after authoritative slots load', async () => {
+    const pins = [
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, last_ts: '2026-02-01T00:00:00Z' },
+    ]
+    const { findByText, rerenderSlots } = renderSidebar(pins)
+    await findByText('newer')
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k1'], true))
+    rerenderSlots(pins.map(p => ({ ...p })))
+    await settle()
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('seeds the stored order when pins arrive after an initially empty roster', async () => {
+    const { rerenderSlots } = renderSidebar([])
+    await settle()
+    expect(setPinnedOrder).not.toHaveBeenCalled()
+    rerenderSlots([
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, last_ts: '2026-02-01T00:00:00Z' },
+    ])
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k1'], true))
+  })
+
+  it('hands the legacy browser order to an unranked gateway once, then clears it', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'gone', 'k2']))
     const pins = [
       { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' },
       { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, last_ts: '2026-02-01T00:00:00Z' },
     ]
     renderSidebar(pins)
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['k2', 'k1']))
-  })
-
-  it('seeds the baseline when pins arrive after an initially empty roster', async () => {
-    const { rerenderSlots } = renderSidebar([])
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k1', 'gone', 'k2'], true))
     await waitFor(() => expect(localStorage.getItem('mc-pinned-session-order')).toBeNull())
-
-    rerenderSlots([
-      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' },
-      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, last_ts: '2026-02-01T00:00:00Z' },
-    ])
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['k2', 'k1']))
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
   })
 
-  it('prunes remote unpins and appends later remote re-pins', async () => {
-    const a = { key: 'a', title: 'A', running: false, messages: 1, pinned: true, last_ts: '2026-03-01T00:00:00Z' }
-    const b = { key: 'b', title: 'B', running: false, messages: 1, pinned: true, last_ts: '2026-02-01T00:00:00Z' }
-    const c = { key: 'c', title: 'C', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' }
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['a', 'b', 'c']))
-    const { rerenderSlots } = renderSidebar([a, b, c])
-
-    rerenderSlots([a, c])
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['a', 'c']))
-
-    rerenderSlots([a, b, c])
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['a', 'c', 'b']))
+  it('hands over the whole legacy order even when the gateway has not restored those sessions yet', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2']))
+    // A gateway still restoring its sessions answers a partial list: here
+    // only k2 is back. The order must reach the gateway with k1 in place.
+    renderSidebar([{ key: 'k2', title: 'newer', running: false, messages: 1, pinned: true }])
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k1', 'k2'], true))
+    await waitFor(() => expect(localStorage.getItem('mc-pinned-session-order')).toBeNull())
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
   })
 
-  it('does not write back a storage-originated membership reconciliation', async () => {
-    const a = { key: 'a', title: 'A', running: false, messages: 1, pinned: true, last_ts: '2026-03-01T00:00:00Z' }
-    const c = { key: 'c', title: 'C', running: false, messages: 1, pinned: true, last_ts: '2026-01-01T00:00:00Z' }
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['a', 'c']))
-    renderSidebar([a, c])
+  it('drops the legacy browser order when the conditional hand-off finds an order', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2']))
+    setPinnedOrder.mockRejectedValue(Object.assign(new Error('exists'), { status: 409 }))
+    const pins = [
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true },
+    ]
+    renderSidebar(pins)
+    await waitFor(() => expect(localStorage.getItem('mc-pinned-session-order')).toBeNull())
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
+  })
 
-    await act(async () => {
-      localStorage.setItem('mc-pinned-session-order', JSON.stringify(['a', 'b', 'c']))
-      window.dispatchEvent(new StorageEvent('storage', { key: 'mc-pinned-session-order' }))
-      await Promise.resolve()
+  it('reports a failed hand-off and keeps the legacy order for the next load, without retrying', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2']))
+    setPinnedOrder.mockRejectedValue(Object.assign(new Error('write failed'), { status: 500 }))
+    const pins = [
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true },
+    ]
+    const { rerenderSlots, findByText, queryByText } = renderSidebar(pins)
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledTimes(1))
+    // The person's words, not the server's log line.
+    expect(await findByText(/Your pinned order wasn't saved yet/)).toBeInTheDocument()
+    expect(queryByText(/write failed/)).toBeNull()
+    rerenderSlots(pins.map(p => ({ ...p })))
+    rerenderSlots(pins.map(p => ({ ...p })))
+    await settle()
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem('mc-pinned-session-order')).not.toBeNull()
+  })
+
+  it('drops the legacy browser order once the gateway confirms it already has one', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2']))
+    setPinnedOrder.mockRejectedValue(Object.assign(new Error('exists'), { status: 409 }))
+    const pins = [
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, pin_rank: 0 },
+    ]
+    renderSidebar(pins)
+    // Ranked rows are not proof of a stored order (an optimistic drag paints
+    // them too), so the copy goes through the conditional hand-off.
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k1', 'k2'], true))
+    await waitFor(() => expect(localStorage.getItem('mc-pinned-session-order')).toBeNull())
+    expect(setPinnedOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the legacy browser order when ranked rows were never stored and the hand-off fails', async () => {
+    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2']))
+    setPinnedOrder.mockRejectedValue(Object.assign(new Error('write failed'), { status: 500 }))
+    // Optimistic ranks from a drag whose POST failed look like this too.
+    const pins = [
+      { key: 'k1', title: 'older', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k2', title: 'newer', running: false, messages: 1, pinned: true, pin_rank: 0 },
+    ]
+    const { findByText } = renderSidebar(pins)
+    expect(await findByText(/Your pinned order wasn't saved yet/)).toBeInTheDocument()
+    await settle()
+    expect(localStorage.getItem('mc-pinned-session-order')).not.toBeNull()
+  })
+
+  it('says why a reorder failed and re-reads the gateway ranks instead of restoring its own', async () => {
+    setPinnedOrder.mockRejectedValue(new Error('gateway unavailable'))
+    const gatewayRows = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+    ]
+    chatSlots.mockResolvedValue(gatewayRows)
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { findByText, queryByText, store } = renderSidebar(pins)
+    await findByText('second pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    // It says the rows went back, in the person's words, not the server's.
+    expect(await findByText(/The move wasn't saved, so the last saved order is back/)).toBeInTheDocument()
+    expect(queryByText(/gateway unavailable/)).toBeNull()
+    // The ranks come from the gateway's answer, not from a client-held copy.
+    await waitFor(() => expect(chatSlots).toHaveBeenCalled())
+    await waitFor(() => {
+      const ranks = Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))
+      expect(ranks).toEqual({ k1: 1, k2: 0 })
     })
+  })
 
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['a', 'b', 'c'])
+  it('says the pinned set changed when a reorder meets a 409', async () => {
+    setPinnedOrder.mockRejectedValue(Object.assign(new Error('a session in the reorder is gone or no longer pinned'), { status: 409 }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    chatSlots.mockResolvedValue(pins)
+    const { findByText, queryByText } = renderSidebar(pins)
+    await findByText('second pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    expect(await findByText(/Your pinned sessions changed while you were moving one/)).toBeInTheDocument()
+    expect(queryByText(/no longer pinned/)).toBeNull()
+  })
+
+  it('paints only the last queued write’s answer when two reorders succeed back to back', async () => {
+    const answers: Array<(value: { ok: boolean; order: string[] }) => void> = []
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'third pin', running: false, messages: 1, pinned: true, pin_rank: 2 },
+    ]
+    const { findByText, store } = renderSidebar(pins)
+    await findByText('third pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    fireEvent.keyDown(row('k3'), { key: 'ArrowUp', altKey: true })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    // The first write's answer arrives while the second gesture is queued: it
+    // is older than what the sidebar shows, so it must not repaint.
+    const painted = Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))
+    answers[0]({ ok: true, order: ['k2', 'k1', 'k3'] })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    expect(Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))).toEqual(painted)
+    answers[1]({ ok: true, order: ['k1', 'k3', 'k2'] })
+    await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 'k3')?.pin_rank).toBe(1))
+  })
+
+  it('lets a queued reorder, not a re-read, settle the ranks after an earlier write fails', async () => {
+    let rejectFirst: (reason: unknown) => void = () => undefined
+    let resolveSecond: (value: { ok: boolean; order: string[] }) => void = () => undefined
+    setPinnedOrder
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve }))
+    let answerReread: (rows: unknown[]) => void = () => undefined
+    chatSlots.mockImplementation(() => new Promise(resolve => { answerReread = resolve }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { findByText, store } = renderSidebar(pins)
+    await findByText('second pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    fireEvent.keyDown(row('k1'), { key: 'ArrowUp', altKey: true })
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledTimes(1))
+    rejectFirst(new Error('gateway unavailable'))
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledTimes(2))
+    // A later gesture is queued, so the failed write does not re-read: the
+    // queued write's answer is newer than anything a re-read would return.
+    expect(chatSlots).not.toHaveBeenCalled()
+    resolveSecond({ ok: true, order: ['k1', 'k2'] })
+    await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 'k2')?.pin_rank).toBe(1))
+    answerReread(pins)
+    await settle()
+    const ranks = Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))
+    expect(ranks).toEqual({ k1: 0, k2: 1 })
+  })
+
+  it('sends reorders one at a time, in gesture order', async () => {
+    const answers: Array<(value: { ok: boolean; order: string[] }) => void> = []
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { findByText } = renderSidebar(pins)
+    await findByText('second pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    fireEvent.keyDown(row('k1'), { key: 'ArrowUp', altKey: true })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    await settle()
+    expect(answers).toHaveLength(1)
+    answers[0]({ ok: true, order: ['k2', 'k1'] })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    expect(setPinnedOrder.mock.calls.map(call => call[0])).toEqual([['k2', 'k1'], ['k1', 'k2']])
+    answers[1]({ ok: true, order: ['k1', 'k2'] })
+  })
+
+  it('derives the next gesture from the queued order when a stale slots frame lands mid-write', async () => {
+    const answers: Array<(value: { ok: boolean; order: string[] }) => void> = []
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'third pin', running: false, messages: 1, pinned: true, pin_rank: 2 },
+    ]
+    const { findByText, rerenderSlots } = renderSidebar(pins)
+    await findByText('third pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    // A slots frame serialized before the write landed still carries the old
+    // ranks. The next gesture must build on the queued order, not on these.
+    rerenderSlots(pins.map(p => ({ ...p })))
+    fireEvent.keyDown(row('k3'), { key: 'ArrowUp', altKey: true })
+    answers[0]({ ok: true, order: ['k2', 'k1', 'k3'] })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    expect(setPinnedOrder.mock.calls.map(call => call[0])).toEqual([['k2', 'k1', 'k3'], ['k2', 'k3', 'k1']])
+    answers[1]({ ok: true, order: ['k2', 'k3', 'k1'] })
+  })
+
+  it('keeps a newer slots frame over a slower answer to its own reorder', async () => {
+    const pins = [
+      { key: 'k1', title: 'first', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { findByText, store } = renderSidebar(pins)
+    await findByText('second')
+    let answer: (value: unknown) => void = () => {}
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answer = resolve }))
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k1'], false))
+
+    // Another browser's reorder lands after this one and its frame arrives
+    // first; this write's own answer, built before that, arrives last.
+    act(() => { store.dispatch(sseSlots([{ ...pins[0], pin_rank: 0, pin_rev: 6 }, { ...pins[1], pin_rank: 1, pin_rev: 6 }])) })
+    await act(async () => { answer({ ok: true, order: ['k2', 'k1'], rev: 5 }) })
+
+    const ranks = Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))
+    expect(ranks).toEqual({ k1: 0, k2: 1 })
+  })
+
+  it('keeps an answered reorder over a slots frame serialized before it', () => {
+    const pins = [
+      { key: 'k1', title: 'first', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { store } = renderSidebar(pins)
+    const ranks = () => Object.fromEntries(store.getState().dashboard.slots.map(s => [s.key, s.pin_rank]))
+    act(() => { store.dispatch(sseSlots(pins.map(p => ({ ...p, pin_rev: 1 })))) })
+    // A frame from another session's creation, serialized before the write,
+    // lands between the send and the answer; the answer still applies.
+    act(() => { store.dispatch(setPinRanks({ order: ['k2', 'k1'], rev: 2 })) })
+    expect(ranks()).toEqual({ k1: 1, k2: 0 })
+    // That old frame, or a one-row patch of the same age, arriving after the
+    // answer cannot bring the old ranks back.
+    act(() => { store.dispatch(sseSlots(pins.map(p => ({ ...p, pin_rev: 1 })))) })
+    act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: 'k1', pin_rank: 0, pin_rev: 1 }] } as never)) })
+    expect(ranks()).toEqual({ k1: 1, k2: 0 })
+    expect(store.getState().dashboard.slots.every(s => !('pin_rev' in s))).toBe(true)
+    // A newer frame is the gateway's later order and replaces it.
+    act(() => { store.dispatch(sseSlots(pins.map(p => ({ ...p, pin_rev: 3 })))) })
+    expect(ranks()).toEqual({ k1: 0, k2: 1 })
+  })
+
+  it('shows a reorder failure in a sidebar reopened while the write was in flight', async () => {
+    let fail: (reason: unknown) => void = () => {}
+    setPinnedOrder.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+    ]
+    const { findByText, remount } = renderSidebar(pins)
+    await findByText('second pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledTimes(1))
+    const reopened = remount(pins)
+    await reopened.findByText('second pin')
+    await act(async () => { fail(new Error('order write failed')) })
+    expect(await reopened.findByText(/The move wasn't saved, so the last saved order is back/)).toBeInTheDocument()
+  })
+
+  it('builds on the queued gesture after a remount even when an earlier answer lands', async () => {
+    const answers: Array<(value: unknown) => void> = []
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'third pin', running: false, messages: 1, pinned: true, pin_rank: 2 },
+    ]
+    const { findByText, remount, store } = renderSidebar(pins)
+    await findByText('third pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    fireEvent.keyDown(row('k3'), { key: 'ArrowUp', altKey: true })
+    const reopened = remount(pins)
+    await reopened.findByText('third pin')
+    // The first write's answer lands while the second is still queued.
+    await act(async () => { answers[0]({ ok: true, order: ['k2', 'k1', 'k3'], rev: 2 }) })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    expect(store.getState().dashboard.pendingPinOrder).toEqual(['k2', 'k3', 'k1'])
+    // The next gesture moves k2 down from the queued [k2, k3, k1].
+    fireEvent.keyDown(row('k2'), { key: 'ArrowDown', altKey: true })
+    answers[1]({ ok: true, order: ['k2', 'k3', 'k1'], rev: 3 })
+    await waitFor(() => expect(answers).toHaveLength(3))
+    expect(setPinnedOrder.mock.calls[2][0]).toEqual(['k3', 'k2', 'k1'])
+    answers[2]({ ok: true, order: ['k3', 'k2', 'k1'], rev: 4 })
+  })
+
+  it('keeps gesture order across a sidebar remount while writes are queued', async () => {
+    const answers: Array<(value: unknown) => void> = []
+    setPinnedOrder.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    const pins = [
+      { key: 'k1', title: 'first pin', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second pin', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'third pin', running: false, messages: 1, pinned: true, pin_rank: 2 },
+    ]
+    const { findByText, remount } = renderSidebar(pins)
+    await findByText('third pin')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    fireEvent.keyDown(row('k3'), { key: 'ArrowUp', altKey: true })
+    const reopened = remount(pins)
+    await reopened.findByText('third pin')
+    fireEvent.keyDown(row('k2'), { key: 'ArrowDown', altKey: true })
+    await settle()
+    // The reopened sidebar's gesture waits behind the closed one's queue.
+    expect(answers).toHaveLength(1)
+    answers[0]({ ok: true, order: ['k2', 'k1', 'k3'], rev: 2 })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    answers[1]({ ok: true, order: ['k2', 'k3', 'k1'], rev: 3 })
+    await waitFor(() => expect(answers).toHaveLength(3))
+    const sent = setPinnedOrder.mock.calls.map(call => call[0])
+    expect(sent.slice(0, 2)).toEqual([['k2', 'k1', 'k3'], ['k2', 'k3', 'k1']])
+    answers[2]({ ok: true, order: sent[2], rev: 4 })
+  })
+
+  it('holds a reorder until a pin the person made first has reached the gateway', async () => {
+    const pins = [
+      { key: 'k1', title: 'first', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'second', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'third', running: false, messages: 1 },
+    ]
+    const { findByText, store, qc } = renderSidebar(pins)
+    await findByText('third')
+    let releasePin: (value: unknown) => void = () => {}
+    setSlotPin.mockImplementation(() => new Promise(resolve => { releasePin = resolve }))
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={qc}><Provider store={store}>{children}</Provider></QueryClientProvider>
+    )
+    const { result } = renderHook(() => useSessionActions(), { wrapper })
+    act(() => result.current.togglePin('k3'))
+    await waitFor(() => expect(setSlotPin).toHaveBeenCalledWith('k3', true))
+
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    // The reorder names k1 and k2 only, but it still waits: the pin PATCH is
+    // older and must land first.
+    await settle()
+    expect(setPinnedOrder).not.toHaveBeenCalled()
+
+    await act(async () => { releasePin({ ok: true, pinned: true }) })
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledTimes(1))
+  })
+
+  it('sends each pinned row\'s created token with the reorder', async () => {
+    const pins = [
+      { key: 'k1', title: 'first', running: false, messages: 1, pinned: true, pin_rank: 0, created: '2026-09-01T00:00:00+00:00' },
+      { key: 'k2', title: 'second', running: false, messages: 1, pinned: true, pin_rank: 1, created: '2026-09-02T00:00:00+00:00' },
+    ]
+    const { findByText } = renderSidebar(pins)
+    await findByText('second')
+    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k1'], false, {
+      k1: '2026-09-01T00:00:00+00:00', k2: '2026-09-02T00:00:00+00:00',
+    }))
   })
 
   it('reorders against the next rendered pin instead of a filtered-out peer', async () => {
     const pins = [
-      { key: 'k1', title: 'keep first', running: false, messages: 1, pinned: true },
-      { key: 'k2', title: 'drop second', running: false, messages: 1, pinned: true },
-      { key: 'k3', title: 'keep third', running: false, messages: 1, pinned: true },
+      { key: 'k1', title: 'keep first', running: false, messages: 1, pinned: true, pin_rank: 0 },
+      { key: 'k2', title: 'drop second', running: false, messages: 1, pinned: true, pin_rank: 1 },
+      { key: 'k3', title: 'keep third', running: false, messages: 1, pinned: true, pin_rank: 2 },
     ]
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['k1', 'k2', 'k3']))
     const { findByText, getByPlaceholderText, queryByText } = renderSidebar(pins)
     await findByText('drop second')
 
@@ -356,8 +725,7 @@ describe('chat sidebar — session list arrow navigation', () => {
     await waitFor(() => expect(queryByText('drop second')).toBeNull())
     fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
 
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['k2', 'k3', 'k1'])
+    await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k3', 'k1'], false))
   })
 })
 
@@ -435,19 +803,6 @@ describe('chat sidebar — board column arrow navigation', () => {
     expect(siblingSessionRow(foldered, 1)).toBe(rooted)
   })
 
-  it('reconciles remote board membership after rank authority exists', async () => {
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['b1', 'b2']))
-    const { rerenderSlots } = renderBoard()
-
-    rerenderSlots([boardSlots[0]])
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['b1']))
-
-    rerenderSlots(boardSlots)
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['b1', 'b2']))
-  })
-
   it('does not advertise or execute pinned ordering in a board projection', async () => {
     const { findByText } = renderBoard()
     await findByText('in folder')
@@ -456,6 +811,8 @@ describe('chat sidebar — board column arrow navigation', () => {
 
     fireEvent.keyDown(foldered, { key: 'ArrowDown', altKey: true })
 
-    expect(localStorage.getItem('mc-pinned-session-order')).toBeNull()
+    // A board view neither reorders nor seeds the natural order, as on main.
+    await settle()
+    expect(setPinnedOrder).not.toHaveBeenCalled()
   })
 })

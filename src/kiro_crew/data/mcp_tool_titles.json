@@ -94,6 +94,7 @@
     "chat_folder_delete": "Delete empty folder",
     "chat_folder_file_self": "File this session",
     "chat_session_pin": "Pin session",
+    "chat_session_pin_move": "Move pinned session",
     "chat_tag_list": "List tags",
     "chat_tag_create": "Create tag",
     "chat_tag_update": "Update tag",

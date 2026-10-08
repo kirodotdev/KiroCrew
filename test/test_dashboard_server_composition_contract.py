@@ -299,6 +299,7 @@ _FACADE_DEFS = (
     "_register_browser_view_cleanup",
     "_register_instances_hooks",
     "_dispatch_healthy_boot_marker",
+    "_kick_pinned_order_load",
     "start_dashboard",
     "start_api_server",
 )
@@ -611,7 +612,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 102
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 103
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1428,7 +1429,7 @@ _DASHBOARD_BOOT = tuple("""
     _register_workflow_lifecycle _register_crewmate_prune_gate
     _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context _arm_listener_guard
-    _kick_crewmate_prune subprocess_executor _start_unix_site _resolved_bound_port
+    _kick_crewmate_prune _kick_pinned_order_load subprocess_executor _start_unix_site _resolved_bound_port
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -1475,8 +1476,8 @@ _API_BOOT = tuple("""
     _register_listener_guard_shutdown _register_browser_install_cleanup
     _register_connections_warm_lifecycle _register_workflow_lifecycle
     _register_unix_socket_cleanup build_hardened_runner bind_address_for _start_site
-    _arm_listener_guard _export_bound_port _resolved_bound_port _start_unix_site
-    _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
+    _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
+    _start_unix_site _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch

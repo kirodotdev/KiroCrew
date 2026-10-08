@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         carry_provenance,
         deny_app_slot_access,
         effective_session_key,
+        folder_principal,
         history_corpus_unreadable,
         logger,
         parse_cls_meta,
@@ -79,6 +80,13 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     # the full, unchanged response (an app row is already app-scoped downstream).
     from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 
+    if folder_principal(state, request):
+        # ``pin_rank`` is a place in the person's whole pinned order; an app or
+        # member caller gets none of it, so a filtered list's rank gaps cannot
+        # count the pinned sessions it is not shown.
+        from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+        payloads = [{k: v for k, v in p.items() if k not in PIN_ORDER_FIELDS} for p in payloads]
     if str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "").startswith("member:"):
         from kiro_crew.dashboard.session_control import member_owns_slot
 

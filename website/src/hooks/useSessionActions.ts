@@ -9,10 +9,8 @@ import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { sessionIsBusyForClose } from '../lib/closeBusyGate'
-import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
 import type { ChatSlot } from '../types'
-import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
 
 interface PinMutationEntry {
   key: string
@@ -27,8 +25,10 @@ interface PinMutationEntry {
 }
 
 interface PinMutationBatch {
+  /** Keys pinned before the batch's first mutation. The pinned ORDER is the
+   *  gateway's (it appends and removes on each accepted pin), so the batch
+   *  tracks membership only. */
   baseline: string[]
-  storedBaseline: string[]
   entries: PinMutationEntry[]
   snapshotVersion: number
 }
@@ -43,6 +43,14 @@ export function pinMutationKeysInFlight(): string[] {
 }
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
+
+/** Resolves once every pin write already sent has settled, whatever its outcome.
+ *  The pinned-order queue waits on it, so a reorder never reaches the gateway
+ *  ahead of a pin the person made first: the reorder names that session, and
+ *  the gateway refuses an order naming a session it has not seen pinned. */
+export function pinWritesSettled(): Promise<void> {
+  return Promise.allSettled([...pinMutationTails.values()]).then(() => undefined)
+}
 
 /** Preserve invocation order at the server for rapid toggles of one session. */
 function setSlotPinInOrder(key: string, pinned: boolean) {
@@ -153,32 +161,6 @@ export function useSessionActions(mode?: string): SessionActions {
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
         if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
       }
-      const currentSlots = store.getState().dashboard.slots
-      const pinnedKeys = new Set(currentSlots.filter(slot => slot.pinned).map(slot => slot.key))
-      const currentKeys = new Set(currentSlots.map(slot => slot.key))
-      const baselineKeys = new Set(batch.storedBaseline)
-      for (const slot of slots) {
-        if (slot.pinned && baselineKeys.has(slot.key) && !currentKeys.has(slot.key)) pinnedKeys.add(slot.key)
-      }
-      const baselineMembership = new Set(batch.baseline)
-      const sortableByKey = new Map<string, ChatSlot>()
-      for (const slot of slots) sortableByKey.set(slot.key, slot)
-      for (const slot of currentSlots) sortableByKey.set(slot.key, slot)
-      const fallbackSort = readSessionSortKey()
-      const newlyPinnedKeys = [...pinnedKeys]
-        .filter(key => !baselineMembership.has(key))
-        .sort((a, b) => compareBySort(
-          sortableByKey.get(a) ?? { key: a },
-          sortableByKey.get(b) ?? { key: b },
-          fallbackSort,
-        ))
-      const authoritativePinnedOrder = [
-        ...batch.baseline.filter(key => pinnedKeys.has(key)),
-        ...newlyPinnedKeys,
-      ]
-      commitPinnedSessionSnapshot(
-        authoritativePinnedOrder, batch.baseline, newlyPinnedKeys, batch.storedBaseline,
-      )
     } catch {
       // A newer request (or an entry that has not settled yet) owns reconciliation.
       if (snapshotVersion !== batch.snapshotVersion
@@ -197,21 +179,11 @@ export function useSessionActions(mode?: string): SessionActions {
         .map(([key]) => key))
       const successfulOperations = batch.entries
         .filter(candidate => candidate.succeeded && ownedKeys.has(candidate.key))
-        .map(({ key, pinned }) => ({ key, pinned }))
       const expected = new Set(batch.baseline)
       for (const { key, pinned } of successfulOperations) {
         if (pinned) expected.add(key)
         else expected.delete(key)
       }
-      const finalMembershipOperations = [...ownedKeys].map(key => ({
-        key,
-        pinned: expected.has(key),
-      }))
-      commitPinnedSessionOperations(
-        [...successfulOperations, ...finalMembershipOperations],
-        batch.baseline,
-        batch.storedBaseline,
-      )
       for (const key of ownedKeys) {
         const pinned = expected.has(key)
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
@@ -242,16 +214,8 @@ export function useSessionActions(mode?: string): SessionActions {
     mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
     onMutate: ({ key, pinned }) => {
       const dashboard = store.getState().dashboard
-      const fallbackSort = readSessionSortKey()
-      const naturalPinned = dashboard.slots
-        .filter(slot => slot.pinned)
-        .sort((a, b) => compareBySort(a, b, fallbackSort))
-        .map(slot => slot.key)
-      const storedPinnedOrder = readPinnedSessionOrder()
-      const prevPinnedOrder = reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinned)
       const batch = activePinMutationBatch ?? {
-        baseline: prevPinnedOrder,
-        storedBaseline: storedPinnedOrder,
+        baseline: dashboard.slots.filter(slot => slot.pinned).map(slot => slot.key),
         entries: [],
         snapshotVersion: 0,
       }

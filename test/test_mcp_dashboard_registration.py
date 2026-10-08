@@ -359,9 +359,11 @@ class TestWhatThisSetGrants:
         "chat_tag_update",
         "chat_tag_assign",
     }
-    #: Pinning. Same posture as tag assignment: one metadata flag on a live
-    #: session the caller may already file and tag, nothing deleted.
-    PIN_TOOLS = {"chat_session_pin"}
+    #: Pinning and pinned-session ordering. Same posture as tag assignment:
+    #: one metadata flag, or the display order the person already sees, on a
+    #: live session the caller may already file and tag; nothing deleted. The
+    #: gateway refuses a reorder from app and crew-member callers.
+    PIN_TOOLS = {"chat_session_pin", "chat_session_pin_move"}
     #: Board columns. Same posture as the tag tools: read, append and reorder;
     #: no delete and no retag, so nothing the person put on the board is lost.
     COLUMN_TOOLS = {"chat_tag_column_list", "chat_tag_column_create", "chat_tag_column_move"}
@@ -431,7 +433,7 @@ class TestWhatThisSetGrants:
         session = {n for n in names if n.startswith("session_")}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
-        assert pins, "the pin tool left this set"
+        assert pins, "the pin and pinned-order tools left this set"
         assert session, "the session-control tools left this set"
         # Nothing else rides along unannounced.
         assert names == folder | tags | pins | session, (

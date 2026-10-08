@@ -97,6 +97,14 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
      *  an index-only null would leave a custom hex behind. */
     clearSlotColor: (slot: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: null, color_hex: null }).then(j),
     setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
+    /** Set the order of pinned sessions in one atomic write; answers the stored order.
+     *  `onlyIfUnset` lands the write only while no order is stored (a 409
+     *  otherwise), which is how a browser hands over its old local order. */
+    setPinnedOrder: (keys: string[], onlyIfUnset = false, expectedCreated?: Record<string, string>) => post('/api/chat/pinned-order', {
+      keys,
+      ...(onlyIfUnset ? { only_if_unset: true } : {}),
+      ...(expectedCreated && Object.keys(expectedCreated).length > 0 ? { expected_created: expectedCreated } : {}),
+    }).then(j) as Promise<{ ok: boolean; order: string[] }>,
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

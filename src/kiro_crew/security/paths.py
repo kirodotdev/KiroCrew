@@ -532,6 +532,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
     # gateway opens the path.
     "tag-grants",
+    "pinned-order",  # person-only sidebar order; mirror: sandbox._CREW_HIDDEN_LEAVES
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
     # roll up into, and a crewmate must not be able to move itself or a sibling.

@@ -46,6 +46,7 @@ from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_B
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
 )
+from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.chat_tag_grants import seed_default_grants, seed_status_identity_rows
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
@@ -5708,6 +5709,22 @@ class DashboardState:
     # direct ``_do_slots_broadcast`` call) means everyone.
     _slots_push_all_owed: bool = False
     _slots_push_legacy_owed: bool = False
+    # The person's pinned-session order (``pinned_session_order``). A class
+    # default for the same reason as the push fields above: serialize_slot
+    # reads it on the slots-push hot path, which also runs on a
+    # ``__new__``-built state. The empty tuple means "never reordered".
+    _pinned_session_order: "list[str] | tuple[str, ...]" = ()
+    #: Whether the stored order has been read. The read runs after the
+    #: gateway starts serving (see ``load_pinned_order_after_listen``), and
+    #: every writer reads it first when it has not landed yet.
+    _pinned_session_order_loaded: bool = False
+    #: Whether an order was ever stored, even an empty one. The browser's
+    #: one-time hand-off of its old local order lands only while this is False.
+    _pinned_session_order_stored: bool = False
+    #: Revision of the in-memory order, raised on every change. Each slot row
+    #: and each reorder answer carries it, so a browser can tell a frame
+    #: serialized before a write from one serialized after it.
+    _pinned_order_rev: int = 0
     # The one loop this dashboard is served on. Every surface that hands work in
     # from a foreign thread -- the coalesced slots broadcast, an off-loop
     # websocket send, the log handler's fan-out -- resolves it through
@@ -8274,6 +8291,71 @@ class DashboardState:
                     )
         return True
 
+    # ── Pinned session order ──
+
+    def read_pinned_session_order(self) -> tuple[list[str], bool] | None:
+        """Read the stored pinned-session order. Blocking; run off the loop.
+
+        Returns ``(keys, stored)``: ``stored`` says whether an order file
+        exists at all, which an empty ``keys`` cannot tell. A person who
+        reordered and then unpinned everything has a stored empty order; one
+        who never reordered has none. Returns ``None`` on a transient
+        ``OSError`` (logged): the order is a display preference, so an
+        unreadable file must not replace a good order with an empty one.
+        """
+        path = pinned_session_order.store_path(config_dir())
+        try:
+            return pinned_session_order.load_stored(path)
+        except OSError:
+            logger.warning(
+                "could not read %s; keeping the current pinned order",
+                pinned_session_order.PINNED_ORDER_FILE,
+                exc_info=True,
+            )
+            return None
+
+    def adopt_pinned_session_order(self, read: tuple[list[str], bool] | None) -> bool:
+        """Take a read's order as the in-memory one unless one is already loaded.
+
+        Runs on the loop. The gateway reads the file after it starts serving,
+        so a reorder can land first; that write is newer than what was read,
+        and this returns ``False`` without touching it. A failed read
+        (``None``) leaves the order unloaded so the next writer reads again.
+        """
+        if self._pinned_session_order_loaded or read is None:
+            return False
+        self._pinned_session_order, self._pinned_session_order_stored = read
+        self._pinned_session_order_loaded = True
+        self.bump_pinned_order_rev()
+        return True
+
+    def bump_pinned_order_rev(self) -> None:
+        """Raise the order revision after the in-memory order changed."""
+        self._pinned_order_rev = pinned_session_order.next_revision(
+            self._pinned_order_rev, time.time_ns() // 1000
+        )
+
+    def save_pinned_session_order(self, keys: list[str]) -> None:
+        """Write *keys* as the pinned-session order. Blocking; run off the loop."""
+        pinned_session_order.save(pinned_session_order.store_path(config_dir()), keys)
+
+    def pinned_session_flags(self) -> dict[str, bool]:
+        """Every live slot key mapped to its pinned flag."""
+        return {key: bool(slot.pinned) for key, slot in self._slots.items()}
+
+    def pin_rank(self, slot: Any) -> int | None:
+        """*slot*'s position in the pinned order, or ``None`` when it has none.
+
+        Only a pinned slot has a rank, so a key left behind in the stored list
+        by an unpin that could not be written ranks nothing.
+        """
+        if not slot.pinned:
+            return None
+        try:
+            return self._pinned_session_order.index(slot.key)
+        except ValueError:
+            return None
+
     # ── Chat message pin persistence ──
 
     _CHAT_PINS_FILE = "chat_pins.json"
@@ -9157,6 +9239,8 @@ class DashboardState:
         links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
         payload.update(
             {
+                "pin_rank": self.pin_rank(slot),
+                "pin_rev": self._pinned_order_rev,
                 "links": links,
                 "slack_linked": slack_linked,
                 "slack_channel": slack_channel,

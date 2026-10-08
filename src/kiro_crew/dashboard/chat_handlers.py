@@ -262,6 +262,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     row_mid,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
+from kiro_crew.dashboard.token_auth import folder_principal
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
@@ -1916,6 +1917,22 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
 )
 
 
+def _created_slot_row(state: Any, request: web.Request, slot: Any) -> dict[str, Any]:
+    """*slot*'s row for the create route's answer, rank-free for a scoped caller.
+
+    A create can answer with an existing, already-pinned session (an
+    idempotent retry or a raced key). Its ``pin_rank`` is a place in the
+    person's whole pinned order, which an app or member caller gets none of.
+    """
+    row = state.serialize_slot(slot)
+    if folder_principal(state, request):
+        from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+        for field in PIN_ORDER_FIELDS:
+            row.pop(field, None)
+    return row
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -2522,7 +2539,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # idle until it timed out.
     if slot.executor != "remote":
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
-    return web.json_response(state.serialize_slot(slot))
+    return web.json_response(_created_slot_row(state, request, slot))
 
 
 def _reject_pending_approvals(slot: _ChatSlot) -> None:

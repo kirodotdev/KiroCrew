@@ -1722,6 +1722,29 @@ class TestDashboardStream:
         req.app["state"].unregister_sse.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_dashboard_user", [True, False])
+    async def test_only_a_dashboard_reader_gets_pin_ranks_on_sse(
+        self, monkeypatch, is_dashboard_user
+    ):
+        """A rank is a place in the person's whole order; a scoped reader gets none."""
+        writes = _stub_stream(monkeypatch)
+        slots = json.dumps([{"key": "a", "pin_rank": 0}])
+        req = self._request_with_queue(
+            [{"_type": "slots", "slots": slots}], is_dashboard_user=is_dashboard_user
+        )
+        task = asyncio.ensure_future(updates.api_stream(req))
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if any(w.startswith(b"event: slots") for w in writes):
+                break
+        updates.shutdown_event.set()
+        await asyncio.wait_for(task, timeout=5)
+        frames = [w.decode() for w in writes if w.startswith(b"event: slots")]
+        assert frames, "no slots frame was written"
+        rows = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert ("pin_rank" in rows[0]) is is_dashboard_user
+
+    @pytest.mark.asyncio
     async def test_the_sse_chat_message_frame_carries_the_rows_identity(self, monkeypatch):
         """`meta` (and `cls`) survive the SSE relay, as they do on the WebSocket.
 

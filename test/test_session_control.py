@@ -4153,6 +4153,7 @@ _DASHBOARD_TOOL_CALLS = {
     "chat_tag_update": {"tag": "todo", "name": "later"},
     "chat_tag_assign": {"session": "chat-3", "add": ["todo"]},
     "chat_session_pin": {"session": "chat-3", "pinned": True},
+    "chat_session_pin_move": {"session": "chat-3", "before": "chat-4"},
     "chat_tag_column_list": {},
     "chat_tag_column_create": {"name": "Urgent", "tag": "todo"},
     "chat_tag_column_move": {"column": "Todo", "after": "Live"},
