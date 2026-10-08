@@ -4115,9 +4115,21 @@
       "just_now": "just now",
       "loading": "loading...",
       "refresh": "Refresh",
-      "title": "Git",
       "uncommitted": "{{count}} uncommitted",
-      "no_project": "No project folder set for this session."
+      "repos_caption": "Repositories the agent edited files or ran commands in during this chat.",
+      "repos_caption_project_first": "The project's repository is listed first.",
+      "section_collapse_hint": "Hide changes and history",
+      "section_expand_hint": "Show changes and history",
+      "repos_empty": "No Git repositories to show. One appears here when the agent edits files or runs commands in it.",
+      "source_project": "Project",
+      "repos_failed": "Couldn't list this chat's repositories.",
+      "repos_refresh_failed": "Couldn't refresh this chat's repositories. The list below may be out of date.",
+      "repos_loading": "Loading this chat's repositories...",
+      "repos_incomplete": "Some repositories the agent worked in may not be listed. Each one appears here once the agent works in it again.",
+      "repos_omitted_one": "The agent worked in {{formattedTotal}} repositories; the {{formattedLimit}} most recent are listed. The hidden one reappears once the agent works in it again.",
+      "repos_omitted_other": "The agent worked in {{formattedTotal}} repositories; the {{formattedLimit}} most recent are listed. Each hidden one reappears once the agent works in it again.",
+      "repos_retry": "Retry",
+      "source_project_help": "The repository this chat was started in. The others are repositories the agent worked in."
     },
     "agentImportFlow": {
       "back": "Back",

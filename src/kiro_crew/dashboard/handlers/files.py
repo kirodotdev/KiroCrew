@@ -79,6 +79,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERNS_MAX,
     link_pattern_url_ok,
 )
+from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
@@ -137,6 +138,7 @@ from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _GIT_PANEL_STDOUT_CAP,
+    _git_repo_listing,
     _is_not_a_repo_verdict,
     _porcelain_unquote,
     _probe_git_dir,
@@ -145,6 +147,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _run_git_bounded,
     _worktree_probe_failure_is_empty_scope,
     api_project_git_log,
+    api_project_git_repos,
     api_project_git_status,
 )
 from kiro_crew.dashboard.file_api.grep import (  # noqa: F401
@@ -222,6 +225,7 @@ from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     _read_git_meta_prefix,
     _redact_project_path,
     _resolve_project_git,
+    _slot_git_repo_snapshot,
     _slot_project_snapshot,
     api_project_git,
 )
@@ -286,6 +290,7 @@ from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
     api_workspaces_update,
 )
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS  # noqa: F401
+from kiro_crew.dashboard.git_repo_touches import _GIT_ROOT_WALK_LIMIT  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _probe_persisted_session,
     read_bounded_json,
@@ -296,6 +301,11 @@ from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SESSION_FOLDER_ROOT_MAX_CHARS,
     validate_session_folder_root,
+)
+from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
+    app_owns_slot_session,
+    deny_app_slot_session_access,
+    slot_not_found,
 )
 from kiro_crew.dashboard.slot_projection import summary_rows  # noqa: F401
 from kiro_crew.dashboard.state import (  # noqa: F401
@@ -1090,11 +1100,6 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
     _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources=base)
     return web.json_response({"path": base, "parent": _browse_parent(base), "dirs": dirs})
 
-
-#: Depth ceiling for the walk-up that looks for a repository root. A project
-#: directory nested deeper than this below its repo root is reported as
-#: not-a-repo rather than paying an unbounded number of stat calls per request.
-_GIT_ROOT_WALK_LIMIT = 40
 
 #: A HEAD file is one short line; cap the read so a hostile symlink to something
 #: enormous cannot be slurped into memory.

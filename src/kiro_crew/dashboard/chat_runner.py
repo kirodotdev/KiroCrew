@@ -138,6 +138,7 @@ from kiro_crew.context_blocks import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -5047,6 +5048,17 @@ async def _run_chat(
                     "tool_call",
                     _tool_payload,
                 )
+                # A proposed call is not an executed touch. Snapshot only raw
+                # strings here; the terminal result releases them to the walker.
+                _git_repo_touches.note_tool_call(
+                    slot,
+                    event.raw_tool_params,
+                    tool_call_id=event.tool_call_id or "",
+                    background_tasks=getattr(state, "_background_tasks", None),
+                    tool_kind=event.tool_kind or "",
+                    diff_path=event.diff_path or "",
+                    is_shell=bool(event.is_shell),
+                )
                 # AFTER the live ``tool_call`` broadcast above and BEFORE the
                 # row is appended: the pill the open tab draws is not delayed by
                 # the annotation, and the record reaches both doors -- the
@@ -5301,6 +5313,17 @@ async def _run_chat(
                             **_tool_identity_fields(event),
                         },
                     )
+                    # The refinement may supply the first path (Claude streams
+                    # empty input first). Retain it until successful completion.
+                    _git_repo_touches.note_tool_call(
+                        slot,
+                        event.raw_tool_params,
+                        tool_call_id=event.tool_call_id,
+                        background_tasks=getattr(state, "_background_tasks", None),
+                        tool_kind=event.tool_kind or "",
+                        diff_path=event.diff_path or "",
+                        is_shell=bool(event.is_shell),
+                    )
                     # Update the audit log so the SEL trail captures the
                     # refined title/kind, not just the "Terminal"/"grep" stub
                     # logged at the initial EVENT_TOOL_CALL.
@@ -5480,6 +5503,12 @@ async def _run_chat(
                             )
                             break
                 if _tool_terminal:
+                    _git_repo_touches.finish_tool_call(
+                        slot,
+                        event.tool_call_id or "",
+                        executed=event.tool_final and not event.refusal and _tcid_identifies,
+                        background_tasks=getattr(state, "_background_tasks", None),
+                    )
                     # The backend's own word, unmapped, with the refusal this
                     # process decided taking precedence -- a refused call never
                     # reached the tool, whatever the frame says.
@@ -12304,6 +12333,11 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        # An interrupted or unexecuted proposal must not survive into a turn
+        # whose backend may reuse its call id. Executed walker work is separate.
+        slot._git_repo_touch_pending.clear()
+        slot._git_repo_touch_terminal.clear()
+        slot._git_repo_touch_overflow = False
         # First: hand back the session-switch lock if this turn exited between
         # its acquire and its post-registration release. Before anything that
         # can await, and before the refusal-fallback restore below takes the

@@ -19,16 +19,20 @@ if TYPE_CHECKING:
         _GIT_PROBE_STDERR_CAP,
         ConfigHookScanError,
         DashboardState,
+        _git_repo_touches,
         _match_known_project_for,
         _redact_project_path,
         _sel,
-        _slot_project_snapshot,
+        _slot_git_repo_snapshot,
         config_hook_disable_args_sandboxed,
+        deny_app_slot_session_access,
         is_sensitive_path,
+        load_window_off_loop,
         popen_limited,
         redact,
         redact_path_segments,
         sandboxed_spawn_argv,
+        slot_not_found,
         worktree_probe_failure_is_empty_scope,
     )
 
@@ -311,14 +315,16 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     """GET /api/project/git/status?path=... - working tree status for a project dir.
 
     Returns staged/unstaged/untracked files with per-file line-change counts.
-    Path must match a known project directory (same allow-list as api_project_git).
+    Path must match a known project directory or a git root a session's tool
+    calls touched (``_slot_git_repo_snapshot``).
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
     raw = request.query.get("path", "").strip()
     if not raw:
         return web.json_response({"error": "path required", "code": "path_required"}, status=400)
-    project = await asyncio.to_thread(_match_known_project_for, _slot_project_snapshot(state), raw)
+    allowed = _slot_git_repo_snapshot(state, request.get("app", ""))
+    project = await asyncio.to_thread(_match_known_project_for, allowed, raw)
     if project is None:
         _sel().log_api_access(
             caller=caller,
@@ -694,7 +700,8 @@ async def api_project_git_log(request: web.Request) -> web.Response:
     """GET /api/project/git/log?path=...&limit=N - recent commit log for a project dir.
 
     Returns short sha, subject, author, date (ISO), and isHead flag.
-    Path must match a known project directory (same allow-list as api_project_git).
+    Path must match a known project directory or a git root a session's tool
+    calls touched (``_slot_git_repo_snapshot``).
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
@@ -708,7 +715,8 @@ async def api_project_git_log(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         limit = 20
 
-    project = await asyncio.to_thread(_match_known_project_for, _slot_project_snapshot(state), raw)
+    allowed = _slot_git_repo_snapshot(state, request.get("app", ""))
+    project = await asyncio.to_thread(_match_known_project_for, allowed, raw)
     if project is None:
         _sel().log_api_access(
             caller=caller,
@@ -874,3 +882,118 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         c["message"] = redact(c["message"])
         c["author"] = redact(c["author"])
     return web.json_response(result)
+
+
+def _git_repo_listing(
+    project: str, touched: list[str], seed_paths: list[str]
+) -> tuple[str, _git_repo_touches.TouchCandidates, list[str]]:
+    """Resolve the Git tab's repositories for one slot. Worker thread only.
+
+    Returns ``(project_root, seed_roots, live_touched)``: the real root of the
+    repository holding *project* (``""`` when it holds none), the roots the
+    transcript's file-change *seed_paths* resolve to, and the subset of
+    *touched* that is still a repository on disk (a deleted worktree drops
+    out instead of listing as an error). *seed_paths* arrive newest first and
+    are resolved oldest first, the order :func:`resolve_repo_roots` expects.
+    """
+    project_root = ""
+    oldest_first = _git_repo_touches.TouchCandidates(
+        reversed(seed_paths), truncated=getattr(seed_paths, "truncated", False)
+    )
+    seed_roots = _git_repo_touches.resolve_repo_roots(oldest_first, project)
+    if project:
+        roots = _git_repo_touches.resolve_repo_roots([project])
+        seed_roots.truncated |= roots.truncated
+        if roots:
+            project_root = roots[0]
+    live = [root for root in touched if os.path.exists(os.path.join(root, ".git"))]
+    return project_root, seed_roots, live
+
+
+async def api_project_git_repos(request: web.Request) -> web.Response:
+    """GET /api/project/git/repos?slot=... -- the repositories the Git tab lists.
+
+    The session's project directory first, when it sits in a repository, then
+    every repository the session's tool calls worked in, most recent first. Each
+    ``path`` is the value the status and log routes accept for that row, except
+    a path the credential redactor masks: that row is refused rather than the
+    unmasked path being sent to the client. ``omitted`` and ``listed`` are the
+    two numbers the client's capacity notice states.
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    key = request.query.get("slot", "").strip()
+    if not key:
+        return web.json_response({"error": "slot required", "code": "slot_required"}, status=400)
+    slot = state.get_slot(key)
+    # An app token reaches only a slot it owns, on its own session and
+    # transcript (the transcript seeds the list); every refusal is the
+    # checkpoint's uniform 404, audited when the slot exists.
+    denied = deny_app_slot_session_access(request.get("app", ""), slot, key, "project_git_repos")
+    if denied is not None:
+        return denied
+    if slot is None:
+        return slot_not_found()
+
+    if not getattr(slot, "_git_repos_seeded", False):
+        await load_window_off_loop(slot)
+
+    project = slot.project or ""
+    touched = list(getattr(slot, "_git_repos", None) or [])
+    omitted = _git_repo_touches.omitted_repo_count(slot)
+    seeded = bool(getattr(slot, "_git_repos_seeded", False))
+    seed_paths = [] if seeded else _git_repo_touches.transcript_change_paths(slot.messages)
+    project_root, seed_roots, live = await asyncio.to_thread(
+        _git_repo_listing, project, touched, seed_paths
+    )
+    slot._git_repos_incomplete |= seed_roots.truncated
+    if not seeded:
+        # Back on the loop: fold the transcript's repositories in once, behind
+        # anything a live tool call noticed while the walk ran.
+        _git_repo_touches.record_repo_roots(slot, seed_roots, newest=False)
+        slot._git_repos_seeded = True
+        present = set(live) | set(seed_roots)
+        live = [r for r in slot._git_repos if r in present]
+        omitted = _git_repo_touches.omitted_repo_count(slot)
+    _sel().log_api_access(
+        caller=caller,
+        operation="project_git_repos",
+        outcome="allowed",
+        resources=f"slot={key}",
+    )
+
+    # A path the credential redactor would mask is refused, not listed: the
+    # masked string is not a path the status and log routes accept, so its row
+    # could only ever show an error. The refusal is announced through
+    # ``incomplete``, like every other repository the list cannot show.
+    repos: list[dict] = []
+    listed = 0
+    refused = False
+    project_shown = False
+    if project_root:
+        if _redact_project_path(project) == project:
+            repos.append({"path": project, "source": "project"})
+            project_shown = True
+        else:
+            refused = True
+    for root in reversed(live):
+        if root == project_root and project_shown:
+            listed += 1
+            continue
+        if _redact_project_path(root) != root:
+            refused = True
+            continue
+        repos.append({"path": root, "source": "agent"})
+        listed += 1
+    return web.json_response(
+        {
+            "repos": repos,
+            "omitted": omitted,
+            # Agent-touched repositories actually listed, the project's own
+            # included when the agent worked in it. The capacity notice reads
+            # its total as ``listed + omitted``: ``repos`` would count an
+            # untouched project row and skip held roots whose ``.git`` is gone.
+            "listed": listed,
+            "incomplete": bool(slot._git_repos_incomplete) or refused,
+        }
+    )
