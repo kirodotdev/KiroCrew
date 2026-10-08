@@ -1979,8 +1979,11 @@ def test_a_descendant_only_record_is_retracted_from_the_descendant_file(
         reading.owned_dead == 1 and reading.forgotten == 1
     ), f"the dead descendant's own row is removed; {reading.as_counter_fields()}"
     rows = pid_file.read_text(encoding="utf-8")
-    assert "5501" not in rows, f"the row is gone from the file that held it; {rows!r}"
-    assert "5502" in rows, f"and the live sibling's row is untouched; {rows!r}"
+    # Compare each row's OWN pid field. The parent field is this test process's pid,
+    # and on a runner that pid can itself be 5501, so a substring check misreads it.
+    recorded = {line.split(":", 1)[0] for line in rows.splitlines() if line}
+    assert "5501" not in recorded, f"the row is gone from the file that held it; {rows!r}"
+    assert "5502" in recorded, f"and the live sibling's row is untouched; {rows!r}"
 
 
 def test_a_legacy_bare_descendant_row_is_retracted_by_the_bare_line_remover(
