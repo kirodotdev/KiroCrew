@@ -1,9 +1,10 @@
 """Bound the bundled shell-audit hook's ``audit.log`` from the gateway side.
 
 The default ``postToolUse`` hook in ``config/defaults.json`` records every
-``execute_bash`` call by appending a stamp line, the hook-event JSON kiro-cli
-hands it on stdin (the tool call -- its command and, on this event, its
-result) and a blank line to ``${KIROCREW_HOME:-$HOME/.kiro/crew}/audit.log``.
+``execute_bash`` call as a single line -- a UTC stamp, then `` BASH: ``, then
+the hook-event JSON kiro-cli hands it on stdin (the tool call -- its command
+and, on this event, its result) with every CR and LF stripped -- appended to
+``${KIROCREW_HOME:-$HOME/.kiro/crew}/audit.log``.
 The command is one shell append and bounds nothing, so on a default install
 the file only grows: measured at 4.4 MB over about five weeks of ordinary
 use, as a single file with no sibling generation.
