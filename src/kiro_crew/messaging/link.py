@@ -131,10 +131,11 @@ _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("channel", "channel"),
 )
 
-#: Exact keys for the two singleton sessions.
+#: Exact keys for singleton sessions.
 _TELEMETRY_EXACT_KEYS: dict[str, str] = {
     "_bg": "background",
     "_hb": "heartbeat",
+    "_consolidate": "consolidation",
     # The CLI chat session's fixed key. Present so this function is a strict
     # SUPERSET of the labels ``validation.infer_use_case`` produced: the turn
     # histogram switched to this helper to gain the background surfaces, and

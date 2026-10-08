@@ -923,10 +923,15 @@ class BackgroundSessionRuntime:
             return None
         return f"tree rss={rss}MB exceeds {ceiling}MB"
 
-    async def recycle_background(self) -> None:
-        """Recycle the persistent background provider when context is full."""
-        background_key = self._deps.background_key
-        background_agent = self._deps.background_agent
+    async def recycle_background(
+        self,
+        session_key: str | None = None,
+        *,
+        agent: str | None = None,
+    ) -> None:
+        """Recycle a persistent background-style provider when context is full."""
+        background_key = session_key or self._deps.background_key
+        background_agent = agent or self._deps.background_agent
         logger = self._deps.logger
         session = self._owner._sessions.get(background_key)
         if not session:

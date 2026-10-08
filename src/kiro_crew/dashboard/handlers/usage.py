@@ -378,6 +378,7 @@ _BACKGROUND_CHANNELS = frozenset(
         # concept across two rows.
         "workflow",
         "background",
+        "consolidation",
         "secretary",
     }
 )

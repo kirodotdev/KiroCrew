@@ -575,11 +575,14 @@ _STATELESS_PREFIXES = (
     _WORKFLOW_POOL_PREFIX,
 )
 
-# Background session key — cron and lessons share this session.
-# Heartbeat uses a separate key (HEARTBEAT_KEY) so it can run a tooled
-# agent without forcing other background callers (chat-title, consolidator,
-# taskkeeper) to load the same MCP servers.
+# Heartbeat and history extraction have separate keys so their longer turns
+# cannot hold the semaphore used by lightweight background jobs.
 BACKGROUND_KEY = "_bg"
+CONSOLIDATE_KEY = "_consolidate"
+# Singleton stateless keys, matched exactly: the extraction session mints no
+# suffixed keys, so a prefix would only claim names it never uses.
+_STATELESS_KEYS = frozenset({CONSOLIDATE_KEY})
+
 # Kiro agent the background session runs as. Named once because it is needed in
 # TWO places — the provider factory call AND the ``_Session`` record — and when
 # only the factory got it, ``_Session.agent`` stayed at its "" default, so every
@@ -1260,6 +1263,7 @@ class SessionManager:
             background_agent=BACKGROUND_AGENT,
             subagent_prefix=_SUBAGENT_PREFIX,
             stateless_prefixes=_STATELESS_PREFIXES,
+            stateless_keys=_STATELESS_KEYS,
             provider_label_default=PROVIDER_LABEL_DEFAULT,
             provider_label_claude=PROVIDER_LABEL_CLAUDE,
         )
@@ -1351,6 +1355,7 @@ class SessionManager:
                 max_pool=_MAX_POOL,
                 background_key=BACKGROUND_KEY,
                 stateless_prefixes=_STATELESS_PREFIXES,
+                stateless_keys=_STATELESS_KEYS,
                 close_all_concurrency=_CLOSE_ALL_CONCURRENCY,
                 drain_active_turns_timeout_secs=_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS,
                 unbind_reason_session_destroyed=UNBIND_REASON_SESSION_DESTROYED,
@@ -2581,9 +2586,14 @@ class SessionManager:
         cache[agent] = (model, dir_mtime, now)
         return model
 
-    async def recycle_background(self) -> None:
-        """Delegate context-driven background-provider recycling."""
-        await self._background_runtime.recycle_background()
+    async def recycle_background(
+        self,
+        session_key: str | None = None,
+        *,
+        agent: str | None = None,
+    ) -> None:
+        """Recycle a persistent background-style provider when context is full."""
+        await self._background_runtime.recycle_background(session_key, agent=agent)
 
     async def recycle_heartbeat(self) -> None:
         """Delegate cycle-scoped heartbeat-provider recycling."""

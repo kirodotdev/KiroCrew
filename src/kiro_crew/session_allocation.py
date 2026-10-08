@@ -123,6 +123,8 @@ class AllocationConstants:
     stateless_prefixes: tuple[str, ...]
     provider_label_default: str
     provider_label_claude: str
+    # Singleton stateless sessions, matched exactly rather than by prefix.
+    stateless_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2300,6 +2302,7 @@ class SessionAllocationService:
         resume_sid: str | None = None
         is_stateless = (
             key in (constants.background_key, constants.heartbeat_key)
+            or key in constants.stateless_keys
             or any(key.startswith(prefix) for prefix in constants.stateless_prefixes)
         ) and not owner._is_continuable_key(key)
         if not is_stateless:

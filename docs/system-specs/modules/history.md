@@ -1633,9 +1633,8 @@ writer:
 ## HistoryConsolidator (`history_consolidation.py`, re-exported by `history.py`)
 
 Background task that fires once a session's message count reaches
-`_CONSOLIDATION_THRESHOLD` (30) messages past its last consolidation offset. Uses the
-persistent background ACP session (kiro-cli long-running session, same as
-cron/heartbeat/lesson extraction) to extract:
+`_CONSOLIDATION_THRESHOLD` (30) messages past its last consolidation offset.
+Global history extraction uses its own lazily created `_consolidate` session to extract:
 - `history_entry` → appended to today's daily history file
 - `preferences_update` → overwrites `preferences.md` if changed
 - `projects_update` → overwrites `projects.md` if changed
@@ -1646,6 +1645,16 @@ V1 store and a private V2 member store write structured records only (see
 [memory-skills-hooks](memory-skills-hooks.md)). Each message is formatted by
 `_fmt_message`, which replaces image references with the stripped-image marker, so
 the extraction turn carries text and no image data.
+
+The separate session removes semaphore contention between long extraction turns
+and short `_bg` metadata jobs; cheap dedupe and merge judges remain on `_bg`.
+It can idle-expire and is recreated on demand without native session-map resume.
+Active turns hold the existing session semaphore and survive idle cleanup.
+Live reuse retains provider context until expiry or context-driven recycling.
+Private V2 extraction retains its per-store `memory-consolidation:` session and
+cleanup path. Acquisition timing includes startup and semaphore acquisition;
+it is not a measurement of queue wait alone.
+ ebb643681 (fix(history): isolate consolidation sessions)
 
 The two `*_update` values replace the whole file, so each is gated by
 `_is_plausible_memory_file()` before writing: a value that does not start with

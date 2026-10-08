@@ -21,6 +21,7 @@ from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import (
     _BG_BLIND_RECYCLE_PROMPTS,
     BACKGROUND_KEY,
+    CONSOLIDATE_KEY,
     SessionClosingError,
     SessionEndingError,
     SessionManager,
@@ -620,6 +621,59 @@ class TestWarmPool:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_consolidation_expires_and_recreates_without_resume(self, cfg):
+        factory = MagicMock(side_effect=_mock_provider_factory())
+        mgr = SessionManager(cfg, provider_factory=factory)
+        mgr._session_map.get = MagicMock(return_value="stale-sid")
+        try:
+            assert CONSOLIDATE_KEY not in mgr._sessions
+            first, _, resumed = await mgr.get_or_create(CONSOLIDATE_KEY, agent="kirocrew-lite")
+            assert not resumed
+            mgr.release(CONSOLIDATE_KEY)
+            assert _raw_sid(mgr, CONSOLIDATE_KEY) is None
+            mgr._sessions[CONSOLIDATE_KEY].last_used = time.monotonic() - 9999
+            await mgr._expire_idle(1)
+            assert CONSOLIDATE_KEY not in mgr._sessions
+            first.shutdown.assert_awaited_once()
+
+            second, is_new, resumed = await mgr.get_or_create(
+                CONSOLIDATE_KEY, agent="kirocrew-lite"
+            )
+            mgr.release(CONSOLIDATE_KEY)
+            assert second is not first
+            assert is_new and not resumed
+            assert _raw_sid(mgr, CONSOLIDATE_KEY) is None
+            assert factory.call_count == 2
+            mgr._session_map.get.assert_not_called()
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_active_consolidation_survives_idle_sweep(self, cfg):
+        from kiro_crew.llm_helpers import background_turn
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        try:
+            async with background_turn(
+                mgr, task="consolidation", agent="kirocrew-lite", session_key=CONSOLIDATE_KEY
+            ) as provider:
+                provider.last_prompt_stats = AcpPromptStats()
+                mgr._sessions[CONSOLIDATE_KEY].last_used = time.monotonic() - 9999
+                await mgr._expire_idle(1)
+                assert mgr._sessions[CONSOLIDATE_KEY].provider is provider
+                provider.shutdown.assert_not_awaited()
+                await asyncio.wait_for(mgr.get_or_create(BACKGROUND_KEY), 2)
+                mgr.release(BACKGROUND_KEY)
+            # The finished turn stamped its clock; age it again so the next
+            # sweep sees an idle session it is now free to reclaim.
+            mgr._sessions[CONSOLIDATE_KEY].last_used = time.monotonic() - 9999
+            await mgr._expire_idle(1)
+            assert CONSOLIDATE_KEY not in mgr._sessions
+            provider.shutdown.assert_awaited_once()
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_channel_session_not_expired_by_idle(self, cfg):
         """Channel-agent sessions survive idle expiry (managed by channel lifecycle)."""
         import time
@@ -738,6 +792,25 @@ class TestHeartbeatStateless:
 
 class TestRecycleBackground:
     """Tests for background session context overflow recycling."""
+
+    @pytest.mark.asyncio
+    async def test_consolidation_recycles_its_own_provider(self, cfg):
+        factory = MagicMock(side_effect=_mock_provider_factory())
+        mgr = SessionManager(cfg, provider_factory=factory)
+        try:
+            background, _, _ = await mgr.get_or_create(BACKGROUND_KEY)
+            mgr.release(BACKGROUND_KEY)
+            extraction, _, _ = await mgr.get_or_create(CONSOLIDATE_KEY, agent="kirocrew-lite")
+            mgr.release(CONSOLIDATE_KEY)
+            extraction.context_usage_pct = lambda: 75.0
+            await mgr.recycle_background(session_key=CONSOLIDATE_KEY, agent="kirocrew-lite")
+            assert mgr._sessions[CONSOLIDATE_KEY].provider is not extraction
+            extraction.shutdown.assert_awaited_once()
+            assert mgr._sessions[BACKGROUND_KEY].provider is background
+            background.shutdown.assert_not_awaited()
+            factory.assert_called_with(CONSOLIDATE_KEY, agent="kirocrew-lite")
+        finally:
+            await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_recycle_on_high_context(self, cfg):

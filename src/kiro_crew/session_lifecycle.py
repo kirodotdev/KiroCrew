@@ -672,6 +672,8 @@ class SessionLifecycleConstants:
     first_turn_fresh: object
     first_turn_resumed: object
     provider_label_claude: str
+    # Singleton stateless sessions, matched exactly rather than by prefix.
+    stateless_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2866,8 +2868,12 @@ class SessionLifecycleService:
                         and not sess.provider_switch_replay
                         and key != constants.background_key
                         and (
-                            not any(
-                                key.startswith(prefix) for prefix in constants.stateless_prefixes
+                            not (
+                                key in constants.stateless_keys
+                                or any(
+                                    key.startswith(prefix)
+                                    for prefix in constants.stateless_prefixes
+                                )
                             )
                             or owner._is_continuable_key(key)
                         )
@@ -2888,8 +2894,12 @@ class SessionLifecycleService:
                         sid
                         and key != constants.background_key
                         and (
-                            not any(
-                                key.startswith(prefix) for prefix in constants.stateless_prefixes
+                            not (
+                                key in constants.stateless_keys
+                                or any(
+                                    key.startswith(prefix)
+                                    for prefix in constants.stateless_prefixes
+                                )
                             )
                             or owner._is_continuable_key(key)
                         )

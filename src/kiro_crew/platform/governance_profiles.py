@@ -1415,7 +1415,7 @@ def resolve_active_scope(
     # ceiling alone governs), NOT deny-all.  Making it deny-all here would break
     # the gate's ungoverned no-op contract on every standalone host.  The
     # unattended sentinels (_bg/_hb) and unattended surfaces ARE contained.
-    identity_proven = bool(session_key) and session_key not in ("", "_bg", "_hb")
+    identity_proven = bool(session_key) and session_key not in ("", "_bg", "_hb", "_consolidate")
     if surface in _UNATTENDED_SURFACES and not identity_proven:
         return deny_all_profile(f"_deny_all:{surface}")
 

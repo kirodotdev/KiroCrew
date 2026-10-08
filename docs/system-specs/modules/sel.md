@@ -44,6 +44,9 @@ Each entry records:
 
 The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `operation=config.load`, `caller_identity=config_loader`) is emitted by `config/loader.py`'s `_log_config_clamp_event` whenever `_clamp_security_bounds()` changes an out-of-range field from the authoritative `_SECURITY_BOUNDED_FIELDS` table or one of its sentinel-aware follow-up checks. It records `metadata` `{file_value, clamped_to, min, max}`. Best-effort: a SEL failure never makes config loading raise.
 
+The history extraction session (`_consolidate`) is classified as `background`,
+like `_bg`; other unrecognized session keys retain the legacy `slack` fallback.
+
 ## Integrity
 
 - HMAC-SHA256 chain: each entry signs over the previous entry's hash

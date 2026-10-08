@@ -349,6 +349,22 @@ do their work, and release — the process stays warm.
 
 ### Context Overflow Protection
 
+History extraction uses its own `CONSOLIDATE_KEY = "_consolidate"` session,
+created lazily with `kirocrew-lite`. Cheap skill dedupe and merge judges keep
+using `_bg`; their turns do not wait on the extraction semaphore. The dedicated
+provider adds one resident extraction process while present; context recycling
+can briefly overlap it with its replacement. It can
+idle-expire under the configured session timeout, and the next extraction
+creates a fresh provider. The held turn semaphore protects active extraction
+from idle expiry; reset rechecks that semaphore before retiring a candidate.
+
+The extraction key is stateless: it bypasses native session-map resume and the
+warm pool. Reusing a live provider can retain context between turns; stateless
+does not mean a fresh native conversation on every call. `background_turn`
+accounts against the selected key, releases its semaphore, and applies the same
+context recycling policy with the extraction agent. Private V2 memory keeps its
+per-store `memory-consolidation:` session and cleanup path.
+
 `recycle_background()` is called after every background task completes.
 It checks context usage and **recycles** (kill + fresh spawn) the session
 if needed — no compaction, since background tasks are stateless:
@@ -4607,7 +4623,9 @@ Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 | Dashboard tab | `dashboard:{slot_key}` | Idle timeout (60 min) | Own kiro-cli (from warm pool) |
 | Cron job | `cron:{job_id}` | One-shot (reset after) | Own kiro-cli (from warm pool) |
 | Background | `_bg` | Entire runtime (recycled at 70%) | Shared kiro-cli |
+| History extraction | `_consolidate` | Lazy; idle timeout; context recycling | Own provider; replacement can briefly overlap |
 | Heartbeat | `_hb` | Entire runtime | Own persistent session |
+ ebb643681 (fix(history): isolate consolidation sessions)
 | Lesson extract | `_bg` | Shared | Shared kiro-cli |
 | Subagent | `subagent:{uuid}` | Task duration | Own kiro-cli |
 | TaskRunner step | `taskrunner:{task_id}:task{N}` | Step duration (reset after) | Own kiro-cli (concurrency bounded, see below) |

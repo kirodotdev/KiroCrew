@@ -1448,6 +1448,8 @@ class TestInferSource:
         ("subagent:abc", "subagent"),
         ("taskrunner:spec1", "taskrunner"),
         ("_bg", "background"),
+        ("_consolidate", "background"),
+        ("_consolidate:other", "slack"),
         ("cli_chat", "cli"),
         # Namespaced messaging channels are attributed to their transport,
         # matching context._runtime_display_name's set — via ``{ns}:`` …

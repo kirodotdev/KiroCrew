@@ -40,6 +40,7 @@ class TestTelemetryChannelOf:
         assert telemetry_channel_of("telegram_123") == "telegram"
 
     def test_local_surfaces_get_their_own_labels(self):
+        assert telemetry_channel_of("_consolidate") == "consolidation"
         assert telemetry_channel_of("dashboard:chat-60-1785802461") == "dashboard"
         assert telemetry_channel_of("cron:job-1") == "cron"
         assert telemetry_channel_of("subagent:abc123") == "subagent"
@@ -48,6 +49,12 @@ class TestTelemetryChannelOf:
     def test_singleton_sessions(self):
         assert telemetry_channel_of("_bg") == "background"
         assert telemetry_channel_of("_hb") == "heartbeat"
+
+    def test_consolidation_label_requires_the_exact_singleton_key(self):
+        assert telemetry_channel_of("_consolidate") == "consolidation"
+        assert "consolidation" in TELEMETRY_CHANNELS
+        for key in ("_consolidateXYZ", "_consolidate:123", "_consolidate_123"):
+            assert telemetry_channel_of(key) == "other"
 
     def test_missing_key_is_unknown(self):
         assert telemetry_channel_of(None) == "unknown"
@@ -251,7 +258,11 @@ class TestPrefixDrift:
         from kiro_crew import session as session_mod
         from kiro_crew.messaging.link import telemetry_channel_of
 
-        for key in (session_mod.BACKGROUND_KEY, session_mod.HEARTBEAT_KEY):
+        for key in (
+            session_mod.BACKGROUND_KEY,
+            session_mod.HEARTBEAT_KEY,
+            session_mod.CONSOLIDATE_KEY,
+        ):
             assert telemetry_channel_of(key) != "other"
 
 
