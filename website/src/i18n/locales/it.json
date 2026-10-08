@@ -18351,5 +18351,8 @@
     "resolve_explanation": "Mantieni il valore attuale. Applica registra questa decisione e chiude le proposte in sospeso.",
     "forget_count": "Dimentica i ricordi selezionati: {{count}}",
     "retry_preview_page": "Riprova la pagina di anteprima"
+  },
+  "queueActions": {
+    "teardownPending": "Il turno precedente si sta ancora interrompendo. Il messaggio è in coda. Riprova Invia ora tra poco."
   }
 }

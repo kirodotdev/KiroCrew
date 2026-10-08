@@ -18351,5 +18351,8 @@
     "resolve_explanation": "Mantenha o valor atual. Aplicar registra esta decisão e encerra as propostas pendentes.",
     "forget_count": "Esquecer memórias selecionadas: {{count}}",
     "retry_preview_page": "Tentar página de prévia novamente"
+  },
+  "queueActions": {
+    "teardownPending": "O turno anterior ainda está sendo interrompido. Sua mensagem está na fila. Tente Enviar agora novamente em instantes."
   }
 }

@@ -17805,5 +17805,8 @@
     "resolve_explanation": "現在の値を保持します。適用すると判断を記録し、保留中の提案を終了します。",
     "forget_count": "選択したメモリを忘れる: {{count}}",
     "retry_preview_page": "プレビューページを再試行"
+  },
+  "queueActions": {
+    "teardownPending": "前のターンを停止しています。メッセージはキューに残っています。少し待ってから「今すぐ送信」を再試行してください。"
   }
 }

@@ -18351,5 +18351,8 @@
     "resolve_explanation": "Conserva el valor actual. Aplicar registra esta decisión y cierra sus propuestas pendientes.",
     "forget_count": "Olvidar recuerdos seleccionados: {{count}}",
     "retry_preview_page": "Reintentar página de vista previa"
+  },
+  "queueActions": {
+    "teardownPending": "El turno anterior aún se está deteniendo. Tu mensaje está en la cola. Vuelve a intentar Enviar ahora en unos instantes."
   }
 }

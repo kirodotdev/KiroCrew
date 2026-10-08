@@ -6726,6 +6726,10 @@ async def _start_next_queued_turn(
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
     # the queue head is that turn's own recovery; the dequeue re-decides then.
+    teardown = slot._stop_teardown_task
+    if teardown is not None and not teardown.done():
+        return False
+
     turn_ended = False
     if predecessor_actor and not _is_own_recovery(
         slot._queue[:1], predecessor_actor, predecessor_turn_id
@@ -9827,9 +9831,12 @@ async def _run_chat(
     _deferred_options_expiry = (
         _prompt_depth == 0 and first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     )
+    # Bounded dispatch stores the outer task on the slot, not this inner runner.
+    _preparing_task = slot.task or asyncio.current_task()
     try:
-        # Publish the immutable identity BEFORE the first admission await, as
-        # the first statement the enclosing finally covers. From here down the
+        slot._preparing_task = _preparing_task
+        # Publish the immutable identity BEFORE the first admission await,
+        # inside the enclosing finally's coverage. From here down the
         # local session_key is what the turn acquires, audits and releases
         # while slot.linked_session_key remains mutable underneath it -- and
         # the admission awaits below are exactly where a rebind can land: a
@@ -11923,6 +11930,15 @@ async def _run_chat(
         _crew_log_step_t0 = time.monotonic()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            # The provider's first event ends the PREPARING span. Not the dispatch
+            # gate above: the transport can still await (timeout configuration,
+            # session setup) before it registers the turn as active, and a Stop
+            # landing there finds no active turn, answers ``idle`` and would leave
+            # the prompt to dispatch after it. While the marker stands, that
+            # terminal outcome cancels this runner instead. From the first event
+            # on, the provider owns the turn and a stop goes through its machinery.
+            if slot._preparing_task is _preparing_task:
+                slot._preparing_task = None
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):
@@ -18990,6 +19006,10 @@ async def _run_chat(
                 "nudge_turn": _directive_self_wake and _turn_landed,
             },
         )
+        # An older runner may finish after a successor starts preparing.
+        if slot._preparing_task is _preparing_task:
+            slot._preparing_task = None
+
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the

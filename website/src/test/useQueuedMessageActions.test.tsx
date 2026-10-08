@@ -343,6 +343,20 @@ describe('useQueuedMessageActions — in-flight latch (#5891 item 2)', () => {
     await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
   })
 
+  it('releases a held interrupt and explains the explicit retry', async () => {
+    apiMocks.interruptSlot.mockResolvedValue({ ok: true, queue_held: true })
+    const { get } = renderActions({})
+    await act(async () => { get().onInterrupt('q2') })
+    expect(get().pendingIds.has('q2')).toBe(false)
+    expect(get().interruptNotice).toBe('The previous turn is still stopping. Your message is queued. Try Send now again shortly.')
+    act(() => { get().dismissInterruptNotice() })
+    expect(get().interruptNotice).toBeNull()
+    apiMocks.interruptSlot.mockResolvedValue({ ok: true, outcome: 'started' })
+    await act(async () => { get().onInterrupt('q2') })
+    expect(get().pendingIds.has('q2')).toBe(true)
+    expect(apiMocks.interruptSlot).toHaveBeenCalledTimes(2)
+  })
+
   it('releases an interrupt immediately on rejection so the user can retry', async () => {
     // Nothing was promoted and the card is the same card, so holding it would
     // strand a control over an entry that is still queued.

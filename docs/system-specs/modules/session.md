@@ -1625,6 +1625,36 @@ is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
 
+Dashboard stop and interrupt handlers snapshot the runner task before calling
+`stop_turn()`. A terminal `"hard"` or `"idle"` result cancels and awaits the captured
+task only while it owns the runtime-only `_preparing_task` marker. The runner
+captures `slot.task` (the outer task under bounded dispatch, falling back to the
+current task for direct calls), publishes that identity inside its preparation
+`try`, clears it on the provider stream's first event, and compare-and-clears it
+in `finally`. The first event, not the dispatch gate, ends preparation because the
+transport can still await before it registers the turn as active, and a Stop in
+that span answers `"idle"`. Local command exits never publish it, and an older
+runner cannot clear a successor's marker. A turn the provider has taken remains
+owned by the existing stop machinery. A task that does not settle within two
+seconds emits a warning for investigation.
+
+An idle interrupt starts preserved queued work only after the captured runner
+settles and clears `slot.task`, including cancellation before memory admission.
+If teardown exceeds the cancellation deadline, the queue remains available for
+a later explicit retry rather than dispatching over unfinished cleanup. The response
+sets `queue_held: true`; both chat surfaces show a retry notice and release the
+selected card's pending latch. A runtime-only `_stop_teardown_task` reference
+keeps admission busy until cleanup actually completes, even when `slot.task` has
+already cleared. Normal messages queue, and shared queue drains and interrupt retries
+withhold dispatch while teardown is live. Completion clears that reference by identity.
+Steering uses `turn_running` or `_turn_admission_reserved`; the queue guard uses
+`running` so teardown without a task still holds new messages. A later explicit
+Stop re-cancels a live retained teardown task, even after its preparation marker
+clears; a non-escalating RPC retry leaves that cleanup alone.
+Under the slot
+lock, the handler rechecks slot identity, authorizes the current session, and
+withholds dispatch after an authentication failure or a superseding stop.
+
 ### Cancelled-turn context restore
 
 `_Session.prev_turn_cancelled` is a one-shot flag set on soft-cancel

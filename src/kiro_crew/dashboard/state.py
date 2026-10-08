@@ -2873,6 +2873,8 @@ class _ChatSlot:
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_active_turn_session_key",
+        "_preparing_task",
+        "_stop_teardown_task",
         "_side",
         "_acp_client",
         "_last_turn_awaiting_permission",
@@ -3873,6 +3875,10 @@ class _ChatSlot:
         # lifecycle owner (installed once the turn is committed, cleared after
         # its session is released).
         self._active_turn_session_key: str = ""
+        # A preparing turn has no provider turn to cancel. Task identity keeps
+        # terminal stops and an older runner's cleanup off a successor or stage loop.
+        self._preparing_task: asyncio.Task[Any] | None = None
+        self._stop_teardown_task: asyncio.Task[Any] | None = None
         # True only when this slot was created to DISPLAY a conversation that
         # already lives in a channel transcript (the reconciler surfacing a
         # thread, a restore, a History resume). It is what separates such a tab
@@ -5151,7 +5157,12 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(self.turn_running or self._turn_admission_reserved)
+        teardown = self._stop_teardown_task
+        return bool(
+            self.turn_running
+            or self._turn_admission_reserved
+            or (teardown is not None and not teardown.done())
+        )
 
     @property
     def queue_depth(self) -> int:

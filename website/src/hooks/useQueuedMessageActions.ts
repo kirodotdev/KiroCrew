@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { i18nT } from '../i18n/t'
 import { api } from '../api/client'
 import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '../store/chatSlice'
@@ -51,6 +52,8 @@ export interface QueuedMessageActions {
   onReorder: (queueId: string, direction: 'next' | 'later') => void
   /** Feed straight to `QueueStack`'s `pendingIds`. */
   pendingIds: ReadonlySet<string>
+  interruptNotice: string | null
+  dismissInterruptNotice: () => void
 }
 
 export interface QueuedMessageActionsOptions {
@@ -114,6 +117,9 @@ export function useQueuedMessageActions({
   restoreDraft,
 }: QueuedMessageActionsOptions): QueuedMessageActions {
   const dispatch = useAppDispatch()
+  const [interruptFailure, setInterruptFailure] = useState<{ slot: string; message: string } | null>(null)
+  const interruptNotice = interruptFailure && interruptFailure.slot === slot ? interruptFailure.message : null
+  const dismissInterruptNotice = useCallback(() => setInterruptFailure(null), [])
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set())
 
   // Reads happen inside callbacks that must NOT be re-created when the queue
@@ -244,10 +250,17 @@ export function useQueuedMessageActions({
   const onInterrupt = useCallback((queueId: string) => {
     if (!slot) return
     markPending(queueId, true)
+    setInterruptFailure(null)
     api.interruptSlot(slot, queueId).then(
-      // Accepted: the entry is being promoted, so stay latched until the row is
-      // gone rather than until this response landed.
-      () => setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId))),
+      response => {
+        if (response?.queue_held) {
+          markPending(queueId, false)
+          setInterruptFailure({ slot, message: i18nT('queueActions.teardownPending') })
+          return
+        }
+        // A promoted entry stays latched until its queue_pop frame arrives.
+        setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId)))
+      },
       // Rejected: nothing was promoted and the card is still the same card, so
       // release at once and let the user try again.
       () => markPending(queueId, false),
@@ -289,7 +302,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onReorder, pendingIds],
+    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds, interruptNotice, dismissInterruptNotice }),
+    [onCancel, onInterrupt, onEdit, onReorder, pendingIds, interruptNotice, dismissInterruptNotice],
   )
 }

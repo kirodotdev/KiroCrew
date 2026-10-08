@@ -17805,5 +17805,8 @@
     "resolve_explanation": "保留当前值。应用后记录此决定，并关闭其待处理提案。",
     "forget_count": "忘记所选记忆：{{count}}",
     "retry_preview_page": "重试预览页面"
+  },
+  "queueActions": {
+    "teardownPending": "上一轮仍在停止中。消息已排队。请稍后再次尝试立即发送。"
   }
 }

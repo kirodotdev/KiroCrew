@@ -155,6 +155,16 @@ describe('ChatPane queue actions (issue #5891)', () => {
     expect(msgs.find((m) => m.meta?.queueId === 'q-77')).toBeUndefined()
   })
 
+  it('shows a held-queue notice and leaves Send now available for retry', async () => {
+    vi.mocked(api.interruptSlot).mockResolvedValue({ ok: true, queue_held: true })
+    renderPane('pane-held')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send now' }))
+    expect(await screen.findByTestId('queue-interrupt-notice')).toHaveTextContent(
+      'The previous turn is still stopping. Your message is queued. Try Send now again shortly.',
+    )
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled()
+  })
+
   it('keeps the queue card controls disabled through an interrupt, and past its response', async () => {
     const d = deferred()
     vi.mocked(api.interruptSlot).mockReturnValue(d.promise as ReturnType<typeof api.interruptSlot>)

@@ -5,6 +5,7 @@ KiroCrew is KiroACP-only and providers/claude_code.py does not exist here."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,6 +36,13 @@ class _FakeSlot:
         #: nobody owns is cancellable by the dashboard caller.
         self._app = None
         self._active_turn_session_key = ""
+        self._stop_teardown_task = None
+        #: Runtime-only runner bookkeeping, mirrors ``_ChatSlot``: which task the
+        #: slot currently runs, and whether that task is still preparing.
+        self.task = None
+        self._preparing_task = None
+        self._lock = asyncio.Lock()
+        self._last_turn_auth_required = False
         #: Relay-archive marker, "local" as on every ordinary slot.
         self.executor = "local"
         self.instance_id = ""
@@ -153,6 +161,158 @@ class TestStopHandlerIdempotent:
         assert slot._stop_state == "idle"
         assert slot._stop_event_id is None
         assert slot.source_links_invalidated == 1
+
+
+class TestStopCancelsTurnPreparation:
+    """Stop during turn preparation must actually stop the turn.
+
+    While ``_run_chat`` is still preparing (memory admission, session cold
+    start) the provider has no turn, so ``stop_turn`` answers "idle". The
+    handler cancels the preparing task there: settling the card as "stopped"
+    and leaving the task running until it reaches the dispatch gate would, on
+    a slow cold start, keep the session busy for minutes behind a "[Stopped]"
+    card, and each extra press would be another no-op "idle" stop that could
+    never escalate.
+    """
+
+    @staticmethod
+    def _preparing_task():
+        started = asyncio.Event()
+
+        async def _prepare():
+            started.set()
+            await asyncio.Event().wait()
+
+        return asyncio.create_task(_prepare()), started
+
+    async def _stop(self, state, slot):
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                return await stop_slot_turn(state, slot)
+
+    @pytest.mark.asyncio
+    async def test_idle_outcome_cancels_a_preparing_turn(self):
+        slot = _FakeSlot()
+        slot.task, started = self._preparing_task()
+        slot._preparing_task = slot.task
+        await started.wait()
+        state = _FakeState(slot)
+
+        await self._stop(state, slot)
+
+        assert slot.task.cancelled()
+        assert slot._stop_state == "idle"
+        assert slot._stop_event_id is None
+
+    @pytest.mark.asyncio
+    async def test_idle_outcome_leaves_a_dispatched_turn_alone(self):
+        """Past dispatch the provider owns the turn; the task is not ours to cancel."""
+        slot = _FakeSlot()
+        slot._preparing_task = None
+        slot.task, started = self._preparing_task()
+        await started.wait()
+        state = _FakeState(slot)
+
+        try:
+            await self._stop(state, slot)
+            assert not slot.task.done()
+        finally:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_soft_outcome_does_not_cancel_the_task(self):
+        """A provider that acked the cancel ends the turn itself."""
+        slot = _FakeSlot()
+        slot.task, started = self._preparing_task()
+        slot._preparing_task = slot.task
+        await started.wait()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+
+        try:
+            await self._stop(state, slot)
+            assert not slot.task.done()
+        finally:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_state", ["idle", "killing"])
+    async def test_later_stop_recancels_detached_teardown(self, stop_state):
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        slot = _FakeSlot()
+        slot._queue = [{"id": "q1", "content": "next"}]
+        started = asyncio.Event()
+        teardown_entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def prepare():
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                slot._preparing_task = None
+                teardown_entered.set()
+                await release.wait()
+
+        task = asyncio.create_task(prepare())
+        slot.task = slot._preparing_task = task
+        state = _FakeState(slot)
+        try:
+            await started.wait()
+            await self._stop(state, slot)
+            assert teardown_entered.is_set()
+            assert slot.task is None
+            assert slot._preparing_task is None
+            assert slot._stop_teardown_task is task
+            assert not task.done()
+            slot._stop_state = stop_state
+
+            with patch("kiro_crew.dashboard.chat_handlers.sel"):
+                await stop_slot_turn(state, slot, escalate=False)
+            assert not task.done()
+            await self._stop(state, slot)
+
+            assert task.cancelled()
+            assert slot._stop_teardown_task is None
+            assert slot._queue == [{"id": "q1", "content": "next"}]
+            assert state.sessions.stop_turn.await_count == 1
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_interrupt_idle_outcome_cancels_a_preparing_turn(self):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot._queue = [{"id": "q1", "content": "next"}]
+        slot.task, started = self._preparing_task()
+        slot._preparing_task = slot.task
+        await started.wait()
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        request.content_length = 0
+        request.can_read_body = False
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel"):
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                await api_chat_slot_interrupt(request)
+
+        assert slot.task.cancelled()
+        assert [item["id"] for item in slot._queue] == ["q1"]
 
 
 class TestInterruptHandlerIdempotent:
@@ -1193,6 +1353,10 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         with (
             patch("kiro_crew.dashboard.chat_handlers.sel"),
             patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
+            # The idle outcome then dispatches the preserved queue through the
+            # real runner machinery, which needs a full slot surface; this test
+            # asserts only the session key the stop addressed.
+            patch("kiro_crew.dashboard.chat_handlers._start_next_queued_turn", AsyncMock()),
         ):
             await api_chat_slot_interrupt(request)
 
