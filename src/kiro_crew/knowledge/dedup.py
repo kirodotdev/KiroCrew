@@ -124,6 +124,19 @@ class DocRef:
     resident_since: float   # earliest item created_at epoch (tiebreak)
     file_path: str | None = None  # set only for folder-file docs
     embedding: list[float] | None = field(default=None, repr=False)
+    _norm_stem: str | None = field(default=None, repr=False, compare=False)
+
+    def norm_stem(self) -> str:
+        """``normalize_filename(self.filename)``, computed once and cached.
+
+        The fuzzy tier compares normalized stems for every candidate pair, so
+        normalizing on each comparison is O(n^2) string work. Caching it on the
+        document makes it O(n). Cleared automatically whenever a fresh DocRef is
+        built, since the cache lives on the instance.
+        """
+        if self._norm_stem is None:
+            self._norm_stem = normalize_filename(self.filename)
+        return self._norm_stem
 
     @property
     def key(self) -> tuple[str, str]:
@@ -227,7 +240,23 @@ def filename_near_match(a: str, b: str) -> bool:
     a high difflib ratio), AND -- when both carry dates -- those dates are within
     _DATE_MATCH_MAX_DAYS. The date gate stops distinct instances of a series that
     share an identical stem (e.g. "...Apr 2026" vs "...Dec25") from collapsing."""
-    na, nb = normalize_filename(a), normalize_filename(b)
+    return _stems_near_match(normalize_filename(a), normalize_filename(b), a, b)
+
+
+# A difflib ratio is 2*M/(La+Lb) with M <= min(La, Lb), so ratio <= 2*min/(La+Lb).
+# For ratio >= _FILENAME_RATIO_FLOOR the two lengths must satisfy
+# min/max >= floor/(2-floor). Any candidate outside that length band cannot clear
+# the floor, so the bucketed sweep can skip it without changing any result.
+_FILENAME_LEN_RATIO = _FILENAME_RATIO_FLOOR / (2.0 - _FILENAME_RATIO_FLOOR)
+
+
+def _stems_near_match(na: str, nb: str, a: str, b: str) -> bool:
+    """``filename_near_match`` on already-normalized stems ``na``/``nb``.
+
+    Takes the raw names ``a``/``b`` too, only for the date-compatibility gate.
+    Lets a caller that normalizes each stem once (the O(n) bucketed sweep) reuse
+    the result instead of re-normalizing per pair.
+    """
     if not na or not nb:
         return False
     if na == nb or SequenceMatcher(None, na, nb).ratio() >= _FILENAME_RATIO_FLOOR:
@@ -500,7 +529,7 @@ def _match_reason(store, a: DocRef, b: DocRef, threshold: float) -> str | None:
         return None
     if a.content_hash and b.content_hash and a.content_hash == b.content_hash:
         return "exact"
-    if not filename_near_match(a.filename, b.filename):
+    if not _stems_near_match(a.norm_stem(), b.norm_stem(), a.filename, b.filename):
         return None
     if not a.embedding_sig or a.embedding_sig != b.embedding_sig:
         return None
@@ -522,14 +551,23 @@ def find_duplicates(store, docs: list[DocRef], threshold: float) -> list[DedupAc
     """Greedy pairwise collapse. Each loser is removed from further consideration, and a
     document that has already won a collapse is protected from later becoming a loser --
     so a deleted document's designated survivor is never itself deleted, and content
-    always survives in exactly one copy."""
+    always survives in exactly one copy.
+
+    Candidate pairs are found through indexes built once instead of comparing every
+    pair: a content-hash bucket (the exact tier) and, within each embedding_sig
+    bucket, a filename near-match found through a chain of exact upper bounds on the
+    difflib ratio. Every surfaced pair is still fully re-checked by ``_match_reason``,
+    and no pair that matches today is ever skipped, so the action list is identical
+    to the dense O(n^2) scan -- same pairs, same order. See ``_candidate_pairs``.
+    """
     actions: list[DedupAction] = []
     removed: set[tuple[str, str]] = set()
     survivors: set[tuple[str, str]] = set()  # designated winners; must not be deleted
+    candidates = _candidate_pairs(docs)
     for i in range(len(docs)):
         if docs[i].key in removed:
             continue
-        for j in range(i + 1, len(docs)):
+        for j in candidates[i]:
             if docs[j].key in removed:
                 continue
             reason = _match_reason(store, docs[i], docs[j], threshold)
@@ -547,6 +585,113 @@ def find_duplicates(store, docs: list[DocRef], threshold: float) -> list[DedupAc
             if docs[i].key in removed:
                 break  # docs[i] itself lost; stop pairing it
     return actions
+
+
+def _candidate_pairs(docs: list[DocRef]) -> list[list[int]]:
+    """For each ``i``, the sorted list of ``j > i`` worth comparing against it.
+
+    Replaces the dense ``for j in range(i+1, len(docs))`` scan that compared every
+    one of the ``n*(n-1)/2`` pairs. The surfaced set is the UNION of the only two
+    ways ``_match_reason`` can return a reason:
+
+      * exact tier -- the two share a non-empty ``content_hash`` (a dict bucket).
+        Name-independent, so it is built regardless of ``embedding_sig``.
+      * fuzzy tier -- the two share a non-empty ``embedding_sig`` (``_match_reason``
+        requires equal sig before it ever computes a cosine) AND their filenames
+        near-match. Inside each sig bucket:
+          - equal normalized stems are grouped directly through a dict;
+          - for non-equal stems, candidates are found with a chain of EXACT upper
+            bounds on ``SequenceMatcher.ratio()`` -- a length band
+            (``real_quick_ratio`` = ``2*min/(la+lb)``), then ``quick_ratio()``,
+            then ``ratio()`` -- each ``>= _FILENAME_RATIO_FLOOR``. Every link is an
+            upper bound, so a pair that would clear ``ratio()`` is never dropped.
+
+    Every surfaced pair is still fully re-checked by ``_match_reason`` (including the
+    date gate and the cosine), so the collapse is byte-identical to the dense scan;
+    this only skips pairs that provably return None. Lists are kept in ascending
+    ``j`` order so the greedy loop visits pairs in the original order.
+    """
+    n = len(docs)
+    out: list[set[int]] = [set() for _ in range(n)]
+
+    def _add(a: int, b: int) -> None:
+        lo, hi = (a, b) if a < b else (b, a)
+        out[lo].add(hi)
+
+    def _pair_group(group: list[int]) -> None:
+        for a in range(len(group)):
+            for b in range(a + 1, len(group)):
+                _add(group[a], group[b])
+
+    # Exact tier: group document indices by content hash.
+    by_hash: dict[str, list[int]] = {}
+    for idx, d in enumerate(docs):
+        if d.content_hash:
+            by_hash.setdefault(d.content_hash, []).append(idx)
+    for group in by_hash.values():
+        _pair_group(group)
+
+    # Fuzzy tier: _match_reason only computes a cosine when both docs carry the SAME
+    # non-empty embedding_sig, so pair only within a sig bucket. The filename
+    # near-match is then found inside each bucket, never across the whole corpus.
+    by_sig: dict[str, list[int]] = {}
+    for idx, d in enumerate(docs):
+        if d.embedding_sig:
+            by_sig.setdefault(d.embedding_sig, []).append(idx)
+    for members in by_sig.values():
+        _pair_filename_near(docs, members, _add)
+
+    return [sorted(s) for s in out]
+
+
+def _pair_filename_near(docs, members, add) -> None:
+    """Add every pair in ``members`` whose filenames near-match, via exact bounds.
+
+    An equal normalized stem is grouped through a dict (O(1) per member). For stems
+    that differ, the only pairs that can reach ``_FILENAME_RATIO_FLOOR`` are found
+    with a chain of upper bounds on ``SequenceMatcher.ratio()``:
+
+      1. length band ``2*min/(la+lb) >= floor`` (this is exactly ``real_quick_ratio``,
+         an upper bound) -- found by sorting the distinct stems by length and
+         walking a window;
+      2. ``SequenceMatcher.quick_ratio() >= floor`` (an upper bound on ratio);
+      3. ``SequenceMatcher.ratio() >= floor`` (the real value).
+
+    Each stem's work is done once between distinct stems; the member lists behind
+    each stem are then cross-producted. autojunk (names >= 200 chars) only makes
+    ``quick_ratio``/``ratio`` smaller, never larger, so the bounds still hold.
+    """
+    by_stem: dict[str, list[int]] = {}
+    for idx in members:
+        s = docs[idx].norm_stem()
+        if s:
+            by_stem.setdefault(s, []).append(idx)
+
+    # Equal stems: every member in the bucket pairs with every other.
+    for group in by_stem.values():
+        for a in range(len(group)):
+            for b in range(a + 1, len(group)):
+                add(group[a], group[b])
+
+    # Non-equal stems: length window -> quick_ratio -> ratio, all upper bounds.
+    distinct = sorted(by_stem.keys(), key=len)
+    for p, sa in enumerate(distinct):
+        la = len(sa)
+        max_len = la / _FILENAME_LEN_RATIO if _FILENAME_LEN_RATIO else float("inf")
+        sm = SequenceMatcher(None, sa, "")
+        for q in range(p + 1, len(distinct)):
+            sb = distinct[q]
+            lb = len(sb)
+            if lb > max_len:
+                break  # length-sorted: every later stem is out of band too
+            sm.set_seq2(sb)
+            if sm.quick_ratio() < _FILENAME_RATIO_FLOOR:
+                continue
+            if sm.ratio() < _FILENAME_RATIO_FLOOR:
+                continue
+            for i_idx in by_stem[sa]:
+                for j_idx in by_stem[sb]:
+                    add(i_idx, j_idx)
 
 
 def _source_is_now_empty(store, source_id: str) -> bool:

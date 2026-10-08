@@ -1115,3 +1115,226 @@ class TestOneDocumentManyLocations:
             assert store.detach_source_location_by_hash(a, text_hash) == 1
         finally:
             store.db.close()
+
+
+def _find_duplicates_reference(store, docs, threshold):
+    """The pre-optimization dense O(n^2) find_duplicates, kept here as the oracle.
+
+    The optimized find_duplicates must return exactly this list, in this order, for
+    every input. Copied verbatim from the original implementation so the equivalence
+    tests compare against the behaviour being replaced, not against the new code.
+    """
+    import kiro_crew.knowledge.dedup as dd
+
+    actions = []
+    removed = set()
+    survivors = set()
+    for i in range(len(docs)):
+        if docs[i].key in removed:
+            continue
+        for j in range(i + 1, len(docs)):
+            if docs[j].key in removed:
+                continue
+            reason = dd._match_reason(store, docs[i], docs[j], threshold)
+            if not reason:
+                continue
+            winner, loser = dd.pick_winner(docs[i], docs[j])
+            if loser.key in survivors:
+                continue
+            actions.append(dd.DedupAction(winner=winner, loser=loser, reason=reason))
+            removed.add(loser.key)
+            survivors.add(winner.key)
+            if docs[i].key in removed:
+                break
+    return actions
+
+
+def _action_tuples(actions):
+    return [(a.winner.key, a.loser.key, a.reason) for a in actions]
+
+
+class TestSweepIsNotQuadratic:
+    """The scheduled sweep must not do O(n^2) filename work on a large corpus.
+
+    find_duplicates once called _match_reason -- and through it SequenceMatcher and
+    normalize_filename -- for every one of the n*(n-1)/2 cross pairs. On a 20k-doc
+    Library that is ~2e8 pairs of pure-Python string work holding the GIL in the
+    gateway thread. The optimized sweep buckets candidates (a content-hash index and,
+    inside each embedding_sig bucket, a filename near-match found through a chain of
+    exact upper bounds on the difflib ratio), so unrelated documents are never
+    compared -- and its action list is identical to the dense scan's.
+    """
+
+    @staticmethod
+    def _doc(idx, name, *, content_hash=None, embedding_sig=None, item_ids=None,
+             source_id=None, source_type="local_file", recency=None):
+        from kiro_crew.knowledge.dedup import DocRef
+        return DocRef(
+            source_id=source_id if source_id is not None else f"s{idx}",
+            source_type=source_type, filename=name,
+            item_ids=item_ids if item_ids is not None else [f"i{idx}"],
+            content_hash=content_hash, embedding_sig=embedding_sig,
+            recency=float(idx) if recency is None else recency,
+            resident_since=float(idx))
+
+    # ---- equivalence with the dense reference, over randomized corpora ----
+
+    def _random_corpus(self, rng, n):
+        """Mix every feature that steers _match_reason: shared hashes, near-typo
+        names, dated series, same/different sources, shared item ids, mixed sigs."""
+        stems = ["Quarterly Report", "Engineering Roadmap", "Budget Plan",
+                 "Onboarding Guide", "Incident Postmortem", "Release Notes"]
+        suffixes = ["", " (1)", " copy", " - copy", " Apr 2026", " Dec 2025",
+                    " 2026-01-15", " 2026-01-16"]
+        hashes = [None] + [f"h{k}" for k in range(n // 3 + 1)]
+        sigs = [None, "", "sigA", "sigB", "sigC"]
+        shared_item_pool = [f"shared{k}" for k in range(n // 5 + 1)]
+
+        docs = []
+        for k in range(n):
+            stem = rng.choice(stems)
+            # Occasionally inject a one-character typo so some stems are near but
+            # not equal (the ratio-only branch of the match).
+            name = stem + rng.choice(suffixes) + ".docx"
+            if rng.random() < 0.15:
+                pos = rng.randrange(len(name))
+                name = name[:pos] + "x" + name[pos + 1:]
+            ch = rng.choice(hashes)
+            sig = rng.choice(sigs)
+            src = f"src{rng.randrange(1, max(2, n // 2))}"
+            if rng.random() < 0.1:
+                item_ids = [rng.choice(shared_item_pool)]
+            else:
+                item_ids = [f"it{k}"]
+            stype = rng.choice(["local_file", "local_folder", "obsidian_vault"])
+            docs.append(self._doc(
+                k, name, content_hash=ch, embedding_sig=sig, item_ids=item_ids,
+                source_id=src, source_type=stype, recency=float(rng.randrange(1000))))
+        # Give fuzzy pairs a chance to clear the cosine: equal-sig docs share a vector.
+        vecs = {}
+        for d in docs:
+            if d.embedding_sig:
+                d.embedding = vecs.setdefault(d.embedding_sig, [1.0, 0.0, 0.0])
+        return docs
+
+    def test_equivalence_with_reference_over_random_corpora(self):
+        import random
+
+        import kiro_crew.knowledge.dedup as dd
+
+        store = object()  # embeddings are cached on the DocRefs, so the store is unused
+        for seed in range(40):
+            rng = random.Random(seed)
+            n = rng.randrange(10, 120)
+            docs = self._random_corpus(rng, n)
+            # Fresh copies for each run so the lazy embedding cache does not leak.
+            expected = _find_duplicates_reference(store, list(docs), 0.95)
+            got = dd.find_duplicates(store, list(docs), 0.95)
+            assert _action_tuples(got) == _action_tuples(expected), (
+                f"seed={seed} n={n}: optimized action list diverged from the dense "
+                f"reference")
+
+    def test_equivalence_with_long_autojunk_names(self):
+        """Names >= 200 chars trigger SequenceMatcher autojunk. quick_ratio/ratio can
+        only shrink under autojunk, so the upper-bound chain still never drops a
+        matching pair -- verify the optimized output still equals the reference."""
+        import kiro_crew.knowledge.dedup as dd
+
+        base = "Engineering Roadmap " + ("alpha beta gamma delta " * 12)  # > 200 chars
+        assert len(base) >= 200
+        store = object()
+        vec = [1.0, 0.0, 0.0]
+        docs = []
+        long_names = [base + ".docx", base + " (1).docx",
+                      base[:-1] + "x.docx", "Short Note.docx"]
+        for k, name in enumerate(long_names):
+            d = self._doc(k, name, embedding_sig="s1")
+            d.embedding = vec
+            docs.append(d)
+        docs.append(self._doc(99, "Short Note copy.docx", embedding_sig="s2"))
+
+        expected = _find_duplicates_reference(store, list(docs), 0.95)
+        got = dd.find_duplicates(store, list(docs), 0.95)
+        assert _action_tuples(got) == _action_tuples(expected)
+        assert any(a.reason.startswith("fuzzy:") for a in got), (
+            "the long-name near-duplicates must still collapse")
+
+    # ---- the quadratic path is gone ----
+
+    @staticmethod
+    def _distinct_names(n):
+        import random
+        words = ["roadmap", "budget", "onboarding", "retro", "spec", "design",
+                 "notes", "runbook", "postmortem", "proposal", "charter", "review",
+                 "plan", "audit", "metrics", "sprint", "backlog", "okrs", "rfc",
+                 "adr", "ledger", "pipeline", "gateway", "worker", "conductor",
+                 "schema", "migration", "release", "hotfix", "incident"]
+        rng = random.Random(1234)
+        return [f"{rng.choice(words)}-{rng.choice(words)}-{rng.choice(words)}-{k}.md"
+                for k in range(n)]
+
+    def test_ratio_calls_are_bounded_for_2000_distinct_docs(self):
+        """~2000 docs with distinct names and distinct sigs must trigger far fewer
+        than n*(n-1)/2 SequenceMatcher.ratio() calls."""
+        import kiro_crew.knowledge.dedup as dd
+
+        n = 2000
+        names = self._distinct_names(n)
+        # Spread across a handful of sigs so the fuzzy path is actually exercised.
+        # Give each doc a well-separated embedding DIRECTION so that even when two
+        # names happen to normalize to the same stem, their cosine stays below the
+        # threshold -- the subject under test is the number of ratio() calls, not the
+        # collapse outcome -- and no store read is needed.
+        import math as _math
+        docs = []
+        for k, nm in enumerate(names):
+            d = self._doc(k, nm, embedding_sig=f"sig{k % 8}")
+            theta = (k % 97) * (_math.pi / 97.0)  # 97 distinct directions, all < pi
+            d.embedding = [_math.cos(theta), _math.sin(theta), 0.0]
+            docs.append(d)
+
+        calls = {"ratio": 0}
+        real = dd.SequenceMatcher
+
+        class _Counting(real):  # type: ignore[misc,valid-type]
+            def ratio(self):
+                calls["ratio"] += 1
+                return super().ratio()
+
+        dd.SequenceMatcher = _Counting
+        try:
+            dd.find_duplicates(object(), docs, 0.95)
+        finally:
+            dd.SequenceMatcher = real
+
+        dense_pairs = n * (n - 1) // 2  # ~2,000,000
+        assert calls["ratio"] < dense_pairs // 100, (
+            f"{calls['ratio']} ratio() calls for {n} docs (dense pairs = "
+            f"{dense_pairs}) -- the sweep is still ~quadratic")
+
+    def test_result_matches_brute_force_on_a_mixed_db(self, tmp_path):
+        """End-to-end against a real KnowledgeStore: the optimized find_duplicates
+        over enumerate_docs must equal the dense reference over the same docs."""
+        import kiro_crew.knowledge.dedup as dd
+
+        store = _mk_store(tmp_path)
+        try:
+            vec = [1.0, 0.0, 0.0]
+            _add_upload(store, "Quarterly Report.docx", "h-a", vec, sig="e1")
+            _add_folder_file(store, "/f/Quarterly Report (1).docx", "h-b", vec,
+                             sig="e1")
+            _add_upload(store, "alpha.md", "dup-hash", [0.0, 1.0, 0.0], sig="e2")
+            _add_folder_file(store, "/f/beta.md", "dup-hash", [0.0, 1.0, 0.0],
+                             sig="e3")
+            for k in range(30):
+                _add_upload(store, f"noise-{k}.md", f"nh{k}",
+                            [0.0, 0.0, float(k + 1)], sig=f"n{k}")
+
+            expected = _find_duplicates_reference(store, dd.enumerate_docs(store), 0.95)
+            got = dd.find_duplicates(store, dd.enumerate_docs(store), 0.95)
+            assert _action_tuples(got) == _action_tuples(expected)
+            reasons = sorted(r for *_, r in _action_tuples(got))
+            assert any(r == "exact" for r in reasons)
+            assert any(r.startswith("fuzzy:") for r in reasons)
+        finally:
+            store.db.close()
