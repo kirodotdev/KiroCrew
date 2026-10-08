@@ -7,6 +7,20 @@ import type { Diagnostic, GitStatus } from './api'
 /** localStorage key holding the project the user last had open. */
 export const LAST_PROJECT_KEY = 'kc:papyrus:project'
 
+/** React Query key for the paper list. */
+export const PROJECTS_QUERY_KEY = ['papyrus', 'projects']
+
+/**
+ * React Query key for ONE paper's detail.
+ *
+ * Shared because the list and the workspace hold SEPARATE cache entries for the
+ * same paper, and the rename lives in the list while the title it changes is
+ * rendered by the workspace. Spelling the key out in both files is how they came
+ * to disagree: invalidating only the list left the renamed paper opening under
+ * its old name until a reload.
+ */
+export const projectQueryKey = (name: string): string[] => ['papyrus', 'project', name]
+
 /** localStorage key prefix mapping a project to its co-author chat slot. */
 export const SLOT_KEY_PREFIX = 'kc:papyrus:slot:'
 

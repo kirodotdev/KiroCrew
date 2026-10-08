@@ -1710,6 +1710,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
         "members.py",
+        # Same predicate use: `sanitize_title` asks whether a title's closed-up
+        # form (markup removed) WOULD need redaction, only to pick which form to
+        # return. It returns unredacted text; the Papyrus routes that display the
+        # title are the registered sink and redact it there.
+        "apps/builtins/papyrus/backend/store.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
