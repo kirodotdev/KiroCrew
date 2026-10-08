@@ -45,6 +45,7 @@ from kiro_crew.piper_worker import MAX_AUDIO_BYTES as _PIPER_MAX_AUDIO_BYTES
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
+    _PYTHON_ENV_PREFIXES,
     SandboxUnavailableError,
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -1112,6 +1113,12 @@ async def _synthesize_polly(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # A Python AWS CLI must not load the gateway's packages.
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if not any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
+                },
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
