@@ -54,6 +54,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/project/git", handlers.api_project_git)
     app.router.add_get("/api/project/git/status", handlers.api_project_git_status)
     app.router.add_get("/api/project/git/log", handlers.api_project_git_log)
+    app.router.add_get("/api/project/git/repos", handlers.api_project_git_repos)
     app.router.add_get("/api/project/tree", handlers.api_project_tree)
     app.router.add_post("/api/upload", handlers.api_upload)
     app.router.add_post("/api/upload/file", handlers.api_upload_file)
