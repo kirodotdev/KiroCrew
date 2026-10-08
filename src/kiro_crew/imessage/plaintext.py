@@ -81,6 +81,17 @@ _REGIONAL_INDICATORS = range(0x1F1E6, 0x1F200)
 _KEYCAP = 0x20E3
 _TAG_RANGE = range(0xE0020, 0xE0080)
 
+#: General categories that carry Grapheme_Extend. ``unicodedata.combining``
+#: reports the canonical combining CLASS, which is 0 for a large share of real
+#: marks -- every Thai vowel sign above the baseline (U+0E31 MAO EK, U+0E34,
+#: U+0E47), Khmer and the Indic matras -- so testing the class alone declared
+#: those marks safe to cut after and split a grapheme the reader sees as one
+#: character. Testing the CATEGORY is the property that actually holds: a mark
+#: belongs to the preceding base whatever its class. Erring wide here can only
+#: move a cut earlier, never split a cluster, so the whole file's guarantee
+#: ("never separate a mark from its base") gets stronger, not weaker.
+_MARK_CATEGORIES = frozenset({"Mn", "Mc", "Me"})
+
 
 def to_plaintext(text: str) -> str:
     """Flatten markdown to plain text, passing code-block contents through.
@@ -235,6 +246,7 @@ def _joins_previous(text: str, index: int) -> bool:
     if (
         following == _ZWJ
         or unicodedata.combining(following)
+        or unicodedata.category(following) in _MARK_CATEGORIES
         or code in _VARIATION_SELECTORS
         or code in _VARIATION_SUPPLEMENT
         or code in _SKIN_TONES
