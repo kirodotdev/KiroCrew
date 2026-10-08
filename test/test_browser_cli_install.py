@@ -3062,3 +3062,44 @@ class TestPlaywrightHostPlatform:
 
     def test_no_os_release_falls_back_like_playwright(self, monkeypatch):
         assert self._host(monkeypatch, system="linux") == "ubuntu24.04-x64"
+
+
+def test_install_resolves_npm_and_node_once_and_logs_what_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bootstrap's PATH-derived npm/Node are resolved once and recorded.
+
+    Reporting only: the logged writability never changes whether the install runs.
+    """
+    crew = tmp_path / "crew"
+    monkeypatch.setattr(mod, "config_dir", lambda: crew)
+    calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/playwright-cli"})
+    lookups: list[str] = []
+    resolve = mod.find_node_tool
+    monkeypatch.setattr(
+        mod, "find_node_tool", lambda name, base_path=None: (lookups.append(name), resolve(name))[1]
+    )
+    monkeypatch.setattr(
+        mod,
+        "bootstrap_tool_provenance",
+        lambda path: {
+            "path": path,
+            "real_path": path,
+            "writable_at": "/n",
+            "own_toolchain": False,
+            "shared_write": True,
+        },
+    )
+
+    with caplog.at_level("INFO", logger=mod.__name__):
+        result = mod.install()
+
+    assert result["ok"] is True
+    assert sorted(lookups) == ["node", "npm"]
+    assert calls[0][0] == "/n/npm"
+    logged = caplog.text
+    assert "browser install bootstrap: npm=/n/npm" in logged
+    assert "browser install bootstrap: node=/n/node" in logged
+    assert "user-writable at=/n, own toolchain=False, group/other-writable=True" in logged

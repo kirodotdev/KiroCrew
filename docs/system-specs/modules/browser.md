@@ -148,6 +148,29 @@ once, at install, so registry auth applies at install time only.
    and Windows `.cmd` launchers remain shell-facing identities only, so neither
    PATH-based interpreter selection nor command-processor reparsing reaches a
    gateway request.
+   The bootstrap itself is the one step that still reads the gateway's
+   environment: `npm` and the source `node` are resolved ONCE per install
+   through `env.find_node_tool` (version-manager dirs, then the gateway `PATH`),
+   and those same paths are what run. No trust policy refuses them — nvm, fnm,
+   volta and mise all install into user-writable directories under `$HOME`, so
+   rejecting writable toolchains would break most real installs. Instead the
+   installer logs each resolved path, its symlink-resolved target, and the first
+   component of its hierarchy the gateway user can write
+   (`install.bootstrap_tool_provenance`, built on the same
+   `_gateway_writable_component` walk the CLI resolver refuses on, so the two
+   cannot disagree). `kirocrew doctor` prints the same answer as `browser npm:` /
+   `browser node:` rows: ✅ when nothing is writable; ℹ️ when the writable
+   component is owned by the gateway's own account with no group/other write bit
+   — nvm, fnm, volta and mise under `$HOME`, and Homebrew's 0755 user-owned
+   `/opt/homebrew` prefix (its `g+rwx` subdirectories sit below the prefix, which
+   the walk reaches first), which only an account that already runs the gateway
+   can replace; ⚠️ when it is group- or world-writable (another account could
+   swap the binary, as with a legacy root-owned `/usr/local` over a `g+rwx`
+   `bin`) or owned by a different account. The warning is never recorded as a doctor issue.
+   Doctor repeats the lookup with its OWN shell's `PATH`, which can differ from a
+   service-managed gateway's, and its rows say so; the install-time log line is
+   the authoritative record of what ran. Writability is reported as unchecked on
+   Windows, where `os.access` ignores ACLs.
 3. `playwright-cli install-browser chromium` for the baseline browser binary.
    The engine argument is required: omitting it installs every engine and lets an
    optional Firefox or WebKit dependency failure veto a working Chromium setup.

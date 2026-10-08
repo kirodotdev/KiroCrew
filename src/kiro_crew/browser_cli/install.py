@@ -602,6 +602,58 @@ def _gateway_writable_component(candidate: Path, resolved: Path) -> Path | None:
     return None
 
 
+def bootstrap_tool_provenance(path: str) -> dict[str, object]:
+    """Describe a resolved bootstrap ``npm``/``node``: where it lands, who can replace it.
+
+    Returns ``{"path", "real_path", "writable_at", "own_toolchain",
+    "shared_write"}``. ``writable_at`` is the first component of the
+    executable's hierarchy the gateway user can write, from the SAME predicate
+    the CLI resolver refuses on (:func:`_gateway_writable_component`), or ``""``
+    when there is none.
+
+    Who else can write that component is what separates the expected case from
+    the alarming one. ``shared_write`` means its group or other write bit is set,
+    so another account can replace the binary. ``own_toolchain`` means it is
+    owned by the gateway's own account and carries no such bit -- which is how
+    nvm, fnm, volta and mise lay out ``$HOME``, and how Homebrew's installer
+    creates ``/opt/homebrew`` (``install -m 0755 -o $USER``; the ``g+rwx`` it
+    applies to ``bin``/``Cellar`` sits below the prefix, which the walk reaches
+    first): only this account, which already runs the gateway, can replace it.
+    A legacy root-owned ``/usr/local`` over a ``g+rwx`` ``bin`` is
+    ``shared_write``: every other ``admin`` account can write it.
+
+    Reporting only: the bootstrap never refuses on this answer. ``writable_at``
+    is ``None`` -- not checked -- on Windows, where ``os.access`` reads only the
+    read-only attribute and not the ACL. A gateway running as root gets the
+    resolver's own answer: every component is writable by it.
+    """
+    real = os.path.realpath(path)
+    writable_at: str | None
+    own_toolchain = False
+    shared_write = False
+    if platform_compat.IS_WINDOWS:
+        writable_at = None
+    else:
+        component = _gateway_writable_component(Path(path), Path(real))
+        writable_at = "" if component is None else str(component)
+        if component is not None:
+            try:
+                st = component.stat()
+            except OSError:
+                st = None
+            if st is not None:
+                shared_write = bool(st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+                me = platform_compat.process_owner_uid(os.getpid())
+                own_toolchain = not shared_write and me is not None and st.st_uid == me
+    return {
+        "path": path,
+        "real_path": real,
+        "writable_at": writable_at,
+        "own_toolchain": own_toolchain,
+        "shared_write": shared_write,
+    }
+
+
 def _system_candidate(candidate: Path) -> tuple[Path | None, str | None]:
     """Validate a fixed system candidate with the tailnet planted-binary floor."""
     resolved, reason = _resolve_executable(candidate)
@@ -1883,6 +1935,32 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
 
 
+def _log_bootstrap_tools(npm: str | None, node: str | None) -> None:
+    """Log which npm and Node the install bootstrap is about to run.
+
+    These come from the gateway's PATH and version-manager directories, the one
+    place the browser install still reads that environment, so the resolved
+    paths -- and whether the gateway user could have replaced them -- are
+    recorded for whoever later asks what ran. ``kirocrew doctor`` reports the
+    same answer.
+    """
+    for name, path in (("npm", npm), ("node", node)):
+        if path is None:
+            logger.info("browser install bootstrap: %s not found", name)
+            continue
+        info = bootstrap_tool_provenance(path)
+        logger.info(
+            "browser install bootstrap: %s=%s (real %s, user-writable at=%s, "
+            "own toolchain=%s, group/other-writable=%s)",
+            name,
+            path,
+            info["real_path"],
+            info["writable_at"] if info["writable_at"] is not None else "not checked",
+            info["own_toolchain"],
+            info["shared_write"],
+        )
+
+
 def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
     """Install the CLI, a browser, and the skills reference.
 
@@ -1911,7 +1989,12 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
 
+    # Both bootstrap tools are resolved ONCE, here, and the same answers are
+    # what runs: the gateway PATH and version-manager dirs are not re-read
+    # between the npm step and the Node staging step.
     npm = find_node_tool("npm")
+    node = find_node_tool("node")
+    _log_bootstrap_tools(npm, node)
     if npm is None:
         steps.append(
             {
@@ -1952,10 +2035,9 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 
-    node = find_node_tool("node")
     try:
         if node is None:
-            raise OSError("node not found after npm install")
+            raise OSError("node not found on the gateway PATH or version-manager dirs")
         runtime_node = _node_runtime_executable(node)
         if runtime_node is None:
             raise OSError("Node did not report an executable process.execPath")
