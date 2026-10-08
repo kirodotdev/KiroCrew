@@ -502,6 +502,54 @@ def _audit_provision_failure(app_name: str, provision_error: str) -> str:
     return provision_error
 
 
+def _ensure_pip_available(app_name: str, env: dict[str, str], cwd: str) -> str:
+    """Make sure ``<interpreter> -m pip`` works before a --target install.
+
+    Some packaged interpreters ship ``ensurepip`` but no ``pip`` module, so the
+    install below dies with ``No module named pip``. Probe ``-m pip --version``;
+    on failure bootstrap once with ``-m ensurepip --upgrade`` and probe again.
+    Every call goes through the same sandbox wrapper and cgroup scope as the
+    install. Returns '' when pip is usable, else the reason it is not.
+    """
+
+    def _run(*args: str, timeout: int) -> int | None:
+        """Exit code, or None when the child could not be run to an answer."""
+        argv, _ = wrap_argv(platform_compat.isolated_python_argv(*args), mode="standard")
+        argv = cgroup_scope_argv(argv)
+        try:
+            return run_limited(
+                argv,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                env=env,
+                cwd=cwd,
+            ).returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("App %s: %s did not run: %s", app_name, " ".join(args), exc)
+            return None
+
+    probe = ("-m", "pip", "--version", "--disable-pip-version-check")
+    first = _run(*probe, timeout=30)
+    # Only a clean non-zero exit means "no pip". A probe that could not run
+    # (spawn error, timeout) proves nothing, so the install runs and reports
+    # its own, more specific, failure.
+    if first is None or first == 0:
+        return ""
+    logger.warning(
+        "App %s: the bundled interpreter has no pip; bootstrapping it with ensurepip", app_name
+    )
+    rc = _run("-m", "ensurepip", "--upgrade", timeout=120)
+    if rc == 0 and _run(*probe, timeout=30) == 0:
+        logger.info("App %s: pip bootstrapped with ensurepip", app_name)
+        return ""
+    return (
+        f"the interpreter {sys.executable} has no pip and `-m ensurepip --upgrade` "
+        f"did not provide one (exit {rc})"
+    )
+
+
 def provision_app_deps(app_name: str, root: Path) -> str:
     """Provision ``root/requirements.txt`` into the app's deps dir.
 
@@ -633,8 +681,9 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
     # installs bundle an interpreter that ships pip but no ensurepip, so
     # `-m venv` dies after creating the directory skeleton - and the venv-first
     # interpreter policy would then prefer that skeleton while it holds none of
-    # the app's dependencies. A --target install needs no bootstrap and works
-    # identically under packaged and source installs; the deps dir reaches the
+    # the app's dependencies. A --target install needs no venv and works
+    # identically under packaged and source installs (an interpreter shipping
+    # ensurepip without pip gets pip bootstrapped first: _ensure_pip_available); the deps dir reaches the
     # child via PYTHONPATH (set where the spawn body in ``backend.py`` builds the env).
     # sys.executable, never a bare "python3": the bare name relies on PATH
     # (absent on some hosts, a Store stub on Windows) - the same policy every
@@ -845,6 +894,11 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
                 # take the stamp shortcut (_requirements_volatile), so they
                 # reprovision on every start - a change confined to an
                 # included file cannot be masked.
+                # Raised into the except arm below, so a missing pip takes the
+                # same cleanup, restore and audit path as a failed install.
+                _no_pip = _ensure_pip_available(app_name, _env, str(root))
+                if _no_pip:
+                    raise RuntimeError(_no_pip)
                 pip_cmd, _ = wrap_argv(
                     platform_compat.isolated_python_argv(
                         "-m",

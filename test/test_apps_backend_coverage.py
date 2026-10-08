@@ -2687,7 +2687,10 @@ class TestDependencyInstall:
         kwargs_seen: list[dict[str, Any]] = []
 
         def _run(argv: Any, **kwargs: Any) -> Any:
-            kwargs_seen.append(kwargs)
+            # The pip-availability probe runs first with check=False on purpose
+            # (its exit code is the answer); only the install is pinned here.
+            if "install" in argv:
+                kwargs_seen.append(kwargs)
             return SimpleNamespace(returncode=0, stdout="")
 
         monkeypatch.setattr(bmod, "run_limited", _run)
@@ -2695,6 +2698,102 @@ class TestDependencyInstall:
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("deps-check", _manifest("server.py"))
         assert kwargs_seen and kwargs_seen[0].get("check") is True, kwargs_seen
+
+    @staticmethod
+    def _pip_bootstrap_runs(
+        monkeypatch: pytest.MonkeyPatch, codes: dict[str, list[int]]
+    ) -> tuple[list[str], list[str]]:
+        """Script exit codes per step ('probe', 'ensurepip'); record the order
+        of calls and the sandbox mode every one of them was wrapped with."""
+        order: list[str] = []
+        modes: list[str] = []
+
+        def _wrap(argv: Any, **kw: Any) -> Any:
+            modes.append(kw.get("mode", ""))
+            return list(argv), None
+
+        def _run(argv: Any, **_kw: Any) -> Any:
+            argv = list(argv)
+            step = (
+                "install" if "install" in argv
+                else "ensurepip" if "ensurepip" in argv
+                else "probe" if "--version" in argv
+                else "other"
+            )
+            order.append(step)
+            rc = codes.get(step, [0]).pop(0) if codes.get(step) else 0
+            return SimpleNamespace(returncode=rc, stdout="")
+
+        monkeypatch.setattr(bmod, "wrap_argv", _wrap)
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        return order, modes
+
+    def test_pip_present_skips_the_ensurepip_bootstrap(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        order, _ = self._pip_bootstrap_runs(monkeypatch, {"probe": [0]})
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-pip-ok", _manifest("server.py"))
+        assert order == ["probe", "install"], order
+
+    def test_a_missing_pip_is_bootstrapped_with_ensurepip_then_installs(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A packaged interpreter with ensurepip but no pip: probe fails,
+        ensurepip runs once, the re-probe passes, and the install proceeds -
+        every step under the same sandbox wrapper."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        order, modes = self._pip_bootstrap_runs(
+            monkeypatch, {"probe": [1, 0], "ensurepip": [0]}
+        )
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-no-pip", _manifest("server.py"))
+        assert order == ["probe", "ensurepip", "probe", "install"], order
+        assert modes[:4] == ["standard"] * 4, modes
+
+    def test_a_failed_pip_bootstrap_is_a_provisioning_failure(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ensurepip cannot help: no install is attempted, the backend log
+        names the cause, and the spawn still goes ahead (prior deps may serve)."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        order, _ = self._pip_bootstrap_runs(monkeypatch, {"probe": [1], "ensurepip": [1]})
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-no-pip-fail", _manifest("server.py"))
+        assert order == ["probe", "ensurepip"], order
+        log_text = (spawn_root / "data" / "logs" / "backend.log").read_text()
+        assert "Failed to install requirements.txt dependencies" in log_text
+        assert "ensurepip" in log_text
+
+    def test_a_probe_that_cannot_run_falls_through_to_the_install(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A probe timeout proves nothing about pip, so no bootstrap: the
+        install runs and reports its own failure if there is one."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        order: list[str] = []
+
+        def _run(argv: Any, **_kw: Any) -> Any:
+            argv = list(argv)
+            if "--version" in argv:
+                order.append("probe")
+                raise subprocess.TimeoutExpired(argv, 30)
+            order.append("ensurepip" if "ensurepip" in argv else "install")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-probe-timeout", _manifest("server.py"))
+        assert order == ["probe", "install"], order
 
     def test_a_failed_dependency_install_does_not_block_the_spawn(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

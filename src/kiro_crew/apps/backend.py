@@ -1543,6 +1543,7 @@ if _typing.TYPE_CHECKING:
         _default_marker_environment,
         _deps_abi_tag,
         _deps_digest,
+        _ensure_pip_available,
         _open_contained_nofollow,
         _pinned_ancestors,
         _pinned_remove_entry,
