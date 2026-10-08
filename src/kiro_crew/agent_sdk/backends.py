@@ -171,6 +171,9 @@ with no row here.
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
      - driver-internal (whether ``settings.local.json`` is re-seeded on switch)
+   * - ``ACP_BACKENDS_AGENT_STARTED_TURNS``
+     - driver-internal (whether ``AcpClient`` reads stdout between turns and hands a
+       turn the agent started on its own to its ``on_agent_turn`` callback)
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.effort_via_slash_command``), and
        driver-internal everywhere else (whether ``_kiro.dev/commands/execute`` exists)
@@ -897,6 +900,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SESSION_SHARING,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary
+    ACP_BACKENDS_AGENT_STARTED_TURNS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,

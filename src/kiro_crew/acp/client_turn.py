@@ -1,8 +1,8 @@
 """Run an ``AcpClient`` prompt turn and dispatch the frames it reads.
 
-The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events``, the frame classifier
-and dispatcher, the prompt response reader, the opencode shell-permission deferral and the liveness
-consult.
+The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
+``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
+opencode shell-permission deferral and the liveness consult.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -49,7 +49,7 @@ from kiro_crew.acp.client_timeouts import (
     _TOOL_STALL_TIMEOUT,
     _effective_prompt_timeout_async,
 )
-from kiro_crew.acp.client_transport import _is_safe_oauth_url
+from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
@@ -766,6 +766,45 @@ async def stream_events(
     async with aclosing(self._dispatch_prompt_events(req_id, timeout)) as events:
         async for event in events:
             yield event
+
+
+async def stream_unsolicited(
+    self: AcpClient, timeout: float | None = None
+) -> AsyncIterator[AcpEvent]:
+    """Yield the events of a turn the agent started on its own, sending nothing.
+
+    Yields nothing when no such turn is pending, or when a prompt is in
+    flight: that prompt's turn reads those frames as its own. A prompt started
+    while this stream is open waits until it closes.
+    """
+    timeout = await _effective_prompt_timeout_async(timeout)
+    gate = self._agent_turn_gate
+    if gate is None or not self._agent_turn_pending():
+        return
+    async with gate:
+        # Checked under the gate, so a prompt that started meanwhile is seen.
+        if (
+            self._prompts_in_flight
+            or not self._agent_turn_pending()
+            or not self._turn_done.is_set()
+        ):
+            return
+        self._cancelled = False
+        self._turn_done.clear()
+        try:
+            async with aclosing(
+                self._dispatch_events(_AGENT_STARTED_REQUEST_ID, timeout)
+            ) as events:
+                async for event in events:
+                    yield event
+        finally:
+            # _dispatch_events leaves _prompt_loop to the async-gen finalizer, so
+            # its finally, which sets _turn_done, can run after this stream
+            # closes; the gate stays shut until it has released _turn_lock.
+            async with self._turn_lock:
+                pass
+            # Also when the read ended before _prompt_loop's own finally was armed.
+            self._turn_done.set()
 
 
 async def _dispatch_events(
