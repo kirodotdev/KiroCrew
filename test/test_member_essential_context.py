@@ -2636,6 +2636,7 @@ def test_a_refused_declared_source_still_refuses_when_the_envelope_is_over_budge
     """Budget fitting never turns a source the reader refuses into an omission."""
     (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
     (env.project / "declared-guide.md").unlink()
+    (env.project / "declared-guide.md").mkdir()
     with pytest.raises(MemberEssentialContextError, match="declared-guide"):
         _member_message(env)
 
@@ -2670,3 +2671,151 @@ def test_a_guide_too_large_to_fit_does_not_take_the_smaller_guides_after_it_out(
     assert "Declared guide: examples must be reproducible." in message
     assert "Always guide: explain assumptions." in message
     assert len(_envelope(message)) <= 64_000
+
+
+def _declare(env, resources: list[str]) -> None:
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(
+        json.dumps({"name": "writer-template", "prompt": "Bound Soul.", "resources": resources}),
+        encoding="utf-8",
+    )
+
+
+def test_absent_declared_literal_resource_is_skipped_with_a_note(env):
+    """kiro-cli skips a declared file that is not there; the session must still start.
+
+    AIM templates declare ``file://AGENTS.md`` and a subagent starts in an empty
+    folder, so the absent file is the ordinary case, not an attack.
+    """
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MISSING_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    (env.project / "AGENTS.md").unlink()
+    _declare(env, ["file://AGENTS.md", "file://notes/README.md", "file://declared-guide.md"])
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+    assert "Declared guide: examples must be reproducible." in message
+    assert f"[Essential source: {ESSENTIAL_MISSING_SKIP_SOURCE}:writer-template]" in message
+    assert "DECLARED RESOURCES NOT FOUND. 2 files" in message
+    assert str(env.project.resolve() / "AGENTS.md") in message
+    assert str(env.project.resolve() / "notes" / "README.md") in message
+    core: set[str] = set()
+    documents = documents_for_member("writer-template", str(env.project), core_sources_out=core)
+    assert f"{ESSENTIAL_MISSING_SKIP_SOURCE}:writer-template" in core
+    native = documents_for_member("writer-template", str(env.project), native_only=True)
+    assert not any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in native)
+    assert any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in documents)
+
+
+def test_present_declared_resources_add_no_missing_note(env):
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MISSING_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    documents = documents_for_member("writer-template", str(env.project))
+    assert not any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in documents)
+
+
+def test_projected_resources_skip_an_absent_file_in_an_empty_cwd(env, tmp_path):
+    """A subagent's empty working folder has no README.md; KAS loads nothing for it."""
+    from kiro_crew.member_essential_context import projected_resource_documents
+
+    cwd = tmp_path / "subagent_0001"
+    cwd.mkdir()
+    definition = {"id": "worker", "resources": ["file://README.md", "file://AGENTS.md"]}
+    assert projected_resource_documents(definition, str(cwd)) == {}
+    (cwd / "README.md").write_text("PRESENT_README", encoding="utf-8")
+    assert projected_resource_documents(definition, str(cwd)) == {
+        str(cwd.resolve() / "README.md"): "PRESENT_README"
+    }
+
+
+@requires_symlinks
+@pytest.mark.parametrize("shape", ["dangling-leaf", "leaf-to-outside", "dangling-parent"])
+def test_declared_literal_link_still_refuses(env, tmp_path, shape):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "GUIDE.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
+    if shape == "dangling-leaf":
+        (env.project / "GUIDE.md").symlink_to(outside / "gone.md")
+        declared = "file://GUIDE.md"
+    elif shape == "leaf-to-outside":
+        (env.project / "GUIDE.md").symlink_to(outside / "GUIDE.md")
+        declared = "file://GUIDE.md"
+    else:
+        (env.project / "notes").symlink_to(tmp_path / "gone-dir", target_is_directory=True)
+        declared = "file://notes/GUIDE.md"
+    _declare(env, [declared])
+    with pytest.raises(MemberEssentialContextError, match="GUIDE.md"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
+def test_declared_literal_outside_the_root_still_refuses_when_absent(env):
+    _declare(env, ["file://../never-created.md"])
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission bits; root reads mode-000 files",
+)
+def test_declared_literal_unreadable_file_still_refuses(env):
+    guide = env.project / "declared-guide.md"
+    guide.chmod(0)
+    try:
+        with pytest.raises(MemberEssentialContextError, match="declared-guide.md"):
+            env.builder.build_message(
+                "Continue",
+                False,
+                memory_store=env.store,
+                member=env.member,
+                project=str(env.project),
+            )
+    finally:
+        guide.chmod(0o644)
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission bits; root ignores a missing search bit",
+)
+def test_declared_literal_under_an_unsearchable_directory_still_refuses(env):
+    """An lstat that fails for permission is not absence: the source stays refused."""
+    locked = env.project / "locked"
+    locked.mkdir()
+    (locked / "GUIDE.md").write_text("LOCKED_GUIDE", encoding="utf-8")
+    locked.chmod(0o600)
+    _declare(env, ["file://locked/GUIDE.md"])
+    try:
+        with pytest.raises(MemberEssentialContextError, match="GUIDE.md"):
+            env.builder.build_message(
+                "Continue",
+                False,
+                memory_store=env.store,
+                member=env.member,
+                project=str(env.project),
+            )
+    finally:
+        locked.chmod(0o755)
+
+
+def test_absent_managed_literal_resource_still_refuses(env):
+    """A missing managed-state path keeps its refusal rather than becoming a skip."""
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project = config_dir() / "workspace"
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://memory/never-written.md"])
+    with pytest.raises(MemberEssentialContextError, match="managed"):
+        documents_for_member("writer-template", str(project))

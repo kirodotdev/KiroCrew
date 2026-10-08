@@ -1656,8 +1656,14 @@ fresh delivery, warm suppression, observable clear/compaction, one complete
 retransmission and renewed suppression. Only the model transport is simulated;
 this pins the adapter/receipt pairing, not unobservable native history behavior.
 Canonical identity and permanent-rule checks are not cached by a
-receipt. A missing declared source still refuses; missing optional root guides
-change the snapshot instead. The project root's implicit `AGENTS.md` and
+receipt. A declared literal (glob-free) `file://` source that simply does not
+exist is skipped, as kiro-cli skips it: the snapshot carries one core
+`essential-context#missing-skipped:<template>` note naming it, and the KAS
+projection skips it without a note. "Does not exist" means a root-first lstat
+walk meets a missing component and no link; a declared link (dangling or not),
+an unreadable or non-regular file, a managed-state path and an out-of-root path
+still refuse. Missing optional root guides change the snapshot instead. The
+project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does
 not refuse the turn: the guide is not read, a warning is logged, and an in-band

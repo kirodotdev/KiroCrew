@@ -131,6 +131,7 @@ DECLARED_SITES = frozenset(
         ("mcp_gateway/backend_tmp.py", "sweep_all_backend_tmp"),
         ("mcp_gateway/spill.py", "cleanup_old_spill_files"),
         ("mcp_gateway/spill.py", "maybe_spill_response"),
+        ("member_essential_context.py", "_is_absent"),
         ("member_essential_context.py", "_matches"),
         ("memory_files.py", "LocalMemoryFiles._atomic_write_text"),
         ("memory_files.py", "LocalMemoryFiles._guarded_entry"),
