@@ -57,7 +57,15 @@ Based on the user's current context below, generate 4-6 short, actionable prompt
 that the user might want to ask right now. Each suggestion should be a single sentence \
 (under 60 characters) that the user can click to start a conversation.
 
+IMPORTANT — LANGUAGE: Write every suggestion's "text" in the SAME language the user \
+writes and prefers. If the context below states a preferred/response language, or the \
+user's recent messages are in a particular language (for example Chinese), you MUST write \
+all suggestions in that language. Do NOT default to English when the user's language is \
+not English. Only the "text" is affected; the "kind" value always stays one of the fixed \
+English tags listed below.
+
 Consider:
+- The user's preferred language (follow it strictly, see above)
 - What they were working on recently (projects, sessions)
 - Their preferences and habits
 - Time of day and day of week
