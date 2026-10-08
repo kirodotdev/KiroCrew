@@ -119,6 +119,28 @@ Parameters:
       when combined with EC2 Instance Connect (which pushes an ephemeral key over
       the AWS API). Empty (default, recommended) = SSM-only: no inbound ports and
       no key material - use `kirocrew cloud connect` (SSM port-forward) instead.
+  CustomAmiId:
+    Type: String
+    Default: ""
+    # Mirrors the CLI's _AMI_ID_RE (cloud/ec2.py).
+    AllowedPattern: "^$|^ami-[0-9a-f]{8,17}$"
+    Description: >-
+      Optional (`kirocrew cloud launch --ami`). Launch from this AMI instead of
+      the latest Amazon Linux 2023 image. It must match Architecture and be
+      AL2023-compatible (the bootstrap uses dnf). Empty = the stock image.
+  ExtraPackages:
+    Type: String
+    Default: ""
+    # Mirrors the CLI's _EXTRA_PACKAGE_RE / EXTRA_PACKAGES_MAX_LEN (cloud/ec2.py).
+    # Space-separated names, each starting alphanumeric (never option-shaped),
+    # from a charset with no shell metacharacters: the value is expanded into
+    # the root user-data script. MaxLength bounds its UserData growth.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9._+-]*( [A-Za-z0-9][A-Za-z0-9._+-]*)*$"
+    MaxLength: 256
+    Description: >-
+      Optional (`kirocrew cloud launch --extra-packages`). Space-separated dnf
+      package names installed after the stock system packages. A name dnf
+      cannot find is skipped with a warning in /var/log/kirocrew-setup.log.
 
 # The AMI is resolved at deploy time from the public SSM Parameter Store alias —
 # never a hardcoded per-region AMI id. Latest Amazon Linux 2023 for the arch.
@@ -135,6 +157,7 @@ Conditions:
   IsArm: !Equals [!Ref Architecture, arm64]
   HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
   WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
+  HasCustomAmi: !Not [!Equals [!Ref CustomAmiId, ""]]
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
@@ -225,12 +248,15 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref InstanceType
-      ImageId: !Sub
-        - "{{resolve:ssm:${Param}}}"
-        - Param: !If
-            - IsArm
-            - !FindInMap [ArchToAmiParam, arm64, Param]
-            - !FindInMap [ArchToAmiParam, x8664, Param]
+      ImageId: !If
+        - HasCustomAmi
+        - !Ref CustomAmiId
+        - !Sub
+          - "{{resolve:ssm:${Param}}}"
+          - Param: !If
+              - IsArm
+              - !FindInMap [ArchToAmiParam, arm64, Param]
+              - !FindInMap [ArchToAmiParam, x8664, Param]
       IamInstanceProfile: !Ref InstanceProfile
       # Attach the ENI explicitly so the public-IP decision is instance-level
       # (the subnet's MapPublicIpOnLaunch may disagree either way). The launcher
@@ -365,6 +391,13 @@ Resources:
       #   repos carry no python3.12, install.sh provisions its own pinned
       #   interpreter instead, so a missing package must not fail the boot.
       #   ripgrep is optional and must never fail the bootstrap.
+      # "Extra packages": `--extra-packages` fills ExtraPackages, installed
+      #   one name at a time after the stock set so a name dnf cannot find is
+      #   skipped with a warning instead of failing the boot (the stock box
+      #   still works). Empty (the default) runs the loop zero times. The
+      #   value is expanded unquoted into this root script, which is safe only
+      #   because the AllowedPattern admits no shell metacharacters and no
+      #   leading '-'; MaxLength bounds its share of the 16 KB UserData cap.
       # "Node.js": the frontend build (vite 8 + rolldown) REQUIRES Node >= 22;
       #   AL2023's default AppStream nodejs is 18, on which the build dies
       #   with "SyntaxError: ... 'node:util' does not provide an export named
@@ -531,13 +564,14 @@ Resources:
           dnf install -y git tmux python3 python3-pip \
             unzip tar gzip which \
             || fail "essential package install failed (git/python3/unzip)"
-          # python3.12 explicitly: install.sh needs >= 3.12, AL2023's default
-          # python3 is 3.9 (see "System packages" above). Best-effort -- if the
-          # repos carry no python3.12, install.sh's _bootstrap_python provisions
-          # one via mise rather than failing the boot.
+          # Best-effort python3.12: see "System packages" above.
           dnf install -y python3.12 python3.12-pip \
             || echo "python3.12 unavailable from dnf; install.sh will provision one"
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
+          # Optional --extra-packages: see "Extra packages" above.
+          for p in ${ExtraPackages}; do
+            dnf install -y "$p" || echo "extra package $p unavailable, skipped"
+          done
 
           echo "--- installing Node.js ---"
           # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023 ships
@@ -615,8 +649,7 @@ Resources:
           cd kirocrew
           # Make a failed frontend build fatal so the retry below re-runs it.
           export KIROCREW_REQUIRE_FRONTEND=1
-          # One retry: first-boot contention can signal-kill the first build;
-          # the warm re-run reliably succeeds (see "Source fetch" above).
+          # One retry on a cold first boot: see "Source fetch" above.
           if ! bash install.sh --voice; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20

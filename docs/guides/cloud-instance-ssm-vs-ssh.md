@@ -100,7 +100,18 @@ here, and opens the dashboard — all from your laptop.
    or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
    --profile dev -y`. Useful flags: `--new` (a separate box instead of resuming
    your saved one) and `--keep-on-failure` (disable CloudFormation rollback to
-   inspect a failed bootstrap).
+   inspect a failed bootstrap). To customize a **new** box: `--extra-packages
+   gh,jq` installs extra dnf packages after the stock set (a name dnf cannot
+   find is skipped with a warning in `/var/log/kirocrew-setup.log`; names are
+   letters, digits and `. _ + -`, at most 256 characters in total), and
+   `--ami ami-xxxx` launches from your own image instead of the latest Amazon
+   Linux 2023 one (it must match the size tier's architecture and be
+   AL2023-compatible, since the bootstrap still runs `dnf`). The launcher does
+   not inspect the image first: an image of the wrong architecture fails the
+   stack at instance creation (EC2 reports the architecture mismatch, and
+   `launch` prints it as the root cause), while an image without `dnf` or
+   `cfn-signal` fails or times out during the bootstrap. Both are fixed
+   when the instance is created: with an existing saved box, use `--new`.
 3. **Reach it — and the ports.** Launch ends by opening an SSM port-forward and
    your browser at `http://localhost:<local>/?token=…`. You never choose the
    **remote** port: the gateway always listens on loopback `:5476` on the box. The

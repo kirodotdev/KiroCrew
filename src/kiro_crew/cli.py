@@ -2614,6 +2614,8 @@ Examples:
   kirocrew cloud launch --size power     # non-interactive size
   kirocrew cloud launch --new            # create a separate new instance
   kirocrew cloud launch --subnet subnet-0abc…  # pin the launch to an exact subnet
+  kirocrew cloud launch --extra-packages gh,jq # also install these dnf packages
+  kirocrew cloud launch --ami ami-0abc…  # launch from your own AL2023-based image
   kirocrew cloud list                    # list your cloud instances
   kirocrew cloud connect                 # reopen the dashboard over SSM
   kirocrew cloud stop | start            # pause / resume (save cost)
@@ -2676,6 +2678,20 @@ Examples:
         "auto-discovery — required to target a dedicated/private-subnet VPC "
         "when a default VPC exists. The subnet must have internet egress "
         "(NAT or IGW route).",
+    )
+    _c_launch.add_argument(
+        "--ami",
+        default="",
+        metavar="AMI_ID",
+        help="Launch from this AMI (ami-xxxx) instead of the latest Amazon Linux 2023 "
+        "image. It must match the size tier's architecture and be AL2023-compatible.",
+    )
+    _c_launch.add_argument(
+        "--extra-packages",
+        default="",
+        metavar="PKGS",
+        help='Extra dnf packages to install on the box, comma-separated (e.g. "gh,jq"). '
+        "A package dnf cannot find is skipped with a warning in the setup log.",
     )
     _c_launch.add_argument("-y", "--yes", action="store_true", help="Accept defaults, no prompts")
     _c_launch.add_argument(

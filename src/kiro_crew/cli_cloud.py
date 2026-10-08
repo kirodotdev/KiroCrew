@@ -127,6 +127,14 @@ def _cloud_launch(args: argparse.Namespace) -> int:
     except LoginTargetError as exc:
         ui.fail(f"Kiro identity target rejected: {exc}")
         return 2
+    ami_id = getattr(args, "ami", "") or ""
+    try:
+        if ami_id:
+            ami_id = ec2.validate_ami_id(ami_id)
+        extra_packages = ec2.normalize_extra_packages(getattr(args, "extra_packages", "") or "")
+    except ValidationError as exc:
+        ui.fail(f"Invalid launch option: {exc}")
+        return 2
     return wizard.launch(
         profile=profile,
         region=region,
@@ -137,6 +145,8 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         keep_on_failure=getattr(args, "keep_on_failure", False),
         hold_tunnel=getattr(args, "hold_tunnel", True),
         login_target=login_target,
+        ami_id=ami_id,
+        extra_packages=extra_packages,
     )
 
 

@@ -44,6 +44,8 @@ def _deploy_with_progress(
     region: str,
     subnet_id: str = "",
     disable_rollback: bool = False,
+    ami_id: str = "",
+    extra_packages: str = "",
 ) -> ec2.DeployResult:
     """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
 
@@ -69,6 +71,8 @@ def _deploy_with_progress(
                 region=region,
                 subnet_id=subnet_id,
                 disable_rollback=disable_rollback,
+                ami_id=ami_id,
+                extra_packages=extra_packages,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
@@ -362,6 +366,8 @@ def launch(
     keep_on_failure: bool = False,
     hold_tunnel: bool = True,
     login_target: Optional[KiroLoginTarget] = None,
+    ami_id: str = "",
+    extra_packages: str = "",
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
 
@@ -525,6 +531,17 @@ def launch(
                 return 1
             ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
             ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+        # Same rule for the image and package set: both are fixed when the
+        # instance is created.
+        fixed = [f for f, v in (("--ami", ami_id), ("--extra-packages", extra_packages)) if v]
+        if fixed:
+            names = " / ".join(fixed)
+            if assume_yes:
+                ui.fail(f"{names} cannot apply to the existing stack (set at creation).")
+                ui.detail(f"Use `kirocrew cloud launch --new {names} …` for a fresh instance.")
+                return 1
+            ui.warn(f"{names} ignored for an existing stack (set at creation).")
+            ui.detail(f"Use `kirocrew cloud launch --new {names} …` for a fresh instance.")
 
     # ── 4. Launch ─────────────────────────────────────────────────────────
     steps.step("Launching")
@@ -534,6 +551,10 @@ def launch(
         ui.info(f"CloudFormation stack: {ec2.stack_name(tag)}")
         if subnet_id:
             ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
+        if ami_id:
+            ui.info(f"AMI: {ami_id} (explicit --ami)")
+        if extra_packages:
+            ui.info(f"Extra packages: {extra_packages}")
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
         # would leave the record pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
@@ -557,6 +578,8 @@ def launch(
                 region=region,
                 subnet_id=subnet_id,
                 disable_rollback=keep_on_failure,
+                ami_id=ami_id,
+                extra_packages=extra_packages,
             )
         except AWSError as exc:
             ui.fail(str(exc))

@@ -106,6 +106,49 @@ _REF_PROBE_TIMEOUT_SECONDS = 15.0
 # EC2 subnet ids are `subnet-` + 8 (EC2-Classic era) or 17 hex chars.
 _SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}\Z")
 _SUBNET_ID_SPEC = FieldSpec(name="subnet_id", type=str, max_len=24, pattern=_SUBNET_ID_RE)
+# `--ami`: EC2 image ids are `ami-` + 8 or 17 lowercase hex chars. Mirrored by
+# the template's CustomAmiId AllowedPattern.
+_AMI_ID_RE = re.compile(r"^ami-[0-9a-f]{8,17}\Z")
+_AMI_ID_SPEC = FieldSpec(name="ami", type=str, required=True, max_len=21, pattern=_AMI_ID_RE)
+# `--extra-packages`: each name is expanded into the root user-data script, so
+# the charset is an allowlist with no shell metacharacters, and a name must
+# start alphanumeric so it can never be read as a dnf option. The total-length
+# cap bounds the UserData growth (EC2's 16 KB decoded limit; the template's
+# ExtraPackages MaxLength mirrors EXTRA_PACKAGES_MAX_LEN).
+_EXTRA_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}\Z")
+EXTRA_PACKAGES_MAX_LEN = 256
+
+
+def validate_ami_id(ami_id: str) -> str:
+    """Return ``ami_id`` if it is a well-formed EC2 image id, else raise."""
+    return validate_field(ami_id, _AMI_ID_SPEC) or ""
+
+
+def normalize_extra_packages(raw: str) -> str:
+    """Validate a comma/space-separated package list; return it space-joined.
+
+    Duplicates are dropped (first occurrence wins). Raises
+    :class:`ValidationError` for any name outside the allowlist charset or a
+    joined value longer than :data:`EXTRA_PACKAGES_MAX_LEN`.
+    """
+    names: list[str] = []
+    for name in re.split(r"[, ]+", raw or ""):
+        if not name:
+            continue
+        if not _EXTRA_PACKAGE_RE.match(name):
+            raise ValidationError(
+                "extra_packages",
+                f"{name!r} is not a valid package name "
+                "(letters, digits and . _ + - only; must start with a letter or digit)",
+            )
+        if name not in names:
+            names.append(name)
+    joined = " ".join(names)
+    if len(joined) > EXTRA_PACKAGES_MAX_LEN:
+        raise ValidationError(
+            "extra_packages", f"list is {len(joined)} characters (at most {EXTRA_PACKAGES_MAX_LEN})"
+        )
+    return joined
 
 
 def _validate_cidr(cidr: str) -> str:
@@ -641,6 +684,8 @@ def build_deploy_argv(
     allow_ssh_cidr: str = "",
     source_bucket: str = "",
     source_key: str = "",
+    ami_id: str = "",
+    extra_packages: str = "",
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
 
@@ -648,6 +693,9 @@ def build_deploy_argv(
     instance permissions boundary (``source.ensure_instance_boundary`` creates it
     once); it fills the template's ``PermissionsBoundaryArn`` parameter so the
     InstanceRole is capped by it instead of a per-launch CFN-authored boundary.
+
+    ``ami_id`` / ``extra_packages`` (``--ami`` / ``--extra-packages``) are
+    emitted only when set, so a stock launch's argv is unchanged.
     """
     overrides = [
         f"InstanceType={tier.instance_type}",
@@ -669,6 +717,10 @@ def build_deploy_argv(
         overrides.append(f"KirocrewRef={ref}")
     if allow_ssh_cidr:
         overrides.append(f"AllowSshCidr={allow_ssh_cidr}")
+    if ami_id:
+        overrides.append(f"CustomAmiId={ami_id}")
+    if extra_packages:
+        overrides.append(f"ExtraPackages={extra_packages}")
     return [
         "cloudformation",
         "deploy",
@@ -700,6 +752,8 @@ def deploy(
     disable_rollback: bool = False,
     dry_run: bool = False,
     proc_sink: Optional[Any] = None,
+    ami_id: str = "",
+    extra_packages: str = "",
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -710,7 +764,9 @@ def deploy(
     :func:`resolve_explicit_subnet`) instead of auto-discovery. ``dry_run``
     returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
     :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
-    a background thread can terminate the child on Ctrl+C.
+    a background thread can terminate the child on Ctrl+C. ``ami_id`` and
+    ``extra_packages`` customize the box (see :func:`validate_ami_id` and
+    :func:`normalize_extra_packages`); empty means the stock image and packages.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -725,6 +781,9 @@ def deploy(
         repo = validate_field(repo, _REPO_SPEC) or ""
     if ref:
         ref = validate_field(ref, _REF_SPEC) or ""
+    if ami_id:
+        ami_id = validate_ami_id(ami_id)
+    extra_packages = normalize_extra_packages(extra_packages)
 
     from kiro_crew.cloud import source as source_mod
 
@@ -757,6 +816,8 @@ def deploy(
             allow_ssh_cidr=allow_ssh_cidr,
             source_bucket="<auto>" if ship_source else "",
             source_key=f"{tag}/kirocrew-src.tar.gz" if ship_source else "",
+            ami_id=ami_id,
+            extra_packages=extra_packages,
         )
         return DeployResult(
             tag=tag,
@@ -826,6 +887,8 @@ def deploy(
         allow_ssh_cidr=allow_ssh_cidr,
         source_bucket=source_bucket,
         source_key=source_key,
+        ami_id=ami_id,
+        extra_packages=extra_packages,
     )
     # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
     # on the gateway being healthy). "No changes" exits 0 with a message on reuse.

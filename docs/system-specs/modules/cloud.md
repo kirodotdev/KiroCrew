@@ -168,6 +168,18 @@ stack; reusing an existing stack warns interactively that its network is fixed,
 and **hard-fails under `--yes`** — a script's explicitly requested pin must not
 be silently ignored.
 
+`launch --ami <ami-id>` and `launch --extra-packages <names>` customize a
+**new** box only, with the same existing-stack rule as `--subnet` (warn
+interactively, hard-fail under `--yes`). `--ami` fills the template's
+`CustomAmiId` (the `HasCustomAmi` condition picks it over the SSM-resolved
+AL2023 image); `--extra-packages` is validated by
+`ec2.normalize_extra_packages` (allowlist charset, no leading `-`, at most 256
+chars) and fills `ExtraPackages`, which UserData installs one name
+at a time, skipping one dnf cannot find. Both template parameters carry an
+`AllowedPattern` mirroring the CLI, and `ExtraPackages` a `MaxLength` that the
+UserData size test renders at its worst case. With neither flag the deploy argv
+is unchanged.
+
 The optional SSH CIDR is also **normalized** (host bits cleared, `1.2.3.4/24` →
 `1.2.3.0/24`) so the SG ingress rule is canonical. `get_stack_failures` sorts the
 specific bootstrap reason ahead of CloudFormation's generic `[WaitCondition]`
