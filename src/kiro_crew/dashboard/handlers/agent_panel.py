@@ -1622,11 +1622,37 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     # know its fields, the rows are capped at ten, and a second round trip for ten rows
     # is a cycle spent on a payload that fits in this one.
     rows, retained = await asyncio.to_thread(_instance_history, slug, slot)
+    values, written_at = await asyncio.to_thread(_current_values, slug, crew_name, instance)
     return web.json_response(
         dashboard_agentic.fields_for_agent(
-            instance, mistakes, history=rows, rollback_versions=retained
+            instance,
+            mistakes,
+            history=rows,
+            rollback_versions=retained,
+            values=values,
+            written_at=written_at,
         )
     )
+
+
+def _current_values(
+    slug: str, crew_name: str, instance: dashboard_agentic.Instance | None
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """The page's current field values, read the way the page reads them.
+
+    ``(None, {})`` when there is no instance or the read fails, so the listing still
+    answers with the fields and their shapes rather than failing the whole read.
+    """
+    if instance is None:
+        return None, {}
+    try:
+        from kiro_crew.dashboard.handlers.member_dashboard import read_fields
+
+        read = read_fields(slug, crew_name, instance.manifest)
+    except Exception:
+        logger.warning("dashboard values for %s are unreadable", slug, exc_info=True)
+        return None, {}
+    return dict(read.fields), dict(read.written_at)
 
 
 async def api_dashboard_write(request: web.Request) -> web.Response:

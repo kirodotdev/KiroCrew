@@ -489,6 +489,27 @@ def _trusted_page(slug: str, record: Any) -> str | None:
     return entry.html
 
 
+def read_fields(slug: str, member: str, manifest: Any) -> Any:
+    """One read of *manifest*'s field values for this crewmate, as the page gets them.
+
+    The page's own read, shared with ``dashboard_fields`` so the values an agent is
+    shown are the values the reader sees. File IO; raises on a failed read.
+    """
+    from kiro_crew.crew_log import projection
+    from kiro_crew.dashboard_feed import DashboardFeed
+
+    slot = _dashboard_slot(member, slug)
+    feed = DashboardFeed(slot, _write_session(slug, member))
+    try:
+        feed.subscribe(manifest)
+        agentic: Any = {}
+        if any(spec.agentic for spec in manifest.fields.values()):
+            agentic = projection.read_slot_projection(slot, "agentic").value
+        return feed.read(manifest, agentic if isinstance(agentic, dict) else {})
+    finally:
+        feed.unsubscribe()
+
+
 def _render(slug: str, member: str, record: Any) -> str | None:
     """The live page with its values filled in: the frame's half of contract v3 part 5.
 
@@ -507,8 +528,6 @@ def _render(slug: str, member: str, record: Any) -> str | None:
     """
     try:
         from kiro_crew import dashboard_frame
-        from kiro_crew.crew_log import projection
-        from kiro_crew.dashboard_feed import DashboardFeed
         from kiro_crew.dashboard_templates.manifest import parse_manifest
 
         manifest = parse_manifest(dict(record.manifest))
@@ -529,16 +548,7 @@ def _render(slug: str, member: str, record: Any) -> str | None:
         page = _trusted_page(slug, record)
         if page is None:
             return None
-        slot = _dashboard_slot(member, slug)
-        feed = DashboardFeed(slot, _write_session(slug, member))
-        try:
-            feed.subscribe(manifest)
-            agentic: Any = {}
-            if any(spec.agentic for spec in manifest.fields.values()):
-                agentic = projection.read_slot_projection(slot, "agentic").value
-            read = feed.read(manifest, agentic if isinstance(agentic, dict) else {})
-        finally:
-            feed.unsubscribe()
+        read = read_fields(slug, member, manifest)
         payload = dashboard_frame.read_payload(
             # MASKED AND REDACTED on the way out, at the one step that hands fold
             # values to a page's own script. A snapshot is taken from what the page

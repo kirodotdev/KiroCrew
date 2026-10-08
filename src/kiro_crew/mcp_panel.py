@@ -31,6 +31,7 @@ of its own and is told so.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from urllib.parse import quote
@@ -133,7 +134,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "with its type and where its value comes from -- `fold` for a "
                 "number the gateway reads out of your crew log, which you cannot "
                 "write, and `agentic` for one you write yourself with "
-                "dashboard_write. It also returns your own MISTAKE BOOK: the "
+                "dashboard_write. An agentic field shows its full shape (the keys "
+                "each row must carry, the allowed values) and its current value; a "
+                "fold field shows one summary line. It also returns your own MISTAKE BOOK: the "
                 "writes of yours that were refused, grouped, with how many times "
                 "you made each one and the field name that worked instead. Those "
                 "are mistakes you made in earlier cycles and cannot remember, so "
@@ -149,10 +152,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Write ONE agentic field of your dashboard -- a number, phrase or "
                 "series only you know, which the page then draws. Call "
                 "dashboard_fields first if you do not know your field names and "
-                "types; a write naming a field your template does not declare, a "
+                "shapes; a write naming a field your template does not declare, a "
                 "field the gateway fills from a fold, or a value of the wrong "
-                "type is REFUSED, and the refusal names the fields you could have "
-                "used. Fix it from that list and call again; after "
+                "type or shape (an unknown key, a missing required key, a value "
+                "outside an allowed list) is REFUSED, and the refusal names the "
+                "fields or keys you could have used. Fix it from that list and call again; after "
                 f"{dashboard_agentic.AGENTIC_RETRY_BUDGET} tries, ask the human "
                 "instead of guessing further. Each write replaces that one field "
                 "and leaves the others alone, so report the number you just "
@@ -594,10 +598,27 @@ def _render_fields(payload: dict[str, Any]) -> str:
                     continue
                 if row.get("source") == "agentic":
                     lines.append(f"  {row.get('field')} ({row.get('type')}) -- YOURS to write")
+                    schema = row.get("schema")
+                    if isinstance(schema, dict) and set(schema) != {"type"}:
+                        # The nested shape whole: the write is refused for any key
+                        # it does not list, so the agent needs every key it does.
+                        lines.append("    shape: " + json.dumps(schema, ensure_ascii=False))
+                    if row.get("written") is True:
+                        at = row.get("written_at")
+                        lines.append(
+                            "    current value"
+                            + (f" (written {at})" if at else "")
+                            + ": "
+                            + json.dumps(row.get("value"), ensure_ascii=False)
+                        )
+                    elif row.get("written") is False:
+                        lines.append("    current value: not written yet")
                 else:
+                    summary = row.get("summary")
                     lines.append(
                         f"  {row.get('field')} ({row.get('type')}) -- read from the "
                         f"{row.get('fold')} fold at {row.get('path')}"
+                        + (f"; now: {summary}" if summary else "")
                     )
     mistakes = payload.get("mistakes")
     if isinstance(mistakes, list) and mistakes:

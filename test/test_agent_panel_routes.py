@@ -3177,3 +3177,99 @@ class TestTheHistorySessionLookup:
 
         monkeypatch.setattr(crew_log_projection, "units_in_succession", _boom)
         assert routes._history_session("dashboard:chat-1") == ""
+
+
+# ----------------------------------- nested shapes on the agentic surface
+
+
+#: A Needs-you list whose rows must carry ``text``, the key the page draws.
+SHAPED_MANIFEST: dict[str, Any] = {
+    "id": "shaped",
+    "version": 3,
+    "title": "Shaped",
+    "description": "A field with a nested shape",
+    "source": "builtin",
+    "fields": {
+        "for_you": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "ask": {"type": "string", "enum": ["decide", "approve", "do"]},
+                },
+                "required": ["text"],
+            },
+            "source": {"agentic": True},
+        },
+        "items": {"type": "array", "source": {"fold": "work", "path": "items"}},
+    },
+}
+
+
+def _shaped_dashboard(monkeypatch, read: Any = None) -> None:
+    """The shaped manifest through ``read_instance``, and *read* as the page's values."""
+    from kiro_crew import dashboard_agentic
+    from kiro_crew.dashboard.handlers import member_dashboard
+    from kiro_crew.dashboard_templates.manifest import parse_manifest
+
+    inst = dashboard_agentic.Instance(
+        manifest=parse_manifest(dict(SHAPED_MANIFEST)), instance_version=5
+    )
+    monkeypatch.setattr(routes, "read_instance", lambda _slug, _crew: inst)
+    if read is not None:
+        monkeypatch.setattr(member_dashboard, "read_fields", lambda *_a: read)
+
+
+async def test_a_needs_you_card_without_text_is_refused_naming_text(vetted, monkeypatch):
+    """The ``{title, detail}`` card the page drops silently is refused, and told why."""
+    _shaped_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": [{"title": "Pick a db", "detail": "a or b"}]},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "wrong_shape", body
+    assert "'title'" in body["error"] and "'detail'" in body["error"], body["error"]
+    assert "missing required key(s) 'text'" in body["error"], body["error"]
+
+
+async def test_a_card_in_the_declared_shape_is_accepted(vetted, monkeypatch):
+    _shaped_dashboard(monkeypatch)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": [{"text": "Pick a db", "ask": "decide"}]},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["written"] == {"field": "for_you", "type": "array"}
+
+
+async def test_the_field_list_carries_the_shape_and_the_current_values(vetted, monkeypatch):
+    """Shape and current value for an agentic field, one summary line for a fold field."""
+    from kiro_crew.dashboard_feed import FieldRead
+
+    card = [{"text": "Pick a db", "ask": "decide"}]
+    board = [{"title": f"t{i}", "last_report_at": f"2026-10-0{i}T00:00:00Z"} for i in (1, 2, 3)]
+    read = FieldRead(
+        fields={"for_you": card, "items": board},
+        written_at={"for_you": "2026-10-08T01:00:00Z"},
+    )
+    _shaped_dashboard(monkeypatch, read)
+    async with _client() as c:
+        resp = await c.get(FIELDS_PATH, headers={"X-Session-Key": "dashboard:chat-1"})
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    rows = {row["field"]: row for row in body["fields"]}
+    assert rows["for_you"]["schema"] == {
+        key: SHAPED_MANIFEST["fields"]["for_you"][key] for key in ("type", "items")
+    }
+    assert rows["for_you"]["value"] == card
+    assert rows["for_you"]["written_at"] == "2026-10-08T01:00:00Z"
+    assert rows["items"]["summary"] == "3 items, latest 2026-10-03T00:00:00Z"
+    assert "value" not in rows["items"], "a fold field's data is summarised, never returned"
+    assert "mistakes" in body, "the mistake book stays in this read"

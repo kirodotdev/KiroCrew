@@ -530,6 +530,16 @@ def build_member_section(
             "is never injected; keep your working memory in this DM "
             "thread instead)"
         )
+    if not desk_withheld:
+        # Which page is in force and which of its fields are the member's, so a
+        # write starts from the right names. Rides with item 7: both describe the
+        # desk's own Dashboard tab. The shapes and the mistake book stay behind
+        # `dashboard_fields`; this block is paid for on every turn.
+        from kiro_crew import dashboard_agentic
+
+        dashboard = dashboard_agentic.turn_block(slug)
+        if dashboard:
+            parts.append("\n\n" + dashboard)
     parts.append("\n[END MEMBER IDENTITY]\n\n")
     return "".join(parts)
 
