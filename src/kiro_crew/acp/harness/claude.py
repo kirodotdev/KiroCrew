@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
     ACP_BACKEND_PROCESS_NAMES,
+    ACP_BACKENDS_AGENT_STARTED_TURNS,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     model_registry_namespace,
 )
@@ -240,6 +241,10 @@ class ClaudeLaunch(ProcessAdapter):
         # synchronous in-memory read, so the kiro construction path gains no
         # executor hop and no new failure mode (harness-parity H13).
         await session._prepare_session_mcp()
+        # Bound here rather than in AcpClient.__init__ for the same reason: the
+        # constructor is shared with kiro-cli.
+        if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:
+            session._install_idle_reader()
         return SpawnPlan(
             argv=argv,
             spawn_label=launch_mod._adapter_spawn_label(

@@ -438,6 +438,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "control that works, and asking the option on a harness whose level rides the "
         "model offers one the model will refuse"
     ),
+    "ACP_BACKENDS_AGENT_STARTED_TURNS": (
+        "whether a turn the agent starts on its own between prompts is read when it "
+        "happens. It is a transport detail of one adapter, not a choice a reader "
+        "makes: a member missing from it shows that turn under the next message, and "
+        "a harness added without the end-of-turn marker holds its slot until the "
+        "stale-turn gate or the prompt timeout, so either wrong membership is a defect"
+    ),
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS": (
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"
