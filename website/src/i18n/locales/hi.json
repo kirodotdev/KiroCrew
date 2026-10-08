@@ -6835,8 +6835,11 @@
       "start_in_new_worktree": "नई वर्कट्री में शुरू करें",
       "suggested_follow_up_one": "सुझाया गया फ़ॉलो-अप",
       "suggested_follow_up_other": "सुझाए गए फ़ॉलो-अप",
-      "this_session_has_no_project_directory_so_there_i": "इस सेशन में कोई प्रोजेक्ट डायरेक्टरी नहीं है, इसलिए ब्रांच बनाने के लिए कोई रिपॉज़िटरी नहीं है",
-      "worktree_disabled_no_project_directory": "\"इस सत्र में जोड़ें\" कंपोज़र को पहले से भर देता है — जब तक आप भेजें नहीं दबाते, कुछ भी नहीं भेजा जाता। वर्कट्री यहाँ उपलब्ध नहीं हैं: इस सत्र की कोई प्रोजेक्ट डायरेक्टरी नहीं है (कंपोज़र की प्रोजेक्ट चिप से एक चुनें)।"
+      "set_repo_path": "रिपॉज़िटरी पथ सेट करो…",
+      "set_repo_path_no_project": "इस सत्र की परियोजना को किसी Git रिपॉज़िटरी पर सेट करो ताकि worktree उससे शाखा बना सकें",
+      "set_repo_path_not_a_repo": "{{path}} एक Git रिपॉज़िटरी नहीं है — एक चुनो ताकि worktree उससे शाखा बना सकें",
+      "set_repo_path_footer_no_project": "\"Set repo path…\" इस सत्र के लिए एक Git रिपॉज़िटरी चुनता है, फिर \"Start in new worktree\" उससे शाखा बना सकता है। \"Add to this session\" कम्पोज़र को पहले से भर देता है — जब तक तुम \"Send\" नहीं दबाते, कुछ भी नहीं भेजा जाता।",
+      "set_repo_path_footer_not_a_repo": "इस सत्र की परियोजना एक Git रिपॉज़िटरी नहीं है। \"Set repo path…\" एक चुनता है ताकि \"Start in new worktree\" उससे शाखा बना सके। \"Add to this session\" कम्पोज़र को पहले से भर देता है — जब तक तुम \"Send\" नहीं दबाते, कुछ भी नहीं भेजा जाता।"
     },
     "inboundLinkChip": {
       "driven_from": "{{label}} से संचालित",

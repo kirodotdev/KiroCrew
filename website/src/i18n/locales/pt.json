@@ -6944,8 +6944,11 @@
       "suggested_follow_up_many": "Acompanhamentos sugeridos",
       "suggested_follow_up_one": "Acompanhamento sugerido",
       "suggested_follow_up_other": "Acompanhamentos sugeridos",
-      "this_session_has_no_project_directory_so_there_i": "Esta sessão não tem diretório de projeto, então não há repositório do qual criar uma branch",
-      "worktree_disabled_no_project_directory": "\"Adicionar a esta sessão\" pré-preenche o campo de mensagem — nada é enviado até você clicar em enviar. Worktrees não estão disponíveis aqui: esta sessão não tem diretório de projeto (escolha um no chip Projeto do campo de mensagem)."
+      "set_repo_path": "Definir caminho do repo…",
+      "set_repo_path_no_project": "Defina o projeto desta sessão para um repositório Git para que os worktrees possam ramificar a partir dele",
+      "set_repo_path_not_a_repo": "{{path}} não é um repositório Git — escolha um para que os worktrees possam ramificar a partir dele",
+      "set_repo_path_footer_no_project": "\"Set repo path…\" escolhe um repositório Git para esta sessão; então \"Start in new worktree\" pode ramificar a partir dele. \"Add to this session\" preenche o editor — nada é enviado até você pressionar Enviar.",
+      "set_repo_path_footer_not_a_repo": "O projeto desta sessão não é um repositório Git. \"Set repo path…\" escolhe um para que \"Start in new worktree\" possa ramificar a partir dele. \"Add to this session\" preenche o editor — nada é enviado até você pressionar Enviar."
     },
     "inboundLinkChip": {
       "driven_from": "Controlada por {{label}}",

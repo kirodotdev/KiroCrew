@@ -6726,8 +6726,11 @@
       "skip": "スキップ",
       "start_in_new_worktree": "新しいワークツリーで開始",
       "suggested_follow_up_other": "サジェストされたフォローアップ",
-      "this_session_has_no_project_directory_so_there_i": "このセッションはプロジェクトディレクトリがないため、ブランチ元リポジトリがありません",
-      "worktree_disabled_no_project_directory": "「このセッションに追加」はコンポーザーを事前入力します。送信を押すまで何も送信されません。ワークツリーは使用不可です。このセッションにはプロジェクトディレクトリがありません (コンポーザーのプロジェクトチップで選択してください)。"
+      "set_repo_path": "リポジトリパスを設定…",
+      "set_repo_path_no_project": "このセッションのプロジェクトを Git リポジトリに設定すると、そこから worktree を分岐できます",
+      "set_repo_path_not_a_repo": "{{path}} は Git リポジトリではありません。worktree を分岐できるリポジトリを選択してください",
+      "set_repo_path_footer_no_project": "「Set repo path…」はこのセッションの Git リポジトリを選びます。その後「Start in new worktree」でそこから分岐できます。「Add to this session」は入力欄に下書きを入れるだけで、送信を押すまで何も送信されません。",
+      "set_repo_path_footer_not_a_repo": "このセッションのプロジェクトは Git リポジトリではありません。「Set repo path…」でリポジトリを選ぶと「Start in new worktree」でそこから分岐できます。「Add to this session」は入力欄に下書きを入れるだけで、送信を押すまで何も送信されません。"
     },
     "inboundLinkChip": {
       "driven_from": "{{label}}から駆動中",

@@ -6835,8 +6835,11 @@
       "start_in_new_worktree": "In neuem Worktree starten",
       "suggested_follow_up_one": "Vorgeschlagene Folgefrage",
       "suggested_follow_up_other": "Vorgeschlagene Folgefragen",
-      "this_session_has_no_project_directory_so_there_i": "Diese Sitzung hat kein Projektverzeichnis, daher gibt es kein Repository, von dem verzweigt werden kann",
-      "worktree_disabled_no_project_directory": "„Zu dieser Sitzung hinzufügen“ füllt das Eingabefeld vor — es wird nichts gesendet, bis Sie auf Senden drücken. Worktrees sind hier nicht verfügbar: Diese Sitzung hat kein Projektverzeichnis (wählen Sie eines über den Projekt-Chip des Eingabefelds)."
+      "set_repo_path": "Repo-Pfad festlegen…",
+      "set_repo_path_no_project": "Lege das Projekt dieser Sitzung auf ein Git-Repository fest, damit Worktrees davon abzweigen können",
+      "set_repo_path_not_a_repo": "{{path}} ist kein Git-Repository – wähle eines, damit Worktrees davon abzweigen können",
+      "set_repo_path_footer_no_project": "„Set repo path…“ wählt ein Git-Repository für diese Sitzung; dann kann „Start in new worktree“ davon abzweigen. „Add to this session“ füllt den Editor vor – es wird nichts gesendet, bis du auf Senden drückst.",
+      "set_repo_path_footer_not_a_repo": "Das Projekt dieser Sitzung ist kein Git-Repository. „Set repo path…“ wählt eines, damit „Start in new worktree“ davon abzweigen kann. „Add to this session“ füllt den Editor vor – es wird nichts gesendet, bis du auf Senden drückst."
     },
     "inboundLinkChip": {
       "driven_from": "Gesteuert von {{label}}",

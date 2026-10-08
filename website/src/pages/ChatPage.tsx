@@ -6291,8 +6291,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <FollowUpCard
                     items={pendingFollowup.items}
                     projectDir={currentSlot?.project || undefined}
+                    // The worktree action runs only for a project that is a git
+                    // repo; otherwise the card shows "Set repo path…" instead.
+                    // Reuse the composer-chips `projectGit` probe: `repo` once
+                    // it resolves. A probe ERROR maps to `undefined`, NOT
+                    // `false` — a transient failure on a real repo must not
+                    // claim "not a git repository" and swap in the picker; only
+                    // a confirmed `repo: false` does that.
+                    projectIsRepo={projectGitError ? undefined : projectGit?.repo}
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
+                    // Non-repo / no-project: the card's primary slot offers
+                    // "Set repo path…", which opens the same picker as the
+                    // composer's Project chip.
+                    onSetProject={() => setProjectPickerOpen(true)}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
                 </div>

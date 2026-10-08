@@ -4565,7 +4565,12 @@
       "pre_fill_this_session_s_composer_with_the_expand": "Pre-fill this session's composer with the expanded prompt",
       "skip": "Skip",
       "suggested_follow_up_one": "Suggested follow-up",
-      "suggested_follow_up_other": "Suggested follow-ups"
+      "suggested_follow_up_other": "Suggested follow-ups",
+      "set_repo_path": "Set repo path…",
+      "set_repo_path_no_project": "Set this session's project to a git repository so worktrees can branch from it",
+      "set_repo_path_not_a_repo": "{{path}} is not a git repository — pick one so worktrees can branch from it",
+      "set_repo_path_footer_no_project": "\"Set repo path…\" picks a git repository for this session; then \"Start in new worktree\" can branch from it. \"Add to this session\" pre-fills the composer — nothing is sent until you press send.",
+      "set_repo_path_footer_not_a_repo": "This session's project is not a git repository. \"Set repo path…\" picks one so \"Start in new worktree\" can branch from it. \"Add to this session\" pre-fills the composer — nothing is sent until you press send."
     },
     "infoTip": {
       "more_information": "More information"

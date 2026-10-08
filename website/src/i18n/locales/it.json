@@ -6944,8 +6944,11 @@
       "suggested_follow_up_many": "Follow-up suggeriti",
       "suggested_follow_up_one": "Follow-up suggerito",
       "suggested_follow_up_other": "Follow-up suggeriti",
-      "this_session_has_no_project_directory_so_there_i": "Questa sessione non ha una directory di progetto, quindi non c'è un repository da cui creare un branch",
-      "worktree_disabled_no_project_directory": "\"Aggiungi a questa sessione\" precompila il campo di scrittura — nulla viene inviato finché non premi invia. I worktree non sono disponibili qui: questa sessione non ha una directory di progetto (scegline una con il chip Progetto del campo di scrittura)."
+      "set_repo_path": "Imposta percorso repo…",
+      "set_repo_path_no_project": "Imposta il progetto di questa sessione su un repository Git in modo che i worktree possano derivarne",
+      "set_repo_path_not_a_repo": "{{path}} non è un repository Git: scegline uno in modo che i worktree possano derivarne",
+      "set_repo_path_footer_no_project": "«Set repo path…» sceglie un repository Git per questa sessione; poi «Start in new worktree» può derivarne. «Add to this session» precompila l'editor: non viene inviato nulla finché non premi Invia.",
+      "set_repo_path_footer_not_a_repo": "Il progetto di questa sessione non è un repository Git. «Set repo path…» ne sceglie uno in modo che «Start in new worktree» possa derivarne. «Add to this session» precompila l'editor: non viene inviato nulla finché non premi Invia."
     },
     "inboundLinkChip": {
       "driven_from": "Pilotata da {{label}}",

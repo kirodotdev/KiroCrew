@@ -6726,8 +6726,11 @@
       "skip": "跳过",
       "start_in_new_worktree": "在新工作树中开始",
       "suggested_follow_up_other": "建议的后续操作",
-      "this_session_has_no_project_directory_so_there_i": "此会话没有项目目录路径，因此没有可用于开分支的仓库",
-      "worktree_disabled_no_project_directory": "“添加到此会话”只是预填输入框 — 在你按下发送前不会发送任何内容。此处无法使用工作树：此会话没有项目目录（可通过输入框的“项目”按钮选择一个）。"
+      "set_repo_path": "设置仓库路径…",
+      "set_repo_path_no_project": "将此会话的项目设置为一个 Git 仓库，以便工作树可以从中分支",
+      "set_repo_path_not_a_repo": "{{path}} 不是 Git 仓库——请选择一个，以便工作树可以从中分支",
+      "set_repo_path_footer_no_project": "“Set repo path…”为此会话选择一个 Git 仓库；随后“Start in new worktree”即可从中分支。“Add to this session”会预填输入框——在你按下发送前不会发送任何内容。",
+      "set_repo_path_footer_not_a_repo": "此会话的项目不是 Git 仓库。“Set repo path…”可选择一个，以便“Start in new worktree”从中分支。“Add to this session”会预填输入框——在你按下发送前不会发送任何内容。"
     },
     "inboundLinkChip": {
       "driven_from": "由 {{label}} 驱动",

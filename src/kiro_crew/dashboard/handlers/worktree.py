@@ -853,7 +853,17 @@ async def api_worktree_create(request: web.Request) -> web.Response:
         logger.warning("worktree_create: git toplevel probe failed: %s", exc)
         return web.json_response({"error": "git is unavailable"}, status=503)
     if not root:
-        return web.json_response({"error": "Not a git repository"}, status=400)
+        return web.json_response(
+            {
+                "error": (
+                    "The session's project directory is not a git repository, so there is "
+                    "nothing to branch a worktree from. Set the session's project to a git "
+                    'repository (the follow-up card\'s "Set repo path…" button, or the '
+                    "composer's Project chip), then try again."
+                )
+            },
+            status=400,
+        )
     # Re-check the toplevel: resolving upward from an allowed subdirectory can
     # land on a repo root ABOVE every allowed root, which the match above never
     # saw. Without this, granting a nested directory would let git operate on an

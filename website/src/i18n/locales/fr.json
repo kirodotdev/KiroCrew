@@ -6944,8 +6944,11 @@
       "suggested_follow_up_many": "Suivis suggérés",
       "suggested_follow_up_one": "Suivi suggéré",
       "suggested_follow_up_other": "Suivis suggérés",
-      "this_session_has_no_project_directory_so_there_i": "Cette session n’a pas de répertoire de projet, il n’y a donc aucun dépôt d’où créer une branche",
-      "worktree_disabled_no_project_directory": "« Ajouter à cette session » pré-remplit le champ de saisie — rien n'est envoyé avant que vous appuyiez sur Envoyer. Les worktrees ne sont pas disponibles ici : cette session n'a pas de répertoire de projet (choisissez-en un via la puce Projet du champ de saisie)."
+      "set_repo_path": "Définir le chemin du dépôt…",
+      "set_repo_path_no_project": "Définis le projet de cette session sur un dépôt Git pour que les worktrees puissent en dériver",
+      "set_repo_path_not_a_repo": "{{path}} n'est pas un dépôt Git — choisis-en un pour que les worktrees puissent en dériver",
+      "set_repo_path_footer_no_project": "« Set repo path… » choisit un dépôt Git pour cette session, et « Start in new worktree » peut alors en dériver. « Add to this session » préremplit l'éditeur — rien n'est envoyé tant que tu n'appuies pas sur Envoyer.",
+      "set_repo_path_footer_not_a_repo": "Le projet de cette session n'est pas un dépôt Git. « Set repo path… » en choisit un pour que « Start in new worktree » puisse en dériver. « Add to this session » préremplit l'éditeur — rien n'est envoyé tant que tu n'appuies pas sur Envoyer."
     },
     "inboundLinkChip": {
       "driven_from": "Pilotée depuis {{label}}",

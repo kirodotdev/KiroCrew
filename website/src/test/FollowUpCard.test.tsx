@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import FollowUpCard from '../components/FollowUpCard'
 import reducer, { setFollowupCard, clearFollowupCard, dismissFollowupItem, deleteSlot } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
@@ -16,6 +16,7 @@ function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
   const onAddToSession = vi.fn()
   const onStartInWorktree = vi.fn().mockResolvedValue(undefined)
   const onSkip = vi.fn()
+  const onSetProject = vi.fn()
   const utils = render(
     <FollowUpCard
       items={[item()]}
@@ -23,10 +24,11 @@ function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
       onAddToSession={onAddToSession}
       onStartInWorktree={onStartInWorktree}
       onSkip={onSkip}
+      onSetProject={onSetProject}
       {...props}
     />,
   )
-  return { onAddToSession, onStartInWorktree, onSkip, ...utils }
+  return { onAddToSession, onStartInWorktree, onSkip, onSetProject, ...utils }
 }
 
 describe('FollowUpCard', () => {
@@ -59,39 +61,92 @@ describe('FollowUpCard', () => {
         onAddToSession={vi.fn()}
         onStartInWorktree={vi.fn()}
         onSkip={onSkip}
+        onSetProject={vi.fn()}
       />,
     )
     fireEvent.click(screen.getAllByRole('button', { name: /skip/i })[1])
     expect(onSkip).toHaveBeenCalledWith(1)
   })
 
-  it('disables the worktree action when the session has no project dir', () => {
-    setup({ projectDir: undefined })
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeDisabled()
-    // The in-session route stays available — it needs no repo.
+  it('replaces worktree with an enabled "Set repo path" button when there is no project dir', () => {
+    // The feature is never hidden or dead-disabled: with no project to branch
+    // from, the primary slot offers an enabled "Set repo path…" that opens the
+    // picker, so the user always has a valid way forward.
+    const { onSetProject } = setup({ projectDir: undefined })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    const setBtn = screen.getByRole('button', { name: /set repo path/i })
+    expect(setBtn).not.toBeDisabled()
+    fireEvent.click(setBtn)
+    expect(onSetProject).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
   })
 
-  it('demotes the disabled worktree button from the accent style so it does not read as the primary action', () => {
-    // A permanently-disabled button that keeps the accent background at 40%
-    // opacity still looks like the main CTA on a dark theme — users click it,
-    // meet a not-allowed cursor, and report a dead button. Unscoped sessions
-    // must render it in the secondary (bordered) look instead.
-    setup({ projectDir: undefined })
-    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
-    expect(worktree.className).not.toContain('bg-accent')
-    expect(worktree.className).toContain('border-border')
+  it('replaces worktree with "Set repo path" when the project dir is a confirmed non-repo', () => {
+    // The core bug: a session scoped to a real directory that is NOT a git
+    // repo (e.g. the default ~/.kiro/crew/workspace) used to show an enabled
+    // button that failed "not a git repository" on click. Now the slot shows
+    // an enabled "Set repo path…" instead.
+    const { onSetProject } = setup({ projectDir: '/not/a/repo', projectIsRepo: false })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    const setBtn = screen.getByRole('button', { name: /set repo path/i })
+    expect(setBtn).not.toBeDisabled()
+    fireEvent.click(setBtn)
+    expect(onSetProject).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the accent style on the worktree button when the session is scoped', () => {
-    setup()
-    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
-    expect(worktree.className).toContain('bg-accent')
+  it('offers the worktree action (not Set repo path) when the project is a confirmed git repo', () => {
+    setup({ projectDir: '/repo', projectIsRepo: true })
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /set repo path/i })).not.toBeInTheDocument()
   })
 
-  it('explains the disabled worktree button in the footer instead of claiming both actions work', () => {
-    setup({ projectDir: undefined })
-    expect(screen.getByText(/this session has no project directory/i)).toBeInTheDocument()
+  it('offers the worktree action optimistically while the repo probe is unresolved', () => {
+    // `projectIsRepo === undefined` means "not resolved yet" — INCLUDING a
+    // transient probe failure on a real repo. The worktree button must stay;
+    // the server still refuses a genuine non-repo and the card renders that
+    // inline. Only a confirmed `false` swaps in "Set repo path…".
+    setup({ projectDir: '/repo', projectIsRepo: undefined })
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /set repo path/i })).not.toBeInTheDocument()
+  })
+
+  it('keeps the accent (primary) style on both primary-slot buttons', () => {
+    setup({ projectDir: '/repo', projectIsRepo: true })
+    expect(screen.getByRole('button', { name: /start in new worktree/i }).className).toContain('bg-accent')
+    cleanup()
+    setup({ projectDir: '/not/a/repo', projectIsRepo: false })
+    // "Set repo path…" is a real action, so it is the primary CTA too.
+    expect(screen.getByRole('button', { name: /set repo path/i }).className).toContain('bg-accent')
+  })
+
+  it('footer explains the Set-repo-path path with the right reason', () => {
+    // No project at all → "Set repo path… picks a git repository"; a confirmed
+    // non-repo → "project is not a git repository". Neither claims "both actions".
+    const { rerender } = render(
+      <FollowUpCard
+        items={[item()]}
+        projectDir={undefined}
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onSkip={vi.fn()}
+        onSetProject={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/picks a git repository for this session/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
+
+    rerender(
+      <FollowUpCard
+        items={[item()]}
+        projectDir="/not/a/repo"
+        projectIsRepo={false}
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onSkip={vi.fn()}
+        onSetProject={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/project is not a git repository/i)).toBeInTheDocument()
     expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
   })
 
@@ -125,7 +180,7 @@ describe('FollowUpCard', () => {
     const onStartInWorktree = vi.fn(() => new Promise<void>((_res, rej) => { reject = rej }))
     const a = item({ title: 'A' })
     const b = item({ title: 'B' })
-    const props = { projectDir: '/repo', onAddToSession: vi.fn(), onStartInWorktree, onSkip: vi.fn() }
+    const props = { projectDir: '/repo', onAddToSession: vi.fn(), onStartInWorktree, onSkip: vi.fn(), onSetProject: vi.fn() }
     const { rerender } = render(<FollowUpCard items={[a, b]} {...props} />)
     fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[0])
     await waitFor(() => expect(onStartInWorktree).toHaveBeenCalled())
@@ -148,6 +203,7 @@ describe('FollowUpCard', () => {
         onAddToSession={vi.fn()}
         onStartInWorktree={onStartInWorktree}
         onSkip={vi.fn()}
+        onSetProject={vi.fn()}
       />,
     )
     fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[0])
@@ -159,6 +215,7 @@ describe('FollowUpCard', () => {
         onAddToSession={vi.fn()}
         onStartInWorktree={onStartInWorktree}
         onSkip={vi.fn()}
+        onSetProject={vi.fn()}
       />,
     )
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())

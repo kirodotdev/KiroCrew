@@ -36,7 +36,7 @@ Calling the tool is the agent's own judgement call; there is no turn-boundary ho
 
 | Action | Effect |
 | --- | --- |
-| **Start in new worktree** | Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and pre-fills its composer with the prompt. Disabled — and demoted from the accent style to the secondary look — when the session has no project directory; the card footer says why, and the tool result tells the agent so it can steer to "Add to this session" instead. |
+| **Start in new worktree** | Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and pre-fills its composer with the prompt. Shown only when the session's project directory is a git repository. When it is NOT a repo (or the session has no project directory), this slot instead shows an enabled **Set repo path…** button that opens the project picker — the feature is never hidden or dead-disabled, so the user always has a valid way forward; the tool result also tells the agent so it can steer to "Add to this session". |
 | **Add to this session** | Pre-fills the current session's composer with the prompt. An unsent draft is preserved — the prompt is appended below it, not written over it. |
 | **Skip** | Dismisses that one suggestion; siblings remain. The card disappears when its last item is gone. |
 

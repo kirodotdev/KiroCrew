@@ -6944,8 +6944,11 @@
       "suggested_follow_up_many": "Seguimientos sugeridos",
       "suggested_follow_up_one": "Seguimiento sugerido",
       "suggested_follow_up_other": "Seguimientos sugeridos",
-      "this_session_has_no_project_directory_so_there_i": "Esta sesión no tiene directorio de proyecto, así que no hay repositorio del que crear una rama",
-      "worktree_disabled_no_project_directory": "«Añadir a esta sesión» precarga el editor de mensajes — no se envía nada hasta que pulsas enviar. Los worktrees no están disponibles aquí: esta sesión no tiene directorio de proyecto (elige uno con el chip Proyecto del editor)."
+      "set_repo_path": "Establecer ruta del repo…",
+      "set_repo_path_no_project": "Establece el proyecto de esta sesión en un repositorio Git para que los worktrees puedan ramificarse desde él",
+      "set_repo_path_not_a_repo": "{{path}} no es un repositorio Git: elige uno para que los worktrees puedan ramificarse desde él",
+      "set_repo_path_footer_no_project": "«Set repo path…» elige un repositorio Git para esta sesión; luego «Start in new worktree» puede ramificarse desde él. «Add to this session» rellena el editor: no se envía nada hasta que pulses Enviar.",
+      "set_repo_path_footer_not_a_repo": "El proyecto de esta sesión no es un repositorio Git. «Set repo path…» elige uno para que «Start in new worktree» pueda ramificarse desde él. «Add to this session» rellena el editor: no se envía nada hasta que pulses Enviar."
     },
     "inboundLinkChip": {
       "driven_from": "Controlada desde {{label}}",

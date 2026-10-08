@@ -6726,8 +6726,11 @@
       "skip": "건너뛰기",
       "start_in_new_worktree": "새 worktree에서 시작",
       "suggested_follow_up_other": "제안된 후속 작업",
-      "this_session_has_no_project_directory_so_there_i": "이 세션에는 프로젝트 디렉터리가 없어 브랜치를 만들 저장소가 없습니다",
-      "worktree_disabled_no_project_directory": "‘이 세션에 추가’는 작성창을 미리 채웁니다 — 전송을 누르기 전까지는 아무것도 전송되지 않습니다. 여기서는 worktree를 사용할 수 없습니다. 이 세션에는 프로젝트 디렉터리가 없습니다 (작성창의 프로젝트 칩에서 선택하세요)."
+      "set_repo_path": "리포지토리 경로 설정…",
+      "set_repo_path_no_project": "이 세션의 프로젝트를 Git 리포지토리로 설정하면 worktree가 거기서 분기할 수 있습니다",
+      "set_repo_path_not_a_repo": "{{path}}은(는) Git 리포지토리가 아닙니다 — worktree가 분기할 수 있도록 하나를 선택하세요",
+      "set_repo_path_footer_no_project": "\"Set repo path…\"는 이 세션의 Git 리포지토리를 선택하며, 그러면 \"Start in new worktree\"가 거기서 분기할 수 있습니다. \"Add to this session\"은 입력창을 미리 채우며, 보내기를 누르기 전까지는 아무것도 전송되지 않습니다.",
+      "set_repo_path_footer_not_a_repo": "이 세션의 프로젝트는 Git 리포지토리가 아닙니다. \"Set repo path…\"로 하나를 선택하면 \"Start in new worktree\"가 거기서 분기할 수 있습니다. \"Add to this session\"은 입력창을 미리 채우며, 보내기를 누르기 전까지는 아무것도 전송되지 않습니다."
     },
     "inboundLinkChip": {
       "driven_from": "{{label}}에서 구동 중",

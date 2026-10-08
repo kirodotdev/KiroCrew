@@ -1141,7 +1141,12 @@ class TestEndpointGitBoundary:
                 "/api/worktree/create", json={"repo": str(repo_dir), "branch": "feat/x"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "Not a git repository"
+            assert (await resp.json())["error"] == (
+                "The session's project directory is not a git repository, so there is "
+                "nothing to branch a worktree from. Set the session's project to a git "
+                "repository (the follow-up card's \"Set repo path…\" button, or the "
+                "composer's Project chip), then try again."
+            )
 
     @pytest.mark.asyncio
     async def test_a_toplevel_above_every_grant_is_audited_and_refused(
