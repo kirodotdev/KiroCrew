@@ -371,7 +371,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.sel import sel
+from kiro_crew.sel import flush_audit_queue, flush_audit_queue_before_hard_exit, sel
 from kiro_crew.service.common import restart_command_hint
 from kiro_crew.session import (
     HEARTBEAT_KEY,
@@ -14175,6 +14175,8 @@ class GatewayOrchestrator:
                     _stop_log_queue_listener(timeout=2.0)
                 except Exception:
                     pass  # force exit must never be blocked by logging
+                # Hard exits skip the SEL writer's atexit drain.
+                flush_audit_queue(timeout=2.0)
                 platform_compat.hard_exit(0)
             _shutting_down = True
             shutdown_event.set()
@@ -14338,6 +14340,7 @@ class GatewayOrchestrator:
         from kiro_crew.cli import drain_log_queue_before_hard_exit
 
         await drain_log_queue_before_hard_exit()
+        await flush_audit_queue_before_hard_exit()
         os._exit(exit_code)
 
     # ── per-channel hoists ───────────────────────────────────────────────
