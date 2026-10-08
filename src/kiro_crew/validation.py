@@ -1447,12 +1447,18 @@ def validate_jsonrpc_request(req: dict[str, Any]) -> tuple[str, Any, dict[str, A
 #: fields a caller varies across one wave in practice (model, effort); a
 #: per-task template is ``agents``. The rest stay batch-wide and can join this
 #: object later without changing the shape again.
+#: A backend's policy-facing name ("kiro", "claude", "codex"): lowercase id
+#: characters only, so a request can never smuggle anything past the endpoint's
+#: membership check into a log line or an error message.
+_BACKEND_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
 SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
     tool_name="spawn_run.tasks[]",
     fields=[
         FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
+        FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
     ],
 )
 
@@ -1491,6 +1497,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Batch-wide, like ``model``. ``""`` (in EFFORT_VALUES) means "unset —
         # defer to the role_efforts['subagent'] pin, else the provider default".
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
+        # Optional backend (harness) for the subagent(s), spelled the way a
+        # governance rule spells it ("kiro", "claude", "codex", ...). Shape only
+        # here: whether it is selectable on this gateway is the spawn endpoint's
+        # answer, which refuses with the selectable list.
+        FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
         # keep=True makes the run a continuable conversation: its session
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.

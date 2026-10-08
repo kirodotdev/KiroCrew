@@ -2396,6 +2396,14 @@ class SessionAllocationService:
             # fixed when it was pre-spawned with no parent. Cold-starting is what
             # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
             pool_decision = "bypass_shared_scratch"
+        elif extra_factory_kwargs.get("backend_override") is not None:
+            # An explicit backend (a sub-agent spawned on another harness). A
+            # pooled child was spawned on the factory's DEFAULT backend -- a
+            # different process, which no post-claim switch can change -- so a
+            # warm hit would run the work on the wrong harness. ``is not None``:
+            # ``""`` is a Kiro request, and under a non-Kiro default the pooled
+            # child is on the wrong backend for it too.
+            pool_decision = "bypass_backend_override"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -2772,6 +2780,7 @@ class SessionAllocationService:
                     # Stamped from the same local rather than re-resolved, which is
                     # what keeps the id sent and the id read identical.
                     session.requested_model = model or ""
+                    session.backend_override = extra_factory_kwargs.get("backend_override")
                     session.loaded_capabilities = stamp
                     self.state.capability_failures.pop(key, None)
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True

@@ -66,6 +66,82 @@ def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
     return canonical or (same_parent[0] if same_parent else None)
 
 
+async def _requested_backend(raw: object) -> tuple[str | None, web.Response | None]:
+    """The backend a spawn request names, as a backend id, or its refusal.
+
+    ``(None, None)`` when the request names none: the run starts on the gateway
+    default exactly as before. The request spells backends the way a governance
+    rule does (``"kiro"``, not the empty id), so an agent can name every backend
+    and a falsy value is never mistaken for one.
+
+    A backend is available when governance allows it AND this machine has it
+    installed (``probe_backend``; a probe that could not decide does not block).
+    Refused rather than degraded: the factory's gate would fall back to Kiro, and
+    a sub-agent the orchestrator sent to another harness silently running on Kiro
+    -- or failing at cold start on a harness that is not there -- is the failure
+    this parameter exists to rule out. The refusal lists only what can start, so
+    an agent's retry picks a backend that works.
+    """
+    import asyncio
+
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
+    from kiro_crew.agent_sdk.backend_install import MISSING, probe_backend
+
+    if raw is None or raw == "":
+        return None, None
+    by_name = {name: backend for backend, name in POLICY_ID_BY_BACKEND.items()}
+    selectable = selectable_backend_values()
+    # Off the loop: a probe shells out and walks the filesystem (cached briefly).
+    states = await asyncio.to_thread(lambda: {b: probe_backend(b) for b in selectable})
+    # Installed after the gateway started (``restart_required``): the gateway
+    # still holds the cached absence, so a start now would fail like a missing one.
+    available = [
+        b for b in selectable if states[b].installed != MISSING and not states[b].restart_required
+    ]
+    names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
+    backend = by_name.get(raw) if isinstance(raw, str) else None
+    if backend is not None and backend in available:
+        return backend, None
+    if backend not in states:
+        return None, web.json_response(
+            {
+                "error": f"backend {raw!r} is not available; choose one of {names}",
+                "code": "unknown_backend",
+                "backends": names,
+            },
+            status=400,
+        )
+    state = states[backend]
+    if state.restart_required:
+        return None, web.json_response(
+            {
+                "error": (
+                    f"backend {raw!r} was installed after the gateway started;"
+                    f" restart the gateway to use it. Choose one of {names}"
+                ),
+                "code": "backend_restart_required",
+                "backends": names,
+            },
+            status=400,
+        )
+    # Allowed here but not installed on this machine: say how to install it.
+    missing = ", ".join(state.missing_components) or "unknown"
+    error = (
+        f"backend {raw!r} is not installed on this machine (missing: {missing});"
+        f" choose one of {names}"
+    )
+    return None, web.json_response(
+        {
+            "error": error,
+            "code": "backend_not_installed",
+            "backends": names,
+            # "" when the probe names no installer for this backend.
+            "install_command": state.install_command,
+        },
+        status=400,
+    )
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -116,6 +192,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 # store resolution all ran off a value that was always None.
                 "crew": body.get("crew", ""),
                 "target_member": body.get("target_member", ""),
+                "backend": body.get("backend", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -124,6 +201,9 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
+    backend, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    if backend_refusal is not None:
+        return backend_refusal
     parent_session = body.get("parent_session", "")
     if not isinstance(parent_session, str):
         return web.json_response(
@@ -250,6 +330,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         cwd=cwd,
         model=model or None,
         reasoning_effort=reasoning_effort,
+        backend=backend,
         approval_mode=approval_mode or None,
         silent=silent,
         batch_id=batch_id,
@@ -346,10 +427,15 @@ async def api_spawn(request: web.Request) -> web.Response:
                 return "", ""
             kind, verdict_agent = selection
             claim = verdict_agent if kind == "member" else ""
-            d = effort_drop_reason(model, reasoning_effort, verdict_agent, crew_agent=claim)
+            # Judged on the backend the run starts on, not the gateway default.
+            d = effort_drop_reason(
+                model, reasoning_effort, verdict_agent, crew_agent=claim, backend=backend
+            )
             if d:
                 return d, ""
-            return "", effort_applied_note(model, reasoning_effort, verdict_agent, crew_agent=claim)
+            return "", effort_applied_note(
+                model, reasoning_effort, verdict_agent, crew_agent=claim, backend=backend
+            )
 
         # The resolvers read config and glob ~/.kiro/agents — file I/O that
         # must not run on the gateway event loop (the same reason
