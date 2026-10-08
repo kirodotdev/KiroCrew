@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
@@ -18,6 +19,11 @@ from kiro_crew.config.loader import KiroCrewConfig, SttConfig
 # a genuine regression (the audit never fires); the happy path returns as soon
 # as the handler's next step runs, so a large bound costs nothing in wall clock.
 _AUDIT_WAIT_TIMEOUT_SECS = 5.0
+
+
+async def _recv_json(ws):
+    """One JSON frame, bounded: a server that never answers is a failed test, not a lost run."""
+    return await asyncio.wait_for(ws.receive_json(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
 
 
 async def _wait_for_operation(calls: list[dict], operation: str) -> None:
@@ -205,6 +211,78 @@ class TestGuards:
             assert resp.status == 503
 
 
+def _arm_cap(monkeypatch) -> asyncio.Event:
+    """Make the duration cap fire on a signal instead of a clock.
+
+    The transport's deadline sleeps `_MAX_STREAM_DURATION_SECS`. Pinning that to a
+    sentinel and shimming the module's OWN `asyncio` binding with a delegating copy
+    (the pattern `test_stop_budget_covers_the_active_partial_and_the_final` uses for
+    the drain budget, minus the stdlib rebinding) lets a test fire the cap exactly
+    when the session is in the state under test, instead of racing a real timer
+    against loopback I/O: a cap that fires before the client's frame has been read,
+    queued and fed has nothing pending and legitimately sends no final. Every other
+    coroutine in the worker keeps the real stdlib sleep (tests-are-deterministic,
+    item 11: never rebind a stdlib clock).
+    """
+    from kiro_crew.dashboard import stt_stream
+
+    sentinel = 12_345.0
+    fire = asyncio.Event()
+    original_sleep = asyncio.sleep
+
+    async def controlled_sleep(delay, result=None):
+        if delay == sentinel:
+            await asyncio.wait_for(fire.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            return result
+        return await original_sleep(delay, result)
+
+    monkeypatch.setattr(stt_stream, "_MAX_STREAM_DURATION_SECS", sentinel)
+    monkeypatch.setattr(
+        stt_stream, "asyncio", SimpleNamespace(**{**vars(asyncio), "sleep": controlled_sleep})
+    )
+    return fire
+
+
+@pytest.mark.asyncio
+async def test_receive_until_takes_its_pending_read_down_with_an_outer_cancellation():
+    """A reader cancelled from outside must not leave its `__anext__` in flight.
+
+    That orphan would sit in `receive()` until the close and end unretrieved.
+    """
+    from kiro_crew.dashboard import stt_stream
+
+    started = asyncio.Event()
+    released = asyncio.Event()
+    seen: list[str] = []
+
+    class Blocking:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            started.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                seen.append("read cancelled")
+                raise
+            raise StopAsyncIteration
+
+    async def consume():
+        async for _ in stt_stream._receive_until(Blocking(), asyncio.Event()):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+    task.cancel()
+    # Bounded without awaiting the task itself: a reader that swallowed the
+    # cancellation would never finish, and this join must fail here rather
+    # than hang until the suite's global timeout.
+    done, _ = await asyncio.wait({task}, timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+    assert task in done, "the cancelled reader never finished"
+    assert seen == ["read cancelled"]
+
+
 class TestAppleStreamingSession:
     """The `apple` provider's own WebSocket path (`_run_apple_session`).
 
@@ -281,6 +359,139 @@ class TestAppleStreamingSession:
         return events, fed
 
     @pytest.mark.asyncio
+    async def test_ready_advertises_the_connection_cap(self, monkeypatch):
+        """Same figure, same field, as the other two providers: one contract."""
+        self._install(monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 7)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            ready = await _recv_json(ws)
+            assert ready["type"] == "ready"
+            assert ready["max_duration_ms"] == 7000
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_finishes_the_helper_before_its_error_frame(self, monkeypatch):
+        """The cap must reach `session.finish()` while the socket is still open.
+
+        Closing stdin is the helper's cue to finalize, and its trailing final is
+        relayed afterwards; a socket already closed by the deadline task has no
+        recipient for it. Order on the wire: the helper's final, the cap frame,
+        the close.
+        """
+        # `_install` returns the queue the fake helper's `events()` drains; its
+        # `finish()` ends that queue with None. Subclass through the patched
+        # module attribute (as `test_stream_uses_effective_locale` does) so
+        # finish() first enqueues the trailing final the real helper would emit.
+        events, _ = self._install(monkeypatch)
+        from kiro_crew import apple_speech
+
+        class Finishing(apple_speech.StreamingSession):
+            async def finish(self, **kwargs):
+                await events.put({"type": "final", "text": "what was being said"})
+                return await super().finish(**kwargs)
+
+        monkeypatch.setattr(apple_speech, "StreamingSession", Finishing)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            # Only an OPEN socket can carry this frame: it proves finish() ran
+            # before the close, which the old deadline task made impossible.
+            assert await _recv_json(ws) == {
+                "type": "final",
+                "text": "what was being said",
+            }
+            assert await _recv_json(ws) == {
+                "type": "error",
+                "message": "max stream duration exceeded",
+                "code": "stt_max_duration_exceeded",
+            }
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_cap_that_fires_mid_feed_lets_the_frame_finish(self, monkeypatch):
+        """The reader stops between frames, never inside one.
+
+        Cancelling the reader task mid-`feed` would cut a frame half-way into the
+        helper's stdin. The cap now only ends the loop once the frame in flight
+        has been forwarded, and the helper is finished after it — so the frame is
+        whole, in order, and the trailing final still precedes the cap frame.
+        """
+        events, fed = self._install(monkeypatch)
+        from kiro_crew import apple_speech
+
+        fire = _arm_cap(monkeypatch)
+        feeding = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        class SlowFeed(apple_speech.StreamingSession):
+            async def feed(self, pcm):
+                feeding.set()
+                await asyncio.wait_for(release.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+                order.append("fed")
+                return await super().feed(pcm)
+
+            async def finish(self, **kwargs):
+                order.append("finish")
+                await events.put({"type": "final", "text": "after the frame"})
+                return await super().finish(**kwargs)
+
+        monkeypatch.setattr(apple_speech, "StreamingSession", SlowFeed)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await asyncio.wait_for(feeding.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            fire.set()  # the cap lands while that frame is still being fed
+            release.set()
+            assert await _recv_json(ws) == {
+                "type": "final",
+                "text": "after the frame",
+            }
+            assert (await _recv_json(ws))["code"] == ("stt_max_duration_exceeded")
+            await ws.close()
+        assert order == ["fed", "finish"]
+        assert fed == [b"\x00\x01" * 16]
+
+    @pytest.mark.asyncio
+    async def test_a_cap_cancels_a_reader_stuck_inside_a_feed_after_the_grace(self, monkeypatch):
+        """A helper that stopped reading its stdin cannot hold the session past the cap.
+
+        The reader stops between frames, but a feed that never returns has no
+        next frame; after `_CAP_READER_GRACE_SECS` the cap cancels it after all,
+        the helper is finished, and the cap frame still reaches the client.
+        """
+        _, fed = self._install(monkeypatch)
+        from kiro_crew import apple_speech
+        from kiro_crew.dashboard import stt_stream
+
+        fire = _arm_cap(monkeypatch)
+        monkeypatch.setattr(stt_stream, "_CAP_READER_GRACE_SECS", 0.05)
+        feeding = asyncio.Event()
+        stuck = asyncio.Event()  # never set: the helper stopped reading
+
+        class Stuck(apple_speech.StreamingSession):
+            async def feed(self, pcm):
+                feeding.set()
+                await stuck.wait()
+                return await super().feed(pcm)
+
+        monkeypatch.setattr(apple_speech, "StreamingSession", Stuck)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await asyncio.wait_for(feeding.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            fire.set()
+            assert (await _recv_json(ws))["code"] == "stt_max_duration_exceeded"
+            await ws.close()
+        assert fed == []
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("language", "expected_locale"),
         [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
@@ -293,7 +504,7 @@ class TestAppleStreamingSession:
         monkeypatch.setattr(apple_speech, "StreamingSession", factory)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert await asyncio.wait_for(ws.receive_json(), timeout=5) == {"type": "ready"}
+            assert (await asyncio.wait_for(ws.receive_json(), timeout=5))["type"] == "ready"
             await ws.send_json({"type": "stop"})
             await ws.close()
         assert factory.call_args.kwargs["locale"] == expected_locale
@@ -315,7 +526,7 @@ class TestAppleStreamingSession:
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             # Deliberately send NO audio — only the deadline task can end this.
             msg = await ws.receive_json()
             assert msg == {
@@ -342,7 +553,7 @@ class TestAppleStreamingSession:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.receive_json()  # the cap's error frame
             await ws.close()
         for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
@@ -362,7 +573,7 @@ class TestAppleStreamingSession:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
         for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
@@ -378,7 +589,7 @@ class TestAppleStreamingSession:
         events, _ = self._install(monkeypatch)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await events.put({"type": "partial", "text": "  my key is AKIAIOSFODNN7EXAMPLE  "})
             got = await ws.receive_json()
             assert got["type"] == "partial"
@@ -404,7 +615,7 @@ class TestAppleStreamingSession:
         events, _ = self._install(monkeypatch)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await events.put({"type": "error", "message": "result stream failed: boom"})
             msg = await ws.receive_json()
             assert msg["type"] == "error"
@@ -424,7 +635,7 @@ class TestAppleStreamingSession:
         self._install(monkeypatch, feed_ok=False)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 32)
             msg = await ws.receive_json()
             assert msg["type"] == "error"
@@ -612,6 +823,48 @@ class TestStreamLifecycle:
         return client, input_stream
 
     @pytest.mark.asyncio
+    async def test_ready_advertises_the_connection_cap(self, monkeypatch):
+        """Same figure, same field, as the other two providers: one contract."""
+        self._install_stubs(monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 7)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            ready = await _recv_json(ws)
+            assert ready["type"] == "ready"
+            assert ready["max_duration_ms"] == 7000
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_ends_the_input_stream_before_its_error_frame(self, monkeypatch):
+        """On the metered provider the trailing final arrives after end_stream().
+
+        A cap that closed the socket first would leave that final decoded, billed
+        and thrown away. The input stream is ended and the handler drained while
+        the socket is open; the cap frame follows.
+        """
+        from kiro_crew.dashboard import stt_stream
+
+        _, input_stream = self._install_stubs(monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
+        order: list[str] = []
+        input_stream.end_stream = AsyncMock(side_effect=lambda: order.append("end_stream"))
+        original = stt_stream._send_error
+
+        async def _spy(ws, message, code):
+            order.append(f"error:{code}")
+            await original(ws, message, code)
+
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._send_error", _spy)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            assert (await _recv_json(ws))["code"] == "stt_max_duration_exceeded"
+            await ws.close()
+        assert order == ["end_stream", "error:stt_max_duration_exceeded"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("language", "expected_locale"),
         [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
@@ -621,7 +874,7 @@ class TestStreamLifecycle:
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             msg = await ws.receive_json()
-            assert msg == {"type": "ready"}
+            assert msg["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             await ws.send_str('{"type":"stop"}')
             await ws.close()
@@ -652,7 +905,7 @@ class TestStreamLifecycle:
         transcribe_client, _ = self._install_stubs(monkeypatch, vocabulary=vocabulary)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
         kwargs = transcribe_client.start_stream_transcription.call_args.kwargs
@@ -927,7 +1180,7 @@ class TestStreamLifecycle:
         input_stream.send_audio_event = AsyncMock(side_effect=RuntimeError("throttled"))
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             await ws.close()
         input_stream.end_stream.assert_awaited()
@@ -938,7 +1191,7 @@ class TestStreamLifecycle:
         _, input_stream = self._install_stubs(monkeypatch)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             await ws.close()  # no stop message
         input_stream.end_stream.assert_awaited()
@@ -956,7 +1209,7 @@ class TestStreamLifecycle:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
         input_stream.end_stream.assert_awaited()
@@ -976,7 +1229,7 @@ class TestStreamLifecycle:
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             # Do NOT send any audio — rely purely on the deadline task.
             msg = await ws.receive_json()
             assert msg == {
@@ -1040,7 +1293,7 @@ class TestStreamLifecycle:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.receive_json()
             await ws.close()
         for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
@@ -1055,7 +1308,7 @@ class TestStreamLifecycle:
         _, input_stream = self._install_stubs(monkeypatch)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str("x" * 300)  # >_MAX_TEXT_FRAME_BYTES (256)
             await ws.close()
         input_stream.end_stream.assert_awaited()
@@ -1450,7 +1703,7 @@ class TestDefensiveGuards:
 
         async with TestClient(TestServer(_make_app())) as http_client:
             ws = await http_client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
         # Wait for the end audit instead of assuming the handler already ran:
@@ -1629,6 +1882,175 @@ class TestLocalStreamingSession:
             lambda caller, *, outcome: outcomes.append(outcome),
         )
         return outcomes
+
+    @pytest.mark.asyncio
+    async def test_ready_advertises_the_connection_cap(self, monkeypatch):
+        """A client that outlives one connection needs the cap to plan its rotation.
+
+        The meetings app holds a socket for an hour-long meeting and rotates before
+        the cap; without the figure it can only guess. Milliseconds, like the
+        sibling `final_timeout_ms`, and derived from the constant rather than
+        restated, so a changed cap cannot leave a stale advertisement.
+        """
+        self._install(monkeypatch, _FakeLocalSession())
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 7)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            ready = await _recv_json(ws)
+            assert ready["type"] == "ready"
+            assert ready["max_duration_ms"] == 7000
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+
+    def _arm_cap(self, monkeypatch) -> asyncio.Event:
+        """Make the duration cap fire on a signal instead of a clock.
+
+        The transport's deadline sleeps `_MAX_STREAM_DURATION_SECS`. Pinning that
+        to a sentinel and shimming `asyncio.sleep` (the pattern
+        `test_stop_budget_covers_the_active_partial_and_the_final` already uses for
+        the drain budget) lets a test fire the cap exactly when the session is in
+        the state under test, instead of racing a real timer against loopback I/O:
+        a cap that fires before the client's frame has been read, queued and fed
+        has nothing pending and legitimately sends no final.
+        """
+        return _arm_cap(monkeypatch)
+
+    @staticmethod
+    def _fed_session(fed: asyncio.Event, **kwargs) -> _FakeLocalSession:
+        """A fake session that signals once audio has been accepted."""
+
+        class Fed(_FakeLocalSession):
+            async def feed(self, raw_int16, *, allow_partial=True):
+                events = await super().feed(raw_int16, allow_partial=allow_partial)
+                fed.set()
+                return events
+
+        return Fed(**kwargs)
+
+    @pytest.mark.asyncio
+    async def test_the_cap_delivers_the_pending_utterance_before_its_error_frame(self, monkeypatch):
+        """The cap is a server-initiated stop, not a kill.
+
+        Audio the server has accepted is speech the user already said; discarding
+        it at the cap lost up to the utterance backstop (two minutes) per cap in a
+        continuous meeting. The trailing final goes out first, then the cap's own
+        frame, then the close — the same order a client `stop` produces, plus the
+        frame that says why the server ended it.
+        """
+        outcomes = self._record_end_audits(monkeypatch)
+        fire = self._arm_cap(monkeypatch)
+        fed = asyncio.Event()
+        session = self._install(
+            monkeypatch, self._fed_session(fed, final_text="what was being said")
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            # The cap fires with that audio accepted and no final yet.
+            await asyncio.wait_for(fed.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            fire.set()
+            assert (await _recv_json(ws)) == {"type": "final", "text": "what was being said"}
+            assert (await _recv_json(ws)) == {
+                "type": "error",
+                "message": "max stream duration exceeded",
+                "code": "stt_max_duration_exceeded",
+            }
+            closing = await asyncio.wait_for(ws.receive(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            assert closing.type in (
+                web.WSMsgType.CLOSE,
+                web.WSMsgType.CLOSING,
+                web.WSMsgType.CLOSED,
+            )
+        assert session.finished is True
+        assert session.cancelled is False
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes == ["timeout"], outcomes
+
+    @pytest.mark.asyncio
+    async def test_a_stop_that_races_the_cap_ends_the_session_once(self, monkeypatch):
+        """Both the client and the cap may end the session in the same window.
+
+        Whoever claims first owns the outcome; the other must not add a second
+        final or a contradictory frame. The cap is fired once the audio is in,
+        with the client's `stop` already sent and in flight: which one the server
+        reads first is the loop's choice, and both answers are accepted.
+        """
+        outcomes = self._record_end_audits(monkeypatch)
+        fire = self._arm_cap(monkeypatch)
+        fed = asyncio.Event()
+        session = self._install(monkeypatch, self._fed_session(fed, final_text="only once"))
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await ws.send_str('{"type":"stop"}')
+            await asyncio.wait_for(fed.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            fire.set()
+            frames = []
+            while True:
+                msg = await asyncio.wait_for(ws.receive(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+                if msg.type != web.WSMsgType.TEXT:
+                    break
+                frames.append(json.loads(msg.data))
+        assert [f for f in frames if f["type"] == "final"] == [
+            {"type": "final", "text": "only once"}
+        ]
+        assert len([f for f in frames if f["type"] == "error"]) <= 1
+        assert session.finished is True
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes in (["ok"], ["timeout"]), outcomes
+
+    @pytest.mark.asyncio
+    async def test_a_raise_during_a_cap_drain_reports_the_failure_not_the_cap(self, monkeypatch):
+        """One frame, and the one that tells the truth.
+
+        The cap now precedes a drain, so a recogniser that raises while finishing
+        reaches the generic `except` with the cap already claimed. Two frames
+        (`transcription failed`, then the cap's) contradicted each other; the cap
+        frame alone would promise that nothing was lost when the final was. So the
+        failure's own code goes out in the cap frame's place, once, and the audit
+        still records the cap that ended the session.
+        """
+        outcomes = self._record_end_audits(monkeypatch)
+        fire = self._arm_cap(monkeypatch)
+        fed = asyncio.Event()
+
+        class Exploding(_FakeLocalSession):
+            async def feed(self, raw_int16, *, allow_partial=True):
+                events = await super().feed(raw_int16, allow_partial=allow_partial)
+                fed.set()
+                return events
+
+            async def finish(self):
+                raise RuntimeError("decode blew up while finishing")
+
+        self._install(monkeypatch, Exploding())
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await asyncio.wait_for(fed.wait(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+            fire.set()
+            frames = []
+            while True:
+                msg = await asyncio.wait_for(ws.receive(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+                if msg.type != web.WSMsgType.TEXT:
+                    break
+                frames.append(json.loads(msg.data))
+        assert [f["type"] for f in frames] == ["error"], frames
+        assert frames[0]["code"] == "stt_session_failed", frames
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes == ["timeout"], outcomes
 
     @pytest.mark.asyncio
     async def test_pcm_and_stop_are_read_while_a_partial_is_still_decoding(self, monkeypatch):
@@ -1816,7 +2238,11 @@ class TestLocalStreamingSession:
             await asyncio.wait_for(task, timeout=5)
             assert interrupted.is_set() and session.cancelled
             assert session.finished is (phase == "final")
-            assert ws.sent[0] == {"type": "ready", "final_timeout_ms": 42_000}
+            assert ws.sent[0] == {
+                "type": "ready",
+                "final_timeout_ms": 42_000,
+                "max_duration_ms": 300_000,
+            }
             assert [message["type"] for message in ws.sent] == ["ready", "error"]
             assert ws.sent[1]["code"] == stt.CODE_DECODE_FAILED
             assert ws.closed and outcomes == ["timeout"]

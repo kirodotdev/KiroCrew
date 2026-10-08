@@ -14,9 +14,9 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
-from aiohttp import WSMsgType, web
+from aiohttp import WSMessage, WSMsgType, web
 
 # Streaming-path dep. Declared in Config + setup.cfg, but keep the module
 # importable without it so a stale-env gateway still starts and cli_doctor
@@ -63,6 +63,67 @@ _MAX_WS_MSG_SIZE = 128 * 1024
 # buffered audio and keeps queueing decodes onto the one shared model. 5 min
 # covers realistic dictation; longer sessions require explicit reconnect.
 _MAX_STREAM_DURATION_SECS = 300
+
+
+def _max_duration_ms() -> int:
+    """The connection cap, as the ``ready`` frame advertises it.
+
+    Read at call time rather than bound at import, so a test that shortens the
+    cap sees the shortened advertisement, and so a client's rotation plan always
+    reflects the cap this process enforces. A client that outlives one connection
+    (the Meetings app) rotates to a fresh socket before this many milliseconds
+    instead of discovering the cap by being ended.
+    """
+    return int(_MAX_STREAM_DURATION_SECS * 1000)
+
+
+async def _receive_until(
+    ws: web.WebSocketResponse, stop: asyncio.Event
+) -> AsyncIterator[WSMessage]:
+    """Yield the socket's messages until it ends or *stop* is set.
+
+    The same iteration ``async for msg in ws`` gives (it ends on CLOSE, CLOSING
+    and CLOSED and yields everything else, ERROR included), plus one exit: a
+    *stop* raised by the duration cap. Stopping is observed only BETWEEN
+    messages, never inside the body that forwards one. Cancelling the reader
+    task instead could interrupt ``session.feed`` or ``send_audio_event``
+    half-way and leave the recogniser's input stream with a truncated frame; the
+    only await this cancels is the pending ``receive()``, which is what a
+    ``break`` out of ``async for`` leaves behind too.
+    """
+    # Driven through the socket's own async-iteration protocol rather than
+    # `receive()`, so it ends where `async for` ends (aiohttp raises
+    # StopAsyncIteration on CLOSE, CLOSING and CLOSED) and so a test double that
+    # implements only `__aiter__` is read the same way.
+    messages = ws.__aiter__()
+    stop_task = asyncio.ensure_future(stop.wait())
+    nxt: asyncio.Task[WSMessage] | None = None
+    try:
+        while not stop.is_set():
+            nxt = asyncio.ensure_future(messages.__anext__())
+            done, _ = await asyncio.wait({nxt, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            if nxt not in done:
+                nxt.cancel()
+                await asyncio.gather(nxt, return_exceptions=True)
+                return
+            try:
+                msg = nxt.result()
+            except StopAsyncIteration:
+                return
+            finally:
+                nxt = None
+            yield msg
+    finally:
+        # An outer cancellation (client gone, server shutdown) lands in the
+        # `wait` above and must take the pending read down with it, or that read
+        # sits in `receive()` until the close and ends unretrieved.
+        stop_task.cancel()
+        pending = [stop_task] + ([nxt] if nxt is not None and not nxt.done() else [])
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 # Cap text-frame size — the only valid text frame is `{"type":"stop"}`
 # (15 bytes). Reject obvious abuse without the 128 KiB binary cap.
 _MAX_TEXT_FRAME_BYTES = 256
@@ -75,6 +136,10 @@ _MAX_LOCAL_BUFFER_FRAMES = 1024
 #: Native abort cleanup precedes socket teardown; allow its final coded frame
 #: to reach the browser before the browser's own fallback closes the socket.
 _LOCAL_FINAL_WIRE_GRACE_SECS = 15
+#: After the cap, how long a reader may stay inside the frame it is forwarding
+#: before it is cancelled after all: a helper that stopped reading its stdin
+#: would otherwise hold the session, and its slot, until a gateway restart.
+_CAP_READER_GRACE_SECS = 5.0
 # Cap concurrent streaming sessions per-process, for all three providers. Only
 # `transcribe` carries a cost reason (each open socket is a billable session and
 # counts against the account's concurrent-stream quota); the free on-device
@@ -586,13 +651,19 @@ async def _run_local_session(
         )
 
     # The FIRST fatal cause wins. Both the duration cap and a failed send can end
-    # the session, and the cap ends the read loop by closing the socket — so
+    # the session, and the cap ends the read loop by cancelling the reader — so
     # without a single claim the second one to run would relabel the first one's
     # audit outcome. Claimed before any awaiting work. `None` means a normal end.
     fatal_outcome: str | None = None
     # Set once the client stops accepting frames, so teardown skips a full-buffer
     # decode whose transcript has nowhere to go.
     client_gone = False
+    # The CAP fired, as distinct from the drain deadline, which also claims
+    # `timeout` but already sends its own frame.
+    capped = False
+    # A drain that FAILED under the cap. Its frame replaces the cap's, because the
+    # cap frame alone is the promise that nothing accepted was lost.
+    drain_failure: dict[str, object] | None = None
 
     def _claim_fatal(kind: str) -> None:
         nonlocal fatal_outcome
@@ -615,12 +686,16 @@ async def _run_local_session(
 
     async def _relay(events: list["stt.SttEvent"]) -> bool:
         """Forward session events to the client. False means stop the session."""
-        nonlocal acknowledged_audio_end
+        nonlocal acknowledged_audio_end, drain_failure
         for event in events:
             if event.kind == stt.KIND_ERROR:
                 if fatal_outcome is None:
                     _claim_fatal("error")
                     await _send({"type": "error", "message": event.text, "code": event.code})
+                elif capped and drain_failure is None:
+                    # The cap's drain failed: the client must learn THAT, not
+                    # read the cap frame as "nothing was lost".
+                    drain_failure = {"type": "error", "message": event.text, "code": event.code}
                 return False
             if event.kind == stt.KIND_STATUS:
                 if not await _send(
@@ -785,35 +860,41 @@ async def _run_local_session(
     # that stops sending audio while the socket stays alive (a throttled background
     # tab, a muted input, a client bug) would never evaluate a message-driven
     # deadline and would hold one of `_MAX_CONCURRENT_SESSIONS` slots indefinitely.
-    async def _enforce_deadline() -> None:
-        await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
-        # Only the first claimant sends: otherwise the cap and a concurrent
-        # failure each emit a frame in the window before the other's close lands,
-        # and the client sees two contradictory errors for one failure.
-        if fatal_outcome is not None:
-            return
-        _claim_fatal("timeout")
-        await _send(
-            {
-                "type": "error",
-                "message": "max stream duration exceeded",
-                "code": _CODE_MAX_DURATION,
-            }
-        )
-        # ws.close() can raise on a broken transport, and an unhandled exception
-        # here would surface as "Task exception was never retrieved".
-        try:
-            await ws.close()
-        except Exception:
-            pass
-
     inbox: asyncio.Queue[bytes | None] = asyncio.Queue()
     buffered_bytes = 0
     input_finished = False
     drain_timed_out = False
     drain_error_needed = False
     drain_task: asyncio.Task[None] | None = None
+    receive_task: asyncio.Task[None] | None = None
     owner_task = asyncio.current_task()
+
+    async def _enforce_deadline() -> None:
+        nonlocal drain_task, capped
+        await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
+        # Only the first claimant acts: otherwise the cap and a concurrent
+        # failure each emit a frame in the window before the other's close lands,
+        # and the client sees two contradictory errors for one failure. A reader
+        # that already finished means a client `stop` owns the teardown.
+        if fatal_outcome is not None or input_finished:
+            return
+        _claim_fatal("timeout")
+        capped = True
+        # A server-initiated stop. Stop READING, let the owner drain what it
+        # already accepted and relay the trailing final, then send the cap's
+        # frame and close (the `finally` below). Closing here discarded the
+        # utterance in flight: up to the utterance backstop of accepted speech
+        # per cap, every five minutes of a continuous meeting.
+        if drain_task is None:
+            drain_task = asyncio.create_task(_enforce_final_deadline())
+        # Cancelling this reader is safe, unlike the apple and transcribe ones:
+        # its body only queues frames (`put_nowait`), it never awaits a write to
+        # the recogniser, so no frame can be cut half-way. Its `finally` ends the
+        # inbox the way a client `stop` does.
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
+        else:
+            inbox.put_nowait(None)
 
     async def _enforce_final_deadline() -> None:
         nonlocal drain_timed_out, drain_error_needed
@@ -909,28 +990,43 @@ async def _run_local_session(
             pcm = update.pending
 
     deadline_task = asyncio.create_task(_enforce_deadline())
-    receive_task: asyncio.Task[None] | None = None
     outcome = "ok"
     try:
         final_timeout_ms = int(
             (cfg.stt.timeout_secs + DECODE_ABORT_GRACE_SECS + _LOCAL_FINAL_WIRE_GRACE_SECS) * 1000
         )
-        if await _send({"type": "ready", "final_timeout_ms": final_timeout_ms}):
+        if await _send(
+            {
+                "type": "ready",
+                "final_timeout_ms": final_timeout_ms,
+                "max_duration_ms": _max_duration_ms(),
+            }
+        ):
             receive_task = asyncio.create_task(_receive_audio())
             while True:
                 raw = await inbox.get()
-                if raw is None or fatal_outcome is not None or client_gone or ws.closed:
+                # The cap is a stop, not a failure: queued audio is still drained
+                # to finals, exactly as after a client `stop`.
+                if (
+                    raw is None
+                    or client_gone
+                    or ws.closed
+                    or (fatal_outcome is not None and not capped)
+                ):
                     break
                 buffered_bytes -= len(raw)
                 # The next queued frame makes this frame's partial obsolete.
                 # Stopping has the same effect: drain all audio directly to finals.
-                events = await session.feed(raw, allow_partial=not input_finished and inbox.empty())
+                events = await session.feed(
+                    raw, allow_partial=not input_finished and not capped and inbox.empty()
+                )
                 if not await _relay(events) or session.ended:
                     break
-            if receive_task.done():
+            # Our own cancellation (the cap) is not an outcome to re-raise.
+            if receive_task.done() and not receive_task.cancelled():
                 await receive_task
         if (
-            fatal_outcome is None
+            (fatal_outcome is None or capped)
             and not client_gone
             and not ws.closed
             and not session.ended
@@ -944,34 +1040,39 @@ async def _run_local_session(
         # full-buffer decode while unwinding its interrupted cosmetic inference.
         session.cancel()
         if drain_timed_out:
+            timed_out_frame: dict[str, object] = {
+                "type": "error",
+                "message": "final speech transcription timed out",
+                "code": stt.CODE_DECODE_FAILED,
+            }
             if drain_error_needed:
-                await _send(
-                    {
-                        "type": "error",
-                        "message": "final speech transcription timed out",
-                        "code": stt.CODE_DECODE_FAILED,
-                    }
-                )
+                await _send(timed_out_frame)
+            elif capped and drain_failure is None:
+                drain_failure = timed_out_frame
         else:
             _claim_fatal("error")
             raise
     except Exception:
         logger.exception("local streaming STT session failed")
         outcome = "error"
-        # Claimed before the frame goes out, so a duration cap firing in the same
-        # window stays silent instead of contradicting this one.
-        _claim_fatal("error")
-        await _send(
-            {
-                "type": "error",
-                "message": "transcription failed",
-                "code": _CODE_SESSION_FAILED,
-            }
-        )
+        # Only the FIRST fatal claimant sends a frame, the same rule `_relay`
+        # applies. A cap that already claimed sends its frame in the `finally`;
+        # a raise that interrupted ITS drain is recorded there instead, because
+        # the cap frame alone would read as "nothing was lost".
+        failed_frame: dict[str, object] = {
+            "type": "error",
+            "message": "transcription failed",
+            "code": _CODE_SESSION_FAILED,
+        }
+        if fatal_outcome is None:
+            _claim_fatal("error")
+            await _send(failed_frame)
+        elif capped and drain_failure is None:
+            drain_failure = failed_frame
     finally:
-        # An EXPLICIT claim, not `deadline_task.done()`: the cap's own ws.close()
-        # is what ends the read loop, so this `finally` runs while that task is
-        # still awaiting the close and `done()` is still False.
+        # An EXPLICIT claim, not `deadline_task.done()`: the cap ends the read
+        # loop by cancelling the reader and may still be unwinding when this
+        # `finally` runs, so its `done()` can read False.
         timed_out = fatal_outcome == "timeout"
         # Cancel first among the cleanup steps: it is the one thing that can still
         # touch the socket, and leaving it live past cleanup would close a socket
@@ -996,8 +1097,22 @@ async def _run_local_session(
             *([drain_task] if drain_task is not None else []),
             return_exceptions=True,
         )
+        # The cap's own frame goes out AFTER the trailing final it let through,
+        # and before the close that `_close_and_end_audit` performs. Keyed on the
+        # cap itself: a drain that timed out also reads `timeout`, but it has
+        # already sent its own frame. A drain that FAILED under the cap sends its
+        # failure instead: the cap frame is the promise that nothing was lost.
+        if capped and not client_gone and not ws.closed:
+            await _send(
+                drain_failure
+                or {
+                    "type": "error",
+                    "message": "max stream duration exceeded",
+                    "code": _CODE_MAX_DURATION,
+                }
+            )
         # A claimed fatal cause outranks the local `outcome`: the read loop can
-        # exit cleanly (the cap closed the socket under it) and would otherwise be
+        # exit cleanly (the cap ended it under the owner) and would otherwise be
         # recorded as "ok" for a session that in fact died.
         await _close_and_end_audit(ws, caller, outcome=fatal_outcome or outcome)
 
@@ -1141,11 +1256,11 @@ async def _run_apple_session(
     # message-driven deadline. It would hold the StreamTranscribe helper, an OS
     # speech-recognition session, and one of `_MAX_CONCURRENT_SESSIONS` slots
     # indefinitely; three such sockets make dictation 503 until a gateway restart.
-    # The FIRST fatal cause wins. Both teardown paths (the duration cap and a fatal
-    # helper error) can fire, and each ends the read loop by closing the socket — so
-    # without a single claim the second one to run would relabel the first one's
-    # outcome in the audit trail. Claimed before any awaiting work, so it cannot be
-    # missed; `None` means the session ended normally.
+    # The FIRST fatal cause wins. Both teardown paths (the duration cap, which
+    # stops the reader between frames, and a fatal helper error, which closes the
+    # socket) end the read loop — so without a single claim the second one to run would relabel
+    # the first one's outcome in the audit trail. Claimed before any awaiting work,
+    # so it cannot be missed; `None` means the session ended normally.
     fatal_outcome: str | None = None
 
     def _claim_fatal(kind: str) -> None:
@@ -1153,32 +1268,45 @@ async def _run_apple_session(
         if fatal_outcome is None:
             fatal_outcome = kind
 
+    read_task: asyncio.Task[None] | None = None
+    cap_fired = asyncio.Event()
+    # Set right before the cap's grace cancels the reader, so the owner swallows
+    # exactly that cancellation and no other.
+    reader_cancelled_by_cap = False
+
     async def _enforce_deadline() -> None:
+        nonlocal reader_cancelled_by_cap
         await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
-        # Only the first claimant sends: otherwise the cap and a concurrent helper
+        # Only the first claimant acts: otherwise the cap and a concurrent helper
         # error each emit a frame in the window before the other's close lands, and
-        # the client sees two contradictory errors for one failure.
-        if fatal_outcome is not None:
+        # the client sees two contradictory errors for one failure. A reader that
+        # already returned means a client `stop` owns the teardown.
+        if fatal_outcome is not None or (read_task is not None and read_task.done()):
             return
         _claim_fatal("timeout")
-        if not ws.closed:
-            await _send_error(ws, "max stream duration exceeded", _CODE_MAX_DURATION)
-            # Same defensive shape as the AWS path: ws.close() can raise on a
-            # broken transport, and an unhandled exception here would surface as
-            # "Task exception was never retrieved".
+        # A server-initiated stop: end the read loop between frames and let the
+        # teardown finish the helper and relay its trailing final to the OPEN
+        # socket, then send the cap's frame and close. Closing here left that
+        # final with no recipient.
+        cap_fired.set()
+        # The reader stops at its next receive. One stuck INSIDE a feed — a
+        # helper that stopped reading its stdin — would hold the session, and
+        # its slot, until a gateway restart, so it gets a bounded grace to
+        # finish the frame in flight and is then cancelled after all.
+        if read_task is not None:
             try:
-                await ws.close()
+                await asyncio.wait_for(asyncio.shield(read_task), timeout=_CAP_READER_GRACE_SECS)
+            except asyncio.TimeoutError:
+                reader_cancelled_by_cap = True
+                read_task.cancel()
             except Exception:
-                pass
+                pass  # the owner awaits the reader and reports its failure
 
-    deadline_task = asyncio.create_task(_enforce_deadline())
-    outcome = "ok"
-    try:
-        await ws.send_json({"type": "ready"})
-        async for msg in ws:
+    async def _read_audio() -> None:
+        async for msg in _receive_until(ws, cap_fired):
             if msg.type == WSMsgType.BINARY:
                 if not await session.feed(msg.data):
-                    # The helper died mid-dictation. Breaking alone would audit this
+                    # The helper died mid-dictation. Returning alone would audit this
                     # as a clean stop and leave the client believing it is still
                     # recording, with everything it says from here silently dropped —
                     # the same failure mode as swallowing an `error` event, reached
@@ -1186,30 +1314,43 @@ async def _run_apple_session(
                     logger.warning("apple streaming helper stopped accepting audio")
                     _claim_fatal("error")
                     await _send_error(ws, "speech helper stopped", _CODE_SESSION_FAILED)
-                    break
+                    return
             elif msg.type == WSMsgType.TEXT:
                 if len(msg.data) > _MAX_TEXT_FRAME_BYTES:
                     logger.warning(
                         "Oversized text frame (%d bytes) on /api/ws/stt — closing",
                         len(msg.data),
                     )
-                    break
+                    return
                 try:
                     ctrl = json.loads(msg.data)
                 except ValueError:
                     continue
                 if isinstance(ctrl, dict) and ctrl.get("type") == "stop":
-                    break
+                    return
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                break
+                return
+
+    deadline_task = asyncio.create_task(_enforce_deadline())
+    outcome = "ok"
+    try:
+        await ws.send_json({"type": "ready", "max_duration_ms": _max_duration_ms()})
+        read_task = asyncio.create_task(_read_audio())
+        try:
+            await read_task
+        except asyncio.CancelledError:
+            # Only the cap's reader grace is swallowed; an outer cancellation
+            # (client gone, server shutdown) must still unwind.
+            if not reader_cancelled_by_cap:
+                raise
     except Exception:
         logger.exception("apple streaming STT session failed")
         outcome = "error"
     finally:
         # An EXPLICIT claim, not `deadline_task.done()`. Inferring from task state
-        # is racy here: the cap's own `ws.close()` is what ends the read loop, so
-        # the `finally` runs while that task is still awaiting the close and
-        # `done()` is still False — the teardown would be audited as a clean stop.
+        # is racy here: the cap ends the read loop between frames, and this
+        # `finally` runs while the deadline task may still be unwinding, so its
+        # `done()` can read False — the teardown would be audited as a clean stop.
         # The claim is made before any awaiting work, so it cannot be missed.
         timed_out = fatal_outcome == "timeout"
         # Cancel first among the cleanup steps: it is the one thing that can still
@@ -1228,12 +1369,16 @@ async def _run_apple_session(
             await asyncio.wait_for(asyncio.shield(relay_task), timeout=3)
         except (asyncio.TimeoutError, Exception):
             relay_task.cancel()
+        # The cap's own frame goes out AFTER the trailing final the relay just
+        # delivered, and before the close in `_close_and_end_audit`.
+        if timed_out and not ws.closed:
+            await _send_error(ws, "max stream duration exceeded", _CODE_MAX_DURATION)
         await session.close()
         if endpointer is not None:
             await endpointer.aclose()
         # A claimed fatal cause outranks the local `outcome`: the read loop can exit
-        # cleanly (the cap/relay closed the socket under it) and would otherwise be
-        # recorded as "ok" for a session that in fact died.
+        # cleanly (the cap ended it, or the relay closed the socket under it) and
+        # would otherwise be recorded as "ok" for a session that in fact died.
         await _close_and_end_audit(ws, caller, outcome=fatal_outcome or outcome)
 
 
@@ -1489,32 +1634,74 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
 
         # An EXPLICIT claim by the cap itself, the same discipline as the other two
         # branches, and NOT `deadline_task.done()`. Inferring from task state is racy
-        # here: the cap's own `ws.close()` is what ends the read loop, so the
-        # `finally` runs while that task is still awaiting the peer's close
-        # acknowledgement and `done()` is still False. A capped session would then be
-        # audited as a clean stop, which on the one metered provider is the
-        # distinction an operator most needs. Claimed before any awaiting work, so it
-        # cannot be missed.
+        # here: the cap ends the read loop between frames and may still be
+        # unwinding when the `finally` runs, so its `done()` can read False. A capped
+        # session would then be audited as a clean stop, which on the one metered
+        # provider is the distinction an operator most needs. Claimed before any
+        # awaiting work, so it cannot be missed.
         capped = False
 
         # Enforce the bill-cap with a dedicated task, not an in-loop check.
         # `async for msg in ws` only yields on client data; aiohttp handles
         # heartbeat ping/pong internally, so an idle-but-alive client would
         # never trip a message-driven deadline.
+        cap_fired = asyncio.Event()
+        # Set right before the cap's grace cancels the reader, so the owner
+        # swallows exactly that cancellation and no other.
+        reader_cancelled_by_cap = False
+
         async def _enforce_deadline() -> None:
-            nonlocal capped
+            nonlocal capped, reader_cancelled_by_cap
             await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
-            if not ws.closed:
-                capped = True
-                await _send_error(ws, "max stream duration exceeded", _CODE_MAX_DURATION)
-                # Tolerated for the same reason `_send_error` tolerates a failed
-                # send: ws.close() can raise on a broken transport, and an
-                # unhandled exception here would surface as "Task exception was
-                # never retrieved".
+            # A reader that already returned means a client `stop` owns the
+            # teardown: a clean stop must not be re-labelled as the cap.
+            if ws.closed or (read_task is not None and read_task.done()):
+                return
+            capped = True
+            # A server-initiated stop: end the read loop between frames so the
+            # teardown ends the input stream and drains the trailing final to the
+            # OPEN socket, then sends the cap's frame and closes. Closing here
+            # billed that final and threw it away.
+            cap_fired.set()
+            # The reader stops at its next receive. One stuck INSIDE a send — a
+            # credential lookup or an event-stream write that never returns —
+            # would hold the session, its slot and the billing, so it gets a
+            # bounded grace to finish the event in flight and is then cancelled.
+            if read_task is not None:
                 try:
-                    await ws.close()
+                    await asyncio.wait_for(
+                        asyncio.shield(read_task), timeout=_CAP_READER_GRACE_SECS
+                    )
+                except asyncio.TimeoutError:
+                    reader_cancelled_by_cap = True
+                    read_task.cancel()
                 except Exception:
-                    pass
+                    pass  # the owner awaits the reader and reports its failure
+
+        async def _read_audio() -> None:
+            async for msg in _receive_until(ws, cap_fired):
+                if msg.type == WSMsgType.BINARY:
+                    try:
+                        await stream.input_stream.send_audio_event(audio_chunk=msg.data)
+                    except Exception:
+                        logger.exception("Transcribe send_audio_event failed")
+                        return
+                elif msg.type == WSMsgType.TEXT:
+                    if len(msg.data) > _MAX_TEXT_FRAME_BYTES:
+                        logger.warning(
+                            "Oversized text frame (%d bytes) on /api/ws/stt — closing",
+                            len(msg.data),
+                        )
+                        return
+                    try:
+                        ctrl = json.loads(msg.data)
+                    except ValueError:
+                        continue  # ignore non-JSON text frames
+                    if isinstance(ctrl, dict) and ctrl.get("type") == "stop":
+                        return
+                    # Unknown control frames are ignored (forward-compat).
+                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                    return
 
         # Wrap `send_json(ready)` + task creation in the cleanup `try`.
         # If any of these lines raises (most plausibly a client disconnect
@@ -1523,39 +1710,25 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         # silently bills and counts against the concurrent-stream quota.
         handler_task = None
         deadline_task = None
+        read_task: asyncio.Task[None] | None = None
         # Build the endpointer once, before the try, so it is always bound in the
         # finally (a raise before assignment would otherwise NameError there).
         endpointer = _build_endpointer(ws, cfg, request)
         try:
-            await ws.send_json({"type": "ready"})
+            await ws.send_json({"type": "ready", "max_duration_ms": _max_duration_ms()})
 
             handler = _make_handler(ws, endpointer)(stream.output_stream)
             handler_task = asyncio.create_task(handler.handle_events())
             deadline_task = asyncio.create_task(_enforce_deadline())
 
-            async for msg in ws:
-                if msg.type == WSMsgType.BINARY:
-                    try:
-                        await stream.input_stream.send_audio_event(audio_chunk=msg.data)
-                    except Exception:
-                        logger.exception("Transcribe send_audio_event failed")
-                        break
-                elif msg.type == WSMsgType.TEXT:
-                    if len(msg.data) > _MAX_TEXT_FRAME_BYTES:
-                        logger.warning(
-                            "Oversized text frame (%d bytes) on /api/ws/stt — closing",
-                            len(msg.data),
-                        )
-                        break
-                    try:
-                        ctrl = json.loads(msg.data)
-                    except ValueError:
-                        continue  # ignore non-JSON text frames
-                    if isinstance(ctrl, dict) and ctrl.get("type") == "stop":
-                        break
-                    # Unknown control frames are ignored (forward-compat).
-                elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                    break
+            read_task = asyncio.create_task(_read_audio())
+            try:
+                await read_task
+            except asyncio.CancelledError:
+                # Only the cap's reader grace is swallowed; an outer cancellation
+                # (client gone, server shutdown) must still unwind.
+                if not reader_cancelled_by_cap:
+                    raise
         finally:
             # Cancel first among the cleanup steps: it is the one thing that can still
             # touch the socket, and leaving it live past cleanup would close a socket
@@ -1600,6 +1773,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             # done/cancelled by here, so no further note_final can fire.
             if endpointer is not None:
                 await endpointer.aclose()
+            # The cap's own frame goes out AFTER the trailing final the handler
+            # drain just delivered, and before the audit and the close.
+            if capped and not ws.closed:
+                await _send_error(ws, "max stream duration exceeded", _CODE_MAX_DURATION)
             # Audit BEFORE the close, for the reason documented on
             # _close_and_end_audit: ws.close() awaits the peer's close ack under
             # its own timeout, so a client that already went away would otherwise
