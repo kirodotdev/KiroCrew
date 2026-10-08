@@ -113,72 +113,26 @@ describe('filterCrewmateChat', () => {
   })
 })
 
-describe('filterCrewmateChat while a turn runs (live)', () => {
+describe('filterCrewmateChat during a running turn', () => {
   const thinking = (ts: string): ChatMessage => ({ role: 'thinking', content: 'reasoning', cls: '', ts })
-  const done = (ts: string): ChatMessage => ({ role: 'tool', content: '✅ gh issue list', cls: '', ts, meta: { tool_call_id: 'tc-x' } })
-  const earlierTurn = tool(at('2026-09-20T09:00:05Z'))
+  const done = (ts: string, of: ChatMessage): ChatMessage => ({ role: 'tool', content: '✅ gh issue list', cls: '', ts, meta: { tool_call_id: of.meta!.tool_call_id } })
   const opener = user(at('2026-09-20T09:12:00Z'))
   const liveThinking = thinking(at('2026-09-20T09:12:02Z'))
   const liveTool = tool(at('2026-09-20T09:12:06Z'))
-  const liveDone = done(at('2026-09-20T09:12:07Z'))
-  const rows: ChatMessage[] = [
-    user(at('2026-09-20T09:00:00Z')),
-    earlierTurn,
-    said(at('2026-09-20T09:00:09Z')),
-    opener,
-    liveThinking,
-    liveTool,
-    liveDone,
-  ]
+  const liveDone = done(at('2026-09-20T09:12:07Z'), liveTool)
 
-  it("keeps the running turn's thinking and tool rows, completion siblings included", () => {
-    const kept = filterCrewmateChat(rows, true)
-    expect(kept).toContain(liveThinking)
-    expect(kept).toContain(liveTool)
-    expect(kept).toContain(liveDone)
-  })
-
-  it("an earlier turn's machinery stays folded away", () => {
-    expect(filterCrewmateChat(rows, true)).not.toContain(earlierTurn)
-  })
-
-  it('folds the progress away again once the turn ends', () => {
-    const kept = filterCrewmateChat(rows, false)
-    expect(kept).not.toContain(liveThinking)
-    expect(kept).not.toContain(liveTool)
-  })
-
-  it('a patrol wake opens the live turn too, and stays hidden itself', () => {
-    const wake: ChatMessage = { role: 'nudge', content: '[auto-nudge cycle 3]', cls: 'msg msg-nudge', ts: at('2026-09-20T10:00:00Z'), meta: { nudge: { cycle: 3 } } }
-    const patrolTool = tool(at('2026-09-20T10:00:04Z'))
-    const kept = filterCrewmateChat([...rows, wake, patrolTool], true)
-    expect(kept).toContain(patrolTool)
-    expect(kept).not.toContain(wake)
-    expect(kept).not.toContain(liveTool)
-  })
-
-  it('a steer sent into the running turn does not restart it', () => {
-    const steer: ChatMessage = { role: 'user', content: 'also check main', cls: 'msg msg-u', ts: at('2026-09-20T09:12:09Z'), meta: { steer: true } }
-    const after = tool(at('2026-09-20T09:12:10Z'))
-    const kept = filterCrewmateChat([...rows, steer, after], true)
-    expect(kept).toContain(liveTool)
-    expect(kept).toContain(after)
-    expect(kept).toContain(steer)
+  it('the transcript never draws progress rows — the live step is the status line, not a row (#18238)', () => {
+    const drawn = filterCrewmateChat([opener, liveThinking, liveTool, liveDone])
+    expect(drawn).toEqual([opener])
   })
 
   it("a live tool row between two replies does not reshape the run (no mid-turn footer)", () => {
     const a = said(at('2026-09-20T09:12:01Z'), 'Looking now.')
     const b = said(at('2026-09-20T09:12:30Z'), 'Found it.')
     const transcript = [opener, a, liveTool, b]
-    const drawn = filterCrewmateChat(transcript, true)
-    expect(drawn).toContain(liveTool)
+    const drawn = filterCrewmateChat(transcript)
     expect(crewmateRunPosition(drawn, drawn.indexOf(a), transcript)).toBe('start')
     expect(crewmateRunPosition(drawn, drawn.indexOf(b), transcript)).toBe('end')
-  })
-
-  it('other machinery stays hidden even in the live turn', () => {
-    const envelope: ChatMessage = { role: 'inject', content: '[Cron notification] x', cls: '', ts: at('2026-09-20T09:12:08Z') }
-    expect(filterCrewmateChat([...rows, envelope], true)).not.toContain(envelope)
   })
 })
 

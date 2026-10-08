@@ -97,9 +97,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { selectSidebarAutomationRunningKeys, selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
-import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
-import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import { selectSidebarAutomationRunningKeys, selectSlotStreamState } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
@@ -109,7 +107,8 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import CrewLoopIndicator from '../../components/crew/CrewLoopIndicator'
 import Glass from '../../components/Glass'
 import { Badge } from '../../components/ui'
-import { resolvePillActivity, type PillActivityKind } from './pillActivity'
+import { PILL_ACTIVITY_KEY, type PillActivityKind } from './pillActivity'
+import { useSlotActivity } from './useSlotActivity'
 import ChatPane from '../../components/ChatPane'
 import MateResumeCard from './MateResumeCard'
 import MateWelcomeCard from './MateWelcomeCard'
@@ -433,14 +432,6 @@ const dockMotion = sidePanelDockMotion('right')
  *  spellings — with the time since the thread last moved when one is known,
  *  bare when it is not. File-scope and indexed in place so the key checker
  *  resolves every entry. */
-const PILL_ACTIVITY_KEY: Record<Exclude<PillActivityKind, 'tool' | 'thinking'>, string> = {
-  writing: 'pages.membersPage.pill_writing',
-  compacting: 'pages.membersPage.pill_compacting',
-  stopping: 'pages.membersPage.pill_stopping',
-  working: 'pages.membersPage.drawer_working',
-  delegated: 'pages.membersPage.drawer_delegated_working',
-  idle: 'pages.membersPage.pill_idle',
-}
 /** How often the "next wake in …" countdown in the drawer re-reads the clock.
  *  Coarser than the popover's per-second tick on purpose: the drawer line is
  *  an at-a-glance status, and a per-second re-render of the whole drawer for
@@ -2347,37 +2338,22 @@ export default function MembersPage() {
   const activeSlotLastTs = useAppSelector(
     (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
   )
-  // The identity pill's second line — what the crewmate is doing now. Its
-  // busy readings are the slot's live status line (`slotStatusDetail`), the
-  // SAME record the sessions sidebar and the command palette render through
-  // `toolStatusLabel`, so the pill names a moment the way the sidebar row
-  // does and honours the `simplifiedToolNames` preference. Each read is
-  // memo-safe on its own (a string, a boolean or a stable entry ref), so the
-  // header does not re-render on every WS frame; `resolvePillActivity` folds
-  // them at render time. The key falls back to the roster's slot_key the same
-  // way the avatar does, so a thread whose confirmed slot has not resolved yet
-  // still reads live.
+  // The identity pill's second line — what the crewmate is doing now, read
+  // through the ONE seam the chat's live status line reads too
+  // (`useSlotActivity`): the slot's live status record, the SAME one the
+  // sessions sidebar and the command palette render through `toolStatusLabel`,
+  // so the pill names a moment the way the sidebar row does and honours the
+  // `simplifiedToolNames` preference. The key falls back to the roster's
+  // slot_key the same way the avatar does, so a thread whose confirmed slot
+  // has not resolved yet still reads live.
   const pillSlotKey = activeSlot || active?.slot_key || ''
   const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
-  const pillDetail = useAppSelector((s) => (pillSlotKey ? s.chat.slotStatusDetail[pillSlotKey] : undefined))
-  // Whether the tool call the status describes has RETURNED: the status seam
-  // keeps the call's label until the next status frame, but once its output
-  // is in the tool log the model is reading it, and the pill says so. Matched
-  // by the call's own id, so parallel calls cannot be confused, and tested
-  // with `!== undefined`: an empty output is still a return.
-  const pillToolReturned = useAppSelector((s) => {
-    const d = pillSlotKey ? s.chat.slotStatusDetail[pillSlotKey] : undefined
-    if (d?.kind !== 'tool' || !d.toolCallId) return false
-    const entry = selectSlotToolLog(s, pillSlotKey).findLast((e) => e.type === 'tool' && e.tool_call_id === d.toolCallId)
-    return entry !== undefined && entry.output !== undefined
-  })
   const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? s.dashboard.slots.find((sl) => sl.key === pillSlotKey) : undefined))
-  const simplifiedToolNames = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
-  const pillLabelOf = useCallback(
-    (detail: ToolStatusDetail) => toolStatusLabel(detail, simplifiedToolNames, uiLang),
-    [simplifiedToolNames, uiLang],
-  )
+  const pillAct = useSlotActivity(pillSlotKey, {
+    running: !!active && !!isRunning(active),
+    delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
+  })
   // The resting line's age ("Idle · 6m ago") is on screen for as long as the
   // thread rests, so it must move on its own: re-read the clock on the
   // drawer's coarse tick while the pill is resting, and not at all while it is
@@ -2406,21 +2382,13 @@ export default function MembersPage() {
     // the next tick.
   }, [pillResting, pillLastActive, uiLang])
   const pillActivity = useMemo(() => {
-    const act = resolvePillActivity({
-      streamState: pillStreamState,
-      detail: pillDetail,
-      toolReturned: pillToolReturned,
-      running: !!active && !!isRunning(active),
-      delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
-      labelOf: pillLabelOf,
-    })
-    const label = act.text !== undefined
-      ? act.text
-      : act.kind === 'idle' && pillIdleAge
+    const label = pillAct.text !== undefined
+      ? pillAct.text
+      : pillAct.kind === 'idle' && pillIdleAge
         ? t('pages.membersPage.pill_idle_since', { when: pillIdleAge })
-        : t(PILL_ACTIVITY_KEY[act.kind as Exclude<PillActivityKind, 'tool' | 'thinking'>])
-    return { kind: act.kind, label }
-  }, [pillStreamState, pillDetail, pillToolReturned, active, isRunning, pillLiveSlot, pillLabelOf, t, pillIdleAge])
+        : t(PILL_ACTIVITY_KEY[pillAct.kind as Exclude<PillActivityKind, 'tool' | 'thinking'>])
+    return { kind: pillAct.kind, label }
+  }, [pillAct, t, pillIdleAge])
   // Reactive document visibility AND focus, so the read effect below re-runs
   // when the user returns to a hidden tab or focuses the window — a plain
   // document.hidden read would leave the effect settled and the reveal

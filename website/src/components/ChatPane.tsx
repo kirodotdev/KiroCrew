@@ -13,6 +13,7 @@ import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat } from './chat/crewmateBubbles'
+import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
@@ -34,6 +35,7 @@ import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
+import { useSlotActivity } from '../pages/members/useSlotActivity'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
@@ -498,14 +500,23 @@ export default function ChatPane({
   // prop). Filtered HERE, above the list, so the run positions the assistant
   // rows compute from their neighbours see the drawn list, and so the pinned
   // prompt, the earlier-messages anchor and the empty hint all agree with what
-  // is on screen. Same array identity back when nothing is dropped. While a
-  // turn runs, its tool calls and thinking stay in, so the chat shows what the
-  // crewmate is doing (same liveness the footer reads).
+  // is on screen. Same array identity back when nothing is dropped. The turn
+  // in flight is filtered like any other: what the crewmate is doing right now
+  // is the status line above the footer (`liveActivity`), not a transcript
+  // row, so the working indicator holds still while steps come and go.
   const crewmateLive = running || !!paneSlot?.running
   const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(paneMessages, crewmateLive) : paneMessages),
-    [crewmate, paneMessages, crewmateLive],
+    () => (crewmate ? filterCrewmateChat(paneMessages) : paneMessages),
+    [crewmate, paneMessages],
   )
+  // What the crewmate is doing right now, for the status line above the
+  // working indicator: read through the SAME seam the DM header's identity
+  // pill reads (`useSlotActivity` over the slot's live status record), so the
+  // two can never name one moment differently (same `delegatedOnly` input).
+  const liveActivity = useSlotActivity(crewmate ? slotKey : '', {
+    running: crewmateLive,
+    delegatedOnly: !!paneSlot?.subagents_running && !paneSlot?.running,
+  })
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block
   // inject row). `undefined` for an ordinary chat, so its renderer set does not
@@ -1734,8 +1745,12 @@ export default function ChatPane({
                     spoken and where the work went, instead of "type a message
                     to start" beside a summary that counts its wakes. Said only
                     once the read is the WHOLE history (`crewmateQuietUnproven`
-                    above): a bounded window with no speech in it is not proof. */}
-                {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
+                    above): a bounded window with no speech in it is not proof.
+                    Nor while the crewmate is at work (`crewmateLive`, the same
+                    liveness the status line and footer read): its current step
+                    is on screen, so "hasn't said anything" would sit under a
+                    line that shows it busy. */}
+                {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (
                       <>
@@ -1782,7 +1797,12 @@ export default function ChatPane({
                  tool steps. Inside the scroll container, after the last message,
                  so it reads as "the reply is coming" exactly where the reply will
                  land. Stop/regenerate chrome stays page-level: the pane derives
-                 the footer's inputs from its own per-slot stream state. */
+                 the footer's inputs from its own per-slot stream state. A
+                 crewmate's current step is the one-line status directly above
+                 it, mounted for the whole live turn so the indicator never
+                 moves while steps come and go (#18238). */
+              <>
+              {crewmate && crewmateLive && <CrewmateLiveActivity activity={liveActivity} />}
               <ChatFooter
                 running={running || !!paneSlot?.running}
                 stopping={streamState === 'stopping' || !!paneSlot?.stopping}
@@ -1794,6 +1814,7 @@ export default function ChatPane({
                     : 0
                 }
               />
+              </>
             ),
           }}
         />

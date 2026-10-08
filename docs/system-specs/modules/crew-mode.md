@@ -1527,13 +1527,38 @@ when the roster's quote or recency moved since the read observed it, so a
 message the crewmate speaks while a roster read is in flight is never
 overwritten by the older answer.
 
-While a turn runs (the slot's stream or its `running` flag), the chat also
-keeps that turn's progress rows — `tool` rows (the 🔧 line and its hidden ✅ /
-🚫 siblings) and thinking — after the newest turn opener (`TURN_OPENER_ROLES`:
-a user message, a patrol wake, a sub-agent drain), and draws them with the
-ordinary transcript's own tool line, step group and thinking block; earlier
-turns' machinery stays folded away, and the live rows fold away again when the
-turn ends (`filterCrewmateChat(messages, live)`).
+While a turn runs (the slot's stream or its `running` flag), the chat does not
+draw the turn's progress rows either; what the crewmate is doing right now is
+ONE status line directly above the working indicator (the ghost-pose carousel
+in `ChatFooter`), rendered by `CrewmateLiveActivity`. Its text is the DM
+header identity pill's OWN reading, through the one shared hook
+`useSlotActivity` (`pages/members/useSlotActivity.ts` → `resolvePillActivity`
+over the slot's live status record `slotStatusDetail`, the stream state and
+the tool log's returned flag, labelled by the shared `toolStatusLabel`), so
+the header and the chat can never name one moment differently. It answers
+"what is the crewmate doing now", never "what has it done": the open call's
+label while the call runs (`data-activity=tool`), the indicator's own
+"Thinking…" once the call has returned or the model is reasoning
+(`thinking`), the pill's other phase words otherwise (`writing`, `working`,
+`delegated`), and text-free (same height) for `compacting` and `stopping`,
+which the `ChatFooter` directly under it already spells out; and the line goes
+with the turn (#18238). Words only — the ghost under it carries the motion; a second
+spinner read as a second "working" sign. The line is a status, not a
+transcript row, for a reason that is part of the contract: it is one
+fixed-height row (`h-5`, truncating), mounted for the WHOLE live turn and
+never blank, whose text changes — so the indicator under it never moves while
+the crewmate works. Transcript rows mounting and unmounting above the
+indicator hopped it by a row on every step, and the "hasn't said anything yet"
+hint stays hidden while the crewmate is live for the same reason. The one step
+that never names itself in the chat line, even in flight, is the
+`nothing_to_do` call (#16429; the line reads "Thinking…"): matched inside
+the hook on the tool log entry's trusted identity (`tool_name` +
+`mcp_server`, the `QUIET_END_*` constants `store/chat/selectors.ts` defines,
+imported through the `store/chatSlice` facade), never on its title — the
+quiet end has to look quiet from its first frame, applied or refused, and
+since the header pill reads the same hook it reads "Thinking…" there too: one
+reading, no fork. The chat line shows the tool label in full (`fullText`,
+CSS-truncated, carried as `title`) where the pill clamps it to 40 chars.
 
 How it is drawn: the crewmate's messages form **runs**. A message carries NO
 author line — no avatar, no name, no time row — and no avatar gutter: the chat

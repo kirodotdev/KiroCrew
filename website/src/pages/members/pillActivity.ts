@@ -61,6 +61,9 @@ export interface PillActivity {
   kind: PillActivityKind
   /** Present on `tool` / `thinking`: the clamped shared label. */
   text?: string
+  /** Present on `tool`: the label before the clamp, for a host with room to
+   *  show it (the chat's status line truncates by CSS, `title` carries it). */
+  fullText?: string
 }
 
 export interface PillActivityInput {
@@ -114,7 +117,7 @@ export function resolvePillActivity(input: PillActivityInput): PillActivity {
       if (toolReturned) return { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
       const label = labelOf(detail)
       return label
-        ? { kind: 'tool', text: clampActivityText(label) }
+        ? { kind: 'tool', text: clampActivityText(label), fullText: label.replace(/\s+/g, ' ').trim() }
         : { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
     }
     case 'thinking':
@@ -124,4 +127,16 @@ export function resolvePillActivity(input: PillActivityInput): PillActivity {
     default:
       return { kind: delegatedOnly ? 'delegated' : 'working' }
   }
+}
+
+/** Catalog keys for the phases that carry no text of their own. `tool` and
+ *  `thinking` carry `text`; `idle` is the host's to phrase (the pill adds the
+ *  resting age). */
+export const PILL_ACTIVITY_KEY: Record<Exclude<PillActivityKind, 'tool' | 'thinking'>, string> = {
+  writing: 'pages.membersPage.pill_writing',
+  compacting: 'pages.membersPage.pill_compacting',
+  stopping: 'pages.membersPage.pill_stopping',
+  working: 'pages.membersPage.drawer_working',
+  delegated: 'pages.membersPage.drawer_delegated_working',
+  idle: 'pages.membersPage.pill_idle',
 }
