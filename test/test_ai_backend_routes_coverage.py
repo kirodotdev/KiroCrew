@@ -82,7 +82,10 @@ class FakeSupervisor:
             return {"status": self.status_queue.pop(0)}
         return {"status": self._status}
 
-    def start(self, config: dict[str, Any]) -> dict[str, Any]:
+    def stop_seq(self) -> int:
+        return 0
+
+    def start(self, config: dict[str, Any], *, admitted_at: int | None = None) -> dict[str, Any]:
         self.calls.append("start")
         if self.start_raises is not None:
             raise self.start_raises
@@ -1661,6 +1664,7 @@ class TestReadOnlySurface:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("enabled")
 class TestRunEngine:
     async def test_the_body_is_ignored_and_the_config_on_disk_is_used(
         self, data_root: Path, supervisor: FakeSupervisor
@@ -1675,6 +1679,17 @@ class TestRunEngine:
         used = _json_of(response)["config"]
         assert used["clone"] == "/scratch/repo"
         assert used["maxCycles"] == 2
+
+    async def test_start_is_refused_once_the_app_is_disabled(
+        self, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enablement is read again at admission, under the app lifecycle lock, so a
+        disable that finished after the route guard passed still refuses the start."""
+        monkeypatch.setattr(routes, "is_app_enabled", lambda _name: False)
+        response = await routes._handle_run_start(_request("POST"))
+        assert response.status == 403
+        assert _json_of(response)["code"] == "app_disabled"
+        assert "start" not in supervisor.calls
 
     @pytest.mark.parametrize(
         "exc",

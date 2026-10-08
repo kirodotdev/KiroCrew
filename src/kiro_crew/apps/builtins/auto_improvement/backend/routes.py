@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew.apps import teardown
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.security import redact
 
@@ -1504,6 +1504,22 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
         return owner_denied
     await _audit_owner_route_allowed(request, "auto_improvement.run_start")
 
+    # Admit under the app's lifecycle lock, which disable holds across its stop hook and
+    # the `enabled` write. Either this sees the app disabled, or the stop count it records
+    # predates that hook, so the hook's stop makes `start` refuse. Held only for this
+    # short read, never across the driver build.
+    def _admit() -> int | None:
+        if not is_app_enabled(store.APP_NAME):
+            return None
+        return runner.get_supervisor().stop_seq()
+
+    async with app_lifecycle_lock(store.APP_NAME):
+        admitted_at = await asyncio.to_thread(_admit)
+    if admitted_at is None:
+        return web.json_response(
+            {"code": "app_disabled", "error": f"{store.APP_NAME} is disabled"}, status=403
+        )
+
     # Read the config INSIDE the lock, together with the start it feeds. Read outside, a
     # retarget landing between the read and the start means the run operates on the repo
     # that was just replaced while the UI shows the new one. `_build_driver` re-enters the
@@ -1511,7 +1527,7 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
     def _start() -> dict:
         with commit_mod.clone_lock():
             config = store.read_json(store.config_path(), {})
-            return runner.get_supervisor().start(config or {})
+            return runner.get_supervisor().start(config or {}, admitted_at=admitted_at)
 
     try:
         result = await asyncio.to_thread(_start)

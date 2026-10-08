@@ -117,6 +117,8 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         raise _Reached
 
     monkeypatch.setattr(routes.ledger_admin, "purge_dead", _sync_sink("purge_dead"))
+    # Run start re-reads enablement at admission; these tests are about the owner gate.
+    monkeypatch.setattr(routes, "is_app_enabled", lambda _name: True)
     monkeypatch.setattr(routes.runner, "get_supervisor", _sync_sink("supervisor"))
     monkeypatch.setattr(store, "delete_session", _sync_sink("delete_session"))
     monkeypatch.setattr(routes.pr_checks, "fetch_pr_status", _fetch_pr_status)

@@ -310,6 +310,10 @@ class RunSupervisor:
         self._reserved = False
         self._driver: Any = None
         self._stop_requested = False
+        #: Bumped under ``_lock`` by every :meth:`stop`. A start records it when it is
+        #: admitted and launches only if it is unchanged, so a stop that lands while the
+        #: driver is still being built (no thread to signal yet) still holds.
+        self._stop_seq = 0
         #: WHY the last :meth:`_build_runner` call produced no agent runner, or ``""``.
         #: Written on EVERY call so it is self-clearing: a previous offline run cannot leak
         #: its reason into a later run whose runner came online. Read by :meth:`start`, which
@@ -681,18 +685,29 @@ class RunSupervisor:
 
     # ── the public API the routes call ────────────────────────────────────────
 
-    def start(self, config: dict[str, Any]) -> dict[str, Any]:
+    def stop_seq(self) -> int:
+        """The current stop count. Pass it to :meth:`start` as ``admitted_at``."""
+        with self._lock:
+            return self._stop_seq
+
+    def start(self, config: dict[str, Any], *, admitted_at: int | None = None) -> dict[str, Any]:
         """Build the driver and launch the loop on a worker thread.
 
         Returns ``{"run_id", "status"}`` on success. Raises :class:`RuntimeError` when a
-        run is already active, :class:`ValueError` when no repository is configured, and
+        run is already active or a :meth:`stop` landed after admission,
+        :class:`ValueError` when no repository is configured, and
         :class:`PermissionError` when the clone's push is not disabled — the routes map
         each to a 409 with the message intact.
+
+        ``admitted_at`` is a :meth:`stop_seq` reading taken when the caller admitted the
+        request; omitted, admission is the entry to this call.
 
         Order matters: the driver is built (and every refusal raised) BEFORE the thread
         is created, so a refusal leaves the supervisor exactly as it was.
         """
         with self._lock:
+            if admitted_at is None:
+                admitted_at = self._stop_seq
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
 
@@ -710,6 +725,9 @@ class RunSupervisor:
             # above while the slow _build_driver ran outside it.
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            if self._stop_seq != admitted_at:
+                # A stop (or the app being disabled) landed while the driver was built.
+                raise RuntimeError("the run was stopped before it started")
             self._driver = driver
             self._stop_requested = False
             self._state = RunState(
@@ -1198,9 +1216,11 @@ class RunSupervisor:
         fifteen-minute suite would just time out at the proxy.
         """
         with self._lock:
+            self._stop_seq += 1
             thread = self._thread
             driver = self._driver
-            if thread is None or not thread.is_alive():
+            # `_reserved` covers a thread assigned but not yet started (see `_in_flight`).
+            if thread is None or not (thread.is_alive() or self._reserved):
                 return {
                     "status": self._state.status,
                     "run_id": self._state.run_id,
@@ -1218,7 +1238,11 @@ class RunSupervisor:
             except Exception:  # noqa: BLE001 — a stop must never raise at the caller
                 logger.debug("request_stop failed", exc_info=True)
 
-        thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+        try:
+            thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+        except RuntimeError:
+            # Not started yet; `_stop_requested` is already set for it to read.
+            pass
         stopped = not thread.is_alive()
         with self._lock:
             return {
