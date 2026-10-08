@@ -10861,7 +10861,10 @@
       },
       "noticeCard": {
         "blocked": "Bloqueado",
-        "warning": "Advertencia"
+        "warning": "Advertencia",
+        "provider_backlog_one": "Se descartó {{count}} aviso anterior del proveedor. Solo se muestran los últimos {{limit}} avisos en cola.",
+        "provider_backlog_other": "Se descartaron {{count}} avisos anteriores del proveedor. Solo se muestran los últimos {{limit}} avisos en cola.",
+        "provider_backlog_many": "Se descartaron {{count}} avisos anteriores del proveedor. Solo se muestran los últimos {{limit}} avisos en cola."
       },
       "compactionCard": {
         "no_summary": "Listo: no hay resumen que mostrar",

@@ -6005,6 +6005,186 @@ class TestRunChatSegmentFlush:
         assert "tool_call" in ws_types
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("split_credential", [False, True])
+    async def test_mid_turn_provider_notice_is_a_segment_boundary(
+        self, tmp_path, monkeypatch, split_credential
+    ):
+        """Text streamed before a provider notice is finalized above it.
+
+        Appending the notice over live chunks would strand them: the trailing
+        chunk walk in `_flush_segment` stops at the notice row, so the answer's
+        opening would render twice when the window is rebuilt.
+        """
+        from kiro_crew.acp.types import EVENT_NOTICE
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Before notice"),
+            LLMEvent(
+                kind=EVENT_NOTICE,
+                title="Authorization: Bearer" if split_credential else "Model fallback",
+                text="opaque-notice-token" if split_credential else "",
+                notice_severity="warning",
+            ),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="After notice"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot._has_reader = split_credential
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert not [m for m in slot.messages if m.get("role") == "chunk"]
+        rows = [
+            (m["role"], m["content"])
+            for m in slot.messages
+            if m.get("role") == "assistant"
+            or (m.get("role") == "notice" and m.get("meta", {}).get("kind") == "provider_notice")
+        ]
+        from kiro_crew.acp._dispatch import redact_text
+
+        expected_notice = (
+            redact_text("Authorization: Bearer\nopaque-notice-token")
+            if split_credential
+            else "Model fallback"
+        )
+        assert rows == [
+            ("assistant", "Before notice"),
+            ("notice", expected_notice),
+            ("assistant", "After notice"),
+        ]
+
+        if split_credential:
+            assert "opaque-notice-token" not in str(slot.messages)
+            assert "opaque-notice-token" not in str(state.broadcast_ws.call_args_list)
+            notice_frames = [
+                call.args[1]
+                for call in state.broadcast_ws.call_args_list
+                if call.args[0] == "chat_message" and call.args[1].get("role") == "notice"
+            ]
+            assert any(frame["content"] == expected_notice for frame in notice_frames)
+
+    @pytest.mark.asyncio
+    async def test_backlog_catalog_metadata_survives_dashboard_delivery(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.acp._dispatch import NOTICE_STATE_MAX, SessionNoticeState
+        from kiro_crew.acp.types import EVENT_NOTICE, JsonRpcMessage
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.dashboard.chat import _run_chat
+
+        notices = SessionNoticeState()
+        for i in range(NOTICE_STATE_MAX + 1):
+            notices.accept(
+                JsonRpcMessage(
+                    method="session/update",
+                    params={
+                        "sessionId": "s1",
+                        "update": {"sessionUpdate": "notice", "title": str(i), "severity": "info"},
+                    },
+                ),
+                "s1",
+                stage=True,
+            )
+        warning = notices.take_pending("s1")[0]
+        assert warning.kind == EVENT_NOTICE
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot._has_reader = True
+        client = self._make_mock_client(
+            [warning, LLMEvent(kind=EVENT_TEXT_CHUNK, text="Answer"), LLMEvent(kind=EVENT_COMPLETE)]
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        await _run_chat(state, slot, "hello")
+        row = next(m for m in slot.messages if m.get("meta", {}).get("kind") == "provider_notice")
+        assert row["meta"]["notice_key"] == warning.notice_key
+        assert row["meta"]["notice_params"] == {"count": 1, "limit": NOTICE_STATE_MAX}
+        frames = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "chat_message" and c.args[1].get("role") == "notice"
+        ]
+        assert any(frame["meta"] == row["meta"] for frame in frames)
+
+    @pytest.mark.asyncio
+    async def test_notice_prefix_is_cleared_at_tool_boundary(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.types import EVENT_NOTICE
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="A"),
+            LLMEvent(kind=EVENT_NOTICE, title="Warning", notice_severity="warning"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="B"),
+            LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="C"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.get_slack_link = MagicMock(return_value=("ts-1", "C123"))
+        state.slack_client = AsyncMock()
+        state.slack_client.start_stream = AsyncMock(return_value="")
+        mirror = AsyncMock()
+        monkeypatch.setattr(chat_runner, "_deliver_cross_surface_reply", mirror)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == [
+            "A",
+            "B",
+            "C",
+        ]
+        mirror.assert_awaited_once_with(state, "dashboard:s1", "C", slot=slot)
+        posted = [call.args[1] for call in state.slack_client.post_message.await_args_list]
+        assert "C" in posted
+        assert "AC" not in posted
+
+    @pytest.mark.asyncio
+    async def test_a_notice_after_a_tool_does_not_strand_its_pill(self, tmp_path, monkeypatch):
+        """A tool that sent no result frame is completed by the text after it, even
+        when a provider notice lands in between."""
+        from kiro_crew.acp.types import EVENT_NOTICE
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read"),
+            LLMEvent(kind=EVENT_NOTICE, title="Model fallback", notice_severity="warning"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="After the tool"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        tools = [m for m in slot.messages if m.get("role") == "tool"]
+        assert tools and all(m.get("meta", {}).get("done") for m in tools)
+
+    @pytest.mark.asyncio
     async def test_tool_turn_progress_claim_surfaces_idle_notice(self, tmp_path, monkeypatch):
         """A mixed turn must not replay tools, but it must not claim it keeps running."""
         from kiro_crew.acp.types import STOP_REASON_END_TURN

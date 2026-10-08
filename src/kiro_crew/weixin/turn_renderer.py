@@ -141,6 +141,9 @@ class WeixinRenderer(Renderer):
         # safe no-op to satisfy the Renderer contract.
         logger.debug("weixin: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        await self._send(text)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Mid-turn text would land as its own bubble; the dispatcher surfaces
         # threshold notices post-turn instead.

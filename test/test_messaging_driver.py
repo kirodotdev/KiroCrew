@@ -15,6 +15,7 @@ import pytest
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
@@ -57,6 +58,9 @@ class _RecordingRenderer(Renderer):
         self, options, request_id, tool_title="", tool_purpose="", tool_input=""
     ):
         self.events.append(("prompt_choice", options, request_id, tool_title, tool_purpose))
+
+    async def on_notice(self, text):
+        self.events.append(("notice", text))
 
     async def on_compaction(self, pct):
         self.events.append(("compaction", pct))
@@ -1449,3 +1453,53 @@ class TestCompactionEvidence:
         with pytest.raises(RuntimeError, match="channel down"):
             asyncio.run(turn.run("hello"))
         assert turn.compaction_completed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_notice_is_separate_from_answer_and_empty_turn_accounting():
+    renderer = _RecordingRenderer()
+    provider = _ScriptedProvider(
+        [
+            AcpEvent(kind=EVENT_NOTICE, title="Checking tools", notice_severity="info"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="The answer"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+    )
+    driver = TurnDriver(provider, renderer)
+    assert await driver.run("question") == "The answer"
+    assert renderer.events[0] == ("notice", "ℹ️ Checking tools")
+    assert driver.empty_turn_notice == ""
+    renderer = _RecordingRenderer()
+    driver = TurnDriver(
+        _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_NOTICE, title="Checking tools", notice_severity="info"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        ),
+        renderer,
+    )
+    assert await driver.run("question") == ""
+    assert driver.empty_turn_notice
+
+
+@pytest.mark.asyncio
+async def test_advisory_delivery_failure_does_not_drop_the_answer(caplog):
+    renderer = _RecordingRenderer()
+
+    async def fail_notice(text):
+        raise OSError("channel offline")
+
+    renderer.on_notice = fail_notice
+    driver = TurnDriver(
+        _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_NOTICE, title="Warning", notice_severity="warning"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Answer"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        ),
+        renderer,
+    )
+    assert await driver.run("question") == "Answer"
+    assert "Provider notice delivery failed" in caplog.text

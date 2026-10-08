@@ -10545,7 +10545,8 @@
       },
       "noticeCard": {
         "blocked": "ブロック済み",
-        "warning": "警告"
+        "warning": "警告",
+        "provider_backlog_other": "以前のプロバイダー通知 {{count}} 件が破棄されました。キュー内の最新 {{limit}} 件の通知のみ表示されます。"
       },
       "compactionCard": {
         "no_summary": "完了 — 表示する要約はありません",

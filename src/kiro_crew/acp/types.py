@@ -53,6 +53,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
+    ACP_BACKENDS_SESSION_NOTICES,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
@@ -82,6 +83,7 @@ from kiro_crew.recovery.ladder import (  # noqa: E402 - see the re-export note a
 # ── ACP Event Kinds ──
 
 EVENT_TEXT_CHUNK = "text_chunk"
+EVENT_NOTICE = "notice"
 EVENT_THINKING_CHUNK = "thinking_chunk"
 EVENT_TOOL_CALL = "tool_call"
 EVENT_TOOL_CALL_UPDATE = "tool_call_update"
@@ -260,6 +262,24 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # filter string (``clientApp/kirocrew``, ``acp-client/kirocrew``) finds Crew on both.
 KIRO_CLI_CLIENT_APPLICATION_ENV = "KIRO_CLI_CLIENT_APPLICATION"
 KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
+# `session.notices` moves an adapter's provider notices out of the transcript into
+# `notice` session updates, so it goes only to the backends whose adapters emit
+# them: codex-acp 2.0.0 and claude-agent-acp 0.84.0 (a live Claude hook message
+# arrived as `{"sessionUpdate": "notice", "severity": "info", "title": ...}`).
+# kiro-cli, KAS and every other backend keep the shared set byte-identical -- the
+# rule above again: add a key for a backend in the change that handles it.
+ACP_CLIENT_CAPABILITIES_SESSION_NOTICES: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "session": {"notices": {}},
+}
+
+
+def acp_client_capabilities(backend: str | None) -> dict:
+    """The ``clientCapabilities`` the standalone transport sends for ``backend``."""
+    if backend in ACP_BACKENDS_SESSION_NOTICES:
+        return ACP_CLIENT_CAPABILITIES_SESSION_NOTICES
+    return ACP_CLIENT_CAPABILITIES
+
 
 # ── ACP Backend Identifiers ──
 # DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
@@ -786,6 +806,9 @@ class AcpEvent:
     text: str = ""
     tool_call_id: str = ""
     title: str = ""
+    notice_severity: str = ""
+    notice_key: str = ""
+    notice_params: dict[str, int] = field(default_factory=dict)
     #: The backend's OWN ``title`` for a tool_call / tool_call_update frame,
     #: untouched. ``title`` above is the DISPLAY label ``select_tool_title``
     #: picks, which prefers a shell call's model-authored ``rawInput.description``

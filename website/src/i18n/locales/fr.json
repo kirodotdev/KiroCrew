@@ -10861,7 +10861,10 @@
       },
       "noticeCard": {
         "blocked": "Bloqué",
-        "warning": "Avertissement"
+        "warning": "Avertissement",
+        "provider_backlog_one": "{{count}} notification précédente du fournisseur a été supprimée. Seules les {{limit}} dernières notifications en attente sont affichées.",
+        "provider_backlog_other": "{{count}} notifications précédentes du fournisseur ont été supprimées. Seules les {{limit}} dernières notifications en attente sont affichées.",
+        "provider_backlog_many": "{{count}} notifications précédentes du fournisseur ont été supprimées. Seules les {{limit}} dernières notifications en attente sont affichées."
       },
       "compactionCard": {
         "no_summary": "Terminé — aucun résumé à afficher",

@@ -355,6 +355,16 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   )
 })
 
+/** A provider notice's stored `title\ndescription` as one sentence for the
+ * single-line ErrorCard: `Title: description`, or `Title. description` when the
+ * title already ends a sentence. */
+export function providerErrorText(content: string): string {
+  const [title, ...rest] = content.split('\n')
+  const description = rest.join(' ').trim()
+  if (!description) return title
+  return /[.!?:]$/.test(title.trim()) ? `${title.trim()} ${description}` : `${title.trim()}: ${description}`
+}
+
 function toolRow(m: ChatMessage, ctx: MessageRenderContext, autoDenied?: boolean): React.ReactNode {
   return ctx.row(
     ctx.renderTool
@@ -645,7 +655,24 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    render: (m, ctx) => {
+      const providerSeverity = m.meta?.kind === 'provider_notice' ? m.meta.severity : undefined
+      // A provider's error notice is an error surfaced in this conversation, so
+      // it takes the transcript's error row (ErrorCard), as `role: 'error'` does.
+      // ErrorCard renders one line, so the stored `title\ndescription` is joined
+      // into a sentence rather than left to collapse into a run-on.
+      if (providerSeverity === 'error') {
+        return ctx.row(<ErrorCard content={providerErrorText(m.content)} meta={m.meta} />)
+      }
+      return ctx.row(
+        <NoticeCard
+          content={m.content}
+          severity={providerSeverity}
+          noticeKey={m.meta?.kind === 'provider_notice' ? m.meta.notice_key : undefined}
+          noticeParams={m.meta?.kind === 'provider_notice' ? m.meta.notice_params : undefined}
+        />,
+      )
+    },
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

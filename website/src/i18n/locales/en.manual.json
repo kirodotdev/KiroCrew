@@ -5095,6 +5095,10 @@
         "retry": "Retry",
         "running_on_header": "On {{name}}",
         "approval_elsewhere": "The agent on {{name}} is waiting for an approval this window cannot answer. Answer it on the crew's own dashboard."
+      },
+      "noticeCard": {
+        "provider_backlog_one": "{{count}} earlier provider notice was dropped. Only the latest {{limit}} queued notices are shown.",
+        "provider_backlog_other": "{{count}} earlier provider notices were dropped. Only the latest {{limit}} queued notices are shown."
       }
     },
     "chatPage": {

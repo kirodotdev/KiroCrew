@@ -271,5 +271,6 @@
   "pages.chatSidebar.close_session_tree_hint",
   "hooks.useCloseSessionTree.title_including_self",
   "pages.chatSidebar.close_blocked",
-  "pages.chatSidebar.close_blocked_short"
+  "pages.chatSidebar.close_blocked_short",
+  "pages.chat.noticeCard.provider_backlog"
 ]

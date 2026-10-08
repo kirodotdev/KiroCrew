@@ -30,6 +30,7 @@ from kiro_crew import acp_tool_gate, model_registry, permission_floor
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
+    SessionNoticeState,
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
@@ -1022,6 +1023,7 @@ class AcpSessionHandle:
         bound_cwd: str = "",
     ) -> None:
         self._session_id = session_id
+        self._session_notices = SessionNoticeState()
         # The Kiro Crew session that OWNS this ACP session, threaded from the
         # runtime's create/load paths the way ``crew_agent`` is, and rebound on a
         # warm-pool claim. The hooks execute path keys its listed-id record and
@@ -1767,6 +1769,8 @@ class AcpSessionHandle:
             except asyncio.QueueEmpty:
                 break
             if stale is not None:
+                if self._session_notices.accept(stale, self._session_id, stage=True) is not None:
+                    continue
                 # A between-turns MCP status snapshot still tells this session
                 # which servers need a sign-in: a server that connected while
                 # no turn was reading leaves the set here, so the turn-start
@@ -4311,7 +4315,10 @@ class AcpSessionHandle:
 
         _buffered: list[JsonRpcMessage] = []
         _last_yield = time.monotonic()
+
         try:
+            for notice in self._session_notices.take_pending(self._session_id):
+                yield notice
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -5942,6 +5949,7 @@ class AcpSessionHandle:
 
     def _apply_init_notification(self, msg: JsonRpcMessage, action: str) -> None:
         """Initialization side effects shared by the drain and readiness barrier."""
+        self._session_notices.accept(msg, self._session_id, stage=True)
         self._note_mcp_sign_in_status(msg, offer=False)
         params = msg.params if isinstance(msg.params, dict) else {}
         if action == "update":
@@ -6564,6 +6572,10 @@ class AcpSessionHandle:
         update = params.get("update") or {}
         if not isinstance(update, dict):
             return []
+
+        if update.get("sessionUpdate") == "notice":
+            notice = self._session_notices.accept(msg, self._session_id)
+            return [notice] if notice is not None else []
 
         # A frame the runtime routed here for a backend-internal subagent
         # carries the CHILD's sessionId. Its tool_call/refinement updates are

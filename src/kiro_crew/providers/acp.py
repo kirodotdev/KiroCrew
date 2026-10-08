@@ -2427,6 +2427,9 @@ class AcpProvider(LLMProvider):
             # continuation and leaves the request unanswered.
             synthesized=e.synthesized,
             control_notice=e.control_notice,
+            notice_severity=e.notice_severity,
+            notice_key=e.notice_key,
+            notice_params=e.notice_params,
             runtime_global=e.runtime_global,
             sub_session_id=e.sub_session_id,
             is_shell=e.is_shell,

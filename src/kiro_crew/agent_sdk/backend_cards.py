@@ -471,6 +471,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "table. Which code path builds the command; the session starts either way, "
         "and a wrong membership is a launch that fails, which is a defect"
     ),
+    "ACP_BACKENDS_SESSION_NOTICES": (
+        "whether provider notices arrive as their own rows or inside the transcript. "
+        "The same notice is shown either way"
+    ),
     "ACP_BACKENDS_STRUCTURED_REFUSAL": (
         "whether a refusal card gains a category line. Visible, and nothing a "
         "reader can act on or would pick a harness for"

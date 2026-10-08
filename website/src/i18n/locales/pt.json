@@ -10861,7 +10861,10 @@
       },
       "noticeCard": {
         "blocked": "Bloqueado",
-        "warning": "Aviso"
+        "warning": "Aviso",
+        "provider_backlog_one": "{{count}} aviso anterior do provedor foi descartado. Apenas os últimos {{limit}} avisos na fila são exibidos.",
+        "provider_backlog_other": "{{count}} avisos anteriores do provedor foram descartados. Apenas os últimos {{limit}} avisos na fila são exibidos.",
+        "provider_backlog_many": "{{count}} avisos anteriores do provedor foram descartados. Apenas os últimos {{limit}} avisos na fila são exibidos."
       },
       "compactionCard": {
         "no_summary": "Concluído — sem resumo para mostrar",

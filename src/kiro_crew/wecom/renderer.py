@@ -289,6 +289,13 @@ class WeComRenderer(Renderer):
         # satisfy the Renderer contract.
         logger.debug("WeCom: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        # The response URL is single-use and belongs to the answer's fallback.
+        if not self._chat_id:
+            raise RuntimeError("WeCom has no independent provider notice destination")
+        if not await self._client.send_proactive(self._chat_id, text):
+            raise RuntimeError("WeCom refused provider notice delivery")
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # A mid-turn out-of-band frame would pollute the single answer bubble;
         # the dispatcher surfaces soft/hard threshold notices post-turn instead.

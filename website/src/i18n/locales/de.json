@@ -10703,7 +10703,9 @@
       },
       "noticeCard": {
         "blocked": "Blockiert",
-        "warning": "Warnung"
+        "warning": "Warnung",
+        "provider_backlog_one": "{{count}} frühere Anbieterbenachrichtigung wurde verworfen. Nur die letzten {{limit}} Benachrichtigungen in der Warteschlange werden angezeigt.",
+        "provider_backlog_other": "{{count}} frühere Anbieterbenachrichtigungen wurden verworfen. Nur die letzten {{limit}} Benachrichtigungen in der Warteschlange werden angezeigt."
       },
       "compactionCard": {
         "no_summary": "Fertig – keine Zusammenfassung vorhanden",

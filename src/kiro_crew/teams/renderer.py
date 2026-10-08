@@ -362,6 +362,9 @@ class TeamsRenderer(Renderer):
         # click that resolves nothing.
         self._pending_prompts[rid] = (activity_id, title)
 
+    async def on_notice(self, text: str) -> None:
+        await self._client.send_message(self._conversation_id, text, self._service_url)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("Teams: compaction status %.0f%%", context_usage_pct)
 

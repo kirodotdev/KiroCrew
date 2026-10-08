@@ -549,3 +549,159 @@ class TestALongFencedReplyStaysCode:
         delivered = "\n".join(c.args[1] for c in tp.send_message.await_args_list)
         for marker in _CODE_MARKERS:
             assert marker in delivered
+
+
+# ── A notice boundary must not truncate the mirrored answer ───────────────────
+#
+# The dashboard splits a notice-split turn into two assistant rows (the notice
+# needs its own row, and appending it over live chunks would strand them). Both
+# linked-channel legs send ONE reply, composed at turn end -- so a segment the
+# notice boundary flushed out of `assistant_text` has no other route to the
+# channel. These drive the REAL `_run_chat` turn loop, not the delivery helper,
+# because the truncation happens in the runner's buffer bookkeeping.
+
+#: The whole answer the provider emitted around the notice frame.
+_ANSWER_OPENING = "The answer opens here. "
+_ANSWER_CLOSING = "And it closes here."
+_WHOLE_ANSWER = _ANSWER_OPENING + _ANSWER_CLOSING
+
+
+def _notice_split_events():
+    """text → notice → text → complete, the stream the finding describes."""
+    from kiro_crew.acp.types import EVENT_NOTICE, STOP_REASON_END_TURN
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    return [
+        LLMEvent(kind=EVENT_TEXT_CHUNK, text=_ANSWER_OPENING),
+        LLMEvent(
+            kind=EVENT_NOTICE,
+            title="Model fallback",
+            text="switched to the fallback model",
+            notice_severity="warning",
+        ),
+        LLMEvent(kind=EVENT_TEXT_CHUNK, text=_ANSWER_CLOSING),
+        LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+
+def _notice_split_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state.context_builder = None
+    state.consolidator = None
+    state._hook_store = None
+    state._yolo = False
+    return state
+
+
+async def _drive_notice_split_turn(state, slot, events=None):
+    """Run one real turn over *events* (default: the notice-split stream),
+    then drain any follow-up turn the runner queued."""
+    from kiro_crew.dashboard.chat_runner import _run_chat
+
+    stream_events = _notice_split_events() if events is None else events
+    client = MagicMock()
+    client.context_usage_pct = MagicMock(return_value=1.0)
+    client.client = None
+
+    async def _stream(_msg):
+        for ev in stream_events:
+            yield ev
+
+    client.stream = _stream
+    client.stream_command = _stream
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+    await _run_chat(state, slot, "hi")
+    task = getattr(slot, "task", None)
+    if task is not None:
+        await task
+
+
+def _assert_the_dashboard_split_the_answer(slot) -> None:
+    """Precondition, so the delivery assertions below cannot pass vacuously.
+
+    If the notice stopped splitting the turn, both legs would carry the whole
+    text without any of the retention under test.
+    """
+    rows = [
+        (m["role"], m["content"])
+        for m in slot.messages
+        if m.get("role") == "assistant"
+        or (m.get("role") == "notice" and m.get("meta", {}).get("kind") == "provider_notice")
+    ]
+    assert rows == [
+        ("assistant", _ANSWER_OPENING),
+        ("notice", "Model fallback\nswitched to the fallback model"),
+        ("assistant", _ANSWER_CLOSING),
+    ]
+
+
+class TestANoticeSplitAnswerReachesALinkedChannel:
+    """The channel reply is the WHOLE answer, not just the post-notice segment."""
+
+    @pytest.mark.asyncio
+    async def test_the_linked_channel_gets_both_halves(self, tmp_path, monkeypatch):
+        state = _notice_split_state(tmp_path, monkeypatch)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.set_mirror_link(
+            "dashboard:s1", ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+        slot = state.get_or_create_slot("s1")
+
+        await _drive_notice_split_turn(state, slot)
+
+        _assert_the_dashboard_split_the_answer(slot)
+        # The user echo lands first; the LAST send is the turn's reply.
+        assert tp.send_message.await_args_list[-1].args[1] == _WHOLE_ANSWER
+
+    @pytest.mark.asyncio
+    async def test_the_slack_mirror_gets_both_halves(self, tmp_path, monkeypatch):
+        state = _notice_split_state(tmp_path, monkeypatch)
+        state.slack_client = MagicMock()
+        state.slack_client.post_message = AsyncMock(return_value="ts-1")
+        state.slack_client.start_stream = AsyncMock(return_value="stream-ts-1")
+        state.slack_client.stop_stream = AsyncMock()
+        state.sessions.set_slack_link("dashboard:s1", "thread-1", "C-1")
+        slot = state.get_or_create_slot("s1")
+
+        await _drive_notice_split_turn(state, slot)
+
+        _assert_the_dashboard_split_the_answer(slot)
+        posted = [c.args[1] for c in state.slack_client.post_message.await_args_list]
+        assert posted[-1] == _WHOLE_ANSWER
+
+    @pytest.mark.asyncio
+    async def test_a_notice_after_the_last_text_still_reaches_the_channel(
+        self, tmp_path, monkeypatch
+    ):
+        """The tail case: text → notice → completion, no closing segment.
+
+        `assistant_text` is empty at turn end here, so the reply leg's
+        non-empty gate is answered by the retained segment alone. Without it
+        the channel receives nothing at all.
+        """
+        from kiro_crew.acp.types import EVENT_NOTICE, STOP_REASON_END_TURN
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=_ANSWER_OPENING),
+            LLMEvent(kind=EVENT_NOTICE, title="Model fallback", notice_severity="warning"),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+        state = _notice_split_state(tmp_path, monkeypatch)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.set_mirror_link(
+            "dashboard:s1", ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+        slot = state.get_or_create_slot("s1")
+
+        await _drive_notice_split_turn(state, slot, events)
+
+        # No closing segment, so the retained one is the entire reply and the
+        # echo is the only other send.
+        assert tp.send_message.await_args_list[-1].args[1] == _ANSWER_OPENING

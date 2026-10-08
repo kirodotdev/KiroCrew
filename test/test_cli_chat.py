@@ -132,3 +132,48 @@ async def test_a_chat_start_leaves_a_fresh_data_home_untouched(monkeypatch, tmp_
     await cli_chat._chat("hello", None)
 
     assert not any(p.name.startswith(SHELL_AUDIT_LOG_NAME) for p in tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_provider_notice_uses_stderr_and_preserves_stdout_answer(capsys):
+    from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_NOTICE, EVENT_TEXT_CHUNK, AcpEvent
+
+    class Provider:
+        async def stream(self, message):
+            yield AcpEvent(
+                kind=EVENT_NOTICE, title="Warning", text="Detail", notice_severity="warning"
+            )
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Answer")
+            yield AcpEvent(kind=EVENT_COMPLETE)
+
+    await cli_chat._send_and_print(Provider(), "question")
+    captured = capsys.readouterr()
+    assert captured.out == "Answer\n"
+    assert "[warning] Warning\nDetail" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_provider_notice_redacts_credentials_split_between_fields(capsys):
+    from kiro_crew.acp._dispatch import parse_session_update
+    from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+
+    (event,) = parse_session_update(
+        {
+            "sessionUpdate": "notice",
+            "title": "Authorization: Bearer",
+            "description": "opaque-notice-token",
+            "severity": "warning",
+        }
+    )
+    assert event.text == "opaque-notice-token"
+
+    class Provider:
+        async def stream(self, message):
+            yield event
+            yield AcpEvent(kind=EVENT_COMPLETE)
+
+    await cli_chat._send_and_print(Provider(), "question")
+    captured = capsys.readouterr()
+    assert "opaque-notice-token" not in captured.err
+    assert "REDACTED" in captured.err
+    assert captured.out == "\n"

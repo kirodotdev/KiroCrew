@@ -343,6 +343,9 @@ class WebexRenderer(Renderer):
         # the answer, and the note costs nothing riding on the final edit.
         self._steered = True
 
+    async def on_notice(self, text: str) -> None:
+        await self._client.send_message(self._room_id, text, parent_id=self._thread_id)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # The dispatcher surfaces threshold notices as separate messages.
         logger.debug("Webex: compaction status %.0f%%", context_usage_pct)

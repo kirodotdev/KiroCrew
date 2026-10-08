@@ -2516,6 +2516,37 @@ class TestDiscordRotatesWithoutHandingOverAKey:
             "predecessor and costs the next message a leading span for nothing"
         )
 
+    def test_a_provider_notice_becomes_the_predecessor(self) -> None:
+        """A provider notice is its own message too, so the answer is graded against it.
+
+        The same shape as the reasoning note: recorded (or held for the sealed
+        fallback while a bubble is open above it) only after the send lands.
+        """
+        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        notice = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "on_notice"
+        )
+        sent_at = [
+            inner.lineno
+            for inner in ast.walk(notice)
+            if isinstance(inner, ast.Call) and _name_of(inner.func) == "send_message"
+        ]
+        recorded_at = [
+            inner.lineno
+            for inner in ast.walk(notice)
+            if isinstance(inner, ast.Call) and _name_of(inner.func) == "_record_sent"
+        ]
+        held_at = [
+            inner.lineno
+            for inner in ast.walk(notice)
+            if isinstance(inner, ast.Attribute) and inner.attr == "_pending_note_tail"
+        ]
+        assert sent_at and recorded_at and held_at
+        first_record = min(recorded_at + held_at)
+        assert first_record > max(sent_at), "a record before the send names unsent text"
+
     #: Every standalone send in the Discord renderer that neither grades its own
     #: seam nor records one, with the property that makes each safe. A send lands as
     #: its own message, so it is a seam on both sides -- and the two obligations are
@@ -2534,7 +2565,14 @@ class TestDiscordRotatesWithoutHandingOverAKey:
         """A new send is a new seam, and silence is not one of its options."""
         tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
         sends = {"send_message", "send_message_with_files"}
-        answered = {"_stream_live", "_seal_current", "_land_sealed", "_flush_thinking"}
+        answered = {
+            "_stream_live",
+            "_seal_current",
+            "_land_sealed",
+            "_flush_thinking",
+            # A provider notice records itself as the predecessor, like the note.
+            "on_notice",
+        }
         stack: list[tuple[ast.AST, str]] = [(tree, "")]
         senders: set[str] = set()
         while stack:

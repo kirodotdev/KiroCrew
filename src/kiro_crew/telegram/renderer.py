@@ -1269,6 +1269,10 @@ class TelegramRenderer(Renderer):
         #: reader is already looking at. Bounded by one message, not by the turn:
         #: only the message a new one sits under can rejoin anything with it.
         self._sent_tail = ""
+        #: A provider notice delivered while the live reply bubble was open sits
+        #: BELOW that bubble. Sealing the bubble in place leaves the notice as the
+        #: message the next one is placed under, so the seal restores it.
+        self._note_below_stream: str | None = None
         # True between posting an approval prompt and the turn resuming. A turn
         # waiting on a button is blocked on the user, not stalled.
         self._awaiting_approval = False
@@ -1977,15 +1981,22 @@ class TelegramRenderer(Renderer):
         repaired = repaired_after_a_sent_tail(self._sent_tail, safe, _default_redactor)
         return repaired if repaired is not None else safe
 
-    def _record_sent(self, text: str) -> None:
+    def _record_sent(self, text: str, *, in_place: bool = False) -> None:
         """Remember *text* as the message the next seam is graded against.
 
         Called only after a send or edit reports success, and with the text that
         actually went out -- which is not always the text ``_seam_safe`` returned: a
         degraded segment is re-split after that point, so the last chunk shown is
         what the reader is looking at and what the next segment sits under.
+
+        ``in_place`` marks the live bubble sealed by an edit: it stays where it is,
+        so a notice delivered under it remains the predecessor.
         """
-        self._sent_tail = text
+        if in_place and self._note_below_stream is not None:
+            self._sent_tail = self._note_below_stream
+        else:
+            self._sent_tail = text
+        self._note_below_stream = None
 
     async def _seal_current(
         self,
@@ -2149,7 +2160,7 @@ class TelegramRenderer(Renderer):
                         )
                     if ok:
                         self._tally_redactions(text)
-                        self._record_sent(text)
+                        self._record_sent(text, in_place=True)
                         return
                     # Both edits failed — the live message is gone (e.g. the user
                     # deleted it mid-turn). Fall through and SEND the final content so
@@ -2392,6 +2403,31 @@ class TelegramRenderer(Renderer):
                 rid,
             )
 
+    async def on_notice(self, text: str) -> None:
+        # A message of its own, graded against the message above it like every
+        # other sealed segment, and recorded as the predecessor only once it
+        # lands: a key begun in a notice and completed by the reply below it must
+        # not read whole down the screen.
+        safe = await asyncio.to_thread(self._seam_safe, text)
+        mid = await self._client.send_message(
+            self._chat_id, safe, message_thread_id=self._thread_id
+        )
+        if mid is None:
+            return
+        if self._stream_mid is not None:
+            # The notice lands BELOW the open bubble, so it is the predecessor
+            # the next NEW message is graded against -- but not the one the
+            # bubble's own live edits and final seal are: those still sit under
+            # the sealed message above it. Recording it as ``_sent_tail`` here
+            # would grade the bubble's next edit against the notice, dropping
+            # the leading-span repair the bubble owes the message above it, and
+            # a credential prefix above plus the bubble's tail would read whole.
+            # ``_record_sent(..., in_place=True)`` adopts the notice once the
+            # bubble is sealed where it stands.
+            self._note_below_stream = safe
+        else:
+            self._record_sent(safe)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         self._note_progress()
         try:
@@ -2567,10 +2603,10 @@ class TelegramRenderer(Renderer):
                 self._chat_id, mid, html_text, parse_mode="HTML", retry_plain=False
             )
             if ok:
-                self._record_sent(chunk)
+                self._record_sent(chunk, in_place=True)
                 return
             if await self._client.edit_message(self._chat_id, mid, _strip_md(chunk)):
-                self._record_sent(chunk)
+                self._record_sent(chunk, in_place=True)
                 return
         mid2 = await self._client.send_message(
             self._chat_id,

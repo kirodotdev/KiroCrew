@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_NOTICE,
     EVENT_STEER_CONSUMED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
@@ -8938,6 +8939,7 @@ async def _run_chat(
             # re-running its side effects.
             _produced_visible_output = True
         assistant_text = ""
+        _notice_flushed_text.clear()
 
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
@@ -8954,6 +8956,17 @@ async def _run_chat(
     # reset the buffer WITHOUT a tool boundary — steer cut, compaction, clear,
     # agent switch) is load-bearing for the promise-only guard below.
     _turn_flushed_visible_text = False
+    # Answer segments a mid-turn NOTICE boundary flushed out of `assistant_text`
+    # — the one reset below that is neither a tool boundary nor an abandonment.
+    # The dashboard gives each segment its own row, but each linked channel gets
+    # ONE reply at turn end, composed from `assistant_text` alone, so without
+    # this the answer's opening above the notice reaches the channel never. Both
+    # mirror legs prepend these, in stream order, to that reply. Cleared
+    # wherever a path deliberately abandons the accumulated text (steer cut,
+    # clear, compaction, agent switch, a dropped leaked call): those discard the
+    # reply, so a segment retained from before them must not resurrect into the
+    # channel.
+    _notice_flushed_text: list[str] = []
     # ── Content-free turn-end diagnostics (empty-response verdict) ──
     # Booleans only, by contract. The empty-response branch below reaches its
     # verdict from these, and a WARNING names the cause it derived; every field
@@ -12004,7 +12017,37 @@ async def _run_chat(
                     event.kind,
                 )
 
-            if event.kind == EVENT_TEXT_CHUNK:
+            if event.kind == EVENT_NOTICE:
+                # A mid-turn notice is a segment boundary. Finalize the text
+                # streamed so far above it first: `_flush_segment`'s trailing
+                # chunk walk stops at the first non-chunk row, so appending the
+                # notice over live chunks would strand them and render the
+                # answer's opening twice once the window is rebuilt.
+                _flush_text_stream()
+                if assistant_text:
+                    _flush_segment(state, slot, assistant_text)
+                    _notice_flushed_text.append(assistant_text)
+                    if _answer_text_only(assistant_text, _compaction_notice_chunks).strip():
+                        _produced_visible_output = True
+                    assistant_text = ""
+                    _turn_flushed_visible_text = True
+                append_and_surface(
+                    state,
+                    slot,
+                    "notice",
+                    redact_via_context(event.title + (f"\n{event.text}" if event.text else "")),
+                    "msg msg-info",
+                    meta={
+                        "kind": "provider_notice",
+                        "severity": event.notice_severity,
+                        **(
+                            {"notice_key": event.notice_key, "notice_params": event.notice_params}
+                            if event.notice_key
+                            else {}
+                        ),
+                    },
+                )
+            elif event.kind == EVENT_TEXT_CHUNK:
                 # If we just exited a tool group, finalize the streaming
                 # message so post-tool text starts a fresh message.
                 if in_tool_group:
@@ -12012,6 +12055,7 @@ async def _run_chat(
                     if assistant_text:
                         _flush_segment(state, slot, assistant_text)
                         assistant_text = ""
+                        _notice_flushed_text.clear()
                         _turn_flushed_visible_text = True
                     else:
                         # No accumulated text, but still tell frontend to
@@ -12029,7 +12073,9 @@ async def _run_chat(
                                     "tool_result",
                                     {"slot": slot.key, "tool_call_id": tcid, "output": ""},
                                 )
-                        elif m.get("role") not in ("tool", "permission", "chunk"):
+                        # A provider notice between the tools and this text is
+                        # an interleaved row, not the end of the tool group.
+                        elif m.get("role") not in ("tool", "permission", "chunk", "notice"):
                             break
                     # The same inference for the log. A tool that produced no
                     # output sent no result frame, so its call is still open here;
@@ -12190,6 +12236,7 @@ async def _run_chat(
                 if not in_tool_group and assistant_text:
                     _flush_segment(state, slot, assistant_text, broadcast=False)
                     assistant_text = ""
+                    _notice_flushed_text.clear()
                     _turn_flushed_visible_text = True
                 # AFTER the flush, because seq is the order a reader folds on and
                 # the model narrating before it calls a tool is the common case:
@@ -13349,6 +13396,7 @@ async def _run_chat(
                 if assistant_text:
                     _flush_segment(state, slot, assistant_text)
                     assistant_text = ""
+                    _notice_flushed_text.clear()
                     _turn_flushed_visible_text = True
                 _pre_tool_hooks_fired = False
                 # Backend-subagent request whose SECURITY context is absent
@@ -14942,6 +14990,7 @@ async def _run_chat(
                         )
                         assistant_text = ""
                         _wsred.reset()
+                        _notice_flushed_text.clear()
             elif event.kind == EVENT_CLEAR_STATUS:
                 # A confirmed native clear is the one destructive slash command:
                 # replaying the persisted Kiro Crew history afterwards would undo
@@ -14981,6 +15030,7 @@ async def _run_chat(
                 _turn_msg_boundary = 0
                 _turn_start_mid = ""
                 assistant_text = ""
+                _notice_flushed_text.clear()
                 _wsred.reset()
                 _produced_visible_output = True
                 # slot_clear FIRST: it wipes the client's message list, so the
@@ -15120,6 +15170,7 @@ async def _run_chat(
                     ) = await _prepare_spec_hooks(state, slot, client, new_agent, is_new=False)
                     selected_binding = _current_binding()
                     assistant_text = ""
+                    _notice_flushed_text.clear()
                     _wsred.reset()
                     _produced_visible_output = True
                     slot.append(
@@ -15987,6 +16038,7 @@ async def _run_chat(
             # upstream.
             slot.purge_chunks()
             assistant_text = ""
+            _notice_flushed_text.clear()
             _wsred.reset()
             _produced_visible_output = True
             await _send_chat_done(state, slot, continuing=True)
@@ -17412,8 +17464,17 @@ async def _run_chat(
         # busier surface open. The destination is the thread cached at turn start,
         # not the live binding, so it is judged as the room it is
         # (`slack_publication_withheld`) beside the live comparison.
+        #
+        # The body is the WHOLE answer, not just the segment after the last notice
+        # boundary: a notice is an out-of-band frame interleaved into one answer,
+        # and both linked legs send one reply. Concatenated rather than separated
+        # so the composed run is what the provider emitted around the notice
+        # frame — which is also what lets the mirror's redactor see a credential
+        # the notice split. Empty list (every turn without a notice) reduces this
+        # to `assistant_text`, byte for byte.
+        _mirror_reply_text = "".join(_notice_flushed_text) + assistant_text
         if (
-            assistant_text
+            _mirror_reply_text
             and state.slack_client
             and _mirror_thread
             and _mirror_chan
@@ -17432,7 +17493,7 @@ async def _run_chat(
                 # means whatever conversion did to the tail decides whether the
                 # controls render at all -- and a >39,000-char turn loses the tag
                 # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(assistant_text)
+                _mirror_body, _mirror_options = extract_options(_mirror_reply_text)
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
@@ -17503,7 +17564,7 @@ async def _run_chat(
         # the decision and the delivery would be two reads with the off-loop
         # mirror-link writer free to retarget between them.
         if not is_slash:
-            await _deliver_cross_surface_reply(state, session_key, assistant_text, slot=slot)
+            await _deliver_cross_surface_reply(state, session_key, _mirror_reply_text, slot=slot)
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
         # A bare CancelledError here is either the operator's Stop press — the

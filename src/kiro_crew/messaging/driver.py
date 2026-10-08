@@ -28,6 +28,7 @@ from kiro_crew import name_grant, session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
     EVENT_SUBAGENT_ACTIVITY,
@@ -62,6 +63,7 @@ from kiro_crew.messaging.empty_turn_copy import (
 from kiro_crew.messaging.renderer import (
     COMPACTION,
     DONE,
+    NOTICE,
     PROMPT_CHOICE,
     STEER_CONSUMED,
     TEXT_CHUNK,
@@ -977,6 +979,14 @@ class TurnDriver:
                     self.compaction_completed = True
                 await self.renderer.dispatch(
                     OutputEvent(kind=COMPACTION, context_usage_pct=event.context_usage_pct)
+                )
+            elif kind == EVENT_NOTICE:
+                await self.renderer.dispatch(
+                    OutputEvent(
+                        kind=NOTICE,
+                        text=_redact(event.title + (f"\n{event.text}" if event.text else "")),
+                        notice_severity=event.notice_severity,
+                    )
                 )
             elif kind == EVENT_COMPLETE:
                 # Exposed for the dispatcher's post-turn bookkeeping: a

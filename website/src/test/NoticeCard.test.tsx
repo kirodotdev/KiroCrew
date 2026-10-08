@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import NoticeCard, { parseNotice } from '../pages/chat/NoticeCard'
 import RecoveryCard, { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
-import { defaultMessageRenderers, type MessageRenderContext } from '../app-sdk/messageRenderers'
+import { defaultMessageRenderers, providerErrorText, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import type { ChatMessage } from '../types'
 
 describe('parseNotice', () => {
@@ -51,6 +51,54 @@ describe('parseNotice', () => {
 })
 
 describe('NoticeCard', () => {
+  it.each([1, 5])("renders backlog count %i through the catalog", (count) => {
+    const renderer = defaultMessageRenderers.find((r) => r.id === "notice")!;
+    const message = {
+      role: "notice",
+      content: "Stored English fallback",
+      meta: {
+        kind: "provider_notice",
+        severity: "warning",
+        notice_key: "pages.chat.noticeCard.provider_backlog",
+        notice_params: { count, limit: 128 },
+      },
+    } as ChatMessage;
+    const ctx = {
+      row: (node: React.ReactNode) => node,
+    } as MessageRenderContext;
+    render(<>{renderer.render(message, ctx)}</>);
+    expect(
+      screen.getByText(
+        `${count} earlier provider ${count === 1 ? "notice was" : "notices were"} dropped. Only the latest 128 queued notices are shown.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Stored English fallback")).toBeNull();
+  });
+
+  it("preserves provider text for unknown catalog keys", () => {
+    render(
+      <NoticeCard
+        content="Provider text"
+        severity="warning"
+        noticeKey="unknown"
+        noticeParams={{ count: 1, limit: 128 }}
+      />,
+    );
+    expect(screen.getByText("Provider text")).toBeInTheDocument();
+  });
+
+  it.each([undefined, null, 'invalid', 1, {}, { count: '1', limit: 128 }, { count: 1 }])('preserves provider text for malformed backlog params %j', (noticeParams) => {
+    render(
+      <NoticeCard
+        content="Provider text"
+        severity="warning"
+        noticeKey="pages.chat.noticeCard.provider_backlog"
+        noticeParams={noticeParams}
+      />,
+    )
+    expect(screen.getByText('Provider text')).toBeInTheDocument()
+  })
+
   it('renders info copy with the emoji stripped and a lucide info glyph in its place', () => {
     const { container } = render(
       <NoticeCard content={'\u2139\uFE0F The model returned nothing twice — auto-continuing once.'} />,
@@ -200,5 +248,42 @@ describe('registry wiring', () => {
     const { container } = render(<>{entry.render(m, ctx)}</>)
     expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
     expect(container.textContent).not.toContain('\u2139')
+  })
+})
+
+
+describe('structured provider notices', () => {
+  it.each(['info', 'warning', 'future-severity'])('renders %s with explicit tone and verbatim text', severity => {
+    const { container } = render(<NoticeCard content="⚠ Provider title\nDetail" severity={severity} />)
+    expect(container.querySelector('[data-testid="notice-card"]')).toHaveAttribute('data-tone', severity === 'warning' ? 'warn' : 'info')
+    expect(container.textContent).toContain('⚠ Provider title')
+    expect(container.textContent).toContain('Detail')
+  })
+
+  it('the shared registry renders an error-severity provider notice as the transcript ErrorCard', () => {
+    const entry = defaultMessageRenderers.find(r => r.id === 'notice')!
+    const message = { role: 'notice', content: 'Background task failed\nThe dev server exited with code 1.', cls: '', ts: '', meta: { kind: 'provider_notice', severity: 'error' } } as ChatMessage
+    const ctx = { row: (node: React.ReactNode) => node } as unknown as MessageRenderContext
+    const { container } = render(<>{entry.render(message, ctx)}</>)
+    expect(container.querySelector('[data-testid="error-card"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="notice-card"]')).toBeNull()
+    expect(container.textContent).toContain('Background task failed: The dev server exited with code 1.')
+  })
+
+  it.each([
+    ['Background task failed\nThe dev server exited with code 1.', 'Background task failed: The dev server exited with code 1.'],
+    ['Quota reached.\nRetry after 5 minutes.', 'Quota reached. Retry after 5 minutes.'],
+    ['Title only', 'Title only'],
+  ])('joins a provider error %j into one sentence for ErrorCard', (content, expected) => {
+    expect(providerErrorText(content)).toBe(expected)
+  })
+
+  it('the shared registry retains severity across live and history message shapes', () => {
+    const entry = defaultMessageRenderers.find(r => r.id === 'notice')!
+    const message = { role: 'notice', content: 'Deprecated configuration', cls: '', ts: '', meta: { kind: 'provider_notice', severity: 'warning' } } as ChatMessage
+    const ctx = { row: (node: React.ReactNode) => node } as unknown as MessageRenderContext
+    const { container } = render(<>{entry.render(message, ctx)}</>)
+    expect(container.querySelector('[data-testid="notice-card"]')).toHaveAttribute('data-tone', 'warn')
+    expect(container.textContent).toContain('Deprecated configuration')
   })
 })

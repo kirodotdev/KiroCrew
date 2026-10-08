@@ -1550,6 +1550,9 @@ class SlackRenderer(Renderer):
                 self.decider.discard(request_id)
             raise
 
+    async def on_notice(self, text: str) -> None:
+        await self.slack.post_message(self.channel, text, self.thread_ts)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
         try:

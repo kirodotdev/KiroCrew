@@ -10545,7 +10545,8 @@
       },
       "noticeCard": {
         "blocked": "차단됨",
-        "warning": "경고"
+        "warning": "경고",
+        "provider_backlog_other": "이전 제공업체 알림 {{count}}개가 삭제되었습니다. 대기 중인 최신 알림 {{limit}}개만 표시됩니다."
       },
       "compactionCard": {
         "no_summary": "완료 — 표시할 요약 없음",

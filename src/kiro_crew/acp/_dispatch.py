@@ -5,8 +5,9 @@ process-per-session) and ``AcpRuntime``/``AcpSessionHandle`` (shared runtime,
 single-reader demux) must send identically. Keeping these here prevents the
 two parallel implementations from drifting.
 
-These are pure, stateless functions: they take primitives and return dicts, so
-each class keeps its own I/O model (``_turn_lock`` reader vs per-session queue)
+Frame-shaping functions are pure; ``SessionNoticeState`` is bounded and owned by
+each session. Each class keeps its own I/O model (``_turn_lock`` reader vs
+per-session queue)
 while sharing the data-shaping logic: session/new params, set_mode/set_model
 request shapes, per-turn metadata/credit capture, and notification classification.
 """
@@ -20,6 +21,7 @@ import logging
 import math
 import re
 import unicodedata
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -27,6 +29,7 @@ from typing import Any, NamedTuple, cast
 from kiro_crew import mcp_apps_render, session_directive
 from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN, qualified_harness_tool_id
 from kiro_crew.acp.types import (
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -83,6 +86,130 @@ logger = logging.getLogger(__name__)
 # per-frame consumer cost varies by orders of magnitude, and loop-held time is
 # the quantity the watchdog measures. Shared so the two loops cannot drift.
 DRAIN_YIELD_AFTER_S = 0.05
+
+NOTICE_STATE_MAX = 128
+NOTICE_TITLE_MAX = 256
+NOTICE_DESCRIPTION_MAX = 4096
+NOTICE_SEVERITY_MAX = 64
+
+
+def parse_notice(update: object) -> AcpEvent | None:
+    if not isinstance(update, dict) or update.get("sessionUpdate") != "notice":
+        return None
+    title = update.get("title")
+    severity = update.get("severity")
+    if not isinstance(title, str) or not isinstance(severity, str):
+        return None
+    description = update.get("description")
+    description = description if isinstance(description, str) else ""
+
+    def clean(value: str, limit: int, *, trim: bool = False) -> str:
+        if len(value) > _REQUEST_ID_REDACT_INPUT_CAP:
+            return redact_backend_text(value)[:limit]
+        if trim:
+            value = value.strip()
+        # Control characters go FIRST. The credential scan cannot see a key the
+        # provider split with an ESC, so removing them afterwards rejoins the
+        # halves into a whole key the redactor never matched -- redaction has to
+        # run on the normalized text. Then redact, then bound: a cut taken before
+        # the scan can sever a secret into a fragment no pattern matches.
+        value = "".join(c for c in value if c in "\n\t" or c.isprintable())
+        return redact_backend_text(value)[:limit]
+
+    title = clean(title, NOTICE_TITLE_MAX, trim=True)
+    if not title:
+        return None
+    return AcpEvent(
+        kind=EVENT_NOTICE,
+        title=title,
+        text=clean(description, NOTICE_DESCRIPTION_MAX),
+        notice_severity=clean(severity, NOTICE_SEVERITY_MAX),
+    )
+
+
+class SessionNoticeState:
+    """Per-session notice dedupe window and between-turn staging queue.
+
+    Both are capped at ``NOTICE_STATE_MAX``. The dedupe window forgets its oldest
+    key when full, which can only let a repeat through. The staging queue drops
+    its oldest notice when full; each drop is counted, and ``take_pending`` reports the
+    count once as a warning notice so a truncated backlog never reads as complete.
+    """
+
+    def __init__(self) -> None:
+        self.session_id = ""
+        self.seen: OrderedDict[str, None] = OrderedDict()
+        self.pending: deque[AcpEvent] = deque(maxlen=NOTICE_STATE_MAX)
+        self.dropped = 0
+
+    def accept(
+        self, msg: JsonRpcMessage, session_id: str, *, stage: bool = False
+    ) -> AcpEvent | None:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if not session_id or params.get("sessionId") != session_id:
+            return None
+        if not msg.is_method(METHOD_SESSION_UPDATE) or msg.fanout_no_owner:
+            return None
+        if self.session_id != session_id:
+            self._reset(session_id)
+        event = parse_notice(params.get("update"))
+        if event is None:
+            return None
+        key = hashlib.sha256(
+            json.dumps([event.notice_severity, event.title, event.text]).encode("utf-8")
+        ).hexdigest()
+        if key in self.seen:
+            self.seen.move_to_end(key)
+            return None
+        self.seen[key] = None
+        if len(self.seen) > NOTICE_STATE_MAX:
+            self.seen.popitem(last=False)
+        if stage:
+            if len(self.pending) == self.pending.maxlen:
+                self.dropped += 1
+            self.pending.append(event)
+        return event
+
+    def take_pending(self, session_id: str) -> list[AcpEvent]:
+        """Hand back the staged notices, oldest first, and forget them.
+
+        Not named ``drain``: that word is reserved under ``acp/`` for a stream
+        writer's drain, the one call the bounded-writer choke point in
+        ``transport_framing`` owns (``test_deny_bounded_write``).
+        """
+        if self.session_id != session_id:
+            self._reset(session_id)
+        events = list(self.pending)
+        self.pending.clear()
+        if self.dropped:
+            logger.warning(
+                "Provider notice backlog over %d: %d earlier notice(s) dropped",
+                NOTICE_STATE_MAX,
+                self.dropped,
+            )
+            events.insert(
+                0,
+                AcpEvent(
+                    kind=EVENT_NOTICE,
+                    title=(
+                        "1 earlier provider notice was dropped"
+                        if self.dropped == 1
+                        else f"{self.dropped} earlier provider notices were dropped"
+                    ),
+                    text=f"Only the latest {NOTICE_STATE_MAX} queued notices are shown.",
+                    notice_severity="warning",
+                    notice_key="pages.chat.noticeCard.provider_backlog",
+                    notice_params={"count": self.dropped, "limit": NOTICE_STATE_MAX},
+                ),
+            )
+            self.dropped = 0
+        return events
+
+    def _reset(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.seen.clear()
+        self.pending.clear()
+        self.dropped = 0
 
 
 def build_session_new_params(
@@ -3010,6 +3137,9 @@ def parse_session_update(
         return []
     kind = update.get("sessionUpdate")
     events: list[AcpEvent] = []
+    if kind == "notice":
+        notice = parse_notice(update)
+        return [notice] if notice is not None else []
     if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
         text, is_thinking = parse_text_chunk(update)
         if text:
