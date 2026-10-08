@@ -9,5 +9,8 @@
 # kirocrew-pr-review -> Settings -> Code review, load-balance) so each PR's
 # team request resolves to individual members instead of notifying the whole
 # team.
+#
+# @KiroCrewCaptain (the maintainers' automation account, repo Write access)
+# is a co-owner so its approval satisfies "Require review from Code Owners".
 
-*                                   @kirodotdev/kirocrew-pr-review
+*                                   @kirodotdev/kirocrew-pr-review @KiroCrewCaptain
