@@ -317,58 +317,48 @@ class TestApplySecurityHeaders:
             assert "http://*.cloudfront.net" not in frame_src
             assert "https://*" + " " not in frame_src  # no bare https wildcard
 
-    def test_csp_admits_the_webfonts_index_html_actually_loads(self) -> None:
-        """The dashboard's two brand faces come from Google Fonts, so the
-        stylesheet origin must be in style-src and the font origin in font-src.
+    def test_csp_names_no_font_host_origin(self) -> None:
+        """The brand faces are served from the dashboard's own origin, so
+        style-src and font-src admit no dedicated font host."""
+        import re
 
-        Without them the stylesheet is refused and BOTH families fall through
-        the stack. macOS lands on ``-apple-system`` and still looks deliberate;
-        Windows has no such entry and drops to the generic sans-serif, so the
-        whole UI renders in a face the design never targeted."""
+        font_host = re.compile(r"^https?://([A-Za-z0-9-]+\.)*fonts[A-Za-z0-9-]*\.", re.IGNORECASE)
         for with_instances in (False, True):
             resp = _make_response()
             _apply_security_headers(resp, _make_app(with_instances=with_instances))
             csp = resp.headers["Content-Security-Policy"]
-            style_sources = set(
-                next(d for d in csp.split(";") if d.strip().startswith("style-src")).split()
-            )
-            font_sources = set(
-                next(d for d in csp.split(";") if d.strip().startswith("font-src")).split()
-            )
-            # Subset comparison over the directive's token SET (not `<url> in
-            # <string>`) — exact, and with no substring `in` on a URL literal it
-            # cannot trip CodeQL's incomplete-url-substring-sanitization
-            # heuristic (see test_dashboard_origin.py's same workaround).
-            assert {"https://fonts.googleapis.com"} <= style_sources, style_sources
-            assert {"https://fonts.gstatic.com"} <= font_sources, font_sources
+            for name in ("style-src", "font-src"):
+                sources = next(d for d in csp.split(";") if d.strip().startswith(name)).split()
+                hosts = [s for s in sources if font_host.match(s)]
+                assert not hosts, (name, hosts)
 
-    def test_csp_covers_every_remote_font_origin_in_index_html(self) -> None:
-        """Parity gate: any remote origin ``website/index.html`` fetches a font
-        or font stylesheet from must be admitted, so adding a face to the HTML
-        without widening the CSP cannot silently ship a blocked font."""
+    def test_dashboard_shell_loads_fonts_from_its_own_origin(self) -> None:
+        """``website/index.html`` and the global stylesheet reference no
+        absolute font URL, every face ``index.css`` declares is a relative
+        file under ``website/src`` (so Vite hashes it into ``/assets/`` and
+        ``'self'`` serves it), and each family ships its licence."""
         import re
         from pathlib import Path
 
-        index_html = Path(__file__).resolve().parents[1] / "website" / "index.html"
-        if not index_html.is_file():
+        website = Path(__file__).resolve().parents[1] / "website"
+        index_html = website / "index.html"
+        index_css = website / "src" / "index.css"
+        if not (index_html.is_file() and index_css.is_file()):
             # python-only checkout (sdist/wheel test run): nothing to compare.
             return
-        html = index_html.read_text(encoding="utf-8")
-        origins = {
-            f"{m.group(1)}//{m.group(2)}"
-            for m in re.finditer(r"(https:)//([A-Za-z0-9.-]*fonts[A-Za-z0-9.-]*)", html)
-        }
-        assert origins, "expected index.html to reference at least one font origin"
-        resp = _make_response()
-        _apply_security_headers(resp, _make_app(with_instances=False))
-        csp = resp.headers["Content-Security-Policy"]
-        # Subset comparison over whole CSP source tokens (not `origin in csp`) —
-        # every font origin index.html references must be its own admitted
-        # source. Set arithmetic keeps URL literals off the left of `in`, which
-        # CodeQL's incomplete-url-substring-sanitization heuristic would flag.
-        csp_tokens = set(csp.replace(";", " ").split())
-        missing = origins - csp_tokens
-        assert not missing, (missing, csp)
+        remote_font = re.compile(r"https?://[^\s\"')]*fonts[^\s\"')]*", re.IGNORECASE)
+        for path in (index_html, index_css):
+            hits = remote_font.findall(path.read_text(encoding="utf-8"))
+            assert not hits, (path.name, hits)
+
+        css = index_css.read_text(encoding="utf-8")
+        declared = re.findall(r"url\('(\./assets/fonts/[^']+\.woff2)'\)", css)
+        assert any("space-grotesk" in u for u in declared), declared
+        assert any("jetbrains-mono" in u for u in declared), declared
+        missing = [u for u in declared if not (index_css.parent / u).is_file()]
+        assert not missing, missing
+        for family_dir in ("space-grotesk", "jetbrains-mono"):
+            assert (website / "public" / "fonts" / family_dir / "OFL.txt").is_file(), family_dir
 
     def test_defense_in_depth_headers_present(self) -> None:
         """(CWE-1021/693/200/319): by default the pipeline sets

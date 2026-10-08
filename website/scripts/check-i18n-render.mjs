@@ -919,20 +919,15 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
           reducedMotion: 'reduce',
         })
         // Nothing a capture waits on may live off the loopback origin it is served
-        // from. index.html requests the webfont stylesheet from fonts.googleapis.com
-        // on every navigation (routing turns the HTTP cache off, so none of them is
-        // a cache hit), and the quiet wait counts that request like any other: one
-        // slow third-party answer would hold a surface past SETTLE_TIMEOUT_MS and
-        // fail the run for nothing in its diff. The stylesheet is answered empty, so
-        // every capture in both sweeps measures the same fallback face instead of
-        // whichever face arrived in time; any other off-origin request is refused
-        // and settles at once as `requestfailed`. The quiet wait still counts every
-        // request, so a loopback request that never answers still fails by name.
+        // from: one slow third-party answer would hold a surface past
+        // SETTLE_TIMEOUT_MS and fail the run for nothing in its diff. The brand
+        // faces are served from the same origin, so every off-origin request is
+        // refused and settles at once as `requestfailed`. The quiet wait still
+        // counts every request, so a loopback request that never answers still
+        // fails by name.
         await context.route(
           url => /^https?:$/.test(url.protocol) && url.origin !== servedOrigin,
-          route => (new URL(route.request().url()).hostname === 'fonts.googleapis.com'
-            ? route.fulfill({ status: 200, contentType: 'text/css', body: '' })
-            : route.abort('blockedbyclient')),
+          route => route.abort('blockedbyclient'),
         )
         await context.addInitScript(code => {
           localStorage.setItem('mc-lang', code)

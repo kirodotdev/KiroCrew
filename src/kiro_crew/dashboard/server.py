@@ -921,17 +921,13 @@ _BASE_CSP = (
     "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' "
     "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
     "https://esm.sh; "
-    # https://fonts.googleapis.com + https://fonts.gstatic.com: index.html loads
-    # the UI's two brand faces (Space Grotesk, JetBrains Mono) from Google Fonts.
-    # Without these the stylesheet is refused and BOTH families fall through the
-    # stack. macOS lands on -apple-system and looks deliberate; Windows has no
-    # such entry, so it drops to the generic sans-serif/monospace and the whole
-    # dashboard renders in a face the design never targeted (metrics tuned for
-    # Space Grotesk/JetBrains Mono then mis-fit, so chrome text also mis-sizes).
+    # The UI's two brand faces (Space Grotesk, JetBrains Mono) are served from
+    # this origin (website/src/assets/fonts/, hashed into /assets/ by Vite), so
+    # style-src and font-src name no third-party font host; 'self' covers them.
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
-    "https://esm.sh https://fonts.googleapis.com; "
+    "https://esm.sh; "
     "img-src 'self' data: blob: https:; "
-    "font-src 'self' data: https://esm.sh https://fonts.gstatic.com; "
+    "font-src 'self' data: https://esm.sh; "
     # Loopback http(s) origins ({connect_src_extra}) mirror the frame-src note
     # below: WebPreviewPanel does not merely FRAME the local dev server, it also
     # polls it with a no-cors `fetch` liveness probe (a cross-origin iframe
