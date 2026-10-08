@@ -107,6 +107,17 @@ describe('path chip glyph reserve', () => {
     expect(glyphOf(container)).toBeNull()
   })
 
+  it('reserves nothing for a command line whose last argument is a path', () => {
+    stubNeverResolves()
+    // The whole span passed the path pre-filter on `Xcode.app`'s extension, so
+    // the copy chip carried a permanent blank glyph slot before `sudo`.
+    const { container } = render(
+      <MarkdownRenderer content={'Run `sudo xcode-select -s /Applications/Xcode.app` first.'} />,
+    )
+    expect(glyphOf(container)).toBeNull()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
   it('swaps the reserve for a visible glyph once the path is confirmed', async () => {
     stubKind('file')
     const { container } = render(<MarkdownRenderer content={'See `src/hooks/useVirtualChat.ts` here.'} />)

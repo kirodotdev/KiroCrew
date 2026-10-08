@@ -290,6 +290,24 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('C:/Users/me/')).toBe(true) // drive-rooted, trailing forward slash
   })
 
+  it('rejects a command line that carries a path argument or a flag', () => {
+    // A space then a second root or a flag means several shell words, not one
+    // path; the probe could never confirm the whole span.
+    expect(isPathCandidate('sudo xcode-select -s /Applications/Xcode.app')).toBe(false)
+    expect(isPathCandidate('open ~/Downloads/report.pdf')).toBe(false)
+    expect(isPathCandidate('python ./scripts/run.py')).toBe(false)
+    expect(isPathCandidate('cp a.txt ../backup/a.txt')).toBe(false)
+    expect(isPathCandidate('type C:\\Users\\me\\notes.md')).toBe(false)
+    expect(isPathCandidate('tail --follow logs/app.log')).toBe(false)
+  })
+
+  it('still accepts paths whose names contain spaces and dashes', () => {
+    expect(isPathCandidate('/Users/me/Library/Application Support/x.json')).toBe(true)
+    expect(isPathCandidate('docs/Report - final.md')).toBe(true)
+    expect(isPathCandidate('My Docs/notes.md')).toBe(true)
+    expect(isPathCandidate('C:\\Program Files (x86)\\app.txt')).toBe(true)
+  })
+
   it('a trailing separator does not rescue a non-path -- no widening (issue #9409)', () => {
     // The strip re-tests the same rules, so a trailing slash classifies only a
     // string whose slash-less form is already a candidate. These stay rejected
