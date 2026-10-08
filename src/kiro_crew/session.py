@@ -1060,6 +1060,11 @@ class _Session:
     # the caller's existing stale-provider path evicts it and cold starts. Default
     # False so every existing construction site is unaffected.
     retire_on_identity_change: bool = False
+    # The ``backend_override`` the session was cold-started with (``None``: the
+    # factory's default backend). A chat allocation naming a different one does
+    # not reuse it: a rebuild that carried no pick (a hard Stop's respawn) would
+    # otherwise keep serving the chat on another harness and account.
+    chat_backend: str | None = None
     # True while the lease is held for a LIFETIME rather than a turn -- see
     # ``session_lifecycle._turn_in_flight``, which is what asks.
     lifecycle_lease: bool = False

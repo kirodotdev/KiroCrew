@@ -935,6 +935,35 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
+def backend_pick_channel_bound(slot: _ChatSlot) -> bool:
+    """Whether *slot*'s turns run on a messaging channel's session.
+
+    Such a chat cannot take a backend pick: the channel's own replies allocate
+    the shared session without one, so they would run on the configured
+    backend while the composer named the pick, and each side's next turn would
+    replace the other's process. The switch refuses it and the slot row
+    reports it, so the composer hides its picker.
+    """
+    return is_channel_session_key(effective_session_key(slot))
+
+
+def effective_backend_pick(slot: _ChatSlot) -> str | None:
+    """*slot*'s backend pick as backend selection should read it.
+
+    ``None`` on a chat whose turns run on a messaging channel's session, even if
+    the slot carries a pick: a chat picked while still unbound and linked to a
+    thread later keeps the stored value, but the channel's own replies allocate
+    without it, and the switch refuses a pick there
+    (:func:`backend_pick_channel_bound`). Every reader that feeds the pick into
+    selection goes through this, so the composer never hands the shared session
+    a backend its channel side does not use.
+    """
+    if backend_pick_channel_bound(slot):
+        return None
+    backend = getattr(slot, "acp_backend", None)
+    return backend if isinstance(backend, str) else None
+
+
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """Whether a different slot at *name* writes *slot*'s transcript file."""
     current = state._slots.get(name)

@@ -48,7 +48,8 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { modelsBackendFor } from '../api/acpBackend'
+import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
@@ -639,7 +640,14 @@ export default function ChatPane({
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const effectiveModels = useAvailableModels()
+  // A chat's own backend pick serves that backend's catalog, as in ChatPage.
+  const paneModelsBackend = modelsBackendFor(paneSlot)
+  const paneModelsQ = useAvailableModelsQuery({ backend: paneModelsBackend })
+  const effectiveModels = paneModelsQ.data
+  // A picked backend whose model list failed: the list falls back to Auto alone
+  // and keeps retrying, so the failure is said in the pane, not left to look
+  // like a backend with no models.
+  const paneModelsFailed = typeof paneModelsBackend === 'string' && paneModelsQ.isDegraded
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
@@ -1969,6 +1977,13 @@ export default function ChatPane({
           className="mx-4 mt-2"
           testId="chat-pane-model-default-error"
           message={chipDefault.failed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+        />
+        {/* No hand-off: same unsent draft; the picked backend's list keeps retrying. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-backend-models-error"
+          message={paneModelsFailed ? i18nT('components.backendPicker.could_not_load_models') : ''}
         />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}

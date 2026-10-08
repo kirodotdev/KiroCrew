@@ -66,5 +66,13 @@ export function modelListRefetchInterval(
   query: { queryKey: readonly unknown[] },
 ): number | false {
   const providerId = typeof query.queryKey[1] === 'string' ? query.queryKey[1] : ''
-  return modelsDegraded(providerId) ? 8_000 : false
+  // A chat's own backend pick is keyed ['available-models', <providerId>, <backend>]
+  // and carries its own flag, so its list self-heals on its own schedule.
+  const backend = typeof query.queryKey[2] === 'string' ? query.queryKey[2] : undefined
+  return modelsDegraded(modelHealthKey(providerId, backend)) ? 8_000 : false
+}
+
+/** The degraded-flag key for a provider's list, or for one backend pick's list. */
+export function modelHealthKey(providerId: string, backend?: string): string {
+  return backend === undefined ? providerId : `${providerId}:${backend}`
 }

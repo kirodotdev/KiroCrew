@@ -25,6 +25,15 @@ _TO_DICT_KEYS = (
     # Present on EVERY slot, so an absent key and "pinned by hand" are not the
     # same reading for a stale client.
     "jev_route",
+    # The chat's own backend pick (null = none); the composer's backend picker
+    # renders it and keys the model list on it.
+    "acp_backend",
+    # True when that pick is outside the selectable set and the gate runs the chat on
+    # Kiro, so the picker can say so instead of naming the pick.
+    "acp_backend_degraded",
+    # True when the chat's turns run on a messaging channel's session, which takes
+    # no backend pick, so the composer hides its picker.
+    "acp_backend_channel_bound",
     "model_withheld",
     "served_model",
     "reasoning_effort",

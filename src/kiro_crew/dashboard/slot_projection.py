@@ -50,6 +50,33 @@ def resolved_row_identity(slot: Any) -> str:
     return str(getattr(slot, "key", "") or "")
 
 
+def _backend_pick_degraded(pick: str | None) -> bool:
+    """True when a chat's backend pick is outside the selectable set.
+
+    The selection gate (``members.select_provider_backend`` ->
+    ``resolve_selected_backend``) runs such a pick on Kiro, and the picker must
+    say so. No pick (``None``) never degrades.
+    """
+    if pick is None:
+        return False
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO, selectable_backend_values
+
+    # Same test ``resolve_selected_backend`` applies (a pick outside the selectable
+    # set falls back to Kiro, so a Kiro pick cannot degrade), without its warning
+    # log -- this runs on every slot push.
+    if pick == ACP_BACKEND_KIRO:
+        return False
+    return pick not in selectable_backend_values()
+
+
+def _backend_pick_channel_bound(slot: Any) -> bool:
+    """See :func:`kiro_crew.dashboard.chat_utils.backend_pick_channel_bound`."""
+    # Import after state initialization: chat_utils itself imports state.
+    from kiro_crew.dashboard.chat_utils import backend_pick_channel_bound
+
+    return backend_pick_channel_bound(slot)
+
+
 def live_trust_scope(slot: Any) -> str:
     """The slot's ``SafetyOverride`` scoped-grant key while that grant is live, else "".
 
@@ -386,6 +413,20 @@ class SlotProjection:
             # otherwise be the same reading, and a stale client would show a
             # routed session as pinned.
             "jev_route": bool(getattr(slot, "jev_route", False)),
+            # The chat's own backend pick (``None`` = follows the member route /
+            # configured default; ``""`` = Kiro). The composer's backend picker
+            # renders it and keys the model list on it.
+            "acp_backend": getattr(slot, "acp_backend", None),
+            # True when that pick is outside the selectable set (a governance
+            # ceiling excludes it): the selection gate then runs the
+            # chat on Kiro, so the picker must say so rather than keep naming the
+            # pick. Read from the same selectable set the gate uses -- the gate's
+            # own answer, not a second decision. DISPLAY only.
+            "acp_backend_degraded": _backend_pick_degraded(getattr(slot, "acp_backend", None)),
+            # True when the chat's turns run on a messaging channel's session,
+            # which takes no backend pick (the switch refuses it): the composer
+            # hides its backend picker.
+            "acp_backend_channel_bound": _backend_pick_channel_bound(slot),
             # The backend's own withhold verdict for `model`: true = the account
             # cannot run the pin (this session is on the backend default), false
             # = it can, null = not known yet. Carried so the frontend reads the

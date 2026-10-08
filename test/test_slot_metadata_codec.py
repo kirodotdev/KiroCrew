@@ -16,6 +16,7 @@ interface with real slots on a temp-home ``DashboardState``:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 
 import pytest
@@ -54,6 +55,7 @@ _POPULATED: dict = {
     "model": "model-m",
     "reasoning_effort": "high",
     "autocompact_pct": 44.0,
+    "acp_backend": "kas",
     "_dismissed_source_links": {K1, K2},
     "workspace": "ws",
     "memory_store": "silo",
@@ -116,6 +118,7 @@ _BASE_LINE_ORDER = (
     "reasoning_effort",
     "autocompact_pct",
     "dismissed_source_links",
+    "acp_backend",
     "mode",
     "workspace",
     "memory_store",
@@ -162,6 +165,7 @@ _BASE_MERGE_ORDER = (
     "model",
     "queued_prompts",
     "autocompact_pct",
+    "acp_backend",
     "title",
     "title_origin",
     "title_refresh_mark",
@@ -212,7 +216,7 @@ def _populated(state, *, app: str = "app-1"):
 
 def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed"):
     if purpose == codec.RESTORE:
-        return codec.Restore(name=name, member=member)
+        return codec.Restore(name=name, member=member, history_key=f"dashboard:{name}")
     if purpose == codec.RECENT:
         return codec.Recent(
             name=name, member=member, listing={"title": listed}, history_key=f"dashboard_{name}"
@@ -237,6 +241,14 @@ def _read_back(state, meta: dict, purpose: str, *, name: str = "", **kwargs):
     """Construct a slot the way a reader does and apply *meta* to it."""
     name = name or f"dst-{purpose}"
     chosen = _purpose(purpose, name=name, **kwargs)
+    # The backend pick is restored only when the gateway-owned record vouches it,
+    # which the reader prefetched off the loop under the purpose's transcript key
+    # (a History resume carries the record it read on the purpose itself).
+    if isinstance(meta.get("acp_backend"), str):
+        cp.vouch_backend_pick(f"dashboard:{name}", meta["acp_backend"])
+        cp.prefetch_vouched_backend(getattr(chosen, "history_key", ""))
+        if isinstance(chosen, codec.Resume):
+            chosen = dataclasses.replace(chosen, vouched_backends=frozenset({meta["acp_backend"]}))
     slot = state.get_or_create_slot(name, **codec.slot_args(meta, chosen))
     baseline = {
         row.attr: copy.deepcopy(getattr(slot, row.attr)) for row in codec.FIELDS if row.attr

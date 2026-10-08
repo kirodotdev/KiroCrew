@@ -16,7 +16,21 @@ import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
 import { useCommandPalette } from '../../hooks/useCommandPalette'
 import { useProvider } from '../../providers/context'
+import { modelsQueryKey } from '../../hooks/useAvailableModels'
+import { modelsBackendFor } from '../../api/acpBackend'
 import { useAgents } from '../../hooks/useAgents'
+
+/**
+ * The backend whose model list the model-cycle shortcuts step through for
+ * *activeSlot*: the same key the composer's picker fills
+ * (`modelsBackendFor`), so a degraded pick cycles Kiro's list.
+ */
+export function activeModelsBackend(
+  slots: readonly { key: string; acp_backend?: string | null; acp_backend_degraded?: boolean }[],
+  activeSlot: string,
+): string | null {
+  return modelsBackendFor(slots.find(s => s.key === activeSlot))
+}
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 // Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
@@ -183,7 +197,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCycleModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active chat's own backend pick has its own model-list entry.
+      const pick = activeModelsBackend(store.getState().dashboard.slots, activeSlot)
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, pick))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
@@ -215,7 +231,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCyclePrevModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active chat's own backend pick has its own model-list entry.
+      const pick = activeModelsBackend(store.getState().dashboard.slots, activeSlot)
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, pick))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)

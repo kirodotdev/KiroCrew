@@ -384,6 +384,7 @@ def _materialise_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    vouched_backends: frozenset[str] = frozenset(),
 ) -> _ChatSlot:
     """Build and hydrate a slot from a persisted history snapshot, UNPUBLISHED.
 
@@ -531,6 +532,8 @@ def _materialise_slot_from_history(
             disk_meta_observed=disk_meta_observed,
             broadcast_rows=broadcast_rows,
             mint_missing_mids=mint_missing_mids,
+            history_key=history_key,
+            vouched_backends=vouched_backends,
         )
     except BaseException:
         # ``slot`` is None if ``get_or_create_slot`` itself raised (nothing was
@@ -572,6 +575,8 @@ def _hydrate_slot_from_history(
     disk_meta_observed: bool = True,
     broadcast_rows: bool = True,
     mint_missing_mids: bool = False,
+    history_key: str = "",
+    vouched_backends: frozenset[str] = frozenset(),
 ) -> None:
     """Apply persisted metadata to *slot* and hydrate its message window.
 
@@ -603,6 +608,8 @@ def _hydrate_slot_from_history(
             folder_unhidden=folder_unhidden,
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
+            history_key=history_key,
+            vouched_backends=vouched_backends,
         ),
     )
     disk_total = len(all_messages)
@@ -1011,6 +1018,13 @@ async def resume_slot_from_history(
     restore_cfg, effort_marker = await asyncio.to_thread(
         lambda: (_load_restore_cfg(), _has_validated_effort_marker(_prefetched_effort))
     )
+    # The backend pick's gateway record is a disk read too, and the pick comes
+    # back only when that record vouches the line's value.
+    vouched_backends: frozenset[str] = frozenset()
+    if isinstance(meta.get("acp_backend"), str):
+        from kiro_crew.dashboard import chat_persistence as cp
+
+        vouched_backends = await asyncio.to_thread(cp.read_vouched_backend, history_key)
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
     resume_outcome = await _live_slot_for_resume(
@@ -1381,6 +1395,7 @@ async def resume_slot_from_history(
         # passed: a refused build is discarded, and frames already pushed for it
         # would describe a session that never appears.
         broadcast_rows=not reserved,
+        vouched_backends=vouched_backends,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the

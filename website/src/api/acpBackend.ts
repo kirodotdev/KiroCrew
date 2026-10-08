@@ -20,6 +20,32 @@ export const ACP_BACKEND_KIRO = ''
  *  which completes first-run setup on kiro-cli ACP support, not a kiro-cli login. */
 export const ACP_BACKEND_KAS = 'kas'
 
+/**
+ * The backend whose model list a chat's picker shows: the chat's own pick, or
+ * `null` (the configured backend's list) when it has none. A degraded pick is
+ * outside the selectable set and the gateway runs the chat on Kiro, so Kiro's
+ * list applies; the pick's own would be refused on every poll.
+ */
+export function modelsBackendFor(
+  slot: { acp_backend?: string | null; acp_backend_degraded?: boolean } | undefined,
+): string | null {
+  if (slot?.acp_backend_degraded) return ACP_BACKEND_KIRO
+  return slot?.acp_backend ?? null
+}
+
+/**
+ * Whether the composer offers a backend picker for *slot*. A peer-bound chat
+ * runs on the peer, which picks its own backend; a channel-linked chat's
+ * replies run on the configured backend (the gateway reports it as
+ * `acp_backend_channel_bound` and refuses a pick there).
+ */
+export function backendPickable(
+  slot: { acp_backend_channel_bound?: boolean } | undefined,
+  remoteBound: boolean,
+): boolean {
+  return !!slot && !remoteBound && !slot.acp_backend_channel_bound
+}
+
 /** The slice of the config body this check reads. */
 export interface AcpBackendConfig {
   agent?: { acp_backend?: string }

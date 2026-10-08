@@ -386,6 +386,29 @@ def take_parked_queue(key: str) -> tuple[Any, ...]:
     return tuple(_parked_queue.pop(key, ()))
 
 
+def park_live_queue(sessions: Any, key: str, session: Any) -> int:
+    """Park *session*'s live queue entries for whatever session next registers under *key*.
+
+    For a teardown that ends a process but not the conversation (a recycling
+    reset, a session evicted because it runs the wrong backend): the queue holds
+    follow-ups people sent while the turn ran, which nobody asked to drop.
+    Entries a mid-turn cancel marked in ``cancelled`` stay on *session*'s queue,
+    so the teardown's unlink removes their files as before. Parking is bounded
+    (``PARKED_QUEUE_MAX``); what does not fit is dropped, counted and logged by
+    ``_park_queue``. Returns how many were parked.
+    """
+    cancelled = session.cancelled
+    kept = tuple(entry for entry in session.queue if entry[0] not in cancelled)
+    if not kept:
+        return 0
+    wanted = {id(entry) for entry in kept}
+    remaining = [entry for entry in session.queue if id(entry) not in wanted]
+    session.queue.clear()
+    session.queue.extend(remaining)
+    _park_queue(sessions, key, kept)
+    return len(kept)
+
+
 def adopt_parked_queue(session: Any, key: str) -> int:
     """Move *key*'s parked entries onto a just-registered *session*'s queue head.
 
@@ -406,8 +429,8 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
 
     Shared by the reset successor and the compaction restart
     (``session_compaction._restart_held``) so the two cannot drift: agent,
-    approval policy, cwd, bound channel, the model the allocation selected and
-    the crew member. A caller's ``extra_env`` is not recorded on a session, so
+    approval policy, cwd, bound channel, the model the allocation selected, the
+    crew member and the chat's backend pick. A caller's ``extra_env`` is not recorded on a session, so
     it cannot be carried.
     """
     return {
@@ -417,6 +440,13 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
         "channel_id": owner.get_channel(key) or None,
         "model": getattr(session, "requested_model", "") or None,
         "crew_agent": getattr(session, "capability_member", "") or None,
+        # The chat's backend pick, only when the session was built on one, so
+        # an allocation that never named a pick keeps the kwargs it always had.
+        **(
+            {"backend_override": session.chat_backend}
+            if isinstance(getattr(session, "chat_backend", None), str)
+            else {}
+        ),
     }
 
 
@@ -1626,16 +1656,7 @@ class SessionLifecycleService:
         Parking is bounded (``PARKED_QUEUE_MAX``); what does not fit is dropped,
         counted and logged by ``_park_queue``. Returns how many were parked.
         """
-        cancelled = session.cancelled
-        kept = tuple(entry for entry in session.queue if entry[0] not in cancelled)
-        if not kept:
-            return 0
-        wanted = {id(entry) for entry in kept}
-        remaining = [entry for entry in session.queue if id(entry) not in wanted]
-        session.queue.clear()
-        session.queue.extend(remaining)
-        _park_queue(self._owner, key, kept)
-        return len(kept)
+        return park_live_queue(self._owner, key, session)
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register the watchdog recycle notification callback."""

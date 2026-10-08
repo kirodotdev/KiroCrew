@@ -34,7 +34,7 @@ from kiro_crew.runtime_ownership import (
     acquire_session_lease,
     release_session_lease,
 )
-from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.session_lifecycle import adopt_parked_queue, park_live_queue
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
     START_QUEUE_COMPANION,
@@ -427,6 +427,23 @@ def _collect_parent_runtime_kwargs(
     if shared_scratch is not None:
         kwargs["shared_scratch"] = shared_scratch
     return kwargs
+
+
+def _release_on_backend_mismatch(session: Any, extra_factory_kwargs: dict[str, Any]) -> bool:
+    """Whether a claimed *session* runs a backend other than the caller's pick.
+
+    Only a caller that names a pick (``backend_override``, a chat allocation) is
+    compared; one that names none (an eager respawn, a probe) takes whatever is
+    live. On a mismatch the claim's semaphore is released, so the caller's
+    stale-session path evicts the session and cold-starts on the pick, the way a
+    dead provider is replaced.
+    """
+    if "backend_override" not in extra_factory_kwargs:
+        return False
+    if getattr(session, "chat_backend", None) == extra_factory_kwargs["backend_override"]:
+        return False
+    session.semaphore.release()
+    return True
 
 
 def parent_work_scratch_dir(owner: _AllocationOwner, parent_session_key: str) -> Path | None:
@@ -2251,12 +2268,14 @@ class SessionAllocationService:
 
         if claimed is not None:
             session = claimed
-            if await owner._reacquire_and_validate(
+            valid = await owner._reacquire_and_validate(
                 key,
                 session,
                 wait_if_busy=wait_if_busy,
                 reservation=_reservation,
-            ):
+            )
+            mismatched = valid and _release_on_backend_mismatch(session, extra_factory_kwargs)
+            if valid and not mismatched:
                 first_turn = session.first_turn
                 if not speculative:
                     session.first_turn = self._deps.first_turn_nothing_armed
@@ -2267,6 +2286,12 @@ class SessionAllocationService:
                 if adopt_parked_queue(session, key):
                     session.adopted_parked = True
                 return session.provider, first_turn.is_new, first_turn.resumed
+            if mismatched:
+                # A wrong-backend session is replaced, not dead: the follow-ups
+                # queued on it (a hard stop's eager respawn adopts them) belong
+                # to the conversation. Parked before the eviction unlinks the
+                # queue, so the cold start below adopts them at registration.
+                park_live_queue(owner, key, session)
             await owner._evict_stale_session(key, session)
             # Re-enter the claim rather than cold-start in place. The session
             # this claimant waited on was replaced or retired under it -- a reset
@@ -2381,6 +2406,13 @@ class SessionAllocationService:
             # fixed when it was pre-spawned with no parent. Cold-starting is what
             # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
             pool_decision = "bypass_shared_scratch"
+        elif extra_factory_kwargs.get("backend_override") is not None:
+            # A chat with its own backend pick. A pooled child was spawned on the
+            # factory's DEFAULT backend -- a different process, which no post-claim
+            # switch can change -- so a warm hit would hand the chat the wrong
+            # backend. ``is not None``: ``""`` is a Kiro pick, and under a non-Kiro
+            # default the pooled child is on the wrong backend for it too.
+            pool_decision = "bypass_chat_backend"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -2757,6 +2789,7 @@ class SessionAllocationService:
                     # Stamped from the same local rather than re-resolved, which is
                     # what keeps the id sent and the id read identical.
                     session.requested_model = model or ""
+                    session.chat_backend = extra_factory_kwargs.get("backend_override")
                     session.loaded_capabilities = stamp
                     self.state.capability_failures.pop(key, None)
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True

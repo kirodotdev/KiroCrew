@@ -139,6 +139,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "stop_slot_turn"),
+                # The backend picker's switch. Reservation state, like the model
+                # switch beside it: a backend change between a plan's stages
+                # would respawn the provider under a turn still in flight.
+                ("chat_handlers.py", "switch_slot_backend"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.

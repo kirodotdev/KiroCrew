@@ -136,6 +136,9 @@ class Restore:
     cfg: Any = None
     model_map: Mapping[str, str] = field(default_factory=dict)
     effort_marker: bool = False
+    #: The transcript key the reader read the line from: the backend pick's
+    #: gateway record was prefetched under it (``cp.prefetch_vouched_backend``).
+    history_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -174,6 +177,10 @@ class Resume:
     disk_meta_observed: bool = True
     app: str = ""
     history_key: str = ""
+    #: The backend picks the transcript's gateway record names, read off the
+    #: loop by a History resume. A transfer import passes none, so the line it
+    #: brought restores no pick.
+    vouched_backends: frozenset[str] = frozenset()
 
 
 Purpose = Restore | Resume
@@ -634,6 +641,17 @@ def _read_autocompact_pct(r: _Read) -> None:
         r.slot.autocompact_pct = _validate_autocompact_pct(r.meta["autocompact_pct"])
 
 
+def _read_acp_backend(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    if isinstance(r.purpose, Resume):
+        r.slot.acp_backend = cp.vouched_acp_backend(
+            r.meta, r.purpose.vouched_backends, r.purpose.history_key
+        )
+    else:
+        r.slot.acp_backend = cp._restored_acp_backend(r.meta, r.purpose.history_key)
+
+
 def _read_dismissed_source_links(r: _Read) -> None:
     _restore_dismissed_source_links(r.slot, r.meta.get("dismissed_source_links"))
 
@@ -977,6 +995,21 @@ FIELDS: tuple[Field, ...] = (
         line=_always(lambda s: s.autocompact_pct),
         merge=_always(lambda s: s.autocompact_pct),
         read=_read_autocompact_pct,
+    ),
+    Field(
+        "acp_backend",
+        _ALL,
+        attr="acp_backend",
+        # ``None`` is "no pick": the full save omits it (the key is slot-owned,
+        # so the omission clears an older line's pick), and the merge writes it
+        # because a merge cannot delete a key. ``""`` is a Kiro pick.
+        line=lambda s, f: s.acp_backend if s.acp_backend is not None else OMIT,
+        merge=_always(lambda s: s.acp_backend),
+        read=_read_acp_backend,
+        why=(
+            "restored only when the gateway-owned record vouches it, since the line "
+            "is agent-editable; a transfer import brings no record, so no pick"
+        ),
     ),
     Field(
         "dismissed_source_links",
@@ -1376,6 +1409,7 @@ LINE_ORDER: tuple[str, ...] = (
     "reasoning_effort",
     "autocompact_pct",
     "dismissed_source_links",
+    "acp_backend",
     "mode",
     "workspace",
     "memory_store",
@@ -1425,6 +1459,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "model",
     "queued_prompts",
     "autocompact_pct",
+    "acp_backend",
     "title",
     "title_origin",
     "title_refresh_mark",

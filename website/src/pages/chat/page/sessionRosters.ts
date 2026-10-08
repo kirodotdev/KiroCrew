@@ -1,16 +1,20 @@
 import { useCallback, useState } from 'react'
 
+import { modelsBackendFor } from '../../../api/acpBackend'
 import { api } from '../../../api/client'
 import { useAgents } from '../../../hooks/useAgents'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
 import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
+import type { ChatSlot } from '../../../types'
 
 interface SessionRostersOptions {
   activeSlot: string | null
   activeSlotProject: string | undefined
   refreshTrigger: number
+  /** The slot list, read for the active chat's backend pick. */
+  slots: ChatSlot[]
   dispatch: AppDispatch
 }
 
@@ -19,7 +23,7 @@ interface SessionRostersOptions {
  * session: this machine's catalog. Also the agent picker's filter state and its
  * "set as default" write.
  */
-export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, dispatch }: SessionRostersOptions) {
+export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, slots, dispatch }: SessionRostersOptions) {
   const { agents: installedAgents, displayAgents, choices: catalogChoices, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
   // What the chat sidebar tints its rows from: the last LOADED roster, so a
   // session switch (which empties `installedAgents` until the new slot's fetch
@@ -46,11 +50,17 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
-  const effectiveModels = useAvailableModels()
+  // The active chat's own backend pick keys the model list: a backend serves its
+  // own catalog. No pick keeps the configured backend's list, as before. A degraded
+  // pick is no longer selectable and the gateway runs the chat on Kiro, so Kiro's
+  // list is the one that applies; asking for the pick's would be refused every poll.
+  const activeSlotRow = slots.find(s => s.key === activeSlot)
+  const activeSlotBackend = activeSlotRow?.acp_backend ?? null
+  const effectiveModels = useAvailableModels({ backend: modelsBackendFor(activeSlotRow) })
   return {
     installedAgents, sidebarAgents, defaultAgent, effectiveAgents,
     defaultAgentFailed, toggleDefaultAgent,
     agentDropdown, setAgentDropdown, agentFilter, setAgentFilter, agentDropdownRef, agentInputRef, filteredAgents,
-    effectiveModels,
+    effectiveModels, activeSlotBackend,
   }
 }

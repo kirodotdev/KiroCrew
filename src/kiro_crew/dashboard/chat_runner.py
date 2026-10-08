@@ -330,6 +330,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     chat_done_payload,
     chunk_generation,
     drained_to_thread,
+    effective_backend_pick,
     effective_session_key,
     expire_slack_options,
     is_harness_slash_command,
@@ -5589,7 +5590,19 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
+def _chat_backend_kwargs(slot: "_ChatSlot") -> dict[str, str]:
+    """The chat's backend pick as provider-factory kwargs, or nothing at all.
+
+    Empty when the chat has no pick, so a chat without one allocates with
+    exactly the kwargs it always did (and a factory that predates the arm is
+    never handed a keyword it does not name). ``""`` is a Kiro pick and IS
+    passed: under a non-Kiro default, dropping it would run the chat elsewhere.
+    """
+    backend = effective_backend_pick(slot)
+    return {"backend_override": backend} if isinstance(backend, str) else {}
+
+
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str | None]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -5598,6 +5611,10 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
     either side is not a copy of this contract, it is a silent inversion of it —
     a field present here and missing there makes the comparison unequal on every
     call, so the guard removes the session it is supposed to keep.
+
+    ``acp_backend`` is a binding too: a backend picked while the handshake runs
+    (a pick on a brand-new chat) must not leave a session on the OLD backend
+    registered for the first message to reuse.
     """
     return (
         slot.agent,
@@ -5605,6 +5622,7 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
         slot.project,
         slot.reasoning_effort,
         slot.memory_store,
+        getattr(slot, "acp_backend", None),
     )
 
 
@@ -5844,7 +5862,10 @@ async def _eager_spawn(
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
                 backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                    session_key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    effective_backend_pick(slot),
                 ),
                 channel_id=None,
                 session_key=session_key,
@@ -6025,6 +6046,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                **_chat_backend_kwargs(slot),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -9729,6 +9751,7 @@ async def _run_chat(
                 session_key,
                 getattr(_todos_agent_cfg, "member_acp_backend", ""),
                 getattr(_todos_agent_cfg, "acp_backend", ""),
+                effective_backend_pick(slot),
             )
             _todos_supported = capabilities_for(_todos_backend).supports_native_todos
         if not _todos_supported:
@@ -9772,6 +9795,7 @@ async def _run_chat(
                 session_key,
                 getattr(_agent_cfg, "member_acp_backend", ""),
                 getattr(_agent_cfg, "acp_backend", ""),
+                effective_backend_pick(slot),
             )
             _compact_unsupported = (
                 _cfg_backend
@@ -10290,6 +10314,7 @@ async def _run_chat(
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
             start_priority=_turn_priority,
+            **_chat_backend_kwargs(slot),
         )
 
         def _release_dispatch_lock() -> None:

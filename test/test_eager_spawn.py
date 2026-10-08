@@ -1212,6 +1212,28 @@ class TestToolSearchReplayPrefetchGate:
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         assert state.sessions.get_or_create.await_args.kwargs["speculative_resume"] is True
 
+    @pytest.mark.asyncio
+    async def test_a_chat_picked_onto_kiro_under_another_default_spawns_nothing(self):
+        # The chat runs on its pick, so the predicate must read the pick: a
+        # Kiro pick takes the replay path even when the default is not Kiro.
+        slot = _ChatSlot("t1")
+        slot.acp_backend = ""
+        state = _mock_state(slot)
+        loader = _cfg(True)
+        loader.return_value.agent.acp_backend = ACP_BACKEND_KAS
+        with patch.object(chat_runner.KiroCrewConfig, "load", loader):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        state.sessions.get_or_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_chat_picked_off_kiro_under_a_kiro_default_still_prefetches(self):
+        slot = _ChatSlot("t1")
+        slot.acp_backend = ACP_BACKEND_KAS
+        state = _mock_state(slot)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        assert state.sessions.get_or_create.await_args.kwargs["speculative_resume"] is True
+
 
 class TestArmedPrefetchCap:
     """_cap_armed_prefetches: population cap on live-but-unclaimed prefetches.

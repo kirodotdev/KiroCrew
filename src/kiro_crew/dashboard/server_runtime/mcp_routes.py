@@ -279,6 +279,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_reload"),
     )
     app.router.add_post(
+        "/api/session-control/backend",
+        _deferred("session_control", "api_session_control_backend"),
+    )
+    app.router.add_post(
         "/api/session-control/close", _deferred("session_control", "api_session_control_close")
     )
     app.router.add_post(

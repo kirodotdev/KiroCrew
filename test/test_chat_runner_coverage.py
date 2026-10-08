@@ -3859,7 +3859,10 @@ class TestRunChatLocalCommands:
             await _drive(state, slot, "/todos")
 
         select_backend.assert_called_once_with(
-            chat_runner.effective_session_key(slot), cfg.agent.member_acp_backend, acp_backend
+            chat_runner.effective_session_key(slot),
+            cfg.agent.member_acp_backend,
+            acp_backend,
+            slot.acp_backend,
         )
 
         notices = [
@@ -4280,8 +4283,35 @@ class TestRunChatLocalCommands:
             select_backend.assert_not_called()
         else:
             select_backend.assert_called_once_with(
-                chat_runner.effective_session_key(slot), "claude", ""
+                chat_runner.effective_session_key(slot), "claude", "", slot.acp_backend
             )
+
+    @pytest.mark.asyncio
+    async def test_todos_follows_the_chats_own_backend_pick(self, tmp_path):
+        """A chat picked onto Claude under a Kiro default is admitted cold.
+
+        With no live row, the gate reads the backend this chat's next session
+        would run on, which is its own pick, not the configured default.
+        """
+        state, client = _runner_state(tmp_path)
+        slot = _slot("picked-claude")
+        state._slots[slot.key] = slot
+        slot.acp_backend = "claude"
+        client.capabilities = capabilities_for("claude")
+        client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+        _set_stream(client, [_complete()])
+        client.stream_command = client.stream
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.is_provider_alive = AsyncMock(return_value=None)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = ""
+        cfg.agent.member_acp_backend = ""
+        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+            await _drive(state, slot, "/todos")
+        assert not any(
+            "not available in the dashboard" in m.get("content", "") for m in slot.messages
+        )
+        state.sessions.get_or_create.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("alive", [False, None, "absent"])

@@ -290,6 +290,28 @@ class TestDashboardManualCompactGate:
         assert any("manages compaction" in t for t in texts)
 
     @pytest.mark.asyncio
+    async def test_a_chat_picked_onto_kas_answers_without_live_session(self, tmp_path) -> None:
+        """The cold gate reads the backend this chat's turn would run on: a chat
+        picked onto KAS under a Kiro default is answered locally too, rather than
+        sent a /compact KAS never answers."""
+        client = MagicMock(spec=AcpProvider)
+        dispatched = _empty_stream(client)
+        state, slot = _state_and_slot(tmp_path, client)
+        state.sessions._sessions = {}  # real dict, no live session
+        slot.acp_backend = ACP_BACKEND_KAS
+
+        from kiro_crew.dashboard import chat_runner as cr
+
+        _cfg = SimpleNamespace(agent=SimpleNamespace(provider="acp", acp_backend=ACP_BACKEND_KIRO))
+        with patch.object(cr.KiroCrewConfig, "load", staticmethod(lambda: _cfg)):
+            await _run_chat(state, slot, "/compact")
+
+        dispatched.assert_not_called()
+        state.sessions.get_or_create.assert_not_called()
+        texts = [m.get("content", "") for m in slot.messages]
+        assert any("manages compaction" in t for t in texts)
+
+    @pytest.mark.asyncio
     async def test_member_backend_compact_still_dispatches(self, tmp_path) -> None:
         """A backend inside ACP_BACKENDS_COMPACT keeps the pre-fix behavior:
         the live provider's property answers None (the member answer) and the
